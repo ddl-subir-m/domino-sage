@@ -26,15 +26,8 @@ load_dotenv()  # backend/.env (gateway creds + model aliases); no-op if absent
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..gateway.client import (
-    DEFAULT_SIDECAR_URL,
-    DominoGatewayClient,
-    FakeGatewayClient,
-    GatewayClient,
-    GatewayUpstreamError,
-    sidecar_token,
-    static_token,
-)
+from ..gateway.client import GatewayUpstreamError
+from ..gateway.factory import build_gateway
 from ..router.model_control import ModelControl
 from ..router.models import ModelCatalog, Mode, Phase
 from .enforcement import EnforcementShim
@@ -42,25 +35,7 @@ from .enforcement import EnforcementShim
 log = logging.getLogger("sage.shim")
 logging.basicConfig(level=logging.INFO)
 
-
-def _build_gateway() -> GatewayClient:
-    """Real gateway when GATEWAY_BASE_URL is set, else an in-process fake.
-
-    Token source: a static dgw_ PAT (GATEWAY_API_KEY) if provided — needed off-Domino;
-    otherwise the Domino workspace sidecar (GATEWAY_TOKEN_URL, default :8899), which only
-    resolves inside a Domino workspace/job.
-    """
-    base_url = os.environ.get("GATEWAY_BASE_URL")
-    if not base_url:
-        return FakeGatewayClient()  # no gateway configured -> curl still works locally
-    api_key = os.environ.get("GATEWAY_API_KEY")
-    provider = (
-        static_token(api_key)
-        if api_key
-        else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    )
-    return DominoGatewayClient(base_url=base_url, token_provider=provider)
-
+_gateway, GATEWAY_MODE = build_gateway()
 
 # TODO(Step 4.2+): SessionState is per project/session. For the spike, one process-wide control.
 # Defaults are gateway alias names (see MODELS.md). Sovereign tier = "Domino Platform"
@@ -76,15 +51,14 @@ _control = ModelControl(mode=Mode.MANUAL, phase=Phase.PLAN)
 # sovereign override live — any request, whatever model OpenCode asks for, routes to sovereign.
 if os.environ.get("SAGE_FORCE_SENSITIVITY_LOCK") in {"1", "true", "yes"}:
     _control.on_assets_changed([True])
-_shim = EnforcementShim(_control, _catalog, _build_gateway())
+_shim = EnforcementShim(_control, _catalog, _gateway)
 
 app = FastAPI(title="sage enforcement shim")
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, object]:
-    gw = type(_shim._gateway).__name__  # noqa: SLF001 - spike introspection
-    return {"ok": True, "gateway": gw, "locked": _control.locked}
+    return {"ok": True, "gateway_mode": GATEWAY_MODE, "locked": _control.locked}
 
 
 # Default the project tag from the Domino project context so cost doesn't land in "unknown".

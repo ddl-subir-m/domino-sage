@@ -104,39 +104,48 @@ class FakeGatewayClient:
         yield from self.scripted_events
 
 
-class DominoGatewayClient:
-    """Real client for the OpenAI-compatible Domino gateway.
+class OpenAICompatibleClient:
+    """Client for any OpenAI-compatible endpoint behind a Bearer token.
 
-    route() is implemented; needs live verification once we have base_url + key (Step 1.1).
-    costs()/guardrail_events() await the Step 2.3 answers (Q1/Q4).
+    Two modes, one code path:
+      - domino_tags=True  -> the Domino LLM gateway: also sends X-LLM-Tag-* (usage attribution).
+      - domino_tags=False -> a generic hosted OpenAI-compatible endpoint (local Mac E2E), no
+        Domino-specific headers.
     """
 
-    def __init__(self, base_url: str, token_provider: Callable[[], str], timeout_s: float = 60.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token_provider: Callable[[], str],
+        *,
+        domino_tags: bool = False,
+        timeout_s: float = 60.0,
+    ) -> None:
         # base_url is the OpenAI base ending in /v1, e.g.
-        #   https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1
+        #   https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1  (domino)
+        #   https://api.some-host.com/v1                                 (generic)
         self._base_url = base_url.rstrip("/")
         self._token_provider = token_provider
+        self._domino_tags = domino_tags
         self._timeout_s = timeout_s
 
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
         import httpx  # local import so tests that never hit the network don't need it
 
-        # Auth + tags per the LLM_gateway repo:
-        #   Authorization: Bearer <token>  (sidecar JWT in-workspace, or a dgw_ PAT off-Domino)
-        #   X-LLM-Tag-*  -> stored in the gateway's usage `tags` column (project from Domino
-        #   context; we add phase + model so per-phase cost is queryable).
-        headers = {
-            "Authorization": f"Bearer {self._token_provider()}",
-            "X-LLM-Tag-project": labels.project,
-            "X-LLM-Tag-phase": labels.phase,
-            "X-LLM-Tag-model": labels.model,
-        }
+        headers = {"Authorization": f"Bearer {self._token_provider()}"}
+        if self._domino_tags:
+            # Stored in the gateway's usage `tags` column (project from Domino context; we add
+            # phase + model so per-phase cost is queryable).
+            headers |= {
+                "X-LLM-Tag-project": labels.project,
+                "X-LLM-Tag-phase": labels.phase,
+                "X-LLM-Tag-model": labels.model,
+            }
         url = f"{self._base_url}/chat/completions"  # base already ends in /v1
         with httpx.Client(timeout=self._timeout_s, follow_redirects=False) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
-                # Surface upstream errors BEFORE streaming so the caller gets a clean
-                # message instead of a mid-stream connection reset. A 3xx here means auth
-                # bounced us to a login page (bad/expired token).
+                # Surface upstream errors BEFORE streaming so the caller gets a clean message
+                # instead of a mid-stream reset. A 3xx here means auth bounced to a login page.
                 if resp.status_code >= 400 or resp.is_redirect:
                     body = resp.read().decode(errors="replace")[:800]
                     raise GatewayUpstreamError(resp.status_code, url, body)

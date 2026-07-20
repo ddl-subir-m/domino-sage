@@ -22,15 +22,8 @@ load_dotenv()
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..gateway.client import (
-    DEFAULT_SIDECAR_URL,
-    DominoGatewayClient,
-    FakeGatewayClient,
-    GatewayClient,
-    GatewayUpstreamError,
-    sidecar_token,
-    static_token,
-)
+from ..gateway.client import GatewayUpstreamError
+from ..gateway.factory import build_gateway
 from ..feedback.runner import FeedbackRunner
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
@@ -44,15 +37,6 @@ logging.basicConfig(level=logging.INFO)
 _REPO = Path(__file__).resolve().parents[3]
 
 
-def _build_gateway() -> GatewayClient:
-    base_url = os.environ.get("GATEWAY_BASE_URL")
-    if not base_url:
-        return FakeGatewayClient()
-    api_key = os.environ.get("GATEWAY_API_KEY")
-    provider = static_token(api_key) if api_key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    return DominoGatewayClient(base_url=base_url, token_provider=provider)
-
-
 def _build_catalog() -> ModelCatalog:
     return ModelCatalog(
         sovereign=os.environ.get("SAGE_MODEL_SOVEREIGN", "qwen-2-5"),
@@ -62,10 +46,11 @@ def _build_catalog() -> ModelCatalog:
     )
 
 
+_gateway, GATEWAY_MODE = build_gateway()
 orchestrator = Orchestrator(
     workspaces_root=Path(os.environ.get("SAGE_WORKSPACES", _REPO / "backend" / "workspaces")),
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
-    gateway=_build_gateway(),
+    gateway=_gateway,
     catalog=_build_catalog(),
     opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
 )
@@ -75,7 +60,9 @@ control_app = FastAPI(title="sage orchestrator")
 
 @control_app.get("/healthz")
 def healthz() -> dict:
-    return {"ok": True, "projects": orchestrator.list_ids(), "gateway": type(orchestrator._gateway).__name__}
+    # gateway_mode is authoritative: "openai" means the mechanism is being exercised against a
+    # generic provider, NOT the real Domino sovereign gateway.
+    return {"ok": True, "projects": orchestrator.list_ids(), "gateway_mode": GATEWAY_MODE}
 
 
 @control_app.post("/api/projects")
