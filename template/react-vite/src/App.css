@@ -1,0 +1,36 @@
+.sage-placeholder {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #fafafa;
+  color: #2e2e38;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+.sage-card {
+  max-width: 32rem;
+  padding: 2.5rem;
+  text-align: center;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+}
+
+.sage-card h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+  color: #543fde;
+}
+
+.sage-card p {
+  margin: 0 0 1.25rem;
+  color: #65657b;
+  line-height: 1.5;
+}
+
+.sage-card code {
+  padding: 0.2rem 0.5rem;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}

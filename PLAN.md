@@ -95,7 +95,7 @@ broke, any scope changes). This is the real exit from "will it work" to "build i
 ## Phase 1 — Core loop (get an agent-built app running live)
 
 ### Step 3 — Warm template + workspace + preview  (C1, C5, C9, R1, R2)
-- [ ] 3.1 Versioned React+Vite warm template: deps pre-installed, Vite serving a placeholder,
+- [x] 3.1 Versioned React+Vite warm template: deps pre-installed, Vite serving a placeholder,
   known-good config, constrained component set + golden examples (C9, R1). (1–2d / 4–8h)
   - Exit: fresh workspace shows a running placeholder app in <90s (TTHW target).
 - [ ] 3.2 Workspace fs module: per-project dir, plan-artifact location, agent edits land here (S3). (0.5d / 2–3h)
