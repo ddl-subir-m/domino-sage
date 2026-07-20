@@ -77,13 +77,15 @@ criticals. All findings below the "held" strategic decisions are folded into thi
    success bar is a v1 acceptance criterion (AC12).
 2. **Domino App hosting for a React static bundle + backend is unconfirmed.** Blocks the
    deploy phase, not v1. Verify before P2.
-3. **Domino AI Gateway already exists and is OpenAI-compatible** with **both vendor and
-   sovereign models registered under it** (selectable by the `model` field). This closes most
-   of the old contract risk: the model-call path is known, and the sovereign switch reduces to
-   overriding the `model` field. **Remaining open item:** whether the gateway exposes
-   per-request cost/tokens and guardrail/leak events back to callers is unconfirmed — a small
-   Step 2.3 confirms this before the "real numbers" ACs (AC3/AC6/AC7) go live. A
-   conformance-tested fake satisfies integration tests until then.
+3. **Domino AI Gateway already exists, is OpenAI-compatible, fronts both tiers, AND already
+   captures cost/usage.** Confirmed from its UI: Logs & Audit shows per-request
+   cost/tokens/user/model/latency/status; Usage & Cost aggregates by tag (project), model, user,
+   provider. So the model-call path is known, the sovereign switch is "set the `model` field,"
+   and cost data already exists. **Remaining open items** (small Step 2.3): (a) is that cost/usage
+   data reachable via an **API** or only the dashboard UI; (b) can we set an **arbitrary
+   per-request tag** like `phase=plan|implement` (project tagging is confirmed); (c) are
+   **guardrail/leak events** exposed to callers (Logs shows HTTP status, not guardrail events).
+   A conformance-tested fake satisfies integration tests until these are confirmed.
 4. **OpenCode drive + egress control.** The spike must prove OpenCode can be pointed at an
    OpenAI-compatible proxy for ALL model calls, that the proxy can override the model
    server-side, and that its event stream (messages, edits, tool/command runs) can drive the
@@ -165,6 +167,9 @@ is enforced, not advisory.
   `LLMRouter.resolve(...)` and **overrides the `model` field** when a lock/mode dictates
   (ignoring what OpenCode asked for), then forwards to the gateway. Because both tiers live
   under the gateway, the sovereign switch is exactly "set `model` to the sovereign id."
+- **Mandatory tagging:** the shim tags every request with `project` + `phase` (+ model) so the
+  gateway's cost/usage attributes it correctly. Untagged → the gateway's "unknown" bucket →
+  per-phase savings impossible. Non-negotiable shim responsibility.
 - **Container egress allowlist:** the only permitted outbound hosts are the Domino AI Gateway
   and the Domino API. This — not application logic — is what enforces "zero direct-to-vendor"
   and neutralizes credential exfiltration via npm postinstall or the shell tool.
@@ -190,11 +195,15 @@ is enforced, not advisory.
   injects a *reference* (schema, types, row count, sample) and shows a confirmation. Attaching
   a **sensitivity-tagged** dataset activates the sovereign lock — surfaced at attach time.
 
-### 7. Cost dashboard (per project)
-- Real per-project token + cost from the gateway, by model and by plan/implement phase.
-- Defines what "savings" is measured against (the plan-phase model's rate applied to
-  implement tokens) or drops the savings framing and shows plain per-phase cost. Actionable
-  empty state before any turns. Chart labels, y-axis at zero, exact-value tooltips.
+### 7. Cost view (per project) — reuse the gateway, don't rebuild
+- The gateway already has a Usage & Cost page grouped by tag/model/user. **Do not rebuild a
+  dashboard from scratch** (DRY). Depending on Step 2.3: if a cost **API** exists, surface a thin
+  in-app per-project view (by model + phase) reading it; if UI-only, embed/deep-link the gateway's
+  own page filtered to the project tag. Either way the source of truth is the gateway.
+- **Hard requirement:** the enforcement shim must tag every request with `project` + `phase`, or
+  cost lands in the gateway's "unknown" bucket and per-phase attribution breaks.
+- "Savings" is measured against the plan-phase model's rate applied to implement tokens (or drop
+  the savings framing and show plain per-phase cost). Actionable empty state; labeled charts.
 
 ### 8. IDE-mode escape hatch
 - Toggle from agent view into a direct file editor over the same workspace, and back. Framed

@@ -75,14 +75,15 @@ contract enough to build the cost dashboard + guardrail alarm for real.
   them for deterministic E2E (AC1/AC13, handles agent non-determinism). (1–2d / 4–8h)
   - Exit: an E2E run asserts on **flow/control** (switch fired, cost recorded, preview served,
     IDE round-trip) not exact generated code; reruns are stable.
-- [ ] **2.3 Confirm the gateway's cost + guardrail surface** (R3) — the model-call contract is
-  already known (existing OpenAI-compatible gateway, both tiers). The only open questions for the
-  gateway team: does it return per-request cost/tokens, per-request **labels** (project + phase +
-  model), and guardrail/leak events to callers? (external dependency — calendar-bound, ~1–3d
-  elapsed / CC drafts the questions in ~30m)
-  - Exit: cost/guardrail surface documented; `GatewayClient.costs/guardrailEvents` frozen; the
-    "real numbers" ACs (AC3/AC6/AC7) unblocked or explicitly gated behind a go-live date. If not
-    exposed → guardrail alarm (C4/AC7) moves to a later phase (raise at gate).
+- [ ] **2.3 Confirm 3 remaining gateway unknowns** (R3) — model-call contract AND per-request
+  cost/usage are already confirmed present in the gateway UI (Logs & Audit + Usage & Cost by tag).
+  Open questions for the gateway team (see gateway-questions.md): (a) is cost/usage reachable via
+  **API** or UI-only; (b) can we set an **arbitrary `phase` tag** per request (project tagging
+  confirmed); (c) are **guardrail/leak events** exposed to callers. (external — ~1–3d elapsed /
+  CC drafted the questions already)
+  - Exit: the 3 answers documented; `GatewayClient.costs/guardrailEvents` frozen. Decides whether
+    the cost view is API-read / embedded UI / rebuilt (C7), whether per-phase savings is possible,
+    and whether the guardrail alarm (C4/AC7) is in v1 or slips to a later phase (raise at gate).
 
 **Step 2 gate:** deterministic proxy + E2E harness exist, and the gateway contract is pinned (or
 the dependent ACs are formally deferred with a date). → Only now start feature work.
@@ -148,8 +149,9 @@ containers, correct scoping).
 **Gate:** AC3 (distinct per-phase cost from gateway) + AC4 (toggle changes model next turn).
 
 ### Step 8 — Cost dashboard + guardrail alarm  (C4, C7, AC3, AC6, AC7)
-- [ ] 8.1 Cost dashboard reading real gateway records by model + phase; empty state; labeled charts
-  (C7). (1–2d / 4–8h)
+- [ ] 8.1 Cost view — reuse the gateway (DRY), don't rebuild (C7). Per Step 2.3: API-read a thin
+  in-app per-project view, OR embed/deep-link the gateway's Usage & Cost page filtered to the
+  project tag. Depends on the shim tagging every request (project + phase). (0.5–1.5d / 2–6h)
 - [ ] 8.2 Guardrail alarm UI: what/blocked-vs-occurred/which asset/recovery/acknowledged, framed as
   detective backstop (C4, AC7). (1d / 3–5h)
 - [ ] 8.3 Rewrite/verify AC6 as "N calls reconcile to N records + zero non-gateway egress." (0.5d / 2–3h)
