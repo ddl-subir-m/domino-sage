@@ -189,6 +189,19 @@ feedback loop consume. The UI never learns OpenCode's log format; it learns `Age
   harness, and makes the plan→implement handoff a workspace artifact both harnesses and IDE
   mode can see. Revisit only if the spike shows (a) is materially cheaper.
 
+### Driving OpenCode (captured 2026-07-20, opencode-ai 1.18.4)
+- **Chosen: server mode.** `opencode serve --port N` → headless HTTP server (basic auth via
+  `OPENCODE_SERVER_PASSWORD`, `--cors` for our backend origin). Drive sessions/messages over its
+  HTTP API (JS SDK `@opencode-ai/sdk`); subscribe to the **`/event` SSE stream**. Envelope:
+  `{"id","type","properties"}`, dotted `type` (server.connected, session.*, message.*, …) →
+  map `type` to `AgentEvent.kind`. OpenCode reaches models only via the `sage-gateway` provider
+  baseURL (the shim) — verified in the 1.2 spike.
+- **Alternatives:** `opencode run --format json` (raw JSON events per one-shot turn; `--session`,
+  `--model provider/model`, `--dir`, `-f`) for a subprocess-per-turn driver; or `opencode acp`.
+- **Deferred to Phase 1:** capture the exact `event.type` list + payload fields live in a Domino
+  workspace (the Mac has no gateway access), and confirm whether OpenCode exposes plan/implement
+  phase natively (Seam-3 option a vs b — default remains b: we own phase via the plan artifact).
+
 ### The context-reset handoff is a `ModelControl` + workspace concern, not a driver flag
 "Reset context between plan and implement" is not `driver.reset()`. It is: persist plan artifact
 → `ModelControl.setPhase("implement")` (router now resolves the cheaper model) → `AgentDriver.

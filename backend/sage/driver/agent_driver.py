@@ -39,8 +39,22 @@ class AgentDriver(Protocol):
 
 
 class OpenCodeDriver:
-    """Real driver. TODO(Step 1.2/1.6): install OpenCode; decide embed vs subprocess vs server
-    mode; prove 100% of model calls hit config.model_base_url; map native events -> AgentEvent."""
+    """Real driver. Driving contract captured 2026-07-20 (opencode-ai 1.18.4):
+
+    Recommended: **server mode**. `opencode serve --port N` runs a headless HTTP server
+    (optional basic auth via OPENCODE_SERVER_PASSWORD; --cors for our backend origin). Drive
+    sessions/messages over its HTTP API (JS SDK: `@opencode-ai/sdk`) and subscribe to the
+    `/event` SSE stream. Event envelope: `{"id","type","properties"}` with dotted type names
+    (server.connected, session.*, message.*, ...) -> map `type` to our AgentEvent.kind.
+    Point OpenCode at the shim by configuring the `sage-gateway` provider baseURL (opencode.json).
+
+    Alternatives: `opencode run --format json` (raw JSON events per one-shot turn; --session to
+    continue, --model provider/model, --dir workspace, -f file) for a subprocess-per-turn driver;
+    or `opencode acp` (Agent Client Protocol).
+
+    TODO(Phase 1): implement against server mode; capture the exact event.type list + payload
+    fields live in a Domino workspace (Mac has no gateway access). Prove 100% of model calls hit
+    config.model_base_url (already observed true in the 1.2 spike)."""
 
     def start(self, workspace: Path, config: AgentConfig) -> Session:
         raise NotImplementedError("Step 1.2: spawn OpenCode pointed at the shim base_url")

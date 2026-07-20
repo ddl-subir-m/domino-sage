@@ -51,7 +51,7 @@ Goal: prove OpenCode can be pointed at our proxy for **all** model calls, that t
   (0.5d / 2–4h)
   - Exit: all bypass attempts blocked by the allowlist; documented. If any succeed → **red flag,
     raise at the gate.**
-- [ ] **1.6 Event stream normalization proof** (S3). Capture OpenCode's native event stream and
+- [~] **1.6 Event stream normalization proof** (S3). Capture OpenCode's native event stream and
   map a sample to the `AgentEvent` union (message / file_edit / tool_run / phase / error).
   (0.5–1d / 2–4h)
   - Exit: a recorded OpenCode run replays into `AgentEvent[]`; confirm whether OpenCode exposes
