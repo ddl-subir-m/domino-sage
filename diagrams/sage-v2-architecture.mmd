@@ -1,0 +1,39 @@
+graph TD
+  USER["Data scientist<br/>(Domino identity)"]
+
+  subgraph CONTAINER["Per-user builder container (D9)"]
+    UI["React UI<br/>agent rail · Preview⇄IDE · drawers<br/>model badge"]
+    BE["FastAPI backend<br/>session/phase state"]
+    SUP["Process supervisor<br/>ports · health · resource caps"]
+    ROUTER["LLMRouter<br/>resolve(state) → model"]
+    PROXY["Gateway proxy<br/>OpenAI-compatible · egress choke"]
+    OC["OpenCode agent"]
+    FEED["Feedback loop<br/>tsc · build · console → agent"]
+    WS["Workspace fs<br/>warm template · plan artifact"]
+    VITE["Vite dev server<br/>generated app"]
+    PREV["Preview proxy<br/>HTTP + HMR ws"]
+  end
+
+  GW["Domino AI Gateway<br/>cost + guardrail events"]
+  MODELS["Vendor + Sovereign<br/>models"]
+  ASSETS["Domino assets<br/>+ permissions"]
+
+  USER -->|describe app / attach| UI
+  UI --> BE
+  BE --> SUP
+  SUP -.spawns.-> OC
+  SUP -.spawns.-> VITE
+  OC -->|edits| WS
+  WS --> VITE
+  FEED -->|errors| OC
+  VITE -->|build/console| FEED
+  PREV -->|proxied app| UI
+  VITE --> PREV
+  OC -->|"all model calls"| PROXY
+  ROUTER -->|"per-request decision"| PROXY
+  PROXY -->|"only allowed egress"| GW
+  GW --> MODELS
+  GW -->|cost + guardrail| BE
+  BE -->|"user token (pass-through)"| ASSETS
+  ASSETS -->|"reference: schema/sample"| WS
+  ASSETS -.sensitivity tag.-> ROUTER

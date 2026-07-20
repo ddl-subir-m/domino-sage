@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / React / Vite
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# Secrets / credentials (never commit gateway keys)
+*.pem
+*.key
+secrets/
+.secrets/
+
+# Tooling state (not project files)
+.tokensave/
+.gstack/
+**/.gstack/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Builder runtime (generated app workspaces, previews)
+workspaces/
+.tmp/
