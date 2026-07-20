@@ -53,8 +53,10 @@ Copy `.env.example` → `backend/.env` and fill in the gateway creds; the shim l
 automatically (via python-dotenv). Leave the gateway vars blank to use the in-process fake.
 
 ### Orchestrator (the assembled builder)
-`make orchestrator` runs the whole thing in one process: the control API + `/v1` shim on
-`:8080` and the preview proxy on `:8090`. Lifecycle over HTTP:
+`make orchestrator` runs the whole thing in one process: the control API + `/v1` shim + the
+**thin UI** on `:8080` and the preview proxy on `:8090`. Open **http://localhost:8080/** for the
+UI (create a project, set the model / force sovereign, build, typecheck, live preview). Or drive
+it over HTTP:
 ```bash
 make orchestrator
 curl -XPOST localhost:8080/api/projects -d '{"id":"demo"}'      # creates workspace + starts Vite

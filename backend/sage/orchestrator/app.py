@@ -20,7 +20,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Header, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+
+_UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 
 from ..gateway.client import GatewayUpstreamError
 from ..gateway.factory import build_gateway
@@ -56,6 +58,12 @@ orchestrator = Orchestrator(
 )
 
 control_app = FastAPI(title="sage orchestrator")
+
+
+@control_app.get("/")
+def ui() -> FileResponse:
+    """The thin builder UI (single static page)."""
+    return FileResponse(_UI)
 
 
 @control_app.get("/healthz")

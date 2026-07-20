@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>sage</title>
+<style>
+  :root {
+    --primary: #543FDE; --primary-hover: #3B23D1;
+    --text: #2E2E38; --muted: #65657B; --faint: #8F8FA3;
+    --border: #E0E0E0; --bg: #FAFAFA; --surface: #FFFFFF;
+    --lock: #C20A29;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; color: var(--text); background: var(--bg); }
+  header {
+    height: 44px; background: #2E2E38; color: #fff; display: flex; align-items: center;
+    padding: 0 16px; gap: 12px; font-size: 14px;
+  }
+  header .brand { font-weight: 700; letter-spacing: 0.5px; }
+  header .mode { margin-left: auto; font-size: 12px; padding: 2px 8px; border-radius: 4px; background: #444; }
+  header .mode.domino { background: #28A464; }
+  header .mode.openai { background: #CCB718; color: #2E2E38; }
+  header .mode.fake { background: #8F8FA3; }
+  .layout { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 44px); }
+  .rail { border-right: 1px solid var(--border); overflow-y: auto; padding: 16px; }
+  .work { display: flex; flex-direction: column; }
+  .work .toolbar { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 13px; color: var(--muted); display: flex; gap: 12px; align-items: center; }
+  iframe { flex: 1; border: 0; width: 100%; background: #fff; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--faint); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  input, select, textarea, button { font: inherit; }
+  input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px; }
+  textarea { resize: vertical; min-height: 64px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button { cursor: pointer; padding: 8px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  button.primary:hover { background: var(--primary-hover); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border); }
+  .badge.locked { border-color: var(--lock); color: var(--lock); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
+  .badge.locked .dot { background: var(--lock); }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; background: #F5F5F5; border-radius: 4px; padding: 8px; margin: 8px 0 0; max-height: 220px; overflow: auto; }
+  .ok { color: #28A464; } .err { color: var(--lock); } .muted { color: var(--muted); font-size: 12px; }
+  .hint { font-size: 11px; color: var(--faint); margin-top: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">sage</span>
+  <span class="muted" style="color:#bbb" id="active-label">no project</span>
+  <span class="mode" id="mode">…</span>
+</header>
+
+<div class="layout">
+  <div class="rail">
+    <div class="card">
+      <h2>Project</h2>
+      <div class="row">
+        <input id="project-id" placeholder="project id, e.g. demo" value="demo" />
+        <button class="primary" style="flex:0 0 auto" onclick="createProject()">Create</button>
+      </div>
+      <div class="hint">Creates a workspace from the warm template and starts the live preview.</div>
+    </div>
+
+    <div class="card">
+      <h2>Model</h2>
+      <div id="model-badge" class="badge"><span class="dot"></span><span id="badge-text">—</span></div>
+      <div class="row" style="margin-top:10px">
+        <div><label>Mode</label>
+          <select id="mode-sel" onchange="setModel()"><option>manual</option><option>auto</option></select></div>
+        <div><label>Phase</label>
+          <select id="phase-sel" onchange="setModel()"><option>plan</option><option>implement</option></select></div>
+      </div>
+      <label>Pick model (manual)</label>
+      <input id="pick" placeholder="leave blank for default" onchange="setModel()" />
+      <button style="margin-top:10px; width:100%; border-color:var(--lock); color:var(--lock)" onclick="lockSovereign()">
+        Force sovereign (lock)
+      </button>
+      <div class="hint">Lock is sticky — simulates a sensitivity-tagged dataset being attached.</div>
+    </div>
+
+    <div class="card">
+      <h2>Build</h2>
+      <textarea id="prompt" placeholder="Describe the app to build, e.g. a todo list with add and delete"></textarea>
+      <button class="primary" style="width:100%; margin-top:8px" id="build-btn" onclick="build()">Build</button>
+      <div class="hint">Runs the agent, then typecheck→fix loop until clean or the breaker stops. Needs a live model (domino/openai mode).</div>
+      <pre id="build-out" style="display:none"></pre>
+    </div>
+
+    <div class="card">
+      <h2>Typecheck</h2>
+      <button style="width:100%" onclick="check()">Typecheck workspace</button>
+      <pre id="check-out" style="display:none"></pre>
+    </div>
+  </div>
+
+  <div class="work">
+    <div class="toolbar">
+      <span>Live preview</span>
+      <a id="preview-link" href="#" target="_blank" style="color:var(--primary)">open in new tab ↗</a>
+      <button style="margin-left:auto; padding:4px 10px" onclick="refreshPreview()">Refresh</button>
+    </div>
+    <iframe id="preview" title="preview"></iframe>
+  </div>
+</div>
+
+<script>
+const api = (p, opts) => fetch(p, opts).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }));
+let active = null;
+// Preview proxy runs on its own port (8090 in dev). Same host as the control app.
+const previewBase = `${location.protocol}//${location.hostname}:8090/`;
+
+async function loadHealth() {
+  const { body } = await api('/healthz');
+  const mode = body.gateway_mode || 'unknown';
+  const el = document.getElementById('mode');
+  el.textContent = `gateway: ${mode}`;
+  el.className = 'mode ' + mode;
+  el.title = mode === 'openai' ? 'mechanism only — NOT the real sovereign guarantee' : '';
+}
+
+async function createProject() {
+  const id = document.getElementById('project-id').value.trim();
+  if (!id) return;
+  const r = await api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  if (!r.ok && r.status !== 409) { alert('create failed: ' + JSON.stringify(r.body)); return; }
+  active = id;
+  document.getElementById('active-label').textContent = 'project: ' + id;
+  refreshPreview();
+  refreshStatus();
+}
+
+async function refreshStatus() {
+  if (!active) return;
+  const { body } = await api('/api/projects/' + active);
+  const m = body.model || {};
+  document.getElementById('mode-sel').value = m.mode || 'manual';
+  document.getElementById('phase-sel').value = m.phase || 'plan';
+  const badge = document.getElementById('model-badge');
+  const txt = document.getElementById('badge-text');
+  if (m.sensitivity_locked) {
+    badge.className = 'badge locked';
+    txt.textContent = 'sovereign (locked)';
+  } else {
+    badge.className = 'badge';
+    txt.textContent = `${m.mode}/${m.phase}` + (m.picked_model ? ` · ${m.picked_model}` : '');
+  }
+}
+
+async function setModel() {
+  if (!active) return;
+  const payload = {
+    mode: document.getElementById('mode-sel').value,
+    phase: document.getElementById('phase-sel').value,
+    pick: document.getElementById('pick').value.trim() || null,
+  };
+  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  refreshStatus();
+}
+
+async function lockSovereign() {
+  if (!active) return;
+  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: true }) });
+  refreshStatus();
+}
+
+async function build() {
+  if (!active) { alert('create a project first'); return; }
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) return;
+  const btn = document.getElementById('build-btn');
+  const out = document.getElementById('build-out');
+  btn.disabled = true; btn.textContent = 'Building…';
+  out.style.display = 'block'; out.textContent = 'Running agent + typecheck loop…';
+  const r = await api('/api/projects/' + active + '/build', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt }) });
+  const b = r.body;
+  out.className = b.ok ? 'ok' : 'err';
+  out.textContent = r.ok
+    ? `${b.ok ? 'CLEAN' : 'STOPPED'} — ${b.decision}\nerrors: ${b.error_count}\n\n${b.message}`
+    : 'build failed: ' + JSON.stringify(b);
+  btn.disabled = false; btn.textContent = 'Build';
+  refreshPreview();
+}
+
+async function check() {
+  if (!active) { alert('create a project first'); return; }
+  const out = document.getElementById('check-out');
+  out.style.display = 'block'; out.textContent = 'Typechecking…';
+  const { body } = await api('/api/projects/' + active + '/check', { method: 'POST' });
+  out.className = body.ok ? 'ok' : 'err';
+  out.textContent = body.message || JSON.stringify(body);
+}
+
+function refreshPreview() {
+  document.getElementById('preview').src = previewBase + '?t=' + Date.now();
+  document.getElementById('preview-link').href = previewBase;
+}
+
+loadHealth();
+refreshPreview();
+</script>
+</body>
+</html>
