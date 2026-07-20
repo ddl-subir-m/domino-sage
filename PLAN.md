@@ -57,9 +57,11 @@ Goal: prove OpenCode can be pointed at our proxy for **all** model calls, that t
   - Exit: a recorded OpenCode run replays into `AgentEvent[]`; confirm whether OpenCode exposes
     plan/implement phase natively (decides DESIGN.md Seam-3 option a vs b).
 
-**Step 1 gate:** OpenCode routes 100% of model calls through the proxy, the proxy overrides the
-model server-side, egress is gateway-only and survives the bypass probe, and the event stream is
-mappable. → If any fail, escalate (harness swap, or rethink the sovereign guarantee) before Step 3.
+**Step 1 gate:** routing (1.2) + override (1.3) VERIFIED live. Egress allowlist (1.4/1.5) is
+**BLOCKED on platform** (we don't control workspace egress) — tracked as a production-readiness
+dependency, not a Phase-1 blocker; interim mitigation = OpenCode has only the sage-gateway
+provider. Event normalization (1.6) DEFERRED to Phase 1 (UI groundwork). See SPIKE-REPORT.md.
+→ Conditional green-light: proceed to build; egress must close before production for regulated use.
 
 ### Step 2 — Deterministic test + gateway-contract spike  (R3, S2)
 
