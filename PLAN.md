@@ -116,9 +116,9 @@ broke, any scope changes). This is the real exit from "will it work" to "build i
 **Gate:** model picked at build is honored and enforced by the proxy (AC5).
 
 ### Step 5 — Agent feedback loop + circuit breaker  (C10, AC11, R1)
-- [ ] 5.1 After each edit run `tsc --noEmit` + capture Vite/build + browser console; inject
+- [x] 5.1 After each edit run `tsc --noEmit` + capture Vite/build + browser console; inject
   structured summary into the agent's next turn (C10, AC11). (1–2d / 4–8h)
-- [ ] 5.2 Circuit breaker: iteration/time/cost budget + "no progress" detector → pause + actionable
+- [x] 5.2 Circuit breaker: iteration/time/cost budget + "no progress" detector → pause + actionable
   stuck-state tied to IDE mode (C10, R1). (1d / 3–5h)
 
 **Gate:** an agent-introduced type/build error is auto-surfaced to the agent and fixed within N

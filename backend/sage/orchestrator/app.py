@@ -31,9 +31,12 @@ from ..gateway.client import (
     sidecar_token,
     static_token,
 )
+from ..feedback.runner import FeedbackRunner
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
 from .service import Orchestrator
+
+_feedback = FeedbackRunner()
 
 log = logging.getLogger("sage.orchestrator")
 logging.basicConfig(level=logging.INFO)
@@ -112,6 +115,22 @@ async def set_model(pid: str, request: Request) -> JSONResponse:
     if body.get("lock"):  # sticky; cannot be cleared via API
         project.control.on_assets_changed([True])
     return JSONResponse(content=project.status())
+
+
+@control_app.post("/api/projects/{pid}/check")
+def check_project(pid: str) -> JSONResponse:
+    """Typecheck the workspace (Step 5). The server-mode driver calls the same engine after each
+    agent edit and injects `message` into the next turn; exposed here for the UI + manual use."""
+    project = orchestrator.get(pid)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    report = _feedback.check(project.workspace.path)
+    return JSONResponse(content={
+        "ok": report.ok,
+        "error_count": len(report.errors),
+        "message": report.as_agent_message(),
+        "signature": report.signature(),
+    })
 
 
 @control_app.post("/v1/chat/completions")
