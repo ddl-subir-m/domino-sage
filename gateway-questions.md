@@ -1,42 +1,27 @@
-# Questions for the Domino AI Gateway team — sage builder (Step 2.3)
+# Gateway questions — mostly answered from the repo (etanlightstone/LLM_gateway)
 
-Context: we're building an internal AI app builder that routes all model calls through the
-Domino AI Gateway. Confirmed from the gateway UI: it's OpenAI-compatible, fronts both vendor and
-sovereign models (by `model` field), and its Logs & Audit + Usage & Cost pages already capture
-per-request cost/tokens/user/model/latency/status and aggregate by tag (project), model, user,
-and provider. These questions cover only what's still unknown.
+Reading the gateway source answered nearly all of these. See MODELS.md for the full cheatsheet.
 
-## Cost / usage — is the dashboard data reachable programmatically?
-1. Is the cost/usage data on the Logs & Audit and Usage & Cost pages available via an **API**
-   (so our builder can show a per-project cost view in-app), or is it dashboard-UI only? If API:
-   endpoint, auth, granularity (per-request? per-tag?), and freshness (real-time vs batched).
-2. Can we set an **arbitrary per-request tag** beyond project — specifically `phase=plan` vs
-   `phase=implement` — and filter/group by it on the usage page or via the API? This is what
-   makes the auto-mode per-phase savings view possible.
-3. Confirmed: untagged requests land in the "unknown" tag bucket. To avoid that, what's the
-   exact mechanism to set tags on a request (header, body field, per-key config)? We'll tag
-   every request with project + phase.
+## Answered from the repo
+- **Cost via API (Q1):** yes — `/api/usage/mine` (per caller) + audit download; dashboards group
+  by tag/model/user/provider.
+- **Per-request tags (Q2/Q3):** yes — `X-LLM-Tag-<name>: <value>` headers land in the usage
+  `tags` JSON. We'll send `X-LLM-Tag-phase|project|model`. Project also derives from
+  `DOMINO_PROJECT_NAME`; untagged → "unknown" bucket.
+- **Guardrails (Q4/Q5/Q6):** preventive input/output egress control (regex or LLM rules,
+  admin-configured per alias). Input guardrails block/redact BEFORE the provider; blocked →
+  `guardrail_blocked`. Not merely detective.
+- **Auth (Q7):** `Authorization: Bearer <token>` — a gateway `dgw_` token, a Domino PAT, or the
+  workspace sidecar JWT at `http://localhost:8899/access-token`.
+- **Models (Q8):** see MODELS.md. Sovereign tier = `Domino Platform` provider (`qwen-2-5`,
+  `local-domino-llm`).
+- **Base URL:** `https://<host>/apps/<id>/v1` (OpenAI-shape); also `/anthropic/v1/messages`.
 
-## Guardrails / data-leak detection (still unknown — Logs shows HTTP status, not guardrail events)
-4. Does the gateway run **guardrail / sensitive-data-leak detection**, and can we **receive
-   those events** as a caller (webhook, stream, response flag, or log API)?
-5. When a guardrail fires, is the request **blocked** before it reaches the model, or is it a
-   **post-hoc detection** (the request already went through)? Decides our UI wording.
-6. What's in a guardrail event payload (what was detected, which request/asset, severity,
-   blocked vs occurred)?
-
-## Auth / access
-7. How does a service (our builder backend, running as the end user's Domino identity)
-   **authenticate** to the gateway — API key, Domino token pass-through, service account? And
-   does auth scope the tags/user attribution automatically?
-
-## Models / routing
-8. Confirm the **list of models** (vendor + sovereign) and their exact `model` identifiers.
-9. Is model selection **policy-gated** (can a caller request any registered model)? We override
-   the `model` field to force the sovereign model on sensitive data — that override must always
-   succeed.
-
-## Operational
-10. Rate limits / quotas per caller, and recommended **retry/backoff**.
-11. Failure modes (timeout, 429, 5xx, model-unavailable) and how they surface, so we handle them
-    as human-readable system errors.
+## Still needed for the live spike (ask Etan / gateway owner)
+1. The **host + app id** of the gateway instance we should target (to form the base URL).
+2. A **`dgw_` service token** for our builder backend — or confirmation we run inside a Domino
+   workspace/project and should pull the sidecar JWT from `:8899` (which also sets the project tag).
+3. Confirm the exact **`/api/usage/mine`** response shape (fields for tokens, cost, tags) so the
+   cost view reads it correctly.
+4. Which **guardrail rules** are configured on the aliases we'll use (so we know what block/redact
+   behavior to expect in the demo), and whether we can scope a rule set to the builder.

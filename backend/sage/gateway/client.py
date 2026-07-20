@@ -95,12 +95,19 @@ class DominoGatewayClient:
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
         import httpx  # local import so tests that never hit the network don't need it
 
+        # Auth + tags per the LLM_gateway repo:
+        #   Authorization: Bearer <dgw_ token / Domino PAT / workspace-sidecar JWT>
+        #   X-LLM-Tag-*  -> stored in the gateway's usage `tags` column (project from Domino
+        #   context; we add phase + model so per-phase cost is queryable).
         headers = {
-            "Authorization": f"Bearer {self._api_key}",  # TODO(Q7): confirm auth scheme
-            # TODO(Q2/Q3): confirm the real tag mechanism (header vs body field). Placeholder:
-            "X-Gateway-Tags": f"project={labels.project},phase={labels.phase},model={labels.model}",
+            "Authorization": f"Bearer {self._api_key}",
+            "X-LLM-Tag-project": labels.project,
+            "X-LLM-Tag-phase": labels.phase,
+            "X-LLM-Tag-model": labels.model,
         }
-        url = f"{self._base_url}/v1/chat/completions"
+        # GATEWAY_BASE_URL is the OpenAI base ending in /v1 (e.g. https://<host>/apps/<id>/v1).
+        base = self._base_url[:-3].rstrip("/") if self._base_url.endswith("/v1") else self._base_url
+        url = f"{base}/v1/chat/completions"
         with httpx.Client(timeout=self._timeout_s) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
                 resp.raise_for_status()

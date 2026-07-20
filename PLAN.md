@@ -75,15 +75,12 @@ contract enough to build the cost dashboard + guardrail alarm for real.
   them for deterministic E2E (AC1/AC13, handles agent non-determinism). (1–2d / 4–8h)
   - Exit: an E2E run asserts on **flow/control** (switch fired, cost recorded, preview served,
     IDE round-trip) not exact generated code; reruns are stable.
-- [ ] **2.3 Confirm 3 remaining gateway unknowns** (R3) — model-call contract AND per-request
-  cost/usage are already confirmed present in the gateway UI (Logs & Audit + Usage & Cost by tag).
-  Open questions for the gateway team (see gateway-questions.md): (a) is cost/usage reachable via
-  **API** or UI-only; (b) can we set an **arbitrary `phase` tag** per request (project tagging
-  confirmed); (c) are **guardrail/leak events** exposed to callers. (external — ~1–3d elapsed /
-  CC drafted the questions already)
-  - Exit: the 3 answers documented; `GatewayClient.costs/guardrailEvents` frozen. Decides whether
-    the cost view is API-read / embedded UI / rebuilt (C7), whether per-phase savings is possible,
-    and whether the guardrail alarm (C4/AC7) is in v1 or slips to a later phase (raise at gate).
+- [x] **2.3 Gateway contract** (R3) — RESOLVED from the repo (see MODELS.md): OpenAI base
+  `/apps/<id>/v1`, auth `Bearer dgw_`, per-request `X-LLM-Tag-*` (so per-phase cost works), cost
+  API `/api/usage/mine`, preventive input/output guardrails. Remaining is not contract but
+  access: get the host+app-id, a `dgw_` token (or sidecar), and confirm `/api/usage/mine` shape
+  (see gateway-questions.md §"Still needed"). Cost view (C7) = API-read; per-phase savings
+  possible; guardrail alarm (C4/AC7) stays in v1 (preventive).
 
 **Step 2 gate:** deterministic proxy + E2E harness exist, and the gateway contract is pinned (or
 the dependent ACs are formally deferred with a date). → Only now start feature work.

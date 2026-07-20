@@ -62,7 +62,7 @@ criticals. All findings below the "held" strategic decisions are folded into thi
 2. Gateway single point of failure on unpinned contract → failure states specified (States
    & Errors), AC6 rewritten, contract pinning is a hard prerequisite (Risk 3).
 3. Sovereign leak windows → serialized turn queue, sticky session lock, resolve→switch→
-   reset→inject ordering; guardrail reframed as detective backstop (C3, C4).
+   reset→inject ordering; gateway guardrails are preventive egress control (C3, C4).
 4. Missing warm template + agent feedback loop → added as C9, C10.
 5. "attach = build intent" overloaded → decoupled: NL description starts a build; attach is
    optional context enrichment + sensitivity trigger; injects a *reference*, not the data (C6).
@@ -77,15 +77,15 @@ criticals. All findings below the "held" strategic decisions are folded into thi
    success bar is a v1 acceptance criterion (AC12).
 2. **Domino App hosting for a React static bundle + backend is unconfirmed.** Blocks the
    deploy phase, not v1. Verify before P2.
-3. **Domino AI Gateway already exists, is OpenAI-compatible, fronts both tiers, AND already
-   captures cost/usage.** Confirmed from its UI: Logs & Audit shows per-request
-   cost/tokens/user/model/latency/status; Usage & Cost aggregates by tag (project), model, user,
-   provider. So the model-call path is known, the sovereign switch is "set the `model` field,"
-   and cost data already exists. **Remaining open items** (small Step 2.3): (a) is that cost/usage
-   data reachable via an **API** or only the dashboard UI; (b) can we set an **arbitrary
-   per-request tag** like `phase=plan|implement` (project tagging is confirmed); (c) are
-   **guardrail/leak events** exposed to callers (Logs shows HTTP status, not guardrail events).
-   A conformance-tested fake satisfies integration tests until these are confirmed.
+3. **Domino AI Gateway — contract now largely known from the repo (see MODELS.md).** It's the
+   existing OpenAI-compatible gateway (`https://<host>/apps/<id>/v1`), fronts both tiers by alias,
+   auth is `Authorization: Bearer <dgw_ token>`, per-request tags are caller-settable via
+   `X-LLM-Tag-*` headers (so per-phase cost IS achievable), cost/usage is exposed at
+   `/api/usage/mine`, and **guardrails are preventive input/output egress control** (regex/LLM
+   rules, block-before-provider), not just detection. **Remaining to get for the live spike:** the
+   specific host + app id, a `dgw_` service token (or run as a Domino identity via the workspace
+   sidecar), and the exact `/api/usage/mine` response shape. A conformance-tested fake satisfies
+   integration tests until then.
 4. **OpenCode drive + egress control.** The spike must prove OpenCode can be pointed at an
    OpenAI-compatible proxy for ALL model calls, that the proxy can override the model
    server-side, and that its event stream (messages, edits, tool/command runs) can drive the
@@ -119,7 +119,7 @@ criticals. All findings below the "held" strategic decisions are folded into thi
    model and plan-vs-implement phase.
 10. If a **sensitivity-tagged** dataset is attached, the model is locked to the **sovereign**
     model; the lock and its reason are visible, with a "detach to choose another model"
-    recourse. A gateway **guardrail alarm** fires as a detective backstop on untagged leaks.
+    recourse. Gateway **guardrails preventively block/redact** sensitive egress; our UI surfaces those outcomes.
 11. User can flip into **IDE mode** to edit files directly, and back; can **download the
     project**.
 
@@ -174,12 +174,12 @@ is enforced, not advisory.
   and the Domino API. This — not application logic — is what enforces "zero direct-to-vendor"
   and neutralizes credential exfiltration via npm postinstall or the shell tool.
 - `GatewayClient` adapter (D6): for the model-call path it is an **OpenAI client pointed at the
-  gateway URL** (contract known). Cost (`cost/tokens`) and `guardrail events` are the remaining
-  unconfirmed surface (Risk 3) — kept behind the adapter so the fake satisfies tests until the
-  real surface is confirmed in Step 2.3.
-- **Guardrail = detective backstop:** tag-based routing + egress control is the *preventive*
-  guarantee; the gateway guardrail is a *post-hoc detector* for untagged-but-sensitive
-  leakage. UI copy must not imply it prevents leaks.
+  gateway URL**; auth `Bearer <dgw_ token>`; tags via `X-LLM-Tag-*`; cost via `/api/usage/mine`.
+- **The gateway itself provides preventive egress guardrails** (input guardrails block/redact the
+  prompt before it reaches the provider; output guardrails before the caller reads the response).
+  This is defense in depth: our sensitivity lock *routes* tagged data to the sovereign model,
+  while the gateway *independently* blocks/redacts sensitive egress per admin rules. Our alarm
+  (below) surfaces real `guardrail_blocked` / redaction outcomes — preventive, not detective.
 
 ### 5. Live preview
 - Vite dev server on an internal port; the proxy **discovers the actual port** (Vite may
@@ -200,8 +200,8 @@ is enforced, not advisory.
   dashboard from scratch** (DRY). Depending on Step 2.3: if a cost **API** exists, surface a thin
   in-app per-project view (by model + phase) reading it; if UI-only, embed/deep-link the gateway's
   own page filtered to the project tag. Either way the source of truth is the gateway.
-- **Hard requirement:** the enforcement shim must tag every request with `project` + `phase`, or
-  cost lands in the gateway's "unknown" bucket and per-phase attribution breaks.
+- **Hard requirement:** the shim tags every request via `X-LLM-Tag-*` headers (`project`, `phase`,
+  `model`), or cost lands in the gateway's "unknown" bucket and per-phase attribution breaks.
 - "Savings" is measured against the plan-phase model's rate applied to implement tokens (or drop
   the savings framing and show plain per-phase cost). Actionable empty state; labeled charts.
 
@@ -262,7 +262,7 @@ stderr). Per surface, specify loading / empty / error / partial:
 6. **Every model call is recorded by the gateway; N calls per turn reconcile to N gateway
    records; zero requests reach any non-gateway host (verified by the egress policy).**
 7. A gateway guardrail event produces a visible, actionable alarm with an acknowledged state;
-   UI copy frames it as a detective backstop, not prevention.
+   UI copy reflects preventive block/redact (the gateway blocks before the provider).
 8. Live preview reflects agent edits within one rebuild cycle; generated-app run errors shown
    raw, infra failures shown human-readable.
 9. Asset explorer shows only permitted assets (verify with two users of different scopes, each

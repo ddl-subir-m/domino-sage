@@ -36,11 +36,13 @@ def _build_gateway() -> GatewayClient:
 
 
 # TODO(Step 4.2+): SessionState is per project/session. For the spike, one process-wide control.
+# Defaults are gateway alias names (see MODELS.md). Sovereign tier = "Domino Platform"
+# provider models (qwen-2-5, local-domino-llm). Override per deployment via env.
 _catalog = ModelCatalog(
-    sovereign=os.environ.get("SAGE_MODEL_SOVEREIGN", "sovereign"),
-    plan=os.environ.get("SAGE_MODEL_PLAN", "plan"),
-    implement=os.environ.get("SAGE_MODEL_IMPLEMENT", "implement"),
-    default=os.environ.get("SAGE_MODEL_DEFAULT", "default"),
+    sovereign=os.environ.get("SAGE_MODEL_SOVEREIGN", "qwen-2-5"),        # on-Domino, sovereign
+    plan=os.environ.get("SAGE_MODEL_PLAN", "gpt-5.4"),                   # strong, plan phase
+    implement=os.environ.get("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder"),  # cheap coder
+    default=os.environ.get("SAGE_MODEL_DEFAULT", "sonnet"),
 )
 _control = ModelControl(mode=Mode.MANUAL, phase=Phase.PLAN)
 _shim = EnforcementShim(_control, _catalog, _build_gateway())
