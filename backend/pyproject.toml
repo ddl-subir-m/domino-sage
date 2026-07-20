@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn>=0.29,<1.0",
     "httpx>=0.27,<1.0",       # forwarding to the OpenAI-compatible gateway (Step 1.1)
     "python-dotenv>=1.0,<2.0",  # load backend/.env (gateway creds + model aliases)
+    "websockets>=12,<16",       # proxy Vite HMR WebSocket into the preview (Step 3.3)
 ]
 
 [project.optional-dependencies]
