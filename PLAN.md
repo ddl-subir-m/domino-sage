@@ -33,7 +33,7 @@ Goal: prove OpenCode can be pointed at our proxy for **all** model calls, that t
   a thin shim (accept `/v1/chat/completions` streaming, forward to the gateway URL, log every
   request), NOT a proxy build. (0.25–0.5d / 1–2h)
   - Exit: `curl` through the shim streams a real completion from the gateway.
-- [ ] **1.2 Point OpenCode at the proxy via `base_url`** and confirm it uses it for **every**
+- [x] **1.2 Point OpenCode at the proxy via `base_url`** and confirm it uses it for **every**
   model call — initial turn, tool-loop sub-calls, retries (S3, C2). (1–2d / 4–8h)
   - Exit: run 3 representative OpenCode tasks; proxy log shows 100% of calls; **zero** calls
     bypass it. Document how OpenCode is driven (embed / subprocess / server mode) — this

@@ -9,6 +9,7 @@ this code — this shim only guarantees the *policy* half (right model + tagging
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -26,6 +27,7 @@ class EnforcementShim:
 
     def handle(self, request: dict[str, Any], project: str) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
+        requested = request.get("model")
         decision = llm_router.resolve(self._control.snapshot(), self._catalog)
 
         # Enforce policy: when locked, override whatever the caller asked for.
@@ -33,6 +35,11 @@ class EnforcementShim:
             request = {**request, "model": decision.model}
         elif "model" not in request:
             request = {**request, "model": decision.model}
+
+        logging.getLogger("sage.shim").info(
+            "model policy: requested=%s -> resolved=%s (%s, locked=%s)",
+            requested, request["model"], decision.reason.value, decision.locked,
+        )
 
         # Mandatory tagging so the gateway attributes cost (avoids the 'unknown' bucket).
         labels = CostLabels(

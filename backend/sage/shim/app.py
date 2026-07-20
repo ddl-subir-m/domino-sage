@@ -72,6 +72,10 @@ _catalog = ModelCatalog(
     default=os.environ.get("SAGE_MODEL_DEFAULT", "sonnet"),
 )
 _control = ModelControl(mode=Mode.MANUAL, phase=Phase.PLAN)
+# Spike helper (Step 1.3): SAGE_FORCE_SENSITIVITY_LOCK=1 starts locked so you can verify the
+# sovereign override live — any request, whatever model OpenCode asks for, routes to sovereign.
+if os.environ.get("SAGE_FORCE_SENSITIVITY_LOCK") in {"1", "true", "yes"}:
+    _control.on_assets_changed([True])
 _shim = EnforcementShim(_control, _catalog, _build_gateway())
 
 app = FastAPI(title="sage enforcement shim")
