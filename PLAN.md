@@ -98,7 +98,7 @@ broke, any scope changes). This is the real exit from "will it work" to "build i
 - [x] 3.1 Versioned React+Vite warm template: deps pre-installed, Vite serving a placeholder,
   known-good config, constrained component set + golden examples (C9, R1). (1–2d / 4–8h)
   - Exit: fresh workspace shows a running placeholder app in <90s (TTHW target).
-- [ ] 3.2 Workspace fs module: per-project dir, plan-artifact location, agent edits land here (S3). (0.5d / 2–3h)
+- [x] 3.2 Workspace fs module: per-project dir, plan-artifact location, agent edits land here (S3). (0.5d / 2–3h)
 - [ ] 3.3 Preview proxy: dynamic Vite port discovery + HTTP + **HMR WebSocket** proxying (C5). (1–2d / 4–8h)
   - Exit: agent edit → preview updates via HMR inside the iframe.
 - [ ] 3.4 Process supervisor: spawn/health/restart Vite, cleanup on parent exit, resource caps (C1). (1–2d / 4–8h)
