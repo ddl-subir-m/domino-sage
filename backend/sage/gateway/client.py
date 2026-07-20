@@ -81,14 +81,30 @@ class FakeGatewayClient:
 
 
 class DominoGatewayClient:
-    """Real client. TODO(Step 1): fill in once we have base_url + auth (gateway-questions Q7)."""
+    """Real client for the OpenAI-compatible Domino gateway.
 
-    def __init__(self, base_url: str, api_key: str) -> None:
-        self._base_url = base_url
+    route() is implemented; needs live verification once we have base_url + key (Step 1.1).
+    costs()/guardrail_events() await the Step 2.3 answers (Q1/Q4).
+    """
+
+    def __init__(self, base_url: str, api_key: str, timeout_s: float = 60.0) -> None:
+        self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._timeout_s = timeout_s
 
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
-        raise NotImplementedError("Step 1.1: forward to the OpenAI-compatible gateway URL")
+        import httpx  # local import so tests that never hit the network don't need it
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",  # TODO(Q7): confirm auth scheme
+            # TODO(Q2/Q3): confirm the real tag mechanism (header vs body field). Placeholder:
+            "X-Gateway-Tags": f"project={labels.project},phase={labels.phase},model={labels.model}",
+        }
+        url = f"{self._base_url}/v1/chat/completions"
+        with httpx.Client(timeout=self._timeout_s) as client:
+            with client.stream("POST", url, json=request, headers=headers) as resp:
+                resp.raise_for_status()
+                yield from resp.iter_bytes()
 
     def costs(self, window: str) -> list[CostRecord]:
         raise NotImplementedError("Step 2.3: depends on whether cost is API-exposed (Q1)")
