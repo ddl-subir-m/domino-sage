@@ -17,6 +17,10 @@ shim:
 orchestrator:
 	cd backend && uv run python -m sage.orchestrator.app
 
+# Preflight: one real completion through the gateway (confirms provider + key before a build).
+probe:
+	cd backend && uv run python -m sage.tools.probe
+
 # OpenCode coding harness.
 opencode:
 	npx opencode
