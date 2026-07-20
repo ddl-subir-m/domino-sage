@@ -24,18 +24,36 @@ from fastapi import FastAPI, Header, Request
 load_dotenv()  # backend/.env (gateway creds + model aliases); no-op if absent
 from fastapi.responses import StreamingResponse
 
-from ..gateway.client import DominoGatewayClient, FakeGatewayClient, GatewayClient
+from ..gateway.client import (
+    DEFAULT_SIDECAR_URL,
+    DominoGatewayClient,
+    FakeGatewayClient,
+    GatewayClient,
+    sidecar_token,
+    static_token,
+)
 from ..router.model_control import ModelControl
 from ..router.models import ModelCatalog, Mode, Phase
 from .enforcement import EnforcementShim
 
 
 def _build_gateway() -> GatewayClient:
+    """Real gateway when GATEWAY_BASE_URL is set, else an in-process fake.
+
+    Token source: a static dgw_ PAT (GATEWAY_API_KEY) if provided — needed off-Domino;
+    otherwise the Domino workspace sidecar (GATEWAY_TOKEN_URL, default :8899), which only
+    resolves inside a Domino workspace/job.
+    """
     base_url = os.environ.get("GATEWAY_BASE_URL")
+    if not base_url:
+        return FakeGatewayClient()  # no gateway configured -> curl still works locally
     api_key = os.environ.get("GATEWAY_API_KEY")
-    if base_url and api_key:
-        return DominoGatewayClient(base_url=base_url, api_key=api_key)
-    return FakeGatewayClient()  # no creds -> curl still works locally
+    provider = (
+        static_token(api_key)
+        if api_key
+        else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    )
+    return DominoGatewayClient(base_url=base_url, token_provider=provider)
 
 
 # TODO(Step 4.2+): SessionState is per project/session. For the spike, one process-wide control.

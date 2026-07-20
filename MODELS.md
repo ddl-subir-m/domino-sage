@@ -36,6 +36,7 @@ working React on the small tier.
 ## Gateway API (confirmed from the repo)
 
 - **Base URL:** `https://<host>/apps/<id>/v1` (OpenAI-shape). `POST …/v1/chat/completions`.
+  Dogfood instance: `https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1`.
   Also an Anthropic-shape ingress at `/anthropic/v1/messages`.
 - **Auth:** `Authorization: Bearer <token>` where token is a gateway token (`dgw_…`), a Domino
   PAT, or a workspace sidecar JWT from `http://localhost:8899/access-token`. (OpenAI SDK:

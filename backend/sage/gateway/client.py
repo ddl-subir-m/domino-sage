@@ -10,9 +10,32 @@ Two adapters make the seam real:
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+# Domino workspace sidecar that mints a short-lived access token.
+DEFAULT_SIDECAR_URL = "http://localhost:8899/access-token"
+
+
+def static_token(token: str) -> Callable[[], str]:
+    """Token provider for a long-lived dgw_ PAT (off-Domino / laptop use)."""
+    return lambda: token
+
+
+def sidecar_token(url: str = DEFAULT_SIDECAR_URL) -> Callable[[], str]:
+    """Token provider that fetches a fresh short-lived token from the Domino sidecar.
+
+    Only reachable inside a Domino workspace/job. Fetched per request because the
+    token is short-lived (README: workspace JWTs expire quickly).
+    """
+    import urllib.request
+
+    def _fetch() -> str:
+        with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 - fixed localhost URL
+            return resp.read().decode().strip()
+
+    return _fetch
 
 
 @dataclass(frozen=True)
@@ -87,27 +110,27 @@ class DominoGatewayClient:
     costs()/guardrail_events() await the Step 2.3 answers (Q1/Q4).
     """
 
-    def __init__(self, base_url: str, api_key: str, timeout_s: float = 60.0) -> None:
+    def __init__(self, base_url: str, token_provider: Callable[[], str], timeout_s: float = 60.0) -> None:
+        # base_url is the OpenAI base ending in /v1, e.g.
+        #   https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1
         self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
+        self._token_provider = token_provider
         self._timeout_s = timeout_s
 
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
         import httpx  # local import so tests that never hit the network don't need it
 
         # Auth + tags per the LLM_gateway repo:
-        #   Authorization: Bearer <dgw_ token / Domino PAT / workspace-sidecar JWT>
+        #   Authorization: Bearer <token>  (sidecar JWT in-workspace, or a dgw_ PAT off-Domino)
         #   X-LLM-Tag-*  -> stored in the gateway's usage `tags` column (project from Domino
         #   context; we add phase + model so per-phase cost is queryable).
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {self._token_provider()}",
             "X-LLM-Tag-project": labels.project,
             "X-LLM-Tag-phase": labels.phase,
             "X-LLM-Tag-model": labels.model,
         }
-        # GATEWAY_BASE_URL is the OpenAI base ending in /v1 (e.g. https://<host>/apps/<id>/v1).
-        base = self._base_url[:-3].rstrip("/") if self._base_url.endswith("/v1") else self._base_url
-        url = f"{base}/v1/chat/completions"
+        url = f"{self._base_url}/chat/completions"  # base already ends in /v1
         with httpx.Client(timeout=self._timeout_s) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
                 resp.raise_for_status()
