@@ -28,7 +28,7 @@ premise is at risk and scope changes before we build features.
 Goal: prove OpenCode can be pointed at our proxy for **all** model calls, that the proxy can
 **override the model server-side**, and that container egress can be locked to gateway-only.
 
-- [ ] **1.1 Stand up the enforcement shim in front of the existing Domino AI Gateway** (S2).
+- [x] **1.1 Stand up the enforcement shim in front of the existing Domino AI Gateway** (S2).
   The gateway is already OpenAI-compatible and fronts both vendor + sovereign models, so this is
   a thin shim (accept `/v1/chat/completions` streaming, forward to the gateway URL, log every
   request), NOT a proxy build. (0.25–0.5d / 1–2h)
@@ -38,7 +38,7 @@ Goal: prove OpenCode can be pointed at our proxy for **all** model calls, that t
   - Exit: run 3 representative OpenCode tasks; proxy log shows 100% of calls; **zero** calls
     bypass it. Document how OpenCode is driven (embed / subprocess / server mode) — this
     resolves R4's first half.
-- [ ] **1.3 Server-side model override.** Shim overrides the `model` field when a `locked` flag is
+- [x] **1.3 Server-side model override.** Shim overrides the `model` field when a `locked` flag is
   set, ignoring the body's model (S2, AC2/AC6). Both tiers live under the gateway, so this is just
   setting the field to the sovereign id. (0.25d / 1–2h)
   - Exit: request asks for `vendor-x`, shim forces `sovereign-y`, the gateway serves `sovereign-y`.

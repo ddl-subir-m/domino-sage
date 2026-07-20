@@ -87,10 +87,14 @@ def healthz() -> dict[str, object]:
     return {"ok": True, "gateway": gw, "locked": _control.locked}
 
 
+# Default the project tag from the Domino project context so cost doesn't land in "unknown".
+_DEFAULT_PROJECT = os.environ.get("DOMINO_PROJECT_NAME", "unknown")
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
-    x_sage_project: str = Header(default="unknown"),
+    x_sage_project: str = Header(default=_DEFAULT_PROJECT),
 ):
     body = await request.json()
     requested = body.get("model")
