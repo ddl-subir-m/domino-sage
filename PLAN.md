@@ -101,7 +101,7 @@ broke, any scope changes). This is the real exit from "will it work" to "build i
 - [x] 3.2 Workspace fs module: per-project dir, plan-artifact location, agent edits land here (S3). (0.5d / 2–3h)
 - [x] 3.3 Preview proxy: dynamic Vite port discovery + HTTP + **HMR WebSocket** proxying (C5). (1–2d / 4–8h)
   - Exit: agent edit → preview updates via HMR inside the iframe.
-- [ ] 3.4 Process supervisor: spawn/health/restart Vite, cleanup on parent exit, resource caps (C1). (1–2d / 4–8h)
+- [x] 3.4 Process supervisor: spawn/health/restart Vite, cleanup on parent exit, resource caps (C1). (1–2d / 4–8h)
   - Exit: kill Vite → supervisor restarts it, error surfaced to preview pane; runaway app can't
     starve the backend.
 

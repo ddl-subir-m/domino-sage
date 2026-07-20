@@ -38,3 +38,7 @@ secrets/
 # Builder runtime (generated app workspaces, previews)
 workspaces/
 .tmp/
+
+# Scratch / spike scratch files (never commit)
+**/_spike*.py
+**/_scratch*.py
