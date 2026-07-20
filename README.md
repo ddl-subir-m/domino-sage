@@ -65,6 +65,24 @@ Environment (unset → uses an in-process fake so curl works with no creds):
 | `GATEWAY_API_KEY`  | gateway auth (scheme pending gateway-questions Q7) |
 | `SAGE_MODEL_SOVEREIGN` / `_PLAN` / `_IMPLEMENT` / `_DEFAULT` | model ids per tier |
 
+## Run in a Domino workspace (live spike)
+
+The sovereign/gateway spike is meant to run inside a Domino workspace on cloud-dogfood, where
+the token sidecar (`:8899`) works with no static key.
+
+```bash
+git clone git@github.com:ddl-subir-m/domino-sage.git && cd domino-sage
+cp .env.example backend/.env          # keep GATEWAY_API_KEY BLANK -> sidecar auth is automatic
+make setup                            # needs Node >=20, Python >=3.11, uv (see note)
+make shim                             # terminal 1: shim on :8080, sidecar token per request
+make opencode                         # terminal 2: pick a model like sage-gateway/qwen-2-5
+```
+
+Toolchain note: Domino workspaces are Python-first, so **Node ≥20 and `uv` may not be
+pre-installed**. If `make setup` fails: install uv (`pip install uv` or the astral installer) and
+Node ≥20 (nvm or the platform's package manager) in the workspace first. The gateway base URL is
+already in `.env.example`; do not set a token in a workspace — the sidecar handles it.
+
 ## Layout
 
 ```
