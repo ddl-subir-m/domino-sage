@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import os
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Request
+
+load_dotenv()  # backend/.env (gateway creds + model aliases); no-op if absent
 from fastapi.responses import StreamingResponse
 
 from ..gateway.client import DominoGatewayClient, FakeGatewayClient, GatewayClient

@@ -49,6 +49,15 @@ curl -s -XPOST localhost:8080/v1/chat/completions \
   -d '{"model":"x","messages":[]}'
 ```
 
+Copy `.env.example` → `backend/.env` and fill in the gateway creds; the shim loads it
+automatically (via python-dotenv). Leave the gateway vars blank to use the in-process fake.
+
+### OpenCode → shim
+`opencode.json` (repo root) defines a `sage-gateway` provider pointed at the shim
+(`http://localhost:8080/v1`) with the gateway aliases as models. Run `make shim` then
+`make opencode` and pick a model like `sage-gateway/qwen-2-5`. OpenCode never talks to the
+gateway directly — every call goes through the shim (that's what the Step 1.2 spike verifies).
+
 Environment (unset → uses an in-process fake so curl works with no creds):
 | Var | Purpose |
 |-----|---------|

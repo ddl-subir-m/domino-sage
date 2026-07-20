@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.110,<1.0",
     "uvicorn>=0.29,<1.0",
     "httpx>=0.27,<1.0",       # forwarding to the OpenAI-compatible gateway (Step 1.1)
+    "python-dotenv>=1.0,<2.0",  # load backend/.env (gateway creds + model aliases)
 ]
 
 [project.optional-dependencies]

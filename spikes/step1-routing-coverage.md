@@ -11,8 +11,11 @@ overrides the model server-side, and container egress can be locked to gateway-o
 1. **1.1** Run the shim locally forwarding to the gateway. Fill in `DominoGatewayClient.route`
    (httpx stream to `{base_url}/v1/chat/completions`, inject auth + tags). `curl` a completion
    through it → expect a real streamed response.
-2. **1.2** Install OpenCode; configure `base_url = http://localhost:<shim>`; run 3 representative
-   tasks (scaffold, edit, multi-step w/ tool loop + a forced retry).
+2. **1.2** OpenCode is installed (npm, pinned) and configured: `opencode.json` at the repo root
+   defines a `sage-gateway` provider pointed at `http://localhost:8080/v1` (the shim). Fill
+   `backend/.env` from `.env.example` (GATEWAY_BASE_URL + GATEWAY_API_KEY), `make shim`, then run
+   OpenCode (`make opencode`) on 3 representative tasks (scaffold, edit, multi-step w/ tool loop +
+   a forced retry). Select gateway aliases via `sage-gateway/<alias>`.
 3. **Coverage check:** the shim logs every inbound request. After the 3 tasks, compare the shim's
    request count against OpenCode's own turn/call log. **Pass = 100% of model calls appear in the
    shim log; 0 bypasses.**
