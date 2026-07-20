@@ -60,8 +60,12 @@ make orchestrator
 curl -XPOST localhost:8080/api/projects -d '{"id":"demo"}'      # creates workspace + starts Vite
 open http://localhost:8090/                                     # live preview of the app
 curl -XPOST localhost:8080/api/projects/demo/model -d '{"lock":true}'   # force sovereign
-# point OpenCode at http://localhost:8080/v1 with header X-Sage-Project: demo
+curl -XPOST localhost:8080/api/projects/demo/build -d '{"prompt":"build a todo app"}'  # agent build + auto-typecheck loop
+curl -XPOST localhost:8080/api/projects/demo/check  # typecheck the workspace now
 ```
+`build` runs the closed loop (prompt → wait → `tsc` → feed errors back until clean or the
+circuit breaker stops). It needs gateway access, so run it in a Domino workspace. The
+orchestrator starts one `opencode serve` internally and drives it via its HTTP API + SSE.
 `/api/projects/{id}/model` accepts `{mode, phase, pick, lock}`. The sensitivity lock is sticky.
 
 ### OpenCode → shim

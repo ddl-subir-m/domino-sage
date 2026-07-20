@@ -12,6 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..driver.opencode import OpenCodeClient, run_feedback_loop
+from ..driver.server import OpenCodeServer
+from ..feedback.circuit_breaker import CircuitBreaker
+from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
@@ -27,6 +31,7 @@ class Project:
     supervisor: ViteSupervisor
     control: ModelControl
     shim: EnforcementShim
+    session_id: str | None = None
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -48,12 +53,63 @@ class Project:
 
 
 class Orchestrator:
-    def __init__(self, workspaces_root: Path, template: Path, gateway: GatewayClient, catalog: ModelCatalog) -> None:
+    def __init__(
+        self,
+        workspaces_root: Path,
+        template: Path,
+        gateway: GatewayClient,
+        catalog: ModelCatalog,
+        opencode_cwd: Path | None = None,
+        feedback: FeedbackRunner | None = None,
+    ) -> None:
         self._wm = WorkspaceManager(workspaces_root, template)
         self._gateway = gateway
         self._catalog = catalog
+        self._opencode_cwd = Path(opencode_cwd) if opencode_cwd else Path.cwd()
+        self._feedback = feedback or FeedbackRunner()
         self._projects: dict[str, Project] = {}
         self._active: str | None = None
+        self._oc_server: OpenCodeServer | None = None
+        self._oc_client: OpenCodeClient | None = None
+
+    def _ensure_opencode(self) -> OpenCodeClient:
+        """Start the shared OpenCode server on first use (opencode.json in opencode_cwd points
+        it at the shim). One server per container; sessions are scoped per workspace."""
+        if self._oc_client is None:
+            self._oc_server = OpenCodeServer(cwd=self._opencode_cwd)
+            self._oc_client = OpenCodeClient(base_url=self._oc_server.start())
+        return self._oc_client
+
+    def build(self, project_id: str, prompt: str) -> dict:
+        """Run one build: prompt the agent, then loop typecheck->feed-errors-back until clean or
+        the circuit breaker stops. Requires gateway access (real model calls)."""
+        project = self.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        client = self._ensure_opencode()
+        if project.session_id is None:
+            project.session_id = client.create_session(
+                directory=str(project.workspace.path),
+                model={"providerID": "sage-gateway", "id": self._catalog.default},
+            )
+        sid = project.session_id
+
+        def send_and_wait(text: str) -> None:
+            client.send_prompt(sid, text)
+            client.wait(sid)
+
+        report, decision = run_feedback_loop(
+            prompt,
+            send_and_wait=send_and_wait,
+            check=lambda: self._feedback.check(project.workspace.path),
+            breaker=CircuitBreaker(),
+        )
+        return {
+            "ok": report.ok,
+            "error_count": len(report.errors),
+            "decision": decision.reason,
+            "message": report.as_agent_message(),
+        }
 
     def create_project(self, project_id: str, start_preview: bool = True) -> Project:
         workspace = self._wm.create(project_id)
@@ -79,3 +135,5 @@ class Orchestrator:
     def shutdown(self) -> None:
         for p in self._projects.values():
             p.supervisor.stop()
+        if self._oc_server:
+            self._oc_server.stop()

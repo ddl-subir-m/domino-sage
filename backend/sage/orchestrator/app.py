@@ -67,6 +67,7 @@ orchestrator = Orchestrator(
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
     gateway=_build_gateway(),
     catalog=_build_catalog(),
+    opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
 )
 
 control_app = FastAPI(title="sage orchestrator")
@@ -131,6 +132,22 @@ def check_project(pid: str) -> JSONResponse:
         "message": report.as_agent_message(),
         "signature": report.signature(),
     })
+
+
+@control_app.post("/api/projects/{pid}/build")
+async def build_project(pid: str, request: Request) -> JSONResponse:
+    """Run one agent build with the closed feedback loop (needs gateway access)."""
+    if not orchestrator.get(pid):
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    body = await request.json()
+    prompt = body.get("prompt")
+    if not prompt:
+        return JSONResponse(status_code=400, content={"error": "prompt required"})
+    try:
+        return JSONResponse(content=orchestrator.build(pid, prompt))
+    except Exception as e:
+        log.exception("build failed")
+        return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
 
 
 @control_app.post("/v1/chat/completions")
