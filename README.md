@@ -52,6 +52,18 @@ curl -s -XPOST localhost:8080/v1/chat/completions \
 Copy `.env.example` → `backend/.env` and fill in the gateway creds; the shim loads it
 automatically (via python-dotenv). Leave the gateway vars blank to use the in-process fake.
 
+### Orchestrator (the assembled builder)
+`make orchestrator` runs the whole thing in one process: the control API + `/v1` shim on
+`:8080` and the preview proxy on `:8090`. Lifecycle over HTTP:
+```bash
+make orchestrator
+curl -XPOST localhost:8080/api/projects -d '{"id":"demo"}'      # creates workspace + starts Vite
+open http://localhost:8090/                                     # live preview of the app
+curl -XPOST localhost:8080/api/projects/demo/model -d '{"lock":true}'   # force sovereign
+# point OpenCode at http://localhost:8080/v1 with header X-Sage-Project: demo
+```
+`/api/projects/{id}/model` accepts `{mode, phase, pick, lock}`. The sensitivity lock is sticky.
+
 ### OpenCode → shim
 `opencode.json` (repo root) defines a `sage-gateway` provider pointed at the shim
 (`http://localhost:8080/v1`) with the gateway aliases as models. Run `make shim` then

@@ -31,6 +31,9 @@ class EnforcementShim:
         decision = llm_router.resolve(self._control.snapshot(), self._catalog)
 
         # Enforce policy: when locked, override whatever the caller asked for.
+        # TODO(Step 7 auto mode): when mode==auto, also override with decision.model so the
+        # plan->implement phase switch forces the model even if the caller sent one. Today the
+        # non-locked path honors the caller's model (correct for manual/modal).
         if decision.locked:
             request = {**request, "model": decision.model}
         elif "model" not in request:
