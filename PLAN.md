@@ -66,7 +66,7 @@ mappable. → If any fail, escalate (harness swap, or rethink the sovereign guar
 Goal: make the system testable without a live model or a finished gateway, and pin the gateway
 contract enough to build the cost dashboard + guardrail alarm for real.
 
-- [ ] **2.1 `FakeGatewayClient`** (S2 adapter) — deterministic cost/token records + scriptable
+- [x] **2.1 `FakeGatewayClient`** (S2 adapter) — deterministic cost/token records + scriptable
   guardrail events, conformance-tested against the same interface the real client will implement.
   (1d / 3–5h)
   - Exit: proxy runs end-to-end against the fake; integration tests assert override + labeling +
@@ -109,9 +109,9 @@ broke, any scope changes). This is the real exit from "will it work" to "build i
 **Gate:** the agent (still hand-driven) can edit files and the change shows live.
 
 ### Step 4 — Model policy + modal-on-build  (S1, C3, AC5)
-- [ ] 4.1 `LLMRouter.resolve()` pure fn + table-driven precedence tests (S1, AC-router). (0.5–1d / 2–4h)
-- [ ] 4.2 `ModelControl` state owner (mode/phase/pick/sticky-lock), single serialized writer (S1). (1d / 3–5h)
-- [ ] 4.3 Wire `resolve()` into the proxy per request (S1×S2). (0.5d / 2–3h)
+- [x] 4.1 `LLMRouter.resolve()` pure fn + table-driven precedence tests (S1, AC-router). (0.5–1d / 2–4h)
+- [x] 4.2 `ModelControl` state owner (mode/phase/pick/sticky-lock), single serialized writer (S1). (1d / 3–5h)
+- [x] 4.3 Wire `resolve()` into the shim per request (S1×S2). (0.5d / 2–3h)
 - [ ] 4.4 Modal-on-build UI + "remember my choice / don't ask again" (C3, AC5). (0.5–1d / 2–4h)
 
 **Gate:** model picked at build is honored and enforced by the proxy (AC5).
