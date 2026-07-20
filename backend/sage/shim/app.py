@@ -16,25 +16,31 @@ Project/phase come from headers so OpenCode's vanilla OpenAI body stays untouche
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, Request
 
 load_dotenv()  # backend/.env (gateway creds + model aliases); no-op if absent
-from fastapi.responses import StreamingResponse
+
+from fastapi import FastAPI, Header, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..gateway.client import (
     DEFAULT_SIDECAR_URL,
     DominoGatewayClient,
     FakeGatewayClient,
     GatewayClient,
+    GatewayUpstreamError,
     sidecar_token,
     static_token,
 )
 from ..router.model_control import ModelControl
 from ..router.models import ModelCatalog, Mode, Phase
 from .enforcement import EnforcementShim
+
+log = logging.getLogger("sage.shim")
+logging.basicConfig(level=logging.INFO)
 
 
 def _build_gateway() -> GatewayClient:
@@ -81,7 +87,28 @@ def healthz() -> dict[str, object]:
 async def chat_completions(
     request: Request,
     x_sage_project: str = Header(default="unknown"),
-) -> StreamingResponse:
+):
     body = await request.json()
-    stream = _shim.handle(body, project=x_sage_project)
-    return StreamingResponse(stream, media_type="text/event-stream")
+    requested = body.get("model")
+    gen = _shim.handle(body, project=x_sage_project)
+
+    # Pull the first chunk eagerly so token-fetch / connect / upstream-status errors
+    # surface as a clean JSON error instead of a mid-stream connection reset.
+    try:
+        first = next(gen)
+    except StopIteration:
+        first = b""
+    except GatewayUpstreamError as e:
+        log.error("gateway %s for requested model %r: %s", e.status, requested, e.body)
+        return JSONResponse(status_code=502, content={"error": {"message": str(e), "upstream_status": e.status}})
+    except Exception as e:  # token fetch, connection refused, timeout, etc.
+        log.exception("shim upstream failure (requested model %r)", requested)
+        return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
+
+    log.info("routed request (requested=%s project=%s) -> streaming", requested, x_sage_project)
+
+    def stream():
+        yield first
+        yield from gen
+
+    return StreamingResponse(stream(), media_type="text/event-stream")

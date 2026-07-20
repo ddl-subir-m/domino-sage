@@ -33,7 +33,8 @@ def sidecar_token(url: str = DEFAULT_SIDECAR_URL) -> Callable[[], str]:
 
     def _fetch() -> str:
         with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 - fixed localhost URL
-            return resp.read().decode().strip()
+            tok = resp.read().decode().strip()
+        return tok[len("Bearer ") :] if tok.startswith("Bearer ") else tok  # avoid double-Bearer
 
     return _fetch
 
@@ -131,10 +132,23 @@ class DominoGatewayClient:
             "X-LLM-Tag-model": labels.model,
         }
         url = f"{self._base_url}/chat/completions"  # base already ends in /v1
-        with httpx.Client(timeout=self._timeout_s) as client:
+        with httpx.Client(timeout=self._timeout_s, follow_redirects=False) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
-                resp.raise_for_status()
+                # Surface upstream errors BEFORE streaming so the caller gets a clean
+                # message instead of a mid-stream connection reset. A 3xx here means auth
+                # bounced us to a login page (bad/expired token).
+                if resp.status_code >= 400 or resp.is_redirect:
+                    body = resp.read().decode(errors="replace")[:800]
+                    raise GatewayUpstreamError(resp.status_code, url, body)
                 yield from resp.iter_bytes()
+
+
+class GatewayUpstreamError(RuntimeError):
+    def __init__(self, status: int, url: str, body: str) -> None:
+        self.status = status
+        self.url = url
+        self.body = body
+        super().__init__(f"gateway returned {status} for {url}: {body}")
 
     def costs(self, window: str) -> list[CostRecord]:
         raise NotImplementedError("Step 2.3: depends on whether cost is API-exposed (Q1)")
