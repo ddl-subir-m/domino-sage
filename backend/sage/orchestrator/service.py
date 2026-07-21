@@ -61,10 +61,12 @@ class Orchestrator:
         catalog: ModelCatalog,
         opencode_cwd: Path | None = None,
         feedback: FeedbackRunner | None = None,
+        force_model: bool = False,
     ) -> None:
         self._wm = WorkspaceManager(workspaces_root, template)
         self._gateway = gateway
         self._catalog = catalog
+        self._force_model = force_model
         self._opencode_cwd = Path(opencode_cwd) if opencode_cwd else Path.cwd()
         self._feedback = feedback or FeedbackRunner()
         self._projects: dict[str, Project] = {}
@@ -88,15 +90,15 @@ class Orchestrator:
             raise KeyError(project_id)
         client = self._ensure_opencode()
         if project.session_id is None:
-            project.session_id = client.create_session(
-                directory=str(project.workspace.path),
-                model={"providerID": "sage-gateway", "id": self._catalog.default},
-            )
+            # No session-level model: use opencode.json's default provider/model. The shim's
+            # force_model + router still enforce the real model per request. (Passing an explicit
+            # ModelRef at session creation was observed to stall the turn.)
+            project.session_id = client.create_session(directory=str(project.workspace.path))
         sid = project.session_id
 
         def send_and_wait(text: str) -> None:
             client.send_prompt(sid, text)
-            client.wait(sid)
+            client.wait_for_idle(sid)  # wait for the full multi-step turn to finish
 
         report, decision = run_feedback_loop(
             prompt,
@@ -114,7 +116,7 @@ class Orchestrator:
     def create_project(self, project_id: str, start_preview: bool = True) -> Project:
         workspace = self._wm.create(project_id)
         control = ModelControl(mode=Mode.MANUAL, phase=Phase.PLAN)
-        shim = EnforcementShim(control, self._catalog, self._gateway)
+        shim = EnforcementShim(control, self._catalog, self._gateway, force_model=self._force_model)
         supervisor = ViteSupervisor(workspace.path)
         if start_preview:
             supervisor.start()

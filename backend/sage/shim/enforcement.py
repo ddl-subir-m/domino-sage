@@ -20,23 +20,29 @@ from ..router.models import ModelCatalog
 
 
 class EnforcementShim:
-    def __init__(self, control: ModelControl, catalog: ModelCatalog, gateway: GatewayClient) -> None:
+    def __init__(
+        self,
+        control: ModelControl,
+        catalog: ModelCatalog,
+        gateway: GatewayClient,
+        force_model: bool = False,
+    ) -> None:
         self._control = control
         self._catalog = catalog
         self._gateway = gateway
+        # force_model: always route to the router's resolved model, ignoring what the caller
+        # asked. Needed for a single-provider host (e.g. DeepSeek) where OpenCode's other model
+        # aliases don't exist upstream. Off for the real multi-model Domino gateway.
+        self._force_model = force_model
 
     def handle(self, request: dict[str, Any], project: str) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         requested = request.get("model")
         decision = llm_router.resolve(self._control.snapshot(), self._catalog)
 
-        # Enforce policy: when locked, override whatever the caller asked for.
-        # TODO(Step 7 auto mode): when mode==auto, also override with decision.model so the
-        # plan->implement phase switch forces the model even if the caller sent one. Today the
-        # non-locked path honors the caller's model (correct for manual/modal).
-        if decision.locked:
-            request = {**request, "model": decision.model}
-        elif "model" not in request:
+        # Override the model when locked (sovereignty), when force_model is on (single-provider
+        # host), or when the caller sent none. Otherwise honor the caller's choice.
+        if decision.locked or self._force_model or "model" not in request:
             request = {**request, "model": decision.model}
 
         logging.getLogger("sage.shim").info(

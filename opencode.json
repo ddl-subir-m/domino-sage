@@ -9,6 +9,7 @@
         "apiKey": "local-shim-no-auth"
       },
       "models": {
+        "deepseek-v4-pro": { "name": "DeepSeek V4 Pro (dev host)", "limit": { "context": 128000, "output": 16384 } },
         "qwen-2-5": { "name": "Qwen 2.5 (sovereign)", "limit": { "context": 32768, "output": 8192 } },
         "local-domino-llm": { "name": "Mistral-7B (sovereign)", "limit": { "context": 32768, "output": 8192 } },
         "bedrock-qwen3-coder": { "name": "Qwen3 Coder 30B", "limit": { "context": 128000, "output": 16384 } },
@@ -18,5 +19,5 @@
       }
     }
   },
-  "model": "sage-gateway/gpt-5.4"
+  "model": "sage-gateway/deepseek-v4-pro"
 }

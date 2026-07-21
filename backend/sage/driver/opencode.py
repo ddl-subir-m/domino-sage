@@ -53,16 +53,50 @@ class OpenCodeClient:
         # /api/* responses wrap the resource in {"data": {...}}.
         return (payload.get("data") or payload)["id"]
 
+    def messages(self, session_id: str) -> list[dict]:
+        r = httpx.get(f"{self.base_url}/api/session/{session_id}/message", timeout=30)
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+    def last_message_id(self, session_id: str) -> str | None:
+        ms = self.messages(session_id)
+        return ms[-1]["id"] if ms else None
+
     def send_prompt(self, session_id: str, text: str, model: dict | None = None) -> None:
+        """Send a prompt. `/prompt` returns before the turn completes (async), so callers must
+        wait_for_completion() to know the edits landed."""
         body: dict = {"prompt": {"text": text}}
         if model:
             body["model"] = model
         r = httpx.post(f"{self.base_url}/api/session/{session_id}/prompt", json=body, timeout=self.timeout_s)
         r.raise_for_status()
 
-    def wait(self, session_id: str) -> None:
-        """Block until the current turn finishes."""
-        httpx.post(f"{self.base_url}/api/session/{session_id}/wait", timeout=self.timeout_s).raise_for_status()
+    def is_running(self, session_id: str) -> bool:
+        r = httpx.get(f"{self.base_url}/api/session/active", timeout=15)
+        r.raise_for_status()
+        return session_id in r.json().get("data", {})
+
+    def wait_for_idle(self, session_id: str, timeout_s: float = 300, poll_s: float = 1.0, appear_grace_s: float = 10.0) -> None:
+        """Block until the whole multi-step turn finishes.
+
+        A turn spans several steps (model->tool->model); /api/session/active reports
+        {sid: {"type":"running"}} for the duration and {} when idle. We wait for the session to
+        register as running, then for it to go idle. `/wait` on the server 503s, and a single
+        'completed assistant message' fires mid-turn — active-polling is the reliable signal.
+        """
+        import time
+
+        start = time.monotonic()
+        appeared = False
+        while time.monotonic() - start < timeout_s:
+            running = self.is_running(session_id)
+            if running:
+                appeared = True
+            elif appeared:
+                return  # was running, now idle -> turn complete
+            elif time.monotonic() - start > appear_grace_s:
+                return  # never registered (trivial/no-op turn)
+            time.sleep(poll_s)
 
     def interrupt(self, session_id: str) -> None:
         httpx.post(f"{self.base_url}/api/session/{session_id}/interrupt", timeout=30)

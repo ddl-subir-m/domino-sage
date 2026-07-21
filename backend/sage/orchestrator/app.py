@@ -21,6 +21,7 @@ load_dotenv()
 
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 _UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 
@@ -55,6 +56,8 @@ orchestrator = Orchestrator(
     gateway=_gateway,
     catalog=_build_catalog(),
     opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
+    # Single-provider hosts (openai mode) don't serve OpenCode's other aliases -> force the model.
+    force_model=(GATEWAY_MODE == "openai"),
 )
 
 control_app = FastAPI(title="sage orchestrator")
@@ -139,7 +142,11 @@ async def build_project(pid: str, request: Request) -> JSONResponse:
     if not prompt:
         return JSONResponse(status_code=400, content={"error": "prompt required"})
     try:
-        return JSONResponse(content=orchestrator.build(pid, prompt))
+        # Offload the blocking build (drives OpenCode, sleeps) to a thread so the event loop
+        # stays free to serve the /v1 model calls that OpenCode makes DURING the build.
+        # Without this the single loop deadlocks: build waits for a turn that can't be served.
+        result = await run_in_threadpool(orchestrator.build, pid, prompt)
+        return JSONResponse(content=result)
     except Exception as e:
         log.exception("build failed")
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
@@ -153,16 +160,22 @@ async def chat_completions(request: Request, x_sage_project: str = Header(defaul
     body = await request.json()
     requested = body.get("model")
     gen = project.shim.handle(body, project=project.id)
-    try:
-        first = next(gen)
-    except StopIteration:
-        first = b""
-    except GatewayUpstreamError as e:
-        log.error("gateway %s: %s", e.status, e.body)
-        return JSONResponse(status_code=502, content={"error": {"message": str(e), "upstream_status": e.status}})
-    except Exception as e:
-        log.exception("shim upstream failure")
-        return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
+
+    def _peek():  # blocking; runs in a thread so the loop stays free
+        try:
+            return next(gen), None
+        except StopIteration:
+            return b"", None
+        except Exception as e:  # noqa: BLE001
+            return None, e
+
+    first, err = await run_in_threadpool(_peek)
+    if err is not None:
+        if isinstance(err, GatewayUpstreamError):
+            log.error("gateway %s: %s", err.status, err.body)
+            return JSONResponse(status_code=502, content={"error": {"message": str(err), "upstream_status": err.status}})
+        log.exception("shim upstream failure", exc_info=err)
+        return JSONResponse(status_code=502, content={"error": {"message": f"{type(err).__name__}: {err}"}})
 
     def stream():
         yield first

@@ -6,6 +6,7 @@ Mirrors ViteSupervisor's spawn/discover/stop shape.
 """
 from __future__ import annotations
 
+import os
 import re
 import signal
 import subprocess
@@ -22,16 +23,20 @@ def parse_server_url(line: str) -> str | None:
 
 
 class OpenCodeServer:
-    def __init__(self, cwd: Path, port: int = 0) -> None:
+    def __init__(self, cwd: Path, port: int = 0, log_path: str | None = None) -> None:
         self._cwd = Path(cwd)
         self._port = port
+        self._log_path = log_path or os.environ.get("SAGE_OPENCODE_LOG")
         self._proc: subprocess.Popen | None = None
         self._url: str | None = None
         self._ready = threading.Event()
 
     def start(self, ready_timeout_s: float = 30.0) -> str:
+        cmd = ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
+        if self._log_path:
+            cmd.append("--print-logs")
         self._proc = subprocess.Popen(
-            ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"],
+            cmd,
             cwd=self._cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -52,7 +57,11 @@ class OpenCodeServer:
 
     def _read(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
+        logf = open(self._log_path, "a") if self._log_path else None  # noqa: SIM115
         for line in proc.stdout:
+            if logf:
+                logf.write(line)
+                logf.flush()
             if self._url is None and (u := parse_server_url(line)):
                 self._url = u
                 self._ready.set()
