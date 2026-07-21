@@ -26,6 +26,23 @@ from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
 
 
+def _tool_detail(tool: str, part: dict) -> str:
+    """A short, human label for a tool call (the file it touched, the command it ran) so the UI
+    can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
+    inp = (part.get("state") or {}).get("input") or {}
+    if tool in ("edit", "write", "read"):
+        path = inp.get("path") or inp.get("filePath") or ""
+        return path.split("/workspaces/", 1)[-1] if "/workspaces/" in path else path
+    if tool == "bash":
+        return (inp.get("command") or "").strip()
+    if tool == "grep":
+        return inp.get("pattern") or ""
+    if tool == "todowrite":
+        todos = inp.get("todos") or []
+        return f"{len(todos)} step" + ("" if len(todos) == 1 else "s")
+    return ""
+
+
 @dataclass
 class Project:
     id: str
@@ -141,6 +158,10 @@ class Orchestrator:
             client.send_prompt(sid, current)
             appeared = False
             start = time.monotonic()
+            # The shim classifies plan/implement per model call (phase_classifier). We only observe
+            # the resulting phase here to keep the UI's live indicator in sync — routing is decided
+            # in the shim, not here, so it stays per-step and race-free.
+            last_phase = project.control.snapshot().phase.value
             while True:
                 running = client.is_running(sid)
                 appeared = appeared or running
@@ -153,11 +174,23 @@ class Orchestrator:
                             continue
                         pt = part.get("type", "")
                         if "tool" in pt:
+                            # Wait until the call finishes before emitting: a tool's args stream in,
+                            # so at first sight a large input (e.g. todowrite's `todos`) is still
+                            # empty -> "0 steps". Don't mark it seen while in-progress; re-check next
+                            # poll and emit once the completed state carries the full input.
+                            status = (part.get("state") or {}).get("status")
+                            if status in ("pending", "running", "in_progress"):
+                                continue
                             seen.add(key)
-                            yield {"type": "agent", "kind": "tool", "tool": part.get("tool") or part.get("name") or pt}
+                            tool = part.get("tool") or part.get("name") or pt
+                            yield {"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)}
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
                             yield {"type": "agent", "kind": "text", "text": part["text"]}
+                cur_phase = project.control.snapshot().phase.value
+                if cur_phase != last_phase:
+                    last_phase = cur_phase
+                    yield {"type": "phase", "phase": cur_phase}
                 if appeared and not running:
                     break
                 if not appeared and time.monotonic() - start > 12:
@@ -176,7 +209,7 @@ class Orchestrator:
 
     def create_project(self, project_id: str, start_preview: bool = True) -> Project:
         workspace = self._wm.create(project_id)
-        control = ModelControl(mode=Mode.MANUAL, phase=Phase.PLAN)
+        control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._catalog, self._gateway, force_model=self._force_model)
         supervisor = ViteSupervisor(workspace.path)
         if start_preview:

@@ -31,7 +31,9 @@ def test_override_forces_sovereign_when_locked():
 
 
 def test_every_request_is_tagged_with_project_and_phase():
-    control = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
+    # Manual mode: phase comes straight from the control (no per-step classification), so this
+    # deterministically exercises tag propagation. Auto-mode classification has its own test.
+    control = ModelControl(mode=Mode.MANUAL, phase=Phase.IMPLEMENT)
     gw = FakeGatewayClient()
 
     list(_shim(control, gw).handle({"messages": []}, project="proj-x"))
@@ -39,6 +41,19 @@ def test_every_request_is_tagged_with_project_and_phase():
     _, labels = gw.seen[-1]
     assert labels.project == "proj-x"
     assert labels.phase == "implement"  # never empty -> avoids the gateway 'unknown' bucket
+
+
+def test_auto_mode_classifies_phase_per_request():
+    # Auto mode picks the model per step from the message tail: writing code -> implement model.
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    gw = FakeGatewayClient()
+    messages = [{"role": "assistant", "tool_calls": [{"function": {"name": "edit"}}]}]
+
+    list(_shim(control, gw).handle({"messages": messages}, project="p"))
+
+    sent_request, labels = gw.seen[-1]
+    assert labels.phase == "implement"
+    assert sent_request["model"] == "cheap-vendor"  # catalog.implement
 
 
 def test_sticky_lock_survives_detach():

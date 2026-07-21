@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import ModelCatalog
+from ..router.models import ModelCatalog, Mode
+from ..router.phase_classifier import classify
 
 
 class EnforcementShim:
@@ -38,7 +40,19 @@ class EnforcementShim:
     def handle(self, request: dict[str, Any], project: str) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         requested = request.get("model")
-        decision = llm_router.resolve(self._control.snapshot(), self._catalog)
+        state = self._control.snapshot()
+
+        # Per-step phase: in Auto mode, classify THIS inference from its own message tail (plan
+        # while reasoning/reading, implement while writing code). Done here, per request, so
+        # interleaved turns route correctly step by step — not from a laggy background poll. The
+        # lock still wins in resolve(), so skip classifying when locked. Reflect the phase back to
+        # the control so the UI's live indicator matches what actually routed.
+        if state.mode is Mode.AUTO and not state.sensitivity_locked:
+            phase = classify(request.get("messages"))
+            state = replace(state, phase=phase)
+            self._control.set_phase(phase)
+
+        decision = llm_router.resolve(state, self._catalog)
 
         # Override the model when locked (sovereignty), when force_model is on (single-provider
         # host), or when the caller sent none. Otherwise honor the caller's choice.
@@ -53,7 +67,7 @@ class EnforcementShim:
         # Mandatory tagging so the gateway attributes cost (avoids the 'unknown' bucket).
         labels = CostLabels(
             project=project,
-            phase=self._control.snapshot().phase.value,
+            phase=state.phase.value,
             model=request["model"],
         )
         return self._gateway.route(request, labels)

@@ -4,228 +4,558 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>sage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
   :root {
     --primary: #543FDE; --primary-hover: #3B23D1;
-    --text: #2E2E38; --muted: #65657B; --faint: #8F8FA3;
-    --border: #E0E0E0; --bg: #FAFAFA; --surface: #FFFFFF;
-    --lock: #C20A29;
+    --text: #1D1D24; --muted: #65657B; --faint: #9797AB;
+    --border: #E7E7EE; --border-strong: #D8D8E2;
+    --bg: #F7F7FB; --surface: #FFFFFF; --surface-2: #F2F2F7;
+    --lock: #C20A29; --ok: #1F9D57; --warn: #B99400;
+    --user-bubble: #EEEBFC;
+    --shadow: 0 1px 2px rgba(20,20,40,.04), 0 8px 24px rgba(20,20,40,.06);
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --text: #ECECF2; --muted: #A6A6BC; --faint: #74748A;
+      --border: #2A2A36; --border-strong: #34344400;
+      --border-strong: #383848;
+      --bg: #131318; --surface: #1B1B22; --surface-2: #22222B;
+      --user-bubble: #2C2648;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; color: var(--text); background: var(--bg); }
-  header {
-    height: 44px; background: #2E2E38; color: #fff; display: flex; align-items: center;
-    padding: 0 16px; gap: 12px; font-size: 14px;
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; color: var(--text);
+    background: var(--bg); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
   }
-  header .brand { font-weight: 700; letter-spacing: 0.5px; }
-  header .mode { margin-left: auto; font-size: 12px; padding: 2px 8px; border-radius: 4px; background: #444; }
-  header .mode.domino { background: #28A464; }
-  header .mode.openai { background: #CCB718; color: #2E2E38; }
-  header .mode.fake { background: #8F8FA3; }
-  .layout { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 44px); }
-  .rail { border-right: 1px solid var(--border); overflow-y: auto; padding: 16px; }
-  .work { display: flex; flex-direction: column; }
-  .work .toolbar { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 13px; color: var(--muted); display: flex; gap: 12px; align-items: center; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+
+  /* ---------- header ---------- */
+  header {
+    height: 52px; display: flex; align-items: center; gap: 14px; padding: 0 16px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; letter-spacing: .2px; }
+  .brand .glyph {
+    width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--primary), #8B6BFF); color: #fff; font-size: 13px; font-weight: 800;
+  }
+  .proj-picker { display: flex; align-items: center; gap: 6px; }
+  .proj-picker select {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; max-width: 220px;
+  }
+  .icon-btn {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    width: 32px; height: 32px; display: grid; place-items: center; font-size: 16px; color: var(--muted);
+  }
+  .icon-btn:hover { border-color: var(--border-strong); color: var(--text); }
+  .spacer { flex: 1; }
+  .mode-chip {
+    font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); display: flex; gap: 6px; align-items: center;
+  }
+  .mode-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .mode-chip.domino { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); } .mode-chip.domino .dot { background: var(--ok); }
+  .mode-chip.openai { color: var(--warn); } .mode-chip.openai .dot { background: var(--warn); }
+  .mode-chip.fake .dot { background: var(--faint); }
+
+  /* ---------- layout ---------- */
+  .main { display: grid; grid-template-columns: minmax(380px, 460px) 1fr; height: calc(100vh - 52px); }
+  .chat { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+  .messages { flex: 1; overflow-y: auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 18px; font-size: 14.5px; }
+
+  /* ---------- empty state ---------- */
+  .empty { margin: auto; max-width: 340px; text-align: center; color: var(--muted); }
+  .empty h1 { font-size: 20px; color: var(--text); margin: 0 0 6px; }
+  .empty p { margin: 0 0 18px; font-size: 13px; }
+  .verticals { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .vertical-chip { padding: 4px 11px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--faint); font-size: 12px; cursor: pointer; transition: color .12s, border-color .12s; }
+  .vertical-chip:hover { border-color: var(--primary); color: var(--text); }
+  .vertical-chip.active { border-color: var(--primary); color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); font-weight: 600; }
+  .suggestions { display: flex; flex-direction: column; gap: 8px; }
+  .suggestion {
+    text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; color: var(--text); font-size: 13px; transition: border-color .15s;
+  }
+  .suggestion:hover { border-color: var(--primary); }
+  .suggestion .s-title { font-weight: 600; }
+  .suggestion .s-sub { color: var(--faint); font-size: 12px; }
+
+  /* ---------- chat messages ---------- */
+  .msg { display: flex; flex-direction: column; max-width: 100%; }
+  .msg.user { align-items: flex-end; }
+  .msg.user .body {
+    background: var(--user-bubble); border-radius: 16px 16px 5px 16px; padding: 11px 15px; max-width: 84%;
+    white-space: pre-wrap; word-break: break-word; line-height: 1.55;
+  }
+  /* agent text renders as clean prose on the panel (dyad-style), not a bubble */
+  .msg.agent .body { max-width: 100%; line-height: 1.6; color: var(--text); }
+  .msg.agent .body > :first-child { margin-top: 0; }
+  .msg.agent .body > :last-child { margin-bottom: 0; }
+  .md h1, .md h2, .md h3 { font-weight: 650; line-height: 1.3; margin: 18px 0 8px; }
+  .md h1 { font-size: 18px; } .md h2 { font-size: 16px; } .md h3 { font-size: 14.5px; color: var(--muted); text-transform: none; }
+  .md p { margin: 8px 0; }
+  .md ul, .md ol { margin: 8px 0; padding-left: 20px; }
+  .md li { margin: 4px 0; }
+  .md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+  .md strong { font-weight: 650; color: var(--text); }
+  .md pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+  .md pre code { border: 0; padding: 0; background: none; }
+
+  /* tool call -> dyad-style action card */
+  .tool-card {
+    display: flex; align-items: center; gap: 11px; align-self: flex-start; max-width: 100%; width: 100%;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 9px 12px; box-shadow: var(--shadow);
+  }
+  .tool-card .tile { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 8px; background: var(--surface-2); display: grid; place-items: center; font-size: 14px; }
+  .tool-card .tc-body { min-width: 0; flex: 1; display: flex; flex-direction: column; line-height: 1.35; }
+  .tool-card .verb { font-weight: 600; font-size: 13.5px; }
+  .tool-card .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-card .check { flex: 0 0 auto; color: var(--ok); font-size: 15px; }
+  .tool-card.err .check { color: var(--lock); }
+
+  /* transient status pill (working / typechecking / fixing) */
+  .status-line { display: flex; align-items: center; gap: 9px; align-self: flex-start; font-size: 13px; color: var(--muted); padding: 2px 2px; }
+  .status-line .ico { display: inline-block; }
+  .status-line.spin .ico { animation: spin 1s linear infinite; }
+  .status-line.ok { color: var(--ok); } .status-line.err { color: var(--lock); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .divider { text-align: center; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .6px; margin: 6px 0; position: relative; }
+  .divider::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--border); z-index: 0; }
+  .divider span { position: relative; background: var(--bg); padding: 0 10px; z-index: 1; }
+  .divider.err span { color: var(--lock); }
+
+  /* ---------- composer ---------- */
+  .composer-wrap { padding: 12px 16px 16px; border-top: 1px solid var(--border); background: var(--surface); position: relative; }
+  .composer {
+    border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface);
+    box-shadow: var(--shadow); transition: border-color .15s;
+  }
+  .composer:focus-within { border-color: var(--primary); }
+  .composer textarea {
+    width: 100%; border: 0; background: transparent; resize: none; padding: 12px 14px 4px; min-height: 46px;
+    max-height: 180px; outline: none;
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+  .composer-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px 10px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; color: var(--muted);
+  }
+  .chip:hover { border-color: var(--border-strong); color: var(--text); }
+  .chip.locked { color: var(--lock); border-color: color-mix(in srgb, var(--lock) 40%, var(--border)); }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
+  .chip.locked .dot { background: var(--lock); }
+  .chip .caret { color: var(--faint); font-size: 10px; }
+  .send {
+    margin-left: auto; background: var(--primary); border: 0; color: #fff; border-radius: 9px;
+    width: 34px; height: 34px; display: grid; place-items: center; font-size: 16px;
+  }
+  .send:hover:not(:disabled) { background: var(--primary-hover); }
+
+  /* ---------- popovers ---------- */
+  .pop {
+    position: absolute; bottom: 74px; z-index: 20; width: 300px; background: var(--surface);
+    border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 14px; display: none;
+  }
+  .pop.open { display: block; }
+  .pop h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); font-weight: 600; }
+  .pop label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  .pop select, .pop input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+  .pop .row { display: flex; gap: 8px; } .pop .row > * { flex: 1; }
+  .btn-block { width: 100%; margin-top: 12px; padding: 8px; border-radius: 8px; border: 1px solid var(--lock); background: transparent; color: var(--lock); font-weight: 500; }
+  .btn-block:hover { background: color-mix(in srgb, var(--lock) 8%, transparent); }
+  .hint { font-size: 11px; color: var(--faint); margin-top: 8px; line-height: 1.4; }
+
+  .asset-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .asset-row:first-of-type { border-top: 0; }
+  .asset-row .a-name { flex: 1; min-width: 0; }
+  .asset-row .a-tags { color: var(--faint); font-size: 11px; }
+  .asset-row .a-tags.sens { color: var(--lock); }
+  .asset-row button { flex: 0 0 auto; padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
+  .asset-row button.attached { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+
+  /* ---------- preview panel ---------- */
+  .work { display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .work-toolbar {
+    height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .seg { display: flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+  .seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 6px; font-size: 12.5px; color: var(--muted); font-weight: 500; }
+  .seg button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .url-pill { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-size: 12px; color: var(--muted); }
+  .url-pill .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+  .url-pill .status-dot.ok { background: var(--ok); } .url-pill .status-dot.err { background: var(--lock); }
+  .url-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   iframe { flex: 1; border: 0; width: 100%; background: #fff; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
-  .card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--faint); }
-  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
-  input, select, textarea, button { font: inherit; }
-  input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px; }
-  textarea { resize: vertical; min-height: 64px; }
-  .row { display: flex; gap: 8px; }
-  .row > * { flex: 1; }
-  button { cursor: pointer; padding: 8px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
-  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-  button.primary:hover { background: var(--primary-hover); }
-  button:disabled { opacity: 0.5; cursor: default; }
-  .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border); }
-  .badge.locked { border-color: var(--lock); color: var(--lock); }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
-  .badge.locked .dot { background: var(--lock); }
-  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; background: #F5F5F5; border-radius: 4px; padding: 8px; margin: 8px 0 0; max-height: 220px; overflow: auto; }
-  .activity { font-size: 12px; background: #F5F5F5; border-radius: 4px; padding: 8px; margin-bottom: 8px; max-height: 260px; overflow: auto; }
-  .activity .ln { margin: 3px 0; line-height: 1.4; }
-  .activity .turn { font-weight: 600; color: var(--primary); margin-top: 8px; }
-  .activity .tool { color: var(--muted); } .activity .tool b { color: var(--text); }
-  .activity .agenttext { color: var(--text); }
-  .activity .tc-ok { color: #28A464; } .activity .tc-err { color: var(--lock); }
-  .activity .done { font-weight: 600; margin-top: 6px; }
-  .ok { color: #28A464; } .err { color: var(--lock); } .muted { color: var(--muted); font-size: 12px; }
-  .hint { font-size: 11px; color: var(--faint); margin-top: 4px; }
+  .work-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
 </style>
 </head>
 <body>
 <header>
-  <span class="brand">sage</span>
-  <span class="muted" style="color:#bbb" id="active-label">no project</span>
-  <span class="mode" id="mode">…</span>
+  <div class="brand"><span class="glyph">S</span> sage</div>
+  <div class="proj-picker">
+    <select id="proj-select" onchange="switchProject()" title="Active project"></select>
+    <button class="icon-btn" title="New app" onclick="newProject()">+</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="mode-chip" id="mode-chip" title=""><span class="dot"></span><span id="mode-text">…</span></div>
 </header>
 
-<div class="layout">
-  <div class="rail">
-    <div class="card">
-      <h2>Project</h2>
-      <div class="row">
-        <input id="project-id" placeholder="project id, e.g. demo" value="demo" />
-        <button class="primary" style="flex:0 0 auto" onclick="createProject()">Create</button>
+<div class="main">
+  <!-- ============ chat column ============ -->
+  <section class="chat">
+    <div class="messages" id="messages">
+      <div class="empty" id="empty">
+        <h1>Build an app with sage</h1>
+        <p>Describe what you want to make. sage writes the code, checks it, and updates the live preview.</p>
+        <div class="verticals" id="verticals"></div>
+        <div class="suggestions" id="suggestions"></div>
       </div>
-      <div class="hint">Creates a workspace from the warm template and starts the live preview.</div>
     </div>
 
-    <div class="card">
-      <h2>Assets</h2>
-      <div id="assets" class="muted">create a project to load datasets</div>
-      <div class="hint">Attaching a dataset tagged <code id="sens-tag">sensitive</code> forces the sovereign model (sticky).</div>
-    </div>
-
-    <div class="card">
-      <h2>Model</h2>
-      <div id="model-badge" class="badge"><span class="dot"></span><span id="badge-text">—</span></div>
-      <div class="row" style="margin-top:10px">
-        <div><label>Mode</label>
-          <select id="mode-sel" onchange="setModel()"><option>manual</option><option>auto</option></select></div>
-        <div><label>Phase</label>
-          <select id="phase-sel" onchange="setModel()"><option>plan</option><option>implement</option></select></div>
+    <div class="composer-wrap">
+      <!-- model popover -->
+      <div class="pop" id="model-pop">
+        <h3>Model</h3>
+        <div class="chip" style="cursor:default" id="pop-badge"><span class="dot"></span><span id="pop-badge-text">—</span></div>
+        <label>Mode</label>
+        <select id="mode-sel" onchange="setModel()"><option value="auto">Auto — pick the best model per step</option><option value="manual">Manual — I'll choose the model</option></select>
+        <div class="hint" id="mode-hint">Auto uses a stronger model while planning, then a faster one to write code.</div>
+        <div id="manual-pick" style="display:none">
+          <label>Model</label>
+          <input id="pick" placeholder="leave blank for default" onchange="setModel()" />
+        </div>
+        <button class="btn-block" onclick="lockSovereign()">Force sovereign (lock)</button>
+        <div class="hint">Lock is sticky — the same signal fires automatically when you attach a sensitivity-tagged dataset.</div>
       </div>
-      <label>Pick model (manual)</label>
-      <input id="pick" placeholder="leave blank for default" onchange="setModel()" />
-      <button style="margin-top:10px; width:100%; border-color:var(--lock); color:var(--lock)" onclick="lockSovereign()">
-        Force sovereign (lock)
-      </button>
-      <div class="hint">Lock is sticky — simulates a sensitivity-tagged dataset being attached.</div>
-    </div>
 
-    <div class="card">
-      <h2>Build</h2>
-      <div id="activity" class="activity" style="display:none"></div>
-      <textarea id="prompt" placeholder="Describe the app, or a change to make (follow-ups keep context)"></textarea>
-      <button class="primary" style="width:100%; margin-top:8px" id="build-btn" onclick="build()">Send</button>
-      <div class="hint">First prompt builds; follow-ups modify/add features with the same context. Live agent activity streams above. Needs a live model (domino/openai mode).</div>
-    </div>
+      <!-- data / assets popover -->
+      <div class="pop" id="data-pop">
+        <h3>Project data</h3>
+        <div id="assets"><div class="hint">Create a project to load datasets.</div></div>
+        <div class="hint">Attaching a dataset tagged <b id="sens-tag">sensitive</b> forces the sovereign model.</div>
+      </div>
 
-    <div class="card">
-      <h2>Typecheck</h2>
-      <button style="width:100%" onclick="check()">Typecheck workspace</button>
-      <pre id="check-out" style="display:none"></pre>
+      <div class="composer">
+        <textarea id="prompt" rows="1" placeholder="Describe your app, or a change to make…"
+                  oninput="autogrow(this)" onkeydown="composerKey(event)"></textarea>
+        <div class="composer-bar">
+          <button class="chip" id="model-chip" onclick="togglePop('model-pop')">
+            <span class="dot"></span><span id="chip-text">model</span><span class="caret">▾</span>
+          </button>
+          <button class="chip" id="data-chip" onclick="togglePop('data-pop')">📎 <span id="data-count">Data</span><span class="caret">▾</span></button>
+          <button class="send" id="build-btn" onclick="build()" title="Send (Enter)">↑</button>
+        </div>
+      </div>
     </div>
-  </div>
+  </section>
 
-  <div class="work">
-    <div class="toolbar">
-      <span>Live preview</span>
-      <a id="preview-link" href="#" target="_blank" style="color:var(--primary)">open in new tab ↗</a>
-      <button style="margin-left:auto; padding:4px 10px" onclick="refreshPreview()">Refresh</button>
+  <!-- ============ preview panel ============ -->
+  <section class="work">
+    <div class="work-toolbar">
+      <div class="seg">
+        <button class="active" id="tab-preview">Preview</button>
+        <button id="tab-check" onclick="check()" title="Typecheck the workspace">Typecheck</button>
+      </div>
+      <div class="url-pill">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="url-text">no preview yet</span>
+      </div>
+      <button class="icon-btn" title="Refresh" onclick="refreshPreview()">⟳</button>
+      <button class="icon-btn" title="Open in new tab" onclick="openPreview()">↗</button>
     </div>
-    <iframe id="preview" title="preview"></iframe>
-  </div>
+    <iframe id="preview" title="preview" style="display:none"></iframe>
+    <div class="work-empty" id="work-empty">Create a project to start the live preview.</div>
+  </section>
 </div>
 
 <script>
 const api = (p, opts) => fetch(p, opts).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }));
 let active = null;
-// Preview proxy runs on its own port (8090 in dev). Same host as the control app.
 const previewBase = `${location.protocol}//${location.hostname}:8090/`;
 
+const STARTERS = {
+  'Cross-industry': [
+    { title: 'Model monitoring dashboard', sub: 'Track accuracy and data drift over time', prompt: 'Build a model monitoring dashboard: line charts for prediction accuracy and data drift over the last 30 days, a summary row of health metrics (latency, error rate, throughput), and a table of recent predictions. Use realistic synthetic data. Include empty and loading states.' },
+    { title: 'Model prediction tester', sub: 'Send inputs to a model, see the prediction', prompt: 'Build a prediction tester for a deployed model: a form of input features on the left; on the right, the predicted class with a confidence score and a bar chart of class probabilities. Simulate the model response. Include input validation and a loading state while scoring.' },
+    { title: 'Dataset explorer', sub: 'Profile columns, stats, and data quality', prompt: 'Build a dataset explorer: pick a table, preview rows, and show a per-column profile with type, missing-value percentage, and a small distribution chart. Use realistic synthetic tabular data. Include an empty state and truncation-safe tables with tooltips.' },
+  ],
+  'Financial services': [
+    { title: 'Credit risk scoring', sub: 'Score an applicant and explain the decision', prompt: 'Build a credit risk scoring app: a form of applicant features, then a risk band (low/medium/high) with a probability-of-default gauge and the top reason codes (feature contributions) for adverse-action transparency. Simulate the model. Include validation and a loading state.' },
+    { title: 'Fraud review queue', sub: 'Triage flagged transactions', prompt: 'Build a fraud review queue: a table of flagged transactions with fraud score, amount, and status; filters by score and date; a row detail drawer; and approve/escalate actions. Use synthetic data with truncation-safe tables and empty and zero-result states.' },
+    { title: 'Model risk report', sub: 'Governance view for a deployed model', prompt: 'Build a model risk report: a model card header (owner, version, approval status), performance metrics, a validation checklist, and a change log. Use realistic synthetic content. Follow the design system closely and include empty states.' },
+  ],
+  'Life sciences': [
+    { title: 'Clinical trial explorer', sub: 'Browse arms, enrollment, and outcomes', prompt: 'Build a clinical trial explorer: select a trial, show enrollment over time, a table of study arms with participant counts, and an outcome summary. Use realistic synthetic data with empty and loading states.' },
+    { title: 'Adverse event dashboard', sub: 'Pharmacovigilance signal monitoring', prompt: 'Build an adverse event dashboard: signal counts by drug and severity over time, a stacked bar chart by severity, and a drill-down table of reported events. Use synthetic data, truncation-safe tables, and empty states.' },
+    { title: 'Biomarker cohort explorer', sub: 'Filter a cohort, compare outcomes', prompt: 'Build a biomarker cohort explorer: filter a patient cohort by biomarker thresholds, then show cohort size, a demographics summary, and an outcome (survival) curve comparing subgroups. Use realistic synthetic data and an empty state when filters match no one.' },
+  ],
+  'Insurance': [
+    { title: 'Claims triage dashboard', sub: 'Prioritize incoming claims by severity', prompt: 'Build a claims triage dashboard: a table of open claims with severity score, amount, and status; filters and a detail drawer; and adjuster assignment. Use synthetic data with truncation-safe tables and empty and zero-result states.' },
+    { title: 'Underwriting risk scorer', sub: 'Score a policy and show the drivers', prompt: 'Build an underwriting risk scorer: a form of applicant and policy attributes, then a risk score, a suggested premium, and the top contributing factors. Simulate the model. Include validation and a loading state.' },
+    { title: 'Loss ratio monitor', sub: 'Track loss ratio by line of business', prompt: 'Build a loss ratio monitor: line charts of loss ratio and claim frequency over time, a summary row by line of business, and a table of recent claims. Use realistic synthetic data with empty and loading states.' },
+  ],
+  'Manufacturing': [
+    { title: 'Predictive maintenance', sub: 'Machine health and time-to-failure', prompt: 'Build a predictive maintenance monitor: sensor time-series charts per machine, anomaly flags, a predicted time-to-failure indicator, and an alert table. Use realistic synthetic data with empty and loading states.' },
+    { title: 'Inspection review queue', sub: 'Review defect predictions', prompt: 'Build a quality inspection review queue: a table of inspected units with defect probability, pass/fail, and station; filters and a detail drawer; and confirm/override actions. Use synthetic data with truncation-safe tables and empty states.' },
+    { title: 'Yield & quality dashboard', sub: 'Track yield and defect rate by line', prompt: 'Build a yield and quality dashboard: charts of yield, defect rate, and throughput over time, a summary row by production line, and a table of recent batches. Use realistic synthetic data with empty and loading states.' },
+  ],
+};
+let starterVertical = 'Cross-industry';
+
+/* ---------- health / mode ---------- */
 async function loadHealth() {
   const { body } = await api('/healthz');
   const mode = body.gateway_mode || 'unknown';
-  const el = document.getElementById('mode');
-  el.textContent = `gateway: ${mode}`;
-  el.className = 'mode ' + mode;
-  el.title = mode === 'openai' ? 'mechanism only — NOT the real sovereign guarantee' : '';
+  const chip = document.getElementById('mode-chip');
+  document.getElementById('mode-text').textContent = `gateway: ${mode}`;
+  chip.className = 'mode-chip ' + mode;
+  chip.title = mode === 'openai' ? 'mechanism only — NOT the real sovereign guarantee' : '';
+  // hydrate the project picker from any existing projects
+  for (const id of body.projects || []) addProjectOption(id);
+  if (!active && (body.projects || []).length) { active = body.projects[0]; onProjectActive(); }
 }
 
-async function createProject() {
-  const id = document.getElementById('project-id').value.trim();
+/* ---------- project switching ---------- */
+function addProjectOption(id) {
+  const sel = document.getElementById('proj-select');
+  if ([...sel.options].some(o => o.value === id)) return;
+  const o = document.createElement('option'); o.value = id; o.textContent = id; sel.appendChild(o);
+}
+function newProject() {
+  const id = prompt_(`New app name`, 'demo');
+  if (!id) return;
+  createProject(id.trim());
+}
+// tiny wrapper to avoid clashing with the <textarea id="prompt">
+function prompt_(msg, def) { return window.prompt(msg, def); }
+
+async function createProject(id) {
   if (!id) return;
   const r = await api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
   if (!r.ok && r.status !== 409) { alert('create failed: ' + JSON.stringify(r.body)); return; }
+  addProjectOption(id);
+  document.getElementById('proj-select').value = id;
   active = id;
-  document.getElementById('active-label').textContent = 'project: ' + id;
+  clearMessages();
+  onProjectActive();
+}
+function switchProject() {
+  active = document.getElementById('proj-select').value;
+  clearMessages();
+  onProjectActive();
+}
+function onProjectActive() {
+  document.getElementById('proj-select').value = active;
+  document.getElementById('empty').style.display = 'none';
+  showPreview();
   refreshPreview();
   refreshStatus();
   loadAssets();
 }
 
+/* ---------- assets ---------- */
 async function loadAssets() {
   const { body } = await api('/api/assets');
   document.getElementById('sens-tag').textContent = body.sensitivity_tag || 'sensitive';
   const el = document.getElementById('assets');
   const assets = body.assets || [];
-  if (!assets.length) { el.textContent = 'no datasets'; return; }
+  if (!assets.length) { el.innerHTML = '<div class="hint">No datasets.</div>'; return; }
   el.innerHTML = '';
   for (const a of assets) {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px';
-    const tags = a.tags.length ? ` [${a.tags.join(', ')}]` : '';
-    row.innerHTML = `<span style="flex:1">${a.name}<span style="color:${a.sensitive ? 'var(--lock)' : 'var(--faint)'}">${tags}</span></span>`;
+    row.className = 'asset-row';
+    const tags = a.tags.length ? `[${a.tags.join(', ')}]` : '';
+    row.innerHTML = `<span class="a-name">${a.name} <span class="a-tags ${a.sensitive ? 'sens' : ''}">${tags}</span></span>`;
     const btn = document.createElement('button');
-    btn.textContent = 'Attach'; btn.style.cssText = 'padding:4px 10px;flex:0 0 auto';
-    btn.onclick = () => attachAsset(a.id);
+    btn.textContent = 'Attach';
+    btn.dataset.id = a.id;
+    btn.onclick = () => attachAsset(a.id, btn);
     row.appendChild(btn);
     el.appendChild(row);
   }
 }
-
-async function attachAsset(datasetId) {
+async function attachAsset(datasetId, btn) {
   if (!active) return;
   const { body } = await api(`/api/projects/${active}/assets/${datasetId}/attach`, { method: 'POST' });
-  if (body.sensitive) { /* badge will show locked */ }
+  if (btn) { btn.textContent = 'Attached'; btn.classList.add('attached'); }
+  updateDataCount();
   refreshStatus();
+  if (body.sensitive) addStatus('err', '🔒', `Attached <b>${esc(body.attached)}</b> — sovereign model locked`);
+}
+function updateDataCount() {
+  const n = document.querySelectorAll('#assets button.attached').length;
+  document.getElementById('data-count').textContent = n ? `${n} attached` : 'Data';
 }
 
+/* ---------- model control ---------- */
 async function refreshStatus() {
   if (!active) return;
   const { body } = await api('/api/projects/' + active);
   const m = body.model || {};
-  document.getElementById('mode-sel').value = m.mode || 'manual';
-  document.getElementById('phase-sel').value = m.phase || 'plan';
-  const badge = document.getElementById('model-badge');
-  const txt = document.getElementById('badge-text');
+  document.getElementById('mode-sel').value = m.mode || 'auto';
+  document.getElementById('manual-pick').style.display = m.mode === 'manual' ? 'block' : 'none';
+  renderModelChip(m);
+}
+const PHASE_LABEL = { plan: 'planning', implement: 'building' };
+function renderModelChip(m) {
+  const chip = document.getElementById('model-chip');
+  const chipText = document.getElementById('chip-text');
+  const popBadge = document.getElementById('pop-badge');
+  const popText = document.getElementById('pop-badge-text');
   if (m.sensitivity_locked) {
-    badge.className = 'badge locked';
-    txt.textContent = 'sovereign (locked)';
+    chip.classList.add('locked'); popBadge.classList.add('locked');
+    chipText.textContent = 'sovereign · locked';
+    popText.textContent = 'sovereign (locked)';
   } else {
-    badge.className = 'badge';
-    txt.textContent = `${m.mode}/${m.phase}` + (m.picked_model ? ` · ${m.picked_model}` : '');
+    chip.classList.remove('locked'); popBadge.classList.remove('locked');
+    const label = m.mode === 'auto'
+      ? `Auto · ${PHASE_LABEL[m.phase] || m.phase}`
+      : `Manual · ${m.picked_model || 'default'}`;
+    chipText.textContent = label;
+    popText.textContent = label;
   }
 }
-
 async function setModel() {
   if (!active) return;
   const payload = {
     mode: document.getElementById('mode-sel').value,
-    phase: document.getElementById('phase-sel').value,
     pick: document.getElementById('pick').value.trim() || null,
   };
   await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
   refreshStatus();
 }
-
 async function lockSovereign() {
   if (!active) return;
   await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: true }) });
   refreshStatus();
 }
 
-function logLine(cls, html) {
-  const box = document.getElementById('activity');
-  box.style.display = 'block';
-  const d = document.createElement('div');
-  d.className = 'ln ' + cls; d.innerHTML = html;
-  box.appendChild(d); box.scrollTop = box.scrollHeight;
+/* ---------- popovers ---------- */
+function togglePop(id) {
+  const el = document.getElementById(id);
+  const open = el.classList.contains('open');
+  document.querySelectorAll('.pop').forEach(p => p.classList.remove('open'));
+  if (!open) el.classList.add('open');
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.pop') && !e.target.closest('.chip')) {
+    document.querySelectorAll('.pop').forEach(p => p.classList.remove('open'));
+  }
+});
+
+/* ---------- chat rendering ---------- */
+function clearMessages() {
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('empty').style.display = 'none';
+}
+function scrollDown() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
+function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+function addUser(text) {
+  const d = document.createElement('div'); d.className = 'msg user';
+  d.innerHTML = `<div class="body">${esc(text)}</div>`;
+  document.getElementById('messages').appendChild(d); scrollDown();
+}
+function append(el) { document.getElementById('messages').appendChild(el); scrollDown(); return el; }
+
+// minimal, dependency-free markdown -> HTML (headings, bold/italic/code, lists, fences, paragraphs)
+function md(src) {
+  const lines = (src || '').replace(/\r/g, '').split('\n');
+  const inline = t => esc(t)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(?<!\*)\*(?!\*)([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+  let html = '', i = 0, list = null;
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (/^```/.test(ln)) {
+      closeList(); i++; let code = '';
+      while (i < lines.length && !/^```/.test(lines[i])) { code += lines[i] + '\n'; i++; }
+      i++; html += `<pre><code>${esc(code)}</code></pre>`; continue;
+    }
+    const h = ln.match(/^(#{1,3})\s+(.*)$/);
+    if (h) { closeList(); const n = h[1].length; html += `<h${n}>${inline(h[2])}</h${n}>`; i++; continue; }
+    const ul = ln.match(/^\s*[-*]\s+(.*)$/);
+    if (ul) { if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; } html += `<li>${inline(ul[1])}</li>`; i++; continue; }
+    const ol = ln.match(/^\s*\d+\.\s+(.*)$/);
+    if (ol) { if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; } html += `<li>${inline(ol[1])}</li>`; i++; continue; }
+    if (ln.trim() === '') { closeList(); i++; continue; }
+    closeList();
+    let para = ln; i++;
+    while (i < lines.length && lines[i].trim() !== '' && !/^(#{1,3}\s|```|\s*[-*]\s|\s*\d+\.\s)/.test(lines[i])) { para += ' ' + lines[i]; i++; }
+    html += `<p>${inline(para)}</p>`;
+  }
+  closeList();
+  return html;
+}
+function addAgent(text) {
+  const d = document.createElement('div'); d.className = 'msg agent';
+  d.innerHTML = `<div class="body md">${md(text)}</div>`;
+  return append(d);
+}
+const TOOL_META = {
+  edit: ['✏️', 'Edited'], write: ['📄', 'Created'], read: ['📖', 'Read'], bash: ['▸', 'Ran'],
+  grep: ['🔎', 'Searched'], glob: ['🔎', 'Searched'], list: ['📁', 'Listed'],
+  todowrite: ['✓', 'Planned'], todoread: ['✓', 'Plan'], webfetch: ['🌐', 'Fetched'],
+};
+function addToolCard(tool, detail) {
+  const [ico, verb] = TOOL_META[tool] || ['⚙', tool];
+  // collapse consecutive calls of the same tool into one card with a count (dyad-style tidiness)
+  const box = document.getElementById('messages');
+  const last = box.lastElementChild;
+  if (last && last.classList.contains('tool-card') && last.dataset.tool === tool) {
+    const n = (+last.dataset.count || 1) + 1;
+    last.dataset.count = n;
+    last.querySelector('.verb').textContent = `${verb} ×${n}`;
+    if (detail) {
+      let p = last.querySelector('.path');
+      if (!p) { p = document.createElement('span'); p.className = 'path'; last.querySelector('.tc-body').appendChild(p); }
+      p.textContent = detail;
+    }
+    scrollDown(); return last;
+  }
+  const d = document.createElement('div'); d.className = 'tool-card'; d.dataset.tool = tool; d.dataset.count = 1;
+  d.innerHTML = `<span class="tile">${ico}</span>`
+    + `<span class="tc-body"><span class="verb">${esc(verb)}</span>`
+    + (detail ? `<span class="path">${esc(detail)}</span>` : '')
+    + `</span><span class="check">✓</span>`;
+  return append(d);
+}
+function addStatus(cls, ico, html) {
+  const d = document.createElement('div'); d.className = 'status-line ' + (cls || '');
+  d.innerHTML = `<span class="ico">${ico}</span><span>${html}</span>`;
+  return append(d);
+}
+function addDivider(cls, text) {
+  const d = document.createElement('div'); d.className = 'divider ' + (cls || '');
+  d.innerHTML = `<span>${esc(text)}</span>`;
+  return append(d);
 }
 
+/* ---------- build (streaming) ---------- */
+let working = null; // the "working…" spinner action element
+
 async function build() {
-  if (!active) { alert('create a project first'); return; }
+  if (!active) { alert('Create a project first'); return; }
   const ta = document.getElementById('prompt');
   const prompt = ta.value.trim();
   if (!prompt) return;
   const btn = document.getElementById('build-btn');
-  btn.disabled = true; btn.textContent = 'Working…';
-  logLine('turn', '&#9654; ' + prompt.replace(/</g, '&lt;'));
-  ta.value = '';
+  btn.disabled = true;
+  addUser(prompt);
+  ta.value = ''; autogrow(ta);
+  working = addStatus('spin', '◐', 'Working…');
 
   try {
     const resp = await fetch('/api/projects/' + active + '/build/stream', {
@@ -241,44 +571,88 @@ async function build() {
       const frames = buf.split('\n\n'); buf = frames.pop();
       for (const f of frames) {
         const line = f.replace(/^data: /, '').trim();
-        if (!line) continue;
-        renderEvent(JSON.parse(line));
+        if (line) renderEvent(JSON.parse(line));
       }
     }
   } catch (e) {
-    logLine('tc-err', 'stream error: ' + e);
+    renderEvent({ type: 'error', message: String(e) });
   }
-  btn.disabled = false; btn.textContent = 'Send';
+  if (working) { working.remove(); working = null; }
+  btn.disabled = false;
   refreshPreview();
   refreshStatus();
 }
 
+function removeWorking() { if (working) { working.remove(); working = null; } }
 function renderEvent(ev) {
-  if (ev.type === 'agent' && ev.kind === 'tool') logLine('tool', `&#8226; <b>${ev.tool}</b>`);
-  else if (ev.type === 'agent' && ev.kind === 'text') logLine('agenttext', ev.text.replace(/</g, '&lt;').replace(/\n/g, '<br>'));
-  else if (ev.type === 'typecheck-start') logLine('tool', 'typechecking…');
-  else if (ev.type === 'typecheck') logLine(ev.ok ? 'tc-ok' : 'tc-err', ev.ok ? 'typecheck passed' : `typecheck: ${ev.errors} error(s)`);
-  else if (ev.type === 'iterate') logLine('tool', 'fixing errors…');
-  else if (ev.type === 'done') { logLine('done', ev.ok ? '&#10003; done — clean' : `stopped — ${ev.decision}`); refreshPreview(); }
-  else if (ev.type === 'error') logLine('tc-err', 'error: ' + ev.message);
+  if (ev.type === 'agent' && ev.kind === 'tool') { removeWorking(); addToolCard(ev.tool, ev.detail || ''); }
+  else if (ev.type === 'agent' && ev.kind === 'text') { removeWorking(); addAgent(ev.text); }
+  else if (ev.type === 'typecheck-start') { removeWorking(); working = addStatus('spin', '◐', 'Typechecking…'); }
+  else if (ev.type === 'typecheck') { removeWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); }
+  else if (ev.type === 'iterate') { removeWorking(); working = addStatus('spin', '◐', 'Fixing errors…'); }
+  else if (ev.type === 'done') { removeWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
+  else if (ev.type === 'phase') { refreshStatus(); }
+  else if (ev.type === 'error') { removeWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message)); }
 }
 
+/* ---------- typecheck (manual) ---------- */
 async function check() {
-  if (!active) { alert('create a project first'); return; }
-  const out = document.getElementById('check-out');
-  out.style.display = 'block'; out.textContent = 'Typechecking…';
+  if (!active) { alert('Create a project first'); return; }
+  const s = addStatus('spin', '◐', 'Typechecking workspace…');
   const { body } = await api('/api/projects/' + active + '/check', { method: 'POST' });
-  out.className = body.ok ? 'ok' : 'err';
-  out.textContent = body.message || JSON.stringify(body);
+  s.remove();
+  addStatus(body.ok ? 'ok' : 'err', body.ok ? '✓' : '✕', esc(body.message) || (body.ok ? 'Clean' : 'Errors'));
 }
 
+/* ---------- preview ---------- */
+function showPreview() {
+  document.getElementById('preview').style.display = 'block';
+  document.getElementById('work-empty').style.display = 'none';
+}
 function refreshPreview() {
+  if (!active) return;
+  showPreview();
   document.getElementById('preview').src = previewBase + '?t=' + Date.now();
-  document.getElementById('preview-link').href = previewBase;
+  document.getElementById('url-text').textContent = previewBase;
+  document.getElementById('status-dot').className = 'status-dot ok';
+}
+function openPreview() { if (active) window.open(previewBase, '_blank'); }
+
+/* ---------- composer helpers ---------- */
+function autogrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
+function composerKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); build(); }
 }
 
+/* ---------- init ---------- */
+function renderVerticals() {
+  const row = document.getElementById('verticals');
+  row.innerHTML = '';
+  for (const name of Object.keys(STARTERS)) {
+    const c = document.createElement('button');
+    c.className = 'vertical-chip' + (name === starterVertical ? ' active' : '');
+    c.textContent = name;
+    c.onclick = () => { starterVertical = name; renderVerticals(); renderSuggestions(); };
+    row.appendChild(c);
+  }
+}
+function renderSuggestions() {
+  const box = document.getElementById('suggestions');
+  box.innerHTML = '';
+  for (const s of STARTERS[starterVertical]) {
+    const b = document.createElement('button'); b.className = 'suggestion';
+    b.innerHTML = `<div class="s-title">${s.title}</div><div class="s-sub">${s.sub}</div>`;
+    b.onclick = async () => {
+      if (!active) await createProject('demo');
+      document.getElementById('prompt').value = s.prompt; autogrow(document.getElementById('prompt'));
+      build();
+    };
+    box.appendChild(b);
+  }
+}
+renderVerticals();
+renderSuggestions();
 loadHealth();
-refreshPreview();
 </script>
 </body>
 </html>

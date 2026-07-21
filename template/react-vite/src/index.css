@@ -1,21 +1,29 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
+  /* Domino design tokens — see AGENTS.md. Style with these, don't hardcode hex. */
+  --text: #2e2e38;
+  --text-h: #2e2e38;
+  --text-muted: #65657b;
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --border: #e0e0e0;
   --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
+  --accent: #543fde;
+  --accent-hover: #3b23d1;
+  --accent-bg: rgba(84, 63, 222, 0.1);
+  --accent-border: rgba(84, 63, 222, 0.4);
+  --ok: #28a464;
+  --warn: #ccb718;
+  --danger: #c20a29;
+  --radius: 8px;
   --social-bg: rgba(244, 243, 236, 0.5);
   --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+    rgba(20, 20, 40, 0.06) 0 8px 24px, rgba(20, 20, 40, 0.04) 0 1px 2px;
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
-  font: 18px/145% var(--sans);
+  font: 15px/1.5 var(--sans);
   letter-spacing: 0.18px;
   color-scheme: light dark;
   color: var(--text);
@@ -32,17 +40,23 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #9ca3af;
+    --text: #ececf2;
     --text-h: #f3f4f6;
-    --bg: #16171d;
+    --text-muted: #a6a6bc;
+    --bg: #131318;
+    --surface: #1b1b22;
     --border: #2e303a;
     --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
+    --accent: #8b7bff;
+    --accent-hover: #a394ff;
+    --accent-bg: rgba(139, 123, 255, 0.16);
+    --accent-border: rgba(139, 123, 255, 0.5);
+    --ok: #3ecb83;
+    --warn: #d9c04a;
+    --danger: #ef6d7f;
     --social-bg: rgba(47, 48, 58, 0.5);
     --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+      rgba(0, 0, 0, 0.35) 0 8px 24px, rgba(0, 0, 0, 0.3) 0 1px 2px;
   }
 
   #social .button-icon {
@@ -51,11 +65,9 @@
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   text-align: center;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;
   flex-direction: column;
