@@ -5,11 +5,12 @@ already running with live reload. **Build the user's app by editing `src/`.** Th
 automatically — there is no build step to run.
 
 ## Project rules
-- **Plan once, then build.** Start each task by reading what you need and thinking the whole app
-  through — components, state, data shape, and all the states below — then write a single complete
-  plan/todo list. After that, implement in a sustained pass; avoid drifting back into re-planning
-  unless requirements actually change. A comprehensive up-front plan beats many small course
-  corrections.
+- **Plan proportionally, then build.** Match the planning to the task. A simple app (one screen, a
+  list, a form) needs only a quick mental plan — just start building. A complex one (multiple views,
+  non-trivial state or data shape) deserves a short up-front pass over components, state, and the
+  states below. Don't over-plan small tasks; a one-line prompt rarely needs a 7-step todo list.
+  Either way, plan once and then implement in a sustained pass — avoid drifting back into
+  re-planning unless requirements actually change.
 - **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html` unless the
   user truly needs a new dependency. The config is known-good; regenerating it wastes turns and
   breaks the preview.

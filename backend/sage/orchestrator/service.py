@@ -39,7 +39,13 @@ def _tool_detail(tool: str, part: dict) -> str:
         return inp.get("pattern") or ""
     if tool == "todowrite":
         todos = inp.get("todos") or []
-        return f"{len(todos)} step" + ("" if len(todos) == 1 else "s")
+        n = len(todos)
+        done = sum(1 for t in todos if (t or {}).get("status") == "completed")
+        # First call = the plan ("7 steps"); later calls are progress updates ("3/7 done") so they
+        # read as bookkeeping, not repeated planning.
+        if done:
+            return f"{done}/{n} done"
+        return f"{n} step" + ("" if n == 1 else "s")
     return ""
 
 
