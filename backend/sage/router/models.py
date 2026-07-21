@@ -12,8 +12,10 @@ ModelId = str
 
 
 class Mode(str, Enum):
+    ASK = "ask"
+    PLAN = "plan"
+    IMPLEMENT = "implement"
     AUTO = "auto"
-    MANUAL = "manual"
 
 
 class Phase(str, Enum):
@@ -25,18 +27,23 @@ class Reason(str, Enum):
     SENSITIVITY = "sensitivity"
     AUTO_PLAN = "auto-plan"
     AUTO_IMPLEMENT = "auto-implement"
-    MANUAL = "manual"
-    MODAL_DEFAULT = "modal-default"
+    ASK_PINNED = "ask-pinned"
+    PLAN_PINNED = "plan-pinned"
+    PLAN_OVERRIDE = "plan-override"
+    IMPLEMENT_PINNED = "implement-pinned"
+    IMPLEMENT_OVERRIDE = "implement-override"
 
 
 @dataclass(frozen=True)
 class ModelCatalog:
     """The model ids the router chooses between. Confirmed by gateway-questions Q8."""
 
-    sovereign: ModelId
-    plan: ModelId           # stronger model for the plan phase
-    implement: ModelId      # cheaper model for the implement phase
-    default: ModelId        # fallback when no modal pick
+    sovereign_plan: ModelId        # sovereign model for the plan phase
+    sovereign_implement: ModelId   # sovereign model for the implement phase
+    sovereign_ask: ModelId         # sovereign model for ask mode, and the lock fallback
+    plan: ModelId             # stronger model for the plan phase
+    implement: ModelId        # cheaper model for the implement phase
+    ask: ModelId               # read-only ask mode model
 
 
 @dataclass(frozen=True)

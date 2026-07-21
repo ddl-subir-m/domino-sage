@@ -9,14 +9,23 @@ Deep module, narrow interface: start() / upstream() / stop(). How the port is di
 """
 from __future__ import annotations
 
+import logging
 import re
 import signal
 import subprocess
 import threading
 from pathlib import Path
 
+log = logging.getLogger("sage.preview.supervisor")
+
 # Vite prints e.g.  "  ➜  Local:   http://localhost:5173/"
 _LOCAL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
+
+# Vite's default dev server port (before auto-increment). A leftover process from a prior
+# session that was killed without going through stop() can squat here on one address family
+# (e.g. IPv6-only) while a fresh Vite grabs the other, so "localhost" nondeterministically
+# resolves to the stale one. Clearing it before every spawn keeps that from happening.
+_DEFAULT_PORT = 5173
 
 
 def parse_vite_url(line: str) -> str | None:
@@ -60,6 +69,7 @@ class ViteSupervisor:
     def _spawn(self) -> None:
         self._ready.clear()
         self._upstream = None
+        self._clear_stale_port(_DEFAULT_PORT)
         # start_new_session -> own process group so we can kill Vite + any children (esbuild).
         self._proc = subprocess.Popen(
             ["npm", "run", "dev"],
@@ -95,3 +105,21 @@ class ViteSupervisor:
                 os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 self._proc.terminate()
+
+    def _clear_stale_port(self, port: int) -> None:
+        """Reap any leftover process still listening on `port` from an unclean prior shutdown."""
+        import os
+
+        try:
+            pids = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True, timeout=5
+            ).stdout.split()
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        for pid in pids:
+            try:
+                os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, ValueError):
+                continue
+            else:
+                log.warning("preview: killed stale process %s squatting on port %d", pid, port)

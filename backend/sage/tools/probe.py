@@ -4,7 +4,7 @@ Confirms the provider is reachable and the key/mode is valid BEFORE involving Op
 failed live build can be diagnosed as provider-vs-loop. Reads the same env as the apps.
 
 Run:  uv run python -m sage.tools.probe
-Env:  SAGE_PROBE_MODEL overrides the model (default: SAGE_MODEL_DEFAULT / "sonnet").
+Env:  SAGE_PROBE_MODEL overrides the model (default: SAGE_MODEL_ASK / "sonnet").
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from ..gateway.factory import build_gateway
 
 def main() -> int:
     client, mode = build_gateway()
-    model = os.environ.get("SAGE_PROBE_MODEL") or os.environ.get("SAGE_MODEL_DEFAULT", "sonnet")
+    model = os.environ.get("SAGE_PROBE_MODEL") or os.environ.get("SAGE_MODEL_ASK", "sonnet")
     print(f"gateway_mode={mode}  model={model}")
     if mode == "fake":
         print("NOTE: fake mode — set GATEWAY_BASE_URL (+ key) for a real probe.")

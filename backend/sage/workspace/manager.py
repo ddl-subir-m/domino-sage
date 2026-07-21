@@ -9,6 +9,7 @@ node_modules is symlinked from the template rather than copied so each workspace
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from dataclasses import dataclass
@@ -40,6 +41,55 @@ class Workspace:
     def read_plan(self) -> str | None:
         return self.plan_path.read_text() if self.plan_path.exists() else None
 
+    @property
+    def session_path(self) -> Path:
+        """Persisted OpenCode session id, so a project re-attached after an orchestrator restart
+        (see Orchestrator.open_project) can resume the same conversation instead of starting a
+        fresh session with no memory of prior turns."""
+        return self.path / ".sage" / "session.json"
+
+    def read_session_id(self) -> str | None:
+        if not self.session_path.exists():
+            return None
+        return json.loads(self.session_path.read_text()).get("session_id")
+
+    def write_session_id(self, session_id: str) -> None:
+        self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        self.session_path.write_text(json.dumps({"session_id": session_id}))
+
+    @property
+    def history_path(self) -> Path:
+        """Append-only transcript of chat-visible build events, so the UI can replay a project's
+        history after a page reload or an orchestrator restart (neither of which the in-memory
+        registry survives)."""
+        return self.path / ".sage" / "history.jsonl"
+
+    def append_history(self, entry: dict) -> None:
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.history_path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def read_history(self) -> list[dict]:
+        if not self.history_path.exists():
+            return []
+        return [json.loads(line) for line in self.history_path.read_text().splitlines() if line.strip()]
+
+    @property
+    def catalog_overrides_path(self) -> Path:
+        """Per-project overrides of the plan/implement/sovereign/default model ids, layered on
+        top of the deployment-wide ModelCatalog so a project can retarget which model Auto uses
+        per phase without changing every other project."""
+        return self.path / ".sage" / "model_overrides.json"
+
+    def read_catalog_overrides(self) -> dict:
+        if not self.catalog_overrides_path.exists():
+            return {}
+        return json.loads(self.catalog_overrides_path.read_text())
+
+    def write_catalog_overrides(self, overrides: dict) -> None:
+        self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        self.catalog_overrides_path.write_text(json.dumps(overrides))
+
 
 class WorkspaceManager:
     def __init__(self, root: Path, template: Path) -> None:
@@ -68,3 +118,14 @@ class WorkspaceManager:
             os.symlink(tmpl_modules, dest / "node_modules")
 
         return Workspace(project_id, dest)
+
+    def list_ids(self) -> list[str]:
+        """Every workspace materialized on disk, whether or not it's currently registered in the
+        orchestrator's in-memory Project map (e.g. survives a process restart)."""
+        return sorted(p.name for p in self._root.iterdir() if p.is_dir())
+
+    def delete(self, project_id: str) -> None:
+        """Remove a workspace's directory from disk. No-op if it was never created."""
+        dest = self._dir(project_id)
+        if dest.exists():
+            shutil.rmtree(dest)

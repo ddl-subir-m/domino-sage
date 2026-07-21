@@ -18,7 +18,7 @@ from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import ModelCatalog, Mode
-from ..router.phase_classifier import classify
+from ..router.phase_classifier import WRITE_TOOLS, classify
 
 
 class EnforcementShim:
@@ -37,6 +37,15 @@ class EnforcementShim:
         # aliases don't exist upstream. Off for the real multi-model Domino gateway.
         self._force_model = force_model
 
+    @property
+    def catalog(self) -> ModelCatalog:
+        return self._catalog
+
+    def set_catalog(self, catalog: ModelCatalog) -> None:
+        """Swap the catalog this shim's requests resolve against (e.g. a per-project override of
+        which model Auto uses for plan/implement). Takes effect on the next request."""
+        self._catalog = catalog
+
     def handle(self, request: dict[str, Any], project: str) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         requested = request.get("model")
@@ -51,6 +60,16 @@ class EnforcementShim:
             phase = classify(request.get("messages"))
             state = replace(state, phase=phase)
             self._control.set_phase(phase)
+
+        # Ask mode is read-only: strip write tools from the request so the model is never
+        # offered them. This only controls what this shim advertises upstream — it can't reach
+        # into OpenCode's own tool-execution layer, which is out of scope for this guarantee.
+        if state.mode is Mode.ASK and "tools" in request:
+            tools = [
+                t for t in request["tools"]
+                if (t.get("function") or {}).get("name", "").lower() not in WRITE_TOOLS
+            ]
+            request = {**request, "tools": tools}
 
         decision = llm_router.resolve(state, self._catalog)
 

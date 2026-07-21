@@ -47,7 +47,7 @@
     width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
     background: linear-gradient(135deg, var(--primary), #8B6BFF); color: #fff; font-size: 13px; font-weight: 800;
   }
-  .proj-picker { display: flex; align-items: center; gap: 6px; }
+  .proj-picker { display: flex; align-items: center; gap: 6px; position: relative; }
   .proj-picker select {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
     padding: 6px 10px; max-width: 220px;
@@ -57,6 +57,8 @@
     width: 32px; height: 32px; display: grid; place-items: center; font-size: 16px; color: var(--muted);
   }
   .icon-btn:hover { border-color: var(--border-strong); color: var(--text); }
+  .icon-btn:disabled { opacity: .4; cursor: default; }
+  .icon-btn:disabled:hover { border-color: var(--border); color: var(--muted); }
   .spacer { flex: 1; }
   .mode-chip {
     font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
@@ -109,6 +111,9 @@
   .md strong { font-weight: 650; color: var(--text); }
   .md pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
   .md pre code { border: 0; padding: 0; background: none; }
+  .md table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+  .md th, .md td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+  .md th { background: var(--surface-2); font-weight: 650; }
 
   /* tool call -> dyad-style action card */
   .tool-card {
@@ -127,6 +132,7 @@
   .status-line .ico { display: inline-block; }
   .status-line.spin .ico { animation: spin 1s linear infinite; }
   .status-line.ok { color: var(--ok); } .status-line.err { color: var(--lock); }
+  .status-line .elapsed { color: var(--faint); font-variant-numeric: tabular-nums; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .divider { text-align: center; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .6px; margin: 6px 0; position: relative; }
   .divider::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--border); z-index: 0; }
@@ -170,10 +176,20 @@
   .pop h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); font-weight: 600; }
   .pop label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   .pop select, .pop input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+  .pop input.invalid { border-color: var(--lock); }
   .pop .row { display: flex; gap: 8px; } .pop .row > * { flex: 1; }
+  .pop details { margin-top: 12px; }
+  .pop summary { font-size: 12px; color: var(--muted); cursor: pointer; }
   .btn-block { width: 100%; margin-top: 12px; padding: 8px; border-radius: 8px; border: 1px solid var(--lock); background: transparent; color: var(--lock); font-weight: 500; }
-  .btn-block:hover { background: color-mix(in srgb, var(--lock) 8%, transparent); }
+  .btn-block:hover:not(:disabled) { background: color-mix(in srgb, var(--lock) 8%, transparent); }
+  .btn-block:disabled { opacity: .5; cursor: default; }
+  .btn-primary { padding: 8px; border-radius: 8px; border: 0; background: var(--primary); color: #fff; font-weight: 500; }
+  .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+  .btn-secondary { padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-weight: 500; }
   .hint { font-size: 11px; color: var(--faint); margin-top: 8px; line-height: 1.4; }
+  .hint.err { color: var(--lock); }
+  /* header popovers (project picker) open downward, unlike the composer's which open upward */
+  .pop-down { position: absolute; top: calc(100% + 8px); bottom: auto; left: 0; }
 
   .asset-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
   .asset-row:first-of-type { border-top: 0; }
@@ -198,6 +214,33 @@
   .url-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   iframe { flex: 1; border: 0; width: 100%; background: #fff; }
   .work-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
+  .spacer { flex: 1; }
+
+  /* ---------- code / file tree ---------- */
+  .work-body { flex: 1; display: flex; min-height: 0; }
+  .work-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #editor-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .editor-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
+  #monaco-editor { flex: 1; min-height: 0; display: none; }
+  .file-tree-panel {
+    width: 240px; flex: 0 0 auto; display: none; flex-direction: column;
+    border-left: 1px solid var(--border); background: var(--surface); overflow: hidden;
+  }
+  .file-tree-panel.open { display: flex; }
+  .file-tree-header {
+    height: 38px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 10px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border);
+  }
+  .file-tree { flex: 1; overflow-y: auto; padding: 6px 0; font-size: 12.5px; }
+  .ft-node { user-select: none; }
+  .ft-row { display: flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 6px; cursor: pointer; color: var(--muted); white-space: nowrap; }
+  .ft-row:hover { background: var(--surface-2); color: var(--text); }
+  .ft-row.active { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .ft-row .ft-icon { flex: 0 0 auto; width: 14px; text-align: center; }
+  .ft-row .ft-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--text); opacity: 0; margin-left: auto; }
+  .ft-row .ft-dot.visible { opacity: .7; }
+  .ft-children { display: none; }
+  .ft-children.open { display: block; }
 </style>
 </head>
 <body>
@@ -205,7 +248,20 @@
   <div class="brand"><span class="glyph">S</span> sage</div>
   <div class="proj-picker">
     <select id="proj-select" onchange="switchProject()" title="Active project"></select>
-    <button class="icon-btn" title="New app" onclick="newProject()">+</button>
+    <button class="icon-btn" id="delete-proj-btn" title="Delete this app" onclick="deleteActiveProject()" disabled>🗑</button>
+    <button class="icon-btn" title="New app" onclick="togglePop('new-proj-pop')">+</button>
+    <div class="pop pop-down" id="new-proj-pop">
+      <h3>New app</h3>
+      <label for="new-proj-name">Name</label>
+      <input id="new-proj-name" placeholder="e.g. Fraud review" autocomplete="off"
+        oninput="validateNewProjectName()"
+        onkeydown="if (event.key === 'Enter') { event.preventDefault(); submitNewProject(); }" />
+      <div class="hint" id="new-proj-hint">Each app needs a unique name.</div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn-secondary" onclick="togglePop('new-proj-pop')">Cancel</button>
+        <button class="btn-primary" id="new-proj-submit" onclick="submitNewProject()" disabled>Create app</button>
+      </div>
+    </div>
   </div>
   <div class="spacer"></div>
   <div class="mode-chip" id="mode-chip" title=""><span class="dot"></span><span id="mode-text">…</span></div>
@@ -229,14 +285,33 @@
         <h3>Model</h3>
         <div class="chip" style="cursor:default" id="pop-badge"><span class="dot"></span><span id="pop-badge-text">—</span></div>
         <label>Mode</label>
-        <select id="mode-sel" onchange="setModel()"><option value="auto">Auto — pick the best model per step</option><option value="manual">Manual — I'll choose the model</option></select>
-        <div class="hint" id="mode-hint">Auto uses a stronger model while planning, then a faster one to write code.</div>
-        <div id="manual-pick" style="display:none">
-          <label>Model</label>
-          <input id="pick" placeholder="leave blank for default" onchange="setModel()" />
+        <select id="mode-sel" onchange="setModel()">
+          <option value="ask">Ask — read-only, no code changes</option>
+          <option value="plan">Plan — reasons about the task, model fixed unless overridden</option>
+          <option value="implement">Implement — writes code, model fixed unless overridden</option>
+          <option value="auto">Auto — picks the best model per step</option>
+        </select>
+        <div class="hint" id="sensitivity-lock-hint" style="display:none">Sensitivity lock is on — only sovereign models are used, in every mode.</div>
+        <div id="auto-models" style="display:none">
+          <div class="hint"><span id="auto-plan-row">Plan → <b id="auto-plan-model">—</b></span></div>
+          <div class="hint"><span id="auto-implement-row">Implement → <b id="auto-implement-model">—</b></span></div>
         </div>
-        <button class="btn-block" onclick="lockSovereign()">Force sovereign (lock)</button>
-        <div class="hint">Lock is sticky — the same signal fires automatically when you attach a sensitivity-tagged dataset.</div>
+        <div id="ask-model" class="hint" style="display:none">Model — <b id="ask-model-name">—</b></div>
+        <div id="manual-pick" style="display:none">
+          <label>Override model</label>
+          <select id="pick" onchange="setModel()"></select>
+        </div>
+        <details id="catalog-editor">
+          <summary>Model assignments</summary>
+          <label>Plan</label><input id="cat-plan" onchange="setCatalog()" />
+          <label>Implement</label><input id="cat-implement" onchange="setCatalog()" />
+          <label>Sovereign (plan)</label><input id="cat-sovereign-plan" onchange="setCatalog()" />
+          <label>Sovereign (implement)</label><input id="cat-sovereign-implement" onchange="setCatalog()" />
+          <label>Sovereign (ask)</label><input id="cat-sovereign-ask" onchange="setCatalog()" />
+          <label>Ask</label><input id="cat-ask" onchange="setCatalog()" />
+        </details>
+        <button class="btn-block" id="lock-btn" onclick="lockSovereign()">Force sovereign (lock)</button>
+        <div class="hint" id="lock-hint">Attaching a sensitivity-tagged dataset locks this automatically and permanently for the session.</div>
       </div>
 
       <!-- data / assets popover -->
@@ -260,28 +335,48 @@
     </div>
   </section>
 
-  <!-- ============ preview panel ============ -->
+  <!-- ============ preview / code panel ============ -->
   <section class="work">
     <div class="work-toolbar">
       <div class="seg">
-        <button class="active" id="tab-preview">Preview</button>
-        <button id="tab-check" onclick="check()" title="Typecheck the workspace">Typecheck</button>
+        <button class="active" id="tab-preview" onclick="showTab('preview')">Preview</button>
+        <button id="tab-code" onclick="showTab('code')">Code</button>
       </div>
-      <div class="url-pill">
+      <div class="url-pill" id="url-pill">
         <span class="status-dot" id="status-dot"></span>
         <span id="url-text">no preview yet</span>
       </div>
-      <button class="icon-btn" title="Refresh" onclick="refreshPreview()">⟳</button>
-      <button class="icon-btn" title="Open in new tab" onclick="openPreview()">↗</button>
+      <span class="spacer"></span>
+      <button class="icon-btn" id="editor-save-btn" title="Save file" onclick="saveOpenFile()" style="display:none" disabled>💾</button>
+      <button class="icon-btn" title="Typecheck the workspace" onclick="check()">✓</button>
+      <button class="icon-btn" id="preview-refresh-btn" title="Refresh" onclick="refreshPreview()">⟳</button>
+      <button class="icon-btn" id="preview-open-btn" title="Open in new tab" onclick="openPreview()">↗</button>
     </div>
-    <iframe id="preview" title="preview" style="display:none"></iframe>
-    <div class="work-empty" id="work-empty">Create a project to start the live preview.</div>
+    <div class="work-body">
+      <div class="work-main">
+        <iframe id="preview" title="preview" style="display:none"></iframe>
+        <div id="editor-pane" style="display:none">
+          <div class="editor-empty" id="editor-empty">Select a file from the tree to view and edit it.</div>
+          <div id="monaco-editor"></div>
+        </div>
+        <div class="work-empty" id="work-empty">Create a project to start the live preview.</div>
+      </div>
+      <div class="file-tree-panel" id="file-tree-panel">
+        <div class="file-tree-header">
+          <span>Files</span>
+          <button class="icon-btn" title="Refresh files" onclick="loadFileTree()">⟳</button>
+        </div>
+        <div class="file-tree" id="file-tree"></div>
+      </div>
+    </div>
   </section>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 <script>
 const api = (p, opts) => fetch(p, opts).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }));
 let active = null;
+let lastModel = {};
 const previewBase = `${location.protocol}//${location.hostname}:8090/`;
 
 const STARTERS = {
@@ -314,16 +409,20 @@ const STARTERS = {
 let starterVertical = 'Cross-industry';
 
 /* ---------- health / mode ---------- */
+let openWeightModels = [];
 async function loadHealth() {
   const { body } = await api('/healthz');
   const mode = body.gateway_mode || 'unknown';
+  openWeightModels = body.open_weight_models || [];
   const chip = document.getElementById('mode-chip');
   document.getElementById('mode-text').textContent = `gateway: ${mode}`;
   chip.className = 'mode-chip ' + mode;
   chip.title = mode === 'openai' ? 'mechanism only — NOT the real sovereign guarantee' : '';
-  // hydrate the project picker from any existing projects
-  for (const id of body.projects || []) addProjectOption(id);
-  if (!active && (body.projects || []).length) { active = body.projects[0]; onProjectActive(); }
+  // hydrate the project picker from every workspace on disk, not just in-memory-registered ones,
+  // so projects survive an orchestrator restart (which wipes the in-memory registry)
+  const all = body.all_projects || body.projects || [];
+  for (const id of all) addProjectOption(id);
+  if (!active && all.length) { active = all[0]; await reattachProject(active); await loadHistory(active); onProjectActive(); }
 }
 
 /* ---------- project switching ---------- */
@@ -332,36 +431,121 @@ function addProjectOption(id) {
   if ([...sel.options].some(o => o.value === id)) return;
   const o = document.createElement('option'); o.value = id; o.textContent = id; sel.appendChild(o);
 }
-function newProject() {
-  const id = prompt_(`New app name`, 'demo');
-  if (!id) return;
-  createProject(id.trim());
+function slugify(s) { return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-+|-+$)/g, '') || 'app'; }
+function existingProjectIds() { return new Set([...document.getElementById('proj-select').options].map(o => o.value)); }
+// Appends -2, -3, ... until the name is free, so starter clicks never collide with an existing
+// project (previously this hardcoded 'demo', which silently reused whatever 'demo' already held).
+function uniqueProjectId(base) {
+  const existing = existingProjectIds();
+  if (!existing.has(base)) return base;
+  let n = 2;
+  while (existing.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
 }
-// tiny wrapper to avoid clashing with the <textarea id="prompt">
-function prompt_(msg, def) { return window.prompt(msg, def); }
 
+// Creates the project on the server. Never switches the active project itself — on a name
+// conflict (409) that would silently drop the user into someone else's existing app, which reads
+// as "my new app already had code in it". Callers decide what to do with the result.
 async function createProject(id) {
-  if (!id) return;
   const r = await api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
-  if (!r.ok && r.status !== 409) { alert('create failed: ' + JSON.stringify(r.body)); return; }
+  if (!r.ok) return { ok: false, conflict: r.status === 409 };
+  return { ok: true };
+}
+async function activateProject(id) {
   addProjectOption(id);
   document.getElementById('proj-select').value = id;
   active = id;
   clearMessages();
+  await loadHistory(id);
   onProjectActive();
 }
-function switchProject() {
+
+function validateNewProjectName() {
+  const input = document.getElementById('new-proj-name');
+  const hint = document.getElementById('new-proj-hint');
+  const submit = document.getElementById('new-proj-submit');
+  const raw = input.value.trim();
+  if (!raw) {
+    input.classList.remove('invalid'); hint.className = 'hint'; hint.textContent = 'Each app needs a unique name.';
+    submit.disabled = true;
+    return null;
+  }
+  const id = slugify(raw);
+  if (existingProjectIds().has(id)) {
+    input.classList.add('invalid'); hint.className = 'hint err'; hint.textContent = `"${id}" already exists — pick another name.`;
+    submit.disabled = true;
+    return null;
+  }
+  input.classList.remove('invalid'); hint.className = 'hint';
+  hint.textContent = id === raw ? 'Name is available.' : `Will be created as "${id}".`;
+  submit.disabled = false;
+  return id;
+}
+async function submitNewProject() {
+  const id = validateNewProjectName();
+  if (!id) return;
+  const submit = document.getElementById('new-proj-submit');
+  submit.disabled = true; submit.textContent = 'Creating…';
+  const res = await createProject(id);
+  submit.disabled = false; submit.textContent = 'Create app';
+  if (!res.ok) {
+    const hint = document.getElementById('new-proj-hint');
+    hint.className = 'hint err';
+    hint.textContent = res.conflict ? `"${id}" already exists — pick another name.` : 'Could not create the app — try again.';
+    return;
+  }
+  togglePop('new-proj-pop');
+  document.getElementById('new-proj-name').value = '';
+  await activateProject(id);
+}
+// Re-attaches a workspace that may only exist on disk (e.g. after an orchestrator restart
+// wiped the in-memory registry). Idempotent: a no-op if the project is already registered.
+async function reattachProject(id) {
+  await api(`/api/projects/${encodeURIComponent(id)}/open`, { method: 'POST' });
+}
+
+async function switchProject() {
   active = document.getElementById('proj-select').value;
   clearMessages();
+  await reattachProject(active);
+  await loadHistory(active);
   onProjectActive();
 }
 function onProjectActive() {
   document.getElementById('proj-select').value = active;
   document.getElementById('empty').style.display = 'none';
+  document.getElementById('delete-proj-btn').disabled = !active;
   showPreview();
   refreshPreview();
   refreshStatus();
   loadAssets();
+  openFilePath = null;
+  for (const buf of fileBuffers.values()) buf.model.dispose();
+  fileBuffers.clear();
+  fileTreeRows.clear();
+  document.getElementById('editor-empty').style.display = 'grid';
+  document.getElementById('monaco-editor').style.display = 'none';
+  document.getElementById('editor-save-btn').disabled = true;
+  if (workTab === 'code') loadFileTree();
+}
+
+// Deletes the workspace on disk — irreversible, so confirm first.
+async function deleteActiveProject() {
+  if (!active) return;
+  const id = active;
+  if (!confirm(`Delete "${id}"? This permanently removes its files and cannot be undone.`)) return;
+  const r = await api(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!r.ok) { addStatus('err', '⚠', `Could not delete "${id}" — try again.`); return; }
+  const sel = document.getElementById('proj-select');
+  const opt = [...sel.options].find(o => o.value === id);
+  if (opt) opt.remove();
+  active = sel.options.length ? sel.options[0].value : null;
+  clearMessages();
+  if (active) { await reattachProject(active); await loadHistory(active); onProjectActive(); }
+  else {
+    document.getElementById('delete-proj-btn').disabled = true;
+    document.getElementById('empty').style.display = '';
+  }
 }
 
 /* ---------- assets ---------- */
@@ -403,9 +587,76 @@ async function refreshStatus() {
   if (!active) return;
   const { body } = await api('/api/projects/' + active);
   const m = body.model || {};
+  const showOverride = m.mode === 'plan' || m.mode === 'implement';
   document.getElementById('mode-sel').value = m.mode || 'auto';
-  document.getElementById('manual-pick').style.display = m.mode === 'manual' ? 'block' : 'none';
+  document.getElementById('manual-pick').style.display = showOverride ? 'block' : 'none';
+  document.getElementById('auto-models').style.display = m.mode === 'auto' ? 'block' : 'none';
+  document.getElementById('catalog-editor').style.display = m.mode === 'auto' ? 'block' : 'none';
+  document.getElementById('ask-model').style.display = m.mode === 'ask' ? 'block' : 'none';
+  if (m.mode === 'ask' && m.catalog) {
+    document.getElementById('ask-model-name').textContent = m.sensitivity_locked ? m.catalog.sovereign_ask : m.catalog.ask;
+  }
+  if (showOverride && m.catalog) renderCatalog(m.catalog, m.picked_model, m.sensitivity_locked, m.mode);
+  if (m.mode === 'auto' && m.catalog) renderAutoModels(m.catalog, m.phase, m.sensitivity_locked);
   renderModelChip(m);
+  renderLockButton(m);
+  document.getElementById('sensitivity-lock-hint').style.display = m.sensitivity_locked ? 'block' : 'none';
+  lastModel = m;
+}
+function renderLockButton(m) {
+  const btn = document.getElementById('lock-btn');
+  const hint = document.getElementById('lock-hint');
+  if (m.asset_locked) {
+    btn.textContent = 'Sovereign locked';
+    btn.disabled = true;
+    hint.textContent = 'Locked for this session because a sensitivity-tagged dataset was attached — detaching it will not unlock this.';
+  } else if (m.manual_locked) {
+    btn.textContent = 'Unlock sovereign';
+    btn.disabled = false;
+    hint.textContent = 'You forced sovereign manually — click to go back to normal model selection.';
+  } else {
+    btn.textContent = 'Force sovereign (lock)';
+    btn.disabled = false;
+    hint.textContent = 'Attaching a sensitivity-tagged dataset locks this automatically and permanently for the session.';
+  }
+}
+function renderAutoModels(catalog, phase, locked) {
+  document.getElementById('auto-plan-model').textContent = locked ? catalog.sovereign_plan : catalog.plan;
+  document.getElementById('auto-implement-model').textContent = locked ? catalog.sovereign_implement : catalog.implement;
+}
+function renderCatalog(catalog, pickedModel, locked, mode) {
+  const sel = document.getElementById('pick');
+  const pinned = locked
+    ? (mode === 'implement' ? catalog.sovereign_implement : catalog.sovereign_plan)
+    : (mode === 'implement' ? catalog.implement : catalog.plan);
+  const slots = locked
+    ? [catalog.sovereign_plan, catalog.sovereign_implement, catalog.sovereign_ask]
+    : [catalog.plan, catalog.implement, catalog.ask];
+  const models = [...new Set(slots)];
+  let options = models.map(id => {
+    const isPinned = id === pinned;
+    const value = isPinned ? '' : id;
+    const label = isPinned ? `${id} (default)` : id;
+    return `<option value="${value}">${label}</option>`;
+  }).join('');
+  // openai gateway mode: offer the broader open-weight catalog (DeepSeek/Qwen/Kimi) as
+  // overrides too, not just the .env-pinned plan/implement/ask defaults.
+  if (!locked && openWeightModels.length) {
+    const extra = openWeightModels.filter(m => !models.includes(m.id));
+    if (extra.length) {
+      options += `<optgroup label="Open-weight models">` +
+        extra.map(m => `<option value="${m.id}">${m.id} (${m.provider})</option>`).join('') +
+        `</optgroup>`;
+    }
+  }
+  sel.innerHTML = options;
+  sel.value = pickedModel || '';
+  document.getElementById('cat-plan').value = catalog.plan;
+  document.getElementById('cat-implement').value = catalog.implement;
+  document.getElementById('cat-sovereign-plan').value = catalog.sovereign_plan;
+  document.getElementById('cat-sovereign-implement').value = catalog.sovereign_implement;
+  document.getElementById('cat-sovereign-ask').value = catalog.sovereign_ask;
+  document.getElementById('cat-ask').value = catalog.ask;
 }
 const PHASE_LABEL = { plan: 'planning', implement: 'building' };
 function renderModelChip(m) {
@@ -419,11 +670,16 @@ function renderModelChip(m) {
     popText.textContent = 'sovereign (locked)';
   } else {
     chip.classList.remove('locked'); popBadge.classList.remove('locked');
-    const label = m.mode === 'auto'
-      ? `Auto · ${PHASE_LABEL[m.phase] || m.phase}`
-      : `Manual · ${m.picked_model || 'default'}`;
-    chipText.textContent = label;
-    popText.textContent = label;
+    const chipLabel = m.mode === 'auto' ? `Auto · ${PHASE_LABEL[m.phase] || m.phase}`
+      : m.mode === 'ask' ? 'Ask · read-only'
+      : m.mode === 'plan' ? `Plan · ${m.picked_model || 'default'}`
+      : `Implement · ${m.picked_model || 'default'}`;
+    const activeModel = m.catalog && m.catalog[m.phase];
+    const popLabel = m.mode === 'auto' && activeModel
+      ? `Auto · ${activeModel} (${PHASE_LABEL[m.phase] || m.phase})`
+      : chipLabel;
+    chipText.textContent = chipLabel;
+    popText.textContent = popLabel;
   }
 }
 async function setModel() {
@@ -437,7 +693,21 @@ async function setModel() {
 }
 async function lockSovereign() {
   if (!active) return;
-  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: true }) });
+  const next = !lastModel.manual_locked;
+  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: next }) });
+  refreshStatus();
+}
+async function setCatalog() {
+  if (!active) return;
+  const payload = { catalog: {
+    plan: document.getElementById('cat-plan').value.trim(),
+    implement: document.getElementById('cat-implement').value.trim(),
+    sovereign_plan: document.getElementById('cat-sovereign-plan').value.trim(),
+    sovereign_implement: document.getElementById('cat-sovereign-implement').value.trim(),
+    sovereign_ask: document.getElementById('cat-sovereign-ask').value.trim(),
+    ask: document.getElementById('cat-ask').value.trim(),
+  } };
+  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
   refreshStatus();
 }
 
@@ -446,17 +716,25 @@ function togglePop(id) {
   const el = document.getElementById(id);
   const open = el.classList.contains('open');
   document.querySelectorAll('.pop').forEach(p => p.classList.remove('open'));
-  if (!open) el.classList.add('open');
+  if (!open) {
+    el.classList.add('open');
+    if (id === 'new-proj-pop') {
+      const input = document.getElementById('new-proj-name');
+      input.value = ''; validateNewProjectName();
+      setTimeout(() => input.focus(), 0);
+    }
+  }
 }
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('.pop') && !e.target.closest('.chip')) {
+  if (!e.target.closest('.pop') && !e.target.closest('.chip') && !e.target.closest('.icon-btn')) {
     document.querySelectorAll('.pop').forEach(p => p.classList.remove('open'));
   }
 });
 
 /* ---------- chat rendering ---------- */
 function clearMessages() {
-  document.getElementById('messages').innerHTML = '';
+  const box = document.getElementById('messages');
+  [...box.children].forEach(c => { if (c.id !== 'empty') c.remove(); });
   document.getElementById('empty').style.display = 'none';
 }
 function scrollDown() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
@@ -490,6 +768,20 @@ function md(src) {
     if (ul) { if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; } html += `<li>${inline(ul[1])}</li>`; i++; continue; }
     const ol = ln.match(/^\s*\d+\.\s+(.*)$/);
     if (ol) { if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; } html += `<li>${inline(ol[1])}</li>`; i++; continue; }
+    const sep = lines[i + 1] && lines[i + 1].match(/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/);
+    if (/\|/.test(ln) && sep) {
+      closeList();
+      const cells = row => row.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      const head = cells(ln);
+      html += '<table><thead><tr>' + head.map(c => `<th>${inline(c)}</th>`).join('') + '</tr></thead><tbody>';
+      i += 2;
+      while (i < lines.length && lines[i].trim() !== '' && /\|/.test(lines[i])) {
+        html += '<tr>' + cells(lines[i]).map(c => `<td>${inline(c)}</td>`).join('') + '</tr>';
+        i++;
+      }
+      html += '</tbody></table>';
+      continue;
+    }
     if (ln.trim() === '') { closeList(); i++; continue; }
     closeList();
     let para = ln; i++;
@@ -544,7 +836,43 @@ function addDivider(cls, text) {
 }
 
 /* ---------- build (streaming) ---------- */
-let working = null; // the "working…" spinner action element
+// One persistent activity line that always trails the latest card, so there is never dead air:
+// events only fire when a step *completes*, and a single step (model thinking, writing a large
+// file) can run 10-30s. The live label + elapsed clock is the proof that work is still happening.
+let working = null;        // the persistent spinner element (null when idle)
+let workingLabel = '';     // current activity text
+let workingStart = 0;      // ms when the current label began (for the elapsed clock)
+let workingTimer = null;   // interval that repaints the elapsed clock
+let buildPhase = 'plan';   // last phase seen this build; drives the default label
+
+const PHASE_WORK = { plan: 'Planning', implement: 'Building' };
+// present-participle labels for a live in-progress step ("active" events from the driver)
+const ACTIVE_VERB = { edit: 'Editing', write: 'Creating', read: 'Reading', bash: 'Running', grep: 'Searching' };
+
+function paintWorking() {
+  if (!working) return;
+  const secs = Math.round((Date.now() - workingStart) / 1000);
+  working.lastElementChild.innerHTML =
+    `${esc(workingLabel)}<span class="elapsed">${secs > 2 ? ' · ' + secs + 's' : ''}</span>`;
+}
+function setWorking(label) {
+  if (!working) { working = addStatus('spin', '◐', ''); workingStart = Date.now(); }
+  if (label !== workingLabel) { workingLabel = label; workingStart = Date.now(); }
+  paintWorking();
+  if (!workingTimer) workingTimer = setInterval(paintWorking, 1000);
+}
+function stopWorking() {
+  if (workingTimer) { clearInterval(workingTimer); workingTimer = null; }
+  if (working) { working.remove(); working = null; }
+  workingLabel = '';
+}
+// Render the just-finished step, then move the live spinner back to the bottom so it keeps
+// trailing the newest card with the phase-appropriate label.
+function trail() {
+  setWorking(PHASE_WORK[buildPhase] || 'Working');
+  document.getElementById('messages').appendChild(working);
+  scrollDown();
+}
 
 async function build() {
   if (!active) { alert('Create a project first'); return; }
@@ -555,7 +883,8 @@ async function build() {
   btn.disabled = true;
   addUser(prompt);
   ta.value = ''; autogrow(ta);
-  working = addStatus('spin', '◐', 'Working…');
+  buildPhase = 'plan';
+  setWorking(PHASE_WORK[buildPhase]);
 
   try {
     const resp = await fetch('/api/projects/' + active + '/build/stream', {
@@ -577,24 +906,38 @@ async function build() {
   } catch (e) {
     renderEvent({ type: 'error', message: String(e) });
   }
-  if (working) { working.remove(); working = null; }
+  stopWorking();
   btn.disabled = false;
   refreshPreview();
   refreshStatus();
 }
 
-function removeWorking() { if (working) { working.remove(); working = null; } }
+// Replays a project's persisted chat transcript (see Workspace.append_history) so switching to
+// or reopening a project shows its prior conversation instead of a blank slate.
+async function loadHistory(id) {
+  const { body } = await api(`/api/projects/${encodeURIComponent(id)}/history`);
+  for (const ev of body.history || []) replayEvent(ev);
+}
+function replayEvent(ev) {
+  if (ev.type === 'user') addUser(ev.text);
+  else if (ev.type === 'agent' && ev.kind === 'tool') addToolCard(ev.tool, ev.detail || '');
+  else if (ev.type === 'agent' && ev.kind === 'text') addAgent(ev.text);
+  else if (ev.type === 'typecheck') addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`);
+  else if (ev.type === 'done') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`);
+}
+
 function renderEvent(ev) {
-  if (ev.type === 'agent' && ev.kind === 'tool') { removeWorking(); addToolCard(ev.tool, ev.detail || ''); }
-  else if (ev.type === 'agent' && ev.kind === 'text') { removeWorking(); addAgent(ev.text); }
-  else if (ev.type === 'typecheck-start') { removeWorking(); working = addStatus('spin', '◐', 'Typechecking…'); }
-  else if (ev.type === 'typecheck') { removeWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); }
-  else if (ev.type === 'iterate') { removeWorking(); working = addStatus('spin', '◐', 'Fixing errors…'); }
-  else if (ev.type === 'done') { removeWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
-  else if (ev.type === 'phase') { refreshStatus(); }
+  if (ev.type === 'active') { const v = ACTIVE_VERB[ev.tool] || 'Working on'; const d = ev.detail || ''; setWorking(d ? `${v} ${d}` : v); }
+  else if (ev.type === 'agent' && ev.kind === 'tool') { addToolCard(ev.tool, ev.detail || ''); trail(); }
+  else if (ev.type === 'agent' && ev.kind === 'text') { addAgent(ev.text); trail(); }
+  else if (ev.type === 'typecheck-start') { setWorking('Typechecking'); }
+  else if (ev.type === 'typecheck') { stopWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); trail(); }
+  else if (ev.type === 'iterate') { setWorking('Fixing errors'); }
+  else if (ev.type === 'done') { stopWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
+  else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(PHASE_WORK[buildPhase] || 'Working'); refreshStatus(); }
   else if (ev.type === 'error') {
-    removeWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message));
-    if (ev.code === 'no_project') { active = null; document.getElementById('empty').style.display = ''; }
+    stopWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message));
+    if (ev.code === 'no_project') { active = null; document.getElementById('empty').style.display = ''; document.getElementById('delete-proj-btn').disabled = true; }
   }
 }
 
@@ -609,7 +952,7 @@ async function check() {
 
 /* ---------- preview ---------- */
 function showPreview() {
-  document.getElementById('preview').style.display = 'block';
+  document.getElementById('preview').style.display = workTab === 'preview' ? 'block' : 'none';
   document.getElementById('work-empty').style.display = 'none';
 }
 function refreshPreview() {
@@ -620,6 +963,177 @@ function refreshPreview() {
   document.getElementById('status-dot').className = 'status-dot ok';
 }
 function openPreview() { if (active) window.open(previewBase, '_blank'); }
+
+/* ---------- code tab: file tree + editor ---------- */
+let workTab = 'preview';
+let monacoEditor = null;
+let monacoReady = null;
+let openFilePath = null;
+const fileBuffers = new Map();   // path -> { model, saved: string, dirty: bool }
+const fileTreeRows = new Map();  // path -> row element (for dirty-dot updates)
+const fileTreeDirRows = new Map(); // dir path -> row element (for dirty-dot propagation)
+
+function showTab(tab) {
+  workTab = tab;
+  document.getElementById('tab-preview').classList.toggle('active', tab === 'preview');
+  document.getElementById('tab-code').classList.toggle('active', tab === 'code');
+  document.getElementById('file-tree-panel').classList.toggle('open', tab === 'code');
+  document.getElementById('url-pill').style.display = tab === 'preview' ? 'flex' : 'none';
+  document.getElementById('preview-refresh-btn').style.display = tab === 'preview' ? '' : 'none';
+  document.getElementById('preview-open-btn').style.display = tab === 'preview' ? '' : 'none';
+  document.getElementById('editor-save-btn').style.display = tab === 'code' ? '' : 'none';
+  document.getElementById('preview').style.display = tab === 'preview' && active ? 'block' : 'none';
+  document.getElementById('editor-pane').style.display = tab === 'code' ? 'flex' : 'none';
+  document.getElementById('work-empty').style.display = active ? 'none' : 'grid';
+  if (tab === 'code' && active) loadFileTree();
+}
+
+function ensureMonaco() {
+  if (monacoReady) return monacoReady;
+  monacoReady = new Promise(resolve => {
+    require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
+    require(['vs/editor/editor.main'], () => {
+      monacoEditor = monaco.editor.create(document.getElementById('monaco-editor'), {
+        value: '', language: 'plaintext', automaticLayout: true, minimap: { enabled: false }, fontSize: 13,
+      });
+      monacoEditor.onDidChangeModelContent(() => {
+        if (!openFilePath) return;
+        const buf = fileBuffers.get(openFilePath);
+        if (!buf) return;
+        setDirty(openFilePath, monacoEditor.getValue() !== buf.saved);
+      });
+      monacoEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveOpenFile);
+      resolve();
+    });
+  });
+  return monacoReady;
+}
+
+const FT_LANG = {
+  ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', json: 'json',
+  html: 'html', css: 'css', md: 'markdown', py: 'python', yaml: 'yaml', yml: 'yaml', sh: 'shell',
+};
+function languageFor(name) {
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+  return FT_LANG[ext] || 'plaintext';
+}
+
+function setDirty(path, dirty) {
+  const buf = fileBuffers.get(path);
+  if (buf) buf.dirty = dirty;
+  const row = fileTreeRows.get(path);
+  if (row) row.querySelector('.ft-dot')?.classList.toggle('visible', dirty);
+  if (path === openFilePath) {
+    document.getElementById('editor-save-btn').disabled = !dirty;
+  }
+  updateAncestorDots(path);
+}
+
+function ancestorDirPaths(path) {
+  const parts = path.split('/');
+  parts.pop();
+  const anc = [];
+  let cur = '';
+  for (const p of parts) {
+    cur = cur ? cur + '/' + p : p;
+    anc.push(cur);
+  }
+  return anc;
+}
+
+function updateAncestorDots(path) {
+  for (const dir of ancestorDirPaths(path)) {
+    const row = fileTreeDirRows.get(dir);
+    if (!row) continue;
+    const prefix = dir + '/';
+    let hasDirty = false;
+    for (const [p, buf] of fileBuffers) {
+      if (buf.dirty && p.startsWith(prefix)) { hasDirty = true; break; }
+    }
+    row.querySelector('.ft-dot')?.classList.toggle('visible', hasDirty);
+  }
+}
+
+async function loadFileTree() {
+  if (!active) return;
+  const { ok, body } = await api(`/api/projects/${encodeURIComponent(active)}/files`);
+  const root = document.getElementById('file-tree');
+  root.innerHTML = '';
+  fileTreeRows.clear();
+  fileTreeDirRows.clear();
+  if (!ok) return;
+  root.appendChild(renderFileTree(body.tree, 0));
+  for (const [path, buf] of fileBuffers) setDirty(path, buf.dirty);
+  if (openFilePath) fileTreeRows.get(openFilePath)?.classList.add('active');
+}
+
+function renderFileTree(nodes, depth) {
+  const frag = document.createDocumentFragment();
+  for (const node of nodes) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ft-node';
+    const row = document.createElement('div');
+    row.className = 'ft-row';
+    row.style.paddingLeft = (10 + depth * 14) + 'px';
+    row.dataset.path = node.path;
+    if (node.type === 'dir') {
+      row.innerHTML = `<span class="ft-icon">▸</span><span>${esc(node.name)}</span><span class="ft-dot" title="Unsaved changes"></span>`;
+      const kids = document.createElement('div');
+      kids.className = 'ft-children';
+      kids.appendChild(renderFileTree(node.children, depth + 1));
+      row.onclick = () => {
+        kids.classList.toggle('open');
+        row.querySelector('.ft-icon').textContent = kids.classList.contains('open') ? '▾' : '▸';
+      };
+      fileTreeDirRows.set(node.path, row);
+      wrap.appendChild(row);
+      wrap.appendChild(kids);
+    } else {
+      row.innerHTML = `<span class="ft-icon">📄</span><span>${esc(node.name)}</span><span class="ft-dot" title="Unsaved changes"></span>`;
+      row.onclick = () => openFile(node.path, row);
+      fileTreeRows.set(node.path, row);
+      wrap.appendChild(row);
+    }
+    frag.appendChild(wrap);
+  }
+  return frag;
+}
+
+async function openFile(path, rowEl) {
+  if (!active) return;
+  document.querySelectorAll('.ft-row.active').forEach(el => el.classList.remove('active'));
+  (rowEl || fileTreeRows.get(path))?.classList.add('active');
+  await ensureMonaco();
+  let buf = fileBuffers.get(path);
+  if (!buf) {
+    const { ok, body } = await api(`/api/projects/${encodeURIComponent(active)}/file?path=${encodeURIComponent(path)}`);
+    if (!ok) { addStatus('err', '✕', `Could not open ${esc(path)}`); return; }
+    const model = monaco.editor.createModel(body.content, languageFor(path));
+    buf = { model, saved: body.content, dirty: false };
+    fileBuffers.set(path, buf);
+  }
+  document.getElementById('editor-empty').style.display = 'none';
+  document.getElementById('monaco-editor').style.display = 'block';
+  openFilePath = path;
+  monacoEditor.setModel(buf.model);
+  document.getElementById('editor-save-btn').disabled = !buf.dirty;
+}
+
+async function saveOpenFile() {
+  if (!active || !openFilePath || !monacoEditor) return;
+  const path = openFilePath;
+  const buf = fileBuffers.get(path);
+  if (!buf || !buf.dirty) return;
+  const content = monacoEditor.getValue();
+  const { ok } = await api(`/api/projects/${encodeURIComponent(active)}/file`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content }),
+  });
+  if (!ok) { addStatus('err', '✕', `Could not save ${esc(path)}`); return; }
+  buf.saved = content;
+  setDirty(path, false);
+}
 
 /* ---------- composer helpers ---------- */
 function autogrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
@@ -646,7 +1160,12 @@ function renderSuggestions() {
     const b = document.createElement('button'); b.className = 'suggestion';
     b.innerHTML = `<div class="s-title">${s.title}</div><div class="s-sub">${s.sub}</div>`;
     b.onclick = async () => {
-      if (!active) await createProject('demo');
+      if (!active) {
+        const id = uniqueProjectId(slugify(s.title));
+        const res = await createProject(id);
+        if (!res.ok) { addStatus('err', '⚠', 'Could not create the app — try again.'); return; }
+        await activateProject(id);
+      }
       document.getElementById('prompt').value = s.prompt; autogrow(document.getElementById('prompt'));
       build();
     };

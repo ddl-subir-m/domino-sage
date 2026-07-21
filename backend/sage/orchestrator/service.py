@@ -9,8 +9,10 @@ Deep module, narrow interface: create_project / get / active / shutdown.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+import httpx
 
 from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, is_sensitive
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG
@@ -75,6 +77,16 @@ class Project:
                 "phase": s.phase.value,
                 "picked_model": s.picked_model,
                 "sensitivity_locked": s.sensitivity_locked,
+                "asset_locked": self.control.asset_locked,
+                "manual_locked": self.control.manual_locked,
+                "catalog": {
+                    "sovereign_plan": self.shim.catalog.sovereign_plan,
+                    "sovereign_implement": self.shim.catalog.sovereign_implement,
+                    "sovereign_ask": self.shim.catalog.sovereign_ask,
+                    "plan": self.shim.catalog.plan,
+                    "implement": self.shim.catalog.implement,
+                    "ask": self.shim.catalog.ask,
+                },
             },
         }
 
@@ -118,10 +130,27 @@ class Orchestrator:
     def _ensure_session(self, project: Project) -> str:
         client = self._ensure_opencode()
         if project.session_id is None:
+            project.session_id = self._recover_session(project.workspace, client)
+        if project.session_id is None:
             # No session-level model: use opencode.json's default; the shim's force_model + router
             # enforce the real model per request. (An explicit ModelRef at creation stalled turns.)
             project.session_id = client.create_session(directory=str(project.workspace.path))
+            project.workspace.write_session_id(project.session_id)
         return project.session_id
+
+    @staticmethod
+    def _recover_session(workspace: Workspace, client: OpenCodeClient) -> str | None:
+        """A session id persisted from a prior process may point at a session the current
+        OpenCode server doesn't know about (e.g. its storage was reset); validate before reusing
+        it so a stale id doesn't wedge every subsequent build call."""
+        sid = workspace.read_session_id()
+        if sid is None:
+            return None
+        try:
+            client.messages(sid)
+        except httpx.HTTPStatusError:
+            return None
+        return sid
 
     def build(self, project_id: str, prompt: str) -> dict:
         """Run one build to completion (non-streaming). Reuses the session, so repeated calls are
@@ -158,6 +187,15 @@ class Orchestrator:
         breaker = CircuitBreaker()
         current = prompt
 
+        # Persist only the events the UI actually renders as a chat bubble/card/divider, so
+        # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
+        def persist(ev: dict) -> dict:
+            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done"):
+                project.workspace.append_history(ev)
+            return ev
+
+        project.workspace.append_history({"type": "user", "text": prompt})
+
         while True:
             yield {"type": "turn", "prompt": current[:120]}
             seen: set[tuple[str, int]] = set()
@@ -168,6 +206,7 @@ class Orchestrator:
             # the resulting phase here to keep the UI's live indicator in sync — routing is decided
             # in the shim, not here, so it stays per-step and race-free.
             last_phase = project.control.snapshot().phase.value
+            last_active: str | None = None  # last "active" label emitted (dedup across 1s polls)
             while True:
                 running = client.is_running(sid)
                 appeared = appeared or running
@@ -180,19 +219,30 @@ class Orchestrator:
                             continue
                         pt = part.get("type", "")
                         if "tool" in pt:
-                            # Wait until the call finishes before emitting: a tool's args stream in,
-                            # so at first sight a large input (e.g. todowrite's `todos`) is still
-                            # empty -> "0 steps". Don't mark it seen while in-progress; re-check next
-                            # poll and emit once the completed state carries the full input.
+                            # Wait until the call finishes before emitting the card: a tool's args
+                            # stream in, so at first sight a large input (e.g. todowrite's `todos`) is
+                            # still empty -> "0 steps". Don't mark it seen while in-progress; re-check
+                            # next poll and emit once the completed state carries the full input.
                             status = (part.get("state") or {}).get("status")
+                            tool = part.get("tool") or part.get("name") or pt
                             if status in ("pending", "running", "in_progress"):
+                                # Live "active" hint so a long step names what it's doing instead of
+                                # dead air. Only for tools whose streaming input already carries a
+                                # useful detail (a file path, a command); this deliberately skips
+                                # todowrite so the "0 steps" artifact never surfaces.
+                                detail = _tool_detail(tool, part) if tool in ("edit", "write", "read", "bash", "grep") else ""
+                                if detail:
+                                    sig = f"{tool}:{detail}"
+                                    if sig != last_active:
+                                        last_active = sig
+                                        yield {"type": "active", "tool": tool, "detail": detail}
                                 continue
                             seen.add(key)
-                            tool = part.get("tool") or part.get("name") or pt
-                            yield {"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)}
+                            last_active = None  # completed: let the next running tool re-announce
+                            yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
-                            yield {"type": "agent", "kind": "text", "text": part["text"]}
+                            yield persist({"type": "agent", "kind": "text", "text": part["text"]})
                 cur_phase = project.control.snapshot().phase.value
                 if cur_phase != last_phase:
                     last_phase = cur_phase
@@ -205,18 +255,22 @@ class Orchestrator:
 
             yield {"type": "typecheck-start"}
             report = self._feedback.check(project.workspace.path)
-            yield {"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()}
+            yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
             decision = breaker.record(report.signature(), report.ok)
             if decision.action == "stop":
-                yield {"type": "done", "ok": report.ok, "decision": decision.reason}
+                yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 return
             yield {"type": "iterate", "reason": decision.reason}
             current = report.as_agent_message()
 
+    def _effective_catalog(self, workspace: Workspace) -> ModelCatalog:
+        overrides = workspace.read_catalog_overrides()
+        return replace(self._catalog, **overrides) if overrides else self._catalog
+
     def create_project(self, project_id: str, start_preview: bool = True) -> Project:
         workspace = self._wm.create(project_id)
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
-        shim = EnforcementShim(control, self._catalog, self._gateway, force_model=self._force_model)
+        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
         supervisor = ViteSupervisor(workspace.path)
         if start_preview:
             supervisor.start()
@@ -233,6 +287,69 @@ class Orchestrator:
 
     def list_ids(self) -> list[str]:
         return list(self._projects)
+
+    def list_all_ids(self) -> list[str]:
+        """Registered projects plus any workspace left on disk from a prior process (e.g. a
+        restart wiped the in-memory registry but the project's files and history survive)."""
+        return sorted(set(self._projects) | set(self._wm.list_ids()))
+
+    def open_project(self, project_id: str, start_preview: bool = True) -> Project:
+        """Re-attach an on-disk workspace that isn't currently registered, instead of re-copying
+        the template (which create_project would refuse, since the directory already exists).
+        Idempotent: returns the existing Project if it's already registered."""
+        existing = self.get(project_id)
+        if existing is not None:
+            self._active = project_id
+            return existing
+        workspace = self._wm.get(project_id)
+        if workspace is None:
+            raise FileNotFoundError(project_id)
+        control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
+        supervisor = ViteSupervisor(workspace.path)
+        if start_preview:
+            supervisor.start()
+        project = Project(project_id, workspace, supervisor, control, shim)
+        self._projects[project_id] = project
+        self._active = project_id
+        return project
+
+    def set_catalog(self, project_id: str, **fields: str | None) -> ModelCatalog:
+        """Override which model id fills a catalog slot (sovereign/plan/implement/default) for
+        this project, persisted so it survives a restart. Only non-empty fields change; the rest
+        keep their current value."""
+        project = self.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        changes = {k: v for k, v in fields.items() if v}
+        if not changes:
+            return project.shim.catalog
+        new_catalog = replace(project.shim.catalog, **changes)
+        project.shim.set_catalog(new_catalog)
+        overrides = project.workspace.read_catalog_overrides()
+        overrides.update(changes)
+        project.workspace.write_catalog_overrides(overrides)
+        return new_catalog
+
+    def history(self, project_id: str) -> list[dict]:
+        """Reads straight from the workspace (not the in-memory registry) so history is available
+        even for a dormant project that hasn't been re-attached via open_project yet."""
+        workspace = self._wm.get(project_id)
+        if workspace is None:
+            raise FileNotFoundError(project_id)
+        return workspace.read_history()
+
+    def delete_project(self, project_id: str) -> None:
+        """Stop the project's preview (if running) and remove its workspace from disk. Raises if
+        the project is neither registered nor present on disk."""
+        if project_id not in self.list_all_ids():
+            raise FileNotFoundError(project_id)
+        project = self._projects.pop(project_id, None)
+        if project is not None:
+            project.supervisor.stop()
+        if self._active == project_id:
+            self._active = None
+        self._wm.delete(project_id)
 
     def list_assets(self) -> list[dict]:
         assets = self._assets.list_datasets(self._domino_project_id)

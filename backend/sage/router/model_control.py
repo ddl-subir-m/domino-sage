@@ -14,11 +14,12 @@ from .models import Mode, ModelId, Phase, SessionState
 
 
 class ModelControl:
-    def __init__(self, mode: Mode = Mode.MANUAL, phase: Phase = Phase.PLAN) -> None:
+    def __init__(self, mode: Mode = Mode.AUTO, phase: Phase = Phase.PLAN) -> None:
         self._mode = mode
         self._phase = phase
         self._picked_model: ModelId | None = None
-        self._sensitivity_locked = False  # sticky once set True
+        self._asset_locked = False   # sticky once True: set by an attached sensitivity-tagged asset
+        self._manual_locked = False  # user-toggled via the "Force sovereign" button; freely reversible
 
     def set_mode(self, mode: Mode) -> None:
         self._mode = mode
@@ -30,17 +31,29 @@ class ModelControl:
         self._picked_model = model
 
     def on_assets_changed(self, asset_sensitivity_tags: Iterable[bool]) -> None:
-        """Recompute the lock from currently-attached assets. Sticky: never clears."""
+        """Recompute the asset-driven lock from currently-attached assets. Sticky: never clears."""
         if any(asset_sensitivity_tags):
-            self._sensitivity_locked = True
+            self._asset_locked = True
+
+    def set_manual_lock(self, on: bool) -> None:
+        """User-initiated lock/unlock, independent of the sticky asset-driven lock."""
+        self._manual_locked = on
 
     @property
     def locked(self) -> bool:
-        return self._sensitivity_locked
+        return self._asset_locked or self._manual_locked
+
+    @property
+    def asset_locked(self) -> bool:
+        return self._asset_locked
+
+    @property
+    def manual_locked(self) -> bool:
+        return self._manual_locked
 
     def snapshot(self) -> SessionState:
         return SessionState(
-            sensitivity_locked=self._sensitivity_locked,
+            sensitivity_locked=self.locked,
             mode=self._mode,
             phase=self._phase,
             picked_model=self._picked_model,

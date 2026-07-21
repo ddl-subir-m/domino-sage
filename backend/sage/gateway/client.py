@@ -10,9 +10,12 @@ Two adapters make the seam real:
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from .open_models import OpenModel
 
 # Domino workspace sidecar that mints a short-lived access token.
 DEFAULT_SIDECAR_URL = "http://localhost:8899/access-token"
@@ -150,6 +153,46 @@ class OpenAICompatibleClient:
                     body = resp.read().decode(errors="replace")[:800]
                     raise GatewayUpstreamError(resp.status_code, url, body)
                 yield from resp.iter_bytes()
+
+
+class MultiProviderOpenAIClient:
+    """openai gateway mode: each model routes to its own vendor base_url/key.
+
+    Unlike OpenAICompatibleClient (one fixed base_url), there's no shared gateway here — the
+    catalog entry matching request["model"] decides which vendor endpoint and API key to use.
+    """
+
+    def __init__(self, models: list[OpenModel], *, timeout_s: float = 60.0) -> None:
+        self._by_id = {m.id: m for m in models}
+        self._timeout_s = timeout_s
+
+    def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
+        import httpx  # local import so tests that never hit the network don't need it
+
+        model_id = request.get("model")
+        model = self._by_id.get(model_id)
+        if model is None:
+            known = ", ".join(sorted(self._by_id))
+            raise GatewayUpstreamError(400, "", f"unknown open-weight model {model_id!r}; known: {known}")
+
+        key = os.environ.get(model.api_key_env, "")
+        if not key:
+            raise GatewayUpstreamError(400, "", f"{model.api_key_env} not set for model {model_id!r}")
+
+        headers = {"Authorization": f"Bearer {key}"}
+        url = f"{model.base_url.rstrip('/')}/chat/completions"
+        with httpx.Client(timeout=self._timeout_s, follow_redirects=False) as client:
+            with client.stream("POST", url, json=request, headers=headers) as resp:
+                if resp.status_code >= 400 or resp.is_redirect:
+                    body = resp.read().decode(errors="replace")[:800]
+                    raise GatewayUpstreamError(resp.status_code, url, body)
+                yield from resp.iter_bytes()
+
+    def costs(self, window: str) -> list[CostRecord]:
+        raise NotImplementedError("openai mode has no unified cost API across providers")
+
+    def guardrail_events(self) -> Iterator[GuardrailEvent]:
+        raise NotImplementedError("openai mode has no guardrail surface")
 
 
 class GatewayUpstreamError(RuntimeError):

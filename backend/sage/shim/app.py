@@ -41,12 +41,14 @@ _gateway, GATEWAY_MODE = build_gateway()
 # Defaults are gateway alias names (see MODELS.md). Sovereign tier = "Domino Platform"
 # provider models (qwen-2-5, local-domino-llm). Override per deployment via env.
 _catalog = ModelCatalog(
-    sovereign=os.environ.get("SAGE_MODEL_SOVEREIGN", "qwen-2-5"),        # on-Domino, sovereign
+    sovereign_plan=os.environ.get("SAGE_MODEL_SOVEREIGN_PLAN", "qwen-2-5"),            # on-Domino, sovereign
+    sovereign_implement=os.environ.get("SAGE_MODEL_SOVEREIGN_IMPLEMENT", "qwen-2-5"),  # on-Domino, sovereign
+    sovereign_ask=os.environ.get("SAGE_MODEL_SOVEREIGN_ASK", "qwen-2-5"),      # on-Domino, sovereign
     plan=os.environ.get("SAGE_MODEL_PLAN", "gpt-5.4"),                   # strong, plan phase
     implement=os.environ.get("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder"),  # cheap coder
-    default=os.environ.get("SAGE_MODEL_DEFAULT", "sonnet"),
+    ask=os.environ.get("SAGE_MODEL_ASK", "sonnet"),
 )
-_control = ModelControl(mode=Mode.MANUAL, phase=Phase.PLAN)
+_control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
 # Spike helper (Step 1.3): SAGE_FORCE_SENSITIVITY_LOCK=1 starts locked so you can verify the
 # sovereign override live — any request, whatever model OpenCode asks for, routes to sovereign.
 if os.environ.get("SAGE_FORCE_SENSITIVITY_LOCK") in {"1", "true", "yes"}:

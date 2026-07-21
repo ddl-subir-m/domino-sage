@@ -28,6 +28,7 @@ _UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG, DominoAssetProvider, FakeAssetProvider
 from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_token, static_token
 from ..gateway.factory import build_gateway
+from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..feedback.runner import FeedbackRunner
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
@@ -43,10 +44,12 @@ _REPO = Path(__file__).resolve().parents[3]
 
 def _build_catalog() -> ModelCatalog:
     return ModelCatalog(
-        sovereign=os.environ.get("SAGE_MODEL_SOVEREIGN", "qwen-2-5"),
+        sovereign_plan=os.environ.get("SAGE_MODEL_SOVEREIGN_PLAN", "qwen-2-5"),
+        sovereign_implement=os.environ.get("SAGE_MODEL_SOVEREIGN_IMPLEMENT", "qwen-2-5"),
+        sovereign_ask=os.environ.get("SAGE_MODEL_SOVEREIGN_ASK", "qwen-2-5"),
         plan=os.environ.get("SAGE_MODEL_PLAN", "gpt-5.4"),
         implement=os.environ.get("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder"),
-        default=os.environ.get("SAGE_MODEL_DEFAULT", "sonnet"),
+        ask=os.environ.get("SAGE_MODEL_ASK", "sonnet"),
     )
 
 
@@ -90,8 +93,18 @@ def ui() -> FileResponse:
 @control_app.get("/healthz")
 def healthz() -> dict:
     # gateway_mode is authoritative: "openai" means the mechanism is being exercised against a
-    # generic provider, NOT the real Domino sovereign gateway.
-    return {"ok": True, "projects": orchestrator.list_ids(), "gateway_mode": GATEWAY_MODE}
+    # generic provider, NOT the real Domino sovereign gateway. `projects` is in-memory-registered
+    # only (kept for back-compat); `all_projects` also surfaces on-disk workspaces from a prior
+    # process so the UI's picker survives an orchestrator restart.
+    return {
+        "ok": True,
+        "projects": orchestrator.list_ids(),
+        "all_projects": orchestrator.list_all_ids(),
+        "gateway_mode": GATEWAY_MODE,
+        "open_weight_models": [
+            {"id": m.id, "provider": m.provider} for m in OPEN_WEIGHT_MODELS
+        ] if GATEWAY_MODE == "openai" else [],
+    }
 
 
 @control_app.post("/api/projects")
@@ -102,6 +115,35 @@ async def create_project(request: Request) -> JSONResponse:
         return JSONResponse(status_code=409, content={"error": f"project {pid} exists"})
     project = orchestrator.create_project(pid, start_preview=body.get("start_preview", True))
     return JSONResponse(status_code=201, content=project.status())
+
+
+@control_app.post("/api/projects/{pid}/open")
+def open_project(pid: str) -> JSONResponse:
+    """Re-attach a workspace left on disk by a prior process (see list_all_ids)."""
+    try:
+        project = orchestrator.open_project(pid)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return JSONResponse(content=project.status())
+
+
+@control_app.delete("/api/projects/{pid}")
+def delete_project(pid: str) -> JSONResponse:
+    try:
+        orchestrator.delete_project(pid)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return JSONResponse(content={"deleted": pid})
+
+
+@control_app.get("/api/projects/{pid}/history")
+def project_history(pid: str) -> JSONResponse:
+    """The chat transcript persisted per-workspace, so the UI can replay it after a reload or an
+    orchestrator restart (see Workspace.append_history / Orchestrator.history)."""
+    try:
+        return JSONResponse(content={"history": orchestrator.history(pid)})
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "not found"})
 
 
 @control_app.get("/api/projects")
@@ -124,13 +166,19 @@ async def set_model(pid: str, request: Request) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": "not found"})
     body = await request.json()
     if "mode" in body:
-        project.control.set_mode(Mode(body["mode"]))
+        try:
+            mode = Mode(body["mode"])
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": f"invalid mode {body['mode']!r}"})
+        project.control.set_mode(mode)
     if "phase" in body:
         project.control.set_phase(Phase(body["phase"]))
     if "pick" in body:
         project.control.pick(body["pick"])
-    if body.get("lock"):  # sticky; cannot be cleared via API
-        project.control.on_assets_changed([True])
+    if "catalog" in body:
+        orchestrator.set_catalog(pid, **(body.get("catalog") or {}))
+    if "lock" in body:  # manual toggle; independent of the sticky asset-driven lock
+        project.control.set_manual_lock(bool(body["lock"]))
     return JSONResponse(content=project.status())
 
 
@@ -148,6 +196,82 @@ def check_project(pid: str) -> JSONResponse:
         "message": report.as_agent_message(),
         "signature": report.signature(),
     })
+
+
+_FILE_TREE_IGNORE = {"node_modules", ".git", "dist", "dist-ssr", ".vite", "build", "__pycache__", ".turbo"}
+
+
+def _build_file_tree(root: Path, current: Path) -> list[dict]:
+    entries = []
+    try:
+        children = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except OSError:
+        return entries
+    for child in children:
+        if child.name in _FILE_TREE_IGNORE or child.name.startswith("."):
+            continue
+        rel = child.relative_to(root).as_posix()
+        if child.is_dir():
+            entries.append({"name": child.name, "path": rel, "type": "dir", "children": _build_file_tree(root, child)})
+        else:
+            entries.append({"name": child.name, "path": rel, "type": "file"})
+    return entries
+
+
+def _resolve_workspace_file(root: Path, rel_path: str) -> Path:
+    """Resolves a UI-supplied relative path against the workspace root, rejecting anything that
+    escapes it (../, absolute paths) so the file API can't read/write outside the workspace."""
+    root = root.resolve()
+    candidate = (root / rel_path).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise ValueError("path escapes workspace")
+    return candidate
+
+
+@control_app.get("/api/projects/{pid}/files")
+def list_files(pid: str) -> JSONResponse:
+    project = orchestrator.get(pid)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return JSONResponse(content={"tree": _build_file_tree(project.workspace.path, project.workspace.path)})
+
+
+@control_app.get("/api/projects/{pid}/file")
+def read_file(pid: str, path: str) -> JSONResponse:
+    project = orchestrator.get(pid)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    try:
+        target = _resolve_workspace_file(project.workspace.path, path)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid path"})
+    if not target.is_file():
+        return JSONResponse(status_code=404, content={"error": "file not found"})
+    try:
+        content = target.read_text()
+    except UnicodeDecodeError:
+        return JSONResponse(status_code=415, content={"error": "binary file"})
+    return JSONResponse(content={"path": path, "content": content})
+
+
+@control_app.put("/api/projects/{pid}/file")
+async def write_file(pid: str, request: Request) -> JSONResponse:
+    project = orchestrator.get(pid)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    body = await request.json()
+    path = body.get("path")
+    content = body.get("content")
+    if not path or content is None:
+        return JSONResponse(status_code=400, content={"error": "path and content required"})
+    try:
+        target = _resolve_workspace_file(project.workspace.path, path)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid path"})
+    if not target.exists() or not target.is_file():
+        return JSONResponse(status_code=404, content={"error": "file not found"})
+    target.write_text(content)
+    return JSONResponse(content={"path": path, "saved": True})
 
 
 @control_app.get("/api/assets")
