@@ -197,3 +197,30 @@ containers, correct scoping).
 ## Definition of done (v1)
 SPEC.md acceptance criteria 1–13 pass, States & Errors matrix covered, `/qa` + `/verify` green,
 and the Phase-0 spike report shows the enforcement guarantee held under the bypass probe.
+
+---
+
+## Backlog / deferred (tracked)
+
+Follow-ups discovered during the build; not yet implemented.
+
+- **Session compaction (context/cost control).** Follow-up prompts reuse one OpenCode session per
+  project for context, so a long-lived session's context (and token cost) grows unbounded.
+  Add compaction: summarize/trim old turns (OpenCode has `/api/session/{id}/compact` and
+  `/summarize`), or cap history, and surface it in the UI. Prevents slow/expensive later turns.
+- **Token-level streaming.** Build streaming currently ~1s-polls session messages (tool steps +
+  summaries appear as they complete). For word-by-word output, proxy OpenCode's `/event` SSE with
+  clean teardown of the blocking stream.
+- **6.2 — inject dataset reference into the build prompt.** Attaching a dataset should feed its
+  schema/columns/sample (a reference, not raw data) into the agent's context. Today attach only
+  drives the sovereign lock.
+- **Leak-window turn-queue ordering.** Serialize turns and enforce resolve→switch→reset→inject so
+  a sensitivity lock can't be bypassed by an in-flight vendor turn (SPEC States & Errors).
+- **DominoAssetProvider response-shape verification.** The `/v4/datasetUi/collections/byProject`
+  parsing is defensive/best-guess; confirm field names against a live Domino workspace.
+- **Auto-mode model override (Step 7).** Non-locked auto mode should force the phase model (the
+  `force_model` path currently only triggers on lock or openai single-provider mode).
+- **Single-port Domino App packaging.** Consolidate control(:8080)+preview(:8090) to one `:8888`
+  process + `app.sh` + Vite `base` so it publishes as a real Domino App (see README).
+- **Container egress allowlist (platform dependency).** The airtight zero-direct-to-vendor
+  guarantee needs a network allowlist; owner = platform. See SPIKE-REPORT.md.
