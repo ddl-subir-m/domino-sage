@@ -67,6 +67,12 @@
     </div>
 
     <div class="card">
+      <h2>Assets</h2>
+      <div id="assets" class="muted">create a project to load datasets</div>
+      <div class="hint">Attaching a dataset tagged <code id="sens-tag">sensitive</code> forces the sovereign model (sticky).</div>
+    </div>
+
+    <div class="card">
       <h2>Model</h2>
       <div id="model-badge" class="badge"><span class="dot"></span><span id="badge-text">—</span></div>
       <div class="row" style="margin-top:10px">
@@ -131,6 +137,34 @@ async function createProject() {
   active = id;
   document.getElementById('active-label').textContent = 'project: ' + id;
   refreshPreview();
+  refreshStatus();
+  loadAssets();
+}
+
+async function loadAssets() {
+  const { body } = await api('/api/assets');
+  document.getElementById('sens-tag').textContent = body.sensitivity_tag || 'sensitive';
+  const el = document.getElementById('assets');
+  const assets = body.assets || [];
+  if (!assets.length) { el.textContent = 'no datasets'; return; }
+  el.innerHTML = '';
+  for (const a of assets) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px';
+    const tags = a.tags.length ? ` [${a.tags.join(', ')}]` : '';
+    row.innerHTML = `<span style="flex:1">${a.name}<span style="color:${a.sensitive ? 'var(--lock)' : 'var(--faint)'}">${tags}</span></span>`;
+    const btn = document.createElement('button');
+    btn.textContent = 'Attach'; btn.style.cssText = 'padding:4px 10px;flex:0 0 auto';
+    btn.onclick = () => attachAsset(a.id);
+    row.appendChild(btn);
+    el.appendChild(row);
+  }
+}
+
+async function attachAsset(datasetId) {
+  if (!active) return;
+  const { body } = await api(`/api/projects/${active}/assets/${datasetId}/attach`, { method: 'POST' });
+  if (body.sensitive) { /* badge will show locked */ }
   refreshStatus();
 }
 

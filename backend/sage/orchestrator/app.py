@@ -25,7 +25,8 @@ from starlette.concurrency import run_in_threadpool
 
 _UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 
-from ..gateway.client import GatewayUpstreamError
+from ..assets.provider import DEFAULT_SENSITIVITY_TAG, DominoAssetProvider, FakeAssetProvider
+from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_token, static_token
 from ..gateway.factory import build_gateway
 from ..feedback.runner import FeedbackRunner
 from ..preview.proxy import make_preview_app
@@ -49,6 +50,16 @@ def _build_catalog() -> ModelCatalog:
     )
 
 
+def _build_assets():
+    """Domino datasets when DOMINO_API_HOST is set (workspace), else an in-memory fake."""
+    api_host = os.environ.get("DOMINO_API_HOST")
+    if not api_host:
+        return FakeAssetProvider()
+    key = os.environ.get("DOMINO_API_KEY")
+    token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    return DominoAssetProvider(api_host, token)
+
+
 _gateway, GATEWAY_MODE = build_gateway()
 orchestrator = Orchestrator(
     workspaces_root=Path(os.environ.get("SAGE_WORKSPACES", _REPO / "backend" / "workspaces")),
@@ -58,6 +69,9 @@ orchestrator = Orchestrator(
     opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
     # Single-provider hosts (openai mode) don't serve OpenCode's other aliases -> force the model.
     force_model=(GATEWAY_MODE == "openai"),
+    assets=_build_assets(),
+    sensitivity_tag=os.environ.get("SAGE_SENSITIVITY_TAG", DEFAULT_SENSITIVITY_TAG),
+    domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
 )
 
 control_app = FastAPI(title="sage orchestrator")
@@ -130,6 +144,21 @@ def check_project(pid: str) -> JSONResponse:
         "message": report.as_agent_message(),
         "signature": report.signature(),
     })
+
+
+@control_app.get("/api/assets")
+def list_assets() -> dict:
+    return {"assets": orchestrator.list_assets(), "sensitivity_tag": orchestrator._sensitivity_tag}
+
+
+@control_app.post("/api/projects/{pid}/assets/{dataset_id}/attach")
+def attach_asset(pid: str, dataset_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(content=orchestrator.attach_asset(pid, dataset_id))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "project not found"})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": "dataset not found"})
 
 
 @control_app.post("/api/projects/{pid}/build")

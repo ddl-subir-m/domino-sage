@@ -9,9 +9,11 @@ Deep module, narrow interface: create_project / get / active / shutdown.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, is_sensitive
+from ..assets.provider import DEFAULT_SENSITIVITY_TAG
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
@@ -32,6 +34,7 @@ class Project:
     control: ModelControl
     shim: EnforcementShim
     session_id: str | None = None
+    attached: list[str] = field(default_factory=list)
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -43,6 +46,7 @@ class Project:
             "id": self.id,
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
+            "attached": list(self.attached),
             "model": {
                 "mode": s.mode.value,
                 "phase": s.phase.value,
@@ -62,11 +66,17 @@ class Orchestrator:
         opencode_cwd: Path | None = None,
         feedback: FeedbackRunner | None = None,
         force_model: bool = False,
+        assets: AssetProvider | None = None,
+        sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG,
+        domino_project_id: str | None = None,
     ) -> None:
         self._wm = WorkspaceManager(workspaces_root, template)
         self._gateway = gateway
         self._catalog = catalog
         self._force_model = force_model
+        self._assets = assets or FakeAssetProvider()
+        self._sensitivity_tag = sensitivity_tag
+        self._domino_project_id = domino_project_id
         self._opencode_cwd = Path(opencode_cwd) if opencode_cwd else Path.cwd()
         self._feedback = feedback or FeedbackRunner()
         self._projects: dict[str, Project] = {}
@@ -133,6 +143,28 @@ class Orchestrator:
 
     def list_ids(self) -> list[str]:
         return list(self._projects)
+
+    def list_assets(self) -> list[dict]:
+        assets = self._assets.list_datasets(self._domino_project_id)
+        return [
+            {"id": a.id, "name": a.name, "tags": a.tags, "sensitive": is_sensitive(a, self._sensitivity_tag)}
+            for a in assets
+        ]
+
+    def attach_asset(self, project_id: str, dataset_id: str) -> dict:
+        """Attach a dataset to the project. If it carries the sensitivity tag, fire the sovereign
+        lock (sticky). This is the real signal that replaces the manual lock toggle."""
+        project = self.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
+        if asset is None:
+            raise LookupError(dataset_id)
+        if dataset_id not in project.attached:
+            project.attached.append(dataset_id)
+        sensitive = is_sensitive(asset, self._sensitivity_tag)
+        project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
+        return {"attached": asset.name, "sensitive": sensitive, "status": project.status()}
 
     def shutdown(self) -> None:
         for p in self._projects.values():

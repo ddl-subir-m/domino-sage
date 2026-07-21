@@ -129,10 +129,10 @@ turns without a human (AC11).
 ## Phase 2 — Domino integration + switching
 
 ### Step 6 — Asset explorer + attach + sensitivity lock  (C6, S1, AC2, AC9, security)
-- [ ] 6.1 Permission-scoped asset explorer via user-token pass-through, per-user container (C6, AC9). (1–2d / 4–8h)
+- [x] 6.1 Permission-scoped asset explorer via user-token pass-through, per-user container (C6, AC9). (1–2d / 4–8h)
 - [ ] 6.2 Optional attach → inject a **reference** (schema/types/rowcount/sample), not raw data
   (C6, eng finding). (0.5–1d / 2–4h)
-- [ ] 6.3 Sensitivity lock wiring + leak-window ordering: resolve→switch→reset→inject, serialized
+- [~] 6.3 Sensitivity lock wiring + leak-window ordering: resolve→switch→reset→inject, serialized
   turn queue, sticky session lock (S1, AC2, R-leak). (1–2d / 4–8h)
   - Exit: attach tagged dataset mid-session → next turn is sovereign; no in-flight vendor leak.
 
