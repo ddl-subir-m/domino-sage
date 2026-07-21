@@ -592,7 +592,10 @@ function renderEvent(ev) {
   else if (ev.type === 'iterate') { removeWorking(); working = addStatus('spin', '◐', 'Fixing errors…'); }
   else if (ev.type === 'done') { removeWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
   else if (ev.type === 'phase') { refreshStatus(); }
-  else if (ev.type === 'error') { removeWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message)); }
+  else if (ev.type === 'error') {
+    removeWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message));
+    if (ev.code === 'no_project') { active = null; document.getElementById('empty').style.display = ''; }
+  }
 }
 
 /* ---------- typecheck (manual) ---------- */

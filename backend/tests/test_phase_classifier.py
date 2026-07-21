@@ -30,15 +30,28 @@ def test_write_tools_are_implement():
 
 
 def test_reads_after_a_write_stay_implement():
-    # Sticky: a read between edits must NOT bounce back to planning.
-    msgs = [_assistant("write"), {"role": "tool", "content": "ok"}, _assistant("read")]
+    # Sticky within a turn: a read between edits must NOT bounce back to planning.
+    msgs = [{"role": "user", "content": "x"}, _assistant("write"),
+            {"role": "tool", "content": "ok"}, _assistant("read")]
     assert classify(msgs) is Phase.IMPLEMENT
 
 
-def test_explicit_plan_tool_flips_back_to_plan():
-    # Only an explicit (re)planning tool moves it back after implementing.
-    msgs = [_assistant("write"), _assistant("read"), _assistant("todowrite")]
+def test_todowrite_is_neutral_and_does_not_flip_back():
+    # todowrite is mid-build progress bookkeeping, not re-planning -> stays IMPLEMENT.
+    msgs = [{"role": "user", "content": "x"}, _assistant("write"),
+            _assistant("read"), _assistant("todowrite")]
+    assert classify(msgs) is Phase.IMPLEMENT
+
+
+def test_new_turn_resets_to_plan_despite_prior_writes():
+    # A follow-up prompt starts a fresh turn: prior writes don't leak forward.
+    msgs = [{"role": "user", "content": "build it"}, _assistant("write"), _assistant("edit"),
+            {"role": "user", "content": "now add a filter"}]
     assert classify(msgs) is Phase.PLAN
+    msgs.append(_assistant("read"))
+    assert classify(msgs) is Phase.PLAN                       # exploring the new request
+    msgs.append(_assistant("edit"))
+    assert classify(msgs) is Phase.IMPLEMENT                  # writing for the new request
 
 
 def test_concentrated_plan_then_sustained_implement():
@@ -46,13 +59,13 @@ def test_concentrated_plan_then_sustained_implement():
     assert classify(steps) is Phase.PLAN                      # step 1: planning
     steps.append(_assistant("read"))
     assert classify(steps) is Phase.PLAN                      # step 2: still exploring (neutral)
-    steps.append(_assistant("grep"))
-    assert classify(steps) is Phase.PLAN                      # step 3: still exploring (neutral)
+    steps.append(_assistant("todowrite"))
+    assert classify(steps) is Phase.PLAN                      # step 3: writing the plan (neutral)
     steps.append(_assistant("edit"))
     assert classify(steps) is Phase.IMPLEMENT                 # step 4: first write -> implement
     steps.append(_assistant("read"))
     assert classify(steps) is Phase.IMPLEMENT                 # step 5: read mid-build stays implement
-    steps.append(_assistant("write"))
-    assert classify(steps) is Phase.IMPLEMENT                 # step 6: still building
     steps.append(_assistant("todowrite"))
-    assert classify(steps) is Phase.PLAN                      # step 7: explicit re-plan
+    assert classify(steps) is Phase.IMPLEMENT                 # step 6: progress update stays implement
+    steps.append(_assistant("write"))
+    assert classify(steps) is Phase.IMPLEMENT                 # step 7: still building

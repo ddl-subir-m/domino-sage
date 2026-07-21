@@ -79,8 +79,12 @@ control_app = FastAPI(title="sage orchestrator")
 
 @control_app.get("/")
 def ui() -> FileResponse:
-    """The thin builder UI (single static page)."""
-    return FileResponse(_UI)
+    """The thin builder UI (single static page).
+
+    no-store: the in-memory project registry resets on restart, so a cached page pointing at a
+    stale project would POST builds that silently 404. Always serve the current HTML.
+    """
+    return FileResponse(_UI, headers={"Cache-Control": "no-store"})
 
 
 @control_app.get("/healthz")
@@ -172,7 +176,8 @@ def build_stream(pid: str, body: dict) -> StreamingResponse:
 
     def sse():
         if not orchestrator.get(pid):
-            yield f"data: {_json.dumps({'type': 'error', 'message': 'project not found'})}\n\n"
+            msg = f"Project '{pid}' not found — it may have been reset. Create a project to continue."
+            yield f"data: {_json.dumps({'type': 'error', 'code': 'no_project', 'message': msg})}\n\n"
             return
         if not prompt:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"

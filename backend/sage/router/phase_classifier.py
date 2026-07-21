@@ -9,14 +9,16 @@ interleaved turns (plan → edit → re-plan → edit) route correctly, per step
 Design notes:
   - Pure function of the OpenAI-compatible `messages`. No I/O, no shared mutable state, so
     concurrent requests never race over a phase flag.
-  - Sticky, not per-action-flip. Reads, searches, shell, and pure reasoning are *neutral* — they
-    hold whatever phase the last STRONG signal set. Only a file write (-> implement) or an explicit
-    plan/todo tool or the start of the task (-> plan) changes the phase. That keeps planning
-    concentrated: PLAN through the whole initial explore-and-think pass until the first write, then
-    IMPLEMENT through the build (reads between edits don't bounce it) until the agent re-plans.
+  - Scoped to the CURRENT turn. We scan back only to the most recent user message, so a follow-up
+    prompt (a new feature, or a feedback-loop fix turn) starts fresh in PLAN even though earlier
+    turns wrote files.
+  - Within the turn: PLAN until the agent's first file write, then IMPLEMENT for the rest of the
+    turn. Everything else — reads, search, shell, and todo/progress bookkeeping (todowrite is called
+    repeatedly mid-build to tick off steps, NOT to re-plan) — is neutral and never flips the phase
+    back. That keeps planning concentrated at the front of each turn, sparse by construction.
   - Harness-specific tool names live HERE, localized. The router (resolve) stays pure Phase->model
     and the gateway proxy stays harness-agnostic (DESIGN.md leak rule).
-  - Bias to PLAN (the stronger model) when no strong signal is present — a safe default.
+  - Bias to PLAN (the stronger model) when no write has happened yet — a safe default.
 """
 from __future__ import annotations
 
@@ -25,15 +27,14 @@ from typing import Any
 
 from .models import Phase
 
-# Strong IMPLEMENT signal: tools that mutate source files. OpenCode's names plus common aliases
-# from other OpenAI-tool-calling harnesses, so the signal survives a driver swap.
+# The only phase-changing signal: tools that mutate source files -> the agent is implementing.
+# OpenCode's names plus common aliases from other OpenAI-tool-calling harnesses, so the signal
+# survives a driver swap. Reads, search, shell, and todo tools are all neutral.
 WRITE_TOOLS = frozenset(
     {"edit", "write", "patch", "multiedit", "multi_edit", "str_replace", "str_replace_editor",
      "create", "create_file", "apply_patch"}
 )
-# Strong PLAN signal: explicit (re)planning tools. Everything else (read, grep, glob, list, bash,
-# webfetch, reasoning-only turns) is NEUTRAL and does not move the phase.
-PLAN_TOOLS = frozenset({"todowrite", "todoread", "plan"})
+_TURN_BOUNDARY_ROLES = frozenset({"user", "human"})
 
 
 def _tool_names(message: dict[str, Any]) -> list[str]:
@@ -47,19 +48,15 @@ def _tool_names(message: dict[str, Any]) -> list[str]:
 
 
 def classify(messages: Sequence[dict[str, Any]] | None) -> Phase:
-    """Phase for the next inference: scan back to the most recent STRONG signal.
+    """Phase for the next inference, within the current turn.
 
-    IMPLEMENT once the agent has started writing files (held through intervening reads/reasoning);
-    PLAN before the first write or after an explicit plan/todo tool. Neutral actions are skipped.
-    Defaults to PLAN.
+    IMPLEMENT if the agent has already written a file since the last user message; otherwise PLAN.
+    Scanning stops at the turn boundary so prior turns' writes don't leak forward.
     """
     for message in reversed(messages or []):
-        if message.get("role") != "assistant":
-            continue
-        names = _tool_names(message)
-        if any(n in WRITE_TOOLS for n in names):
+        role = message.get("role")
+        if role in _TURN_BOUNDARY_ROLES:
+            break  # reached the start of this turn with no write -> still planning
+        if role == "assistant" and any(n in WRITE_TOOLS for n in _tool_names(message)):
             return Phase.IMPLEMENT
-        if any(n in PLAN_TOOLS for n in names):
-            return Phase.PLAN
-        # neutral (read/search/bash/reasoning): keep scanning for the last strong signal
     return Phase.PLAN
