@@ -44,6 +44,13 @@
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
   .badge.locked .dot { background: var(--lock); }
   pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; background: #F5F5F5; border-radius: 4px; padding: 8px; margin: 8px 0 0; max-height: 220px; overflow: auto; }
+  .activity { font-size: 12px; background: #F5F5F5; border-radius: 4px; padding: 8px; margin-bottom: 8px; max-height: 260px; overflow: auto; }
+  .activity .ln { margin: 3px 0; line-height: 1.4; }
+  .activity .turn { font-weight: 600; color: var(--primary); margin-top: 8px; }
+  .activity .tool { color: var(--muted); } .activity .tool b { color: var(--text); }
+  .activity .agenttext { color: var(--text); }
+  .activity .tc-ok { color: #28A464; } .activity .tc-err { color: var(--lock); }
+  .activity .done { font-weight: 600; margin-top: 6px; }
   .ok { color: #28A464; } .err { color: var(--lock); } .muted { color: var(--muted); font-size: 12px; }
   .hint { font-size: 11px; color: var(--faint); margin-top: 4px; }
 </style>
@@ -91,10 +98,10 @@
 
     <div class="card">
       <h2>Build</h2>
-      <textarea id="prompt" placeholder="Describe the app to build, e.g. a todo list with add and delete"></textarea>
-      <button class="primary" style="width:100%; margin-top:8px" id="build-btn" onclick="build()">Build</button>
-      <div class="hint">Runs the agent, then typecheck→fix loop until clean or the breaker stops. Needs a live model (domino/openai mode).</div>
-      <pre id="build-out" style="display:none"></pre>
+      <div id="activity" class="activity" style="display:none"></div>
+      <textarea id="prompt" placeholder="Describe the app, or a change to make (follow-ups keep context)"></textarea>
+      <button class="primary" style="width:100%; margin-top:8px" id="build-btn" onclick="build()">Send</button>
+      <div class="hint">First prompt builds; follow-ups modify/add features with the same context. Live agent activity streams above. Needs a live model (domino/openai mode).</div>
     </div>
 
     <div class="card">
@@ -202,22 +209,58 @@ async function lockSovereign() {
   refreshStatus();
 }
 
+function logLine(cls, html) {
+  const box = document.getElementById('activity');
+  box.style.display = 'block';
+  const d = document.createElement('div');
+  d.className = 'ln ' + cls; d.innerHTML = html;
+  box.appendChild(d); box.scrollTop = box.scrollHeight;
+}
+
 async function build() {
   if (!active) { alert('create a project first'); return; }
-  const prompt = document.getElementById('prompt').value.trim();
+  const ta = document.getElementById('prompt');
+  const prompt = ta.value.trim();
   if (!prompt) return;
   const btn = document.getElementById('build-btn');
-  const out = document.getElementById('build-out');
-  btn.disabled = true; btn.textContent = 'Building…';
-  out.style.display = 'block'; out.textContent = 'Running agent + typecheck loop…';
-  const r = await api('/api/projects/' + active + '/build', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt }) });
-  const b = r.body;
-  out.className = b.ok ? 'ok' : 'err';
-  out.textContent = r.ok
-    ? `${b.ok ? 'CLEAN' : 'STOPPED'} — ${b.decision}\nerrors: ${b.error_count}\n\n${b.message}`
-    : 'build failed: ' + JSON.stringify(b);
-  btn.disabled = false; btn.textContent = 'Build';
+  btn.disabled = true; btn.textContent = 'Working…';
+  logLine('turn', '&#9654; ' + prompt.replace(/</g, '&lt;'));
+  ta.value = '';
+
+  try {
+    const resp = await fetch('/api/projects/' + active + '/build/stream', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt }),
+    });
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const frames = buf.split('\n\n'); buf = frames.pop();
+      for (const f of frames) {
+        const line = f.replace(/^data: /, '').trim();
+        if (!line) continue;
+        renderEvent(JSON.parse(line));
+      }
+    }
+  } catch (e) {
+    logLine('tc-err', 'stream error: ' + e);
+  }
+  btn.disabled = false; btn.textContent = 'Send';
   refreshPreview();
+  refreshStatus();
+}
+
+function renderEvent(ev) {
+  if (ev.type === 'agent' && ev.kind === 'tool') logLine('tool', `&#8226; <b>${ev.tool}</b>`);
+  else if (ev.type === 'agent' && ev.kind === 'text') logLine('agenttext', ev.text.replace(/</g, '&lt;').replace(/\n/g, '<br>'));
+  else if (ev.type === 'typecheck-start') logLine('tool', 'typechecking…');
+  else if (ev.type === 'typecheck') logLine(ev.ok ? 'tc-ok' : 'tc-err', ev.ok ? 'typecheck passed' : `typecheck: ${ev.errors} error(s)`);
+  else if (ev.type === 'iterate') logLine('tool', 'fixing errors…');
+  else if (ev.type === 'done') { logLine('done', ev.ok ? '&#10003; done — clean' : `stopped — ${ev.decision}`); refreshPreview(); }
+  else if (ev.type === 'error') logLine('tc-err', 'error: ' + ev.message);
 }
 
 async function check() {

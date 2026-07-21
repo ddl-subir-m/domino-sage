@@ -92,23 +92,26 @@ class Orchestrator:
             self._oc_client = OpenCodeClient(base_url=self._oc_server.start())
         return self._oc_client
 
+    def _ensure_session(self, project: Project) -> str:
+        client = self._ensure_opencode()
+        if project.session_id is None:
+            # No session-level model: use opencode.json's default; the shim's force_model + router
+            # enforce the real model per request. (An explicit ModelRef at creation stalled turns.)
+            project.session_id = client.create_session(directory=str(project.workspace.path))
+        return project.session_id
+
     def build(self, project_id: str, prompt: str) -> dict:
-        """Run one build: prompt the agent, then loop typecheck->feed-errors-back until clean or
-        the circuit breaker stops. Requires gateway access (real model calls)."""
+        """Run one build to completion (non-streaming). Reuses the session, so repeated calls are
+        follow-up turns with context. Requires gateway access."""
         project = self.get(project_id)
         if project is None:
             raise KeyError(project_id)
         client = self._ensure_opencode()
-        if project.session_id is None:
-            # No session-level model: use opencode.json's default provider/model. The shim's
-            # force_model + router still enforce the real model per request. (Passing an explicit
-            # ModelRef at session creation was observed to stall the turn.)
-            project.session_id = client.create_session(directory=str(project.workspace.path))
-        sid = project.session_id
+        sid = self._ensure_session(project)
 
         def send_and_wait(text: str) -> None:
             client.send_prompt(sid, text)
-            client.wait_for_idle(sid)  # wait for the full multi-step turn to finish
+            client.wait_for_idle(sid)
 
         report, decision = run_feedback_loop(
             prompt,
@@ -116,12 +119,60 @@ class Orchestrator:
             check=lambda: self._feedback.check(project.workspace.path),
             breaker=CircuitBreaker(),
         )
-        return {
-            "ok": report.ok,
-            "error_count": len(report.errors),
-            "decision": decision.reason,
-            "message": report.as_agent_message(),
-        }
+        return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
+
+    def build_stream(self, project_id: str, prompt: str):
+        """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
+        activity, typecheck results, iteration, and a final done event. Reuses the session so
+        each call is a follow-up turn (modify/add features) with full context."""
+        import time
+
+        project = self.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        client = self._ensure_opencode()
+        sid = self._ensure_session(project)
+        breaker = CircuitBreaker()
+        current = prompt
+
+        while True:
+            yield {"type": "turn", "prompt": current[:120]}
+            seen: set[tuple[str, int]] = set()
+            client.send_prompt(sid, current)
+            appeared = False
+            start = time.monotonic()
+            while True:
+                running = client.is_running(sid)
+                appeared = appeared or running
+                for m in client.messages(sid):
+                    if m.get("type") != "assistant":
+                        continue
+                    for i, part in enumerate(m.get("content", [])):
+                        key = (m["id"], i)
+                        if key in seen:
+                            continue
+                        pt = part.get("type", "")
+                        if "tool" in pt:
+                            seen.add(key)
+                            yield {"type": "agent", "kind": "tool", "tool": part.get("tool") or part.get("name") or pt}
+                        elif pt == "text" and part.get("text"):
+                            seen.add(key)
+                            yield {"type": "agent", "kind": "text", "text": part["text"]}
+                if appeared and not running:
+                    break
+                if not appeared and time.monotonic() - start > 12:
+                    break
+                time.sleep(1.0)
+
+            yield {"type": "typecheck-start"}
+            report = self._feedback.check(project.workspace.path)
+            yield {"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()}
+            decision = breaker.record(report.signature(), report.ok)
+            if decision.action == "stop":
+                yield {"type": "done", "ok": report.ok, "decision": decision.reason}
+                return
+            yield {"type": "iterate", "reason": decision.reason}
+            current = report.as_agent_message()
 
     def create_project(self, project_id: str, start_preview: bool = True) -> Project:
         workspace = self._wm.create(project_id)

@@ -161,6 +161,32 @@ def attach_asset(pid: str, dataset_id: str) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": "dataset not found"})
 
 
+@control_app.post("/api/projects/{pid}/build/stream")
+def build_stream(pid: str, body: dict) -> StreamingResponse:
+    """Streaming build: SSE of progress events (agent text/tool, typecheck, done). Follow-up
+    prompts reuse the session (modify/add features). Sync generator -> Starlette threadpools it,
+    so the loop stays free to serve the /v1 model calls the turn makes."""
+    import json as _json
+
+    prompt = (body or {}).get("prompt", "")
+
+    def sse():
+        if not orchestrator.get(pid):
+            yield f"data: {_json.dumps({'type': 'error', 'message': 'project not found'})}\n\n"
+            return
+        if not prompt:
+            yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
+            return
+        try:
+            for evt in orchestrator.build_stream(pid, prompt):
+                yield f"data: {_json.dumps(evt)}\n\n"
+        except Exception as e:  # noqa: BLE001
+            log.exception("build_stream failed")
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
 @control_app.post("/api/projects/{pid}/build")
 async def build_project(pid: str, request: Request) -> JSONResponse:
     """Run one agent build with the closed feedback loop (needs gateway access)."""
