@@ -173,7 +173,7 @@
     border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 14px; display: none;
   }
   .pop.open { display: block; }
-  .pop h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); font-weight: 600; }
+  .pop h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); font-weight: 600; }
   .pop label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   .pop select, .pop input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
   .pop input.invalid { border-color: var(--lock); }
@@ -251,7 +251,7 @@
     <button class="icon-btn" id="delete-proj-btn" title="Delete this app" onclick="deleteActiveProject()" disabled>🗑</button>
     <button class="icon-btn" title="New app" onclick="togglePop('new-proj-pop')">+</button>
     <div class="pop pop-down" id="new-proj-pop">
-      <h3>New app</h3>
+      <h2>New app</h2>
       <label for="new-proj-name">Name</label>
       <input id="new-proj-name" placeholder="e.g. Fraud review" autocomplete="off"
         oninput="validateNewProjectName()"
@@ -282,7 +282,7 @@
     <div class="composer-wrap">
       <!-- model popover -->
       <div class="pop" id="model-pop">
-        <h3>Model</h3>
+        <h2>Model</h2>
         <div class="chip" style="cursor:default" id="pop-badge"><span class="dot"></span><span id="pop-badge-text">—</span></div>
         <label>Mode</label>
         <select id="mode-sel" onchange="setModel()">
@@ -316,7 +316,7 @@
 
       <!-- data / assets popover -->
       <div class="pop" id="data-pop">
-        <h3>Project data</h3>
+        <h2>Project data</h2>
         <div id="assets"><div class="hint">Create a project to load datasets.</div></div>
         <div class="hint">Attaching a dataset tagged <b id="sens-tag">sensitive</b> forces the sovereign model.</div>
       </div>
