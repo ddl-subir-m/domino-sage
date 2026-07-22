@@ -111,8 +111,11 @@ class ViteSupervisor:
         import os
 
         try:
+            # -sTCP:LISTEN restricts to the actual server socket — plain `-ti tcp:{port}` also
+            # matches client sockets (e.g. our own proxy's outgoing connections to Vite), which
+            # let this kill the orchestrator's own process group when its pid was among them.
             pids = subprocess.run(
-                ["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True, timeout=5
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5
             ).stdout.split()
         except (OSError, subprocess.TimeoutExpired):
             return

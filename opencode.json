@@ -19,5 +19,17 @@
       }
     }
   },
-  "model": "sage-gateway/deepseek-v4-pro"
+  "model": "sage-gateway/gpt-5.4",
+  "agent": {
+    "sage-ask": {
+      "mode": "primary",
+      "description": "Read-only: answers questions without editing files or running shell commands.",
+      "permission": { "edit": "deny", "bash": "deny" }
+    },
+    "sage-plan": {
+      "mode": "primary",
+      "description": "Read-only planning: explores and proposes a plan without editing files or running shell commands.",
+      "permission": { "edit": "deny", "bash": "deny" }
+    }
+  }
 }

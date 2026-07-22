@@ -357,8 +357,10 @@ async def chat_completions(request: Request, x_sage_project: str = Header(defaul
     if err is not None:
         if isinstance(err, GatewayUpstreamError):
             log.error("gateway %s: %s", err.status, err.body)
+            project.last_gateway_error = {"message": str(err), "upstream_status": err.status}
             return JSONResponse(status_code=502, content={"error": {"message": str(err), "upstream_status": err.status}})
         log.exception("shim upstream failure", exc_info=err)
+        project.last_gateway_error = {"message": f"{type(err).__name__}: {err}"}
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(err).__name__}: {err}"}})
 
     def stream():

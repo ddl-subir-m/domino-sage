@@ -48,8 +48,11 @@ Every app must look intentional and consistent. These rules are what separate a 
   Comfortable line length is 50–75 characters.
 
 ### States — do not skip these (this is the #1 polish signal)
-- **Empty state:** every list/collection that can be empty needs one that says *what it is*, *why
-  it's empty*, and *the action to fill it* — with a button. Never render a blank area.
+Scope these to the screens/collections the current request actually touches — don't add them to
+components outside what was asked.
+- **Empty state:** for a list/collection you're building or editing that can be empty, add one that
+  says *what it is*, *why it's empty*, and *the action to fill it* — with a button. Never render a
+  blank area.
 - **Loading:** show a spinner or skeleton for async work; never a blank flash.
 - **Error:** a human-readable message plus how to recover.
 - **Interactive elements:** hover and focus styles; explain disabled states.

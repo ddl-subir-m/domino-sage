@@ -62,12 +62,20 @@ class OpenCodeClient:
         ms = self.messages(session_id)
         return ms[-1]["id"] if ms else None
 
-    def send_prompt(self, session_id: str, text: str, model: dict | None = None) -> None:
+    def send_prompt(self, session_id: str, text: str, model: dict | None = None, agent: str | None = None) -> None:
         """Send a prompt. `/prompt` returns before the turn completes (async), so callers must
-        wait_for_completion() to know the edits landed."""
+        wait_for_completion() to know the edits landed.
+
+        `agent` selects a named agent from opencode.json (e.g. "sage-ask", "sage-plan") whose
+        `permission` block OpenCode enforces at its own tool-execution layer — the real read-only
+        guarantee for Ask/Plan modes, since the shim's tools-list filtering only hides tools from
+        the model's view of one request and can't stop OpenCode from running a tool it already
+        knows about (e.g. `bash`, which the tools filter never covered either)."""
         body: dict = {"prompt": {"text": text}}
         if model:
             body["model"] = model
+        if agent:
+            body["agent"] = agent
         r = httpx.post(f"{self.base_url}/api/session/{session_id}/prompt", json=body, timeout=self.timeout_s)
         r.raise_for_status()
 

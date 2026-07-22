@@ -70,8 +70,8 @@
   .mode-chip.fake .dot { background: var(--faint); }
 
   /* ---------- layout ---------- */
-  .main { display: grid; grid-template-columns: minmax(380px, 460px) 1fr; height: calc(100vh - 52px); }
-  .chat { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+  .main { display: grid; grid-template-columns: minmax(380px, 460px) 1fr; height: calc(100vh - 52px); overflow: hidden; }
+  .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
   .messages { flex: 1; overflow-y: auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 18px; font-size: 14.5px; }
 
   /* ---------- empty state ---------- */
@@ -200,7 +200,7 @@
   .asset-row button.attached { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
 
   /* ---------- preview panel ---------- */
-  .work { display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .work { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
   .work-toolbar {
     height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
     border-bottom: 1px solid var(--border); background: var(--surface);
@@ -218,7 +218,7 @@
 
   /* ---------- code / file tree ---------- */
   .work-body { flex: 1; display: flex; min-height: 0; }
-  .work-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .work-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   #editor-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .editor-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
   #monaco-editor { flex: 1; min-height: 0; display: none; }
@@ -245,7 +245,7 @@
 </head>
 <body>
 <header>
-  <div class="brand"><span class="glyph">S</span> sage</div>
+  <div class="brand" onclick="goToStart()" style="cursor:pointer" title="Start a new app"><span class="glyph">S</span> sage</div>
   <div class="proj-picker">
     <select id="proj-select" onchange="switchProject()" title="Active project"></select>
     <button class="icon-btn" id="delete-proj-btn" title="Delete this app" onclick="deleteActiveProject()" disabled>🗑</button>
@@ -450,6 +450,30 @@ async function createProject(id) {
   const r = await api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
   if (!r.ok) return { ok: false, conflict: r.status === 409 };
   return { ok: true };
+}
+// Logo/brand click: return to the starter-prompt screen without touching the current
+// project's files — just deselects it so the next starter click creates a fresh one.
+function goToStart() {
+  active = null;
+  clearMessages();
+  document.getElementById('empty').style.display = '';
+  document.getElementById('delete-proj-btn').disabled = true;
+  document.getElementById('proj-select').value = '';
+  renderVerticals();
+  renderSuggestions();
+  // blank the preview/code panel — it belongs to the project we just left
+  document.getElementById('preview').style.display = 'none';
+  document.getElementById('preview').src = 'about:blank';
+  document.getElementById('url-text').textContent = 'no preview yet';
+  document.getElementById('work-empty').style.display = 'grid';
+  document.getElementById('status-dot').className = 'status-dot';
+  openFilePath = null;
+  for (const buf of fileBuffers.values()) buf.model.dispose();
+  fileBuffers.clear();
+  fileTreeRows.clear();
+  document.getElementById('editor-empty').style.display = 'grid';
+  document.getElementById('monaco-editor').style.display = 'none';
+  document.getElementById('editor-save-btn').disabled = true;
 }
 async function activateProject(id) {
   addProjectOption(id);
@@ -744,7 +768,15 @@ function addUser(text) {
   d.innerHTML = `<div class="body">${esc(text)}</div>`;
   document.getElementById('messages').appendChild(d); scrollDown();
 }
-function append(el) { document.getElementById('messages').appendChild(el); scrollDown(); return el; }
+// Keep the live "working" spinner trailing the newest card: if it's present, insert new
+// messages before it instead of after, so the DOM order always matches chronological order.
+function append(el) {
+  const box = document.getElementById('messages');
+  if (working && working.parentElement === box) box.insertBefore(el, working);
+  else box.appendChild(el);
+  scrollDown();
+  return el;
+}
 
 // minimal, dependency-free markdown -> HTML (headings, bold/italic/code, lists, fences, paragraphs)
 function md(src) {
@@ -805,7 +837,8 @@ function addToolCard(tool, detail) {
   const [ico, verb] = TOOL_META[tool] || ['⚙', tool];
   // collapse consecutive calls of the same tool into one card with a count (dyad-style tidiness)
   const box = document.getElementById('messages');
-  const last = box.lastElementChild;
+  // skip the trailing "working" spinner when looking for the most recent real card
+  const last = (working && working.parentElement === box) ? working.previousElementSibling : box.lastElementChild;
   if (last && last.classList.contains('tool-card') && last.dataset.tool === tool) {
     const n = (+last.dataset.count || 1) + 1;
     last.dataset.count = n;
@@ -876,6 +909,7 @@ function trail() {
 
 async function build() {
   if (!active) { alert('Create a project first'); return; }
+  const pid = active; // pin the stream to the project it was launched for
   const ta = document.getElementById('prompt');
   const prompt = ta.value.trim();
   if (!prompt) return;
@@ -887,7 +921,7 @@ async function build() {
   setWorking(PHASE_WORK[buildPhase]);
 
   try {
-    const resp = await fetch('/api/projects/' + active + '/build/stream', {
+    const resp = await fetch('/api/projects/' + pid + '/build/stream', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt }),
     });
     const reader = resp.body.getReader();
@@ -900,16 +934,21 @@ async function build() {
       const frames = buf.split('\n\n'); buf = frames.pop();
       for (const f of frames) {
         const line = f.replace(/^data: /, '').trim();
-        if (line) renderEvent(JSON.parse(line));
+        // Drop frames if the user has switched away from `pid` — the stream keeps running
+        // server-side (and persists to that project's history) but must not render into
+        // whatever project is now on screen.
+        if (line && active === pid) renderEvent(JSON.parse(line));
       }
     }
   } catch (e) {
-    renderEvent({ type: 'error', message: String(e) });
+    if (active === pid) renderEvent({ type: 'error', message: String(e) });
   }
-  stopWorking();
-  btn.disabled = false;
-  refreshPreview();
-  refreshStatus();
+  if (active === pid) {
+    stopWorking();
+    btn.disabled = false;
+    refreshPreview();
+    refreshStatus();
+  }
 }
 
 // Replays a project's persisted chat transcript (see Workspace.append_history) so switching to

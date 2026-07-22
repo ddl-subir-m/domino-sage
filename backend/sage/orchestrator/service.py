@@ -28,6 +28,16 @@ from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
 
 
+# Ask/Plan are the two read-only modes: routed to an opencode.json agent whose `permission`
+# block OpenCode enforces natively (edit/bash denied), not just hidden from the model's tools
+# list. Auto/Implement keep OpenCode's default agent (full permissions).
+_READ_ONLY_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan"}
+
+
+def _agent_for_mode(mode: Mode) -> str | None:
+    return _READ_ONLY_AGENT.get(mode)
+
+
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
@@ -60,6 +70,11 @@ class Project:
     shim: EnforcementShim
     session_id: str | None = None
     attached: list[str] = field(default_factory=list)
+    # Set by the /v1/chat/completions handler when a model call the agent made this turn fails
+    # upstream (bad model id, gateway auth, etc). build()/build_stream() check + clear this so a
+    # failed turn is reported as an error instead of silently falling through to "typecheck clean"
+    # on an unmodified workspace (the turn never touched any files).
+    last_gateway_error: dict | None = None
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -162,8 +177,13 @@ class Orchestrator:
         sid = self._ensure_session(project)
 
         def send_and_wait(text: str) -> None:
-            client.send_prompt(sid, text)
+            project.last_gateway_error = None
+            agent = _agent_for_mode(project.control.snapshot().mode)
+            client.send_prompt(sid, text, agent=agent)
             client.wait_for_idle(sid)
+            if project.last_gateway_error is not None:
+                err = project.last_gateway_error
+                raise RuntimeError(f"model call failed: {err['message']}")
 
         report, decision = run_feedback_loop(
             prompt,
@@ -196,10 +216,16 @@ class Orchestrator:
 
         project.workspace.append_history({"type": "user", "text": prompt})
 
+        # Scoped to the whole build_stream call (not per turn): client.messages(sid) returns the
+        # entire session's messages on every poll, so a per-turn `seen` would let a follow-up
+        # turn's first poll re-walk the previous turn's already-completed parts and re-emit/
+        # re-persist them out of order (duplicate cards appended after the newer turn began).
+        seen: set[tuple[str, int]] = set()
         while True:
             yield {"type": "turn", "prompt": current[:120]}
-            seen: set[tuple[str, int]] = set()
-            client.send_prompt(sid, current)
+            project.last_gateway_error = None
+            agent = _agent_for_mode(project.control.snapshot().mode)
+            client.send_prompt(sid, current, agent=agent)
             appeared = False
             start = time.monotonic()
             # The shim classifies plan/implement per model call (phase_classifier). We only observe
@@ -247,11 +273,19 @@ class Orchestrator:
                 if cur_phase != last_phase:
                     last_phase = cur_phase
                     yield {"type": "phase", "phase": cur_phase}
+                if project.last_gateway_error is not None:
+                    break
                 if appeared and not running:
                     break
                 if not appeared and time.monotonic() - start > 12:
                     break
                 time.sleep(1.0)
+
+            if project.last_gateway_error is not None:
+                err = project.last_gateway_error
+                yield persist({"type": "error", "message": f"model call failed: {err['message']}"})
+                yield persist({"type": "done", "ok": False, "decision": "gateway error"})
+                return
 
             yield {"type": "typecheck-start"}
             report = self._feedback.check(project.workspace.path)
