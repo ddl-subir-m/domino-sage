@@ -215,10 +215,13 @@
   iframe { flex: 1; border: 0; width: 100%; background: #fff; }
   .work-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
   .spacer { flex: 1; }
+  .preview-loading { position: absolute; inset: 0; display: none; place-items: center; background: var(--surface); color: var(--faint); font-size: 13px; gap: 8px; }
+  .preview-loading.show { display: grid; }
+  .preview-loading .ico { font-size: 16px; animation: spin 1s linear infinite; }
 
   /* ---------- code / file tree ---------- */
   .work-body { flex: 1; display: flex; min-height: 0; }
-  .work-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .work-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
   #editor-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .editor-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
   #monaco-editor { flex: 1; min-height: 0; display: none; }
@@ -355,6 +358,7 @@
     <div class="work-body">
       <div class="work-main">
         <iframe id="preview" title="preview" style="display:none"></iframe>
+        <div class="preview-loading" id="preview-loading"><span class="ico">◐</span><span>Loading preview…</span></div>
         <div id="editor-pane" style="display:none">
           <div class="editor-empty" id="editor-empty">Select a file from the tree to view and edit it.</div>
           <div id="monaco-editor"></div>
@@ -990,6 +994,9 @@ async function check() {
 }
 
 /* ---------- preview ---------- */
+document.getElementById('preview').addEventListener('load', () => {
+  document.getElementById('preview-loading').classList.remove('show');
+});
 function showPreview() {
   document.getElementById('preview').style.display = workTab === 'preview' ? 'block' : 'none';
   document.getElementById('work-empty').style.display = 'none';
@@ -997,6 +1004,7 @@ function showPreview() {
 function refreshPreview() {
   if (!active) return;
   showPreview();
+  document.getElementById('preview-loading').classList.add('show');
   document.getElementById('preview').src = previewBase + '?t=' + Date.now();
   document.getElementById('url-text').textContent = previewBase;
   document.getElementById('status-dot').className = 'status-dot ok';
