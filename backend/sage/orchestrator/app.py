@@ -300,9 +300,12 @@ def build_stream(pid: str, body: dict) -> StreamingResponse:
 
     def sse():
         if not orchestrator.get(pid):
-            msg = f"Project '{pid}' not found — it may have been reset. Create a project to continue."
-            yield f"data: {_json.dumps({'type': 'error', 'code': 'no_project', 'message': msg})}\n\n"
-            return
+            try:
+                orchestrator.open_project(pid)
+            except FileNotFoundError:
+                msg = f"Project '{pid}' not found — it may have been reset. Create a project to continue."
+                yield f"data: {_json.dumps({'type': 'error', 'code': 'no_project', 'message': msg})}\n\n"
+                return
         if not prompt:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
             return
