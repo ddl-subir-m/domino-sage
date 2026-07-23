@@ -42,6 +42,7 @@ def main() -> None:
     if not BASE:
         raise SystemExit("set GATEWAY_BASE_URL (e.g. https://<host>/apps/<id>/v1)")
     headers = {"Authorization": token(), "Content-Type": "application/json"}
+    root = BASE.rsplit("/v1", 1)[0]
     print("gateway base:", BASE, " token prefix:", token()[:16], "…")
 
     # 1) models — confirms auth + that sovereign models are listed
@@ -50,21 +51,28 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001
         print("models error:", type(e).__name__, e)
 
-    # 2) one real completion, with the labels the shim will send
-    tagged = {**headers, "X-LLM-Tag-phase": "plan", "X-LLM-Tag-project": os.environ.get("DOMINO_PROJECT_NAME", "Sage")}
-    body = {"model": MODEL, "messages": [{"role": "user", "content": "Reply with the single word: ok"}], "max_tokens": 8}
-    try:
-        show(f"POST {BASE}/chat/completions (model={MODEL})", httpx.post(f"{BASE}/chat/completions", headers=tagged, json=body, timeout=60))
-    except Exception as e:  # noqa: BLE001
-        print("completion error:", type(e).__name__, e)
-
-    # 3) usage/cost shape — try a couple of likely locations
-    root = BASE.rsplit("/v1", 1)[0]
-    for url in (f"{root}/api/usage/mine", f"{BASE}/usage/mine", f"{root}/usage/mine"):
+    # 2) route discovery — find the usage/cost endpoint from the gateway's own OpenAPI
+    for spec in (f"{root}/openapi.json", f"{BASE}/openapi.json"):
         try:
-            show(f"GET {url}", httpx.get(url, headers=headers, timeout=30))
+            r = httpx.get(spec, headers=headers, timeout=30)
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json"):
+                paths = sorted(r.json().get("paths", {}))
+                print(f"\n### {spec} -> 200 ; {len(paths)} paths:")
+                for p in paths:
+                    print("   ", p)
+                break
+            print(f"\n### {spec} -> {r.status_code}")
         except Exception as e:  # noqa: BLE001
-            print(f"usage error {url}:", type(e).__name__, e)
+            print(f"openapi error {spec}:", type(e).__name__, e)
+
+    # 3) completions across a few models to isolate the earlier 502 (provider vs gateway)
+    for model in [MODEL, "sonnet", "gpt-5.4"]:
+        tagged = {**headers, "X-LLM-Tag-phase": "plan", "X-LLM-Tag-project": os.environ.get("DOMINO_PROJECT_NAME", "Sage")}
+        body = {"model": model, "messages": [{"role": "user", "content": "Reply with the single word: ok"}], "max_tokens": 8}
+        try:
+            show(f"POST {BASE}/chat/completions (model={model})", httpx.post(f"{BASE}/chat/completions", headers=tagged, json=body, timeout=60))
+        except Exception as e:  # noqa: BLE001
+            print(f"completion error {model}:", type(e).__name__, e)
 
 
 if __name__ == "__main__":

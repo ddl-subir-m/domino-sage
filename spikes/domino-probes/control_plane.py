@@ -62,43 +62,50 @@ def call(method: str, path: str, **kw) -> tuple[int, object]:
 def main() -> None:
     print("token prefix:", token()[:16], "…  API base:", API)
 
-    # --- read-only discovery: learn the shapes ---
+    # --- read-only discovery ---
     call("GET", "/projects?limit=3")
+    call("GET", "/users/self")  # want the caller's Mongo ObjectId (ownerId) for the hub
+    owner_oid = None
     if PROJECT_ID:
-        call("GET", f"/projects/{PROJECT_ID}")
+        _, proj = call("GET", f"/projects/{PROJECT_ID}")
+        if isinstance(proj, dict):
+            owner_oid = proj.get("ownerId")  # caller owns this project → their ObjectId
         call("GET", f"/projects/{PROJECT_ID}/useableEnvironments")
-        call("GET", f"/workspace/project/{PROJECT_ID}/workspace")
-    call("GET", "/hardwareTiers")  # may 404; DOMINO_HARDWARE_TIER_ID is the fallback
+        call("GET", f"/workspace/project/{PROJECT_ID}/workspace?offset=0&limit=10")
+        call("GET", f"/projects/{PROJECT_ID}/hardwareTiers")
+    print("\nresolved owner ObjectId:", owner_oid)
 
     if os.environ.get("PROBE_CREATE") != "1":
         print("\n(read-only. Re-run with PROBE_CREATE=1 to test project/workspace creation.)")
         return
 
-    # --- best-guess creation flow (prints what the API actually requires) ---
+    # --- creation flow with the learned contract (ownerId = ObjectId; collaborators/tags required) ---
     new_pid = None
     try:
         name = f"sage-probe-{RUN_ID[:8]}"
-        status, body = call(
+        _, body = call(
             "POST", "/projects",
-            json={"name": name, "ownerId": USER_ID, "visibility": "Private", "description": "throwaway Phase-0 probe"},
+            json={
+                "name": name,
+                "ownerId": owner_oid,
+                "visibility": "Private",
+                "description": "throwaway Phase-0 probe",
+                "collaborators": [],
+                "tags": [],
+            },
         )
         if isinstance(body, dict):
             new_pid = body.get("id") or body.get("projectId")
         print("\n>>> created project id:", new_pid)
 
         if new_pid:
-            status, ws = call(
+            # workspace-create body is still a guess — print whatever the API says it needs.
+            _, ws = call(
                 "POST", f"/workspace/project/{new_pid}/workspace",
-                json={"name": "sage-spike", "environmentId": ENV_ID, "hardwareTierId": TIER_ID, "workspaceDefinitionId": "sageSpike"},
+                json={"name": "sage-spike", "environmentId": ENV_ID, "hardwareTierId": TIER_ID},
             )
             ws_id = ws.get("id") if isinstance(ws, dict) else None
             print("\n>>> created workspace id:", ws_id)
-            if ws_id:
-                call(
-                    "POST", f"/workspace/project/{new_pid}/workspace/{ws_id}/sessions",
-                    params={"externalVolumeMounts": ""},
-                    json={},
-                )
     finally:
         if new_pid:
             print("\n--- cleanup: deleting throwaway project ---")
