@@ -115,7 +115,21 @@ async def http_proxy(request: Request, path: str) -> Response:
     body = await request.body()
     client = httpx.AsyncClient(timeout=30.0)
     req = client.build_request(request.method, url, headers=headers, params=request.query_params, content=body)
-    up = await client.send(req, stream=True)
+    try:
+        up = await client.send(req, stream=True)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError, OSError) as e:
+        await client.aclose()
+        return JSONResponse(
+            status_code=502,
+            content={
+                "preview": "upstream Vite not reachable",
+                "vite_url": VITE,
+                "error": f"{type(e).__name__}: {e}",
+                "hint": "First launch runs `npm install` (~1-2 min) before Vite binds :5173. "
+                "Check the workspace logs for the Vite 'ready'/'Local:' line or npm/network "
+                "errors, then refresh. If it never comes up, npm registry egress may be blocked.",
+            },
+        )
     resp_headers = {k: v for k, v in up.headers.items() if k.lower() not in _HOP}
 
     async def body_iter():
