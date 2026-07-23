@@ -15,10 +15,11 @@ cd "$(dirname "$0")/../../backend"   # -> /mnt/code/backend
 # needed. Bind all interfaces so Domino's tool proxy can reach us; match httpProxy.port below.
 export SAGE_CONTROL_HOST="${SAGE_CONTROL_HOST:-0.0.0.0}"
 export SAGE_CONTROL_PORT="${SAGE_CONTROL_PORT:-8888}"
-# Keep generated workspaces off the git mount (scratch, fine to lose between sessions).
-export SAGE_WORKSPACES="${SAGE_WORKSPACES:-/tmp/sage-workspaces}"
+# Phase 2: the builder is bound to ONE workspace dir. Keep it off the git mount here (scratch,
+# fine to lose between sessions) — in real deploys this is the Domino project's own volume.
+export SAGE_WORKSPACE_DIR="${SAGE_WORKSPACE_DIR:-/tmp/sage-workspaces/app}"
 
-echo "[verify] host=${SAGE_CONTROL_HOST} port=${SAGE_CONTROL_PORT} workspaces=${SAGE_WORKSPACES}"
+echo "[verify] host=${SAGE_CONTROL_HOST} port=${SAGE_CONTROL_PORT} workspace=${SAGE_WORKSPACE_DIR}"
 echo "[verify] prefix (env-derived): /${DOMINO_PROJECT_OWNER:-?}/${DOMINO_PROJECT_NAME:-?}/notebookSession/${DOMINO_RUN_ID:-?}"
 
 # Prefer a system Node (nodesource) over conda's, which commonly shadows it at an OLDER version on

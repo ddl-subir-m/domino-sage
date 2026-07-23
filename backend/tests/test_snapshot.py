@@ -18,8 +18,8 @@ def _fake_template(tmp: Path) -> Path:
 
 
 def test_discard_changes_reverts_edits_and_removes_new_files(tmp_path: Path):
-    mgr = WorkspaceManager(root=tmp_path / "ws", template=_fake_template(tmp_path))
-    ws = mgr.create("p")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
     snap = TurnSnapshot(ws.path)
 
     snap.commit_before_turn()
@@ -33,8 +33,8 @@ def test_discard_changes_reverts_edits_and_removes_new_files(tmp_path: Path):
 
 
 def test_discard_changes_does_not_touch_excluded_dirs(tmp_path: Path):
-    mgr = WorkspaceManager(root=tmp_path / "ws", template=_fake_template(tmp_path))
-    ws = mgr.create("p")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
     snap = TurnSnapshot(ws.path)
 
     snap.commit_before_turn()
@@ -46,8 +46,8 @@ def test_discard_changes_does_not_touch_excluded_dirs(tmp_path: Path):
 
 
 def test_history_truncate_drops_entries_after_baseline(tmp_path: Path):
-    mgr = WorkspaceManager(root=tmp_path / "ws", template=_fake_template(tmp_path))
-    ws = mgr.create("p")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
 
     ws.append_history({"type": "user", "text": "first"})
     baseline = ws.history_len()

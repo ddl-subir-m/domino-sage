@@ -157,22 +157,34 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
 **Out of scope (deferred):** multi-project registry / `active-project` / `x-sage-project` teardown
 → Phase 2. Environment/deps baking → Phase 3.
 
-## Phase 2 — Project-model flip (one Domino project per builder)
+## Phase 2 — Project-model flip (one Domino project per builder) — STATUS: IMPLEMENTED (make test green, 70 passed)
 
 **Goal:** retire multi-project; bind each builder to a single Domino project's file volume.
 
-- 2.1 `orchestrator/service.py`: `Orchestrator` scoped to a single project derived from
-  `DOMINO_PROJECT_ID`/`DOMINO_PROJECT_NAME`; drop the registry, `active()`, `list_ids()`.
-- 2.2 `orchestrator/app.py`: remove `active-project`/`x-sage-project` header logic and the
-  project-picker endpoints; routes act on the single bound project. Keep `open_project`'s
-  **reattach-from-disk** rehydration as the *normal* startup path (session/history/plan/model
-  overrides from `.sage/`).
-- 2.3 `workspace/manager.py`: workspace root = the Domino project's mounted file volume
-  (git-based: `/mnt/...`; dataset-backed: `/domino/datasets/local/...` — confirm in 0.1), not
-  `backend/workspaces/<id>`. Keep warm-`node_modules` symlink from the baked template.
-- 2.4 Update tests: remove multi-project cases; add single-project-scoped + rehydration tests.
-  → **verify:** `make test` green; a builder opened in project A only ever sees project A's files;
-  no cross-project surface remains (the "stream bleed" class is structurally impossible).
+- 2.1 ✅ `orchestrator/service.py`: `Orchestrator` scoped to one bound project (`project_id` =
+  `DOMINO_PROJECT_NAME`), attached lazily via `project()` (memoized). Dropped the registry,
+  `create_project`/`open_project`/`get`/`active`/`list_ids`/`list_all_ids`/`delete_project`.
+  `history()` reads the volume directly (no attach → a GET never starts Vite).
+- 2.2 ✅ `orchestrator/app.py`: removed the `x-sage-project` header and all `/api/projects[...]`
+  picker/create/open/delete endpoints; routes are now project-less (`/api/project/...`) and act on
+  the single bound project. `.sage/` rehydration (session/history/plan/model-overrides) happens on
+  first `project()` attach. `healthz` drops `projects`/`all_projects`.
+- 2.3 ✅ `workspace/manager.py`: single-workspace manager keyed on `SAGE_WORKSPACE_DIR` (the
+  project's mounted volume; git-based `/mnt/code` in deploy). New `ensure()` **idempotently seeds**
+  the template in place only when the volume has no app yet (no `package.json`), never clobbering a
+  pre-existing app or its `.git`; warm-`node_modules` symlink kept. Template `.gitignore` now
+  ignores `.sage/` so builder bookkeeping isn't committed to the app repo.
+- 2.4 ✅ UI: removed the project picker (`<select>`/new-app/delete) + all switching helpers; `active`
+  is now a boolean gating starter-screen vs project view. On load `bootProject()` attaches the one
+  project and replays its transcript. Orphaned CSS/handlers cleaned up.
+- 2.5 ✅ Tests: rewrote `test_workspace.py` (ensure + idempotency + no-clobber), added
+  `test_orchestrator.py` (bound-to-volume, seed-in-place, memoized, history-without-attach, and a
+  guard asserting the multi-project methods are gone), updated `test_snapshot.py` to `ensure()`.
+  → **verify:** `make test` green (70 passed); no cross-project surface remains — with exactly one
+  project the "stream bleed"/wrong-preview/wrong-header classes are structurally impossible.
+  **Remaining verify (on Domino):** launch via the spike, confirm the builder boots into its bound
+  project and HMR/preview still round-trip. Note: the standalone `sage.shim.app` dev harness keeps
+  its own `x-sage-project` default — it's not on the deploy path.
 
 ## Phase 3 — Environment packaging (the shippable artifact)
 

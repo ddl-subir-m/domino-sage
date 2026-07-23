@@ -47,11 +47,6 @@
     width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
     background: linear-gradient(135deg, var(--primary), #8B6BFF); color: #fff; font-size: 13px; font-weight: 800;
   }
-  .proj-picker { display: flex; align-items: center; gap: 6px; position: relative; }
-  .proj-picker select {
-    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
-    padding: 6px 10px; max-width: 220px;
-  }
   .icon-btn {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
     width: 32px; height: 32px; display: grid; place-items: center; font-size: 16px; color: var(--muted);
@@ -188,8 +183,6 @@
   .btn-secondary { padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-weight: 500; }
   .hint { font-size: 11px; color: var(--faint); margin-top: 8px; line-height: 1.4; }
   .hint.err { color: var(--lock); }
-  /* header popovers (project picker) open downward, unlike the composer's which open upward */
-  .pop-down { position: absolute; top: calc(100% + 8px); bottom: auto; left: 0; }
 
   .asset-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
   .asset-row:first-of-type { border-top: 0; }
@@ -248,24 +241,7 @@
 </head>
 <body>
 <header>
-  <div class="brand" onclick="goToStart()" style="cursor:pointer" title="Start a new app"><span class="glyph">S</span> sage</div>
-  <div class="proj-picker">
-    <select id="proj-select" onchange="switchProject()" title="Active project"></select>
-    <button class="icon-btn" id="delete-proj-btn" title="Delete this app" onclick="deleteActiveProject()" disabled>🗑</button>
-    <button class="icon-btn" title="New app" onclick="togglePop('new-proj-pop')">+</button>
-    <div class="pop pop-down" id="new-proj-pop">
-      <h2>New app</h2>
-      <label for="new-proj-name">Name</label>
-      <input id="new-proj-name" placeholder="e.g. Fraud review" autocomplete="off"
-        oninput="validateNewProjectName()"
-        onkeydown="if (event.key === 'Enter') { event.preventDefault(); submitNewProject(); }" />
-      <div class="hint" id="new-proj-hint">Each app needs a unique name.</div>
-      <div class="row" style="margin-top:12px">
-        <button class="btn-secondary" onclick="togglePop('new-proj-pop')">Cancel</button>
-        <button class="btn-primary" id="new-proj-submit" onclick="submitNewProject()" disabled>Create app</button>
-      </div>
-    </div>
-  </div>
+  <div class="brand"><span class="glyph">S</span> sage</div>
   <div class="spacer"></div>
   <div class="mode-chip" id="mode-chip" title=""><span class="dot"></span><span id="mode-text">…</span></div>
 </header>
@@ -320,7 +296,7 @@
       <!-- data / assets popover -->
       <div class="pop" id="data-pop">
         <h2>Project data</h2>
-        <div id="assets"><div class="hint">Create a project to load datasets.</div></div>
+        <div id="assets"><div class="hint">Loading datasets…</div></div>
         <div class="hint">Attaching a dataset tagged <b id="sens-tag">sensitive</b> forces the sovereign model.</div>
       </div>
 
@@ -363,7 +339,7 @@
           <div class="editor-empty" id="editor-empty">Select a file from the tree to view and edit it.</div>
           <div id="monaco-editor"></div>
         </div>
-        <div class="work-empty" id="work-empty">Create a project to start the live preview.</div>
+        <div class="work-empty" id="work-empty">Describe an app to start the live preview.</div>
       </div>
       <div class="file-tree-panel" id="file-tree-panel">
         <div class="file-tree-header">
@@ -383,7 +359,9 @@
 // change under us — and prepend it to every same-origin request so calls carry the prefix back.
 const BASE = location.pathname.replace(/\/$/, "");
 const api = (p, opts) => fetch(BASE + p, opts).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }));
-let active = null;
+// One builder = one project (bound to this Domino project's volume). `active` gates whether we're
+// in the project view vs the starter screen — there is no project id to juggle anymore.
+let active = false;
 let lastModel = {};
 const previewBase = BASE + "/preview/";
 
@@ -426,127 +404,22 @@ async function loadHealth() {
   document.getElementById('mode-text').textContent = `gateway: ${mode}`;
   chip.className = 'mode-chip ' + mode;
   chip.title = mode === 'openai' ? 'mechanism only — NOT the real sovereign guarantee' : '';
-  // hydrate the project picker from every workspace on disk, not just in-memory-registered ones,
-  // so projects survive an orchestrator restart (which wipes the in-memory registry)
-  const all = body.all_projects || body.projects || [];
-  for (const id of all) addProjectOption(id);
-  if (!active && all.length) { active = all[0]; await reattachProject(active); await loadHistory(active); onProjectActive(); }
 }
 
-/* ---------- project switching ---------- */
-function addProjectOption(id) {
-  const sel = document.getElementById('proj-select');
-  if ([...sel.options].some(o => o.value === id)) return;
-  const o = document.createElement('option'); o.value = id; o.textContent = id; sel.appendChild(o);
-}
-function slugify(s) { return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-+|-+$)/g, '') || 'app'; }
-function existingProjectIds() { return new Set([...document.getElementById('proj-select').options].map(o => o.value)); }
-// Appends -2, -3, ... until the name is free, so starter clicks never collide with an existing
-// project (previously this hardcoded 'demo', which silently reused whatever 'demo' already held).
-function uniqueProjectId(base) {
-  const existing = existingProjectIds();
-  if (!existing.has(base)) return base;
-  let n = 2;
-  while (existing.has(`${base}-${n}`)) n++;
-  return `${base}-${n}`;
+/* ---------- project boot ---------- */
+// One project, bound to this container's Domino volume. Booting attaches it server-side (seeds the
+// template + starts the preview) and replays any prior transcript. A project that has already been
+// built (non-empty history) drops straight into the project view; a fresh one shows the starters.
+async function bootProject() {
+  await api('/api/project');            // attach + start preview (idempotent, memoized server-side)
+  const hadHistory = await loadHistory();
+  if (hadHistory) enterProject();
 }
 
-// Creates the project on the server. Never switches the active project itself — on a name
-// conflict (409) that would silently drop the user into someone else's existing app, which reads
-// as "my new app already had code in it". Callers decide what to do with the result.
-async function createProject(id) {
-  const r = await api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
-  if (!r.ok) return { ok: false, conflict: r.status === 409 };
-  return { ok: true };
-}
-// Logo/brand click: return to the starter-prompt screen without touching the current
-// project's files — just deselects it so the next starter click creates a fresh one.
-function goToStart() {
-  active = null;
-  clearMessages();
-  document.getElementById('empty').style.display = '';
-  document.getElementById('delete-proj-btn').disabled = true;
-  document.getElementById('proj-select').value = '';
-  renderVerticals();
-  renderSuggestions();
-  // blank the preview/code panel — it belongs to the project we just left
-  document.getElementById('preview').style.display = 'none';
-  document.getElementById('preview').src = 'about:blank';
-  document.getElementById('url-text').textContent = 'no preview yet';
-  document.getElementById('work-empty').style.display = 'grid';
-  document.getElementById('status-dot').className = 'status-dot';
-  openFilePath = null;
-  for (const buf of fileBuffers.values()) buf.model.dispose();
-  fileBuffers.clear();
-  fileTreeRows.clear();
-  document.getElementById('editor-empty').style.display = 'grid';
-  document.getElementById('monaco-editor').style.display = 'none';
-  document.getElementById('editor-save-btn').disabled = true;
-}
-async function activateProject(id) {
-  addProjectOption(id);
-  document.getElementById('proj-select').value = id;
-  active = id;
-  clearMessages();
-  await loadHistory(id);
-  onProjectActive();
-}
-
-function validateNewProjectName() {
-  const input = document.getElementById('new-proj-name');
-  const hint = document.getElementById('new-proj-hint');
-  const submit = document.getElementById('new-proj-submit');
-  const raw = input.value.trim();
-  if (!raw) {
-    input.classList.remove('invalid'); hint.className = 'hint'; hint.textContent = 'Each app needs a unique name.';
-    submit.disabled = true;
-    return null;
-  }
-  const id = slugify(raw);
-  if (existingProjectIds().has(id)) {
-    input.classList.add('invalid'); hint.className = 'hint err'; hint.textContent = `"${id}" already exists — pick another name.`;
-    submit.disabled = true;
-    return null;
-  }
-  input.classList.remove('invalid'); hint.className = 'hint';
-  hint.textContent = id === raw ? 'Name is available.' : `Will be created as "${id}".`;
-  submit.disabled = false;
-  return id;
-}
-async function submitNewProject() {
-  const id = validateNewProjectName();
-  if (!id) return;
-  const submit = document.getElementById('new-proj-submit');
-  submit.disabled = true; submit.textContent = 'Creating…';
-  const res = await createProject(id);
-  submit.disabled = false; submit.textContent = 'Create app';
-  if (!res.ok) {
-    const hint = document.getElementById('new-proj-hint');
-    hint.className = 'hint err';
-    hint.textContent = res.conflict ? `"${id}" already exists — pick another name.` : 'Could not create the app — try again.';
-    return;
-  }
-  togglePop('new-proj-pop');
-  document.getElementById('new-proj-name').value = '';
-  await activateProject(id);
-}
-// Re-attaches a workspace that may only exist on disk (e.g. after an orchestrator restart
-// wiped the in-memory registry). Idempotent: a no-op if the project is already registered.
-async function reattachProject(id) {
-  await api(`/api/projects/${encodeURIComponent(id)}/open`, { method: 'POST' });
-}
-
-async function switchProject() {
-  active = document.getElementById('proj-select').value;
-  clearMessages();
-  await reattachProject(active);
-  await loadHistory(active);
-  onProjectActive();
-}
-function onProjectActive() {
-  document.getElementById('proj-select').value = active;
+// Switch from the starter screen into the live project view. Idempotent.
+function enterProject() {
+  active = true;
   document.getElementById('empty').style.display = 'none';
-  document.getElementById('delete-proj-btn').disabled = !active;
   showPreview();
   refreshPreview();
   refreshStatus();
@@ -561,25 +434,6 @@ function onProjectActive() {
   if (workTab === 'code') loadFileTree();
 }
 
-// Deletes the workspace on disk — irreversible, so confirm first.
-async function deleteActiveProject() {
-  if (!active) return;
-  const id = active;
-  if (!confirm(`Delete "${id}"? This permanently removes its files and cannot be undone.`)) return;
-  const r = await api(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (!r.ok) { addStatus('err', '⚠', `Could not delete "${id}" — try again.`); return; }
-  const sel = document.getElementById('proj-select');
-  const opt = [...sel.options].find(o => o.value === id);
-  if (opt) opt.remove();
-  active = sel.options.length ? sel.options[0].value : null;
-  clearMessages();
-  if (active) { await reattachProject(active); await loadHistory(active); onProjectActive(); }
-  else {
-    document.getElementById('delete-proj-btn').disabled = true;
-    document.getElementById('empty').style.display = '';
-  }
-}
-
 /* ---------- assets ---------- */
 async function loadAssets() {
   const { body } = await api('/api/assets');
@@ -589,7 +443,7 @@ async function loadAssets() {
   if (!assets.length) { el.innerHTML = '<div class="hint">No datasets.</div>'; return; }
   let attachedIds = [];
   if (active) {
-    const proj = await api('/api/projects/' + active);
+    const proj = await api('/api/project');
     attachedIds = proj.body.attached || [];
   }
   el.innerHTML = '';
@@ -612,7 +466,7 @@ function setAssetButtonState(btn, attached) {
 }
 async function attachAsset(datasetId, btn) {
   if (!active) return;
-  const { body } = await api(`/api/projects/${active}/assets/${datasetId}/attach`, { method: 'POST' });
+  const { body } = await api(`/api/project/assets/${datasetId}/attach`, { method: 'POST' });
   if (btn) setAssetButtonState(btn, true);
   updateDataCount();
   refreshStatus();
@@ -620,7 +474,7 @@ async function attachAsset(datasetId, btn) {
 }
 async function detachAsset(datasetId, btn) {
   if (!active) return;
-  const { body } = await api(`/api/projects/${active}/assets/${datasetId}/detach`, { method: 'POST' });
+  const { body } = await api(`/api/project/assets/${datasetId}/detach`, { method: 'POST' });
   if (btn) setAssetButtonState(btn, false);
   updateDataCount();
   refreshStatus();
@@ -636,7 +490,7 @@ function updateDataCount() {
 /* ---------- model control ---------- */
 async function refreshStatus() {
   if (!active) return;
-  const { body } = await api('/api/projects/' + active);
+  const { body } = await api('/api/project');
   const m = body.model || {};
   const showOverride = m.mode === 'plan' || m.mode === 'implement';
   document.getElementById('mode-sel').value = m.mode || 'auto';
@@ -739,14 +593,14 @@ async function setModel() {
     mode: document.getElementById('mode-sel').value,
     pick: document.getElementById('pick').value.trim() || null,
   };
-  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  await api('/api/project/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
   refreshStatus();
 }
 async function lockSovereign() {
   if (!active) return;
   const next = !lastModel.manual_locked;
   if (!next && !confirm('Unlock sovereign routing? Model selection will go back to normal for this project.')) return;
-  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: next }) });
+  await api('/api/project/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: next }) });
   refreshStatus();
 }
 async function setCatalog() {
@@ -759,7 +613,7 @@ async function setCatalog() {
     sovereign_ask: document.getElementById('cat-sovereign-ask').value.trim(),
     ask: document.getElementById('cat-ask').value.trim(),
   } };
-  await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  await api('/api/project/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
   refreshStatus();
 }
 
@@ -768,14 +622,7 @@ function togglePop(id) {
   const el = document.getElementById(id);
   const open = el.classList.contains('open');
   document.querySelectorAll('.pop').forEach(p => p.classList.remove('open'));
-  if (!open) {
-    el.classList.add('open');
-    if (id === 'new-proj-pop') {
-      const input = document.getElementById('new-proj-name');
-      input.value = ''; validateNewProjectName();
-      setTimeout(() => input.focus(), 0);
-    }
-  }
+  if (!open) el.classList.add('open');
 }
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.pop') && !e.target.closest('.chip') && !e.target.closest('.icon-btn')) {
@@ -935,36 +782,35 @@ function trail() {
   scrollDown();
 }
 
-// Tracks the project a build/build_stream call is currently in flight for, so the
-// composer's send button can be repurposed as a Stop button while streaming.
-let buildingPid = null;
+// True while a build/build_stream call is in flight, so the composer's send button can be
+// repurposed as a Stop button while streaming.
+let building = false;
 
 function sendOrStop() {
-  if (buildingPid) stopBuild(); else build();
+  if (building) stopBuild(); else build();
 }
 
 // Tells the backend to interrupt the in-flight turn; it reverts any file changes and drops
 // the turn from history, then the stream emits a 'stopped' event (handled in renderEvent)
 // that removes the turn's messages from the chat pane.
 async function stopBuild() {
-  if (!buildingPid) return;
+  if (!building) return;
   const btn = document.getElementById('build-btn');
   btn.disabled = true;
   try {
-    await api('/api/projects/' + buildingPid + '/build/stop', { method: 'POST' });
+    await api('/api/project/build/stop', { method: 'POST' });
   } finally {
     btn.disabled = false;
   }
 }
 
 async function build() {
-  if (!active) { alert('Create a project first'); return; }
-  const pid = active; // pin the stream to the project it was launched for
   const ta = document.getElementById('prompt');
   const prompt = ta.value.trim();
   if (!prompt) return;
+  if (!active) enterProject();
   const btn = document.getElementById('build-btn');
-  buildingPid = pid;
+  building = true;
   btn.textContent = '■'; btn.title = 'Stop';
   const msgBox = document.getElementById('messages');
   const turnStart = msgBox.children.length; // first DOM node belonging to this turn
@@ -974,7 +820,7 @@ async function build() {
   setWorking(PHASE_WORK[buildPhase]);
 
   try {
-    const resp = await fetch(BASE + '/api/projects/' + pid + '/build/stream', {
+    const resp = await fetch(BASE + '/api/project/build/stream', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt }),
     });
     const reader = resp.body.getReader();
@@ -987,29 +833,26 @@ async function build() {
       const frames = buf.split('\n\n'); buf = frames.pop();
       for (const f of frames) {
         const line = f.replace(/^data: /, '').trim();
-        // Drop frames if the user has switched away from `pid` — the stream keeps running
-        // server-side (and persists to that project's history) but must not render into
-        // whatever project is now on screen.
-        if (line && active === pid) renderEvent(JSON.parse(line), turnStart);
+        if (line) renderEvent(JSON.parse(line), turnStart);
       }
     }
   } catch (e) {
-    if (active === pid) renderEvent({ type: 'error', message: String(e) }, turnStart);
+    renderEvent({ type: 'error', message: String(e) }, turnStart);
   }
-  if (active === pid) {
-    stopWorking();
-    btn.textContent = '↑'; btn.title = 'Send (Enter)';
-    refreshPreview();
-    refreshStatus();
-  }
-  buildingPid = null;
+  stopWorking();
+  btn.textContent = '↑'; btn.title = 'Send (Enter)';
+  refreshPreview();
+  refreshStatus();
+  building = false;
 }
 
-// Replays a project's persisted chat transcript (see Workspace.append_history) so switching to
-// or reopening a project shows its prior conversation instead of a blank slate.
-async function loadHistory(id) {
-  const { body } = await api(`/api/projects/${encodeURIComponent(id)}/history`);
-  for (const ev of body.history || []) replayEvent(ev);
+// Replays the project's persisted chat transcript (see Workspace.append_history) so a reload or
+// restart shows the prior conversation instead of a blank slate. Returns whether any existed.
+async function loadHistory() {
+  const { body } = await api('/api/project/history');
+  const history = body.history || [];
+  for (const ev of history) replayEvent(ev);
+  return history.length > 0;
 }
 function replayEvent(ev) {
   if (ev.type === 'user') addUser(ev.text);
@@ -1037,15 +880,14 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(PHASE_WORK[buildPhase] || 'Working'); refreshStatus(); }
   else if (ev.type === 'error') {
     stopWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message));
-    if (ev.code === 'no_project') { active = null; document.getElementById('empty').style.display = ''; document.getElementById('delete-proj-btn').disabled = true; }
   }
 }
 
 /* ---------- typecheck (manual) ---------- */
 async function check() {
-  if (!active) { alert('Create a project first'); return; }
+  if (!active) enterProject();
   const s = addStatus('spin', '◐', 'Typechecking workspace…');
-  const { body } = await api('/api/projects/' + active + '/check', { method: 'POST' });
+  const { body } = await api('/api/project/check', { method: 'POST' });
   s.remove();
   addStatus(body.ok ? 'ok' : 'err', body.ok ? '✓' : '✕', esc(body.message) || (body.ok ? 'Clean' : 'Errors'));
 }
@@ -1160,7 +1002,7 @@ function updateAncestorDots(path) {
 
 async function loadFileTree() {
   if (!active) return;
-  const { ok, body } = await api(`/api/projects/${encodeURIComponent(active)}/files`);
+  const { ok, body } = await api(`/api/project/files`);
   const root = document.getElementById('file-tree');
   root.innerHTML = '';
   fileTreeRows.clear();
@@ -1210,7 +1052,7 @@ async function openFile(path, rowEl) {
   await ensureMonaco();
   let buf = fileBuffers.get(path);
   if (!buf) {
-    const { ok, body } = await api(`/api/projects/${encodeURIComponent(active)}/file?path=${encodeURIComponent(path)}`);
+    const { ok, body } = await api(`/api/project/file?path=${encodeURIComponent(path)}`);
     if (!ok) { addStatus('err', '✕', `Could not open ${esc(path)}`); return; }
     const model = monaco.editor.createModel(body.content, languageFor(path));
     buf = { model, saved: body.content, dirty: false };
@@ -1229,7 +1071,7 @@ async function saveOpenFile() {
   const buf = fileBuffers.get(path);
   if (!buf || !buf.dirty) return;
   const content = monacoEditor.getValue();
-  const { ok } = await api(`/api/projects/${encodeURIComponent(active)}/file`, {
+  const { ok } = await api(`/api/project/file`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, content }),
@@ -1263,13 +1105,8 @@ function renderSuggestions() {
   for (const s of STARTERS[starterVertical]) {
     const b = document.createElement('button'); b.className = 'suggestion';
     b.innerHTML = `<div class="s-title">${s.title}</div><div class="s-sub">${s.sub}</div>`;
-    b.onclick = async () => {
-      if (!active) {
-        const id = uniqueProjectId(slugify(s.title));
-        const res = await createProject(id);
-        if (!res.ok) { addStatus('err', '⚠', 'Could not create the app — try again.'); return; }
-        await activateProject(id);
-      }
+    b.onclick = () => {
+      if (!active) enterProject();
       document.getElementById('prompt').value = s.prompt; autogrow(document.getElementById('prompt'));
       build();
     };
@@ -1279,6 +1116,7 @@ function renderSuggestions() {
 renderVerticals();
 renderSuggestions();
 loadHealth();
+bootProject();
 </script>
 </body>
 </html>

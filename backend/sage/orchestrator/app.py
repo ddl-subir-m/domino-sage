@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -64,11 +64,15 @@ def _build_assets():
 
 
 _gateway, GATEWAY_MODE = build_gateway()
+# One builder is bound to one project volume. On Domino (git-based) that's the mounted repo at
+# /mnt/code; locally it defaults to a scratch dir. The display id is the Domino project name.
+_WORKSPACE_DIR = Path(os.environ.get("SAGE_WORKSPACE_DIR", _REPO / "backend" / "workspaces" / "app"))
 orchestrator = Orchestrator(
-    workspaces_root=Path(os.environ.get("SAGE_WORKSPACES", _REPO / "backend" / "workspaces")),
+    workspace_dir=_WORKSPACE_DIR,
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
     gateway=_gateway,
     catalog=_build_catalog(),
+    project_id=os.environ.get("DOMINO_PROJECT_NAME", _WORKSPACE_DIR.name),
     opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
     # Single-provider hosts (openai mode) don't serve OpenCode's other aliases -> force the model.
     force_model=(GATEWAY_MODE == "openai"),
@@ -116,24 +120,17 @@ control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 
 @control_app.get("/")
 def ui() -> FileResponse:
-    """The thin builder UI (single static page).
-
-    no-store: the in-memory project registry resets on restart, so a cached page pointing at a
-    stale project would POST builds that silently 404. Always serve the current HTML.
-    """
+    """The thin builder UI (single static page). no-store so the current HTML is always served."""
     return FileResponse(_UI, headers={"Cache-Control": "no-store"})
 
 
 @control_app.get("/healthz")
 def healthz() -> dict:
     # gateway_mode is authoritative: "openai" means the mechanism is being exercised against a
-    # generic provider, NOT the real Domino sovereign gateway. `projects` is in-memory-registered
-    # only (kept for back-compat); `all_projects` also surfaces on-disk workspaces from a prior
-    # process so the UI's picker survives an orchestrator restart.
+    # generic provider, NOT the real Domino sovereign gateway.
     return {
         "ok": True,
-        "projects": orchestrator.list_ids(),
-        "all_projects": orchestrator.list_all_ids(),
+        "project": orchestrator._project_id,
         "gateway_mode": GATEWAY_MODE,
         "open_weight_models": [
             {"id": m.id, "provider": m.provider} for m in OPEN_WEIGHT_MODELS
@@ -141,63 +138,24 @@ def healthz() -> dict:
     }
 
 
-@control_app.post("/api/projects")
-async def create_project(request: Request) -> JSONResponse:
-    body = await request.json()
-    pid = body["id"]
-    if orchestrator.get(pid):
-        return JSONResponse(status_code=409, content={"error": f"project {pid} exists"})
-    project = orchestrator.create_project(pid, start_preview=body.get("start_preview", True))
-    return JSONResponse(status_code=201, content=project.status())
+@control_app.get("/api/project")
+def get_project() -> JSONResponse:
+    """Attach the bound project (seeds the volume + starts the preview on first call) and return
+    its status. The UI calls this on load to boot the single project."""
+    return JSONResponse(content=orchestrator.project().status())
 
 
-@control_app.post("/api/projects/{pid}/open")
-def open_project(pid: str) -> JSONResponse:
-    """Re-attach a workspace left on disk by a prior process (see list_all_ids)."""
-    try:
-        project = orchestrator.open_project(pid)
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"error": "not found"})
-    return JSONResponse(content=project.status())
+@control_app.get("/api/project/history")
+def project_history() -> JSONResponse:
+    """The chat transcript persisted in the workspace, so the UI can replay it after a reload or
+    restart (see Workspace.append_history / Orchestrator.history). Reads disk without starting the
+    preview."""
+    return JSONResponse(content={"history": orchestrator.history()})
 
 
-@control_app.delete("/api/projects/{pid}")
-def delete_project(pid: str) -> JSONResponse:
-    try:
-        orchestrator.delete_project(pid)
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"error": "not found"})
-    return JSONResponse(content={"deleted": pid})
-
-
-@control_app.get("/api/projects/{pid}/history")
-def project_history(pid: str) -> JSONResponse:
-    """The chat transcript persisted per-workspace, so the UI can replay it after a reload or an
-    orchestrator restart (see Workspace.append_history / Orchestrator.history)."""
-    try:
-        return JSONResponse(content={"history": orchestrator.history(pid)})
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"error": "not found"})
-
-
-@control_app.get("/api/projects")
-def list_projects() -> dict:
-    return {"projects": [orchestrator.get(p).status() for p in orchestrator.list_ids()]}
-
-
-@control_app.get("/api/projects/{pid}")
-def get_project(pid: str) -> JSONResponse:
-    project = orchestrator.get(pid)
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "not found"})
-    return JSONResponse(content=project.status())
-
-
-@control_app.post("/api/projects/{pid}/model")
-async def set_model(pid: str, request: Request) -> JSONResponse:
-    project = orchestrator.get(pid)
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "not found"})
+@control_app.post("/api/project/model")
+async def set_model(request: Request) -> JSONResponse:
+    project = orchestrator.project()
     body = await request.json()
     if "mode" in body:
         try:
@@ -210,19 +168,17 @@ async def set_model(pid: str, request: Request) -> JSONResponse:
     if "pick" in body:
         project.control.pick(body["pick"])
     if "catalog" in body:
-        orchestrator.set_catalog(pid, **(body.get("catalog") or {}))
+        orchestrator.set_catalog(**(body.get("catalog") or {}))
     if "lock" in body:  # manual toggle; independent of the sticky asset-driven lock
         project.control.set_manual_lock(bool(body["lock"]))
     return JSONResponse(content=project.status())
 
 
-@control_app.post("/api/projects/{pid}/check")
-def check_project(pid: str) -> JSONResponse:
+@control_app.post("/api/project/check")
+def check_project() -> JSONResponse:
     """Typecheck the workspace (Step 5). The server-mode driver calls the same engine after each
     agent edit and injects `message` into the next turn; exposed here for the UI + manual use."""
-    project = orchestrator.get(pid)
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "not found"})
+    project = orchestrator.project()
     report = _feedback.check(project.workspace.path)
     return JSONResponse(content={
         "ok": report.ok,
@@ -262,19 +218,15 @@ def _resolve_workspace_file(root: Path, rel_path: str) -> Path:
     return candidate
 
 
-@control_app.get("/api/projects/{pid}/files")
-def list_files(pid: str) -> JSONResponse:
-    project = orchestrator.get(pid)
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "not found"})
+@control_app.get("/api/project/files")
+def list_files() -> JSONResponse:
+    project = orchestrator.project()
     return JSONResponse(content={"tree": _build_file_tree(project.workspace.path, project.workspace.path)})
 
 
-@control_app.get("/api/projects/{pid}/file")
-def read_file(pid: str, path: str) -> JSONResponse:
-    project = orchestrator.get(pid)
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "not found"})
+@control_app.get("/api/project/file")
+def read_file(path: str) -> JSONResponse:
+    project = orchestrator.project()
     try:
         target = _resolve_workspace_file(project.workspace.path, path)
     except ValueError:
@@ -288,11 +240,9 @@ def read_file(pid: str, path: str) -> JSONResponse:
     return JSONResponse(content={"path": path, "content": content})
 
 
-@control_app.put("/api/projects/{pid}/file")
-async def write_file(pid: str, request: Request) -> JSONResponse:
-    project = orchestrator.get(pid)
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "not found"})
+@control_app.put("/api/project/file")
+async def write_file(request: Request) -> JSONResponse:
+    project = orchestrator.project()
     body = await request.json()
     path = body.get("path")
     content = body.get("content")
@@ -313,28 +263,24 @@ def list_assets() -> dict:
     return {"assets": orchestrator.list_assets(), "sensitivity_tag": orchestrator._sensitivity_tag}
 
 
-@control_app.post("/api/projects/{pid}/assets/{dataset_id}/attach")
-def attach_asset(pid: str, dataset_id: str) -> JSONResponse:
+@control_app.post("/api/project/assets/{dataset_id}/attach")
+def attach_asset(dataset_id: str) -> JSONResponse:
     try:
-        return JSONResponse(content=orchestrator.attach_asset(pid, dataset_id))
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": "project not found"})
+        return JSONResponse(content=orchestrator.attach_asset(dataset_id))
     except LookupError:
         return JSONResponse(status_code=404, content={"error": "dataset not found"})
 
 
-@control_app.post("/api/projects/{pid}/assets/{dataset_id}/detach")
-def detach_asset(pid: str, dataset_id: str) -> JSONResponse:
+@control_app.post("/api/project/assets/{dataset_id}/detach")
+def detach_asset(dataset_id: str) -> JSONResponse:
     try:
-        return JSONResponse(content=orchestrator.detach_asset(pid, dataset_id))
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": "project not found"})
+        return JSONResponse(content=orchestrator.detach_asset(dataset_id))
     except LookupError:
         return JSONResponse(status_code=404, content={"error": "dataset not found"})
 
 
-@control_app.post("/api/projects/{pid}/build/stream")
-def build_stream(pid: str, body: dict) -> StreamingResponse:
+@control_app.post("/api/project/build/stream")
+def build_stream(body: dict) -> StreamingResponse:
     """Streaming build: SSE of progress events (agent text/tool, typecheck, done). Follow-up
     prompts reuse the session (modify/add features). Sync generator -> Starlette threadpools it,
     so the loop stays free to serve the /v1 model calls the turn makes."""
@@ -343,18 +289,11 @@ def build_stream(pid: str, body: dict) -> StreamingResponse:
     prompt = (body or {}).get("prompt", "")
 
     def sse():
-        if not orchestrator.get(pid):
-            try:
-                orchestrator.open_project(pid)
-            except FileNotFoundError:
-                msg = f"Project '{pid}' not found — it may have been reset. Create a project to continue."
-                yield f"data: {_json.dumps({'type': 'error', 'code': 'no_project', 'message': msg})}\n\n"
-                return
         if not prompt:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
             return
         try:
-            for evt in orchestrator.build_stream(pid, prompt):
+            for evt in orchestrator.build_stream(prompt):
                 yield f"data: {_json.dumps(evt)}\n\n"
         except Exception as e:  # noqa: BLE001
             log.exception("build_stream failed")
@@ -363,22 +302,17 @@ def build_stream(pid: str, body: dict) -> StreamingResponse:
     return StreamingResponse(sse(), media_type="text/event-stream")
 
 
-@control_app.post("/api/projects/{pid}/build/stop")
-def stop_build(pid: str) -> JSONResponse:
+@control_app.post("/api/project/build/stop")
+def stop_build() -> JSONResponse:
     """Stop the in-flight build/build_stream turn: interrupts the agent, reverts any file
     changes it made this turn, and drops the turn from history — as if it never happened."""
-    try:
-        orchestrator.stop_build(pid)
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": "not found"})
+    orchestrator.stop_build()
     return JSONResponse(content={"stopped": True})
 
 
-@control_app.post("/api/projects/{pid}/build")
-async def build_project(pid: str, request: Request) -> JSONResponse:
+@control_app.post("/api/project/build")
+async def build_project(request: Request) -> JSONResponse:
     """Run one agent build with the closed feedback loop (needs gateway access)."""
-    if not orchestrator.get(pid):
-        return JSONResponse(status_code=404, content={"error": "not found"})
     body = await request.json()
     prompt = body.get("prompt")
     if not prompt:
@@ -387,7 +321,7 @@ async def build_project(pid: str, request: Request) -> JSONResponse:
         # Offload the blocking build (drives OpenCode, sleeps) to a thread so the event loop
         # stays free to serve the /v1 model calls that OpenCode makes DURING the build.
         # Without this the single loop deadlocks: build waits for a turn that can't be served.
-        result = await run_in_threadpool(orchestrator.build, pid, prompt)
+        result = await run_in_threadpool(orchestrator.build, prompt)
         return JSONResponse(content=result)
     except Exception as e:
         log.exception("build failed")
@@ -395,12 +329,9 @@ async def build_project(pid: str, request: Request) -> JSONResponse:
 
 
 @control_app.post("/v1/chat/completions")
-async def chat_completions(request: Request, x_sage_project: str = Header(default="")):
-    project = orchestrator.get(x_sage_project) if x_sage_project else orchestrator.active()
-    if not project:
-        return JSONResponse(status_code=404, content={"error": {"message": "no such project; create one first"}})
+async def chat_completions(request: Request):
+    project = orchestrator.project()
     body = await request.json()
-    requested = body.get("model")
     gen = project.shim.handle(body, project=project.id)
 
     def _peek():  # blocking; runs in a thread so the loop stays free
@@ -428,16 +359,14 @@ async def chat_completions(request: Request, x_sage_project: str = Header(defaul
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-# Preview proxy for the active project, mounted under /preview on the one control port. Vite bakes
+# Preview proxy for the bound project, mounted under /preview on the one control port. Vite bakes
 # base=<prefix>/preview/, so the proxy re-adds that when forwarding upstream (see make_preview_app).
-def _active_upstream() -> str:
-    project = orchestrator.active()
-    if not project:
-        raise RuntimeError("no active project")
-    return project.supervisor.upstream()
+# Attaching the project (first hit) seeds the volume + starts Vite; .upstream() raises until ready.
+def _preview_upstream() -> str:
+    return orchestrator.project().supervisor.upstream()
 
 
-control_app.mount("/preview", make_preview_app(_active_upstream, BASE_PREFIX))
+control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX))
 
 
 def run() -> None:

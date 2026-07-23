@@ -1,9 +1,7 @@
-"""Workspace module tests (Step 3.2)."""
+"""Workspace module tests — single bound workspace, idempotent seed-in-place."""
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 from sage.workspace.manager import WorkspaceManager
 
@@ -18,11 +16,11 @@ def _fake_template(tmp: Path) -> Path:
     return t
 
 
-def test_create_seeds_from_template_and_symlinks_node_modules(tmp_path: Path):
+def test_ensure_seeds_from_template_and_symlinks_node_modules(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
-    mgr = WorkspaceManager(root=tmp_path / "ws", template=tmpl)
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
 
-    ws = mgr.create("proj1")
+    ws = mgr.ensure("proj1")
 
     assert ws.app_entry.read_text() == "placeholder"
     assert (ws.path / "package.json").exists()
@@ -30,24 +28,40 @@ def test_create_seeds_from_template_and_symlinks_node_modules(tmp_path: Path):
     assert nm.is_symlink() and (nm / "dep").read_text() == "x"  # warm deps, not copied
 
 
-def test_create_rejects_existing(tmp_path: Path):
-    mgr = WorkspaceManager(root=tmp_path / "ws", template=_fake_template(tmp_path))
-    mgr.create("p")
-    with pytest.raises(FileExistsError):
-        mgr.create("p")
+def test_ensure_is_idempotent_and_never_clobbers_existing_app(tmp_path: Path):
+    tmpl = _fake_template(tmp_path)
+    ws_dir = tmp_path / "ws"
+    # Pre-existing app (e.g. a fresh git checkout): its files and .git must survive.
+    ws_dir.mkdir()
+    (ws_dir / "package.json").write_text('{"name": "mine"}')
+    (ws_dir / ".git").mkdir()
+    (ws_dir / "src").mkdir()
+    (ws_dir / "src" / "App.tsx").write_text("my code")
+    mgr = WorkspaceManager(workspace_dir=ws_dir, template=tmpl)
+
+    mgr.ensure("proj1")
+    mgr.ensure("proj1")  # second call is a no-op
+
+    assert (ws_dir / "package.json").read_text() == '{"name": "mine"}'
+    assert ws_dir / ".git" in list(ws_dir.iterdir())
+    assert (ws_dir / "src" / "App.tsx").read_text() == "my code"
+
+
+def test_ensure_seeds_into_preexisting_empty_dir(tmp_path: Path):
+    tmpl = _fake_template(tmp_path)
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()  # exists but has no package.json -> gets seeded
+    mgr = WorkspaceManager(workspace_dir=ws_dir, template=tmpl)
+
+    ws = mgr.ensure("proj1")
+
+    assert ws.app_entry.read_text() == "placeholder"
 
 
 def test_plan_artifact_roundtrip(tmp_path: Path):
-    mgr = WorkspaceManager(root=tmp_path / "ws", template=_fake_template(tmp_path))
-    ws = mgr.create("p")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
     assert ws.read_plan() is None
     ws.write_plan("# plan\nstep 1")
     assert ws.read_plan() == "# plan\nstep 1"
     assert ws.plan_path.parent.name == ".sage"
-
-
-def test_get_returns_none_when_absent(tmp_path: Path):
-    mgr = WorkspaceManager(root=tmp_path / "ws", template=_fake_template(tmp_path))
-    assert mgr.get("nope") is None
-    mgr.create("yes")
-    assert mgr.get("yes") is not None
