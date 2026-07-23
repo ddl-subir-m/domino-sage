@@ -171,9 +171,12 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
 
 **Goal:** one Environment image = dev artifact = ship artifact.
 
-- 3.1 `environment/Dockerfile`: base image + Node ≥20 + `uv` + Python deps + OpenCode (pinned) +
-  the warm React+Vite template with **baked `node_modules`** (template baseline; agent-added deps
-  install into the project fs on top).
+- 3.1 `environment/Dockerfile`: base image + **Node ≥20.19 (recommend 22)** + `uv` + Python deps +
+  OpenCode (pinned) + the React+Vite template **cloned from a baked git URL** so a rebuild pulls
+  the latest template (`ARG TEMPLATE_REV` above the `git clone` to bust the layer cache), into
+  `/opt/sage/template`, with **baked `node_modules`** (`npm ci` in the same layer; agent-added deps
+  install into the project fs on top). Node ≥20.19 is load-bearing — `vite@8`/rolldown hard-fails
+  below it, and conda's node shadows nodesource, so ensure the system node wins on PATH.
 - 3.2 `environment/pluggable-tools.yaml`: the Path-A `httpProxy` tool entry from 0.2.
 - 3.3 `app.sh` / entrypoint: boot the single-port orchestrator (`uvicorn … --host 0.0.0.0 --port
   8888`), resolve the base prefix, start OpenCode server, gateway env wired to real values.
@@ -184,16 +187,33 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
 
 ## Phase 4 — "New app" control plane (the hub)
 
-**Goal:** Lovable/Replit-style "New app" that provisions a project + launches the builder.
+**Goal:** Lovable/Replit-style "New app" that provisions a **git-based** project + launches the
+builder. Each app = its own GitHub repo + a git-based Domino project pointing at it.
 
-- 4.1 A small **hub** (own Domino App, or a landing route): lists the user's Sage apps; "New app"
-  → `POST /projects` (from a Sage project template) → `POST /workspace/.../workspace` +
-  `/sessions` (into the Sage Environment) → redirect the user into the builder. Payloads per 0.3.
-- 4.2 Token: acquire the ephemeral token per call from sidecar `:8899` (re-acquire each call).
-- 4.3 UX: "creating your app…" state over the cold-start; "Open" relaunches/reattaches an existing
-  project's workspace.
-  → **verify:** from the hub, "New app" yields a fresh project with a running builder in one flow;
-  "Open" on an existing app rehydrates it.
+**STATUS — 2026-07-23, cloud-dogfood: git-provisioning capability CONFIRMED (git_discovery.sh).**
+Persistence model = **git-based projects** (not DFS). Findings on a git-based workspace:
+- The user's GitHub credential is **extractable at runtime** via `git credential fill`
+  (`protocol=https host=github.com`) — Domino returns the PAT (classic `ghp_`). No v4
+  git-credential API exists (all candidate paths 404); `credential fill` is the mechanism.
+- The PAT carries **`repo` + `delete_repo`** scope → the hub can create/seed/delete repos via the
+  GitHub API. (Observed PAT was far broader — `admin:org`/`admin:enterprise`; we only need `repo`.)
+- `git push` from the workspace is **already authorized** (Domino injects the creds) — dry-run OK.
+- ⚠️ The extracted token is powerful: handle **in-memory only, never log/persist**. GitHub.com only
+  for now — detect host from the credential; GHE/GitLab are separate providers.
+
+- 4.1 **Repo provisioning** (per new app, all user-space):
+  1. `git credential fill` → the user's GitHub token (transient, in-memory).
+  2. `POST https://api.github.com/user/repos` `{name, private:true}` → `github.com/<user>/<app>`.
+  3. Seed from the baked template (`/opt/sage/template`, 3.1): init → initial commit → push.
+  4. `POST /v4/projects` with `mainGitRepoRef` → git-based Domino project on that repo (body per 0.3).
+- 4.2 The **hub** (own Domino App): lists the user's Sage apps; "New app" runs 4.1 then
+  `POST /workspace/.../workspace` into the Sage Environment (body per 0.3) → redirect into the
+  builder. Ephemeral token per call from sidecar `:8899` (re-acquire each call).
+- 4.3 UX: "creating your app…" over repo-create + cold-start; "Open" relaunches/reattaches an
+  existing app's workspace. Handle repo-name collisions; fall back to a manual-repo path if a
+  future user's PAT lacks `repo` scope.
+  → **verify:** from the hub, "New app" creates a GitHub repo + git-based project + running builder
+  in one flow; OpenCode edits commit+push to that repo; "Open" rehydrates an existing app.
 
 ## Phase 5 — Publish as Domino App
 
