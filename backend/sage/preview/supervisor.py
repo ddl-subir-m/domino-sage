@@ -10,6 +10,7 @@ Deep module, narrow interface: start() / upstream() / stop(). How the port is di
 from __future__ import annotations
 
 import logging
+import os
 import re
 import signal
 import subprocess
@@ -35,8 +36,9 @@ def parse_vite_url(line: str) -> str | None:
 
 
 class ViteSupervisor:
-    def __init__(self, workspace: Path, max_restarts: int = 3) -> None:
+    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3) -> None:
         self._workspace = Path(workspace)
+        self._base_prefix = base_prefix  # baked into Vite's `base`/HMR via SAGE_BASE_PREFIX
         self._max_restarts = max_restarts
         self._proc: subprocess.Popen | None = None
         self._upstream: str | None = None
@@ -71,6 +73,7 @@ class ViteSupervisor:
         self._upstream = None
         self._clear_stale_port(_DEFAULT_PORT)
         # start_new_session -> own process group so we can kill Vite + any children (esbuild).
+        # SAGE_BASE_PREFIX tells vite.config.ts the Domino proxy prefix to bake into `base`/HMR.
         self._proc = subprocess.Popen(
             ["npm", "run", "dev"],
             cwd=self._workspace,
@@ -78,6 +81,7 @@ class ViteSupervisor:
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            env={**os.environ, "SAGE_BASE_PREFIX": self._base_prefix},
         )
         threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()
 

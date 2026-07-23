@@ -378,10 +378,14 @@
 
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 <script>
-const api = (p, opts) => fetch(p, opts).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }));
+// Domino serves this page under a proxy path prefix (rewrite:false preserves it); locally it's "".
+// Capture it ONCE from the load path — this is a single static page, so location.pathname doesn't
+// change under us — and prepend it to every same-origin request so calls carry the prefix back.
+const BASE = location.pathname.replace(/\/$/, "");
+const api = (p, opts) => fetch(BASE + p, opts).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }));
 let active = null;
 let lastModel = {};
-const previewBase = `${location.protocol}//${location.hostname}:8090/`;
+const previewBase = BASE + "/preview/";
 
 const STARTERS = {
   'Cross-industry': [
@@ -970,7 +974,7 @@ async function build() {
   setWorking(PHASE_WORK[buildPhase]);
 
   try {
-    const resp = await fetch('/api/projects/' + pid + '/build/stream', {
+    const resp = await fetch(BASE + '/api/projects/' + pid + '/build/stream', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt }),
     });
     const reader = resp.body.getReader();

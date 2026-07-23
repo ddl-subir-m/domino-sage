@@ -1,11 +1,10 @@
 """Orchestrator app — one API over the assembled builder (SPEC C1).
 
-Runs two ASGI apps in one process:
-  - control app  (:8080): project lifecycle + model control + the /v1 shim OpenCode targets
-  - preview app  (:8090): proxies the active project's Vite dev server (HTTP + HMR)
-
-Two ports because Vite serves assets from absolute paths (/src, /@vite), so the preview must
-proxy at root, not a subpath.
+One ASGI app on one port (Phase 1): project lifecycle + model control + the /v1 shim OpenCode
+targets, with the preview proxy (active project's Vite dev server, HTTP + HMR) mounted under
+`/preview`. Everything is served under Domino's proxy path prefix (rewrite:false preserves it); a
+tiny ASGI middleware strips that prefix so bare-registered routes match, and Vite bakes the same
+prefix into its `base` so the preview round-trips through the one port. Prefix is empty locally.
 
 Run:  uv run python -m sage.orchestrator.app
 """
@@ -30,6 +29,7 @@ from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..feedback.runner import FeedbackRunner
+from ..preview.prefix import domino_base_prefix
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
 from .service import Orchestrator
@@ -78,6 +78,40 @@ orchestrator = Orchestrator(
 )
 
 control_app = FastAPI(title="sage orchestrator")
+
+# The Domino proxy path prefix, single-sourced from env (empty locally). Baked into Vite's `base`
+# AND stripped from incoming request paths so the bare-registered routes below keep matching.
+BASE_PREFIX = domino_base_prefix()
+
+
+class _PrefixMiddleware:
+    """Strip Domino's proxy prefix from the request path and record it as `root_path`.
+
+    Domino forwards the full prefixed path (rewrite:false). We strip it so routes registered at
+    bare paths (`/`, `/api/...`, `/preview/...`) match, and set `root_path` for correct URL
+    generation. No-op when the prefix is empty (local dev). Domino also sends the prefix in the
+    `x-script-name` header; a one-time mismatch is logged as a cross-check against drift.
+    """
+
+    def __init__(self, app, prefix: str) -> None:
+        self._app = app
+        self._prefix = prefix
+        self._warned = False
+
+    async def __call__(self, scope, receive, send):
+        if self._prefix and scope["type"] in ("http", "websocket"):
+            path = scope.get("path", "")
+            if path == self._prefix or path.startswith(self._prefix + "/"):
+                scope = dict(scope)
+                scope["path"] = path[len(self._prefix):] or "/"
+                scope["root_path"] = self._prefix
+            elif not self._warned:
+                self._warned = True
+                log.warning("prefix %r not found in request path %r", self._prefix, path)
+        await self._app(scope, receive, send)
+
+
+control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 
 
 @control_app.get("/")
@@ -394,7 +428,8 @@ async def chat_completions(request: Request, x_sage_project: str = Header(defaul
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-# Preview proxy for the active project (served on its own port so Vite's absolute paths resolve).
+# Preview proxy for the active project, mounted under /preview on the one control port. Vite bakes
+# base=<prefix>/preview/, so the proxy re-adds that when forwarding upstream (see make_preview_app).
 def _active_upstream() -> str:
     project = orchestrator.active()
     if not project:
@@ -402,11 +437,11 @@ def _active_upstream() -> str:
     return project.supervisor.upstream()
 
 
-preview_app = make_preview_app(_active_upstream)
+control_app.mount("/preview", make_preview_app(_active_upstream, BASE_PREFIX))
 
 
 def run() -> None:
-    """Run control (:8080) and preview (:8090) together in one process."""
+    """Run the single control app (:8080, preview mounted at /preview) in one process."""
     import asyncio
     import contextlib
     import signal
@@ -414,32 +449,18 @@ def run() -> None:
     import uvicorn
 
     control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
-    preview_port = int(os.environ.get("SAGE_PREVIEW_PORT", "8090"))
-    servers = [
-        uvicorn.Server(uvicorn.Config(control_app, host="127.0.0.1", port=control_port, log_level="info")),
-        uvicorn.Server(uvicorn.Config(preview_app, host="127.0.0.1", port=preview_port, log_level="warning")),
-    ]
+    server = uvicorn.Server(uvicorn.Config(control_app, host="127.0.0.1", port=control_port, log_level="info"))
 
-    # uvicorn.Server.serve() installs its own SIGINT/SIGTERM handler via signal.signal() (a
-    # single global slot per signal). Running two servers concurrently means the second one's
-    # capture_signals() silently clobbers the first's, so a real SIGTERM can leave one server's
-    # loop never told to exit and orchestrator.shutdown() unreliable to reach. Disable each
-    # server's own handling and install ONE handler here instead.
-    for s in servers:
-        s.capture_signals = contextlib.nullcontext
+    # Install our own signal handler (instead of uvicorn's) so a SIGTERM reliably reaches
+    # orchestrator.shutdown() to tear down Vite/OpenCode child processes.
+    server.capture_signals = contextlib.nullcontext
 
     async def _serve() -> None:
         loop = asyncio.get_running_loop()
-
-        def _request_exit() -> None:
-            for s in servers:
-                s.should_exit = True
-
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _request_exit)
-
+            loop.add_signal_handler(sig, lambda: setattr(server, "should_exit", True))
         try:
-            await asyncio.gather(*(s.serve() for s in servers))
+            await server.serve()
         finally:
             orchestrator.shutdown()
 

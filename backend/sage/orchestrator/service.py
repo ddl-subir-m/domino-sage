@@ -24,6 +24,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
+from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
@@ -345,7 +346,7 @@ class Orchestrator:
         workspace = self._wm.create(project_id)
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
-        supervisor = ViteSupervisor(workspace.path)
+        supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
         if start_preview:
             supervisor.start()
         project = Project(project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
@@ -380,7 +381,7 @@ class Orchestrator:
             raise FileNotFoundError(project_id)
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
-        supervisor = ViteSupervisor(workspace.path)
+        supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
         if start_preview:
             supervisor.start()
         project = Project(project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
