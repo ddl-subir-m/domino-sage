@@ -62,6 +62,15 @@ yields the run/session id in-container; gateway host/app-id/`dgw_` token/`/api/u
 
 **Goal:** prove Path A is physically possible before building on it.
 
+**STATUS — 2026-07-23, cloud-dogfood: 0.1 + 0.2 PASSED.** `spikes/domino-pathspike/` launched as
+a pluggable tool ("Sage Path Spike"); Vite rendered under the Domino proxy prefix and HMR fired
+through the double proxy (counter state preserved across a server-triggered source edit).
+Confirmed: prefix preserved (`rewrite:false`) as `/<owner>/<project>/notebookSession/<runId>`,
+also in the `x-script-name` header; `root_path` empty; mount `/mnt/code` (`DOMINO_WORKING_DIR`).
+Finding: runtime `npm install` caused a startup gap → **bake `node_modules` into the image
+(Phase 3)**. Remaining Phase-0 items 0.3 (control-plane payloads) and 0.4 (gateway) still open.
+Gate cleared — proceed to Phase 1.
+
 - 0.1 **Base-path + HMR render.** In a stock Domino workspace, run a Vite dev server behind a
   minimal FastAPI reverse-proxy, launched as a pluggable tool, and confirm the app **renders and
   hot-reloads** through the Domino proxy prefix. Nail down: does Domino **strip or preserve** its
