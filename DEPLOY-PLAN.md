@@ -24,6 +24,12 @@ date: 2026-07-23
 4. **Runtime is invisible-ish.** "New app" and "Open app" spin a workspace behind one button;
    cold-start is acceptable behind a "creating your app…" state. Baked template deps keep the
    *preview* fast once the pod is up.
+5. **Persistence = git-based projects.** Each app is its own **private GitHub repo**
+   (`github.com/<user>/sage-<slug>`) + a git-based Domino project pointing at it (not DFS). The hub
+   auto-creates/seeds the repo using the user's existing Domino GitHub credential (extracted at
+   runtime via `git credential fill`; token handled in-memory only, never logged/persisted).
+   Repo visibility is **always private**; publishing is a separate Domino App deploy. GitHub.com
+   only for now (detect provider from the credential; GHE/GitLab later).
 
 ## Target end-state topology
 
@@ -203,7 +209,12 @@ Persistence model = **git-based projects** (not DFS). Findings on a git-based wo
 
 - 4.1 **Repo provisioning** (per new app, all user-space):
   1. `git credential fill` → the user's GitHub token (transient, in-memory).
-  2. `POST https://api.github.com/user/repos` `{name, private:true}` → `github.com/<user>/<app>`.
+  2. `POST https://api.github.com/user/repos` `{name:"sage-<slug>", private:true, auto_init:false}`
+     → `github.com/<user>/sage-<slug>`, default branch `main`. **Name** = `sage-` + slug of the app
+     display name (GitHub-safe: `[a-z0-9._-]`, lowercased, spaces→`-`); the Domino project keeps the
+     display name. **Visibility** = always private (publish is a Domino App deploy, not a repo
+     change; no public toggle in v1). **Collision**: `GET /repos/<user>/sage-<slug>` — on 200,
+     suffix `-2`, `-3`, … and keep the Domino project name in sync.
   3. Seed from the baked template (`/opt/sage/template`, 3.1): init → initial commit → push.
   4. `POST /v4/projects` with `mainGitRepoRef` → git-based Domino project on that repo (body per 0.3).
 - 4.2 The **hub** (own Domino App): lists the user's Sage apps; "New app" runs 4.1 then
