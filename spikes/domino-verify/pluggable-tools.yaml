@@ -1,0 +1,21 @@
+# Pluggable Workspace Tool for Phase-1 verification — the REAL orchestrator (not the spike).
+#
+# Same load-bearing choices proven in Phase 0:
+#   - rewrite:false  -> Domino preserves the path prefix end-to-end (the orchestrator strips it)
+#   - port 8888      -> the one port the orchestrator binds (SAGE_CONTROL_PORT in run.sh)
+#   - internalPath   -> renders as /<owner>/<project>/notebookSession/<runId>/ (the derived prefix)
+#
+# Each tool is a TOP-LEVEL key (no `tools:` wrapper) — a `tools:` key trips
+# "/tools/start: error.path.missing".
+
+sageVerify:
+  title: "Sage (Phase 1 verify)"
+  iconUrl: "/assets/images/workspace-logos/jupyterlab.svg"
+  start:
+    - "bash"
+    - "/mnt/code/spikes/domino-verify/run.sh"
+  httpProxy:
+    port: 8888
+    rewrite: false
+    requireSubdomain: false
+    internalPath: "/{{ownerUsername}}/{{projectName}}/{{sessionPathComponent}}/{{runId}}/"

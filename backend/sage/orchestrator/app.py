@@ -449,7 +449,10 @@ def run() -> None:
     import uvicorn
 
     control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
-    server = uvicorn.Server(uvicorn.Config(control_app, host="127.0.0.1", port=control_port, log_level="info"))
+    # Loopback locally; Domino's pluggable-tool proxy reaches the tool port from outside the
+    # process, so set SAGE_CONTROL_HOST=0.0.0.0 there (matches the Phase-0 spike).
+    control_host = os.environ.get("SAGE_CONTROL_HOST", "127.0.0.1")
+    server = uvicorn.Server(uvicorn.Config(control_app, host=control_host, port=control_port, log_level="info"))
 
     # Install our own signal handler (instead of uvicorn's) so a SIGTERM reliably reaches
     # orchestrator.shutdown() to tear down Vite/OpenCode child processes.
