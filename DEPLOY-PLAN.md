@@ -103,6 +103,17 @@ yields the run/session id in-container; gateway host/app-id/`dgw_` token/`/api/u
 
 ## Phase 1 — Single-port collapse + base-path threading
 
+**STATUS — 2026-07-23, cloud-dogfood: VERIFIED end-to-end on real Domino.** Builder loads under the
+prefix; creating a project renders the template app in the preview iframe; editing `src/App.tsx`
+hot-reloads live in the preview — all on the one tool port (8888), no `:8090`. Confirmed contracts:
+Node ≥20.19 required in the Environment (conda's node shadows nodesource — `run.sh` forces
+`/usr/bin` first); template `node_modules` must be reinstalled clean per Node version so rolldown's
+platform-native binary is present. Prefix handled by recording `root_path` (NOT rewriting the
+path) so the nested `/preview` mount doesn't double-count. **Follow-ups (not Phase-1 blockers):**
+(a) builds need the OpenCode binary in the image + gateway wired — Phase 3 / gateway config;
+(b) `GET /api/assets` 500s because Domino's `/v4/datasetUi/collections/byProject` returns 400 —
+asset-panel fix, tracked separately.
+
 **Goal:** the real builder (orchestrator + preview + template) runs on **one port under the Domino
 proxy prefix**, exactly as the Phase-0 spike proved — while behaving identically at naked
 `localhost` (empty prefix). No project-model changes here (that's Phase 2).
