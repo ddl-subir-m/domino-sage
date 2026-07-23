@@ -59,8 +59,9 @@ echo "asking helper for: protocol=${proto:-https} host=${host:-<unknown>}"
 if [ -n "${host:-}" ]; then
   printf 'protocol=%s\nhost=%s\n\n' "${proto:-https}" "$host" | git credential fill 2>/dev/null | while IFS= read -r line; do
     case "$line" in
+      # Both fields can hold the secret (Domino stores the PAT in username) — length ONLY, never echo.
       password=*) echo "password=<REDACTED len=$(( ${#line} - 9 ))>  <-- if len>0, we CAN get a token" ;;
-      username=*) echo "$line" ;;
+      username=*) echo "username=<REDACTED len=$(( ${#line} - 9 ))>  <-- may itself be the token" ;;
       *) echo "$line" | redact ;;
     esac
   done
