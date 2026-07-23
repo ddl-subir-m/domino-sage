@@ -91,7 +91,7 @@ def main() -> None:
                 "visibility": "Private",
                 "description": "throwaway Phase-0 probe",
                 "collaborators": [],
-                "tags": [],
+                "tags": {"tagNames": []},  # write model wants an object, not [] (learned from 400)
             },
         )
         if isinstance(body, dict):
@@ -99,10 +99,18 @@ def main() -> None:
         print("\n>>> created project id:", new_pid)
 
         if new_pid:
-            # workspace-create body is still a guess — print whatever the API says it needs.
+            # Body modeled on the observed running-workspace config (initConfig/configTemplate).
+            branch = os.environ.get("SPIKE_BRANCH", "feat/domino-workspace-builder")
             _, ws = call(
                 "POST", f"/workspace/project/{new_pid}/workspace",
-                json={"name": "sage-spike", "environmentId": ENV_ID, "hardwareTierId": TIER_ID},
+                json={
+                    "name": "sage-spike",
+                    "environmentId": ENV_ID,
+                    "environmentRevisionId": os.environ.get("DOMINO_ENVIRONMENT_REVISION_ID"),
+                    "hardwareTierId": {"value": TIER_ID},
+                    "tools": ["sageSpike"],
+                    "mainGitRepoRef": {"type": "branches", "value": branch},
+                },
             )
             ws_id = ws.get("id") if isinstance(ws, dict) else None
             print("\n>>> created workspace id:", ws_id)

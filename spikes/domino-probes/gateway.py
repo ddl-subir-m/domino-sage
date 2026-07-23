@@ -74,6 +74,14 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             print(f"completion error {model}:", type(e).__name__, e)
 
+    # 4) cost/usage shape — real routes from the OpenAPI dump (confirms the dashboard source +
+    # that our X-LLM-Tag-* labels landed on the completions above)
+    for path in ("/api/usage/mine/summary", "/api/usage/mine/logs?limit=3", "/api/usage/mine/cost-breakdown"):
+        try:
+            show(f"GET {root}{path}", httpx.get(f"{root}{path}", headers=headers, timeout=30))
+        except Exception as e:  # noqa: BLE001
+            print(f"usage error {path}:", type(e).__name__, e)
+
 
 if __name__ == "__main__":
     main()
