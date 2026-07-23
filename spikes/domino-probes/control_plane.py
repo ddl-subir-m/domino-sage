@@ -110,6 +110,7 @@ def main() -> None:
                     "hardwareTierId": {"value": TIER_ID},
                     "tools": ["sageSpike"],
                     "mainGitRepoRef": {"type": "branches", "value": branch},
+                    "externalVolumeMounts": [],  # required (learned from 400)
                 },
             )
             ws_id = ws.get("id") if isinstance(ws, dict) else None

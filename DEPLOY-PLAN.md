@@ -62,14 +62,26 @@ yields the run/session id in-container; gateway host/app-id/`dgw_` token/`/api/u
 
 **Goal:** prove Path A is physically possible before building on it.
 
-**STATUS — 2026-07-23, cloud-dogfood: 0.1 + 0.2 PASSED.** `spikes/domino-pathspike/` launched as
-a pluggable tool ("Sage Path Spike"); Vite rendered under the Domino proxy prefix and HMR fired
-through the double proxy (counter state preserved across a server-triggered source edit).
-Confirmed: prefix preserved (`rewrite:false`) as `/<owner>/<project>/notebookSession/<runId>`,
-also in the `x-script-name` header; `root_path` empty; mount `/mnt/code` (`DOMINO_WORKING_DIR`).
-Finding: runtime `npm install` caused a startup gap → **bake `node_modules` into the image
-(Phase 3)**. Remaining Phase-0 items 0.3 (control-plane payloads) and 0.4 (gateway) still open.
-Gate cleared — proceed to Phase 1.
+**STATUS — 2026-07-23, cloud-dogfood: PHASE 0 COMPLETE (0.1–0.4). Proceed to Phase 1.**
+
+- **0.1/0.2 Path A** — Vite renders + HMR fires through the Domino proxy on ONE port (counter
+  state preserved across a server-triggered edit). Prefix preserved (`rewrite:false`) =
+  `/<owner>/<project>/notebookSession/<runId>`, also in the **`x-script-name`** header;
+  `root_path` empty; mount `/mnt/code` (`DOMINO_WORKING_DIR`); public host in
+  `x-original-forwarded-host`. Finding: runtime `npm install` caused a first-render gap →
+  **bake `node_modules` into the image (Phase 3)**.
+- **0.3 control plane** (v4 API, sidecar-auth at `DOMINO_API_PROXY`) — `GET /v4/users/self` →
+  caller ObjectId. **`POST /v4/projects` → 200** with `{name, ownerId:<ObjectId>, visibility,
+  description, collaborators:[], tags:{tagNames:[]}}`. Workspace create:
+  `POST /v4/workspace/project/{id}/workspace` with `{name, environmentId, environmentRevisionId,
+  hardwareTierId:{value}, tools:[...], mainGitRepoRef:{type:"branches",value},
+  externalVolumeMounts:[]}`. Hardware tiers at `/v4/projects/{id}/hardwareTiers`. Sage project is
+  git-based (`mainRepository`). (Sage_Spike env id `6a626bf9…`.)
+- **0.4 gateway** — base `https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1`, sidecar-JWT
+  auth. Models listed; real completions OK for `sonnet` + `gpt-5.4`. Cost/usage at
+  `/api/usage/mine/{summary,logs,cost-breakdown}` (per-alias/model tokens + cost). **CARRY-FORWARD:**
+  `qwen-2-5` (sovereign) 502s at the provider (empty response) — gateway team's fix, not a sage
+  blocker. Anthropic-shape also available at `/anthropic/v1/messages`.
 
 - 0.1 **Base-path + HMR render.** In a stock Domino workspace, run a Vite dev server behind a
   minimal FastAPI reverse-proxy, launched as a pluggable tool, and confirm the app **renders and
