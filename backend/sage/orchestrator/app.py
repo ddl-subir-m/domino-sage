@@ -85,12 +85,13 @@ BASE_PREFIX = domino_base_prefix()
 
 
 class _PrefixMiddleware:
-    """Strip Domino's proxy prefix from the request path and record it as `root_path`.
+    """Record Domino's proxy prefix as `root_path` so bare-registered routes match.
 
-    Domino forwards the full prefixed path (rewrite:false). We strip it so routes registered at
-    bare paths (`/`, `/api/...`, `/preview/...`) match, and set `root_path` for correct URL
-    generation. No-op when the prefix is empty (local dev). Domino also sends the prefix in the
-    `x-script-name` header; a one-time mismatch is logged as a cross-check against drift.
+    Domino forwards the full prefixed path (rewrite:false). Starlette routes on
+    `get_route_path = path - root_path` at every level (including nested Mounts, which extend
+    root_path rather than rewrite the path), so we set `root_path` and leave `path` INTACT — do NOT
+    strip the path, or the /preview Mount double-counts the prefix. No-op when the prefix is empty
+    (local dev). Domino also sends the prefix in `x-script-name`; a one-time mismatch is logged.
     """
 
     def __init__(self, app, prefix: str) -> None:
@@ -103,7 +104,6 @@ class _PrefixMiddleware:
             path = scope.get("path", "")
             if path == self._prefix or path.startswith(self._prefix + "/"):
                 scope = dict(scope)
-                scope["path"] = path[len(self._prefix):] or "/"
                 scope["root_path"] = self._prefix
             elif not self._warned:
                 self._warned = True

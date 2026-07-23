@@ -21,13 +21,12 @@ def _app_with_prefix(prefix: str) -> FastAPI:
     return app
 
 
-def test_prefix_stripped_so_bare_route_matches():
+def test_prefixed_request_matches_bare_route_via_root_path():
+    # The middleware records root_path (does NOT rewrite path); Starlette routes on path-root_path.
     client = TestClient(_app_with_prefix("/owner/proj/notebookSession/run"))
     r = client.get("/owner/proj/notebookSession/run/ping")
     assert r.status_code == 200
-    body = r.json()
-    assert body["path"] == "/ping"
-    assert body["root_path"] == "/owner/proj/notebookSession/run"
+    assert r.json()["root_path"] == "/owner/proj/notebookSession/run"
 
 
 def test_empty_prefix_is_noop():
@@ -37,18 +36,17 @@ def test_empty_prefix_is_noop():
     assert r.json() == {"path": "/ping", "root_path": ""}
 
 
-def test_bare_root_path_maps_to_slash():
-    # Domino serves the builder page at "<prefix>/" — after stripping, that must become "/".
+def test_bare_root_path_matches_index():
+    # Domino serves the builder page at "<prefix>/" — it must still match the "/" route.
     app = FastAPI()
 
     @app.get("/")
-    def index(request: Request) -> dict:
-        return {"path": request.scope["path"]}
+    def index() -> dict:
+        return {"ok": True}
 
     app.add_middleware(_PrefixMiddleware, prefix="/p/q")
     r = TestClient(app).get("/p/q/")
     assert r.status_code == 200
-    assert r.json()["path"] == "/"
 
 
 def test_domino_base_prefix_from_env(monkeypatch):
@@ -94,5 +92,34 @@ def test_preview_forwards_to_vite_base(prefix, path, expected, monkeypatch):
     monkeypatch.setattr("sage.preview.proxy.httpx.AsyncClient", _StubClient)
     app = make_preview_app(lambda: "http://vite:5173", prefix)
     client = TestClient(app, raise_server_exceptions=False)
-    client.get(f"/{path}")  # mounted app sees prefix-stripped, /preview-stripped path
+    client.get(f"/{path}")  # sub-app in isolation sees the route-relative path
     assert captured["url"] == expected
+
+
+def test_preview_through_mount_and_middleware_no_double_prefix(monkeypatch):
+    # Reproduces production exactly: preview mounted at /preview behind the prefix middleware. A
+    # regression that rewrites path instead of root_path double-counts the prefix (…/preview/preview/…).
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _StubClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def build_request(self, method, url, **k):
+            captured["url"] = url
+            raise _Stop
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("sage.preview.proxy.httpx.AsyncClient", _StubClient)
+    prefix = "/o/p/notebookSession/r"
+    app = FastAPI()
+    app.mount("/preview", make_preview_app(lambda: "http://vite:5173", prefix))
+    app.add_middleware(_PrefixMiddleware, prefix=prefix)
+    client = TestClient(app, raise_server_exceptions=False)
+    client.get(f"{prefix}/preview/src/main.tsx")
+    assert captured["url"] == "http://vite:5173/o/p/notebookSession/r/preview/src/main.tsx"
