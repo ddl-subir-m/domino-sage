@@ -87,8 +87,13 @@ yields the run/session id in-container; gateway host/app-id/`dgw_` token/`/api/u
 - 1.1 `template/react-vite/vite.config.ts`: add `base` (injected at spawn), `server.hmr`
   (`clientPort`/`path`/`protocol` derived from the Domino prefix), `server.allowedHosts`, and
   `server.fs` as needed for the proxied host.
-- 1.2 `preview/supervisor.py`: spawn Vite with `--base=<prefix>/preview/` (prefix computed from
-  Domino env resolved in 0.1) and pass HMR config; keep runtime port discovery.
+- 1.2 `preview/supervisor.py`: spawn Vite with `--base=<prefix>/preview/` and pass HMR config;
+  keep runtime port discovery. **Prefix (confirmed via Phase-0 STEP 2 on cloud-dogfood):**
+  `/<owner>/<project>/notebookSession/<runId>` — derivable from env
+  (`DOMINO_PROJECT_OWNER`/`DOMINO_PROJECT_NAME`/`DOMINO_RUN_ID`) AND sent per-request in the
+  **`x-script-name`** header. Prefer reading `x-script-name` in the orchestrator (auto-detect,
+  no env-threading); Vite still needs it baked at spawn. Public host for HMR wss is in
+  `x-original-forwarded-host`.
 - 1.3 `orchestrator/app.py` `run()`: collapse two uvicorn servers → **one**; mount the preview
   proxy (`make_preview_app`) under `/preview` on the control app. Remove the `:8090` server.
 - 1.4 `preview/proxy.py`: serve under the `/preview` sub-mount; ensure the browser-visible prefix

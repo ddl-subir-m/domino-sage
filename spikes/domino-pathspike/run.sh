@@ -4,10 +4,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── set this from STEP 2 (probe.py -> /whoami -> received_path, minus the trailing slash) ──
-# If STEP 2 shows the prefix comes from env vars, compute it here instead of hardcoding, e.g.:
-#   export SAGE_BASE_PREFIX="/${DOMINO_PROJECT_OWNER}/${DOMINO_PROJECT_NAME}/${DOMINO_RUN_ID}"
-export SAGE_BASE_PREFIX="${SAGE_BASE_PREFIX:-}"
+# Domino preserves the proxy prefix (httpProxy rewrite:false). Confirmed via probe.py (STEP 2)
+# that it renders as /<owner>/<project>/notebookSession/<runId>, derivable from env. Domino also
+# sends it per-request in the `x-script-name` header (auto-detect option for the real
+# orchestrator). Override by exporting SAGE_BASE_PREFIX before launch.
+export SAGE_BASE_PREFIX="${SAGE_BASE_PREFIX:-/${DOMINO_PROJECT_OWNER}/${DOMINO_PROJECT_NAME}/notebookSession/${DOMINO_RUN_ID}}"
 export PORT="${PORT:-8888}"
 
 echo "[spike] SAGE_BASE_PREFIX='${SAGE_BASE_PREFIX}'  PORT=${PORT}"

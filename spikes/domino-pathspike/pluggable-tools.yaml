@@ -14,20 +14,11 @@
 sageSpike:
   title: "Sage Path Spike"
   iconUrl: "/assets/images/workspace-logos/jupyterlab.svg"
-  # Invoke via `bash <path>` so neither the exec bit nor the shebang matters — only that the
-  # file EXISTS at this path in the workspace container (repo on the project mount).
+  # Invoke via `bash <path>` (exec bit / shebang irrelevant); run.sh derives SAGE_BASE_PREFIX
+  # from Domino env. Confirmed working path: /mnt/code is the project mount (DOMINO_WORKING_DIR).
   start:
     - "bash"
     - "/mnt/code/spikes/domino-pathspike/run.sh"
-  # DIAGNOSTIC (temporary): if launch still exits 127, swap `start` for this to see what the
-  # Sage Spike container actually has, then read the workspace logs:
-  #   start:
-  #     - "bash"
-  #     - "-lc"
-  #     - "whoami; pwd; echo '--/mnt--'; ls -la /mnt; echo '--code--'; ls -la /mnt/code;
-  #        echo '--target--'; ls -la /mnt/code/spikes/domino-pathspike 2>&1;
-  #        echo '--git--'; git -C /mnt/code branch --show-current; git -C /mnt/code log --oneline -1;
-  #        echo SLEEPING; sleep 600"
   httpProxy:
     port: 8888
     rewrite: false
