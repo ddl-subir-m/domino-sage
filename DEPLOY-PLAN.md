@@ -103,25 +103,41 @@ yields the run/session id in-container; gateway host/app-id/`dgw_` token/`/api/u
 
 ## Phase 1 — Single-port collapse + base-path threading
 
-**Goal:** the builder renders correctly under the Domino proxy on one port.
+**Goal:** the real builder (orchestrator + preview + template) runs on **one port under the Domino
+proxy prefix**, exactly as the Phase-0 spike proved — while behaving identically at naked
+`localhost` (empty prefix). No project-model changes here (that's Phase 2).
 
-- 1.1 `template/react-vite/vite.config.ts`: add `base` (injected at spawn), `server.hmr`
-  (`clientPort`/`path`/`protocol` derived from the Domino prefix), `server.allowedHosts`, and
-  `server.fs` as needed for the proxied host.
-- 1.2 `preview/supervisor.py`: spawn Vite with `--base=<prefix>/preview/` and pass HMR config;
-  keep runtime port discovery. **Prefix (confirmed via Phase-0 STEP 2 on cloud-dogfood):**
-  `/<owner>/<project>/notebookSession/<runId>` — derivable from env
-  (`DOMINO_PROJECT_OWNER`/`DOMINO_PROJECT_NAME`/`DOMINO_RUN_ID`) AND sent per-request in the
-  **`x-script-name`** header. Prefer reading `x-script-name` in the orchestrator (auto-detect,
-  no env-threading); Vite still needs it baked at spawn. Public host for HMR wss is in
-  `x-original-forwarded-host`.
-- 1.3 `orchestrator/app.py` `run()`: collapse two uvicorn servers → **one**; mount the preview
-  proxy (`make_preview_app`) under `/preview` on the control app. Remove the `:8090` server.
-- 1.4 `preview/proxy.py`: serve under the `/preview` sub-mount; ensure the browser-visible prefix
-  is preserved end-to-end (HTTP + HMR ws).
-- 1.5 `ui/index.html`: audit for absolute URLs; make all asset/API/SSE calls relative.
-  → **verify:** launch the built image locally emulating the proxy prefix; UI loads, a build runs,
-  the preview renders in the iframe, HMR live-reloads. All on one port under a subpath.
+**Why it's needed — three places assume a naked, two-port world:**
+- `orchestrator/app.py:405-421` — a separate `:8090` preview uvicorn server.
+- `ui/index.html:384` — `previewBase = …:8090/` (hard port); plus ~18 API calls using
+  **leading-slash absolute** paths (`fetch('/api/…')`) that won't carry Domino's prefix.
+- `template/react-vite/vite.config.ts` — references `SAGE_HMR_CLIENT_PORT` that **nothing sets**,
+  and has no `base`.
+
+**Single source of truth for the prefix.** Compute `SAGE_BASE_PREFIX` once at orchestrator
+startup, env-derived like the spike's `run.sh` (`/<owner>/<project>/notebookSession/<runId>` from
+`DOMINO_PROJECT_OWNER`/`DOMINO_PROJECT_NAME`/`DOMINO_RUN_ID`), empty locally; cross-check against
+the `x-script-name` header. Thread that one value everywhere. **No-strip design is required, not
+just tidy:** Vite bakes its `base` into served HTML/JS, so `base` must be the full path the browser
+uses, and the proxy must forward that same full path to Vite.
+
+**Change set (5 files):**
+
+| # | File | Change | Verify |
+|---|------|--------|--------|
+| 1 | `orchestrator/app.py` | ASGI middleware: read prefix, strip from `scope["path"]` so bare routes match + set `root_path`; stash prefix. `run()`: delete the `:8090` server + `SAGE_PREVIEW_PORT`, run one uvicorn on `control_port`. | `<prefix>/api/projects` 200; local `/api/projects` still 200 |
+| 2 | `preview/proxy.py` | Register preview under `/preview/{path}` on `control_app`; forwarder **re-adds prefix** building the Vite URL (`{vite}{prefix}/preview/{path}`). Keep the spike's 502-when-Vite-down guard. | preview HTTP + HMR ws reach Vite |
+| 3 | `preview/supervisor.py` (+ `service.py:348/383`) | Launch Vite with `--base={prefix}/preview/`, inject HMR env; keep runtime port discovery. | Vite "Local:" line still parsed |
+| 4 | `template/react-vite/vite.config.ts` | Match spike: `base = ${prefix}/preview/`; `hmr = {protocol:'wss', clientPort:443, path:base}`; `allowedHosts:true`. Read prefix from env; empty → `/preview/`. | HMR fires through double proxy |
+| 5 | `ui/index.html` | `previewBase` → relative `preview/`; **Runtime BASE constant** captured once at load (`const BASE = location.pathname.replace(/\/$/,'')`) prepended in the `api()` helper + the raw `fetch`/`EventSource` sites, so the browser sends fully-prefixed paths. | builder loads + drives a build under a prefix |
+
+→ **verify (the Phase-0 test, now on real code):** launch the actual orchestrator as the pluggable
+tool in a Domino workspace → builder UI loads under the prefix, a generated app renders in the
+preview iframe, and an OpenCode edit hot-reloads *without* losing preview state — all on one tool
+port. Locally, `localhost:8080` unchanged (empty prefix).
+
+**Out of scope (deferred):** multi-project registry / `active-project` / `x-sage-project` teardown
+→ Phase 2. Environment/deps baking → Phase 3.
 
 ## Phase 2 — Project-model flip (one Domino project per builder)
 
