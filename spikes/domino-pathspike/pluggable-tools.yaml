@@ -1,27 +1,25 @@
 # Pluggable Workspace Tool definition for the Path-A spike.
 #
-# GROUND TRUTH: the exact key names/nesting vary by Domino version. Before trusting this,
-# open a STANDARD Domino environment (one that offers JupyterLab) and copy its "Pluggable
-# Workspace Tools" block, then adapt the fields below to match that shape. This is a
-# best-effort template based on the TensorBoard-in-Jupyter docs.
+# SCHEMA NOTE: each tool is a TOP-LEVEL key (no `tools:` wrapper). Domino reads a top-level
+# `tools:` as a single tool named "tools" and then reports `/tools/start: error.path.missing`.
+# If in doubt, open a standard environment's JupyterLab block and match its shape exactly.
 #
-# The load-bearing choices for Path A:
+# Load-bearing choices for Path A:
 #   - httpProxy.port         : the port our FastAPI proxy binds (run.sh PORT, default 8888)
 #   - httpProxy.rewrite:false: tells Domino NOT to rewrite/strip the path, so the proxy
 #                              prefix is PRESERVED end-to-end (server.py + Vite assume this)
 #   - httpProxy.internalPath : the templated public path -> this is the SAGE_BASE_PREFIX we
-#                              must feed Vite/uvicorn (STEP 2 tells us how it renders in-container)
+#                              feed Vite/uvicorn (STEP 2 confirms how it renders in-container)
 
-tools:
-  sageSpike:
-    title: "Sage Path Spike"
-    iconUrl: "/assets/images/workspace-logos/jupyterlab.svg"
-    # Path to run.sh on the PROJECT MOUNT (the repo is cloned into the project, not baked into
-    # the image — see Dockerfile note). Confirm the exact mount prefix from STEP 2's /whoami.
-    start:
-      - "/mnt/{{projectName}}/spikes/domino-pathspike/run.sh"
-    httpProxy:
-      port: 8888
-      rewrite: false
-      requireSubdomain: false
-      internalPath: "/{{ownerUsername}}/{{projectName}}/{{sessionPathComponent}}/{{runId}}/"
+sageSpike:
+  title: "Sage Path Spike"
+  iconUrl: "/assets/images/workspace-logos/jupyterlab.svg"
+  # Path to run.sh on the PROJECT MOUNT (repo cloned into the project, not baked into the
+  # image — see Dockerfile note). Confirm the exact mount prefix from STEP 2's /whoami.
+  start:
+    - "/mnt/code/spikes/domino-pathspike/run.sh"
+  httpProxy:
+    port: 8888
+    rewrite: false
+    requireSubdomain: false
+    internalPath: "/{{ownerUsername}}/{{projectName}}/{{sessionPathComponent}}/{{runId}}/"
