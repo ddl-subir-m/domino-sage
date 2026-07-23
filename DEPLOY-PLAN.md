@@ -213,11 +213,13 @@ Persistence model = **git-based projects** (not DFS). Findings on a git-based wo
   access types (PAT / SSH key / App password), so this is layered:
   - **Backbone (universal):** seed + push work for ANY provider + access type — Domino injects the
     creds, `git push` just works (proven §7). This never depends on a provider API.
-  - **Auto-create (where possible):** detect provider+host from the git remote / configured Domino
-    credential → a small **provider adapter** creates the repo via its API using the token from
-    `git credential fill` (HTTPS creds only): GitHub/GHE `POST /user/repos`, GitLab `POST /projects`,
-    Bitbucket `POST /2.0/repositories/...`. Token is HTTPS-only — **SSH-key creds can't be
-    extracted**, so no auto-create there.
+  - **Auto-create (v1 = all HTTPS-token providers):** detect provider+host from the git remote /
+    configured Domino credential → a **provider adapter** creates the repo via its API using the
+    token from `git credential fill`. v1 adapters: **GitHub + GitHub Enterprise** (`POST /user/repos`,
+    base `api.github.com` vs `<ghe>/api/v3`), **GitLab + GitLab EE** (`POST /projects`, base
+    `<host>/api/v4`), **Bitbucket Cloud** (`POST /2.0/repositories/{workspace}/{slug}`) and
+    **Bitbucket Data Center** (`POST /rest/api/1.0/projects/{key}/repos` — note: distinct API from
+    Cloud). Token is HTTPS-only — **SSH-key creds can't be extracted**, so those hit the fallback.
   - **Fallback (BYO repo):** for SSH-key creds, "Other", or unadapted providers, the user
     creates/picks an empty repo in "New app"; the hub seeds + wires it.
   - **Name/visibility (all paths):** `sage-<slug>` (slug of the display name, host-safe chars,
