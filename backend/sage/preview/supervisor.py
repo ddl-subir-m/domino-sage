@@ -9,6 +9,7 @@ Deep module, narrow interface: start() / upstream() / stop(). How the port is di
 """
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import re
@@ -46,14 +47,21 @@ class ViteSupervisor:
         self._restarts = 0
         self._stopped = False
         self._last_error: str | None = None
+        self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent Vite output
 
     def start(self, ready_timeout_s: float = 30.0) -> str:
-        """Spawn Vite and block until its port is discovered. Returns the upstream base URL."""
+        """Spawn Vite and block until its port is discovered. Returns the upstream base URL.
+
+        Raises RuntimeError (with Vite's own recent output) if Vite exits before reporting a port —
+        e.g. an incompatible Node version — so the failure isn't an opaque assertion upstream.
+        """
         self._spawn()
-        if not self._ready.wait(timeout=ready_timeout_s):
+        timed_out = not self._ready.wait(timeout=ready_timeout_s)
+        if self._upstream is None:
             self.stop()
-            raise TimeoutError(f"Vite did not report a port in {ready_timeout_s}s: {self._last_error}")
-        assert self._upstream is not None
+            why = f"timed out after {ready_timeout_s}s" if timed_out else (self._last_error or "exited early")
+            tail = "\n".join(self._tail)
+            raise RuntimeError(f"Vite dev server failed to start ({why}). Recent output:\n{tail}")
         return self._upstream
 
     def upstream(self) -> str:
@@ -88,6 +96,7 @@ class ViteSupervisor:
     def _read_output(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
+            self._tail.append(line.rstrip())
             if self._upstream is None and (url := parse_vite_url(line)):
                 self._upstream = url
                 self._ready.set()
