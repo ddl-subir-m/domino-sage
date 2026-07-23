@@ -28,8 +28,9 @@ date: 2026-07-23
    (`github.com/<user>/sage-<slug>`) + a git-based Domino project pointing at it (not DFS). The hub
    auto-creates/seeds the repo using the user's existing Domino GitHub credential (extracted at
    runtime via `git credential fill`; token handled in-memory only, never logged/persisted).
-   Repo visibility is **always private**; publishing is a separate Domino App deploy. GitHub.com
-   only for now (detect provider from the credential; GHE/GitLab later).
+   Repo visibility is **always private**; publishing is a separate Domino App deploy. Seed+push is
+   provider-agnostic (works for any Domino git provider/access-type); auto-repo-creation is a
+   per-provider adapter (HTTPS-token providers only) with a BYO-repo fallback for SSH keys / "Other".
 
 ## Target end-state topology
 
@@ -207,16 +208,22 @@ Persistence model = **git-based projects** (not DFS). Findings on a git-based wo
 - ⚠️ The extracted token is powerful: handle **in-memory only, never log/persist**. GitHub.com only
   for now — detect host from the credential; GHE/GitLab are separate providers.
 
-- 4.1 **Repo provisioning** (per new app, all user-space):
-  1. `git credential fill` → the user's GitHub token (transient, in-memory).
-  2. `POST https://api.github.com/user/repos` `{name:"sage-<slug>", private:true, auto_init:false}`
-     → `github.com/<user>/sage-<slug>`, default branch `main`. **Name** = `sage-` + slug of the app
-     display name (GitHub-safe: `[a-z0-9._-]`, lowercased, spaces→`-`); the Domino project keeps the
-     display name. **Visibility** = always private (publish is a Domino App deploy, not a repo
-     change; no public toggle in v1). **Collision**: `GET /repos/<user>/sage-<slug>` — on 200,
-     suffix `-2`, `-3`, … and keep the Domino project name in sync.
-  3. Seed from the baked template (`/opt/sage/template`, 3.1): init → initial commit → push.
-  4. `POST /v4/projects` with `mainGitRepoRef` → git-based Domino project on that repo (body per 0.3).
+- 4.1 **Repo provisioning** (per new app, all user-space). Domino supports many providers
+  (GitHub / GitHub Enterprise / GitLab / GitLab Enterprise / Bitbucket / Bitbucket DC / Other) and
+  access types (PAT / SSH key / App password), so this is layered:
+  - **Backbone (universal):** seed + push work for ANY provider + access type — Domino injects the
+    creds, `git push` just works (proven §7). This never depends on a provider API.
+  - **Auto-create (where possible):** detect provider+host from the git remote / configured Domino
+    credential → a small **provider adapter** creates the repo via its API using the token from
+    `git credential fill` (HTTPS creds only): GitHub/GHE `POST /user/repos`, GitLab `POST /projects`,
+    Bitbucket `POST /2.0/repositories/...`. Token is HTTPS-only — **SSH-key creds can't be
+    extracted**, so no auto-create there.
+  - **Fallback (BYO repo):** for SSH-key creds, "Other", or unadapted providers, the user
+    creates/picks an empty repo in "New app"; the hub seeds + wires it.
+  - **Name/visibility (all paths):** `sage-<slug>` (slug of the display name, host-safe chars,
+    lowercased); Domino project keeps the display name; **always private**; collision → `-2`, `-3`.
+  - Then: seed from the baked template (`/opt/sage/template`, 3.1) → initial commit → push →
+    `POST /v4/projects` with `mainGitRepoRef` → git-based Domino project (body per 0.3).
 - 4.2 The **hub** (own Domino App): lists the user's Sage apps; "New app" runs 4.1 then
   `POST /workspace/.../workspace` into the Sage Environment (body per 0.3) → redirect into the
   builder. Ephemeral token per call from sidecar `:8899` (re-acquire each call).
