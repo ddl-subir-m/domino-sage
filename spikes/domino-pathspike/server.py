@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
+import re
 
 import httpx
 import websockets
@@ -26,6 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 
 VITE = os.environ.get("SPIKE_VITE_URL", "http://127.0.0.1:5173").rstrip("/")
 PREFIX = os.environ.get("SAGE_BASE_PREFIX", "").rstrip("/")
+_APP_JSX = pathlib.Path(__file__).resolve().parent / "app" / "src" / "App.jsx"
 
 _HOP = {
     "connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer",
@@ -58,12 +61,31 @@ async def index() -> HTMLResponse:
   <div style="padding:8px 12px;background:#1820A0;color:#fff;font-size:13px">
     sage path spike &middot; <a style="color:#C9C5F2" href="whoami">whoami</a>
     &middot; prefix=<code>{PREFIX or "(empty)"}</code>
-    &middot; success = counter app renders below AND edits to
-      <code>app/src/App.jsx</code> hot-reload without a full refresh.
+    &middot; <button onclick="bump()" style="cursor:pointer">Bump marker (HMR test)</button>
+    &middot; PASS = Bump changes the marker # in the preview WITHOUT resetting the counter.
+    <span id="s"></span>
   </div>
   <iframe src="preview/" style="border:0;width:100vw;height:calc(100vh - 36px)"></iframe>
+  <script>
+    async function bump() {{
+      const r = await fetch('bump', {{method: 'POST'}});
+      const d = await r.json();
+      document.getElementById('s').textContent = ' → server set marker #' + d.marker + ' (watch the preview)';
+    }}
+  </script>
 </body>"""
     )
+
+
+@app.post(f"{PREFIX}/bump")
+async def bump() -> JSONResponse:
+    """Rewrite the preview app's source so Vite HMR fires. The counter in the iframe should keep
+    its value while the marker text updates — that state preservation is the HMR proof."""
+    text = _APP_JSX.read_text()
+    m = re.search(r"edit-marker #(\d+)", text)
+    n = (int(m.group(1)) + 1) if m else 1
+    _APP_JSX.write_text(re.sub(r"edit-marker #\d+", f"edit-marker #{n}", text))
+    return JSONResponse({"marker": n})
 
 
 @app.websocket(_PREVIEW)
