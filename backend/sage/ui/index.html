@@ -131,7 +131,7 @@
   .status-line { display: flex; align-items: center; gap: 9px; align-self: flex-start; font-size: 13px; color: var(--muted); padding: 2px 2px; }
   .status-line .ico { display: inline-block; }
   .status-line.spin .ico { animation: spin 1s linear infinite; }
-  .status-line.ok { color: var(--ok); } .status-line.err { color: var(--lock); }
+  .status-line.ok { color: var(--ok); } .status-line.err { color: var(--lock); } .status-line.warn { color: var(--warn); }
   .status-line .elapsed { color: var(--faint); font-variant-numeric: tabular-nums; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .divider { text-align: center; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .6px; margin: 6px 0; position: relative; }
@@ -332,7 +332,7 @@
             <span class="dot"></span><span id="chip-text">model</span><span class="caret">▾</span>
           </button>
           <button class="chip" id="data-chip" onclick="togglePop('data-pop')">📎 <span id="data-count">Data</span><span class="caret">▾</span></button>
-          <button class="send" id="build-btn" onclick="build()" title="Send (Enter)">↑</button>
+          <button class="send" id="build-btn" onclick="sendOrStop()" title="Send (Enter)">↑</button>
         </div>
       </div>
     </div>
@@ -583,6 +583,11 @@ async function loadAssets() {
   const el = document.getElementById('assets');
   const assets = body.assets || [];
   if (!assets.length) { el.innerHTML = '<div class="hint">No datasets.</div>'; return; }
+  let attachedIds = [];
+  if (active) {
+    const proj = await api('/api/projects/' + active);
+    attachedIds = proj.body.attached || [];
+  }
   el.innerHTML = '';
   for (const a of assets) {
     const row = document.createElement('div');
@@ -590,20 +595,34 @@ async function loadAssets() {
     const tags = a.tags.length ? `[${a.tags.join(', ')}]` : '';
     row.innerHTML = `<span class="a-name">${a.name} <span class="a-tags ${a.sensitive ? 'sens' : ''}">${tags}</span></span>`;
     const btn = document.createElement('button');
-    btn.textContent = 'Attach';
     btn.dataset.id = a.id;
-    btn.onclick = () => attachAsset(a.id, btn);
+    setAssetButtonState(btn, attachedIds.includes(a.id));
+    btn.onclick = () => btn.classList.contains('attached') ? detachAsset(a.id, btn) : attachAsset(a.id, btn);
     row.appendChild(btn);
     el.appendChild(row);
   }
 }
+function setAssetButtonState(btn, attached) {
+  btn.textContent = attached ? 'Detach' : 'Attach';
+  btn.classList.toggle('attached', attached);
+}
 async function attachAsset(datasetId, btn) {
   if (!active) return;
   const { body } = await api(`/api/projects/${active}/assets/${datasetId}/attach`, { method: 'POST' });
-  if (btn) { btn.textContent = 'Attached'; btn.classList.add('attached'); }
+  if (btn) setAssetButtonState(btn, true);
   updateDataCount();
   refreshStatus();
   if (body.sensitive) addStatus('err', '🔒', `Attached <b>${esc(body.attached)}</b> — sovereign model locked`);
+}
+async function detachAsset(datasetId, btn) {
+  if (!active) return;
+  const { body } = await api(`/api/projects/${active}/assets/${datasetId}/detach`, { method: 'POST' });
+  if (btn) setAssetButtonState(btn, false);
+  updateDataCount();
+  refreshStatus();
+  if (lastModel && lastModel.asset_locked) {
+    addStatus('warn', '🔒', `Detached <b>${esc(body.detached)}</b> — sovereign lock stays on for this session.`);
+  }
 }
 function updateDataCount() {
   const n = document.querySelectorAll('#assets button.attached').length;
@@ -722,6 +741,7 @@ async function setModel() {
 async function lockSovereign() {
   if (!active) return;
   const next = !lastModel.manual_locked;
+  if (!next && !confirm('Unlock sovereign routing? Model selection will go back to normal for this project.')) return;
   await api('/api/projects/' + active + '/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: next }) });
   refreshStatus();
 }
@@ -911,6 +931,28 @@ function trail() {
   scrollDown();
 }
 
+// Tracks the project a build/build_stream call is currently in flight for, so the
+// composer's send button can be repurposed as a Stop button while streaming.
+let buildingPid = null;
+
+function sendOrStop() {
+  if (buildingPid) stopBuild(); else build();
+}
+
+// Tells the backend to interrupt the in-flight turn; it reverts any file changes and drops
+// the turn from history, then the stream emits a 'stopped' event (handled in renderEvent)
+// that removes the turn's messages from the chat pane.
+async function stopBuild() {
+  if (!buildingPid) return;
+  const btn = document.getElementById('build-btn');
+  btn.disabled = true;
+  try {
+    await api('/api/projects/' + buildingPid + '/build/stop', { method: 'POST' });
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function build() {
   if (!active) { alert('Create a project first'); return; }
   const pid = active; // pin the stream to the project it was launched for
@@ -918,7 +960,10 @@ async function build() {
   const prompt = ta.value.trim();
   if (!prompt) return;
   const btn = document.getElementById('build-btn');
-  btn.disabled = true;
+  buildingPid = pid;
+  btn.textContent = '■'; btn.title = 'Stop';
+  const msgBox = document.getElementById('messages');
+  const turnStart = msgBox.children.length; // first DOM node belonging to this turn
   addUser(prompt);
   ta.value = ''; autogrow(ta);
   buildPhase = 'plan';
@@ -941,18 +986,19 @@ async function build() {
         // Drop frames if the user has switched away from `pid` — the stream keeps running
         // server-side (and persists to that project's history) but must not render into
         // whatever project is now on screen.
-        if (line && active === pid) renderEvent(JSON.parse(line));
+        if (line && active === pid) renderEvent(JSON.parse(line), turnStart);
       }
     }
   } catch (e) {
-    if (active === pid) renderEvent({ type: 'error', message: String(e) });
+    if (active === pid) renderEvent({ type: 'error', message: String(e) }, turnStart);
   }
   if (active === pid) {
     stopWorking();
-    btn.disabled = false;
+    btn.textContent = '↑'; btn.title = 'Send (Enter)';
     refreshPreview();
     refreshStatus();
   }
+  buildingPid = null;
 }
 
 // Replays a project's persisted chat transcript (see Workspace.append_history) so switching to
@@ -969,8 +1015,15 @@ function replayEvent(ev) {
   else if (ev.type === 'done') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`);
 }
 
-function renderEvent(ev) {
-  if (ev.type === 'active') { const v = ACTIVE_VERB[ev.tool] || 'Working on'; const d = ev.detail || ''; setWorking(d ? `${v} ${d}` : v); }
+function renderEvent(ev, turnStart) {
+  if (ev.type === 'stopped') {
+    // User hit Stop: backend already reverted files/history, so drop this turn's messages
+    // from the chat pane too — it disappears as if it never happened.
+    stopWorking();
+    const msgBox = document.getElementById('messages');
+    while (typeof turnStart === 'number' && msgBox.children.length > turnStart) msgBox.removeChild(msgBox.lastChild);
+  }
+  else if (ev.type === 'active') { const v = ACTIVE_VERB[ev.tool] || 'Working on'; const d = ev.detail || ''; setWorking(d ? `${v} ${d}` : v); }
   else if (ev.type === 'agent' && ev.kind === 'tool') { addToolCard(ev.tool, ev.detail || ''); trail(); }
   else if (ev.type === 'agent' && ev.kind === 'text') { addAgent(ev.text); trail(); }
   else if (ev.type === 'typecheck-start') { setWorking('Typechecking'); }

@@ -289,6 +289,16 @@ def attach_asset(pid: str, dataset_id: str) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": "dataset not found"})
 
 
+@control_app.post("/api/projects/{pid}/assets/{dataset_id}/detach")
+def detach_asset(pid: str, dataset_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(content=orchestrator.detach_asset(pid, dataset_id))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "project not found"})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": "dataset not found"})
+
+
 @control_app.post("/api/projects/{pid}/build/stream")
 def build_stream(pid: str, body: dict) -> StreamingResponse:
     """Streaming build: SSE of progress events (agent text/tool, typecheck, done). Follow-up
@@ -317,6 +327,17 @@ def build_stream(pid: str, body: dict) -> StreamingResponse:
             yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@control_app.post("/api/projects/{pid}/build/stop")
+def stop_build(pid: str) -> JSONResponse:
+    """Stop the in-flight build/build_stream turn: interrupts the agent, reverts any file
+    changes it made this turn, and drops the turn from history — as if it never happened."""
+    try:
+        orchestrator.stop_build(pid)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return JSONResponse(content={"stopped": True})
 
 
 @control_app.post("/api/projects/{pid}/build")
@@ -387,6 +408,8 @@ preview_app = make_preview_app(_active_upstream)
 def run() -> None:
     """Run control (:8080) and preview (:8090) together in one process."""
     import asyncio
+    import contextlib
+    import signal
 
     import uvicorn
 
@@ -397,7 +420,24 @@ def run() -> None:
         uvicorn.Server(uvicorn.Config(preview_app, host="127.0.0.1", port=preview_port, log_level="warning")),
     ]
 
+    # uvicorn.Server.serve() installs its own SIGINT/SIGTERM handler via signal.signal() (a
+    # single global slot per signal). Running two servers concurrently means the second one's
+    # capture_signals() silently clobbers the first's, so a real SIGTERM can leave one server's
+    # loop never told to exit and orchestrator.shutdown() unreliable to reach. Disable each
+    # server's own handling and install ONE handler here instead.
+    for s in servers:
+        s.capture_signals = contextlib.nullcontext
+
     async def _serve() -> None:
+        loop = asyncio.get_running_loop()
+
+        def _request_exit() -> None:
+            for s in servers:
+                s.should_exit = True
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_exit)
+
         try:
             await asyncio.gather(*(s.serve() for s in servers))
         finally:

@@ -74,6 +74,17 @@ class Workspace:
             return []
         return [json.loads(line) for line in self.history_path.read_text().splitlines() if line.strip()]
 
+    def history_len(self) -> int:
+        return len(self.read_history())
+
+    def truncate_history(self, n: int) -> None:
+        """Drop everything appended after the first `n` entries (stop-button revert:
+        removes the in-progress turn's user prompt and any partial response)."""
+        if not self.history_path.exists():
+            return
+        lines = self.history_path.read_text().splitlines()[:n]
+        self.history_path.write_text("".join(line + "\n" for line in lines))
+
     @property
     def catalog_overrides_path(self) -> Path:
         """Per-project overrides of the plan/implement/sovereign/default model ids, layered on

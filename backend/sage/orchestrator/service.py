@@ -9,6 +9,7 @@ Deep module, narrow interface: create_project / get / active / shutdown.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -26,7 +27,9 @@ from ..router.models import Mode, ModelCatalog, Phase
 from ..preview.supervisor import ViteSupervisor
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
+from ..workspace.snapshot import TurnSnapshot
 
+log = logging.getLogger("sage.orchestrator")
 
 # Ask/Plan are the two read-only modes: routed to an opencode.json agent whose `permission`
 # block OpenCode enforces natively (edit/bash denied), not just hidden from the model's tools
@@ -68,6 +71,7 @@ class Project:
     supervisor: ViteSupervisor
     control: ModelControl
     shim: EnforcementShim
+    snapshot: TurnSnapshot
     session_id: str | None = None
     attached: list[str] = field(default_factory=list)
     # Set by the /v1/chat/completions handler when a model call the agent made this turn fails
@@ -75,6 +79,8 @@ class Project:
     # failed turn is reported as an error instead of silently falling through to "typecheck clean"
     # on an unmodified workspace (the turn never touched any files).
     last_gateway_error: dict | None = None
+    # Set by the /build/stop endpoint; build_stream() polls it to revert and stop early.
+    stop_requested: bool = False
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -214,7 +220,19 @@ class Orchestrator:
                 project.workspace.append_history(ev)
             return ev
 
+        # Snapshot before touching history/files so a stop mid-turn can restore exactly this
+        # state, and remember how many history entries pre-date this turn so a stop can drop
+        # everything appended since (the turn disappears from the transcript entirely).
+        project.snapshot.commit_before_turn()
+        history_baseline = project.workspace.history_len()
+
         project.workspace.append_history({"type": "user", "text": prompt})
+
+        def handle_stop() -> dict:
+            project.stop_requested = False
+            project.snapshot.discard_changes()
+            project.workspace.truncate_history(history_baseline)
+            return {"type": "stopped"}
 
         # Scoped to the whole build_stream call (not per turn): client.messages(sid) returns the
         # entire session's messages on every poll, so a per-turn `seen` would let a follow-up
@@ -222,6 +240,9 @@ class Orchestrator:
         # re-persist them out of order (duplicate cards appended after the newer turn began).
         seen: set[tuple[str, int]] = set()
         while True:
+            if project.stop_requested:
+                yield handle_stop()
+                return
             yield {"type": "turn", "prompt": current[:120]}
             project.last_gateway_error = None
             agent = _agent_for_mode(project.control.snapshot().mode)
@@ -234,6 +255,10 @@ class Orchestrator:
             last_phase = project.control.snapshot().phase.value
             last_active: str | None = None  # last "active" label emitted (dedup across 1s polls)
             while True:
+                if project.stop_requested:
+                    client.interrupt(sid)
+                    yield handle_stop()
+                    return
                 running = client.is_running(sid)
                 appeared = appeared or running
                 for m in client.messages(sid):
@@ -290,12 +315,27 @@ class Orchestrator:
             yield {"type": "typecheck-start"}
             report = self._feedback.check(project.workspace.path)
             yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
+            if project.stop_requested:
+                yield handle_stop()
+                return
             decision = breaker.record(report.signature(), report.ok)
             if decision.action == "stop":
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 return
             yield {"type": "iterate", "reason": decision.reason}
             current = report.as_agent_message()
+
+    def stop_build(self, project_id: str) -> None:
+        """Interrupt the in-flight build_stream() turn; it reverts files/history and stops."""
+        project = self.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        project.stop_requested = True
+        if project.session_id and self._oc_client is not None:
+            try:
+                self._oc_client.interrupt(project.session_id)
+            except httpx.HTTPError:
+                pass
 
     def _effective_catalog(self, workspace: Workspace) -> ModelCatalog:
         overrides = workspace.read_catalog_overrides()
@@ -308,7 +348,7 @@ class Orchestrator:
         supervisor = ViteSupervisor(workspace.path)
         if start_preview:
             supervisor.start()
-        project = Project(project_id, workspace, supervisor, control, shim)
+        project = Project(project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
         self._projects[project_id] = project
         self._active = project_id
         return project
@@ -343,7 +383,7 @@ class Orchestrator:
         supervisor = ViteSupervisor(workspace.path)
         if start_preview:
             supervisor.start()
-        project = Project(project_id, workspace, supervisor, control, shim)
+        project = Project(project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
         self._projects[project_id] = project
         self._active = project_id
         return project
@@ -407,8 +447,30 @@ class Orchestrator:
         project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
         return {"attached": asset.name, "sensitive": sensitive, "status": project.status()}
 
+    def detach_asset(self, project_id: str, dataset_id: str) -> dict:
+        """Detach a dataset from the project. Does NOT clear the sovereign lock even if the
+        dataset was sensitivity-tagged — the asset-driven lock is sticky for the session
+        (see ModelControl.on_assets_changed); use the manual lock toggle to unlock."""
+        project = self.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
+        if asset is None:
+            raise LookupError(dataset_id)
+        if dataset_id in project.attached:
+            project.attached.remove(dataset_id)
+        return {"detached": asset.name, "status": project.status()}
+
     def shutdown(self) -> None:
-        for p in self._projects.values():
-            p.supervisor.stop()
+        # Best-effort per resource: one project's preview failing to stop must not leave the
+        # rest (or the shared opencode server) running as orphans.
+        for pid, p in self._projects.items():
+            try:
+                p.supervisor.stop()
+            except Exception:
+                log.exception("shutdown: failed to stop preview for project %s", pid)
         if self._oc_server:
-            self._oc_server.stop()
+            try:
+                self._oc_server.stop()
+            except Exception:
+                log.exception("shutdown: failed to stop opencode server")
