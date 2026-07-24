@@ -75,17 +75,23 @@ class DominoControlPlane:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token_provider()}", "Accept": "application/json"}
 
+    @staticmethod
+    def _check(r: httpx.Response, verb: str, path: str) -> Any:
+        # Surface v4's response body on error — that's where the validation detail lives, which
+        # raise_for_status() drops. No secrets in a v4 error body.
+        if r.status_code >= 400:
+            raise RuntimeError(f"{verb} {path} -> {r.status_code}: {r.text.strip()[:500]}")
+        return r.json()
+
     def _get(self, path: str, **kw: Any) -> Any:
         with self._client() as c:
             r = c.get(f"{self._api}{path}", headers=self._headers(), **kw)
-        r.raise_for_status()
-        return r.json()
+        return self._check(r, "GET", path)
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         with self._client() as c:
             r = c.post(f"{self._api}{path}", json=body, headers=self._headers())
-        r.raise_for_status()
-        return r.json()
+        return self._check(r, "POST", path)
 
     def owner_id(self) -> str:
         data = self._get("/users/self")
