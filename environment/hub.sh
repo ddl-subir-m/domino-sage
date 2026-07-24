@@ -3,13 +3,17 @@
 # provisions new ones (private repo -> seeded git-based Domino project -> launched Sage Builder).
 #
 # Runs from the SAME baked image as the builder (/opt/sage); only the entrypoint differs. Launch it
-# as the `sageHub` pluggable tool in a dedicated git-based hub project (its /mnt/code checkout is
-# where the ambient GitHub credential lives — used to create repos via the API).
+# as the `sageHub` pluggable tool. It needs no git-based project of its own — the GitHub token comes
+# from Domino's global `git credential` helper (the user's account credential), not from a checkout.
 set -euo pipefail
 
 export SAGE_APP_HOME="${SAGE_APP_HOME:-/opt/sage}"
-export SAGE_TEMPLATE="${SAGE_TEMPLATE:-$SAGE_APP_HOME/template/react-vite}"
-# Where to read the ambient git credential + detect the provider (the hub project's own checkout).
+# Seed source: always the baked /opt/sage template (warm node_modules baked there only). Not tied to
+# SAGE_APP_HOME so a fast-loop /mnt/code override for backend code doesn't drag the seed off the mount.
+export SAGE_TEMPLATE="${SAGE_TEMPLATE:-/opt/sage/template/react-vite}"
+# The git host to provision against (which Domino credential to use). Explicit host = no git-based
+# project required. Unset it to fall back to sniffing SAGE_HUB_GIT_CWD's origin (legacy deploy).
+export SAGE_GIT_HOST="${SAGE_GIT_HOST:-github.com}"
 export SAGE_HUB_GIT_CWD="${SAGE_HUB_GIT_CWD:-/mnt/code}"
 
 # One port; bind all interfaces so Domino's tool proxy can reach us. Prefix is derived from env.

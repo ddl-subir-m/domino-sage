@@ -34,7 +34,12 @@ logging.basicConfig(level=logging.INFO)
 _UI = Path(__file__).resolve().parent / "ui" / "index.html"
 _REPO = Path(__file__).resolve().parents[3]
 _TEMPLATE = Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite"))
-# Where to read the ambient git credential from (the hub's own repo checkout).
+# The git host whose Domino credential the hub uses to create repos + push seeds. Setting it
+# explicitly (SAGE_GIT_HOST=github.com) lets the hub run as a plain baked App — no git-based project
+# needed, since the token comes from Domino's global `git credential` helper, not any checkout.
+_GIT_HOST = os.environ.get("SAGE_GIT_HOST")
+# Legacy fallback when SAGE_GIT_HOST is unset: sniff the host off the origin remote of a git-based
+# hub project's checkout. Kept so an existing git-based hub deploy keeps working unchanged.
 _GIT_CWD = os.environ.get("SAGE_HUB_GIT_CWD", "/mnt/code")
 
 BASE_PREFIX = domino_base_prefix()
@@ -57,6 +62,21 @@ class _PrefixMiddleware:
         await self._app(scope, receive, send)
 
 
+def _resolve_git_target() -> tuple[str, str]:
+    """Resolve the (host, provider) to provision against. Prefer the explicit SAGE_GIT_HOST (hub as a
+    plain baked App); otherwise sniff the origin remote of the checkout at SAGE_HUB_GIT_CWD (legacy
+    git-based hub project). Raises when neither yields a host."""
+    if _GIT_HOST:
+        return _GIT_HOST, credentials.detect_provider(_GIT_HOST)
+    remote = credentials.remote_for(_GIT_CWD)
+    if remote is None:
+        raise RuntimeError(
+            f"no git host configured: set SAGE_GIT_HOST (e.g. github.com), or run the hub in a "
+            f"git-based project so its origin remote at {_GIT_CWD} can be detected"
+        )
+    return remote.host, remote.provider
+
+
 def _build_hub() -> tuple[HubService, str]:
     """Real hub on Domino (DOMINO_API_HOST set); an all-fakes hub locally for UI work.
 
@@ -67,16 +87,14 @@ def _build_hub() -> tuple[HubService, str]:
         # No-op the seed: fake mode has no real remote to push to.
         return HubService(FakeControlPlane(), FakeRepoProvider(), _TEMPLATE, seed=lambda *a, **k: None), "fake"
 
-    remote = credentials.remote_for(_GIT_CWD)
-    if remote is None or remote.provider != "github":
+    host, provider = _resolve_git_target()
+    if provider != "github":
         # Only GitHub is a verified adapter in v1; other providers fall back to BYO-repo (not yet
         # wired), so we refuse rather than provision against an unverified contract.
         raise RuntimeError(
-            f"unsupported/undetected git provider at {_GIT_CWD} "
-            f"({remote.provider if remote else 'no origin'}); v1 hub supports github only"
+            f"unsupported git provider '{provider}' for host {host!r}; v1 hub supports github only"
         )
 
-    host = remote.host
     def token_provider() -> str:  # shared by repo create + seed push
         return _require_token(host)
 

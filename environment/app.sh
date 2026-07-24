@@ -9,7 +9,11 @@ set -euo pipefail
 # Where Sage's own code lives. Point this at a mount for a fast inner dev loop (edit on /mnt/code,
 # no image rebuild): e.g. SAGE_APP_HOME=/mnt/code in a git-based sage-source project.
 export SAGE_APP_HOME="${SAGE_APP_HOME:-/opt/sage}"
-export SAGE_TEMPLATE="${SAGE_TEMPLATE:-$SAGE_APP_HOME/template/react-vite}"
+# The warm template is ALWAYS the baked /opt/sage copy — its node_modules are baked there (Dockerfile
+# npm ci) and nowhere else. Deliberately NOT tied to SAGE_APP_HOME: the fast dev loop points that at
+# /mnt/code to edit backend code, but the mount's template carries no warm deps, so following it there
+# would boot the preview cold. Override SAGE_TEMPLATE explicitly only to iterate on the template itself.
+export SAGE_TEMPLATE="${SAGE_TEMPLATE:-/opt/sage/template/react-vite}"
 export SAGE_OPENCODE_CWD="${SAGE_OPENCODE_CWD:-$SAGE_APP_HOME}"   # where opencode.json lives
 
 # The workspace = the app's git checkout. In a deployed app that's the mounted app repo (/mnt/code).
