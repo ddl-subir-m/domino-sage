@@ -912,13 +912,48 @@ function showPreview() {
   document.getElementById('preview').style.display = workTab === 'preview' ? 'block' : 'none';
   document.getElementById('work-empty').style.display = 'none';
 }
+// The preview server 502s transiently while Vite (re)starts (e.g. right after the agent installs a
+// dependency). Rather than point the iframe at that and render raw JSON, probe first and retry while
+// it's not ready, holding the spinner. Only point the iframe once the server actually serves.
+let previewRetryTimer = null;
+const PREVIEW_RETRY_MS = 1500, PREVIEW_GIVE_UP_MS = 90000;
 function refreshPreview() {
   if (!active) return;
   showPreview();
-  document.getElementById('preview-loading').classList.add('show');
-  document.getElementById('preview').src = previewBase + '?t=' + Date.now();
+  const loading = document.getElementById('preview-loading');
+  const label = loading.querySelector('span:last-child');
+  const dot = document.getElementById('status-dot');
+  loading.classList.add('show');
+  label.textContent = 'Loading preview…';
   document.getElementById('url-text').textContent = previewBase;
-  document.getElementById('status-dot').className = 'status-dot ok';
+  clearTimeout(previewRetryTimer);
+  const started = Date.now();
+  const attempt = () => {
+    const url = previewBase + '?t=' + Date.now();
+    fetch(url, { cache: 'no-store' }).then((res) => {
+      if (res.ok) {
+        dot.className = 'status-dot ok';
+        document.getElementById('preview').src = url;  // load event clears the spinner
+      } else if (res.status === 502 && Date.now() - started < PREVIEW_GIVE_UP_MS) {
+        dot.className = 'status-dot';                  // still (re)starting — keep waiting
+        label.textContent = 'Starting preview…';
+        previewRetryTimer = setTimeout(attempt, PREVIEW_RETRY_MS);
+      } else {
+        dot.className = 'status-dot err';
+        label.textContent = 'Preview didn’t start — click ⟳ to retry.';
+      }
+    }).catch(() => {                                    // network blip mid-restart — same as 502
+      if (Date.now() - started < PREVIEW_GIVE_UP_MS) {
+        dot.className = 'status-dot';
+        label.textContent = 'Starting preview…';
+        previewRetryTimer = setTimeout(attempt, PREVIEW_RETRY_MS);
+      } else {
+        dot.className = 'status-dot err';
+        label.textContent = 'Preview didn’t start — click ⟳ to retry.';
+      }
+    });
+  };
+  attempt();
 }
 function openPreview() { if (active) window.open(previewBase, '_blank'); }
 
