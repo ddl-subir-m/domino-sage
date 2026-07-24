@@ -173,6 +173,17 @@
 
     const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
+    // A running workspace's builder lives on the MAIN Domino host. When the hub is published as a
+    // Domino App it's served from apps.<host>, so the host-relative open URL would resolve against
+    // the apps origin and 404. Rewrite it to an absolute URL on the main host (drop the leading
+    // "apps."). As a plain workspace tool the host has no "apps." prefix, so this is a no-op.
+    function builderUrl(openUrl) {
+      if (!openUrl || /^https?:\/\//i.test(openUrl)) return openUrl;
+      const host = location.hostname;
+      if (host.startsWith('apps.')) return `${location.protocol}//${host.slice(5)}${openUrl}`;
+      return openUrl;
+    }
+
     // A launched workspace reports state=Started before its session is running; opening the builder
     // then lands on a not-ready page. Poll status until the session is running, then return the URL.
     // onTick lets the caller surface progress. Gives up after ~4 min (80 × 3s).
@@ -211,7 +222,7 @@
           url = await waitUntilRunning(data.id, data.workspace_id);
         }
         closeModal();
-        if (url) window.open(url, '_blank');
+        if (url) window.open(builderUrl(url), '_blank');
         else banner('Your app was created. It’s still starting — use Open builder in a moment.');
         await load();
       } catch (e) {
@@ -229,7 +240,7 @@
         if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
         let url = (data.running && data.open_url) ? data.open_url : null;
         if (!url) url = await waitUntilRunning(id, data.workspace_id);
-        if (url) window.open(url, '_blank');
+        if (url) window.open(builderUrl(url), '_blank');
         else banner('The app is still starting — try Open builder again in a moment.');
         refreshStatus(id);
       } catch (e) {

@@ -62,6 +62,11 @@ def workspace_open_url(ws: dict[str, Any], project_name: str | None = None) -> s
     return f"/{quote(str(owner))}/{quote(str(project))}/notebookSession/{run_id}/"
 
 
+# v4 workspace `state` values that mean "stopped but relaunchable in place" (vs. running, or the
+# terminal deleted/failed states that warrant a fresh workspace). Matched case-insensitively.
+_STOPPED_STATES = frozenset({"stopped", "stopping"})
+
+
 def workspace_is_running(ws: dict[str, Any]) -> bool:
     """True once the workspace's session is actually running — i.e. safe to open in the browser.
 
@@ -155,10 +160,17 @@ class HubService:
             state = str(ws.get("state") or ws.get("status") or "").lower()
             if state in ("", "running", "started", "active") or ws.get("isRunning"):
                 return self._open_result(ws, name, launched=False)
-        # Restart the newest restartable stopped workspace rather than piling up new ones. Its
-        # relaunch DTO carries no session/open-url fields, so return it launched=True and let the
-        # UI's status poll surface the running URL (same path as a fresh create).
-        restartable = [w for w in workspaces if w.get("isRestartable") and w.get("id")]
+        # Restart the newest stopped workspace in place rather than piling up new ones. Its relaunch
+        # DTO carries no session/open-url fields, so return it launched=True and let the UI's status
+        # poll surface the running URL (same path as a fresh create).
+        # The v4 list DTO (WorkspaceDto) has NO isRestartable field — that lives only on the separate
+        # WorkspaceSummary schema — so restartability is derived from `state`: anything stopped and
+        # not deleted can be relaunched. (A deleted/failed workspace falls through to a fresh create.)
+        restartable = [
+            w for w in workspaces
+            if w.get("id") and not w.get("deleted")
+            and str(w.get("state") or w.get("status") or "").lower() in _STOPPED_STATES
+        ]
         if restartable:
             target = max(restartable, key=lambda w: w.get("createdAt") or "")
             self._cp.relaunch_workspace(project_id, str(target["id"]))

@@ -102,9 +102,10 @@ def test_open_app_launches_when_none(tmp_path):
     assert result["workspace"]["id"] == "ws-proj-9"
 
 
-def test_open_app_relaunches_stopped_restartable(tmp_path):
+def test_open_app_relaunches_stopped_workspace(tmp_path):
     cp = FakeControlPlane()
-    cp.workspaces["proj-1"] = [{"id": "ws-1", "state": "Stopped", "isRestartable": True}]
+    # The v4 list DTO has no isRestartable field — restartability comes from `state` alone.
+    cp.workspaces["proj-1"] = [{"id": "ws-1", "state": "Stopped"}]
     hub = _hub(tmp_path, cp)
 
     result = hub.open_app("proj-1")
@@ -115,14 +116,15 @@ def test_open_app_relaunches_stopped_restartable(tmp_path):
     assert cp.workspaces["proj-1"][0]["state"] == "running"
 
 
-def test_open_app_creates_when_stopped_not_restartable(tmp_path):
+def test_open_app_creates_when_only_workspace_is_terminal(tmp_path):
     cp = FakeControlPlane()
-    cp.workspaces["proj-1"] = [{"id": "ws-old", "state": "Stopped", "isRestartable": False}]
+    # Deleted/failed workspaces aren't relaunchable — fall through to a fresh one.
+    cp.workspaces["proj-1"] = [{"id": "ws-old", "state": "Deleted", "deleted": True}]
     hub = _hub(tmp_path, cp)
 
     result = hub.open_app("proj-1")
     assert result["launched"] is True
-    assert result["workspace"]["id"] == "ws-proj-1"  # a fresh workspace, not the un-restartable one
+    assert result["workspace"]["id"] == "ws-proj-1"  # a fresh workspace, not the terminal one
 
 
 def test_workspace_status_reports_running_and_open_url(tmp_path):
