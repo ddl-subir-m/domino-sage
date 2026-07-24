@@ -167,6 +167,13 @@ class DominoControlPlane:
             log.info("workspace-create response keys: %s", sorted(data.keys()))
         return data
 
+    def available_tools(self) -> list[dict[str, Any]]:
+        """The pluggable workspace tools Domino resolves for this environment (each has an `id` —
+        the tool key). A workspace launch fails to schedule if `tools` names an id not in here."""
+        data = self._get(f"/v4/environments/{self._env_id}/availableTools")
+        items = data if isinstance(data, list) else (data.get("data") if isinstance(data, dict) else [])
+        return [t for t in (items or []) if isinstance(t, dict)]
+
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
         data = self._get(f"/v4/workspace/project/{project_id}/workspace", params={"offset": 0, "limit": 20})
         items = data.get("workspaces") or data.get("data") or data if isinstance(data, (list, dict)) else []

@@ -116,6 +116,34 @@ def healthz() -> dict:
     return {"ok": True, "mode": MODE, "prefix": BASE_PREFIX}
 
 
+@app.get("/api/diag")
+async def diag() -> JSONResponse:
+    """LIVE-VERIFY: config + the tools Domino resolves for this environment. If builder_tool isn't
+    in available_tool_ids, that's why child workspaces fail to start (no logs) — add it to the
+    Environment's Pluggable Workspace Tools."""
+    info: dict = {
+        "mode": MODE,
+        "prefix": BASE_PREFIX,
+        "config": {
+            "environment_id": os.environ.get("DOMINO_ENVIRONMENT_ID"),
+            "environment_revision_id": os.environ.get("DOMINO_ENVIRONMENT_REVISION_ID"),
+            "hardware_tier_id": os.environ.get("DOMINO_HARDWARE_TIER_ID"),
+            "builder_tool": os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder"),
+            "project_id": os.environ.get("DOMINO_PROJECT_ID"),
+        },
+    }
+    cp = getattr(hub, "_cp", None)
+    if MODE == "domino" and hasattr(cp, "available_tools"):
+        try:
+            tools = await run_in_threadpool(cp.available_tools)
+            ids = [t.get("id") for t in tools]
+            info["available_tool_ids"] = ids
+            info["builder_tool_available"] = info["config"]["builder_tool"] in ids
+        except Exception as e:  # noqa: BLE001 — diag must report the failure, not raise it
+            info["available_tools_error"] = str(e)
+    return JSONResponse(info)
+
+
 @app.get("/api/apps")
 async def list_apps() -> JSONResponse:
     apps = await run_in_threadpool(hub.list_apps)
