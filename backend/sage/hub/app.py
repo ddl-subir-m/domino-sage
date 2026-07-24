@@ -225,6 +225,22 @@ async def open_app(project_id: str) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.post("/api/apps/{project_id}/stop")
+async def stop_app(project_id: str, request: Request) -> JSONResponse:
+    """Stop an app's running builder so it stops consuming a hardware tier."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — empty/invalid body is fine; fall back to newest running
+        body = {}
+    workspace_id = (body or {}).get("workspace_id")
+    try:
+        result = await run_in_threadpool(hub.stop_app, project_id, workspace_id)
+    except Exception as e:
+        log.exception("stop_app failed")
+        return JSONResponse({"error": f"Couldn't stop the builder: {e}"}, status_code=502)
+    return JSONResponse(result)
+
+
 @app.get("/api/apps/{project_id}/status")
 async def app_status(project_id: str, workspace_id: str | None = None) -> JSONResponse:
     """Poll target: has the app's (just-launched) workspace session reached Running?"""

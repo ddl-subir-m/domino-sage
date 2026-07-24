@@ -176,9 +176,28 @@ class HubService:
         if ws is None and workspaces:  # newest by creation time
             ws = max(workspaces, key=lambda w: w.get("createdAt") or "")
         if ws is None:
-            return {"running": False, "open_url": None, "state": None}
+            return {"running": False, "open_url": None, "state": None, "workspace_id": None}
         return {
             "running": workspace_is_running(ws),
             "open_url": workspace_open_url(ws, name),
             "state": ws.get("state") or ws.get("status"),
+            "workspace_id": ws.get("id"),
         }
+
+    def stop_app(self, project_id: str, workspace_id: str | None = None) -> dict[str, Any]:
+        """Stop an app's builder so it stops consuming compute. Targets the given workspace, else the
+        newest running one (falling back to the newest overall). Returns {stopped, workspace_id}."""
+        workspaces = [w for w in self._cp.list_workspaces(project_id) if isinstance(w, dict)]
+        ws = None
+        if workspace_id:
+            ws = next((w for w in workspaces if w.get("id") == workspace_id), None)
+        if ws is None:
+            running = [w for w in workspaces if workspace_is_running(w)]
+            pool = running or workspaces
+            if pool:
+                ws = max(pool, key=lambda w: w.get("createdAt") or "")
+        if ws is None:
+            return {"stopped": False, "workspace_id": None, "detail": "no workspace to stop"}
+        wid = ws.get("id")
+        self._cp.stop_workspace(project_id, str(wid))
+        return {"stopped": True, "workspace_id": wid}

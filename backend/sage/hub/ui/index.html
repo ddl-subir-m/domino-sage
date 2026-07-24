@@ -60,7 +60,14 @@
     .card h3 { margin: 0; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .card .repo { font-size: 12px; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .card .actions { margin-top: auto; }
+    .card .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .card .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+    .card .status.running .dot { background: var(--ok); }
+    .card .actions { margin-top: auto; display: flex; align-items: center; gap: 8px; }
+    .btn-ghost { background: transparent; border: none; color: var(--muted); font-weight: 600;
+      padding: 8px 10px; border-radius: 8px; font-size: 14px; }
+    .btn-ghost:hover { color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); }
+    .btn-ghost:disabled { opacity: .55; cursor: default; }
 
     .empty { text-align: center; color: var(--muted); padding: 64px 20px; border: 1px dashed var(--border-strong);
       border-radius: var(--radius); background: var(--surface); }
@@ -224,6 +231,7 @@
         if (!url) url = await waitUntilRunning(id, data.workspace_id);
         if (url) window.open(url, '_blank');
         else banner('The app is still starting — try Open builder again in a moment.');
+        refreshStatus(id);
       } catch (e) {
         banner(e.message || 'Couldn’t open the app.');
       } finally { btn.textContent = label; btn.disabled = false; }
@@ -243,8 +251,55 @@
         <div class="card">
           <h3 title="${esc(a.name)}">${esc(a.name)}</h3>
           <div class="repo" title="${esc(a.git_url || '')}">${esc(a.git_url ? a.git_url.replace(/^https?:\/\//, '') : 'git-based project')}</div>
-          <div class="actions"><button class="btn-secondary" onclick="openApp('${esc(a.id)}', this)">Open builder</button></div>
+          <div class="status" id="status-${esc(a.id)}"><span class="dot"></span><span>Checking…</span></div>
+          <div class="actions" id="actions-${esc(a.id)}">
+            <button class="btn-secondary" onclick="openApp('${esc(a.id)}', this)">Open builder</button>
+          </div>
         </div>`).join('')}</div>`;
+      apps.forEach(a => refreshStatus(a.id));
+    }
+
+    // Show whether the app's builder is running, and offer Stop when it is. One status call per card
+    // on load — fine for a handful of apps; the builder is idle-costly, so surfacing it matters.
+    async function refreshStatus(id) {
+      const statusEl = $(`status-${id}`), actionsEl = $(`actions-${id}`);
+      if (!statusEl || !actionsEl) return;
+      try {
+        const r = await fetch(api(`/api/apps/${id}/status`));
+        if (!r.ok) throw new Error();
+        const s = await r.json();
+        if (s.running) {
+          statusEl.className = 'status running';
+          statusEl.innerHTML = '<span class="dot"></span><span>Builder running</span>';
+          const wsArg = s.workspace_id ? `'${esc(s.workspace_id)}'` : 'null';
+          actionsEl.innerHTML =
+            `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>` +
+            `<button class="btn-ghost" onclick="stopApp('${esc(id)}', ${wsArg}, this)">Stop</button>`;
+        } else {
+          statusEl.className = 'status';
+          statusEl.innerHTML = '<span class="dot"></span><span>Idle — opens on demand</span>';
+          actionsEl.innerHTML = `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>`;
+        }
+      } catch { statusEl.className = 'status'; statusEl.innerHTML = ''; }
+    }
+
+    async function stopApp(id, wsId, btn) {
+      if (!confirm('Stop this builder? Uncommitted changes in the workspace will be lost.')) return;
+      banner(null);
+      const label = btn.textContent; btn.disabled = true; btn.textContent = 'Stopping…';
+      try {
+        const r = await fetch(api(`/api/apps/${id}/stop`), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspace_id: wsId }) });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        // The stop is async on Domino's side — give it a moment before re-reading the state.
+        await sleep(1500);
+        await refreshStatus(id);
+      } catch (e) {
+        banner(e.message || 'Couldn’t stop the builder.');
+        btn.disabled = false; btn.textContent = label;
+      }
     }
 
     async function load() {

@@ -128,4 +128,36 @@ def test_workspace_status_not_running_while_booting(tmp_path):
 
 def test_workspace_status_none_when_no_workspace(tmp_path):
     status = _hub(tmp_path, FakeControlPlane()).workspace_status("proj-x")
-    assert status == {"running": False, "open_url": None, "state": None}
+    assert status == {"running": False, "open_url": None, "state": None, "workspace_id": None}
+
+
+def test_workspace_status_reports_workspace_id(tmp_path):
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [{"id": "ws-1", "createdAt": "2026-07-24T10:00:00Z", "state": "Started"}]
+    assert _hub(tmp_path, cp).workspace_status("proj-1")["workspace_id"] == "ws-1"
+
+
+def test_stop_app_stops_named_workspace(tmp_path):
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [{
+        "id": "ws-1", "state": "Started",
+        "mostRecentSession": {"sessionStatusInfo": {"isRunning": True}},
+    }]
+    result = _hub(tmp_path, cp).stop_app("proj-1", "ws-1")
+    assert result == {"stopped": True, "workspace_id": "ws-1"}
+    assert cp.workspaces["proj-1"][0]["state"] == "Stopped"
+    assert cp.workspaces["proj-1"][0]["mostRecentSession"]["sessionStatusInfo"]["isRunning"] is False
+
+
+def test_stop_app_targets_newest_running_when_id_omitted(tmp_path):
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [
+        {"id": "ws-old", "createdAt": "2026-07-24T09:00:00Z", "state": "running"},
+        {"id": "ws-new", "createdAt": "2026-07-24T11:00:00Z", "state": "running"},
+    ]
+    assert _hub(tmp_path, cp).stop_app("proj-1")["workspace_id"] == "ws-new"
+
+
+def test_stop_app_noop_when_nothing_to_stop(tmp_path):
+    result = _hub(tmp_path, FakeControlPlane()).stop_app("proj-x")
+    assert result == {"stopped": False, "workspace_id": None, "detail": "no workspace to stop"}

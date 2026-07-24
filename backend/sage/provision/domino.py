@@ -45,6 +45,7 @@ class ProjectRef:
 class ControlPlane(Protocol):
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
+    def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
 
@@ -169,6 +170,21 @@ class DominoControlPlane:
             log.info("workspace-create response keys: %s", sorted(data.keys()))
         return data
 
+    def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        # Stop a running builder so it stops consuming a hardware tier. Path + verb confirmed against
+        # Domino's domino_private_spec (basePath /v4): POST .../workspace/{workspaceId}/stop, no request
+        # body, path params only. A stop can return 200 with an empty body, so tolerate a non-JSON body.
+        path = f"/v4/workspace/project/{project_id}/workspace/{workspace_id}/stop"
+        with self._client() as c:
+            r = c.post(f"{self._host}{path}", headers=self._headers())
+        if r.status_code >= 400:
+            raise RuntimeError(f"POST {path} -> {r.status_code}: {r.text.strip()[:500]}")
+        try:
+            data = r.json()
+        except ValueError:
+            data = {}
+        return data if isinstance(data, dict) else {"stopped": True}
+
     def available_tools(self) -> list[dict[str, Any]]:
         """The pluggable workspace tools Domino resolves for this environment (each has an `id` —
         the tool key). A workspace launch fails to schedule if `tools` names an id not in here."""
@@ -224,6 +240,16 @@ class FakeControlPlane:
         }
         self.workspaces.setdefault(project_id, []).append(ws)
         return ws
+
+    def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        for ws in self.workspaces.get(project_id, []):
+            if ws.get("id") == workspace_id:
+                ws["state"] = "Stopped"
+                session = ws.get("mostRecentSession")
+                if isinstance(session, dict) and isinstance(session.get("sessionStatusInfo"), dict):
+                    session["sessionStatusInfo"]["isRunning"] = False
+                return {"id": workspace_id, "state": "Stopped"}
+        return {"id": workspace_id, "state": "Unknown"}
 
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
         return list(self.workspaces.get(project_id, []))

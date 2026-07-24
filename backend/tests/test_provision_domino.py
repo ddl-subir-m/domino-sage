@@ -105,6 +105,25 @@ def test_create_workspace_body():
     assert "mainGitRepoRef" not in b  # invalid field; branch comes from the project's defaultRef
 
 
+def test_stop_workspace_posts_to_stop_path():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"id": "ws-1", "state": "Stopped"})
+
+    out = _cp(handler).stop_workspace("proj-42", "ws-1")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v4/workspace/project/proj-42/workspace/ws-1/stop"
+    assert out["state"] == "Stopped"
+
+
+def test_stop_workspace_tolerates_empty_body():
+    out = _cp(lambda req: httpx.Response(200, text="")).stop_workspace("p", "ws")
+    assert out == {}  # empty body -> no error, empty dict
+
+
 def test_list_apps_filters_by_repo_prefix():
     projects = {
         "projects": [
