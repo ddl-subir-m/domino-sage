@@ -244,7 +244,7 @@ Domino, debug together.
   → **verify:** launch "Sage Builder" from the Environment in a real Domino project → describe an
   app → watch it build → private preview renders. End-to-end on Domino.
 
-## Phase 4 — "New app" control plane (the hub) — STATUS: IMPLEMENTED (GitHub v1); hub decoupled from /mnt/code (plain baked App); one live-verify seam
+## Phase 4 — "New app" control plane (the hub) — STATUS: LIVE-VERIFIED (GitHub v1) on real Domino; hub decoupled from /mnt/code (plain baked App)
 
 **Goal:** Lovable/Replit-style "New app" that provisions a **git-based** project + launches the
 builder. Each provisioned app = its own GitHub repo + a git-based Domino project pointing at it. The
@@ -267,10 +267,9 @@ probe). Modules, all behind Protocols with in-memory fakes:
   mode when off-Domino. Launch via `environment/hub.sh` + the `sageHub` pluggable tool (same image).
   Provisioning host comes from `SAGE_GIT_HOST` (default `github.com`), so the hub runs as a **plain
   baked App** — no git-based hub project needed; origin-sniff at `SAGE_HUB_GIT_CWD` is a legacy fallback.
-- **LIVE-VERIFY (the one open seam):** `service.workspace_open_url()` — which field the v4
-  workspace-create response carries the browser URL in (url / notebookUrl / a runId to assemble the
-  prefix from). Best-effort now; confirm on launch. Also confirm project-name collision behavior
-  (create_app falls back to the unique repo name if the v4 create rejects a duplicate name).
+- **LIVE-VERIFIED (2026-07-24):** `service.workspace_open_url()` resolves — **New app** lands in a
+  running builder and **Open** rehydrates an existing app into its live builder (not a fresh
+  checkout). Project-name collision falls back correctly, and edits commit+push to the new repo.
 
 **STATUS — 2026-07-23, cloud-dogfood: git-provisioning capability CONFIRMED (git_discovery.sh).**
 Persistence model = **git-based projects** (not DFS). Findings on a git-based workspace:
@@ -282,6 +281,15 @@ Persistence model = **git-based projects** (not DFS). Findings on a git-based wo
 - `git push` from the workspace is **already authorized** (Domino injects the creds) — dry-run OK.
 - ⚠️ The extracted token is powerful: handle **in-memory only, never log/persist**. GitHub.com only
   for now — detect host from the credential; GHE/GitLab are separate providers.
+
+**STATUS — 2026-07-24, live-verify: PHASE 4 VERIFIED end-to-end on real Domino.** From the baked
+image, the hub runs as a plain App (no git-based project) and the full flow holds:
+- **New app** → GitHub repo + git-based project + running builder, landing straight in the builder.
+- **Open** rehydrates an existing app into its live builder.
+- Edits **commit+push** to the new repo; same-name creates fall back to a unique repo name.
+- **Gateway follows the ship image:** `GATEWAY_BASE_URL` baked as `ENV` (Domino requires the matching
+  `ARG`) so the hub AND every child builder boot in `domino` mode — a project-scoped value left child
+  builders in `fake`. Token stays the per-workspace `:8899` sidecar; no key baked (`1caa328`).
 
 **STATUS — 2026-07-24, deploy-model cleanup: decoupled Sage from the `/mnt/code` mount.** Two seams
 that tied Sage to the app mount are removed (`fe1f9eb`, 117 tests pass):
