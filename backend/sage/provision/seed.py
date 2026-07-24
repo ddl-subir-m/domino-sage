@@ -21,7 +21,11 @@ _SAGE_IDENTITY = ["-c", "user.email=sage@dominodatalab.com", "-c", "user.name=sa
 
 
 def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True)
+    r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    if r.returncode != 0:
+        # Surface git's own message (never the token) so provisioning errors are diagnosable.
+        detail = (r.stderr or r.stdout).strip()
+        raise RuntimeError(f"git {args[0]} failed (exit {r.returncode}): {detail}")
 
 
 def _copy_template(template: Path, dest: Path) -> None:
