@@ -53,7 +53,10 @@ components outside what was asked.
 - **Empty state:** for a list/collection you're building or editing that can be empty, add one that
   says *what it is*, *why it's empty*, and *the action to fill it* — with a button. Never render a
   blank area.
-- **Loading:** show a spinner or skeleton for async work; never a blank flash.
+- **Loading:** show a spinner or skeleton for async work; never a blank flash. If you drive the UI
+  with a `loading`/`ready`/`empty`/`error` state machine, **wire the initial load in a mount
+  `useEffect`** — a loader defined but only called from a retry button leaves the page stuck on the
+  spinner forever. Every non-terminal state must have a code path that reaches a terminal one.
 - **Error:** a human-readable message plus how to recover.
 - **Interactive elements:** hover and focus styles; explain disabled states.
 
