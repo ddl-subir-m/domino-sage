@@ -147,16 +147,19 @@ class DominoControlPlane:
         return ProjectRef(id=str(pid), name=name, git_url=git_url)
 
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
+        # CreateWorkspaceRequest (domino_private_spec). Required: name, environmentId,
+        # hardwareTierId, tools, externalVolumeMounts. The branch comes from the project's
+        # mainRepository.defaultRef, so overrideMainGitRepoRef is unnecessary. Pin the same
+        # environment revision as the hub when Domino injected one, else default to active.
         body: dict[str, Any] = {
             "name": "sage",
             "environmentId": self._env_id,
             "hardwareTierId": {"value": self._tier_id},
             "tools": [self._tool],
-            "mainGitRepoRef": {"type": "branches", "value": branch},
             "externalVolumeMounts": [],
         }
         if self._env_rev:
-            body["environmentRevisionId"] = self._env_rev
+            body["environmentRevisionSpec"] = {"revisionId": self._env_rev}
         data = self._post(f"/v4/workspace/project/{project_id}/workspace", body)
         # LIVE-VERIFY seam: which field carries the run/session id we assemble the open URL from
         # (see preview.prefix). Workspace metadata has no secrets, so log the shape to stdout.

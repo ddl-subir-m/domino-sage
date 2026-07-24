@@ -98,10 +98,11 @@ def test_create_workspace_body():
     assert seen["path"] == "/v4/workspace/project/proj-42/workspace"
     b = seen["body"]
     assert b["environmentId"] == "env-1"
-    assert b["environmentRevisionId"] == "rev-1"
+    assert b["environmentRevisionSpec"] == {"revisionId": "rev-1"}
     assert b["hardwareTierId"] == {"value": "tier-1"}
     assert b["tools"] == ["sageBuilder"]
     assert b["externalVolumeMounts"] == []
+    assert "mainGitRepoRef" not in b  # invalid field; branch comes from the project's defaultRef
 
 
 def test_list_apps_filters_by_repo_prefix():
