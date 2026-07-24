@@ -858,12 +858,18 @@ async function loadHistory() {
   for (const ev of history) replayEvent(ev);
   return history.length > 0;
 }
+function renderSaved(ev) {
+  if (ev.ok && ev.pushed) addStatus('ok', '⬆', 'Saved &amp; pushed to the repo');
+  else if (ev.ok) addStatus('ok', '✓', `Saved${ev.detail ? ` — ${esc(ev.detail)}` : ''}`);
+  else addStatus('err', '⚠', `Couldn't save — ${esc(ev.detail || 'git error')}`);
+}
 function replayEvent(ev) {
   if (ev.type === 'user') addUser(ev.text);
   else if (ev.type === 'agent' && ev.kind === 'tool') addToolCard(ev.tool, ev.detail || '');
   else if (ev.type === 'agent' && ev.kind === 'text') addAgent(ev.text);
   else if (ev.type === 'typecheck') addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`);
   else if (ev.type === 'done') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`);
+  else if (ev.type === 'saved') renderSaved(ev);
 }
 
 function renderEvent(ev, turnStart) {
@@ -882,6 +888,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'typecheck') { stopWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); trail(); }
   else if (ev.type === 'iterate') { setWorking('Fixing errors'); }
   else if (ev.type === 'done') { stopWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
+  else if (ev.type === 'saved') { renderSaved(ev); }
   else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(PHASE_WORK[buildPhase] || 'Working'); refreshStatus(); }
   else if (ev.type === 'error') {
     stopWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message));

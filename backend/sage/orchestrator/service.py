@@ -232,7 +232,7 @@ class Orchestrator:
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
         def persist(ev: dict) -> dict:
-            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done"):
+            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved"):
                 project.workspace.append_history(ev)
             return ev
 
@@ -337,9 +337,30 @@ class Orchestrator:
             decision = breaker.record(report.signature(), report.ok)
             if decision.action == "stop":
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
+                if report.ok:
+                    saved = self._save_to_git(project, prompt)
+                    if saved is not None:
+                        yield persist(saved)
                 return
             yield {"type": "iterate", "reason": decision.reason}
             current = report.as_agent_message()
+
+    def _save_to_git(self, project: Project, prompt: str) -> dict | None:
+        """Commit + push the workspace after a clean build so the app and .sage/ transcript are
+        durable. Returns None when the workspace isn't a git repo (local dev / the /tmp spike — no
+        save line to show); otherwise a `saved` event. Never raises into the build."""
+        from ..workspace import git
+
+        path = project.workspace.path
+        if not git.is_repo(path):
+            return None
+        message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
+        try:
+            result = git.commit_and_push(path, message)
+            return {"type": "saved", "ok": True, "pushed": result.pushed, "detail": result.detail}
+        except Exception as e:  # noqa: BLE001
+            log.exception("git save failed")
+            return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}
 
     def stop_build(self) -> None:
         """Interrupt the in-flight build_stream() turn; it reverts files/history and stops."""

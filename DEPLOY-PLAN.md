@@ -194,9 +194,21 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
   populated by `refreshStatus()`, which early-returns while `active` is false.
 - 2.7 ✅ **Un-ignore `.sage/`** so the transcript + OpenCode session id are committed with the app
   repo and survive a workspace restart (git-based compute is ephemeral; only committed files persist).
-  **Prerequisite, not sufficient:** cross-restart persistence only materializes once Phase 4 wires
-  the post-build `git commit && git push`, and is NOT observable on the `/tmp` spike (scratch dir is
-  wiped on restart regardless). The spike restart losing history is expected for that reason.
+  **Prerequisite, not sufficient:** cross-restart persistence only materializes once the post-build
+  `git commit && git push` is wired (2.8 below), and is NOT observable on the `/tmp` spike (scratch
+  dir is wiped on restart regardless). The spike restart losing history is expected for that reason.
+- 2.8 ✅ **Commit + push on clean build** (`make test` green, 75 passed). `sage/workspace/git.py`:
+  `is_repo`/`has_remote`/`commit_and_push` via `git`, using Domino's pre-authorized credential helper
+  (no token handling; falls back to a sage identity only when none is configured). `build_stream`
+  auto-commits+pushes after a turn ends with a passing typecheck (message = first line of the prompt)
+  and emits a `saved` SSE event, persisted to history and rendered in the UI; a push failure logs +
+  emits `saved:{ok:false}` but never fails the build. No-op (no `saved` line) when the workspace
+  isn't a git repo — so the `/tmp` spike stays quiet. **Becomes observable only when the workspace is
+  the project's git checkout with a remote** (deploy: `SAGE_WORKSPACE_DIR=/mnt/code`). Auto-*creating*
+  the remote for brand-new apps remains separate (Phase 4).
+- **Env packaging (Phase 3) — spike unblock done:** `spikes/domino-verify/run.sh` now installs the
+  repo-root deps so `opencode-ai` (the `opencode` binary) resolves; a real build runs end-to-end
+  (verified). Baking this into the Environment image is the remaining Phase 3 work.
 
 ## Phase 3 — Environment packaging (the shippable artifact)
 
