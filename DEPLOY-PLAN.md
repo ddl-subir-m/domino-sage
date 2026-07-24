@@ -273,9 +273,6 @@ probe). Modules, all behind Protocols with in-memory fakes:
 
 **STATUS — 2026-07-23, cloud-dogfood: git-provisioning capability CONFIRMED (git_discovery.sh).**
 Persistence model = **git-based projects** (not DFS). Findings on a git-based workspace:
-
-**STATUS — 2026-07-23, cloud-dogfood: git-provisioning capability CONFIRMED (git_discovery.sh).**
-Persistence model = **git-based projects** (not DFS). Findings on a git-based workspace:
 - The user's GitHub credential is **extractable at runtime** via `git credential fill`
   (`protocol=https host=github.com`) — Domino returns the PAT (classic `ghp_`). No v4
   git-credential API exists (all candidate paths 404); `credential fill` is the mechanism.
