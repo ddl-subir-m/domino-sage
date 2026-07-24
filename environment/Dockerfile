@@ -31,8 +31,7 @@ RUN npm install -g --include=optional opencode-ai@1.18.4 && opencode --version
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.
 ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if different
-# All Phase 1–3 work lives on this branch; switch to `main` once it's merged.
-ARG SAGE_REV=feat/domino-workspace-builder
+ARG SAGE_REV=main
 # NOTE: if the repo is PRIVATE, this clone needs a build-time credential — pass a token via a
 # secret build-arg and use it in the URL, or make a deploy mirror public. Public clone shown here.
 RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage
