@@ -30,6 +30,7 @@ import httpx
 log = logging.getLogger("sage.provision.domino")
 
 _PROJECTS_PATH = "/api/projects/beta/projects"
+_APPS_PATH = "/api/apps/beta/apps"  # public apps API (create+launch, then republish new versions)
 # Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
 # create API has no tag field, so list_apps filters on the project's git repo URI instead.
 _SAGE_REPO_PREFIX = "sage-"
@@ -42,6 +43,12 @@ class ProjectRef:
     git_url: str | None = None
 
 
+@dataclass(frozen=True)
+class PublishedApp:
+    id: str
+    url: str  # shareable Domino App URL ("" if the response carried none, e.g. a republish)
+
+
 class ControlPlane(Protocol):
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
@@ -49,6 +56,11 @@ class ControlPlane(Protocol):
     def relaunch_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
+    def publish_app(self, project_id: str, *, name: str, git_ref_type: str = "head",
+                    git_ref_value: str | None = None, entry_point: str = "app.sh",
+                    visibility: str = "GRANT_BASED") -> PublishedApp: ...
+    def republish_app(self, app_id: str, *, git_ref_type: str = "head",
+                      git_ref_value: str | None = None) -> PublishedApp: ...
 
 
 class DominoControlPlane:
@@ -227,6 +239,64 @@ class DominoControlPlane:
             out.append(ProjectRef(id=str(p.get("id") or ""), name=str(p.get("name") or "unnamed"), git_url=uri))
         return out
 
+    def publish_app(
+        self,
+        project_id: str,
+        *,
+        name: str,
+        git_ref_type: str = "head",
+        git_ref_value: str | None = None,
+        entry_point: str = "app.sh",
+        visibility: str = "GRANT_BASED",
+    ) -> PublishedApp:
+        """Publish a git-based project as a Domino App and launch its first version.
+
+        Public apps API (AppCreationRequest): creating an app WITH a `version` also launches it, so
+        publish is one call. The App runs entry_point (app.sh) on :8888 behind Domino's app proxy,
+        on the same environment + hardware tier the hub itself runs on (self._env_id/_tier_id).
+        """
+        body = {
+            "name": name,
+            "projectId": project_id,
+            "visibility": visibility,
+            "entryPoint": entry_point,
+            "configurationType": "STANDARD",
+            "version": self._app_version(git_ref_type, git_ref_value),
+        }
+        d = self._post(_APPS_PATH, body)
+        d = d if isinstance(d, dict) else {}
+        return PublishedApp(id=str(d.get("id") or ""), url=str(d.get("url") or ""))
+
+    def republish_app(
+        self,
+        app_id: str,
+        *,
+        git_ref_type: str = "head",
+        git_ref_value: str | None = None,
+    ) -> PublishedApp:
+        """Deploy a new version of an existing app (the URL is stable across versions) — used to
+        re-publish after further edits. The version response carries the version id, not the app id,
+        so we keep the caller's app_id."""
+        d = self._post(f"{_APPS_PATH}/{app_id}/versions", self._app_version(git_ref_type, git_ref_value))
+        d = d if isinstance(d, dict) else {}
+        return PublishedApp(id=app_id, url=str(d.get("url") or ""))
+
+    def _app_version(self, git_ref_type: str, git_ref_value: str | None) -> dict[str, Any]:
+        """AppVersionCreationRequest: the env + tier the app runs on and the git ref it deploys.
+        gitRef.type is head|branches|commitId|tags; value is omitted for "head" (latest on the
+        project's default branch)."""
+        ref: dict[str, Any] = {"type": git_ref_type}
+        if git_ref_value:
+            ref["value"] = git_ref_value
+        version: dict[str, Any] = {
+            "environmentId": self._env_id,
+            "hardwareTierId": self._tier_id,
+            "gitRef": ref,
+        }
+        if self._env_rev:  # pin the revision Domino injected, else the app uses the env's active one
+            version["environmentRevisionId"] = self._env_rev
+        return version
+
 
 @dataclass
 class FakeControlPlane:
@@ -234,6 +304,7 @@ class FakeControlPlane:
 
     projects: list[ProjectRef] = field(default_factory=list)
     workspaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    published: dict[str, PublishedApp] = field(default_factory=dict)  # app_id -> app
     _seq: int = 0
 
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
@@ -278,3 +349,15 @@ class FakeControlPlane:
 
     def list_apps(self) -> list[ProjectRef]:
         return list(self.projects)
+
+    def publish_app(self, project_id: str, *, name: str, git_ref_type: str = "head",
+                    git_ref_value: str | None = None, entry_point: str = "app.sh",
+                    visibility: str = "GRANT_BASED") -> PublishedApp:
+        self._seq += 1
+        app = PublishedApp(id=f"app-{self._seq}", url=f"https://fake.domino/app/app-{self._seq}")
+        self.published[app.id] = app
+        return app
+
+    def republish_app(self, app_id: str, *, git_ref_type: str = "head",
+                      git_ref_value: str | None = None) -> PublishedApp:
+        return self.published.get(app_id, PublishedApp(id=app_id, url=""))

@@ -140,6 +140,82 @@ def test_stop_workspace_tolerates_empty_body():
     assert out == {}  # empty body -> no error, empty dict
 
 
+def test_publish_app_posts_create_and_launch_body():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "app-9", "url": "https://domino.example.com/u/p/app-9"})
+
+    app = _cp(handler).publish_app("proj-42", name="My App")
+    assert app.id == "app-9"
+    assert app.url == "https://domino.example.com/u/p/app-9"
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/apps/beta/apps"
+    b = seen["body"]
+    assert b["name"] == "My App"
+    assert b["projectId"] == "proj-42"
+    assert b["entryPoint"] == "app.sh"
+    assert b["configurationType"] == "STANDARD"
+    # The version launches on the hub's own env + tier; "head" ref omits a value.
+    assert b["version"] == {
+        "environmentId": "env-1",
+        "hardwareTierId": "tier-1",
+        "gitRef": {"type": "head"},
+        "environmentRevisionId": "rev-1",
+    }
+
+
+def test_publish_app_pins_a_git_ref_value_when_given():
+    seen = {}
+    cp = _cp(lambda req: (seen.update(body=json.loads(req.content)), httpx.Response(200, json={"id": "a"}))[1])
+    cp.publish_app("p", name="X", git_ref_type="commitId", git_ref_value="abc123")
+    assert seen["body"]["version"]["gitRef"] == {"type": "commitId", "value": "abc123"}
+
+
+def test_republish_app_posts_new_version_and_keeps_app_id():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "version-77"})  # version id, NOT the app id
+
+    app = _cp(handler).republish_app("app-9")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/apps/beta/apps/app-9/versions"
+    assert seen["body"] == {
+        "environmentId": "env-1",
+        "hardwareTierId": "tier-1",
+        "gitRef": {"type": "head"},
+        "environmentRevisionId": "rev-1",
+    }
+    assert app.id == "app-9"  # keeps the caller's app id, not the version id
+
+
+def test_publish_app_surfaces_error_body():
+    cp = _cp(lambda req: httpx.Response(400, text='{"message":"bad hardware tier"}'))
+    try:
+        cp.publish_app("p", name="X")
+    except RuntimeError as e:
+        assert "400" in str(e) and "bad hardware tier" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError on 400")
+
+
+def test_fake_publish_then_republish_returns_same_app():
+    from sage.provision.domino import FakeControlPlane
+
+    fake = FakeControlPlane()
+    app = fake.publish_app("proj-1", name="X")
+    assert app.id in fake.published
+    assert fake.republish_app(app.id).url == app.url  # stable URL across versions
+    assert fake.republish_app("unknown").id == "unknown"  # tolerates an unknown id
+
+
 def test_list_apps_filters_by_repo_prefix():
     projects = {
         "projects": [
