@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from . import naming
 from .domino import ControlPlane, ProjectRef
@@ -35,12 +36,21 @@ class AppCreated:
 
 
 def workspace_open_url(ws: dict[str, Any]) -> str | None:
-    """Best-effort browser URL for a created/running workspace. LIVE-VERIFY: confirm which field
-    the v4 API returns (url / notebookUrl / a runId we assemble the prefix from)."""
-    for key in ("url", "notebookUrl", "workspaceUrl"):
-        if isinstance(ws.get(key), str) and ws[key]:
-            return ws[key]
-    return None
+    """Host-relative path that opens a running workspace in the browser, assembled from the Domino
+    WorkspaceDto: /{owner}/{project}/notebookSession/{runId}/ (same shape as preview.prefix).
+
+    Returned as a path with no host on purpose: DOMINO_API_HOST is the internal cluster address and
+    isn't browser-reachable, so the browser resolves this against the external origin the hub is
+    already served from. Returns None if the response lacks the pieces (UI then shows a fallback)."""
+    if not isinstance(ws, dict):
+        return None
+    owner = ws.get("ownerName")
+    project = (ws.get("project") or {}).get("name") if isinstance(ws.get("project"), dict) else None
+    session = ws.get("mostRecentSession") or {}
+    run_id = session.get("executionId") or session.get("id") if isinstance(session, dict) else None
+    if not (owner and project and run_id):
+        return None
+    return f"/{quote(str(owner))}/{quote(str(project))}/notebookSession/{run_id}/"
 
 
 class HubService:

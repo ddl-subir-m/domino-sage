@@ -213,7 +213,13 @@ class FakeControlPlane:
         return ref
 
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
-        ws = {"id": f"ws-{project_id}", "projectId": project_id}
+        ws = {
+            "id": f"ws-{project_id}",
+            "projectId": project_id,
+            "ownerName": "owner",
+            "project": {"name": project_id},
+            "mostRecentSession": {"executionId": f"run-{project_id}"},
+        }
         self.workspaces.setdefault(project_id, []).append(ws)
         return ws
 
