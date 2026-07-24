@@ -116,6 +116,23 @@ def healthz() -> dict:
     return {"ok": True, "mode": MODE, "prefix": BASE_PREFIX}
 
 
+def _builder_tool_hint() -> str:
+    """When a workspace fails to start, explain whether the builder tool is even resolvable for this
+    environment — the most common cause (an undefined tool is rejected before any container logs)."""
+    cp = getattr(hub, "_cp", None)
+    if MODE != "domino" or not hasattr(cp, "available_tools"):
+        return ""
+    tool = os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder")
+    try:
+        ids = [t.get("id") for t in cp.available_tools()]
+    except Exception as e:  # noqa: BLE001 — best-effort hint, never mask the original error
+        return f" (couldn't check available tools: {e})"
+    if tool not in ids:
+        return (f" — the '{tool}' tool isn't defined in this Environment (available: {ids}). "
+                f"Add the sageBuilder block to the Environment's Pluggable Workspace Tools and retry.")
+    return f" — '{tool}' is available ({ids}); the cause is elsewhere (env revision or hardware tier)."
+
+
 @app.get("/api/diag")
 async def diag() -> JSONResponse:
     """LIVE-VERIFY: config + the tools Domino resolves for this environment. If builder_tool isn't
@@ -160,7 +177,10 @@ async def create_app(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:  # provisioning failure — human-readable, not a stack trace
         log.exception("create_app failed")
-        return JSONResponse({"error": f"Couldn't create the app: {e}"}, status_code=502)
+        msg = f"Couldn't create the app: {e}"
+        if "Workspace start" in str(e) or "/workspace/" in str(e):
+            msg += await run_in_threadpool(_builder_tool_hint)
+        return JSONResponse({"error": msg}, status_code=502)
     return JSONResponse(
         {
             "id": created.project.id,
