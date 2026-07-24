@@ -195,8 +195,13 @@ class HubService:
         ws = None
         if workspace_id:
             ws = next((w for w in workspaces if w.get("id") == workspace_id), None)
-        if ws is None and workspaces:  # newest by creation time
-            ws = max(workspaces, key=lambda w: w.get("createdAt") or "")
+        if ws is None:
+            # Prefer a running workspace so the card reflects a live builder even when a stopped
+            # leftover was created more recently (the earlier relaunch bug piled these up); else newest.
+            running = [w for w in workspaces if workspace_is_running(w)]
+            pool = running or workspaces
+            if pool:
+                ws = max(pool, key=lambda w: w.get("createdAt") or "")
         if ws is None:
             return {"running": False, "open_url": None, "state": None, "workspace_id": None}
         return {

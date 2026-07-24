@@ -162,6 +162,19 @@ def test_workspace_status_reports_workspace_id(tmp_path):
     assert _hub(tmp_path, cp).workspace_status("proj-1")["workspace_id"] == "ws-1"
 
 
+def test_workspace_status_prefers_running_over_newer_stopped(tmp_path):
+    # A stopped leftover created more recently must not mask the actually-running builder.
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [
+        {"id": "ws-run", "createdAt": "2026-07-24T09:00:00Z", "state": "Started",
+         "mostRecentSession": {"sessionStatusInfo": {"isRunning": True}}},
+        {"id": "ws-stopped", "createdAt": "2026-07-24T11:00:00Z", "state": "Stopped"},
+    ]
+    status = _hub(tmp_path, cp).workspace_status("proj-1")
+    assert status["running"] is True
+    assert status["workspace_id"] == "ws-run"
+
+
 def test_stop_app_stops_named_workspace(tmp_path):
     cp = FakeControlPlane()
     cp.workspaces["proj-1"] = [{

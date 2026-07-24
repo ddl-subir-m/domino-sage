@@ -242,7 +242,7 @@
         if (!url) url = await waitUntilRunning(id, data.workspace_id);
         if (url) window.open(builderUrl(url), '_blank');
         else banner('The app is still starting — try Open builder again in a moment.');
-        refreshStatus(id);
+        pollStatus(id, true);
       } catch (e) {
         banner(e.message || 'Couldn’t open the app.');
       } finally { btn.textContent = label; btn.disabled = false; }
@@ -291,7 +291,19 @@
           statusEl.innerHTML = '<span class="dot"></span><span>Idle — opens on demand</span>';
           actionsEl.innerHTML = `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>`;
         }
-      } catch { statusEl.className = 'status'; statusEl.innerHTML = ''; }
+        return !!s.running;
+      } catch { statusEl.className = 'status'; statusEl.innerHTML = ''; return undefined; }
+    }
+
+    // Domino's stop/start are async, so a single read catches a transient state ("Stopping", or
+    // "Started" before the session is running) and the card then freezes on it. Re-read the card
+    // until it reaches the expected running-state (or times out), so it settles on reality.
+    async function pollStatus(id, until, tries = 12, every = 3000) {
+      for (let i = 0; i < tries; i++) {
+        const running = await refreshStatus(id);
+        if (until == null || running === until) return;
+        await sleep(every);
+      }
     }
 
     async function stopApp(id, wsId, btn) {
@@ -304,9 +316,9 @@
           body: JSON.stringify({ workspace_id: wsId }) });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
-        // The stop is async on Domino's side — give it a moment before re-reading the state.
-        await sleep(1500);
-        await refreshStatus(id);
+        // The stop is async on Domino's side — poll until the card reads not-running so it doesn't
+        // freeze on the "Stopping" transient.
+        await pollStatus(id, false);
       } catch (e) {
         banner(e.message || 'Couldn’t stop the builder.');
         btn.disabled = false; btn.textContent = label;
