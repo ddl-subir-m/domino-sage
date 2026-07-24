@@ -199,3 +199,30 @@ def test_stop_app_targets_newest_running_when_id_omitted(tmp_path):
 def test_stop_app_noop_when_nothing_to_stop(tmp_path):
     result = _hub(tmp_path, FakeControlPlane()).stop_app("proj-x")
     assert result == {"stopped": False, "workspace_id": None, "detail": "no workspace to stop"}
+
+
+def test_delete_app_stops_running_builder_then_archives_project(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("My App", git_url="https://github.com/me/sage-my-app.git")
+    cp.workspaces[ref.id] = [{
+        "id": "ws-1", "state": "Started",
+        "mostRecentSession": {"sessionStatusInfo": {"isRunning": True}},
+    }]
+
+    stops = []
+    orig_stop = cp.stop_workspace
+    cp.stop_workspace = lambda p, w: stops.append((p, w)) or orig_stop(p, w)
+
+    result = _hub(tmp_path, cp).delete_app(ref.id)
+
+    assert result == {"deleted": True}
+    assert cp.list_apps() == []  # project archived (gone from the list)
+    assert ref.id not in cp.workspaces  # workspaces cleared with it
+    assert stops == [(ref.id, "ws-1")]  # running builder stopped first
+
+
+def test_delete_app_archives_even_with_no_workspace(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Idle App", git_url="https://github.com/me/sage-idle-app.git")
+    assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
+    assert cp.list_apps() == []

@@ -228,3 +228,15 @@ class HubService:
         wid = ws.get("id")
         self._cp.stop_workspace(project_id, str(wid))
         return {"stopped": True, "workspace_id": wid}
+
+    def delete_app(self, project_id: str) -> dict[str, Any]:
+        """Delete an app: stop any running builder, then archive its Domino project (soft delete —
+        a Domino admin can restore it). The GitHub repo is intentionally kept."""
+        for ws in self._cp.list_workspaces(project_id):
+            if isinstance(ws, dict) and workspace_is_running(ws) and ws.get("id"):
+                try:
+                    self._cp.stop_workspace(project_id, str(ws["id"]))
+                except Exception:  # noqa: BLE001 — best-effort; the archive proceeds regardless
+                    pass
+        self._cp.archive_project(project_id)
+        return {"deleted": True}

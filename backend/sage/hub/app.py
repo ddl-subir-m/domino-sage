@@ -241,6 +241,17 @@ async def stop_app(project_id: str, request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.delete("/api/apps/{project_id}")
+async def delete_app(project_id: str) -> JSONResponse:
+    """Delete an app: stop its builder and archive the Domino project (soft; the repo is kept)."""
+    try:
+        result = await run_in_threadpool(hub.delete_app, project_id)
+    except Exception as e:  # provisioning failure — human-readable, not a stack trace
+        log.exception("delete_app failed")
+        return JSONResponse({"error": f"Couldn't delete the app: {e}"}, status_code=502)
+    return JSONResponse(result)
+
+
 @app.get("/api/apps/{project_id}/status")
 async def app_status(project_id: str, workspace_id: str | None = None) -> JSONResponse:
     """Poll target: has the app's (just-launched) workspace session reached Running?"""

@@ -233,3 +233,27 @@ def test_list_apps_filters_by_repo_prefix():
     apps = cp.list_apps()
     assert [a.id for a in apps] == ["p1"]
     assert apps[0].git_url == "https://github.com/me/sage-one.git"
+
+
+def test_archive_project_deletes_via_public_projects_api():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"archived": True})
+
+    out = _cp(handler).archive_project("proj-42")
+    assert seen["method"] == "DELETE"
+    assert seen["path"] == "/api/projects/beta/projects/proj-42"
+    assert out == {"archived": True}
+
+
+def test_archive_project_surfaces_error_body():
+    cp = _cp(lambda req: httpx.Response(403, text='{"message":"not the owner"}'))
+    try:
+        cp.archive_project("proj-42")
+    except RuntimeError as e:
+        assert "403" in str(e) and "not the owner" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError on 403")

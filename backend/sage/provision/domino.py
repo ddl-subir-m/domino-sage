@@ -54,6 +54,7 @@ class ControlPlane(Protocol):
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
+    def archive_project(self, project_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
     def publish_app(self, project_id: str, *, name: str, git_ref_type: str = "head",
@@ -116,6 +117,11 @@ class DominoControlPlane:
         with self._client() as c:
             r = c.post(f"{self._host}{path}", json=body, headers=self._headers(), params=params)
         return self._check(r, "POST", path)
+
+    def _delete(self, path: str) -> Any:
+        with self._client() as c:
+            r = c.delete(f"{self._host}{path}", headers=self._headers())
+        return self._check(r, "DELETE", path)
 
     def _git_credential_id(self) -> str:
         """Id of the caller's Domino git credential for `git_host` (cached). Domino validates repo
@@ -212,6 +218,14 @@ class DominoControlPlane:
         path = f"/v4/workspace/project/{project_id}/workspace/{workspace_id}/sessions"
         data = self._post(path, params={"externalVolumeMounts": ""})
         return data if isinstance(data, dict) else {"resumed": True}
+
+    def archive_project(self, project_id: str) -> dict[str, Any]:
+        # "Delete" a Sage app = archive its Domino project (soft delete; a Domino admin can restore
+        # it). Public API, same family as create_project: DELETE /api/projects/beta/projects/{id}.
+        # The project's workspaces are archived with it; the caller stops a running builder first so
+        # it isn't left consuming compute. The GitHub repo is intentionally NOT touched.
+        data = self._delete(f"{_PROJECTS_PATH}/{project_id}")
+        return data if isinstance(data, dict) else {"archived": True}
 
     def available_tools(self) -> list[dict[str, Any]]:
         """The pluggable workspace tools Domino resolves for this environment (each has an `id` —
@@ -350,6 +364,11 @@ class FakeControlPlane:
 
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
         return list(self.workspaces.get(project_id, []))
+
+    def archive_project(self, project_id: str) -> dict[str, Any]:
+        self.projects = [p for p in self.projects if p.id != project_id]
+        self.workspaces.pop(project_id, None)
+        return {"archived": True}
 
     def list_apps(self) -> list[ProjectRef]:
         return list(self.projects)

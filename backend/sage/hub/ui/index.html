@@ -69,6 +69,11 @@
     .btn-ghost:hover { color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); }
     .btn-ghost:disabled { opacity: .55; cursor: default; }
 
+    .btn-danger { background: transparent; border: none; color: var(--err); font-weight: 600;
+      padding: 8px 10px; border-radius: 8px; font-size: 14px; }
+    .btn-danger:hover { background: color-mix(in srgb, var(--err) 10%, transparent); }
+    .btn-danger:disabled { opacity: .55; cursor: default; }
+
     .empty { text-align: center; color: var(--muted); padding: 64px 20px; border: 1px dashed var(--border-strong);
       border-radius: var(--radius); background: var(--surface); }
     .empty h2 { color: var(--text); font-size: 18px; margin: 0 0 6px; }
@@ -231,6 +236,41 @@
       }
     }
 
+    // Start (resume) the builder's workspace WITHOUT opening a browser tab — the Start/Stop toggle.
+    // Reuses the same open endpoint (which resumes a stopped workspace or launches one); we just
+    // don't navigate. The card polls to running.
+    async function startApp(id, btn) {
+      banner(null);
+      const label = btn.textContent; btn.disabled = true; btn.textContent = 'Starting…';
+      try {
+        const r = await fetch(api(`/api/apps/${id}/open`), { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        await pollStatus(id, true);
+      } catch (e) {
+        banner(e.message || 'Couldn’t start the builder.');
+        btn.disabled = false; btn.textContent = label;
+      }
+    }
+
+    // Delete an app: archives its Domino project (soft — recoverable by an admin) and stops its
+    // builder. The GitHub repo is intentionally kept.
+    async function deleteApp(id, btn) {
+      const name = APP_NAMES[id] || 'this app';
+      if (!confirm(`Delete “${name}”?\n\nThis archives the Domino project and stops its builder. The GitHub repo is kept, and a Domino admin can restore the project.`)) return;
+      banner(null);
+      const label = btn.textContent; btn.disabled = true; btn.textContent = 'Deleting…';
+      try {
+        const r = await fetch(api(`/api/apps/${id}`), { method: 'DELETE' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        await load();  // the app drops out of the list
+      } catch (e) {
+        banner(e.message || 'Couldn’t delete the app.');
+        btn.disabled = false; btn.textContent = label;
+      }
+    }
+
     async function openApp(id, btn) {
       banner(null);
       const label = btn.textContent; btn.disabled = true; btn.textContent = 'Starting…';
@@ -250,8 +290,12 @@
 
     function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
+    let APP_NAMES = {};
+
     function renderApps(apps) {
       const c = $('content');
+      APP_NAMES = {};
+      apps.forEach(a => { APP_NAMES[a.id] = a.name; });
       if (!apps.length) {
         c.innerHTML = `<div class="empty"><h2>No apps yet</h2>
           <p>Create your first app — Sage sets up a private repo and a live builder.</p>
@@ -264,7 +308,9 @@
           <div class="repo" title="${esc(a.git_url || '')}">${esc(a.git_url ? a.git_url.replace(/^https?:\/\//, '') : 'git-based project')}</div>
           <div class="status" id="status-${esc(a.id)}"><span class="dot"></span><span>Checking…</span></div>
           <div class="actions" id="actions-${esc(a.id)}">
+            <button class="btn-secondary" onclick="startApp('${esc(a.id)}', this)">Start</button>
             <button class="btn-secondary" onclick="openApp('${esc(a.id)}', this)">Open builder</button>
+            <button class="btn-danger" onclick="deleteApp('${esc(a.id)}', this)">Delete</button>
           </div>
         </div>`).join('')}</div>`;
       apps.forEach(a => refreshStatus(a.id));
@@ -284,12 +330,16 @@
           statusEl.innerHTML = '<span class="dot"></span><span>Builder running</span>';
           const wsArg = s.workspace_id ? `'${esc(s.workspace_id)}'` : 'null';
           actionsEl.innerHTML =
+            `<button class="btn-ghost" onclick="stopApp('${esc(id)}', ${wsArg}, this)">Stop</button>` +
             `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>` +
-            `<button class="btn-ghost" onclick="stopApp('${esc(id)}', ${wsArg}, this)">Stop</button>`;
+            `<button class="btn-danger" onclick="deleteApp('${esc(id)}', this)">Delete</button>`;
         } else {
           statusEl.className = 'status';
           statusEl.innerHTML = '<span class="dot"></span><span>Idle — opens on demand</span>';
-          actionsEl.innerHTML = `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>`;
+          actionsEl.innerHTML =
+            `<button class="btn-secondary" onclick="startApp('${esc(id)}', this)">Start</button>` +
+            `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>` +
+            `<button class="btn-danger" onclick="deleteApp('${esc(id)}', this)">Delete</button>`;
         }
         return !!s.running;
       } catch { statusEl.className = 'status'; statusEl.innerHTML = ''; return undefined; }
