@@ -1,19 +1,23 @@
 """Domino control-plane client (Phase 4.2).
 
-The v4 platform calls the hub makes to turn a provisioned git repo into a running app: resolve the
-caller's ObjectId, create a git-based project pointing at the repo, launch a workspace with the Sage
-Builder tool, and list existing Sage apps. Contract confirmed live in Phase 0 (§0.3):
+Turns a provisioned git repo into a running app: create a git-based project pointing at the repo,
+launch a workspace with the Sage Builder tool, and list existing Sage apps.
 
-  GET  /v4/users/self                                   -> {id: <ObjectId>, …}
-  POST /v4/projects                                     -> 200 {id, …}
-       {name, ownerId, visibility:"Private", description, collaborators:[], tags:{tagNames:[…]}}
-  POST /v4/workspace/project/{id}/workspace             -> {id, …}
-       {name, environmentId, environmentRevisionId, hardwareTierId:{value}, tools:[…],
-        mainGitRepoRef:{type:"branches",value}, externalVolumeMounts:[]}
-  GET  /v4/workspace/project/{id}/workspace?offset&limit
+Project create/list uses the supported public API (paths + body shapes taken from Domino's generated
+`domino_public_api_client`, the source of truth):
 
-The sidecar token is short-lived, so we re-acquire it per call (token_provider()).
-"""
+  POST /api/projects/beta/projects   -> 200 {project:{id,name,mainRepository:{uri}}, metadata}
+       NewProjectV1: {name, description, visibility:"Private",
+                      mainRepository:{uri, serviceProvider:"Github", defaultRef:{refType:"Branch",value}}}
+       (ownerId omitted -> defaults to the calling user)
+  GET  /api/projects/beta/projects?offset&limit -> {projects:[{project:{…}}], metadata}
+
+Workspace launch is not part of that public client; it still rides the internal v4 endpoint
+(unverified — the next live seam):
+
+  POST /v4/workspace/project/{id}/workspace, GET .../workspace?offset&limit
+
+The sidecar token is short-lived, so we re-acquire it per call (token_provider())."""
 from __future__ import annotations
 
 import logging
@@ -25,8 +29,10 @@ import httpx
 
 log = logging.getLogger("sage.provision.domino")
 
-# Tag stamped on every project the hub creates, so list_apps can find "my Sage apps" by filter.
-SAGE_TAG = "sage"
+_PROJECTS_PATH = "/api/projects/beta/projects"
+# Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
+# create API has no tag field, so list_apps filters on the project's git repo URI instead.
+_SAGE_REPO_PREFIX = "sage-"
 
 
 @dataclass(frozen=True)
@@ -37,7 +43,6 @@ class ProjectRef:
 
 
 class ControlPlane(Protocol):
-    def owner_id(self) -> str: ...
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
@@ -57,15 +62,17 @@ class DominoControlPlane:
         hardware_tier_id: str,
         builder_tool: str = "sageBuilder",
         environment_revision_id: str | None = None,
+        git_service_provider: str = "Github",  # GitServiceProviderV1 value (hub is github-only in v1)
         transport: httpx.BaseTransport | None = None,  # test seam
         timeout_s: float = 30.0,
     ) -> None:
-        self._api = api_host.rstrip("/") + "/v4"
+        self._host = api_host.rstrip("/")
         self._token_provider = token_provider
         self._env_id = environment_id
         self._env_rev = environment_revision_id
         self._tier_id = hardware_tier_id
         self._tool = builder_tool
+        self._provider = git_service_provider
         self._transport = transport
         self._timeout_s = timeout_s
 
@@ -85,37 +92,31 @@ class DominoControlPlane:
 
     def _get(self, path: str, **kw: Any) -> Any:
         with self._client() as c:
-            r = c.get(f"{self._api}{path}", headers=self._headers(), **kw)
+            r = c.get(f"{self._host}{path}", headers=self._headers(), **kw)
         return self._check(r, "GET", path)
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         with self._client() as c:
-            r = c.post(f"{self._api}{path}", json=body, headers=self._headers())
+            r = c.post(f"{self._host}{path}", json=body, headers=self._headers())
         return self._check(r, "POST", path)
-
-    def owner_id(self) -> str:
-        data = self._get("/users/self")
-        oid = data.get("id") or data.get("userId")
-        if not oid:
-            raise RuntimeError("could not resolve caller ObjectId from /v4/users/self")
-        return str(oid)
 
     def create_project(
         self, name: str, *, git_url: str, branch: str = "main", description: str = ""
     ) -> ProjectRef:
+        # NewProjectV1. ownerId omitted -> defaults to the calling user (the hub runs as that user).
         body = {
             "name": name,
-            "ownerId": self.owner_id(),
-            "visibility": "Private",
             "description": description or "Created by Sage",
-            "collaborators": [],
-            "tags": {"tagNames": [SAGE_TAG]},
-            # git-based project pointing at the freshly provisioned repo.
-            "mainGitRepoRef": {"type": "branches", "value": branch},
-            "mainRepository": {"uri": git_url, "defaultRef": {"type": "branches", "value": branch}},
+            "visibility": "Private",
+            "mainRepository": {
+                "uri": git_url,
+                "serviceProvider": self._provider,
+                "defaultRef": {"refType": "Branch", "value": branch},
+            },
         }
-        data = self._post("/projects", body)
-        pid = data.get("id") or data.get("projectId")
+        data = self._post(_PROJECTS_PATH, body)
+        proj = data.get("project") if isinstance(data, dict) else None
+        pid = (proj or {}).get("id")
         if not pid:
             raise RuntimeError(f"project create returned no id: {str(data)[:200]}")
         return ProjectRef(id=str(pid), name=name, git_url=git_url)
@@ -131,7 +132,7 @@ class DominoControlPlane:
         }
         if self._env_rev:
             body["environmentRevisionId"] = self._env_rev
-        data = self._post(f"/workspace/project/{project_id}/workspace", body)
+        data = self._post(f"/v4/workspace/project/{project_id}/workspace", body)
         # LIVE-VERIFY seam: which field carries the run/session id we assemble the open URL from
         # (see preview.prefix). Workspace metadata has no secrets, so log the shape to stdout.
         if isinstance(data, dict):
@@ -139,31 +140,26 @@ class DominoControlPlane:
         return data
 
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
-        data = self._get(f"/workspace/project/{project_id}/workspace", params={"offset": 0, "limit": 20})
+        data = self._get(f"/v4/workspace/project/{project_id}/workspace", params={"offset": 0, "limit": 20})
         items = data.get("workspaces") or data.get("data") or data if isinstance(data, (list, dict)) else []
         return items if isinstance(items, list) else []
 
     def list_apps(self) -> list[ProjectRef]:
-        """Projects tagged `sage` owned by the caller (best-effort field parsing — v4 project list
-        shapes vary by version)."""
-        data = self._get("/projects", params={"limit": 100})
-        projects = data.get("data") if isinstance(data, dict) else data
+        """The caller's Sage apps: projects whose git repo is a `sage-*` repo (the public create API
+        has no tag field, so the repo-name prefix is the marker — see naming.repo_base)."""
+        data = self._get(_PROJECTS_PATH, params={"offset": 0, "limit": 200})
+        envelopes = data.get("projects") if isinstance(data, dict) else data
         out: list[ProjectRef] = []
-        for p in projects or []:
+        for env in envelopes or []:
+            # Each item is a ProjectEnvelopeV1 {project:{…}}; tolerate a bare project too.
+            p = env.get("project") if isinstance(env, dict) and "project" in env else env
             if not isinstance(p, dict):
                 continue
-            tags = p.get("tags") or {}
-            names = tags.get("tagNames") if isinstance(tags, dict) else tags
-            flat = [t if isinstance(t, str) else (t or {}).get("name") for t in (names or [])]
-            if SAGE_TAG not in [str(t).lower() for t in flat if t]:
+            uri = (p.get("mainRepository") or {}).get("uri") if isinstance(p.get("mainRepository"), dict) else None
+            repo_name = uri.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git") if uri else ""
+            if not repo_name.startswith(_SAGE_REPO_PREFIX):
                 continue
-            out.append(
-                ProjectRef(
-                    id=str(p.get("id") or p.get("projectId") or ""),
-                    name=str(p.get("name") or "unnamed"),
-                    git_url=(p.get("mainRepository") or {}).get("uri") if isinstance(p.get("mainRepository"), dict) else None,
-                )
-            )
+            out.append(ProjectRef(id=str(p.get("id") or ""), name=str(p.get("name") or "unnamed"), git_url=uri))
         return out
 
 
@@ -171,13 +167,9 @@ class DominoControlPlane:
 class FakeControlPlane:
     """In-memory control plane for tests/local hub — no network."""
 
-    owner: str = "owner-oid"
     projects: list[ProjectRef] = field(default_factory=list)
     workspaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     _seq: int = 0
-
-    def owner_id(self) -> str:
-        return self.owner
 
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
         self._seq += 1

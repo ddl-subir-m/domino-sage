@@ -16,31 +16,40 @@ def _cp(handler):
     )
 
 
-def test_owner_id():
-    cp = _cp(lambda req: httpx.Response(200, json={"id": "oid-123"}))
-    assert cp.owner_id() == "oid-123"
-
-
-def test_create_project_sends_git_ref_and_tag():
+def test_create_project_uses_public_api_shape():
     seen = {}
 
     def handler(request):
-        if request.url.path.endswith("/users/self"):
-            return httpx.Response(200, json={"id": "oid-9"})
         seen["path"] = request.url.path
         seen["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"id": "proj-42"})
+        # ProjectEnvelopeV1: {project: {...}, metadata: {...}}
+        return httpx.Response(200, json={"project": {"id": "proj-42", "name": "My App"}, "metadata": {}})
 
     ref = _cp(handler).create_project("My App", git_url="https://github.com/me/sage-my-app.git")
     assert ref.id == "proj-42"
     assert ref.name == "My App"
-    assert seen["path"] == "/v4/projects"
+    assert seen["path"] == "/api/projects/beta/projects"
     b = seen["body"]
-    assert b["ownerId"] == "oid-9"
+    # NewProjectV1: no ownerId (defaults to caller), no tags/collaborators/mainGitRepoRef.
+    assert "ownerId" not in b
+    assert "tags" not in b
     assert b["visibility"] == "Private"
-    assert b["tags"] == {"tagNames": ["sage"]}
-    assert b["mainGitRepoRef"] == {"type": "branches", "value": "main"}
-    assert b["mainRepository"]["uri"] == "https://github.com/me/sage-my-app.git"
+    assert b["mainRepository"] == {
+        "uri": "https://github.com/me/sage-my-app.git",
+        "serviceProvider": "Github",
+        "defaultRef": {"refType": "Branch", "value": "main"},
+    }
+
+
+def test_create_project_surfaces_error_body():
+    cp = _cp(lambda req: httpx.Response(400, text='{"message":"bad visibility"}'))
+    try:
+        cp.create_project("X", git_url="https://github.com/me/sage-x.git")
+    except RuntimeError as e:
+        assert "400" in str(e)
+        assert "bad visibility" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError on 400")
 
 
 def test_create_workspace_body():
@@ -62,12 +71,14 @@ def test_create_workspace_body():
     assert b["externalVolumeMounts"] == []
 
 
-def test_list_apps_filters_by_tag():
+def test_list_apps_filters_by_repo_prefix():
     projects = {
-        "data": [
-            {"id": "p1", "name": "Sage One", "tags": {"tagNames": ["sage"]}, "mainRepository": {"uri": "https://github.com/me/sage-one.git"}},
-            {"id": "p2", "name": "Other", "tags": {"tagNames": ["ml"]}},
-        ]
+        "projects": [
+            {"project": {"id": "p1", "name": "Sage One", "mainRepository": {"uri": "https://github.com/me/sage-one.git"}}},
+            {"project": {"id": "p2", "name": "Other", "mainRepository": {"uri": "https://github.com/me/analytics.git"}}},
+            {"project": {"id": "p3", "name": "No Repo"}},
+        ],
+        "metadata": {},
     }
     cp = _cp(lambda req: httpx.Response(200, json=projects))
     apps = cp.list_apps()
