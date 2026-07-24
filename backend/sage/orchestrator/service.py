@@ -255,6 +255,18 @@ class Orchestrator:
         # turn's first poll re-walk the previous turn's already-completed parts and re-emit/
         # re-persist them out of order (duplicate cards appended after the newer turn began).
         seen: set[tuple[str, int]] = set()
+        # A clean typecheck of the untouched template must NOT count as a finished build: track
+        # whether the agent actually edited files, and if a turn ends clean with zero edits, nudge
+        # it to implement instead of declaring success. Capped so a model that refuses to write
+        # can't loop forever.
+        made_edits = False
+        nudges = 0
+        MAX_NUDGES = 1
+        IMPLEMENT_NUDGE = (
+            "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
+            "request: edit the project files (start with src/App.tsx) so the app actually builds "
+            "what was asked. Make the code changes now."
+        )
         while True:
             if project.stop_requested:
                 yield handle_stop()
@@ -306,6 +318,8 @@ class Orchestrator:
                                 continue
                             seen.add(key)
                             last_active = None  # completed: let the next running tool re-announce
+                            if tool in ("edit", "write"):
+                                made_edits = True
                             yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
@@ -336,6 +350,18 @@ class Orchestrator:
                 return
             decision = breaker.record(report.signature(), report.ok)
             if decision.action == "stop":
+                # A clean typecheck with no edits means the agent only planned — don't call that a
+                # finished build. Nudge it to implement (once); if it still writes nothing, stop
+                # with an honest, actionable message rather than a false "done — clean".
+                if report.ok and not made_edits:
+                    if nudges < MAX_NUDGES:
+                        nudges += 1
+                        yield {"type": "iterate", "reason": "planned but wrote no code — implementing"}
+                        current = IMPLEMENT_NUDGE
+                        continue
+                    yield persist({"type": "done", "ok": False,
+                                   "decision": "planned but wrote no code — try Implement mode"})
+                    return
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok:
                     saved = self._save_to_git(project, prompt)

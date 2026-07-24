@@ -206,6 +206,14 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
   isn't a git repo — so the `/tmp` spike stays quiet. **Becomes observable only when the workspace is
   the project's git checkout with a remote** (deploy: `SAGE_WORKSPACE_DIR=/mnt/code`). Auto-*creating*
   the remote for brand-new apps remains separate (Phase 4).
+- 2.9 ✅ **Auto build: require edits before "done".** A clean typecheck of the untouched (already
+  compiling) template was being mistaken for a finished build, so a plan-only turn reported success
+  with no code written. `build_stream` now tracks whether the agent edited/wrote files; a clean turn
+  with zero edits nudges it to implement (once), then — if it still writes nothing — ends with an
+  honest `done:{ok:false, decision:"planned but wrote no code — try Implement mode"}` instead of a
+  false clean. Not unit-tested (the loop needs a live OpenCode server; verified by live re-run).
+- **Env packaging (Phase 3) — image verified:** the baked Environment boots clean (Node 22,
+  `opencode 1.18.4` resolved, gateway chip `domino`). Build ran end-to-end (agent + typecheck).
 - **Env packaging (Phase 3) — spike unblock done:** `spikes/domino-verify/run.sh` now installs the
   repo-root deps so `opencode-ai` (the `opencode` binary) resolves; a real build runs end-to-end
   (verified). Baking this into the Environment image is the remaining Phase 3 work.
