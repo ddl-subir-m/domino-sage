@@ -1,0 +1,22 @@
+# Pluggable Workspace Tool for the shippable Sage Builder Environment (Phase 3).
+#
+# Same load-bearing choices proven in Phases 0–1:
+#   - rewrite:false  -> Domino preserves the path prefix end-to-end (the orchestrator strips it)
+#   - port 8888      -> the one port the orchestrator binds (SAGE_CONTROL_PORT in app.sh)
+#   - internalPath   -> renders as /<owner>/<project>/notebookSession/<runId>/ (the derived prefix)
+#
+# start points at the baked entrypoint (/opt/sage/environment/app.sh), NOT a path on the project
+# mount — the ship artifact carries its own code. Each tool is a TOP-LEVEL key (a `tools:` wrapper
+# trips "/tools/start: error.path.missing").
+
+sageBuilder:
+  title: "Sage Builder"
+  iconUrl: "/assets/images/workspace-logos/jupyterlab.svg"
+  start:
+    - "bash"
+    - "/opt/sage/environment/app.sh"
+  httpProxy:
+    port: 8888
+    rewrite: false
+    requireSubdomain: false
+    internalPath: "/{{ownerUsername}}/{{projectName}}/{{sessionPathComponent}}/{{runId}}/"

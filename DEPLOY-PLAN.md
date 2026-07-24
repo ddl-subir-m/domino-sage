@@ -210,9 +210,17 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
   repo-root deps so `opencode-ai` (the `opencode` binary) resolves; a real build runs end-to-end
   (verified). Baking this into the Environment image is the remaining Phase 3 work.
 
-## Phase 3 — Environment packaging (the shippable artifact)
+## Phase 3 — Environment packaging (the shippable artifact) — STATUS: DRAFTED (files in `environment/`, awaiting on-Domino build)
 
 **Goal:** one Environment image = dev artifact = ship artifact.
+
+**Drafted (`environment/Dockerfile` + `app.sh` + `pluggable-tools.yaml` + `README.md`):** bakes Node 22
+(PATH ahead of conda), `uv`, `opencode-ai@1.18.4` (global), and Sage code + warm template (with
+baked `node_modules`) into `/opt/sage` via `git clone` (public repo — no build secret) + `npm ci`.
+No local build context, so nothing is COPYed. Ship model: **Sage baked in `/opt/sage`, the user's
+app on `/mnt/code`** (`SAGE_WORKSPACE_DIR=/mnt/code`); `SAGE_APP_HOME=/mnt/code` gives a fast dev
+loop off the mount. Fill-ins before build: base image, gateway creds. Verify = apply + launch on
+Domino, debug together.
 
 - 3.1 `environment/Dockerfile`: base image + **Node ≥20.19 (recommend 22)** + `uv` + Python deps +
   OpenCode (pinned) + the React+Vite template **cloned from a baked git URL** so a rebuild pulls
@@ -262,6 +270,13 @@ Persistence model = **git-based projects** (not DFS). Findings on a git-based wo
     lowercased); Domino project keeps the display name; **always private**; collision → `-2`, `-3`.
   - Then: seed from the baked template (`/opt/sage/template`, 3.1) → initial commit → push →
     `POST /v4/projects` with `mainGitRepoRef` → git-based Domino project (body per 0.3).
+  - **De-risk before implementing adapters:** `spikes/domino-probes/repo_provision_probe.sh`
+    (authored) confirms the create/delete API shape per provider against the LIVE API — `DRY_RUN=1`
+    default previews the exact (token-redacted) curl; `DRY_RUN=0` creates + auto-deletes a throwaway
+    `sage-probe-<epoch>` private repo (EXIT-trap cleanup). GitHub path is fully wired/tested-first;
+    GHE/GitLab/GitLab-EE/Bitbucket-Cloud/Bitbucket-DC are `[UNVERIFIED]` transcriptions to confirm on
+    a workspace of that provider (Bitbucket workspace/project-key are guessed from the remote — check
+    before a real run). Run this per provider and lock the shape before writing the adapter.
 - 4.2 The **hub** (own Domino App): lists the user's Sage apps; "New app" runs 4.1 then
   `POST /workspace/.../workspace` into the Sage Environment (body per 0.3) → redirect into the
   builder. Ephemeral token per call from sidecar `:8899` (re-acquire each call).
