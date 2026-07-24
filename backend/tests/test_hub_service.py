@@ -102,6 +102,29 @@ def test_open_app_launches_when_none(tmp_path):
     assert result["workspace"]["id"] == "ws-proj-9"
 
 
+def test_open_app_relaunches_stopped_restartable(tmp_path):
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [{"id": "ws-1", "state": "Stopped", "isRestartable": True}]
+    hub = _hub(tmp_path, cp)
+
+    result = hub.open_app("proj-1")
+    assert result["launched"] is True
+    # Restarted the SAME workspace in place, not created a new one.
+    assert result["workspace"]["id"] == "ws-1"
+    assert cp.workspaces["proj-1"] == [cp.workspaces["proj-1"][0]]  # no new workspace appended
+    assert cp.workspaces["proj-1"][0]["state"] == "running"
+
+
+def test_open_app_creates_when_stopped_not_restartable(tmp_path):
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [{"id": "ws-old", "state": "Stopped", "isRestartable": False}]
+    hub = _hub(tmp_path, cp)
+
+    result = hub.open_app("proj-1")
+    assert result["launched"] is True
+    assert result["workspace"]["id"] == "ws-proj-1"  # a fresh workspace, not the un-restartable one
+
+
 def test_workspace_status_reports_running_and_open_url(tmp_path):
     cp = FakeControlPlane()
     cp.projects.append(ProjectRef(id="proj-1", name="My App", git_url="https://github.com/o/sage-my-app.git"))

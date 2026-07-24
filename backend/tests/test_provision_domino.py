@@ -119,6 +119,22 @@ def test_stop_workspace_posts_to_stop_path():
     assert out["state"] == "Stopped"
 
 
+def test_relaunch_workspace_posts_expected_body():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "ws-1", "status": "running"})
+
+    out = _cp(handler).relaunch_workspace("proj-42", "ws-1")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v4/workspaces/relaunch"
+    assert seen["body"] == {"projectId": "proj-42", "workspaceId": "ws-1", "useOriginalInputCommit": False}
+    assert out["id"] == "ws-1"
+
+
 def test_stop_workspace_tolerates_empty_body():
     out = _cp(lambda req: httpx.Response(200, text="")).stop_workspace("p", "ws")
     assert out == {}  # empty body -> no error, empty dict

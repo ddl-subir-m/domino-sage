@@ -46,6 +46,7 @@ class ControlPlane(Protocol):
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
+    def relaunch_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
 
@@ -185,6 +186,17 @@ class DominoControlPlane:
             data = {}
         return data if isinstance(data, dict) else {"stopped": True}
 
+    def relaunch_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        # Restart a stopped builder in place (instead of creating a new workspace each time, which
+        # piles up stopped records). Path + body confirmed against domino_private_spec:
+        # POST /v4/workspaces/relaunch {projectId, workspaceId, useOriginalInputCommit}. We pass
+        # useOriginalInputCommit=false so the builder restarts on the branch's LATEST commit, not the
+        # commit it first launched at. The response DTO differs from create's and carries no owner/
+        # session fields, so the caller derives the open URL by polling list_workspaces, not from here.
+        body = {"projectId": project_id, "workspaceId": workspace_id, "useOriginalInputCommit": False}
+        data = self._post("/v4/workspaces/relaunch", body)
+        return data if isinstance(data, dict) else {"relaunched": True}
+
     def available_tools(self) -> list[dict[str, Any]]:
         """The pluggable workspace tools Domino resolves for this environment (each has an `id` —
         the tool key). A workspace launch fails to schedule if `tools` names an id not in here."""
@@ -249,6 +261,16 @@ class FakeControlPlane:
                 if isinstance(session, dict) and isinstance(session.get("sessionStatusInfo"), dict):
                     session["sessionStatusInfo"]["isRunning"] = False
                 return {"id": workspace_id, "state": "Stopped"}
+        return {"id": workspace_id, "state": "Unknown"}
+
+    def relaunch_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        for ws in self.workspaces.get(project_id, []):
+            if ws.get("id") == workspace_id:
+                ws["state"] = "running"
+                session = ws.setdefault("mostRecentSession", {})
+                if isinstance(session, dict):
+                    session.setdefault("sessionStatusInfo", {})["isRunning"] = True
+                return ws
         return {"id": workspace_id, "state": "Unknown"}
 
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:

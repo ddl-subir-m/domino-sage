@@ -146,13 +146,23 @@ class HubService:
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
 
     def open_app(self, project_id: str) -> dict[str, Any]:
-        """Return a runnable workspace for an existing app: reuse a running one, else launch one."""
+        """Return a runnable workspace for an existing app: reuse a running one, else restart a
+        stopped one in place, else launch a fresh one."""
         # The workspace DTO has no project name (the URL slug), so resolve it from the app list.
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
-        for ws in self._cp.list_workspaces(project_id):
+        workspaces = [w for w in self._cp.list_workspaces(project_id) if isinstance(w, dict)]
+        for ws in workspaces:
             state = str(ws.get("state") or ws.get("status") or "").lower()
             if state in ("", "running", "started", "active") or ws.get("isRunning"):
                 return self._open_result(ws, name, launched=False)
+        # Restart the newest restartable stopped workspace rather than piling up new ones. Its
+        # relaunch DTO carries no session/open-url fields, so return it launched=True and let the
+        # UI's status poll surface the running URL (same path as a fresh create).
+        restartable = [w for w in workspaces if w.get("isRestartable") and w.get("id")]
+        if restartable:
+            target = max(restartable, key=lambda w: w.get("createdAt") or "")
+            self._cp.relaunch_workspace(project_id, str(target["id"]))
+            return self._open_result(target, name, launched=True)
         ws = self._cp.create_workspace(project_id, branch=self._branch)
         return self._open_result(ws, name, launched=True)
 
