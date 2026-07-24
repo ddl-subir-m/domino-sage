@@ -11,6 +11,7 @@ best-effort and mark it so.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,8 @@ from . import naming
 from .domino import ControlPlane, ProjectRef
 from .github import RepoInfo, RepoNameConflict, RepoProvider
 from .seed import seed_and_push
+
+log = logging.getLogger("sage.provision.service")
 
 # The seed step: materialize the template into the new repo and push it. Injectable so fake-mode and
 # tests can no-op it (a real git push would otherwise need a live remote).
@@ -86,24 +89,38 @@ class HubService:
                 last = e
         raise RuntimeError(f"could not find a free repo name under {base!r} after {self._name_limit} tries") from last
 
+    def _rollback_repo(self, repo: RepoInfo) -> None:
+        """Best-effort delete of a just-created repo when provisioning fails before the project
+        exists. Never masks the original failure — a failed cleanup is only logged."""
+        try:
+            self._repo.delete_repo(repo.full_name)
+            log.info("rolled back orphaned repo %s", repo.full_name)
+        except Exception:
+            log.warning("couldn't roll back repo %s (delete it manually)", repo.full_name, exc_info=True)
+
     def create_app(self, display_name: str) -> AppCreated:
         display_name = display_name.strip()
         if not display_name:
             raise ValueError("app name is required")
 
         repo = self._create_repo(display_name)
-        self._seed(
-            repo.clone_url, self._template, branch=self._branch,
-            token_provider=self._push_token_provider,
-        )
-
-        # Project keeps the human name; fall back to the (unique) repo name if Domino rejects it
-        # (e.g. a duplicate project name).
+        # Roll back the repo if we fail before the project exists — otherwise it's an orphan. Once
+        # the project is created the app is real, so a later (workspace) failure must NOT delete it.
         try:
-            project = self._cp.create_project(display_name, git_url=repo.clone_url, branch=self._branch)
-        except Exception:  # noqa: BLE001 — v4 create-error shape unconfirmed; retry with a unique name
-            fallback = repo.full_name.split("/", 1)[-1]
-            project = self._cp.create_project(fallback, git_url=repo.clone_url, branch=self._branch)
+            self._seed(
+                repo.clone_url, self._template, branch=self._branch,
+                token_provider=self._push_token_provider,
+            )
+            # Project keeps the human name; fall back to the (unique) repo name if Domino rejects it
+            # (e.g. a duplicate project name).
+            try:
+                project = self._cp.create_project(display_name, git_url=repo.clone_url, branch=self._branch)
+            except Exception:  # noqa: BLE001 — v4 create-error shape unconfirmed; retry with a unique name
+                fallback = repo.full_name.split("/", 1)[-1]
+                project = self._cp.create_project(fallback, git_url=repo.clone_url, branch=self._branch)
+        except Exception:
+            self._rollback_repo(repo)
+            raise
 
         ws = self._cp.create_workspace(project.id, branch=self._branch)
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws))

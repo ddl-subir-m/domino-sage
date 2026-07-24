@@ -6,8 +6,10 @@ Confirmed live against github.com (repo_provision_probe.sh, DRY_RUN=0):
     response: {"full_name","clone_url","private", …}
   a name collision returns 422 (caller retries the next `-N` candidate).
 
-The token comes from credentials.extract_token and is used in-memory only — never logged. Only the
-API *create* needs it; seeding/pushing rides Domino's ambient credential helper.
+  a delete (rollback of a half-provisioned app) is DELETE /repos/{owner}/{name} -> 204.
+
+The token comes from credentials.extract_token and is used in-memory only — never logged. It signs
+the create/delete API calls and (via a one-shot helper) the seed push; see seed.py.
 
 github-enterprise shares this exact shape at base https://<host>/api/v3 (unverified — same adapter,
 different base_url). Other providers (GitLab/Bitbucket) are separate adapters, added as verified.
@@ -47,6 +49,10 @@ class RepoProvider(Protocol):
         """Create a repo named `name`. Raises RepoNameConflict if the name is taken."""
         ...
 
+    def delete_repo(self, full_name: str) -> None:
+        """Delete a repo ("owner/name"). Used to roll back a half-provisioned app."""
+        ...
+
 
 @dataclass
 class FakeRepoProvider:
@@ -63,6 +69,9 @@ class FakeRepoProvider:
         info = RepoInfo(full_name=full, clone_url=f"https://{self.host}/{full}.git", private=private)
         self.created.append(info)
         return info
+
+    def delete_repo(self, full_name: str) -> None:
+        self.created = [r for r in self.created if r.full_name != full_name]
 
 
 class GitHubProvider:
@@ -81,6 +90,13 @@ class GitHubProvider:
         self._transport = transport
         self._timeout_s = timeout_s
 
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._token_provider()}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        }
+
     def create_repo(self, name: str, *, description: str = "", private: bool = True) -> RepoInfo:
         body: dict[str, Any] = {
             "name": name,
@@ -88,13 +104,8 @@ class GitHubProvider:
             "auto_init": False,
             "description": description,
         }
-        headers = {
-            "Authorization": f"Bearer {self._token_provider()}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        }
         with httpx.Client(transport=self._transport, timeout=self._timeout_s) as client:
-            r = client.post(f"{self._base_url}/user/repos", json=body, headers=headers)
+            r = client.post(f"{self._base_url}/user/repos", json=body, headers=self._headers())
         if r.status_code == 422:  # name exists (or other validation) — treat as a collision to retry
             raise RepoNameConflict(name)
         if r.status_code >= 400:
@@ -105,3 +116,9 @@ class GitHubProvider:
             clone_url=data["clone_url"],
             private=bool(data.get("private", private)),
         )
+
+    def delete_repo(self, full_name: str) -> None:
+        with httpx.Client(transport=self._transport, timeout=self._timeout_s) as client:
+            r = client.delete(f"{self._base_url}/repos/{full_name}", headers=self._headers())
+        if r.status_code >= 400 and r.status_code != 404:  # 404 = already gone; treat as success
+            raise RepoProviderError(r.status_code, r.text)

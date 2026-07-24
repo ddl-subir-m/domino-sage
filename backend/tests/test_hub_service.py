@@ -46,6 +46,45 @@ def test_create_app_requires_name(tmp_path, no_network_seed):
         _hub(tmp_path).create_app("   ")
 
 
+def test_rollback_deletes_repo_when_seed_fails(tmp_path):
+    repo = FakeRepoProvider()
+
+    def failing_seed(url, tmpl, **kw):
+        raise RuntimeError("push failed")
+
+    hub = HubService(FakeControlPlane(), repo, tmp_path, seed=failing_seed)
+    with pytest.raises(RuntimeError, match="push failed"):
+        hub.create_app("My App")
+    # the orphaned repo was cleaned up
+    assert repo.created == []
+
+
+def test_rollback_deletes_repo_when_project_create_fails(tmp_path):
+    class FailingCP(FakeControlPlane):
+        def create_project(self, name, *, git_url, branch="main", description=""):
+            raise RuntimeError("project rejected")
+
+    repo = FakeRepoProvider()
+    hub = HubService(FailingCP(), repo, tmp_path, seed=lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="project rejected"):
+        hub.create_app("My App")
+    assert repo.created == []
+
+
+def test_no_rollback_once_project_exists(tmp_path):
+    """A workspace-launch failure must not delete the repo — the app already exists."""
+    class WsFailCP(FakeControlPlane):
+        def create_workspace(self, project_id, *, branch="main"):
+            raise RuntimeError("Workspace start wasn't completed")
+
+    repo = FakeRepoProvider()
+    hub = HubService(WsFailCP(), repo, tmp_path, seed=lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="Workspace start"):
+        hub.create_app("My App")
+    # repo (and the created project) are kept so the user can retry opening it
+    assert [r.full_name for r in repo.created] == ["test-owner/sage-my-app"]
+
+
 def test_open_app_reuses_running_workspace(tmp_path):
     cp = FakeControlPlane()
     cp.workspaces["proj-1"] = [{"id": "ws-existing", "state": "running"}]
