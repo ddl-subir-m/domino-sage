@@ -244,7 +244,7 @@ Domino, debug together.
   → **verify:** launch "Sage Builder" from the Environment in a real Domino project → describe an
   app → watch it build → private preview renders. End-to-end on Domino.
 
-## Phase 4 — "New app" control plane (the hub) — STATUS: IMPLEMENTED (GitHub v1); one live-verify seam
+## Phase 4 — "New app" control plane (the hub) — STATUS: IMPLEMENTED (GitHub v1); hub decoupled from /mnt/code (plain baked App); one live-verify seam
 
 **Goal:** Lovable/Replit-style "New app" that provisions a **git-based** project + launches the
 builder. Each provisioned app = its own GitHub repo + a git-based Domino project pointing at it. The
