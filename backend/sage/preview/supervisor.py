@@ -9,7 +9,9 @@ Deep module, narrow interface: start() / upstream() / stop(). How the port is di
 """
 from __future__ import annotations
 
+import collections
 import logging
+import os
 import re
 import signal
 import subprocess
@@ -35,8 +37,9 @@ def parse_vite_url(line: str) -> str | None:
 
 
 class ViteSupervisor:
-    def __init__(self, workspace: Path, max_restarts: int = 3) -> None:
+    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3) -> None:
         self._workspace = Path(workspace)
+        self._base_prefix = base_prefix  # baked into Vite's `base`/HMR via SAGE_BASE_PREFIX
         self._max_restarts = max_restarts
         self._proc: subprocess.Popen | None = None
         self._upstream: str | None = None
@@ -44,14 +47,21 @@ class ViteSupervisor:
         self._restarts = 0
         self._stopped = False
         self._last_error: str | None = None
+        self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent Vite output
 
     def start(self, ready_timeout_s: float = 30.0) -> str:
-        """Spawn Vite and block until its port is discovered. Returns the upstream base URL."""
+        """Spawn Vite and block until its port is discovered. Returns the upstream base URL.
+
+        Raises RuntimeError (with Vite's own recent output) if Vite exits before reporting a port —
+        e.g. an incompatible Node version — so the failure isn't an opaque assertion upstream.
+        """
         self._spawn()
-        if not self._ready.wait(timeout=ready_timeout_s):
+        timed_out = not self._ready.wait(timeout=ready_timeout_s)
+        if self._upstream is None:
             self.stop()
-            raise TimeoutError(f"Vite did not report a port in {ready_timeout_s}s: {self._last_error}")
-        assert self._upstream is not None
+            why = f"timed out after {ready_timeout_s}s" if timed_out else (self._last_error or "exited early")
+            tail = "\n".join(self._tail)
+            raise RuntimeError(f"Vite dev server failed to start ({why}). Recent output:\n{tail}")
         return self._upstream
 
     def upstream(self) -> str:
@@ -71,6 +81,7 @@ class ViteSupervisor:
         self._upstream = None
         self._clear_stale_port(_DEFAULT_PORT)
         # start_new_session -> own process group so we can kill Vite + any children (esbuild).
+        # SAGE_BASE_PREFIX tells vite.config.ts the Domino proxy prefix to bake into `base`/HMR.
         self._proc = subprocess.Popen(
             ["npm", "run", "dev"],
             cwd=self._workspace,
@@ -78,12 +89,14 @@ class ViteSupervisor:
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            env={**os.environ, "SAGE_BASE_PREFIX": self._base_prefix},
         )
         threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
+            self._tail.append(line.rstrip())
             if self._upstream is None and (url := parse_vite_url(line)):
                 self._upstream = url
                 self._ready.set()

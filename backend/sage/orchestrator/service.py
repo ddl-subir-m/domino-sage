@@ -2,10 +2,10 @@
 
 A Project bundles: workspace (from the warm template), a Vite supervisor (live preview), a
 ModelControl (per-project switching state), and an EnforcementShim (routes model calls through
-the gateway with the sovereign override). Per D9 a container usually hosts one project, but the
-registry supports more.
+the gateway with the sovereign override). Per D9 a container hosts exactly one project, bound to
+the Domino project's mounted volume and attached lazily on first use.
 
-Deep module, narrow interface: create_project / get / active / shutdown.
+Deep module, narrow interface: project / build / build_stream / shutdown.
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
+from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
@@ -115,10 +116,11 @@ class Project:
 class Orchestrator:
     def __init__(
         self,
-        workspaces_root: Path,
+        workspace_dir: Path,
         template: Path,
         gateway: GatewayClient,
         catalog: ModelCatalog,
+        project_id: str = "app",
         opencode_cwd: Path | None = None,
         feedback: FeedbackRunner | None = None,
         force_model: bool = False,
@@ -126,7 +128,8 @@ class Orchestrator:
         sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG,
         domino_project_id: str | None = None,
     ) -> None:
-        self._wm = WorkspaceManager(workspaces_root, template)
+        self._wm = WorkspaceManager(workspace_dir, template)
+        self._project_id = project_id
         self._gateway = gateway
         self._catalog = catalog
         self._force_model = force_model
@@ -135,10 +138,27 @@ class Orchestrator:
         self._domino_project_id = domino_project_id
         self._opencode_cwd = Path(opencode_cwd) if opencode_cwd else Path.cwd()
         self._feedback = feedback or FeedbackRunner()
-        self._projects: dict[str, Project] = {}
-        self._active: str | None = None
+        # One container hosts one project (D9): a single bound project, attached lazily on first
+        # use (seeding the volume + rehydrating .sage/ from disk), memoized thereafter.
+        self._project: Project | None = None
         self._oc_server: OpenCodeServer | None = None
         self._oc_client: OpenCodeClient | None = None
+
+    def project(self, start_preview: bool = True) -> Project:
+        """Get-or-attach the single bound project. Idempotent: on first call it seeds the volume
+        if empty, wires control/shim/supervisor, starts the preview, and rehydrates session/history/
+        plan/model-overrides from .sage/; subsequent calls return the memoized Project (the preview
+        is not restarted)."""
+        if self._project is not None:
+            return self._project
+        workspace = self._wm.ensure(self._project_id)
+        control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
+        supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
+        if start_preview:
+            supervisor.start()
+        self._project = Project(self._project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
+        return self._project
 
     def _ensure_opencode(self) -> OpenCodeClient:
         """Start the shared OpenCode server on first use (opencode.json in opencode_cwd points
@@ -173,12 +193,10 @@ class Orchestrator:
             return None
         return sid
 
-    def build(self, project_id: str, prompt: str) -> dict:
+    def build(self, prompt: str) -> dict:
         """Run one build to completion (non-streaming). Reuses the session, so repeated calls are
         follow-up turns with context. Requires gateway access."""
-        project = self.get(project_id)
-        if project is None:
-            raise KeyError(project_id)
+        project = self.project()
         client = self._ensure_opencode()
         sid = self._ensure_session(project)
 
@@ -199,15 +217,13 @@ class Orchestrator:
         )
         return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
 
-    def build_stream(self, project_id: str, prompt: str):
+    def build_stream(self, prompt: str):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context."""
         import time
 
-        project = self.get(project_id)
-        if project is None:
-            raise KeyError(project_id)
+        project = self.project()
         client = self._ensure_opencode()
         sid = self._ensure_session(project)
         breaker = CircuitBreaker()
@@ -216,7 +232,7 @@ class Orchestrator:
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
         def persist(ev: dict) -> dict:
-            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done"):
+            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved"):
                 project.workspace.append_history(ev)
             return ev
 
@@ -239,6 +255,18 @@ class Orchestrator:
         # turn's first poll re-walk the previous turn's already-completed parts and re-emit/
         # re-persist them out of order (duplicate cards appended after the newer turn began).
         seen: set[tuple[str, int]] = set()
+        # A clean typecheck of the untouched template must NOT count as a finished build: track
+        # whether the agent actually edited files, and if a turn ends clean with zero edits, nudge
+        # it to implement instead of declaring success. Capped so a model that refuses to write
+        # can't loop forever.
+        made_edits = False
+        nudges = 0
+        MAX_NUDGES = 1
+        IMPLEMENT_NUDGE = (
+            "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
+            "request: edit the project files (start with src/App.tsx) so the app actually builds "
+            "what was asked. Make the code changes now."
+        )
         while True:
             if project.stop_requested:
                 yield handle_stop()
@@ -290,6 +318,8 @@ class Orchestrator:
                                 continue
                             seen.add(key)
                             last_active = None  # completed: let the next running tool re-announce
+                            if tool in ("edit", "write"):
+                                made_edits = True
                             yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
@@ -320,16 +350,47 @@ class Orchestrator:
                 return
             decision = breaker.record(report.signature(), report.ok)
             if decision.action == "stop":
+                # A clean typecheck with no edits means the agent only planned — don't call that a
+                # finished build. Nudge it to implement (once); if it still writes nothing, stop
+                # with an honest, actionable message rather than a false "done — clean".
+                if report.ok and not made_edits:
+                    if nudges < MAX_NUDGES:
+                        nudges += 1
+                        yield {"type": "iterate", "reason": "planned but wrote no code — implementing"}
+                        current = IMPLEMENT_NUDGE
+                        continue
+                    yield persist({"type": "done", "ok": False,
+                                   "decision": "planned but wrote no code — try Implement mode"})
+                    return
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
+                if report.ok:
+                    saved = self._save_to_git(project, prompt)
+                    if saved is not None:
+                        yield persist(saved)
                 return
             yield {"type": "iterate", "reason": decision.reason}
             current = report.as_agent_message()
 
-    def stop_build(self, project_id: str) -> None:
+    def _save_to_git(self, project: Project, prompt: str) -> dict | None:
+        """Commit + push the workspace after a clean build so the app and .sage/ transcript are
+        durable. Returns None when the workspace isn't a git repo (local dev / the /tmp spike — no
+        save line to show); otherwise a `saved` event. Never raises into the build."""
+        from ..workspace import git
+
+        path = project.workspace.path
+        if not git.is_repo(path):
+            return None
+        message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
+        try:
+            result = git.commit_and_push(path, message)
+            return {"type": "saved", "ok": True, "pushed": result.pushed, "detail": result.detail}
+        except Exception as e:  # noqa: BLE001
+            log.exception("git save failed")
+            return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}
+
+    def stop_build(self) -> None:
         """Interrupt the in-flight build_stream() turn; it reverts files/history and stops."""
-        project = self.get(project_id)
-        if project is None:
-            raise KeyError(project_id)
+        project = self.project()
         project.stop_requested = True
         if project.session_id and self._oc_client is not None:
             try:
@@ -341,60 +402,11 @@ class Orchestrator:
         overrides = workspace.read_catalog_overrides()
         return replace(self._catalog, **overrides) if overrides else self._catalog
 
-    def create_project(self, project_id: str, start_preview: bool = True) -> Project:
-        workspace = self._wm.create(project_id)
-        control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
-        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
-        supervisor = ViteSupervisor(workspace.path)
-        if start_preview:
-            supervisor.start()
-        project = Project(project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
-        self._projects[project_id] = project
-        self._active = project_id
-        return project
-
-    def get(self, project_id: str) -> Project | None:
-        return self._projects.get(project_id)
-
-    def active(self) -> Project | None:
-        return self._projects.get(self._active) if self._active else None
-
-    def list_ids(self) -> list[str]:
-        return list(self._projects)
-
-    def list_all_ids(self) -> list[str]:
-        """Registered projects plus any workspace left on disk from a prior process (e.g. a
-        restart wiped the in-memory registry but the project's files and history survive)."""
-        return sorted(set(self._projects) | set(self._wm.list_ids()))
-
-    def open_project(self, project_id: str, start_preview: bool = True) -> Project:
-        """Re-attach an on-disk workspace that isn't currently registered, instead of re-copying
-        the template (which create_project would refuse, since the directory already exists).
-        Idempotent: returns the existing Project if it's already registered."""
-        existing = self.get(project_id)
-        if existing is not None:
-            self._active = project_id
-            return existing
-        workspace = self._wm.get(project_id)
-        if workspace is None:
-            raise FileNotFoundError(project_id)
-        control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
-        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
-        supervisor = ViteSupervisor(workspace.path)
-        if start_preview:
-            supervisor.start()
-        project = Project(project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
-        self._projects[project_id] = project
-        self._active = project_id
-        return project
-
-    def set_catalog(self, project_id: str, **fields: str | None) -> ModelCatalog:
-        """Override which model id fills a catalog slot (sovereign/plan/implement/default) for
-        this project, persisted so it survives a restart. Only non-empty fields change; the rest
-        keep their current value."""
-        project = self.get(project_id)
-        if project is None:
-            raise KeyError(project_id)
+    def set_catalog(self, **fields: str | None) -> ModelCatalog:
+        """Override which model id fills a catalog slot (sovereign/plan/implement/default),
+        persisted so it survives a restart. Only non-empty fields change; the rest keep their
+        current value."""
+        project = self.project()
         changes = {k: v for k, v in fields.items() if v}
         if not changes:
             return project.shim.catalog
@@ -405,25 +417,10 @@ class Orchestrator:
         project.workspace.write_catalog_overrides(overrides)
         return new_catalog
 
-    def history(self, project_id: str) -> list[dict]:
-        """Reads straight from the workspace (not the in-memory registry) so history is available
-        even for a dormant project that hasn't been re-attached via open_project yet."""
-        workspace = self._wm.get(project_id)
-        if workspace is None:
-            raise FileNotFoundError(project_id)
-        return workspace.read_history()
-
-    def delete_project(self, project_id: str) -> None:
-        """Stop the project's preview (if running) and remove its workspace from disk. Raises if
-        the project is neither registered nor present on disk."""
-        if project_id not in self.list_all_ids():
-            raise FileNotFoundError(project_id)
-        project = self._projects.pop(project_id, None)
-        if project is not None:
-            project.supervisor.stop()
-        if self._active == project_id:
-            self._active = None
-        self._wm.delete(project_id)
+    def history(self) -> list[dict]:
+        """Reads straight from the workspace volume, so the transcript is available without
+        starting the preview (attaching the project) — a plain GET must not spin up Vite."""
+        return Workspace(self._project_id, self._wm.path).read_history()
 
     def list_assets(self) -> list[dict]:
         assets = self._assets.list_datasets(self._domino_project_id)
@@ -432,12 +429,10 @@ class Orchestrator:
             for a in assets
         ]
 
-    def attach_asset(self, project_id: str, dataset_id: str) -> dict:
+    def attach_asset(self, dataset_id: str) -> dict:
         """Attach a dataset to the project. If it carries the sensitivity tag, fire the sovereign
         lock (sticky). This is the real signal that replaces the manual lock toggle."""
-        project = self.get(project_id)
-        if project is None:
-            raise KeyError(project_id)
+        project = self.project()
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
         if asset is None:
             raise LookupError(dataset_id)
@@ -447,13 +442,11 @@ class Orchestrator:
         project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
         return {"attached": asset.name, "sensitive": sensitive, "status": project.status()}
 
-    def detach_asset(self, project_id: str, dataset_id: str) -> dict:
+    def detach_asset(self, dataset_id: str) -> dict:
         """Detach a dataset from the project. Does NOT clear the sovereign lock even if the
         dataset was sensitivity-tagged — the asset-driven lock is sticky for the session
         (see ModelControl.on_assets_changed); use the manual lock toggle to unlock."""
-        project = self.get(project_id)
-        if project is None:
-            raise KeyError(project_id)
+        project = self.project()
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
         if asset is None:
             raise LookupError(dataset_id)
@@ -462,13 +455,13 @@ class Orchestrator:
         return {"detached": asset.name, "status": project.status()}
 
     def shutdown(self) -> None:
-        # Best-effort per resource: one project's preview failing to stop must not leave the
-        # rest (or the shared opencode server) running as orphans.
-        for pid, p in self._projects.items():
+        # Best-effort per resource: the preview failing to stop must not leave the shared
+        # opencode server running as an orphan.
+        if self._project is not None:
             try:
-                p.supervisor.stop()
+                self._project.supervisor.stop()
             except Exception:
-                log.exception("shutdown: failed to stop preview for project %s", pid)
+                log.exception("shutdown: failed to stop preview")
         if self._oc_server:
             try:
                 self._oc_server.stop()

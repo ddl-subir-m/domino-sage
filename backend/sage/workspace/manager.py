@@ -1,8 +1,9 @@
 """Workspace module (SPEC C1/C9, DESIGN Seam 3 handoff).
 
-A per-project working directory seeded from the warm React+Vite template. Deep module,
-narrow interface: callers create/get a workspace and read/write the plan artifact; how the
-template is materialized (copy source + symlink the warm node_modules) is hidden.
+The single working directory (the Domino project's mounted volume) seeded from the warm
+React+Vite template. Deep module, narrow interface: callers ensure the workspace and read/write
+the plan artifact; how the template is materialized (seed source + symlink the warm
+node_modules) is hidden.
 
 node_modules is symlinked from the template rather than copied so each workspace is warm
 (deps already installed) without paying a multi-hundred-MB copy per project.
@@ -17,6 +18,8 @@ from pathlib import Path
 
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately).
 _IGNORE = shutil.ignore_patterns("node_modules", "dist", ".git", ".DS_Store")
+# Top-level template entries skipped when seeding (linked or repo-owned, not template content).
+_SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store"}
 
 
 @dataclass(frozen=True)
@@ -43,9 +46,9 @@ class Workspace:
 
     @property
     def session_path(self) -> Path:
-        """Persisted OpenCode session id, so a project re-attached after an orchestrator restart
-        (see Orchestrator.open_project) can resume the same conversation instead of starting a
-        fresh session with no memory of prior turns."""
+        """Persisted OpenCode session id, so the project re-attached after an orchestrator restart
+        (see Orchestrator.project) can resume the same conversation instead of starting a fresh
+        session with no memory of prior turns."""
         return self.path / ".sage" / "session.json"
 
     def read_session_id(self) -> str | None:
@@ -103,40 +106,44 @@ class Workspace:
 
 
 class WorkspaceManager:
-    def __init__(self, root: Path, template: Path) -> None:
-        self._root = Path(root)
+    """Manages the single workspace bound to this builder's Domino project volume.
+
+    Per D9 one container hosts one project, so the workspace IS the project's mounted directory
+    (git-based: /mnt/code), not a per-id copy under some root. `ensure` idempotently seeds the warm
+    React+Vite template into that volume the first time (when it carries no app yet) and guarantees
+    the warm node_modules symlink; a volume that already holds an app is left untouched.
+    """
+
+    def __init__(self, workspace_dir: Path, template: Path) -> None:
+        self._dir = Path(workspace_dir)
         self._template = Path(template)
-        self._root.mkdir(parents=True, exist_ok=True)
 
-    def _dir(self, project_id: str) -> Path:
-        return self._root / project_id
+    @property
+    def path(self) -> Path:
+        return self._dir
 
-    def get(self, project_id: str) -> Workspace | None:
-        d = self._dir(project_id)
-        return Workspace(project_id, d) if d.exists() else None
+    def ensure(self, project_id: str) -> Workspace:
+        """Get-or-seed the bound workspace. Idempotent: seeds the template in place only when the
+        volume has no app yet (no package.json), never clobbering a pre-existing app or its .git."""
+        self._dir.mkdir(parents=True, exist_ok=True)
+        if not (self._dir / "package.json").exists():
+            # Seed the template INTO the (possibly pre-existing, e.g. a fresh git checkout)
+            # directory entry by entry, so an existing .git / dotfiles are preserved.
+            for item in self._template.iterdir():
+                if item.name in _SEED_SKIP:
+                    continue
+                dest = self._dir / item.name
+                if dest.exists():
+                    continue
+                if item.is_dir():
+                    shutil.copytree(item, dest, ignore=_IGNORE)
+                else:
+                    shutil.copy2(item, dest)
 
-    def create(self, project_id: str) -> Workspace:
-        """Materialize a fresh workspace from the warm template. Idempotent-safe: raises if it
-        already exists so we never clobber in-progress work."""
-        dest = self._dir(project_id)
-        if dest.exists():
-            raise FileExistsError(f"workspace already exists: {dest}")
-        shutil.copytree(self._template, dest, ignore=_IGNORE)
-
-        # Warm deps: symlink the template's node_modules instead of copying.
+        # Warm deps: symlink the template's node_modules unless the volume brought its own.
+        node_modules = self._dir / "node_modules"
         tmpl_modules = self._template / "node_modules"
-        if tmpl_modules.exists():
-            os.symlink(tmpl_modules, dest / "node_modules")
+        if not node_modules.exists() and tmpl_modules.exists():
+            os.symlink(tmpl_modules, node_modules)
 
-        return Workspace(project_id, dest)
-
-    def list_ids(self) -> list[str]:
-        """Every workspace materialized on disk, whether or not it's currently registered in the
-        orchestrator's in-memory Project map (e.g. survives a process restart)."""
-        return sorted(p.name for p in self._root.iterdir() if p.is_dir())
-
-    def delete(self, project_id: str) -> None:
-        """Remove a workspace's directory from disk. No-op if it was never created."""
-        dest = self._dir(project_id)
-        if dest.exists():
-            shutil.rmtree(dest)
+        return Workspace(project_id, self._dir)
