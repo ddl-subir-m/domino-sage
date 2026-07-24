@@ -136,6 +136,8 @@ async def create_app(request: Request) -> JSONResponse:
             "repo": created.repo.full_name,
             "git_url": created.repo.clone_url,
             "open_url": created.open_url,
+            # LIVE-VERIFY seam: raw workspace-create response, so we can pin down the open-URL field.
+            "workspace": created.workspace,
         }
     )
 

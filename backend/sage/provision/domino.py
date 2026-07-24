@@ -16,11 +16,14 @@ The sidecar token is short-lived, so we re-acquire it per call (token_provider()
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
+
+log = logging.getLogger("sage.provision.domino")
 
 # Tag stamped on every project the hub creates, so list_apps can find "my Sage apps" by filter.
 SAGE_TAG = "sage"
@@ -122,7 +125,12 @@ class DominoControlPlane:
         }
         if self._env_rev:
             body["environmentRevisionId"] = self._env_rev
-        return self._post(f"/workspace/project/{project_id}/workspace", body)
+        data = self._post(f"/workspace/project/{project_id}/workspace", body)
+        # LIVE-VERIFY seam: which field carries the run/session id we assemble the open URL from
+        # (see preview.prefix). Workspace metadata has no secrets, so log the shape to stdout.
+        if isinstance(data, dict):
+            log.info("workspace-create response keys: %s", sorted(data.keys()))
+        return data
 
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
         data = self._get(f"/workspace/project/{project_id}/workspace", params={"offset": 0, "limit": 20})
