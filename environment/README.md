@@ -27,8 +27,16 @@ both dev artifact and ship artifact without the app and the tooling fighting ove
 1. **Base image** — `FROM <your-standard-domino-base-image>` at the top of the Dockerfile.
 2. **`SAGE_REPO_URL` / `SAGE_REV`** — where to clone Sage from. If the repo is **private**, the
    build-time `git clone` needs a credential (secret build-arg token, or a public deploy mirror).
-3. **Gateway** — set `GATEWAY_BASE_URL` (+ creds) so builds can reach a model. Without it the UI
-   and preview still work; builds can't call the LLM.
+3. **Gateway** — set `GATEWAY_BASE_URL` in the Environment's **Environment Variables** box so builds
+   can reach a model. Without it the UI and preview still work; builds can't call the LLM.
+   - Set it at the **Environment** level, not the project level. Child builders the hub launches
+     inherit the *Environment's* baked env, not the hub project's env vars — a project-scoped
+     `GATEWAY_BASE_URL` leaves every "New app" builder stuck in `fake` mode.
+   - Domino requires each Environment Variable to also be declared as an `ARG` in the Dockerfile.
+     Ours (`GATEWAY_BASE_URL`, `SAGE_GATEWAY_MODE`) are declared *and* promoted to `ENV` so they
+     survive into the running container — a bare `ARG` is build-time only.
+   - **Don't** put `GATEWAY_API_KEY` here: promoted to `ENV` it lands in an image layer. In `domino`
+     mode leave the key unset; the per-workspace sidecar token at `:8899` works in every workspace.
 
 ## Fast inner dev loop
 

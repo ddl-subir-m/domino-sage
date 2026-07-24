@@ -28,6 +28,22 @@ ENV PATH=/usr/bin:/usr/local/bin:$PATH
 # local-only postinstall (no egress beyond the npm registry — same mechanism as rolldown).
 RUN npm install -g --include=optional opencode-ai@1.18.4 && opencode --version
 
+# --- Gateway config, baked into the image so EVERY workspace inherits it -----------------------
+# Domino requires each Environment Variable to be declared as an ARG here; a bare ARG is build-time
+# only, so we promote it to ENV so it survives into the running container. This is what makes the
+# gateway follow the ship image: the hub AND every child builder it launches boot in `domino` mode.
+# (Child workspaces created via the v4 API inherit the Environment's baked ENV, NOT the hub project's
+# own env vars — which is why a project-scoped GATEWAY_BASE_URL leaves child builders in `fake` mode.)
+# Set the value in the Environment's "Environment Variables" box; leave it blank to run offline/fake.
+# NON-SECRET ONLY: GATEWAY_BASE_URL is a URL. Do NOT bake GATEWAY_API_KEY this way — a key promoted to
+# ENV is written into an image layer. In `domino` mode leave the key unset; the per-workspace sidecar
+# token at :8899 is re-acquired per call and works in every workspace, child builders included.
+ARG GATEWAY_BASE_URL=
+ENV GATEWAY_BASE_URL=${GATEWAY_BASE_URL}
+# Optional: only needed to force a non-auto mode (e.g. openai). Non-secret; safe to bake.
+ARG SAGE_GATEWAY_MODE=
+ENV SAGE_GATEWAY_MODE=${SAGE_GATEWAY_MODE}
+
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.
 ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if different
