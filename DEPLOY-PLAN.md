@@ -186,6 +186,18 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
   project and HMR/preview still round-trip. Note: the standalone `sage.shim.app` dev harness keeps
   its own `x-sage-project` default — it's not on the deploy path.
 
+**Verification findings (fixed):**
+- 2.6 ✅ **Always enter the project view.** With one project the bound project always exists, so
+  `bootProject()` now enters the project view unconditionally (preview + model panel + lock live from
+  first load) and renders the starter prompts as the empty-chat state (`syncStarters()`), instead of
+  a separate "no project" mode. Fixes the dead model panel / lock after a reload — the model panel is
+  populated by `refreshStatus()`, which early-returns while `active` is false.
+- 2.7 ✅ **Un-ignore `.sage/`** so the transcript + OpenCode session id are committed with the app
+  repo and survive a workspace restart (git-based compute is ephemeral; only committed files persist).
+  **Prerequisite, not sufficient:** cross-restart persistence only materializes once Phase 4 wires
+  the post-build `git commit && git push`, and is NOT observable on the `/tmp` spike (scratch dir is
+  wiped on restart regardless). The spike restart losing history is expected for that reason.
+
 ## Phase 3 — Environment packaging (the shippable artifact)
 
 **Goal:** one Environment image = dev artifact = ship artifact.

@@ -12,9 +12,6 @@ dist
 dist-ssr
 *.local
 
-# sage builder bookkeeping (session/history/model-overrides) — not part of the app
-.sage
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

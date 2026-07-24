@@ -412,14 +412,22 @@ async function loadHealth() {
 // built (non-empty history) drops straight into the project view; a fresh one shows the starters.
 async function bootProject() {
   await api('/api/project');            // attach + start preview (idempotent, memoized server-side)
-  const hadHistory = await loadHistory();
-  if (hadHistory) enterProject();
+  enterProject();                       // the one project always exists → panels live immediately
+  await loadHistory();                  // replay transcript; starters stay if the chat is empty
+  syncStarters();
 }
 
-// Switch from the starter screen into the live project view. Idempotent.
+// Show the starter prompts iff the chat has no messages yet (the empty-chat state). The project
+// view (preview + model panel) is always live — there is no separate "no project" mode.
+function syncStarters() {
+  const box = document.getElementById('messages');
+  const hasMessages = [...box.children].some(c => c.id !== 'empty');
+  document.getElementById('empty').style.display = hasMessages ? 'none' : '';
+}
+
+// Enter the live project view (preview + model/lock panels). Idempotent; called once on boot.
 function enterProject() {
   active = true;
-  document.getElementById('empty').style.display = 'none';
   showPreview();
   refreshPreview();
   refreshStatus();
@@ -631,17 +639,13 @@ document.addEventListener('click', (e) => {
 });
 
 /* ---------- chat rendering ---------- */
-function clearMessages() {
-  const box = document.getElementById('messages');
-  [...box.children].forEach(c => { if (c.id !== 'empty') c.remove(); });
-  document.getElementById('empty').style.display = 'none';
-}
 function scrollDown() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
 function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 function addUser(text) {
   const d = document.createElement('div'); d.className = 'msg user';
   d.innerHTML = `<div class="body">${esc(text)}</div>`;
   document.getElementById('messages').appendChild(d); scrollDown();
+  syncStarters();
 }
 // Keep the live "working" spinner trailing the newest card: if it's present, insert new
 // messages before it instead of after, so the DOM order always matches chronological order.
@@ -869,6 +873,7 @@ function renderEvent(ev, turnStart) {
     stopWorking();
     const msgBox = document.getElementById('messages');
     while (typeof turnStart === 'number' && msgBox.children.length > turnStart) msgBox.removeChild(msgBox.lastChild);
+    syncStarters();  // if that emptied the chat, bring the starters back
   }
   else if (ev.type === 'active') { const v = ACTIVE_VERB[ev.tool] || 'Working on'; const d = ev.detail || ''; setWorking(d ? `${v} ${d}` : v); }
   else if (ev.type === 'agent' && ev.kind === 'tool') { addToolCard(ev.tool, ev.detail || ''); trail(); }
