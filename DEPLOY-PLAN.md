@@ -264,6 +264,8 @@ probe). Modules, all behind Protocols with in-memory fakes:
   `list_apps` / `open_app` (reuse-or-launch); injectable seeder (no-op in fake mode).
 - `hub/app.py` + `hub/ui/index.html` — single-page hub (list / create / open), prefix-aware, fake
   mode when off-Domino. Launch via `environment/hub.sh` + the `sageHub` pluggable tool (same image).
+  Provisioning host comes from `SAGE_GIT_HOST` (default `github.com`), so the hub runs as a **plain
+  baked App** — no git-based hub project needed; origin-sniff at `SAGE_HUB_GIT_CWD` is a legacy fallback.
 - **LIVE-VERIFY (the one open seam):** `service.workspace_open_url()` — which field the v4
   workspace-create response carries the browser URL in (url / notebookUrl / a runId to assemble the
   prefix from). Best-effort now; confirm on launch. Also confirm project-name collision behavior
@@ -282,6 +284,16 @@ Persistence model = **git-based projects** (not DFS). Findings on a git-based wo
 - `git push` from the workspace is **already authorized** (Domino injects the creds) — dry-run OK.
 - ⚠️ The extracted token is powerful: handle **in-memory only, never log/persist**. GitHub.com only
   for now — detect host from the credential; GHE/GitLab are separate providers.
+
+**STATUS — 2026-07-24, deploy-model cleanup: decoupled Sage from the `/mnt/code` mount.** Two seams
+that tied Sage to the app mount are removed (`fe1f9eb`, 117 tests pass):
+- **Template/seed source pinned to baked `/opt/sage`.** `SAGE_TEMPLATE` no longer follows
+  `SAGE_APP_HOME`, so the fast dev loop (`SAGE_APP_HOME=/mnt/code`) can't drag the template off the
+  mount where the warm `node_modules` (baked only at `/opt/sage`) don't exist and the preview boots cold.
+- **Hub runs as a plain baked App.** `SAGE_GIT_HOST` (default `github.com`) supplies the provisioning
+  host directly, so the hub no longer needs a git-based project just to sniff its origin remote; the
+  token still comes from Domino's global `git credential` helper. `SAGE_HUB_GIT_CWD` origin-sniff kept
+  as a legacy fallback (`_resolve_git_target` in `hub/app.py`).
 
 - 4.1 **Repo provisioning** (per new app, all user-space). Domino supports many providers
   (GitHub / GitHub Enterprise / GitLab / GitLab Enterprise / Bitbucket / Bitbucket DC / Other) and
