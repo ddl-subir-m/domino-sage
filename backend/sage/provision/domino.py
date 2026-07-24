@@ -53,7 +53,7 @@ class ControlPlane(Protocol):
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
-    def relaunch_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
+    def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
     def publish_app(self, project_id: str, *, name: str, git_ref_type: str = "head",
@@ -112,9 +112,9 @@ class DominoControlPlane:
             r = c.get(f"{self._host}{path}", headers=self._headers(), **kw)
         return self._check(r, "GET", path)
 
-    def _post(self, path: str, body: dict[str, Any]) -> Any:
+    def _post(self, path: str, body: dict[str, Any] | None = None, *, params: dict[str, Any] | None = None) -> Any:
         with self._client() as c:
-            r = c.post(f"{self._host}{path}", json=body, headers=self._headers())
+            r = c.post(f"{self._host}{path}", json=body, headers=self._headers(), params=params)
         return self._check(r, "POST", path)
 
     def _git_credential_id(self) -> str:
@@ -198,16 +198,19 @@ class DominoControlPlane:
             data = {}
         return data if isinstance(data, dict) else {"stopped": True}
 
-    def relaunch_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        # Restart a stopped builder in place (instead of creating a new workspace each time, which
-        # piles up stopped records). Path + body confirmed against domino_private_spec:
-        # POST /v4/workspaces/relaunch {projectId, workspaceId, useOriginalInputCommit}. We pass
-        # useOriginalInputCommit=false so the builder restarts on the branch's LATEST commit, not the
-        # commit it first launched at. The response DTO differs from create's and carries no owner/
-        # session fields, so the caller derives the open URL by polling list_workspaces, not from here.
-        body = {"projectId": project_id, "workspaceId": workspace_id, "useOriginalInputCommit": False}
-        data = self._post("/v4/workspaces/relaunch", body)
-        return data if isinstance(data, dict) else {"relaunched": True}
+    def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        # Resume a stopped builder in place by starting a NEW session on the existing workspace — the
+        # exact inverse of stop_workspace — instead of creating a fresh workspace each time (which
+        # piles up stopped records). We used to POST /v4/workspaces/relaunch, but that 404s the
+        # workspace id on the dogfood build; the session endpoint is what the Domino UI itself uses.
+        # Spec: POST /v4/workspace/project/{projectId}/workspace/{workspaceId}/sessions
+        #   ?externalVolumeMounts=... (required array; empty list — the builder mounts no external
+        # volumes, and httpx drops the empty key, matching Domino's own generated client). No request
+        # body; the new session checks out the branch's LATEST commit. The WorkspaceSessionDto returned
+        # carries no owner/open-url fields, so the caller derives the open URL by polling list_workspaces.
+        path = f"/v4/workspace/project/{project_id}/workspace/{workspace_id}/sessions"
+        data = self._post(path, params={"externalVolumeMounts": []})
+        return data if isinstance(data, dict) else {"resumed": True}
 
     def available_tools(self) -> list[dict[str, Any]]:
         """The pluggable workspace tools Domino resolves for this environment (each has an `id` —
@@ -334,7 +337,7 @@ class FakeControlPlane:
                 return {"id": workspace_id, "state": "Stopped"}
         return {"id": workspace_id, "state": "Unknown"}
 
-    def relaunch_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+    def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
         for ws in self.workspaces.get(project_id, []):
             if ws.get("id") == workspace_id:
                 ws["state"] = "running"
