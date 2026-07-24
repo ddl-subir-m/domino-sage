@@ -247,7 +247,8 @@ Domino, debug together.
 ## Phase 4 — "New app" control plane (the hub) — STATUS: IMPLEMENTED (GitHub v1); one live-verify seam
 
 **Goal:** Lovable/Replit-style "New app" that provisions a **git-based** project + launches the
-builder. Each app = its own GitHub repo + a git-based Domino project pointing at it.
+builder. Each provisioned app = its own GitHub repo + a git-based Domino project pointing at it. The
+hub itself is **not** git-based — it's a plain baked App that provisions those git-based app projects.
 
 **IMPLEMENTED (2026-07-23) — `backend/sage/provision/` + `backend/sage/hub/` (97 tests pass).** Both
 the GitHub repo-provisioning contract (`POST /user/repos` → 201) and the v4 project/workspace
