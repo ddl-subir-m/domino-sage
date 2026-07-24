@@ -20,3 +20,19 @@ sageBuilder:
     rewrite: false
     requireSubdomain: false
     internalPath: "/{{ownerUsername}}/{{projectName}}/{{sessionPathComponent}}/{{runId}}/"
+
+# The "New app" control plane (Phase 4). Same baked image, different entrypoint. Launch it in a
+# dedicated git-based hub project — its /mnt/code checkout supplies the GitHub credential used to
+# create app repos. It creates child workspaces that launch `sageBuilder` (above), so both tools
+# must live in the same Environment.
+sageHub:
+  title: "Sage Hub"
+  iconUrl: "/assets/images/workspace-logos/jupyterlab.svg"
+  start:
+    - "bash"
+    - "/opt/sage/environment/hub.sh"
+  httpProxy:
+    port: 8888
+    rewrite: false
+    requireSubdomain: false
+    internalPath: "/{{ownerUsername}}/{{projectName}}/{{sessionPathComponent}}/{{runId}}/"

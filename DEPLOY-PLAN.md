@@ -244,10 +244,33 @@ Domino, debug together.
   → **verify:** launch "Sage Builder" from the Environment in a real Domino project → describe an
   app → watch it build → private preview renders. End-to-end on Domino.
 
-## Phase 4 — "New app" control plane (the hub)
+## Phase 4 — "New app" control plane (the hub) — STATUS: IMPLEMENTED (GitHub v1); one live-verify seam
 
 **Goal:** Lovable/Replit-style "New app" that provisions a **git-based** project + launches the
 builder. Each app = its own GitHub repo + a git-based Domino project pointing at it.
+
+**IMPLEMENTED (2026-07-23) — `backend/sage/provision/` + `backend/sage/hub/` (97 tests pass).** Both
+the GitHub repo-provisioning contract (`POST /user/repos` → 201) and the v4 project/workspace
+contract (§0.3) are confirmed live on cloud-dogfood (`repo_provision_probe.sh` DRY_RUN=0 + the §0.3
+probe). Modules, all behind Protocols with in-memory fakes:
+- `provision/naming.py` — `sage-<slug>` with `-N` collision candidates.
+- `provision/credentials.py` — origin parse + provider detect + `git credential fill` token extract
+  (in-memory only, never logged; only the API create needs it).
+- `provision/github.py` — `GitHubProvider.create_repo` (422 → `RepoNameConflict` retry) + fake.
+- `provision/domino.py` — `DominoControlPlane` (owner_id, create_project w/ `sage` tag +
+  `mainGitRepoRef`, create_workspace, list_apps by tag) + fake.
+- `provision/seed.py` — template seed + `git push` over **ambient** Domino auth (no token here).
+- `provision/service.py` — `HubService.create_app` (repo → seed → project → workspace) /
+  `list_apps` / `open_app` (reuse-or-launch); injectable seeder (no-op in fake mode).
+- `hub/app.py` + `hub/ui/index.html` — single-page hub (list / create / open), prefix-aware, fake
+  mode when off-Domino. Launch via `environment/hub.sh` + the `sageHub` pluggable tool (same image).
+- **LIVE-VERIFY (the one open seam):** `service.workspace_open_url()` — which field the v4
+  workspace-create response carries the browser URL in (url / notebookUrl / a runId to assemble the
+  prefix from). Best-effort now; confirm on launch. Also confirm project-name collision behavior
+  (create_app falls back to the unique repo name if the v4 create rejects a duplicate name).
+
+**STATUS — 2026-07-23, cloud-dogfood: git-provisioning capability CONFIRMED (git_discovery.sh).**
+Persistence model = **git-based projects** (not DFS). Findings on a git-based workspace:
 
 **STATUS — 2026-07-23, cloud-dogfood: git-provisioning capability CONFIRMED (git_discovery.sh).**
 Persistence model = **git-based projects** (not DFS). Findings on a git-based workspace:

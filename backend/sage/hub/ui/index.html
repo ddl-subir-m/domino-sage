@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sage · Your apps</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --primary: #543FDE; --primary-hover: #3B23D1;
+      --text: #1D1D24; --muted: #65657B; --faint: #9797AB;
+      --border: #E7E7EE; --border-strong: #D8D8E2;
+      --bg: #F7F7FB; --surface: #FFFFFF; --surface-2: #F2F2F7;
+      --ok: #1F9D57; --err: #C20A29;
+      --shadow: 0 1px 2px rgba(20,20,40,.04), 0 8px 24px rgba(20,20,40,.06);
+      --radius: 12px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --text: #ECECF2; --muted: #A6A6BC; --faint: #74748A;
+        --border: #2A2A36; --border-strong: #383848;
+        --bg: #131318; --surface: #1B1B22; --surface-2: #22222B;
+        --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; color: var(--text);
+      background: var(--bg); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    button { font-family: inherit; cursor: pointer; }
+
+    header { height: 52px; display: flex; align-items: center; gap: 12px; padding: 0 24px;
+      border-bottom: 1px solid var(--border); background: var(--surface); }
+    .logo { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+      background: linear-gradient(135deg, var(--primary), #8B6BFF); color: #fff; font-weight: 800; }
+    .brand { font-weight: 700; }
+    .mode-chip { margin-left: auto; font-size: 11.5px; font-weight: 600; padding: 3px 9px;
+      border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
+      display: flex; align-items: center; gap: 6px; }
+    .mode-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+    .mode-chip.domino .dot { background: var(--ok); }
+
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 24px; }
+    .page-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 22px; gap: 16px; }
+    .page-head h1 { font-size: 26px; margin: 0 0 4px; }
+    .page-head p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .btn-primary { background: var(--primary); color: #fff; border: none; border-radius: 8px;
+      padding: 9px 16px; font-weight: 600; font-size: 14px; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-primary:disabled { opacity: .55; cursor: default; }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border-strong);
+      border-radius: 8px; padding: 8px 14px; font-weight: 600; }
+    .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; min-height: 128px; }
+    .card h3 { margin: 0; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card .repo { font-size: 12px; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card .actions { margin-top: auto; }
+
+    .empty { text-align: center; color: var(--muted); padding: 64px 20px; border: 1px dashed var(--border-strong);
+      border-radius: var(--radius); background: var(--surface); }
+    .empty h2 { color: var(--text); font-size: 18px; margin: 0 0 6px; }
+    .empty p { margin: 0 0 18px; font-size: 13px; }
+
+    .skeleton { height: 128px; border-radius: var(--radius); background: var(--surface-2);
+      animation: pulse 1.3s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+    .banner { border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 18px; display: none; }
+    .banner.err { display: block; background: color-mix(in srgb, var(--err) 10%, var(--surface)); color: var(--err);
+      border: 1px solid color-mix(in srgb, var(--err) 30%, var(--border)); }
+
+    /* modal */
+    .backdrop { position: fixed; inset: 0; background: rgba(15,15,30,.45); display: none; align-items: center;
+      justify-content: center; padding: 20px; }
+    .backdrop.open { display: flex; }
+    .modal { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+      width: 100%; max-width: 440px; padding: 24px; }
+    .modal h2 { margin: 0 0 4px; font-size: 18px; }
+    .modal .hint { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+    .modal label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+    .modal input { width: 100%; padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: 8px;
+      background: var(--bg); color: var(--text); font-size: 14px; }
+    .modal input:focus { outline: none; border-color: var(--primary); }
+    .modal .slug { font-size: 12px; color: var(--faint); margin-top: 6px; min-height: 16px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .modal .row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+    .creating { display: none; flex-direction: column; align-items: center; text-align: center; gap: 12px; padding: 12px 0 4px; }
+    .creating.on { display: flex; }
+    .spinner { width: 28px; height: 28px; border: 3px solid var(--surface-2); border-top-color: var(--primary);
+      border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .creating .steps { font-size: 12.5px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">S</div>
+    <div class="brand">Sage</div>
+    <div class="mode-chip" id="modeChip"><span class="dot"></span><span id="modeLabel">…</span></div>
+  </header>
+
+  <div class="wrap">
+    <div class="page-head">
+      <div>
+        <h1>Your apps</h1>
+        <p>Each app is its own private repo and Domino project. Describe it, and Sage builds it.</p>
+      </div>
+      <button class="btn-primary" id="newBtn" onclick="openModal()">Create app</button>
+    </div>
+
+    <div class="banner" id="banner"></div>
+    <div id="content"></div>
+  </div>
+
+  <div class="backdrop" id="backdrop">
+    <div class="modal">
+      <div id="modalForm">
+        <h2>Create app</h2>
+        <p class="hint">We'll create a private repo and a git-based project, then open the builder.</p>
+        <label for="nameInput">App name</label>
+        <input id="nameInput" placeholder="e.g. Sales dashboard" autocomplete="off"
+          oninput="onName()" onkeydown="if(event.key==='Enter')submitCreate()" />
+        <div class="slug" id="slugPreview"></div>
+        <div class="row">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-primary" id="createBtn" onclick="submitCreate()" disabled>Create app</button>
+        </div>
+      </div>
+      <div class="creating" id="creating">
+        <div class="spinner"></div>
+        <div><strong id="creatingName">Creating your app…</strong></div>
+        <div class="steps" id="creatingStep">Provisioning the repo</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Relative base so calls work under Domino's proxy prefix AND as a published App.
+    const BASE = new URL('.', location.href).pathname.replace(/\/$/, '');
+    const api = (p) => `${BASE}${p}`;
+
+    const $ = (id) => document.getElementById(id);
+    const banner = (msg) => { const b = $('banner'); if (!msg) { b.className = 'banner'; b.textContent = ''; return; }
+      b.className = 'banner err'; b.textContent = msg; };
+
+    function slugify(name) {
+      const s = (name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      return 'sage-' + (s || 'app');
+    }
+    function onName() {
+      const v = $('nameInput').value;
+      $('slugPreview').textContent = v.trim() ? `repo: ${slugify(v)}` : '';
+      $('createBtn').disabled = !v.trim();
+    }
+    function openModal() { $('backdrop').classList.add('open'); $('modalForm').style.display = 'block';
+      $('creating').classList.remove('on'); $('nameInput').value = ''; onName(); setTimeout(() => $('nameInput').focus(), 30); }
+    function closeModal() { $('backdrop').classList.remove('open'); }
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+    $('backdrop').addEventListener('click', (e) => { if (e.target === $('backdrop')) closeModal(); });
+
+    async function submitCreate() {
+      const name = $('nameInput').value.trim();
+      if (!name) return;
+      banner(null);
+      $('modalForm').style.display = 'none';
+      $('creating').classList.add('on');
+      $('creatingName').textContent = `Creating “${name}”…`;
+      $('creatingStep').textContent = 'Provisioning the repo and project (this can take a minute)';
+      try {
+        const r = await fetch(api('/api/apps'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }) });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        closeModal();
+        if (data.open_url) { window.open(data.open_url, '_blank'); }
+        await load();
+      } catch (e) {
+        closeModal();
+        banner(e.message || 'Couldn’t create the app.');
+      }
+    }
+
+    async function openApp(id, btn) {
+      banner(null);
+      const label = btn.textContent; btn.textContent = 'Opening…'; btn.disabled = true;
+      try {
+        const r = await fetch(api(`/api/apps/${id}/open`), { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        if (data.open_url) window.open(data.open_url, '_blank');
+        else banner('The app is launching — open it from the Domino workspaces list in a moment.');
+      } catch (e) {
+        banner(e.message || 'Couldn’t open the app.');
+      } finally { btn.textContent = label; btn.disabled = false; }
+    }
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+    function renderApps(apps) {
+      const c = $('content');
+      if (!apps.length) {
+        c.innerHTML = `<div class="empty"><h2>No apps yet</h2>
+          <p>Create your first app — Sage sets up a private repo and a live builder.</p>
+          <button class="btn-primary" onclick="openModal()">Create app</button></div>`;
+        return;
+      }
+      c.innerHTML = `<div class="grid">${apps.map(a => `
+        <div class="card">
+          <h3 title="${esc(a.name)}">${esc(a.name)}</h3>
+          <div class="repo" title="${esc(a.git_url || '')}">${esc(a.git_url ? a.git_url.replace(/^https?:\/\//, '') : 'git-based project')}</div>
+          <div class="actions"><button class="btn-secondary" onclick="openApp('${esc(a.id)}', this)">Open builder</button></div>
+        </div>`).join('')}</div>`;
+    }
+
+    async function load() {
+      $('content').innerHTML = `<div class="grid">${'<div class="skeleton"></div>'.repeat(3)}</div>`;
+      try {
+        const r = await fetch(api('/api/apps'));
+        if (!r.ok) throw new Error(`Couldn’t load apps (${r.status})`);
+        renderApps(await r.json());
+      } catch (e) {
+        $('content').innerHTML = '';
+        banner(e.message);
+      }
+    }
+
+    async function boot() {
+      try {
+        const h = await (await fetch(api('/healthz'))).json();
+        $('modeLabel').textContent = h.mode === 'domino' ? 'Domino' : 'Local (fake)';
+        $('modeChip').className = 'mode-chip' + (h.mode === 'domino' ? ' domino' : '');
+      } catch { $('modeLabel').textContent = '—'; }
+      await load();
+    }
+    boot();
+  </script>
+</body>
+</html>
