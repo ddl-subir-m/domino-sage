@@ -382,11 +382,88 @@ class Orchestrator:
             return None
         message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
         try:
-            result = git.commit_and_push(path, message)
+            committed = git.commit_all(path, message)
+            # Integrate any teammate changes before pushing, or the push is rejected as non-ff and
+            # the build's work silently never reaches the repo.
+            synced = self._integrate_remote(project)
+            if synced is not None and synced.status in ("conflict-unresolved", "error"):
+                return {"type": "saved", "ok": False, "pushed": False,
+                        "detail": f"couldn't sync with the repo — {synced.detail}"}
+            if not committed and (synced is None or synced.status == "up-to-date"):
+                return {"type": "saved", "ok": True, "pushed": False, "detail": "no changes to commit"}
+            result = git.push(path)
             return {"type": "saved", "ok": True, "pushed": result.pushed, "detail": result.detail}
         except Exception as e:  # noqa: BLE001
             log.exception("git save failed")
             return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}
+
+    def _integrate_remote(self, project: Project):
+        """Pull the remote into the (already-committed, clean) workspace, resolving merge conflicts
+        with the agent. Returns a git.SyncResult, or None when there's no remote to pull from."""
+        from ..workspace import git
+
+        path = project.workspace.path
+        if not git.has_remote(path):
+            return None
+        result = git.pull(path)
+        if result.status == "conflict":
+            result = self._resolve_conflicts(project, result.conflicts)
+        return result
+
+    def _resolve_conflicts(self, project: Project, conflicts: list[str]):
+        """Hand the conflicted files to the agent to resolve the markers, then commit the merge.
+        Rolls the merge back (leaving the pre-pull state) if the agent leaves markers or errors."""
+        from ..workspace import git
+
+        path = project.workspace.path
+        client = self._ensure_opencode()
+        sid = self._ensure_session(project)
+        files = "\n".join(f"- {c}" for c in conflicts)
+        prompt = (
+            "A `git pull` brought in changes from a teammate that conflict with the current code. "
+            f"These files have unresolved merge conflicts:\n{files}\n\n"
+            "For each file, resolve every conflict: reconcile the code between the `<<<<<<<`, "
+            "`=======`, and `>>>>>>>` markers so both sides' intent is kept where possible, then "
+            "delete all three markers. Leave no conflict markers behind, and edit only the files "
+            "listed above."
+        )
+        project.last_gateway_error = None
+        client.send_prompt(sid, prompt)
+        client.wait_for_idle(sid)
+        if project.last_gateway_error is not None:
+            git.abort_merge(path)
+            return git.SyncResult("error", conflicts, f"model call failed: {project.last_gateway_error['message']}")
+        remaining = git.files_with_conflict_markers(path, conflicts)
+        if remaining:
+            git.abort_merge(path)
+            return git.SyncResult("conflict-unresolved", remaining,
+                                  f"conflicts remain in {', '.join(remaining)} — pull was rolled back")
+        git.finalize_merge(path, "sage: merge remote changes")
+        return git.SyncResult("merged", conflicts, "merged teammate changes (conflicts resolved)")
+
+    def sync(self) -> dict:
+        """Manual "Pull latest": commit in-progress edits, pull + agent-resolve teammate changes,
+        then push the result so the repo and workspace agree. Returns a UI result dict."""
+        from ..workspace import git
+
+        project = self.project()
+        path = project.workspace.path
+        if not git.is_repo(path) or not git.has_remote(path):
+            return {"status": "no-remote", "conflicts": [], "pushed": False,
+                    "detail": "this app has no git remote to pull from"}
+        try:
+            git.commit_all(path, "sage: save before pull")
+            result = self._integrate_remote(project)
+            if result is None or result.status in ("conflict-unresolved", "error"):
+                detail = result.detail if result else "no remote to pull from"
+                return {"status": result.status if result else "no-remote",
+                        "conflicts": result.conflicts if result else [], "pushed": False, "detail": detail}
+            pushed = git.push(path)
+            return {"status": result.status, "conflicts": result.conflicts,
+                    "pushed": pushed.pushed, "detail": result.detail}
+        except Exception as e:  # noqa: BLE001
+            log.exception("sync failed")
+            return {"status": "error", "conflicts": [], "pushed": False, "detail": f"{type(e).__name__}: {e}"}
 
     def stop_build(self) -> None:
         """Interrupt the in-flight build_stream() turn; it reverts files/history and stops."""

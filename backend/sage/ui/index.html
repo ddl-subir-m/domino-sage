@@ -327,6 +327,7 @@
       </div>
       <span class="spacer"></span>
       <button class="icon-btn" id="editor-save-btn" title="Save file" onclick="saveOpenFile()" style="display:none" disabled>💾</button>
+      <button class="icon-btn" id="pull-btn" title="Pull latest changes from the repo" onclick="pullLatest()">⤓</button>
       <button class="icon-btn" title="Typecheck the workspace" onclick="check()">✓</button>
       <button class="icon-btn" id="preview-refresh-btn" title="Refresh" onclick="refreshPreview()">⟳</button>
       <button class="icon-btn" id="preview-open-btn" title="Open in new tab" onclick="openPreview()">↗</button>
@@ -902,6 +903,29 @@ async function check() {
   const { body } = await api('/api/project/check', { method: 'POST' });
   s.remove();
   addStatus(body.ok ? 'ok' : 'err', body.ok ? '✓' : '✕', esc(body.message) || (body.ok ? 'Clean' : 'Errors'));
+}
+
+async function pullLatest() {
+  if (!active) enterProject();
+  const btn = document.getElementById('pull-btn');
+  btn.disabled = true;
+  const s = addStatus('spin', '◐', 'Pulling latest from the repo…');
+  try {
+    const { body } = await api('/api/project/sync', { method: 'POST' });
+    s.remove();
+    const st = body.status;
+    if (st === 'up-to-date') addStatus('ok', '✓', 'Already up to date');
+    else if (st === 'merged') addStatus('ok', '⬇', `Pulled latest — merged teammate changes${body.pushed ? ' and pushed' : ''}`);
+    else if (st === 'no-remote') addStatus('err', '⚠', "This app has no repo to pull from");
+    else if (st === 'conflict-unresolved') addStatus('err', '⚠', `Couldn't auto-resolve — ${esc(body.detail || 'conflicts remain')}. The pull was rolled back.`);
+    else addStatus('err', '⚠', `Pull failed — ${esc(body.detail || 'git error')}`);
+    if (st === 'merged') { loadFileTree(); refreshPreview(); }
+  } catch (e) {
+    s.remove();
+    addStatus('err', '⚠', `Pull failed — ${esc(String(e))}`);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ---------- preview ---------- */

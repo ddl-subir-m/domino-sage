@@ -174,6 +174,19 @@ async def set_model(request: Request) -> JSONResponse:
     return JSONResponse(content=project.status())
 
 
+@control_app.post("/api/project/sync")
+async def sync_project() -> JSONResponse:
+    """Pull teammate changes from the repo into the workspace, resolving any merge conflicts with
+    the agent, then push. Offloaded to a thread because a conflict resolution drives a model turn
+    (which needs the event loop free to serve the /v1 calls that turn makes)."""
+    try:
+        result = await run_in_threadpool(orchestrator.sync)
+    except Exception as e:  # noqa: BLE001
+        log.exception("sync failed")
+        return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
+    return JSONResponse(content=result)
+
+
 @control_app.post("/api/project/check")
 def check_project() -> JSONResponse:
     """Typecheck the workspace (Step 5). The server-mode driver calls the same engine after each

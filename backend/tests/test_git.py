@@ -72,3 +72,97 @@ def test_commits_when_identity_unset(tmp_path: Path):
     result = git.commit_and_push(work, "sage: first")
     assert result.pushed is False  # no remote
     assert _run(work, "log", "--oneline").strip()  # a commit exists
+
+
+def _second_clone(tmp_path: Path, work: Path) -> Path:
+    """A second checkout of the same remote, standing in for a teammate."""
+    bare = tmp_path / "remote.git"
+    other = tmp_path / "other"
+    _run(tmp_path, "clone", "-q", str(bare), str(other))
+    _run(other, "config", "user.email", "mate@example.com")
+    _run(other, "config", "user.name", "Mate")
+    return other
+
+
+def test_pull_up_to_date_when_remote_unchanged(tmp_path: Path):
+    work = _work_repo(tmp_path)
+    result = git.pull(work)
+    assert result.status == "up-to-date"
+    assert result.conflicts == []
+
+
+def test_pull_merges_remote_changes(tmp_path: Path):
+    work = _work_repo(tmp_path)
+    other = _second_clone(tmp_path, work)
+    # Teammate adds a new file and pushes it.
+    (other / "mate.txt").write_text("from teammate")
+    _run(other, "add", "-A")
+    _run(other, "commit", "-q", "-m", "mate: add file")
+    _run(other, "push", "-q")
+
+    result = git.pull(work)
+    assert result.status == "merged"
+    assert (work / "mate.txt").read_text() == "from teammate"  # integrated into the working tree
+
+
+def test_pull_leaves_conflict_markers_for_resolution(tmp_path: Path):
+    work = _work_repo(tmp_path)
+    other = _second_clone(tmp_path, work)
+    # Both sides change the same line of the same file -> a real conflict.
+    (other / "seed.txt").write_text("teammate version")
+    _run(other, "add", "-A")
+    _run(other, "commit", "-q", "-m", "mate: edit seed")
+    _run(other, "push", "-q")
+    (work / "seed.txt").write_text("builder version")
+    assert git.commit_all(work, "sage: edit seed") is True
+
+    result = git.pull(work)
+    assert result.status == "conflict"
+    assert result.conflicts == ["seed.txt"]
+    # The tree is left mid-merge with markers for the agent to resolve.
+    assert git.files_with_conflict_markers(work, ["seed.txt"]) == ["seed.txt"]
+
+    # Resolve + finalize, mirroring what the orchestrator does after the agent edits.
+    (work / "seed.txt").write_text("reconciled")
+    assert git.files_with_conflict_markers(work, ["seed.txt"]) == []
+    git.finalize_merge(work, "sage: merge remote changes")
+    assert git.push(work).pushed is True
+    assert (work / "seed.txt").read_text() == "reconciled"
+
+
+def test_abort_merge_restores_pre_pull_state(tmp_path: Path):
+    work = _work_repo(tmp_path)
+    other = _second_clone(tmp_path, work)
+    (other / "seed.txt").write_text("teammate version")
+    _run(other, "add", "-A")
+    _run(other, "commit", "-q", "-m", "mate: edit seed")
+    _run(other, "push", "-q")
+    (work / "seed.txt").write_text("builder version")
+    git.commit_all(work, "sage: edit seed")
+
+    assert git.pull(work).status == "conflict"
+    git.abort_merge(work)
+    assert git.files_with_conflict_markers(work, ["seed.txt"]) == []
+    assert (work / "seed.txt").read_text() == "builder version"  # our commit intact
+
+
+def test_pull_without_remote_is_noop(tmp_path: Path):
+    work = _work_repo(tmp_path, with_remote=False)
+    assert git.pull(work).status == "no-remote"
+
+
+def test_push_rejected_on_non_fast_forward(tmp_path: Path):
+    work = _work_repo(tmp_path)
+    other = _second_clone(tmp_path, work)
+    (other / "mate.txt").write_text("x")
+    _run(other, "add", "-A")
+    _run(other, "commit", "-q", "-m", "mate")
+    _run(other, "push", "-q")
+    # Local commits without pulling -> the remote is ahead, so the push is rejected (not an error).
+    (work / "App.tsx").write_text("local")
+    git.commit_all(work, "sage: local")
+    result = git.push(work)
+    assert result.pushed is False and "push failed" in result.detail
+    # After a pull, the push goes through.
+    assert git.pull(work).status == "merged"
+    assert git.push(work).pushed is True

@@ -18,6 +18,18 @@ class SaveResult:
     detail: str
 
 
+@dataclass
+class SyncResult:
+    """Outcome of pulling the remote into the workspace.
+
+    status is one of: "up-to-date" (nothing to pull), "merged" (remote changes integrated),
+    "conflict" (merge left markers in `conflicts` for the caller to resolve), "conflict-unresolved"
+    (resolution failed and the merge was rolled back), "no-remote", or "error"."""
+    status: str
+    conflicts: list[str]
+    detail: str
+
+
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=str(path), capture_output=True, text=True, check=check
@@ -47,17 +59,94 @@ def _identity_args(path: Path) -> list[str]:
     return args
 
 
+def commit_all(path: Path, message: str) -> bool:
+    """Stage everything and commit. Returns False (not an error) when there's nothing to commit."""
+    _git(path, "add", "-A")
+    if _git(path, "diff", "--cached", "--quiet", check=False).returncode == 0:
+        return False
+    _git(path, *_identity_args(path), "commit", "-m", message)
+    return True
+
+
+def push(path: Path) -> SaveResult:
+    """Push HEAD. Returns pushed=False (not an error) when there's no remote or the push is
+    rejected (e.g. a non-fast-forward — the caller should pull first)."""
+    if not has_remote(path):
+        return SaveResult(pushed=False, detail="committed (no remote)")
+    r = _git(path, "push", check=False)
+    if r.returncode != 0:
+        return SaveResult(pushed=False, detail=f"push failed: {(r.stderr or r.stdout).strip()[:200]}")
+    return SaveResult(pushed=True, detail="pushed")
+
+
 def commit_and_push(path: Path, message: str) -> SaveResult:
     """Stage everything, commit, and push. Returns pushed=False (not an error) when there's nothing
     to commit or no remote; raises only on an unexpected git failure (the caller treats that as a
     non-fatal saved:ok=false)."""
-    _git(path, "add", "-A")
-    if _git(path, "diff", "--cached", "--quiet", check=False).returncode == 0:
+    if not commit_all(path, message):
         return SaveResult(pushed=False, detail="no changes to commit")
-    _git(path, *_identity_args(path), "commit", "-m", message)
+    return push(path)
+
+
+def current_branch(path: Path) -> str:
+    return _git(path, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip() or "main"
+
+
+def pull(path: Path) -> SyncResult:
+    """Fetch the remote and merge the current branch's upstream into the working tree. On conflict
+    the tree is left with markers and SyncResult.conflicts lists the files, for the caller (the
+    agent) to resolve and then finalize_merge(). Never pushes. Assumes a clean tree (commit first)."""
     if not has_remote(path):
-        return SaveResult(pushed=False, detail="committed (no remote)")
-    push = _git(path, "push", check=False)
-    if push.returncode != 0:
-        return SaveResult(pushed=False, detail=f"push failed: {(push.stderr or push.stdout).strip()[:200]}")
-    return SaveResult(pushed=True, detail="pushed")
+        return SyncResult("no-remote", [], "no remote to pull from")
+    fetch = _git(path, "fetch", "origin", check=False)
+    if fetch.returncode != 0:
+        raise RuntimeError(f"git fetch failed: {(fetch.stderr or fetch.stdout).strip()[:200]}")
+    ref = f"origin/{current_branch(path)}"
+    # No upstream branch yet (nothing pushed) -> nothing to pull.
+    if _git(path, "rev-parse", "--verify", "--quiet", ref, check=False).returncode != 0:
+        return SyncResult("up-to-date", [], "no upstream branch")
+    merge = _git(path, *_identity_args(path), "merge", "--no-edit", ref, check=False)
+    if merge.returncode == 0:
+        if "up to date" in merge.stdout.lower():
+            return SyncResult("up-to-date", [], "already up to date")
+        return SyncResult("merged", [], merge.stdout.strip()[:200] or "merged remote changes")
+    conflicts = unresolved_conflicts(path)
+    if conflicts:
+        return SyncResult("conflict", conflicts, "merge conflicts need resolution")
+    # A non-conflict merge failure (e.g. local changes would be overwritten) — roll back and raise.
+    _git(path, "merge", "--abort", check=False)
+    raise RuntimeError(f"git merge failed: {(merge.stderr or merge.stdout).strip()[:200]}")
+
+
+def unresolved_conflicts(path: Path) -> list[str]:
+    """Files git considers unmerged (conflicted) in the index."""
+    r = _git(path, "diff", "--name-only", "--diff-filter=U", check=False)
+    return [f for f in r.stdout.splitlines() if f.strip()]
+
+
+_CONFLICT_MARKERS = ("<<<<<<< ", ">>>>>>> ")
+
+
+def files_with_conflict_markers(path: Path, files: list[str]) -> list[str]:
+    """Of `files`, those that still contain conflict markers — used to verify the agent actually
+    resolved them (the index stays "unmerged" until `git add`, so diff-filter=U can't confirm this)."""
+    out: list[str] = []
+    for f in files:
+        try:
+            text = (Path(path) / f).read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if any(m in text for m in _CONFLICT_MARKERS):
+            out.append(f)
+    return out
+
+
+def finalize_merge(path: Path, message: str) -> None:
+    """Stage the resolved files and commit the in-progress merge."""
+    _git(path, "add", "-A")
+    _git(path, *_identity_args(path), "commit", "--no-edit", "-m", message)
+
+
+def abort_merge(path: Path) -> None:
+    """Roll back an in-progress merge, restoring the pre-pull state."""
+    _git(path, "merge", "--abort", check=False)
