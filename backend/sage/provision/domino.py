@@ -144,7 +144,9 @@ class DominoControlPlane:
         pid = (proj or {}).get("id")
         if not pid:
             raise RuntimeError(f"project create returned no id: {str(data)[:200]}")
-        return ProjectRef(id=str(pid), name=name, git_url=git_url)
+        # Use Domino's stored name — it's the URL slug the open link is built from, and Domino may
+        # normalize what we sent.
+        return ProjectRef(id=str(pid), name=str(proj.get("name") or name), git_url=git_url)
 
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
         # CreateWorkspaceRequest (domino_private_spec). Required: name, environmentId,

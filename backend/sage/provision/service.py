@@ -38,17 +38,23 @@ class AppCreated:
     open_url: str | None
 
 
-def workspace_open_url(ws: dict[str, Any]) -> str | None:
-    """Host-relative path that opens a running workspace in the browser, assembled from the Domino
-    WorkspaceDto: /{owner}/{project}/notebookSession/{runId}/ (same shape as preview.prefix).
+def workspace_open_url(ws: dict[str, Any], project_name: str | None = None) -> str | None:
+    """Host-relative path that opens a running workspace in the browser:
+    /{owner}/{project}/notebookSession/{runId}/ (same shape as preview.prefix).
 
     Returned as a path with no host on purpose: DOMINO_API_HOST is the internal cluster address and
     isn't browser-reachable, so the browser resolves this against the external origin the hub is
-    already served from. Returns None if the response lacks the pieces (UI then shows a fallback)."""
+    already served from. Returns None if the pieces are missing (UI then shows a fallback).
+
+    owner + runId come from the v4 WorkspaceDto (ownerName, mostRecentSession.executionId). The DTO's
+    `project` field is null on create/open, so the project name — the URL slug — must be passed in by
+    the caller, who knows it from the ProjectRef."""
     if not isinstance(ws, dict):
         return None
     owner = ws.get("ownerName")
-    project = (ws.get("project") or {}).get("name") if isinstance(ws.get("project"), dict) else None
+    project = project_name or (
+        (ws.get("project") or {}).get("name") if isinstance(ws.get("project"), dict) else None
+    )
     session = ws.get("mostRecentSession") or {}
     run_id = session.get("executionId") or session.get("id") if isinstance(session, dict) else None
     if not (owner and project and run_id):
@@ -123,13 +129,15 @@ class HubService:
             raise
 
         ws = self._cp.create_workspace(project.id, branch=self._branch)
-        return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws))
+        return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
 
     def open_app(self, project_id: str) -> dict[str, Any]:
         """Return a runnable workspace for an existing app: reuse a running one, else launch one."""
+        # The workspace DTO has no project name (the URL slug), so resolve it from the app list.
+        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
         for ws in self._cp.list_workspaces(project_id):
             state = str(ws.get("state") or ws.get("status") or "").lower()
             if state in ("", "running", "started", "active") or ws.get("isRunning"):
-                return {"workspace": ws, "open_url": workspace_open_url(ws), "launched": False}
+                return {"workspace": ws, "open_url": workspace_open_url(ws, name), "launched": False}
         ws = self._cp.create_workspace(project_id, branch=self._branch)
-        return {"workspace": ws, "open_url": workspace_open_url(ws), "launched": True}
+        return {"workspace": ws, "open_url": workspace_open_url(ws, name), "launched": True}
