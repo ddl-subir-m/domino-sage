@@ -34,13 +34,32 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "") -> 
 
     app = FastAPI(title="sage preview proxy")
 
+    def _starting(detail: str) -> JSONResponse:
+        # 502, not 500: the upstream Vite dev server isn't ready — still booting on first launch, or
+        # restarting/re-optimizing after the agent installs a dependency. Transient; a refresh recovers.
+        return JSONResponse(
+            status_code=502,
+            content={
+                "preview": "upstream Vite dev server not ready",
+                "error": detail,
+                "hint": "The preview server is still starting or reloading (first launch installs deps; "
+                "adding a dependency triggers a restart). Wait a moment, then refresh.",
+            },
+        )
+
     @app.websocket("/{path:path}")
     async def ws_proxy(client_ws: WebSocket, path: str) -> None:
         # Vite HMR connects to "/" with the "vite-hmr" subprotocol. Preserve subprotocol + query.
         subprotocols = client_ws.scope.get("subprotocols", [])
         await client_ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
 
-        base = get_upstream().replace("http://", "ws://").replace("https://", "wss://")
+        try:
+            upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
+        except Exception:  # noqa: BLE001 — any not-ready state: close cleanly, HMR reconnects
+            # Nothing to proxy yet; close cleanly — the Vite HMR client reconnects on its own.
+            await client_ws.close()
+            return
+        base = upstream.replace("http://", "ws://").replace("https://", "wss://")
         query = client_ws.url.query
         upstream_url = f"{base}{vite_base}/{path}" + (f"?{query}" if query else "")
 
@@ -57,7 +76,11 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "") -> 
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     async def http_proxy(request: Request, path: str) -> Response:
-        url = f"{get_upstream()}{vite_base}/{path}"
+        try:
+            upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
+        except Exception as e:  # noqa: BLE001 — degrade to transient 502, never a 500 preview crash
+            return _starting(f"{type(e).__name__}: {e}")
+        url = f"{upstream}{vite_base}/{path}"
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
         body = await request.body()
         client = httpx.AsyncClient(timeout=30.0)

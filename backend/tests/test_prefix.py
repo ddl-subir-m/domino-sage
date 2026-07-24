@@ -96,6 +96,18 @@ def test_preview_forwards_to_vite_base(prefix, path, expected, monkeypatch):
     assert captured["url"] == expected
 
 
+def test_preview_returns_502_not_500_while_vite_restarting():
+    # While opencode (re)starts Vite, get_upstream() raises "not ready". The proxy must degrade to a
+    # transient 502 ("still starting, refresh"), never an uncaught 500 in the preview pane.
+    def not_ready() -> str:
+        raise RuntimeError("Vite not ready")
+
+    app = make_preview_app(not_ready, "")
+    r = TestClient(app, raise_server_exceptions=False).get("/src/main.tsx")
+    assert r.status_code == 502
+    assert r.json()["preview"] == "upstream Vite dev server not ready"
+
+
 def test_preview_through_mount_and_middleware_no_double_prefix(monkeypatch):
     # Reproduces production exactly: preview mounted at /preview behind the prefix middleware. A
     # regression that rewrites path instead of root_path double-counts the prefix (…/preview/preview/…).
