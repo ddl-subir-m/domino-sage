@@ -1,6 +1,6 @@
 import pytest
 
-from sage.provision.domino import FakeControlPlane
+from sage.provision.domino import FakeControlPlane, ProjectRef
 from sage.provision.github import FakeRepoProvider
 from sage.provision.service import HubService
 
@@ -100,3 +100,32 @@ def test_open_app_launches_when_none(tmp_path):
     result = hub.open_app("proj-9")
     assert result["launched"] is True
     assert result["workspace"]["id"] == "ws-proj-9"
+
+
+def test_workspace_status_reports_running_and_open_url(tmp_path):
+    cp = FakeControlPlane()
+    cp.projects.append(ProjectRef(id="proj-1", name="My App", git_url="https://github.com/o/sage-my-app.git"))
+    cp.workspaces["proj-1"] = [{
+        "id": "ws-1", "createdAt": "2026-07-24T10:00:00Z", "state": "Started", "ownerName": "u",
+        "mostRecentSession": {"executionId": "run-9", "sessionStatusInfo": {"isRunning": True}},
+    }]
+    hub = _hub(tmp_path, cp)
+
+    status = hub.workspace_status("proj-1", "ws-1")
+    assert status["running"] is True
+    assert status["open_url"] == "/u/My%20App/notebookSession/run-9/"
+
+
+def test_workspace_status_not_running_while_booting(tmp_path):
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [{
+        "id": "ws-1", "state": "Started",
+        "mostRecentSession": {"sessionStatusInfo": {"isRunning": False}},
+    }]
+    hub = _hub(tmp_path, cp)
+    assert hub.workspace_status("proj-1", "ws-1")["running"] is False
+
+
+def test_workspace_status_none_when_no_workspace(tmp_path):
+    status = _hub(tmp_path, FakeControlPlane()).workspace_status("proj-x")
+    assert status == {"running": False, "open_url": None, "state": None}

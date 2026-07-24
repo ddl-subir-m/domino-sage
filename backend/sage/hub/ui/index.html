@@ -164,6 +164,27 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
     $('backdrop').addEventListener('click', (e) => { if (e.target === $('backdrop')) closeModal(); });
 
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+    // A launched workspace reports state=Started before its session is running; opening the builder
+    // then lands on a not-ready page. Poll status until the session is running, then return the URL.
+    // onTick lets the caller surface progress. Gives up after ~4 min (80 × 3s).
+    async function waitUntilRunning(projectId, wsId, onTick) {
+      for (let i = 0; i < 80; i++) {
+        try {
+          const q = wsId ? `?workspace_id=${encodeURIComponent(wsId)}` : '';
+          const r = await fetch(api(`/api/apps/${projectId}/status${q}`));
+          if (r.ok) {
+            const s = await r.json();
+            if (s.running && s.open_url) return s.open_url;
+          }
+        } catch { /* transient — keep polling */ }
+        if (onTick) onTick(i);
+        await sleep(3000);
+      }
+      return null;
+    }
+
     async function submitCreate() {
       const name = $('nameInput').value.trim();
       if (!name) return;
@@ -177,8 +198,14 @@
           body: JSON.stringify({ name }) });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        let url = (data.running && data.open_url) ? data.open_url : null;
+        if (!url) {
+          $('creatingStep').textContent = 'Starting the builder — opens when it’s ready…';
+          url = await waitUntilRunning(data.id, data.workspace_id);
+        }
         closeModal();
-        if (data.open_url) { window.open(data.open_url, '_blank'); }
+        if (url) window.open(url, '_blank');
+        else banner('Your app was created. It’s still starting — use Open builder in a moment.');
         await load();
       } catch (e) {
         closeModal();
@@ -188,13 +215,15 @@
 
     async function openApp(id, btn) {
       banner(null);
-      const label = btn.textContent; btn.textContent = 'Opening…'; btn.disabled = true;
+      const label = btn.textContent; btn.disabled = true; btn.textContent = 'Starting…';
       try {
         const r = await fetch(api(`/api/apps/${id}/open`), { method: 'POST' });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
-        if (data.open_url) window.open(data.open_url, '_blank');
-        else banner('The app is launching — open it from the Domino workspaces list in a moment.');
+        let url = (data.running && data.open_url) ? data.open_url : null;
+        if (!url) url = await waitUntilRunning(id, data.workspace_id);
+        if (url) window.open(url, '_blank');
+        else banner('The app is still starting — try Open builder again in a moment.');
       } catch (e) {
         banner(e.message || 'Couldn’t open the app.');
       } finally { btn.textContent = label; btn.disabled = false; }

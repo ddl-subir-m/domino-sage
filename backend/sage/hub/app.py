@@ -26,7 +26,7 @@ from ..preview.prefix import domino_base_prefix
 from ..provision import credentials
 from ..provision.domino import DominoControlPlane, FakeControlPlane
 from ..provision.github import FakeRepoProvider, GitHubProvider
-from ..provision.service import HubService
+from ..provision.service import HubService, workspace_is_running
 
 log = logging.getLogger("sage.hub")
 logging.basicConfig(level=logging.INFO)
@@ -188,8 +188,9 @@ async def create_app(request: Request) -> JSONResponse:
             "repo": created.repo.full_name,
             "git_url": created.repo.clone_url,
             "open_url": created.open_url,
-            # LIVE-VERIFY seam: raw workspace-create response, so we can pin down the open-URL field.
-            "workspace": created.workspace,
+            "workspace_id": created.workspace.get("id") if isinstance(created.workspace, dict) else None,
+            # Freshly launched — the session usually isn't running yet; the UI polls status before opening.
+            "running": workspace_is_running(created.workspace),
         }
     )
 
@@ -201,6 +202,19 @@ async def open_app(project_id: str) -> JSONResponse:
     except Exception as e:
         log.exception("open_app failed")
         return JSONResponse({"error": f"Couldn't open the app: {e}"}, status_code=502)
+    ws = result.get("workspace")
+    result["workspace_id"] = ws.get("id") if isinstance(ws, dict) else None
+    return JSONResponse(result)
+
+
+@app.get("/api/apps/{project_id}/status")
+async def app_status(project_id: str, workspace_id: str | None = None) -> JSONResponse:
+    """Poll target: has the app's (just-launched) workspace session reached Running?"""
+    try:
+        result = await run_in_threadpool(hub.workspace_status, project_id, workspace_id)
+    except Exception as e:
+        log.exception("workspace_status failed")
+        return JSONResponse({"error": f"Couldn't check status: {e}"}, status_code=502)
     return JSONResponse(result)
 
 

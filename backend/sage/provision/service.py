@@ -62,6 +62,20 @@ def workspace_open_url(ws: dict[str, Any], project_name: str | None = None) -> s
     return f"/{quote(str(owner))}/{quote(str(project))}/notebookSession/{run_id}/"
 
 
+def workspace_is_running(ws: dict[str, Any]) -> bool:
+    """True once the workspace's session is actually running — i.e. safe to open in the browser.
+
+    The coarse workspace `state` flips to "Started" while the session is still booting, so prefer
+    the session's sessionStatusInfo.isRunning; fall back to `state` only when that's absent."""
+    if not isinstance(ws, dict):
+        return False
+    session = ws.get("mostRecentSession") or {}
+    info = session.get("sessionStatusInfo") if isinstance(session, dict) else None
+    if isinstance(info, dict) and "isRunning" in info:
+        return bool(info.get("isRunning"))
+    return str(ws.get("state") or ws.get("status") or "").lower() == "running"
+
+
 class HubService:
     def __init__(
         self,
@@ -138,6 +152,33 @@ class HubService:
         for ws in self._cp.list_workspaces(project_id):
             state = str(ws.get("state") or ws.get("status") or "").lower()
             if state in ("", "running", "started", "active") or ws.get("isRunning"):
-                return {"workspace": ws, "open_url": workspace_open_url(ws, name), "launched": False}
+                return self._open_result(ws, name, launched=False)
         ws = self._cp.create_workspace(project_id, branch=self._branch)
-        return {"workspace": ws, "open_url": workspace_open_url(ws, name), "launched": True}
+        return self._open_result(ws, name, launched=True)
+
+    @staticmethod
+    def _open_result(ws: dict[str, Any], name: str | None, *, launched: bool) -> dict[str, Any]:
+        return {
+            "workspace": ws,
+            "open_url": workspace_open_url(ws, name),
+            "running": workspace_is_running(ws),
+            "launched": launched,
+        }
+
+    def workspace_status(self, project_id: str, workspace_id: str | None = None) -> dict[str, Any]:
+        """Current running-state + open URL for an app's workspace — the UI polls this after a launch
+        so it only opens the builder once the session is actually running."""
+        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
+        workspaces = [w for w in self._cp.list_workspaces(project_id) if isinstance(w, dict)]
+        ws = None
+        if workspace_id:
+            ws = next((w for w in workspaces if w.get("id") == workspace_id), None)
+        if ws is None and workspaces:  # newest by creation time
+            ws = max(workspaces, key=lambda w: w.get("createdAt") or "")
+        if ws is None:
+            return {"running": False, "open_url": None, "state": None}
+        return {
+            "running": workspace_is_running(ws),
+            "open_url": workspace_open_url(ws, name),
+            "state": ws.get("state") or ws.get("status"),
+        }
