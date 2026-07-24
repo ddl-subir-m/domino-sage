@@ -4,22 +4,32 @@ By default the hub ships as a **pluggable workspace tool** (`sageHub` in `plugga
 run it by launching a *Sage Hub* workspace. This doc covers the other deployment mode: publishing the
 hub as a real **Domino App** with a stable, shareable URL (no per-user workspace launch).
 
-## Why a launcher project is needed
+## How it works
 
-A Domino App deploys from a **git-based project** and runs `/mnt/code/app.sh` on the project's
-Environment. The hub's actual entrypoint (`hub.sh`) is baked into the **Sage Environment** at
-`/opt/sage/environment/`, not on any project mount. So you publish a tiny **launcher project** whose
-only file is a root `app.sh` that execs the baked hub — that file is `environment/hub-app/app.sh` here.
+A Domino App deploys from a **git-based project**: it checks the repo out to `/mnt/code` and runs
+`/mnt/code/app.sh` on the project's Environment. The hub's actual entrypoint (`hub.sh`) is baked into
+the **Sage Environment** at `/opt/sage/environment/`, so the root `app.sh` just execs it.
 
-## Steps
+## Recommended: publish THIS repo as the App
 
-1. **Create a git-based project** (e.g. `sage-hub`) and set its **Environment = the Sage Environment**
-   (the same image the builder/hub tools use — it has `/opt/sage` baked).
-2. **Add one file** at the repo root: copy `environment/hub-app/app.sh` from this repo to the launcher
-   project's `/mnt/code/app.sh`. Nothing else is required.
-3. **Publish the App**: in the project, open **App** → pick the **hardware tier** → **Publish**.
-   Domino runs `/mnt/code/app.sh` → `/opt/sage/environment/hub.sh` → the hub on `:8888`, behind the
-   App's URL.
+This repo already has a root `app.sh` that execs the baked hub, so you can publish the Sage source
+project directly — no separate launcher project to maintain.
+
+1. Have a **git-based Domino project** pointing at this repo (the Sage source), with its **Environment
+   = the Sage Environment** (the image with `/opt/sage` baked).
+2. Open the project's **App** section → pick the **hardware tier** → **Publish**.
+   Domino runs `/mnt/code/app.sh` → `/opt/sage/environment/hub.sh` → the hub on `:8888`, at the App's
+   shareable URL.
+
+That's it. The hub runs the baked `/opt/sage` code (not the `/mnt/code` checkout), so which commit is
+checked out doesn't matter — it's just there to give the App an entrypoint. (`app.sh` falls back to
+this checkout's own `hub.sh` only when the baked copy is absent, e.g. running it off the Sage image.)
+
+## Alternative: a standalone launcher project
+
+If you'd rather not publish the whole source repo, publish a tiny project whose only file is a root
+`app.sh` that execs the baked hub — use `environment/hub-app/app.sh` as that file. Same publish steps
+as above.
 
 ## Why you do NOT inject environment variables
 
