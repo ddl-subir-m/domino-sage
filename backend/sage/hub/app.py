@@ -77,7 +77,10 @@ def _build_hub() -> tuple[HubService, str]:
         )
 
     host = remote.host
-    repo_provider = GitHubProvider(token_provider=lambda: _require_token(host))
+    def token_provider() -> str:  # shared by repo create + seed push
+        return _require_token(host)
+
+    repo_provider = GitHubProvider(token_provider=token_provider)
     control_plane = DominoControlPlane(
         api_host,
         sidecar_token(),
@@ -86,7 +89,7 @@ def _build_hub() -> tuple[HubService, str]:
         hardware_tier_id=os.environ["DOMINO_HARDWARE_TIER_ID"],
         builder_tool=os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder"),
     )
-    return HubService(control_plane, repo_provider, _TEMPLATE), "domino"
+    return HubService(control_plane, repo_provider, _TEMPLATE, push_token_provider=token_provider), "domino"
 
 
 def _require_token(host: str) -> str:

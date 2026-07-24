@@ -53,6 +53,7 @@ class HubService:
         branch: str = "main",
         name_limit: int = 50,
         seed: Seeder = seed_and_push,
+        push_token_provider: Callable[[], str] | None = None,
     ) -> None:
         self._cp = control_plane
         self._repo = repo_provider
@@ -60,6 +61,7 @@ class HubService:
         self._branch = branch
         self._name_limit = name_limit
         self._seed = seed
+        self._push_token_provider = push_token_provider
 
     def list_apps(self) -> list[ProjectRef]:
         return self._cp.list_apps()
@@ -80,7 +82,10 @@ class HubService:
             raise ValueError("app name is required")
 
         repo = self._create_repo(display_name)
-        self._seed(repo.clone_url, self._template, branch=self._branch)
+        self._seed(
+            repo.clone_url, self._template, branch=self._branch,
+            token_provider=self._push_token_provider,
+        )
 
         # Project keeps the human name; fall back to the (unique) repo name if Domino rejects it
         # (e.g. a duplicate project name).

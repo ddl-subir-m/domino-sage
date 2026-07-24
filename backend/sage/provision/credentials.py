@@ -6,9 +6,9 @@ Two things the hub needs from the workspace's git setup:
     provider's REST API to *create* a repo).
 
 The token is obtained via `git credential fill` — the mechanism confirmed by git_discovery.sh. It is
-returned to the caller and used in-memory only; NOTHING here logs or persists it. Seeding/pushing a
-new repo does NOT go through here — that rides Domino's ambient credential helper (`git push` is
-pre-authorized for the host), so token handling stays confined to the provider API adapter.
+returned to the caller and used in-memory only; NOTHING here logs or persists it. The same token
+authenticates both the create-repo API call AND the seed push (the seeder pushes from a throwaway
+temp repo that inherits no credential helper, so ambient auth isn't available there — see seed.py).
 """
 from __future__ import annotations
 
