@@ -16,16 +16,30 @@ def _cp(handler):
     )
 
 
+def _creds_handler(post_response, seen):
+    """Route the users/self + credentials GETs the create flow makes, then the project POST."""
+    def handler(request):
+        path = request.url.path
+        if path == "/api/users/v1/self":
+            return httpx.Response(200, json={"user": {"id": "user-1"}, "metadata": {}})
+        if path == "/api/users/beta/credentials/user-1":
+            return httpx.Response(200, json={"credentials": [
+                {"id": "cred-gh", "domain": "github.com", "protocol": "https",
+                 "gitServiceProvider": "Github", "name": "gh", "fingerprint": "x"},
+                {"id": "cred-gl", "domain": "gitlab.com", "protocol": "https",
+                 "gitServiceProvider": "GitLab", "name": "gl", "fingerprint": "y"},
+            ], "metadata": {}})
+        seen["path"] = path
+        seen["body"] = json.loads(request.content)
+        return post_response
+    return handler
+
+
 def test_create_project_uses_public_api_shape():
     seen = {}
-
-    def handler(request):
-        seen["path"] = request.url.path
-        seen["body"] = json.loads(request.content)
-        # ProjectEnvelopeV1: {project: {...}, metadata: {...}}
-        return httpx.Response(200, json={"project": {"id": "proj-42", "name": "My App"}, "metadata": {}})
-
-    ref = _cp(handler).create_project("My App", git_url="https://github.com/me/sage-my-app.git")
+    # ProjectEnvelopeV1: {project: {...}, metadata: {...}}
+    resp = httpx.Response(200, json={"project": {"id": "proj-42", "name": "My App"}, "metadata": {}})
+    ref = _cp(_creds_handler(resp, seen)).create_project("My App", git_url="https://github.com/me/sage-my-app.git")
     assert ref.id == "proj-42"
     assert ref.name == "My App"
     assert seen["path"] == "/api/projects/beta/projects"
@@ -34,15 +48,34 @@ def test_create_project_uses_public_api_shape():
     assert "ownerId" not in b
     assert "tags" not in b
     assert b["visibility"] == "Private"
+    # Matched the github.com https credential, not the gitlab one.
     assert b["mainRepository"] == {
         "uri": "https://github.com/me/sage-my-app.git",
         "serviceProvider": "Github",
         "defaultRef": {"refType": "Branch", "value": "main"},
+        "gitCredentialId": "cred-gh",
     }
 
 
+def test_create_project_errors_without_matching_credential():
+    def handler(request):
+        if request.url.path == "/api/users/v1/self":
+            return httpx.Response(200, json={"user": {"id": "user-1"}})
+        if request.url.path == "/api/users/beta/credentials/user-1":
+            return httpx.Response(200, json={"credentials": []})  # none for github.com
+        raise AssertionError("should not POST without a credential")
+
+    try:
+        _cp(handler).create_project("X", git_url="https://github.com/me/sage-x.git")
+    except RuntimeError as e:
+        assert "github.com" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError when no git credential matches")
+
+
 def test_create_project_surfaces_error_body():
-    cp = _cp(lambda req: httpx.Response(400, text='{"message":"bad visibility"}'))
+    resp = httpx.Response(400, text='{"message":"bad visibility"}')
+    cp = _cp(_creds_handler(resp, {}))
     try:
         cp.create_project("X", git_url="https://github.com/me/sage-x.git")
     except RuntimeError as e:

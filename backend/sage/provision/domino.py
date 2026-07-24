@@ -63,6 +63,7 @@ class DominoControlPlane:
         builder_tool: str = "sageBuilder",
         environment_revision_id: str | None = None,
         git_service_provider: str = "Github",  # GitServiceProviderV1 value (hub is github-only in v1)
+        git_host: str = "github.com",  # domain of the Domino git credential to attach to projects
         transport: httpx.BaseTransport | None = None,  # test seam
         timeout_s: float = 30.0,
     ) -> None:
@@ -73,6 +74,8 @@ class DominoControlPlane:
         self._tier_id = hardware_tier_id
         self._tool = builder_tool
         self._provider = git_service_provider
+        self._git_host = git_host
+        self._cred_id: str | None = None  # resolved lazily, then cached
         self._transport = transport
         self._timeout_s = timeout_s
 
@@ -100,6 +103,27 @@ class DominoControlPlane:
             r = c.post(f"{self._host}{path}", json=body, headers=self._headers())
         return self._check(r, "POST", path)
 
+    def _git_credential_id(self) -> str:
+        """Id of the caller's Domino git credential for `git_host` (cached). Domino validates repo
+        access at project-create time, so a git-based project pointing at a private repo needs it."""
+        if self._cred_id is None:
+            uid = (self._get("/api/users/v1/self").get("user") or {}).get("id")
+            if not uid:
+                raise RuntimeError("could not resolve the calling user from /api/users/v1/self")
+            creds = self._get(f"/api/users/beta/credentials/{uid}").get("credentials") or []
+            match = next(
+                (c for c in creds if isinstance(c, dict) and c.get("domain") == self._git_host
+                 and (c.get("protocol") or "https") == "https"),
+                None,
+            )
+            if not match or not match.get("id"):
+                raise RuntimeError(
+                    f"no HTTPS Git credential for {self._git_host} in your Domino account — "
+                    f"add one under Account Settings > Git Credentials, then try again"
+                )
+            self._cred_id = str(match["id"])
+        return self._cred_id
+
     def create_project(
         self, name: str, *, git_url: str, branch: str = "main", description: str = ""
     ) -> ProjectRef:
@@ -112,6 +136,7 @@ class DominoControlPlane:
                 "uri": git_url,
                 "serviceProvider": self._provider,
                 "defaultRef": {"refType": "Branch", "value": branch},
+                "gitCredentialId": self._git_credential_id(),
             },
         }
         data = self._post(_PROJECTS_PATH, body)

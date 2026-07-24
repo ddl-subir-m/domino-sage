@@ -88,6 +88,7 @@ def _build_hub() -> tuple[HubService, str]:
         environment_revision_id=os.environ.get("DOMINO_ENVIRONMENT_REVISION_ID"),
         hardware_tier_id=os.environ["DOMINO_HARDWARE_TIER_ID"],
         builder_tool=os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder"),
+        git_host=host,
     )
     return HubService(control_plane, repo_provider, _TEMPLATE, push_token_provider=token_provider), "domino"
 
