@@ -134,8 +134,8 @@ def test_resume_workspace_starts_a_new_session_on_the_existing_workspace():
     # Inverse of stop: start a session on the existing workspace (not /v4/workspaces/relaunch).
     assert seen["path"] == "/v4/workspace/project/proj-42/workspace/ws-1/sessions"
     assert seen["body"] == b""  # no request body
-    # Empty externalVolumeMounts -> httpx drops the key, matching Domino's own generated client.
-    assert "externalVolumeMounts" not in seen["query"]
+    # Required param must be PRESENT but empty; the server 400s ("Missing parameter") if absent.
+    assert seen["query"] == "externalVolumeMounts="
     assert out["id"] == "sess-1"
 
 

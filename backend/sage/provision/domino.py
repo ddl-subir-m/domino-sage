@@ -204,12 +204,13 @@ class DominoControlPlane:
         # piles up stopped records). We used to POST /v4/workspaces/relaunch, but that 404s the
         # workspace id on the dogfood build; the session endpoint is what the Domino UI itself uses.
         # Spec: POST /v4/workspace/project/{projectId}/workspace/{workspaceId}/sessions
-        #   ?externalVolumeMounts=... (required array; empty list — the builder mounts no external
-        # volumes, and httpx drops the empty key, matching Domino's own generated client). No request
-        # body; the new session checks out the branch's LATEST commit. The WorkspaceSessionDto returned
-        # carries no owner/open-url fields, so the caller derives the open URL by polling list_workspaces.
+        #   ?externalVolumeMounts=... (required array; the builder mounts none). The server rejects an
+        # absent key ("Missing parameter"), so send the key present-but-empty (?externalVolumeMounts=)
+        # — an empty STRING, which httpx keeps, not an empty list, which it drops. No request body; the
+        # new session checks out the branch's LATEST commit. The WorkspaceSessionDto returned carries no
+        # owner/open-url fields, so the caller derives the open URL by polling list_workspaces.
         path = f"/v4/workspace/project/{project_id}/workspace/{workspace_id}/sessions"
-        data = self._post(path, params={"externalVolumeMounts": []})
+        data = self._post(path, params={"externalVolumeMounts": ""})
         return data if isinstance(data, dict) else {"resumed": True}
 
     def available_tools(self) -> list[dict[str, Any]]:
