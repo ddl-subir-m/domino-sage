@@ -15,6 +15,12 @@ const base = `${prefix}/preview/`;
 export default defineConfig({
   plugins: [react()],
   base,
+  // The agent installs charting/UI libs (recharts, etc.) into an already-running dev server. Vite's
+  // dep pre-bundler can then resolve a SECOND copy of React inside that lib's optimized chunk, so
+  // hooks blow up with "Invalid hook call / null useContext" (dev only — production/Rollup dedupes).
+  // Force a single React instance and keep it in the same optimize pass so pre-bundled deps share it.
+  resolve: { dedupe: ["react", "react-dom"] },
+  optimizeDeps: { include: ["react", "react-dom", "react/jsx-runtime"] },
   server: {
     host: true,
     allowedHosts: true,
