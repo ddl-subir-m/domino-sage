@@ -12,6 +12,7 @@ workspace.
 | `Dockerfile` | The Environment's **Edit Dockerfile** box (on top of your base image) |
 | `pluggable-tools.yaml` | The Environment's **Pluggable Workspace Tools** field |
 | `app.sh` | Baked via the repo clone; the tool's `start` runs `/opt/sage/environment/app.sh` |
+| `hub.sh` | Same image, different entrypoint; the `sageHub` tool's `start` runs `/opt/sage/environment/hub.sh` |
 
 ## Key design decision
 
@@ -33,8 +34,17 @@ both dev artifact and ship artifact without the app and the tooling fighting ove
 
 Don't rebuild the image per code change: set `SAGE_APP_HOME=/mnt/code` (in a git-based project that
 holds the sage *source*), so `app.sh` runs the orchestrator straight off the mount while still using
-the baked Node/OpenCode/template. In that mode also set `SAGE_WORKSPACE_DIR` to a scratch dir
-(e.g. `/tmp/sage-workspaces/app`) so the source tree isn't treated as an app.
+the baked Node/OpenCode/template. `SAGE_TEMPLATE` stays pinned to the baked `/opt/sage` copy (it does
+*not* follow `SAGE_APP_HOME`), so the warm `node_modules` are always present and the preview never
+boots cold. In that mode also set `SAGE_WORKSPACE_DIR` to a scratch dir (e.g. `/tmp/sage-workspaces/app`)
+so the source tree isn't treated as an app.
+
+## Hub (same image, no git-based project)
+
+The **New app** hub ships from this same image via `hub.sh` / the `sageHub` tool. Unlike the Builder,
+it needs **no git-based project of its own**: the GitHub host comes from `SAGE_GIT_HOST` (default
+`github.com`) and the token from Domino's global `git credential` helper, so it runs as a plain baked
+App. It provisions the *git-based app projects* and launches a Builder in each.
 
 ## Relationship to the spike
 
