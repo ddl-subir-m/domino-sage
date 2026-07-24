@@ -6,8 +6,9 @@
 # create a project, mounts the preview under /preview, strips Domino's proxy prefix, and bakes
 # that same prefix into Vite's base — the Phase-1 mechanics we're here to confirm.
 #
-# No gateway / OpenCode needed for the core check: OpenCode starts lazily on the first *build*,
-# so creating a project + rendering the preview + HMR all work without them.
+# The preview/HMR checks don't need OpenCode, but a *build* does: the orchestrator spawns
+# `npx opencode serve`, which resolves the opencode binary from the repo-root node_modules. So we
+# install the root deps too (see below), otherwise the first build fails with an opencode error.
 set -euo pipefail
 cd "$(dirname "$0")/../../backend"   # -> /mnt/code/backend
 
@@ -51,6 +52,20 @@ if [ ! -f "${marker}" ] || [ "$(cat "${marker}" 2>/dev/null)" != "$(node -v)" ];
   ( cd "${TMPL}" && npm install --include=optional --no-fund --no-audit )
   node -v > "${marker}"
 fi
+
+# Repo-root deps: opencode-ai (the `opencode` binary the driver spawns via `npx opencode serve`)
+# lives here. It ships its Linux binary as a platform optionalDependency (same mechanism as
+# rolldown) with a local-only postinstall — no network fetch beyond the npm registry. Same
+# clean-reinstall-on-Node-change discipline as the template. (Phase 3 bakes this into the image.)
+ROOT=..
+root_marker="${ROOT}/node_modules/.sage-node-version"
+if [ ! -f "${root_marker}" ] || [ "$(cat "${root_marker}" 2>/dev/null)" != "$(node -v)" ]; then
+  echo "[verify] (re)installing repo-root deps (opencode-ai) clean for $(node -v)…"
+  rm -rf "${ROOT}/node_modules"
+  ( cd "${ROOT}" && npm install --include=optional --no-fund --no-audit )
+  node -v > "${root_marker}"
+fi
+echo "[verify] opencode: $(cd "${ROOT}" && npx --no-install opencode --version 2>/dev/null || echo '<not resolvable>')"
 
 # Run the real orchestrator. uv syncs backend/pyproject.toml deps into a venv on first run.
 exec uv run python -m sage.orchestrator.app

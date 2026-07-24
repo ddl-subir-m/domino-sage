@@ -18,8 +18,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 USER ubuntu
 ```
 
-Nothing else — the gateway and OpenCode are NOT needed for this check (OpenCode starts lazily on
-the first *build*).
+Nothing else for the Tier-1 preview/HMR check — the gateway and OpenCode are NOT needed there
+(OpenCode starts lazily on the first *build*). For a real *build* (Tier 2), `run.sh` installs the
+repo-root deps so the `opencode` binary (`opencode-ai`) resolves; the gateway still has to be wired
+for the model calls.
 
 Clone this repo into the Domino project so the files land on the mount at `/mnt/code`
 (confirmed mount path from Phase-0 STEP 2). The pluggable tool's `start` points at
@@ -71,5 +73,8 @@ sign off Phase 1.
   `npm install`) or template deps missing. Check logs for Vite's `Local:` line.
 - **Preview 404 / blank** → prefix mismatch. Send back the builder page's URL + one failing
   `api/*` request URL from devtools; compare against the env-derived prefix printed in the logs.
+- **Build fails with an `opencode` error** → the repo-root deps didn't install, so `npx opencode
+  serve` can't resolve the binary. Check the `[verify] opencode: …` line in the logs (should print a
+  version, not `<not resolvable>`); if it's missing, the root `npm install` failed — look just above.
 - **Assets load but no live reload** → HMR ws blocked. Send the failing `wss://…/preview/` request
   from devtools; we adjust `hmr` in `template/react-vite/vite.config.ts`.
