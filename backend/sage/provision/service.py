@@ -72,6 +72,12 @@ _STOPPED_STATES = frozenset({"stopped", "stopping"})
 # these before deleting. Matched case-insensitively.
 _REMOVABLE_STATES = frozenset({"stopped", "failed", "error"})
 
+# A delete on a Stopped workspace can still fail transiently ("Workspace delete wasn't completed
+# successfully. Please try again.") because Domino's delete is async — so retry a few times, and
+# treat the workspace having disappeared as success.
+_DELETE_RETRIES = 5
+_DELETE_RETRY_DELAY = 3.0
+
 
 def is_builder_workspace(ws: dict[str, Any]) -> bool:
     """True unless the workspace is clearly a non-builder session — a VS Code / Jupyter workspace a
@@ -301,7 +307,29 @@ class HubService:
             except Exception:  # noqa: BLE001 — best-effort; it may already be stopping
                 pass
             self._wait_until_removable(project_id, wid)
-        self._cp.delete_workspace(project_id, wid)
+        # The delete is async and can 500 transiently ("delete wasn't completed, please try again");
+        # retry, and treat a workspace that has since disappeared as done.
+        last: Exception | None = None
+        for attempt in range(_DELETE_RETRIES):
+            try:
+                self._cp.delete_workspace(project_id, wid)
+                return
+            except Exception as e:  # noqa: BLE001 — retry the flaky delete
+                last = e
+                if self._workspace_gone(project_id, wid):
+                    return
+                if attempt < _DELETE_RETRIES - 1:
+                    time.sleep(_DELETE_RETRY_DELAY)
+        if self._workspace_gone(project_id, wid):
+            return
+        raise last if last else RuntimeError(f"couldn't delete workspace {wid}")
+
+    def _workspace_gone(self, project_id: str, workspace_id: str) -> bool:
+        """True once the workspace no longer shows up in the project (or is marked deleted) — the
+        async delete having actually taken effect even if the DELETE call reported failure."""
+        ws = next((w for w in self._cp.list_workspaces(project_id)
+                   if isinstance(w, dict) and str(w.get("id")) == workspace_id), None)
+        return ws is None or bool(ws.get("deleted"))
 
     def _wait_until_removable(self, project_id: str, workspace_id: str,
                              tries: int = 20, delay: float = 3.0) -> None:

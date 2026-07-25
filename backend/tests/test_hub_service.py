@@ -332,15 +332,54 @@ def test_delete_app_waits_for_stopped_before_deleting(tmp_path, monkeypatch):
     assert polls["n"] >= 3  # polled until the state settled
 
 
-def test_delete_app_surfaces_real_error_when_workspace_cant_be_deleted(tmp_path):
-    # Delete still rejected (e.g. never leaves the current state) -> raise the real reason, and do
-    # NOT archive the project with the misleading "contains N workspace" message.
+def test_delete_app_retries_transient_delete_then_succeeds(tmp_path, monkeypatch):
+    # Domino's async delete 500s "please try again" a couple of times before it takes.
+    monkeypatch.setattr("sage.provision.service.time.sleep", lambda *_: None)
+    cp = FakeControlPlane()
+    ref = cp.create_project("Probe", git_url="https://github.com/me/sage-probe.git")
+    cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped"}]
+
+    attempts = {"n": 0}
+    orig_del = cp.delete_workspace
+
+    def flaky(p, w):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise RuntimeError("500: Workspace delete wasn't completed successfully. Please try again.")
+        return orig_del(p, w)
+
+    cp.delete_workspace = flaky
+    assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
+    assert attempts["n"] == 3   # retried until it stuck
+    assert cp.list_apps() == []
+
+
+def test_delete_app_treats_vanished_workspace_as_deleted(tmp_path, monkeypatch):
+    # The DELETE reports failure, but the async delete actually removed it — don't error on that.
+    monkeypatch.setattr("sage.provision.service.time.sleep", lambda *_: None)
+    cp = FakeControlPlane()
+    ref = cp.create_project("Probe", git_url="https://github.com/me/sage-probe.git")
+    cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped"}]
+
+    def fail_but_remove(p, w):
+        cp.workspaces[ref.id] = []  # it's actually gone now
+        raise RuntimeError("500: Workspace delete wasn't completed successfully. Please try again.")
+
+    cp.delete_workspace = fail_but_remove
+    assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
+    assert cp.list_apps() == []
+
+
+def test_delete_app_surfaces_real_error_when_delete_keeps_failing(tmp_path, monkeypatch):
+    # Delete never succeeds and the workspace never disappears -> raise the real reason after retries,
+    # and do NOT archive the project with the misleading "contains N workspace" message.
+    monkeypatch.setattr("sage.provision.service.time.sleep", lambda *_: None)
     cp = FakeControlPlane()
     ref = cp.create_project("Probe", git_url="https://github.com/me/sage-probe.git")
     cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped"}]
 
     def reject_delete(p, w):
-        raise RuntimeError("500: Workspace cannot be deleted from current state")
+        raise RuntimeError("500: Workspace delete wasn't completed successfully. Please try again.")
 
     cp.delete_workspace = reject_delete
     archived = []
@@ -348,7 +387,7 @@ def test_delete_app_surfaces_real_error_when_workspace_cant_be_deleted(tmp_path)
 
     with pytest.raises(RuntimeError) as ei:
         _hub(tmp_path, cp).delete_app(ref.id)
-    assert "ws-1" in str(ei.value) and "cannot be deleted from current state" in str(ei.value)
+    assert "ws-1" in str(ei.value) and "delete wasn't completed" in str(ei.value)
     assert archived == []  # project archive not attempted while a workspace remains
 
 
