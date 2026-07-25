@@ -241,13 +241,37 @@ def test_stop_app_stops_even_when_pre_stop_save_fails(tmp_path):
     assert cp.workspaces[ref.id][0]["state"] == "Stopped"  # stopped despite the save failing
 
 
-def test_delete_app_saves_running_builder_before_archiving(tmp_path):
+def test_delete_app_saves_stops_then_deletes_running_workspace(tmp_path):
     cp = FakeControlPlane()
     ref = cp.create_project("My App", git_url="https://github.com/me/sage-my-app.git")
     cp.workspaces[ref.id] = [_running_ws()]
 
+    order = []
+    for m in ("save_workspace_work", "stop_workspace", "delete_workspace"):
+        orig = getattr(cp, m)
+        setattr(cp, m, (lambda name, fn: (lambda *a: order.append(name) or fn(*a)))(m, orig))
+
     assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
+    # Push work, stop the session, THEN remove the workspace so the project can be archived.
+    assert order == ["save_workspace_work", "stop_workspace", "delete_workspace"]
     assert cp.saved_paths == ["/u/My%20App/notebookSession/run-9/"]
+    assert cp.list_apps() == []
+
+
+def test_delete_app_removes_stopped_workspace_so_archive_succeeds(tmp_path):
+    # The bug: a stopped-but-still-present workspace made archive_project 500 ("contains 1 workspace").
+    cp = FakeControlPlane()
+    ref = cp.create_project("Probe", git_url="https://github.com/me/sage-probe.git")
+    cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped"}]
+
+    deleted = []
+    orig = cp.delete_workspace
+    cp.delete_workspace = lambda p, w: deleted.append(w) or orig(p, w)
+
+    assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
+    assert deleted == ["ws-1"]   # removed even though it wasn't running
+    assert cp.saved_paths == []  # nothing running -> no pre-stop save
+    assert cp.list_apps() == []
 
 
 def test_stop_app_noop_when_nothing_to_stop(tmp_path):

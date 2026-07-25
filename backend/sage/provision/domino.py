@@ -57,6 +57,7 @@ class ControlPlane(Protocol):
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
+    def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def save_workspace_work(self, open_path: str) -> dict[str, Any]: ...
     def archive_project(self, project_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
@@ -223,6 +224,14 @@ class DominoControlPlane:
         data = self._post(path, params={"externalVolumeMounts": ""})
         return data if isinstance(data, dict) else {"resumed": True}
 
+    def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        # Remove a workspace entirely (not just stop it). Required before archive_project: a project
+        # that still CONTAINS a workspace — even a stopped one — is rejected with 500 "cannot be
+        # archived. It contains N workspace(s)". Spec: DELETE /v4/workspace/project/{projectId}/
+        # workspace/{workspaceId} (deleteWorkspace), path params only, no body.
+        data = self._delete(f"/v4/workspace/project/{project_id}/workspace/{workspace_id}")
+        return data if isinstance(data, dict) else {"deleted": True}
+
     def save_workspace_work(self, open_path: str) -> dict[str, Any]:
         # Pre-stop save: reach the running builder through its own notebookSession proxy (the same
         # host-relative `open_path` the hub opens in the browser) and drive its POST /api/project/sync
@@ -237,8 +246,9 @@ class DominoControlPlane:
     def archive_project(self, project_id: str) -> dict[str, Any]:
         # "Delete" a Sage app = archive its Domino project (soft delete; a Domino admin can restore
         # it). Public API, same family as create_project: DELETE /api/projects/beta/projects/{id}.
-        # The project's workspaces are archived with it; the caller stops a running builder first so
-        # it isn't left consuming compute. The GitHub repo is intentionally NOT touched.
+        # A project that still CONTAINS any workspace is rejected, so the caller deletes the
+        # workspaces (after saving + stopping a running builder) BEFORE calling this. The GitHub repo
+        # is intentionally NOT touched.
         data = self._delete(f"{_PROJECTS_PATH}/{project_id}")
         return data if isinstance(data, dict) else {"archived": True}
 
@@ -377,6 +387,11 @@ class FakeControlPlane:
                     session.setdefault("sessionStatusInfo", {})["isRunning"] = True
                 return ws
         return {"id": workspace_id, "state": "Unknown"}
+
+    def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        kept = [w for w in self.workspaces.get(project_id, []) if w.get("id") != workspace_id]
+        self.workspaces[project_id] = kept
+        return {"deleted": True}
 
     def save_workspace_work(self, open_path: str) -> dict[str, Any]:
         self.saved_paths.append(open_path)

@@ -139,6 +139,20 @@ def test_resume_workspace_starts_a_new_session_on_the_existing_workspace():
     assert out["id"] == "sess-1"
 
 
+def test_delete_workspace_deletes_via_v4_path():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"deleted": True})
+
+    out = _cp(handler).delete_workspace("proj-42", "ws-1")
+    assert seen["method"] == "DELETE"
+    assert seen["path"] == "/v4/workspace/project/proj-42/workspace/ws-1"
+    assert out == {"deleted": True}
+
+
 def test_save_workspace_work_posts_to_builder_sync():
     seen = {}
 

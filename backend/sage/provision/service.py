@@ -249,12 +249,22 @@ class HubService:
         """Delete an app: stop any running builder, then archive its Domino project (soft delete —
         a Domino admin can restore it). The GitHub repo is intentionally kept."""
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
+        # The project can't be archived while it still contains a workspace (even a stopped one), so
+        # every workspace is removed first: save + stop a running builder (so no work is lost), then
+        # delete it.
         for ws in self._cp.list_workspaces(project_id):
-            if isinstance(ws, dict) and workspace_is_running(ws) and ws.get("id"):
+            if not (isinstance(ws, dict) and ws.get("id")):
+                continue
+            wid = str(ws["id"])
+            if workspace_is_running(ws):
                 self._save_before_stop(ws, name)  # push any in-progress work before it's gone
                 try:
-                    self._cp.stop_workspace(project_id, str(ws["id"]))
-                except Exception:  # noqa: BLE001 — best-effort; the archive proceeds regardless
+                    self._cp.stop_workspace(project_id, wid)
+                except Exception:  # noqa: BLE001 — best-effort; deletion proceeds regardless
                     pass
+            try:
+                self._cp.delete_workspace(project_id, wid)
+            except Exception:  # noqa: BLE001 — best-effort; archive will report any that remain
+                log.warning("couldn't delete workspace %s; archive may fail", wid, exc_info=True)
         self._cp.archive_project(project_id)
         return {"deleted": True}
