@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -72,6 +73,7 @@ class ControlPlane(Protocol):
     def republish_app(self, app_id: str, *, git_ref_type: str = "head",
                       git_ref_value: str | None = None) -> PublishedApp: ...
     def find_project_app(self, project_id: str) -> PublishedApp | None: ...
+    def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str: ...
 
 
 class DominoControlPlane:
@@ -344,6 +346,18 @@ class DominoControlPlane:
             return PublishedApp(id=str(a["id"]), url=str(a.get("url") or ""))
         return None
 
+    def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
+        """Deep-link to the App's settings/overview page in Domino (tier, autoscaling, data, sharing),
+        so 1-click Publish stays frictionless while the full native config is one click away. Shape:
+        {host}/u/{owner}/{project}/apps/{projectId}/{appId}/details/overview."""
+        owner = self._username()
+        proj = quote(project_name, safe="")
+        return f"{self._host}/u/{owner}/{proj}/apps/{project_id}/{app_id}/details/overview"
+
+    def _username(self) -> str:
+        u = self._get("/api/users/v1/self").get("user") or {}
+        return str(u.get("userName") or u.get("loginId") or u.get("id") or "")
+
     def _app_version(self, git_ref_type: str, git_ref_value: str | None) -> dict[str, Any]:
         """AppVersionCreationRequest: the env + tier the app runs on and the git ref it deploys.
         gitRef.type is head|branches|commitId|tags; value is omitted for "head" (latest on the
@@ -445,3 +459,6 @@ class FakeControlPlane:
     def find_project_app(self, project_id: str) -> PublishedApp | None:
         app_id = next((aid for aid, pid in self.app_projects.items() if pid == project_id), None)
         return self.published.get(app_id) if app_id else None
+
+    def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
+        return f"https://fake.domino/u/owner/{project_name}/apps/{project_id}/{app_id}/details/overview"

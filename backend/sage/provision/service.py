@@ -279,13 +279,18 @@ class HubService:
         stable. Deploys the latest committed code on the project's default branch (gitRef "head"), so
         it's independent of whether the builder is running. Returns {published, app_id, url,
         republished}."""
+        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
         existing = self._cp.find_project_app(project_id)
         if existing and existing.id:  # already published — ship a new version, keep the URL
             app = self._cp.republish_app(existing.id)
-            return {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
-        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
-        app = self._cp.publish_app(project_id, name=name or "Sage app")
-        return {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+            out = {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
+        else:
+            app = self._cp.publish_app(project_id, name=name or "Sage app")
+            out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+        # Deep-link to Domino's native App settings (tier, autoscaling, data, sharing) — 1-click
+        # publish stays frictionless while the full config is one click away.
+        out["manage_url"] = self._cp.app_manage_url(project_id, app.id, name or "")
+        return out
 
     def delete_app(self, project_id: str) -> dict[str, Any]:
         """Delete an app: stop any running builder, then archive its Domino project (soft delete —

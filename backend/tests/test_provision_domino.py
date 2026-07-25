@@ -259,6 +259,18 @@ def test_find_project_app_returns_first_non_archived():
     assert app.url == "https://d/app-live"
 
 
+def test_app_manage_url_builds_settings_deep_link():
+    def handler(request):
+        assert request.url.path == "/api/users/v1/self"
+        return httpx.Response(200, json={"user": {"id": "u1", "userName": "subir_mansukhani"}})
+
+    url = _cp(handler).app_manage_url("proj-42", "app-9", "My App")
+    assert url == (
+        "https://domino.example.com/u/subir_mansukhani/My%20App"
+        "/apps/proj-42/app-9/details/overview"
+    )
+
+
 def test_find_project_app_returns_none_when_no_apps():
     cp = _cp(lambda req: httpx.Response(200, json={"apps": []}))
     assert cp.find_project_app("proj-42") is None

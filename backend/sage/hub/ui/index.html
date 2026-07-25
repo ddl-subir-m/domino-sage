@@ -163,11 +163,12 @@
     const $ = (id) => document.getElementById(id);
     const banner = (msg) => { const b = $('banner'); if (!msg) { b.className = 'banner'; b.textContent = ''; return; }
       b.className = 'banner err'; b.textContent = msg; };
-    // Success notice, optionally with a link to the just-published app.
-    function info(msg, url) {
+    // Success notice, optionally with one or more pre-built link elements (HTML strings).
+    function info(msg, links) {
       const b = $('banner');
       b.className = 'banner ok';
-      b.innerHTML = url ? `${esc(msg)} <a href="${esc(url)}" target="_blank" rel="noopener">Open app ↗</a>` : esc(msg);
+      const tail = (links && links.length) ? ' &nbsp; ' + links.join(' &nbsp;·&nbsp; ') : '';
+      b.innerHTML = esc(msg) + tail;
     }
 
     function slugify(name) {
@@ -300,12 +301,12 @@
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
         const verb = data.republished ? 'Re-published' : 'Published';
-        if (data.url) {
-          info(`${verb} “${name}” — it may take a moment to finish deploying.`, publishedUrl(data.url));
-          window.open(publishedUrl(data.url), '_blank');
-        } else {
-          info(`${verb} “${name}”. It's deploying — find it under Apps in Domino.`, null);
-        }
+        const link = (href, label) => `<a href="${esc(href)}" target="_blank" rel="noopener">${label}</a>`;
+        const links = [];
+        if (data.url) links.push(link(publishedUrl(data.url), 'Open app ↗'));
+        if (data.manage_url) links.push(link(data.manage_url, 'Manage settings in Domino ↗'));
+        info(`${verb} “${name}” — it may take a moment to finish deploying.`, links);
+        if (data.url) window.open(publishedUrl(data.url), '_blank');
       } catch (e) {
         banner(e.message || 'Couldn’t publish the app.');
       } finally { btn.disabled = false; btn.textContent = label; }
