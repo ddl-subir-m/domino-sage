@@ -72,11 +72,13 @@ _STOPPED_STATES = frozenset({"stopped", "stopping"})
 # these before deleting. Matched case-insensitively.
 _REMOVABLE_STATES = frozenset({"stopped", "failed", "error"})
 
-# A delete on a Stopped workspace can still fail transiently ("Workspace delete wasn't completed
-# successfully. Please try again.") because Domino's delete is async — so retry a few times, and
-# treat the workspace having disappeared as success.
-_DELETE_RETRIES = 5
-_DELETE_RETRY_DELAY = 3.0
+# A delete on a Stopped workspace keeps failing transiently ("Workspace delete wasn't completed
+# successfully. Please try again.") for a while after the stop — Domino's delete is async and needs
+# time to settle. So retry over a generous window (~75s), treating the workspace having disappeared
+# from the project as the real success signal (the async delete completes even when the DELETE call
+# reports failure).
+_DELETE_RETRIES = 15
+_DELETE_RETRY_DELAY = 5.0
 
 
 def is_builder_workspace(ws: dict[str, Any]) -> bool:
