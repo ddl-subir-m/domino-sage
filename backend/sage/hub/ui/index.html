@@ -63,7 +63,7 @@
     .card .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
     .card .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
     .card .status.running .dot { background: var(--ok); }
-    .card .actions { margin-top: auto; display: flex; align-items: center; gap: 8px; }
+    .card .actions { margin-top: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .btn-ghost { background: transparent; border: none; color: var(--muted); font-weight: 600;
       padding: 8px 10px; border-radius: 8px; font-size: 14px; }
     .btn-ghost:hover { color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); }
@@ -86,6 +86,9 @@
     .banner { border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 18px; display: none; }
     .banner.err { display: block; background: color-mix(in srgb, var(--err) 10%, var(--surface)); color: var(--err);
       border: 1px solid color-mix(in srgb, var(--err) 30%, var(--border)); }
+    .banner.ok { display: block; background: color-mix(in srgb, var(--ok) 12%, var(--surface)); color: var(--ok);
+      border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--border)); }
+    .banner a { color: inherit; font-weight: 700; }
 
     /* modal */
     .backdrop { position: fixed; inset: 0; background: rgba(15,15,30,.45); display: none; align-items: center;
@@ -160,6 +163,12 @@
     const $ = (id) => document.getElementById(id);
     const banner = (msg) => { const b = $('banner'); if (!msg) { b.className = 'banner'; b.textContent = ''; return; }
       b.className = 'banner err'; b.textContent = msg; };
+    // Success notice, optionally with a link to the just-published app.
+    function info(msg, url) {
+      const b = $('banner');
+      b.className = 'banner ok';
+      b.innerHTML = url ? `${esc(msg)} <a href="${esc(url)}" target="_blank" rel="noopener">Open app ↗</a>` : esc(msg);
+    }
 
     function slugify(name) {
       const s = (name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -271,6 +280,37 @@
       }
     }
 
+    // A published Domino App URL is usually absolute; if it comes back host-relative, resolve it
+    // against the main host the same way the builder URL is (see builderUrl).
+    function publishedUrl(u) {
+      if (!u) return u;
+      if (/^https?:\/\//i.test(u)) return u;
+      return builderUrl(u);
+    }
+
+    // Publish the app's committed code as a live, shareable Domino App. Independent of the builder —
+    // it deploys the latest commit on the branch (the builder autosaves after each build and on stop).
+    async function publishApp(id, btn) {
+      const name = APP_NAMES[id] || 'this app';
+      if (!confirm(`Publish “${name}” as a live Domino App?\n\nThis deploys the latest saved (committed) code as a shareable Domino App. If you've just made changes, run a build or stop the builder first so they're saved.`)) return;
+      banner(null);
+      const label = btn.textContent; btn.disabled = true; btn.textContent = 'Publishing…';
+      try {
+        const r = await fetch(api(`/api/apps/${id}/publish`), { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+        const verb = data.republished ? 'Re-published' : 'Published';
+        if (data.url) {
+          info(`${verb} “${name}” — it may take a moment to finish deploying.`, publishedUrl(data.url));
+          window.open(publishedUrl(data.url), '_blank');
+        } else {
+          info(`${verb} “${name}”. It's deploying — find it under Apps in Domino.`, null);
+        }
+      } catch (e) {
+        banner(e.message || 'Couldn’t publish the app.');
+      } finally { btn.disabled = false; btn.textContent = label; }
+    }
+
     async function openApp(id, btn) {
       banner(null);
       const label = btn.textContent; btn.disabled = true; btn.textContent = 'Starting…';
@@ -310,6 +350,7 @@
           <div class="actions" id="actions-${esc(a.id)}">
             <button class="btn-secondary" onclick="startApp('${esc(a.id)}', this)">Start</button>
             <button class="btn-secondary" onclick="openApp('${esc(a.id)}', this)">Open builder</button>
+            <button class="btn-secondary" onclick="publishApp('${esc(a.id)}', this)">Publish</button>
             <button class="btn-danger" onclick="deleteApp('${esc(a.id)}', this)">Delete</button>
           </div>
         </div>`).join('')}</div>`;
@@ -332,6 +373,7 @@
           actionsEl.innerHTML =
             `<button class="btn-ghost" onclick="stopApp('${esc(id)}', ${wsArg}, this)">Stop</button>` +
             `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>` +
+            `<button class="btn-secondary" onclick="publishApp('${esc(id)}', this)">Publish</button>` +
             `<button class="btn-danger" onclick="deleteApp('${esc(id)}', this)">Delete</button>`;
         } else {
           statusEl.className = 'status';
@@ -339,6 +381,7 @@
           actionsEl.innerHTML =
             `<button class="btn-secondary" onclick="startApp('${esc(id)}', this)">Start</button>` +
             `<button class="btn-secondary" onclick="openApp('${esc(id)}', this)">Open builder</button>` +
+            `<button class="btn-secondary" onclick="publishApp('${esc(id)}', this)">Publish</button>` +
             `<button class="btn-danger" onclick="deleteApp('${esc(id)}', this)">Delete</button>`;
         }
         return !!s.running;

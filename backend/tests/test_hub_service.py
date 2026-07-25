@@ -421,3 +421,31 @@ def test_delete_app_archives_even_with_no_workspace(tmp_path):
     ref = cp.create_project("Idle App", git_url="https://github.com/me/sage-idle-app.git")
     assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
     assert cp.list_apps() == []
+
+
+def test_publish_app_creates_and_launches_first_version(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url="https://github.com/me/sage-sales-app.git")
+
+    out = _hub(tmp_path, cp).publish_app(ref.id)
+
+    assert out["published"] is True
+    assert out["republished"] is False
+    assert out["app_id"] in cp.published
+    assert out["url"] == cp.published[out["app_id"]].url
+    # the created App was named after the project
+    assert cp.app_projects[out["app_id"]] == ref.id
+
+
+def test_publish_app_reuses_existing_app_and_keeps_url(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url="https://github.com/me/sage-sales-app.git")
+    hub = _hub(tmp_path, cp)
+
+    first = hub.publish_app(ref.id)
+    second = hub.publish_app(ref.id)
+
+    assert second["republished"] is True
+    assert second["app_id"] == first["app_id"]  # same App, not a duplicate
+    assert second["url"] == first["url"]        # URL stays stable across versions
+    assert len(cp.published) == 1

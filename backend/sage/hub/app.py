@@ -241,6 +241,17 @@ async def stop_app(project_id: str, request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.post("/api/apps/{project_id}/publish")
+async def publish_app(project_id: str) -> JSONResponse:
+    """Publish (or re-publish) the app's latest committed code as a live, shareable Domino App."""
+    try:
+        result = await run_in_threadpool(hub.publish_app, project_id)
+    except Exception as e:  # provisioning failure — human-readable, not a stack trace
+        log.exception("publish_app failed")
+        return JSONResponse({"error": f"Couldn't publish the app: {e}"}, status_code=502)
+    return JSONResponse(result)
+
+
 @app.delete("/api/apps/{project_id}")
 async def delete_app(project_id: str) -> JSONResponse:
     """Delete an app: stop its builder and archive the Domino project (soft; the repo is kept)."""

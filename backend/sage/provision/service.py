@@ -273,6 +273,20 @@ class HubService:
         self._cp.stop_workspace(project_id, str(wid))
         return {"stopped": True, "workspace_id": wid}
 
+    def publish_app(self, project_id: str) -> dict[str, Any]:
+        """Publish an app's built code as a live, shareable Domino App. The first publish creates and
+        launches the App; a later publish deploys a NEW version to the same App so its URL stays
+        stable. Deploys the latest committed code on the project's default branch (gitRef "head"), so
+        it's independent of whether the builder is running. Returns {published, app_id, url,
+        republished}."""
+        existing = self._cp.find_project_app(project_id)
+        if existing and existing.id:  # already published — ship a new version, keep the URL
+            app = self._cp.republish_app(existing.id)
+            return {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
+        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
+        app = self._cp.publish_app(project_id, name=name or "Sage app")
+        return {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+
     def delete_app(self, project_id: str) -> dict[str, Any]:
         """Delete an app: stop any running builder, then archive its Domino project (soft delete —
         a Domino admin can restore it). The GitHub repo is intentionally kept."""

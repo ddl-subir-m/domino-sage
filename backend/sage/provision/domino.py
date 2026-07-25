@@ -71,6 +71,7 @@ class ControlPlane(Protocol):
                     visibility: str = "GRANT_BASED") -> PublishedApp: ...
     def republish_app(self, app_id: str, *, git_ref_type: str = "head",
                       git_ref_value: str | None = None) -> PublishedApp: ...
+    def find_project_app(self, project_id: str) -> PublishedApp | None: ...
 
 
 class DominoControlPlane:
@@ -328,6 +329,21 @@ class DominoControlPlane:
         d = d if isinstance(d, dict) else {}
         return PublishedApp(id=app_id, url=str(d.get("url") or ""))
 
+    def find_project_app(self, project_id: str) -> PublishedApp | None:
+        """The published Domino App for this project, if one already exists — so a re-publish targets
+        it (new version, stable URL) instead of creating a duplicate App. The public create API has
+        no tag field, so we list by projectId and take the first non-archived app."""
+        d = self._get(_APPS_PATH, params={"projectId": project_id, "offset": 0, "limit": 50})
+        items = d if isinstance(d, list) else (d.get("apps") or d.get("data") or [])
+        for a in items:
+            if not isinstance(a, dict) or not a.get("id"):
+                continue
+            status = str(a.get("status") or a.get("state") or "").lower()
+            if "archiv" in status or "delet" in status:  # skip a soft-deleted App — republish would fail
+                continue
+            return PublishedApp(id=str(a["id"]), url=str(a.get("url") or ""))
+        return None
+
     def _app_version(self, git_ref_type: str, git_ref_value: str | None) -> dict[str, Any]:
         """AppVersionCreationRequest: the env + tier the app runs on and the git ref it deploys.
         gitRef.type is head|branches|commitId|tags; value is omitted for "head" (latest on the
@@ -352,6 +368,7 @@ class FakeControlPlane:
     projects: list[ProjectRef] = field(default_factory=list)
     workspaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     published: dict[str, PublishedApp] = field(default_factory=dict)  # app_id -> app
+    app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id (find_project_app)
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
     _seq: int = 0
 
@@ -418,8 +435,13 @@ class FakeControlPlane:
         self._seq += 1
         app = PublishedApp(id=f"app-{self._seq}", url=f"https://fake.domino/app/app-{self._seq}")
         self.published[app.id] = app
+        self.app_projects[app.id] = project_id
         return app
 
     def republish_app(self, app_id: str, *, git_ref_type: str = "head",
                       git_ref_value: str | None = None) -> PublishedApp:
         return self.published.get(app_id, PublishedApp(id=app_id, url=""))
+
+    def find_project_app(self, project_id: str) -> PublishedApp | None:
+        app_id = next((aid for aid, pid in self.app_projects.items() if pid == project_id), None)
+        return self.published.get(app_id) if app_id else None

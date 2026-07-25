@@ -240,6 +240,30 @@ def test_republish_app_posts_new_version_and_keeps_app_id():
     assert app.id == "app-9"  # keeps the caller's app id, not the version id
 
 
+def test_find_project_app_returns_first_non_archived():
+    seen = {}
+    apps = {"apps": [
+        {"id": "app-old", "status": "Archived", "url": "https://d/app-old"},
+        {"id": "app-live", "status": "Running", "url": "https://d/app-live"},
+    ]}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["query"] = request.url.query.decode()
+        return httpx.Response(200, json=apps)
+
+    app = _cp(handler).find_project_app("proj-42")
+    assert seen["path"] == "/api/apps/beta/apps"
+    assert "projectId=proj-42" in seen["query"]
+    assert app is not None and app.id == "app-live"  # skipped the archived one
+    assert app.url == "https://d/app-live"
+
+
+def test_find_project_app_returns_none_when_no_apps():
+    cp = _cp(lambda req: httpx.Response(200, json={"apps": []}))
+    assert cp.find_project_app("proj-42") is None
+
+
 def test_publish_app_surfaces_error_body():
     cp = _cp(lambda req: httpx.Response(400, text='{"message":"bad hardware tier"}'))
     try:
