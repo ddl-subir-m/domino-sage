@@ -153,6 +153,22 @@ def test_delete_workspace_deletes_via_v4_path():
     assert out == {"deleted": True}
 
 
+def test_archive_workspace_posts_to_workspaces_archive():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"archived": True})
+
+    out = _cp(handler).archive_workspace("proj-42", "ws-1")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v4/workspaces/archive"
+    assert seen["body"] == {"workspaceId": "ws-1", "projectId": "proj-42"}
+    assert out == {"archived": True}
+
+
 def test_save_workspace_work_posts_to_builder_sync():
     seen = {}
 

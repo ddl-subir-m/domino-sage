@@ -251,7 +251,9 @@ class HubService:
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
         # The project can't be archived while it still contains a workspace (even a stopped one), so
         # every workspace is removed first: save + stop a running builder (so no work is lost), then
-        # delete it.
+        # archive/delete it. If a workspace can't be removed, raise the real reason — otherwise the
+        # archive fails downstream with a misleading "contains N workspace" 500.
+        failures: list[str] = []
         for ws in self._cp.list_workspaces(project_id):
             if not (isinstance(ws, dict) and ws.get("id")):
                 continue
@@ -260,11 +262,27 @@ class HubService:
                 self._save_before_stop(ws, name)  # push any in-progress work before it's gone
                 try:
                     self._cp.stop_workspace(project_id, wid)
-                except Exception:  # noqa: BLE001 — best-effort; deletion proceeds regardless
+                except Exception:  # noqa: BLE001 — best-effort; removal proceeds regardless
                     pass
             try:
-                self._cp.delete_workspace(project_id, wid)
-            except Exception:  # noqa: BLE001 — best-effort; archive will report any that remain
-                log.warning("couldn't delete workspace %s; archive may fail", wid, exc_info=True)
+                self._remove_workspace(project_id, wid)
+            except Exception as e:  # noqa: BLE001 — collect, so one bad workspace reports clearly
+                failures.append(f"{wid}: {e}")
+        if failures:
+            raise RuntimeError("couldn't remove workspace(s) before archiving — " + " | ".join(failures))
         self._cp.archive_project(project_id)
         return {"deleted": True}
+
+    def _remove_workspace(self, project_id: str, workspace_id: str) -> None:
+        """Remove a workspace so its project can be archived. Domino accepts either archive or delete
+        depending on the workspace's history (a workspace that has run sessions typically must be
+        archived, not deleted), so try archive first — recoverable, matching the project's own soft
+        archive — then fall back to delete. Raises with both errors if neither works."""
+        errors = []
+        for op in (self._cp.archive_workspace, self._cp.delete_workspace):
+            try:
+                op(project_id, workspace_id)
+                return
+            except Exception as e:  # noqa: BLE001 — try the other removal path before giving up
+                errors.append(f"{op.__name__} {e}")
+        raise RuntimeError("; ".join(errors))
