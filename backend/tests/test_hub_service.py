@@ -196,6 +196,60 @@ def test_stop_app_targets_newest_running_when_id_omitted(tmp_path):
     assert _hub(tmp_path, cp).stop_app("proj-1")["workspace_id"] == "ws-new"
 
 
+def _running_ws(wid="ws-1"):
+    return {
+        "id": wid, "state": "Started", "ownerName": "u",
+        "mostRecentSession": {"executionId": "run-9", "sessionStatusInfo": {"isRunning": True}},
+    }
+
+
+def test_stop_app_saves_running_builder_before_stopping(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("My App", git_url="https://github.com/me/sage-my-app.git")
+    cp.workspaces[ref.id] = [_running_ws()]
+
+    order = []
+    orig_save, orig_stop = cp.save_workspace_work, cp.stop_workspace
+    cp.save_workspace_work = lambda p: order.append(("save", p)) or orig_save(p)
+    cp.stop_workspace = lambda p, w: order.append(("stop", w)) or orig_stop(p, w)
+
+    result = _hub(tmp_path, cp).stop_app(ref.id, "ws-1")
+    assert result == {"stopped": True, "workspace_id": "ws-1"}
+    # Committed + pushed (via the builder's own sync) BEFORE the workspace was stopped.
+    assert order == [("save", "/u/My%20App/notebookSession/run-9/"), ("stop", "ws-1")]
+
+
+def test_stop_app_skips_save_when_builder_not_running(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Idle", git_url="https://github.com/me/sage-idle.git")
+    cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped", "ownerName": "u",
+                             "mostRecentSession": {"executionId": "run-9"}}]
+    _hub(tmp_path, cp).stop_app(ref.id, "ws-1")
+    assert cp.saved_paths == []  # nothing running to save
+
+
+def test_stop_app_stops_even_when_pre_stop_save_fails(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("My App", git_url="https://github.com/me/sage-my-app.git")
+    cp.workspaces[ref.id] = [_running_ws()]
+
+    def boom(open_path):
+        raise RuntimeError("builder unreachable")
+
+    cp.save_workspace_work = boom
+    assert _hub(tmp_path, cp).stop_app(ref.id, "ws-1") == {"stopped": True, "workspace_id": "ws-1"}
+    assert cp.workspaces[ref.id][0]["state"] == "Stopped"  # stopped despite the save failing
+
+
+def test_delete_app_saves_running_builder_before_archiving(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("My App", git_url="https://github.com/me/sage-my-app.git")
+    cp.workspaces[ref.id] = [_running_ws()]
+
+    assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
+    assert cp.saved_paths == ["/u/My%20App/notebookSession/run-9/"]
+
+
 def test_stop_app_noop_when_nothing_to_stop(tmp_path):
     result = _hub(tmp_path, FakeControlPlane()).stop_app("proj-x")
     assert result == {"stopped": False, "workspace_id": None, "detail": "no workspace to stop"}

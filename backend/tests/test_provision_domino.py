@@ -139,6 +139,31 @@ def test_resume_workspace_starts_a_new_session_on_the_existing_workspace():
     assert out["id"] == "sess-1"
 
 
+def test_save_workspace_work_posts_to_builder_sync():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"status": "merged", "pushed": True})
+
+    # The builder is reached through its own notebookSession proxy path + /api/project/sync.
+    out = _cp(handler).save_workspace_work("/u/My%20App/notebookSession/run-9/")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/u/My App/notebookSession/run-9/api/project/sync"
+    assert out["pushed"] is True
+
+
+def test_save_workspace_work_surfaces_error_body():
+    cp = _cp(lambda req: httpx.Response(502, text='{"error":"builder unreachable"}'))
+    try:
+        cp.save_workspace_work("/u/App/notebookSession/run-9/")
+    except RuntimeError as e:
+        assert "502" in str(e) and "builder unreachable" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError on 502")
+
+
 def test_stop_workspace_tolerates_empty_body():
     out = _cp(lambda req: httpx.Response(200, text="")).stop_workspace("p", "ws")
     assert out == {}  # empty body -> no error, empty dict

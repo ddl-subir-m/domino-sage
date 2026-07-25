@@ -211,6 +211,20 @@ class HubService:
             "workspace_id": ws.get("id"),
         }
 
+    def _save_before_stop(self, ws: dict[str, Any], name: str | None) -> None:
+        """Stop-safe: before a running builder is stopped, ask it to commit in-progress edits, pull +
+        resolve any conflicts, and push, so no uncommitted work is lost. Best-effort — a failed or
+        unreachable save must never block the stop; the builder's own shutdown hook is the backstop."""
+        if not workspace_is_running(ws):
+            return  # a stopped builder has nothing running to save
+        open_path = workspace_open_url(ws, name)
+        if not open_path:
+            return  # can't address the builder (missing owner/session) — nothing to call
+        try:
+            self._cp.save_workspace_work(open_path)
+        except Exception:  # noqa: BLE001 — best-effort; the stop proceeds regardless
+            log.warning("pre-stop save failed for workspace %s; stopping anyway", ws.get("id"), exc_info=True)
+
     def stop_app(self, project_id: str, workspace_id: str | None = None) -> dict[str, Any]:
         """Stop an app's builder so it stops consuming compute. Targets the given workspace, else the
         newest running one (falling back to the newest overall). Returns {stopped, workspace_id}."""
@@ -225,6 +239,8 @@ class HubService:
                 ws = max(pool, key=lambda w: w.get("createdAt") or "")
         if ws is None:
             return {"stopped": False, "workspace_id": None, "detail": "no workspace to stop"}
+        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
+        self._save_before_stop(ws, name)
         wid = ws.get("id")
         self._cp.stop_workspace(project_id, str(wid))
         return {"stopped": True, "workspace_id": wid}
@@ -232,8 +248,10 @@ class HubService:
     def delete_app(self, project_id: str) -> dict[str, Any]:
         """Delete an app: stop any running builder, then archive its Domino project (soft delete —
         a Domino admin can restore it). The GitHub repo is intentionally kept."""
+        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
         for ws in self._cp.list_workspaces(project_id):
             if isinstance(ws, dict) and workspace_is_running(ws) and ws.get("id"):
+                self._save_before_stop(ws, name)  # push any in-progress work before it's gone
                 try:
                     self._cp.stop_workspace(project_id, str(ws["id"]))
                 except Exception:  # noqa: BLE001 — best-effort; the archive proceeds regardless

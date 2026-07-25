@@ -34,6 +34,9 @@ _APPS_PATH = "/api/apps/beta/apps"  # public apps API (create+launch, then repub
 # Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
 # create API has no tag field, so list_apps filters on the project's git repo URI instead.
 _SAGE_REPO_PREFIX = "sage-"
+# A pre-stop save drives the builder's commit → pull → agent-resolve → push, which can run a model
+# turn to resolve conflicts, so it needs a far longer ceiling than a plain control-plane REST call.
+_SAVE_TIMEOUT_S = 180.0
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,7 @@ class ControlPlane(Protocol):
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
+    def save_workspace_work(self, open_path: str) -> dict[str, Any]: ...
     def archive_project(self, project_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
@@ -219,6 +223,17 @@ class DominoControlPlane:
         data = self._post(path, params={"externalVolumeMounts": ""})
         return data if isinstance(data, dict) else {"resumed": True}
 
+    def save_workspace_work(self, open_path: str) -> dict[str, Any]:
+        # Pre-stop save: reach the running builder through its own notebookSession proxy (the same
+        # host-relative `open_path` the hub opens in the browser) and drive its POST /api/project/sync
+        # — commit in-progress edits, pull + agent-resolve any conflicts, push — so stopping the
+        # workspace never drops uncommitted work. Runs on the internal DOMINO_API_HOST, which proxies
+        # the notebookSession path just like the external origin does.
+        url = f"{self._host}{open_path.rstrip('/')}/api/project/sync"
+        with self._client() as c:
+            r = c.post(url, headers=self._headers(), timeout=_SAVE_TIMEOUT_S)
+        return self._check(r, "POST", url)
+
     def archive_project(self, project_id: str) -> dict[str, Any]:
         # "Delete" a Sage app = archive its Domino project (soft delete; a Domino admin can restore
         # it). Public API, same family as create_project: DELETE /api/projects/beta/projects/{id}.
@@ -323,6 +338,7 @@ class FakeControlPlane:
     projects: list[ProjectRef] = field(default_factory=list)
     workspaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     published: dict[str, PublishedApp] = field(default_factory=dict)  # app_id -> app
+    saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
     _seq: int = 0
 
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
@@ -361,6 +377,10 @@ class FakeControlPlane:
                     session.setdefault("sessionStatusInfo", {})["isRunning"] = True
                 return ws
         return {"id": workspace_id, "state": "Unknown"}
+
+    def save_workspace_work(self, open_path: str) -> dict[str, Any]:
+        self.saved_paths.append(open_path)
+        return {"saved": True}
 
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
         return list(self.workspaces.get(project_id, []))

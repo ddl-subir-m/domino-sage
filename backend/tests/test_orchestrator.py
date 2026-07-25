@@ -65,6 +65,25 @@ def test_history_reads_disk_without_attaching(tmp_path: Path):
     assert orch2.history() == [{"type": "user", "text": "hi"}]
 
 
+def test_shutdown_saves_work_before_stopping_resources(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)  # attach so there's a project to save
+
+    saved = []
+    orch._save_to_git = lambda project, prompt: saved.append(prompt) or None
+
+    orch.shutdown()
+    assert saved == ["save before stop"]  # committed + pushed before teardown
+
+
+def test_shutdown_without_a_project_is_a_noop(tmp_path: Path):
+    orch = _orch(tmp_path)  # never attached
+    saved = []
+    orch._save_to_git = lambda project, prompt: saved.append(prompt)
+    orch.shutdown()
+    assert saved == []
+
+
 def test_sync_pulls_teammate_changes_and_pushes(tmp_path: Path):
     # A bare remote with a workspace checkout at the bound volume, plus a teammate's clone.
     bare = tmp_path / "remote.git"

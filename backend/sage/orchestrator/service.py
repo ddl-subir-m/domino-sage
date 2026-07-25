@@ -532,6 +532,15 @@ class Orchestrator:
         return {"detached": asset.name, "status": project.status()}
 
     def shutdown(self) -> None:
+        # Stop-safe backstop: on a graceful SIGTERM (Domino /stop, idle cull, or the hub button),
+        # save any in-progress work first — commit + pull/resolve + push — so stopping never drops
+        # uncommitted edits. Done before tearing down opencode, whose server the conflict-resolution
+        # turn still needs. Best-effort: _save_to_git never raises, but guard the teardown regardless.
+        if self._project is not None:
+            try:
+                self._save_to_git(self._project, "save before stop")
+            except Exception:
+                log.exception("shutdown: failed to save work to git")
         # Best-effort per resource: the preview failing to stop must not leave the shared
         # opencode server running as an orphan.
         if self._project is not None:
