@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import quote
 
 from . import naming
-from .domino import ControlPlane, ProjectRef
+from .domino import BUILDER_WORKSPACE_NAME, ControlPlane, ProjectRef
 from .github import RepoInfo, RepoNameConflict, RepoProvider
 from .seed import seed_and_push
 
@@ -71,6 +71,17 @@ _STOPPED_STATES = frozenset({"stopped", "stopping"})
 # "Workspace cannot be deleted from current state", so delete_app stops it and waits for one of
 # these before deleting. Matched case-insensitively.
 _REMOVABLE_STATES = frozenset({"stopped", "failed", "error"})
+
+
+def is_builder_workspace(ws: dict[str, Any]) -> bool:
+    """True unless the workspace is clearly a non-builder session — a VS Code / Jupyter workspace a
+    user opened in the same project. The list DTO carries no tool info, so we discriminate by name:
+    the hub names its builders BUILDER_WORKSPACE_NAME. An unnamed workspace is treated as a builder
+    (backward-compatible), so only a workspace with a different explicit name is excluded."""
+    if not isinstance(ws, dict):
+        return False
+    name = ws.get("name")
+    return not name or name == BUILDER_WORKSPACE_NAME
 
 
 def workspace_is_running(ws: dict[str, Any]) -> bool:
@@ -161,7 +172,8 @@ class HubService:
         stopped one in place, else launch a fresh one."""
         # The workspace DTO has no project name (the URL slug), so resolve it from the app list.
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
-        workspaces = [w for w in self._cp.list_workspaces(project_id) if isinstance(w, dict)]
+        workspaces = [w for w in self._cp.list_workspaces(project_id)
+                      if isinstance(w, dict) and is_builder_workspace(w)]
         for ws in workspaces:
             state = str(ws.get("state") or ws.get("status") or "").lower()
             if state in ("", "running", "started", "active") or ws.get("isRunning"):
@@ -197,7 +209,8 @@ class HubService:
         """Current running-state + open URL for an app's workspace — the UI polls this after a launch
         so it only opens the builder once the session is actually running."""
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
-        workspaces = [w for w in self._cp.list_workspaces(project_id) if isinstance(w, dict)]
+        workspaces = [w for w in self._cp.list_workspaces(project_id)
+                      if isinstance(w, dict) and is_builder_workspace(w)]
         ws = None
         if workspace_id:
             ws = next((w for w in workspaces if w.get("id") == workspace_id), None)
@@ -234,7 +247,8 @@ class HubService:
     def stop_app(self, project_id: str, workspace_id: str | None = None) -> dict[str, Any]:
         """Stop an app's builder so it stops consuming compute. Targets the given workspace, else the
         newest running one (falling back to the newest overall). Returns {stopped, workspace_id}."""
-        workspaces = [w for w in self._cp.list_workspaces(project_id) if isinstance(w, dict)]
+        workspaces = [w for w in self._cp.list_workspaces(project_id)
+                      if isinstance(w, dict) and is_builder_workspace(w)]
         ws = None
         if workspace_id:
             ws = next((w for w in workspaces if w.get("id") == workspace_id), None)

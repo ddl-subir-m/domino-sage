@@ -95,6 +95,27 @@ def test_open_app_reuses_running_workspace(tmp_path):
     assert result["workspace"]["id"] == "ws-existing"
 
 
+def test_hub_ignores_non_builder_workspace_in_same_project(tmp_path):
+    # A user's VS Code session in the app's project must not be reused/stopped/reported by the hub.
+    cp = FakeControlPlane()
+    vscode = {"id": "vscode-1", "state": "running", "name": "my-vscode",
+              "mostRecentSession": {"sessionStatusInfo": {"isRunning": True}}}
+    cp.workspaces["proj-1"] = [vscode]
+    hub = _hub(tmp_path, cp)
+
+    # status: no builder -> reported as not running, no workspace id
+    assert hub.workspace_status("proj-1") == {"running": False, "open_url": None,
+                                              "state": None, "workspace_id": None}
+    # stop: nothing (builder) to stop
+    assert hub.stop_app("proj-1") == {"stopped": False, "workspace_id": None,
+                                     "detail": "no workspace to stop"}
+    # open: launches a fresh builder rather than reusing the VS Code session
+    result = hub.open_app("proj-1")
+    assert result["launched"] is True
+    assert result["workspace"]["id"] == "ws-proj-1"
+    assert vscode in cp.workspaces["proj-1"]  # the VS Code workspace was left untouched
+
+
 def test_open_app_launches_when_none(tmp_path):
     hub = _hub(tmp_path, FakeControlPlane())
     result = hub.open_app("proj-9")

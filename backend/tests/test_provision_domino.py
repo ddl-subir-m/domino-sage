@@ -101,6 +101,7 @@ def test_create_workspace_body():
     assert b["environmentRevisionSpec"] == {"revisionId": "rev-1"}
     assert b["hardwareTierId"] == {"value": "tier-1"}
     assert b["tools"] == ["sageBuilder"]
+    assert b["name"] == "sage"  # names the builder so the hub can tell it from other workspaces
     assert b["externalVolumeMounts"] == []
     assert "mainGitRepoRef" not in b  # invalid field; branch comes from the project's defaultRef
 

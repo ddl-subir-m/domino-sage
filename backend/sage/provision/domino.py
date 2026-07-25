@@ -34,6 +34,10 @@ _APPS_PATH = "/api/apps/beta/apps"  # public apps API (create+launch, then repub
 # Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
 # create API has no tag field, so list_apps filters on the project's git repo URI instead.
 _SAGE_REPO_PREFIX = "sage-"
+# The name every hub-created builder workspace is given (WorkspaceDto.name). The list DTO carries no
+# tool info, so the hub uses this to tell its own builder workspaces apart from a VS Code/Jupyter
+# session a user may have opened in the same project — Start/Stop/status act only on builders.
+BUILDER_WORKSPACE_NAME = "sage"
 # A pre-stop save drives the builder's commit → pull → agent-resolve → push, which can run a model
 # turn to resolve conflicts, so it needs a far longer ceiling than a plain control-plane REST call.
 _SAVE_TIMEOUT_S = 180.0
@@ -179,7 +183,7 @@ class DominoControlPlane:
         # mainRepository.defaultRef, so overrideMainGitRepoRef is unnecessary. Pin the same
         # environment revision as the hub when Domino injected one, else default to active.
         body: dict[str, Any] = {
-            "name": "sage",
+            "name": BUILDER_WORKSPACE_NAME,
             "environmentId": self._env_id,
             "hardwareTierId": {"value": self._tier_id},
             "tools": [self._tool],
