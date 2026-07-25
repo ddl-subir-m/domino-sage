@@ -12,6 +12,7 @@ best-effort and mark it so.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,11 @@ def workspace_open_url(ws: dict[str, Any], project_name: str | None = None) -> s
 # v4 workspace `state` values that mean "stopped but relaunchable in place" (vs. running, or the
 # terminal deleted/failed states that warrant a fresh workspace). Matched case-insensitively.
 _STOPPED_STATES = frozenset({"stopped", "stopping"})
+
+# States a workspace can be deleted from. Domino rejects a delete on a live workspace with 500
+# "Workspace cannot be deleted from current state", so delete_app stops it and waits for one of
+# these before deleting. Matched case-insensitively.
+_REMOVABLE_STATES = frozenset({"stopped", "failed", "error"})
 
 
 def workspace_is_running(ws: dict[str, Any]) -> bool:
@@ -250,22 +256,17 @@ class HubService:
         a Domino admin can restore it). The GitHub repo is intentionally kept."""
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
         # The project can't be archived while it still contains a workspace (even a stopped one), so
-        # every workspace is removed first: save + stop a running builder (so no work is lost), then
-        # archive/delete it. If a workspace can't be removed, raise the real reason — otherwise the
-        # archive fails downstream with a misleading "contains N workspace" 500.
+        # every workspace is deleted first. If a workspace can't be removed, raise the real reason —
+        # otherwise the archive fails downstream with a misleading "contains N workspace" 500.
         failures: list[str] = []
         for ws in self._cp.list_workspaces(project_id):
             if not (isinstance(ws, dict) and ws.get("id")):
                 continue
+            if ws.get("deleted"):
+                continue  # already gone — doesn't count against the archive
             wid = str(ws["id"])
-            if workspace_is_running(ws):
-                self._save_before_stop(ws, name)  # push any in-progress work before it's gone
-                try:
-                    self._cp.stop_workspace(project_id, wid)
-                except Exception:  # noqa: BLE001 — best-effort; removal proceeds regardless
-                    pass
             try:
-                self._remove_workspace(project_id, wid)
+                self._remove_workspace(project_id, ws, name)
             except Exception as e:  # noqa: BLE001 — collect, so one bad workspace reports clearly
                 failures.append(f"{wid}: {e}")
         if failures:
@@ -273,16 +274,31 @@ class HubService:
         self._cp.archive_project(project_id)
         return {"deleted": True}
 
-    def _remove_workspace(self, project_id: str, workspace_id: str) -> None:
-        """Remove a workspace so its project can be archived. Domino accepts either archive or delete
-        depending on the workspace's history (a workspace that has run sessions typically must be
-        archived, not deleted), so try archive first — recoverable, matching the project's own soft
-        archive — then fall back to delete. Raises with both errors if neither works."""
-        errors = []
-        for op in (self._cp.archive_workspace, self._cp.delete_workspace):
+    def _remove_workspace(self, project_id: str, ws: dict[str, Any], name: str | None) -> None:
+        """Delete a workspace so its project can be archived. Domino rejects a delete on a live
+        workspace ("cannot be deleted from current state"), so if it isn't already in a removable
+        state, save + stop the builder and wait for it to reach Stopped before deleting."""
+        wid = str(ws["id"])
+        state = str(ws.get("state") or ws.get("status") or "").lower()
+        if state not in _REMOVABLE_STATES:
+            self._save_before_stop(ws, name)  # push in-progress work before it's gone (no-op if not running)
             try:
-                op(project_id, workspace_id)
+                self._cp.stop_workspace(project_id, wid)
+            except Exception:  # noqa: BLE001 — best-effort; it may already be stopping
+                pass
+            self._wait_until_removable(project_id, wid)
+        self._cp.delete_workspace(project_id, wid)
+
+    def _wait_until_removable(self, project_id: str, workspace_id: str,
+                             tries: int = 20, delay: float = 3.0) -> None:
+        """Poll until the workspace reaches a state a delete is accepted from (or disappears). Best-
+        effort: on timeout, fall through and let the delete surface Domino's real state error."""
+        for attempt in range(tries):
+            ws = next((w for w in self._cp.list_workspaces(project_id)
+                       if isinstance(w, dict) and str(w.get("id")) == workspace_id), None)
+            if ws is None or ws.get("deleted"):
                 return
-            except Exception as e:  # noqa: BLE001 — try the other removal path before giving up
-                errors.append(f"{op.__name__} {e}")
-        raise RuntimeError("; ".join(errors))
+            if str(ws.get("state") or ws.get("status") or "").lower() in _REMOVABLE_STATES:
+                return
+            if attempt < tries - 1:
+                time.sleep(delay)

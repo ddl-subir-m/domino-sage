@@ -241,78 +241,93 @@ def test_stop_app_stops_even_when_pre_stop_save_fails(tmp_path):
     assert cp.workspaces[ref.id][0]["state"] == "Stopped"  # stopped despite the save failing
 
 
-def test_delete_app_saves_stops_then_removes_running_workspace(tmp_path):
+def test_delete_app_saves_stops_waits_then_deletes_running_workspace(tmp_path):
     cp = FakeControlPlane()
     ref = cp.create_project("My App", git_url="https://github.com/me/sage-my-app.git")
-    cp.workspaces[ref.id] = [_running_ws()]
+    cp.workspaces[ref.id] = [_running_ws()]  # Started -> stop flips it to Stopped in the fake
 
     order = []
-    for m in ("save_workspace_work", "stop_workspace", "archive_workspace"):
+    for m in ("save_workspace_work", "stop_workspace", "delete_workspace"):
         orig = getattr(cp, m)
         setattr(cp, m, (lambda name, fn: (lambda *a: order.append(name) or fn(*a)))(m, orig))
 
     assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
-    # Push work, stop the session, THEN remove the workspace so the project can be archived.
-    assert order == ["save_workspace_work", "stop_workspace", "archive_workspace"]
+    # Push work, stop the session, THEN delete once stopped so the project can be archived.
+    assert order == ["save_workspace_work", "stop_workspace", "delete_workspace"]
     assert cp.saved_paths == ["/u/My%20App/notebookSession/run-9/"]
     assert cp.list_apps() == []
 
 
-def test_delete_app_removes_stopped_workspace_so_archive_succeeds(tmp_path):
-    # The bug: a stopped-but-still-present workspace made archive_project 500 ("contains 1 workspace").
+def test_delete_app_deletes_already_stopped_workspace_without_stopping(tmp_path):
+    # An already-stopped workspace is deletable directly — no save, no stop, no wait.
     cp = FakeControlPlane()
     ref = cp.create_project("Probe", git_url="https://github.com/me/sage-probe.git")
     cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped"}]
 
-    removed = []
-    orig = cp.archive_workspace
-    cp.archive_workspace = lambda p, w: removed.append(w) or orig(p, w)
+    stopped, deleted = [], []
+    orig_stop, orig_del = cp.stop_workspace, cp.delete_workspace
+    cp.stop_workspace = lambda p, w: stopped.append(w) or orig_stop(p, w)
+    cp.delete_workspace = lambda p, w: deleted.append(w) or orig_del(p, w)
 
     assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
-    assert removed == ["ws-1"]   # removed even though it wasn't running
-    assert cp.saved_paths == []  # nothing running -> no pre-stop save
+    assert stopped == []             # already stopped -> not stopped again
+    assert deleted == ["ws-1"]
+    assert cp.saved_paths == []
     assert cp.list_apps() == []
 
 
-def test_delete_app_falls_back_to_delete_when_archive_rejected(tmp_path):
+def test_delete_app_waits_for_stopped_before_deleting(tmp_path, monkeypatch):
+    # Stop doesn't settle immediately: the workspace reports Stopping until a later poll shows Stopped.
+    monkeypatch.setattr("sage.provision.service.time.sleep", lambda *_: None)  # no real waiting
     cp = FakeControlPlane()
     ref = cp.create_project("Probe", git_url="https://github.com/me/sage-probe.git")
-    cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped"}]
+    ws = {"id": "ws-1", "state": "Started",
+          "mostRecentSession": {"sessionStatusInfo": {"isRunning": True}}}
+    cp.workspaces[ref.id] = [ws]
 
-    def reject(p, w):
-        raise RuntimeError("400: workspace cannot be archived")
-
-    cp.archive_workspace = reject
+    polls = {"n": 0}
     deleted = []
-    orig = cp.delete_workspace
-    cp.delete_workspace = lambda p, w: deleted.append(w) or orig(p, w)
+
+    def slow_stop(p, w):
+        ws["state"] = "Stopping"  # not yet removable
+
+    def list_ws(project_id):
+        polls["n"] += 1
+        if polls["n"] >= 3:  # settles to Stopped after a couple of polls
+            ws["state"] = "Stopped"
+        return [ws]
+
+    def only_when_stopped(p, w):
+        assert ws["state"].lower() in ("stopped", "failed", "error")  # never deleted while live
+        deleted.append(w)
+        return {"deleted": True}
+
+    cp.stop_workspace = slow_stop
+    cp.list_workspaces = list_ws
+    cp.delete_workspace = only_when_stopped
 
     assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
-    assert deleted == ["ws-1"]  # archive failed -> delete removed it
-    assert cp.list_apps() == []
+    assert deleted == ["ws-1"]
+    assert polls["n"] >= 3  # polled until the state settled
 
 
-def test_delete_app_surfaces_real_error_when_workspace_cant_be_removed(tmp_path):
-    # Neither archive nor delete works -> raise the real reasons, not the misleading archive 500.
+def test_delete_app_surfaces_real_error_when_workspace_cant_be_deleted(tmp_path):
+    # Delete still rejected (e.g. never leaves the current state) -> raise the real reason, and do
+    # NOT archive the project with the misleading "contains N workspace" message.
     cp = FakeControlPlane()
     ref = cp.create_project("Probe", git_url="https://github.com/me/sage-probe.git")
     cp.workspaces[ref.id] = [{"id": "ws-1", "state": "Stopped"}]
-
-    def reject_archive(p, w):
-        raise RuntimeError("403: not the owner")
 
     def reject_delete(p, w):
-        raise RuntimeError("409: workspace is still running")
+        raise RuntimeError("500: Workspace cannot be deleted from current state")
 
-    cp.archive_workspace = reject_archive
     cp.delete_workspace = reject_delete
     archived = []
     cp.archive_project = lambda p: archived.append(p)  # must NOT be reached
 
     with pytest.raises(RuntimeError) as ei:
         _hub(tmp_path, cp).delete_app(ref.id)
-    msg = str(ei.value)
-    assert "ws-1" in msg and "403: not the owner" in msg and "409: workspace is still running" in msg
+    assert "ws-1" in str(ei.value) and "cannot be deleted from current state" in str(ei.value)
     assert archived == []  # project archive not attempted while a workspace remains
 
 

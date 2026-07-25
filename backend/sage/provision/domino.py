@@ -58,7 +58,6 @@ class ControlPlane(Protocol):
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
-    def archive_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def save_workspace_work(self, open_path: str) -> dict[str, Any]: ...
     def archive_project(self, project_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
@@ -233,14 +232,6 @@ class DominoControlPlane:
         data = self._delete(f"/v4/workspace/project/{project_id}/workspace/{workspace_id}")
         return data if isinstance(data, dict) else {"deleted": True}
 
-    def archive_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        # The other way to remove a workspace so the project can be archived — a soft, recoverable
-        # archive (matches archive_project). A workspace that has RUN sessions often rejects a plain
-        # delete and must be archived instead, so the caller tries this first. Spec: POST
-        # /v4/workspaces/archive (archiveWorkspace), body ArchiveWorkspaceInput{workspaceId, projectId}.
-        data = self._post("/v4/workspaces/archive", body={"workspaceId": workspace_id, "projectId": project_id})
-        return data if isinstance(data, dict) else {"archived": True}
-
     def save_workspace_work(self, open_path: str) -> dict[str, Any]:
         # Pre-stop save: reach the running builder through its own notebookSession proxy (the same
         # host-relative `open_path` the hub opens in the browser) and drive its POST /api/project/sync
@@ -401,10 +392,6 @@ class FakeControlPlane:
         kept = [w for w in self.workspaces.get(project_id, []) if w.get("id") != workspace_id]
         self.workspaces[project_id] = kept
         return {"deleted": True}
-
-    def archive_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        self.delete_workspace(project_id, workspace_id)
-        return {"archived": True}
 
     def save_workspace_work(self, open_path: str) -> dict[str, Any]:
         self.saved_paths.append(open_path)
