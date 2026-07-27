@@ -336,7 +336,8 @@ class DominoControlPlane:
         it (new version, stable URL) instead of creating a duplicate App. The public create API has
         no tag field, so we list by projectId and take the first non-archived app."""
         d = self._get(_APPS_PATH, params={"projectId": project_id, "offset": 0, "limit": 50})
-        items = d if isinstance(d, list) else (d.get("apps") or d.get("data") or [])
+        # The beta apps API wraps results as {"items": [...], "metadata": {...}} (live-verified).
+        items = d if isinstance(d, list) else (d.get("items") or d.get("apps") or d.get("data") or [])
         for a in items:
             if not isinstance(a, dict) or not a.get("id"):
                 continue
@@ -347,12 +348,14 @@ class DominoControlPlane:
         return None
 
     def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
-        """Deep-link to the App's settings/overview page in Domino (tier, autoscaling, data, sharing),
-        so 1-click Publish stays frictionless while the full native config is one click away. Shape:
-        {host}/u/{owner}/{project}/apps/{projectId}/{appId}/details/overview."""
+        """Host-relative deep-link to the App's settings/overview page in Domino (tier, autoscaling,
+        data, sharing), so 1-click Publish stays frictionless while the full native config is one
+        click away. Returns a PATH only — DOMINO_API_HOST is the internal cluster address
+        (nucleus-frontend…), not user-facing, so the UI resolves this against the browser's external
+        origin via builderUrl(). Shape: /u/{owner}/{project}/apps/{projectId}/{appId}/details/overview."""
         owner = self._username()
         proj = quote(project_name, safe="")
-        return f"{self._host}/u/{owner}/{proj}/apps/{project_id}/{app_id}/details/overview"
+        return f"/u/{owner}/{proj}/apps/{project_id}/{app_id}/details/overview"
 
     def _username(self) -> str:
         u = self._get("/api/users/v1/self").get("user") or {}
@@ -461,4 +464,4 @@ class FakeControlPlane:
         return self.published.get(app_id) if app_id else None
 
     def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
-        return f"https://fake.domino/u/owner/{project_name}/apps/{project_id}/{app_id}/details/overview"
+        return f"/u/owner/{project_name}/apps/{project_id}/{app_id}/details/overview"

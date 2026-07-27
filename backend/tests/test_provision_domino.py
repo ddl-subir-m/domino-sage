@@ -265,14 +265,19 @@ def test_app_manage_url_builds_settings_deep_link():
         return httpx.Response(200, json={"user": {"id": "u1", "userName": "subir_mansukhani"}})
 
     url = _cp(handler).app_manage_url("proj-42", "app-9", "My App")
-    assert url == (
-        "https://domino.example.com/u/subir_mansukhani/My%20App"
-        "/apps/proj-42/app-9/details/overview"
-    )
+    # Host-relative (DOMINO_API_HOST is internal-only); the UI resolves it to the external host.
+    assert url == "/u/subir_mansukhani/My%20App/apps/proj-42/app-9/details/overview"
+
+
+def test_find_project_app_reads_items_envelope():
+    # The live beta apps API wraps results as {"items": [...], "metadata": {...}}.
+    apps = {"items": [{"id": "app-live", "status": "Running", "url": "https://d/app-live"}], "metadata": {}}
+    app = _cp(lambda req: httpx.Response(200, json=apps)).find_project_app("proj-42")
+    assert app is not None and app.id == "app-live"
 
 
 def test_find_project_app_returns_none_when_no_apps():
-    cp = _cp(lambda req: httpx.Response(200, json={"apps": []}))
+    cp = _cp(lambda req: httpx.Response(200, json={"items": [], "metadata": {}}))
     assert cp.find_project_app("proj-42") is None
 
 

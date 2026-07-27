@@ -304,7 +304,9 @@
         const link = (href, label) => `<a href="${esc(href)}" target="_blank" rel="noopener">${label}</a>`;
         const links = [];
         if (data.url) links.push(link(publishedUrl(data.url), 'Open app ↗'));
-        if (data.manage_url) links.push(link(data.manage_url, 'Manage settings in Domino ↗'));
+        // manage_url is a host-relative path; builderUrl resolves it to the external host
+        // (DOMINO_API_HOST is the internal cluster address, not browser-reachable).
+        if (data.manage_url) links.push(link(builderUrl(data.manage_url), 'Manage settings in Domino ↗'));
         info(`${verb} “${name}” — it may take a moment to finish deploying.`, links);
         if (data.url) window.open(publishedUrl(data.url), '_blank');
       } catch (e) {
