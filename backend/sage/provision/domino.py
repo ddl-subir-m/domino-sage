@@ -75,7 +75,7 @@ class ControlPlane(Protocol):
     def find_project_app(self, project_id: str) -> PublishedApp | None: ...
     def list_project_apps(self, project_id: str) -> list[PublishedApp]: ...
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]: ...
-    def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str: ...
+    def app_manage_url(self, app_id: str, project_name: str) -> str | None: ...
     def app_status(self, app_id: str) -> str: ...
 
 
@@ -374,15 +374,32 @@ class DominoControlPlane:
         inst = (d.get("currentVersion") or {}).get("currentInstance") or {}
         return str(inst.get("status") or "")
 
-    def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
+    def app_manage_url(self, app_id: str, project_name: str) -> str | None:
         """Host-relative deep-link to the App's settings/overview page in Domino (tier, autoscaling,
         data, sharing), so 1-click Publish stays frictionless while the full native config is one
         click away. Returns a PATH only — DOMINO_API_HOST is the internal cluster address
         (nucleus-frontend…), not user-facing, so the UI resolves this against the browser's external
-        origin via builderUrl(). Shape: /u/{owner}/{project}/apps/{projectId}/{appId}/details/overview."""
+        origin via builderUrl().
+
+        Shape: /u/{owner}/{project}/apps/{appId}/{appVersionId}/details/overview. The route is
+        appId/appVersionId — NOT projectId/appId: publishing a real app and clicking the link 404'd
+        on 2026-07-27, and the working UI URL used the beta app id + its currentVersion.id (the
+        project id is not in the path at all). The version id is fetched from the app detail; if it
+        can't be resolved we return None so the UI omits the link rather than showing a broken one."""
+        if not app_id:
+            return None
+        version_id = ""
+        try:
+            d = self._get(f"{_APPS_PATH}/{app_id}")
+            if isinstance(d, dict):
+                version_id = str((d.get("currentVersion") or {}).get("id") or "")
+        except Exception:  # best-effort — a broken settings link is worse than no link
+            log.exception("app_manage_url: failed to resolve currentVersion for app %s", app_id)
+        if not version_id:
+            return None
         owner = self._username()
         proj = quote(project_name, safe="")
-        return f"/u/{owner}/{proj}/apps/{project_id}/{app_id}/details/overview"
+        return f"/u/{owner}/{proj}/apps/{app_id}/{version_id}/details/overview"
 
     def _username(self) -> str:
         u = self._get("/api/users/v1/self").get("user") or {}
@@ -500,8 +517,8 @@ class FakeControlPlane:
         self.app_projects.pop(app_id, None)
         return {"deleted": True}
 
-    def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
-        return f"/u/owner/{project_name}/apps/{project_id}/{app_id}/details/overview"
+    def app_manage_url(self, app_id: str, project_name: str) -> str | None:
+        return f"/u/owner/{project_name}/apps/{app_id}/v-{app_id}/details/overview"
 
     def app_status(self, app_id: str) -> str:
         return self.app_statuses.get(app_id, "Running")

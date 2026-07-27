@@ -163,7 +163,7 @@ def test_publish_creates_a_new_app(tmp_path: Path):
     assert out["published"] is True
     assert out["republished"] is False
     assert out["app_id"] and out["url"]
-    assert out["manage_url"] == f"/u/owner/Sales dashboard/apps/proj-1/{out['app_id']}/details/overview"
+    assert out["manage_url"] == f"/u/owner/Sales dashboard/apps/{out['app_id']}/v-{out['app_id']}/details/overview"
     assert cp.app_projects[out["app_id"]] == "proj-1"  # the app is tied to this project
 
 

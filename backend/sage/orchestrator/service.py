@@ -588,7 +588,7 @@ class Orchestrator:
         else:
             app = cp.publish_app(pid, name=name)
             out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
-        out["manage_url"] = cp.app_manage_url(pid, app.id, name)
+        out["manage_url"] = cp.app_manage_url(app.id, name)
         return out
 
     def publish_status(self, app_id: str) -> dict:
@@ -682,7 +682,13 @@ class Orchestrator:
     def list_assets(self) -> list[dict]:
         assets = self._assets.list_datasets(self._domino_project_id)
         return [
-            {"id": a.id, "name": a.name, "tags": a.tags, "sensitive": is_sensitive(a, self._sensitivity_tag)}
+            {
+                "id": a.id,
+                "name": a.name,
+                "tags": a.tags,
+                "project": a.project,
+                "sensitive": is_sensitive(a, self._sensitivity_tag),
+            }
             for a in assets
         ]
 

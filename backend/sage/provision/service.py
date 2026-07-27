@@ -321,7 +321,7 @@ class HubService:
             out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
         # Deep-link to Domino's native App settings (tier, autoscaling, data, sharing) — 1-click
         # publish stays frictionless while the full config is one click away.
-        out["manage_url"] = self._cp.app_manage_url(project_id, app.id, name or "")
+        out["manage_url"] = self._cp.app_manage_url(app.id, name or "")
         return out
 
     def publish_status(self, app_id: str) -> dict[str, Any]:

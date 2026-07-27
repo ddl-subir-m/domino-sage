@@ -198,8 +198,13 @@ async def set_model(request: Request) -> JSONResponse:
         project.control.pick(body["pick"])
     if "catalog" in body:
         orchestrator.set_catalog(**(body.get("catalog") or {}))
-    if "lock" in body:  # manual toggle; independent of the sticky asset-driven lock
-        project.control.set_manual_lock(bool(body["lock"]))
+    if "lock" in body:
+        lock = bool(body["lock"])
+        project.control.set_manual_lock(lock)
+        if not lock:
+            # A single "Unlock" fully unlocks: also override the sticky asset-driven lock (the UI
+            # warns the user before this — the sovereign guarantee no longer holds for the session).
+            project.control.clear_asset_lock()
     return JSONResponse(content=project.status())
 
 

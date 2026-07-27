@@ -472,7 +472,7 @@ def test_publish_app_creates_and_launches_first_version(tmp_path):
     # the created App was named after the project
     assert cp.app_projects[out["app_id"]] == ref.id
     # deep-link to Domino's native settings for tier/autoscaling/sharing
-    assert out["manage_url"].endswith(f"/apps/{ref.id}/{out['app_id']}/details/overview")
+    assert out["manage_url"].endswith(f"/apps/{out['app_id']}/v-{out['app_id']}/details/overview")
 
 
 def test_publish_app_reuses_existing_app_and_keeps_url(tmp_path):

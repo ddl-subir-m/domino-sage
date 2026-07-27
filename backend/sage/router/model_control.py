@@ -38,9 +38,16 @@ class ModelControl:
         self._picked_model = model
 
     def on_assets_changed(self, asset_sensitivity_tags: Iterable[bool]) -> None:
-        """Recompute the asset-driven lock from currently-attached assets. Sticky: never clears."""
+        """Recompute the asset-driven lock from currently-attached assets. Sticky: attaching a
+        sensitivity-tagged asset locks and detaching never clears it. A later user override
+        (clear_asset_lock) can drop the lock, but attaching another sensitive asset re-locks."""
         if any(asset_sensitivity_tags):
             self._asset_locked = True
+
+    def clear_asset_lock(self) -> None:
+        """User override of the sticky asset-driven lock. The sovereign guarantee no longer holds
+        for the session unless another sensitivity-tagged asset is attached."""
+        self._asset_locked = False
 
     def set_manual_lock(self, on: bool) -> None:
         """User-initiated lock/unlock, independent of the sticky asset-driven lock."""

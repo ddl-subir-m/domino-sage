@@ -5,7 +5,7 @@ tag name (default "sensitive"); attaching such a dataset triggers the sovereign 
 dataset tags are freeform, so the sensitivity tag is a convention we read, not a built-in field.
 
 Deep module, narrow interface: list_datasets(project_id) -> [Asset]. Two adapters:
-  - DominoAssetProvider : real, via /v4/datasetUi (works in a Domino workspace)
+  - DominoAssetProvider : real, via /api/datasetrw/v2/datasets (works in a Domino workspace)
   - FakeAssetProvider   : in-memory, for local Mac testing
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ class Asset:
     id: str
     name: str
     tags: list[str] = field(default_factory=list)
+    project: str | None = None  # owning project name, for grouping when listing across projects
 
 
 def is_sensitive(asset: Asset, sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG) -> bool:
@@ -40,9 +41,9 @@ class FakeAssetProvider:
 
     assets: list[Asset] = field(
         default_factory=lambda: [
-            Asset("ds_sales", "sales_2026", tags=["curated"]),
-            Asset("ds_pii", "customer_pii", tags=["sensitive"]),  # triggers the sovereign lock
-            Asset("ds_logs", "app_logs", tags=[]),
+            Asset("ds_sales", "sales_2026", tags=["curated"], project="Revenue"),
+            Asset("ds_pii", "customer_pii", tags=["sensitive"], project="Revenue"),  # sovereign lock
+            Asset("ds_logs", "app_logs", tags=[], project="Platform"),
         ]
     )
 
@@ -51,7 +52,14 @@ class FakeAssetProvider:
 
 
 def parse_tags(raw: Any) -> list[str]:
-    """Domino tags come as strings or {name|tag: ...} objects; normalize to names."""
+    """Normalize Domino dataset tags to a list of tag names.
+
+    The datasetrw v2 API returns tags as a map ``{tagName: snapshotId}`` — the tag NAMES are
+    the keys. Older/other shapes (list of strings or {name|tag|tagName: ...} objects) are still
+    accepted so callers and tests don't have to care which endpoint produced the data.
+    """
+    if isinstance(raw, dict):
+        return [str(k) for k in raw.keys()]
     out: list[str] = []
     for t in raw or []:
         if isinstance(t, str):
@@ -64,11 +72,19 @@ def parse_tags(raw: Any) -> list[str]:
 
 
 class DominoAssetProvider:
-    """Reads datasets via the Domino v4 platform API. Needs DOMINO_API_HOST + a token.
+    """Reads datasets via the Domino public datasetrw v2 API. Needs DOMINO_API_HOST + a token.
 
-    TODO(workspace verify): confirm the exact /v4/datasetUi/collections/byProject response
-    shape (field names for id/name/tags). Parsing is defensive.
+    Lists every dataset the caller can READ across all projects (minimumPermission scopes to
+    what they have access to), so the builder can attach data from anywhere — not just the
+    current project. Mirrors the AutoML extension's proven use of GET /api/datasetrw/v2/datasets.
+
+    Each envelope item is ``{dataset: {id, name, tags{tagName: snapshotId}, projectId}, projectInfo:
+    {name}}``; sensitivity is read from the tag-map keys. Parsing stays defensive against camelCase
+    drift.
     """
+
+    _PAGE = 100
+    _MAX_PAGES = 100  # 10k-dataset backstop against a non-terminating pager
 
     def __init__(self, api_host: str, token_provider: Callable[[], str], timeout_s: float = 20.0) -> None:
         self._api_host = api_host.rstrip("/")
@@ -78,22 +94,34 @@ class DominoAssetProvider:
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         import httpx
 
-        url = f"{self._api_host}/v4/datasetUi/collections/byProject"
+        url = f"{self._api_host}/api/datasetrw/v2/datasets"
         headers = {"Authorization": f"Bearer {self._token_provider()}"}
-        params = {"projectId": project_id} if project_id else {}
-        r = httpx.get(url, headers=headers, params=params, timeout=self._timeout_s)
-        r.raise_for_status()
-        data = r.json()
-        collections = data.get("data") or data if isinstance(data, (list, dict)) else []
-        if isinstance(collections, dict):
-            collections = collections.get("collections") or collections.get("datasets") or []
         out: list[Asset] = []
-        for c in collections:
-            out.append(
-                Asset(
-                    id=str(c.get("id") or c.get("datasetId") or c.get("collectionId") or ""),
-                    name=str(c.get("name") or c.get("datasetName") or "unnamed"),
-                    tags=parse_tags(c.get("tags")),
+        offset = 0
+        for _ in range(self._MAX_PAGES):
+            params = {
+                "minimumPermission": "ReadDatasetRwV2",  # only datasets the user can access
+                "includeProjectInfo": "true",
+                "offset": offset,
+                "limit": self._PAGE,
+            }
+            r = httpx.get(url, headers=headers, params=params, timeout=self._timeout_s)
+            r.raise_for_status()
+            data = r.json()
+            items = data.get("datasets") or data.get("data") or []
+            for item in items:
+                ds = item.get("dataset") or item
+                proj = (item.get("projectInfo") or {}).get("name")
+                out.append(
+                    Asset(
+                        id=str(ds.get("id") or ""),
+                        name=str(ds.get("name") or "unnamed"),
+                        tags=parse_tags(ds.get("tags")),
+                        project=str(proj) if proj else None,
+                    )
                 )
-            )
+            total = (data.get("metadata") or {}).get("totalCount")
+            offset += self._PAGE
+            if not items or (total is not None and len(out) >= total):
+                break
         return out

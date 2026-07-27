@@ -289,12 +289,25 @@ def test_delete_app_deployment_deletes_via_beta_apps_api():
 
 def test_app_manage_url_builds_settings_deep_link():
     def handler(request):
+        if request.url.path == "/api/apps/beta/apps/app-9":
+            # The route is appId/appVersionId, so the version id comes from the app detail.
+            return httpx.Response(200, json={"currentVersion": {"id": "ver-3"}})
         assert request.url.path == "/api/users/v1/self"
         return httpx.Response(200, json={"user": {"id": "u1", "userName": "subir_mansukhani"}})
 
-    url = _cp(handler).app_manage_url("proj-42", "app-9", "My App")
+    url = _cp(handler).app_manage_url("app-9", "My App")
     # Host-relative (DOMINO_API_HOST is internal-only); the UI resolves it to the external host.
-    assert url == "/u/subir_mansukhani/My%20App/apps/proj-42/app-9/details/overview"
+    # appId/appVersionId — the project id is NOT in the path.
+    assert url == "/u/subir_mansukhani/My%20App/apps/app-9/ver-3/details/overview"
+
+
+def test_app_manage_url_omitted_when_version_unresolvable():
+    def handler(request):
+        if request.url.path == "/api/apps/beta/apps/app-9":
+            return httpx.Response(200, json={})  # no currentVersion → no safe link
+        return httpx.Response(200, json={"user": {"id": "u1", "userName": "subir_mansukhani"}})
+
+    assert _cp(handler).app_manage_url("app-9", "My App") is None
 
 
 def test_app_status_reads_nested_instance_status():

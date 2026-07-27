@@ -74,6 +74,18 @@ def test_sticky_lock_survives_detach():
     assert gw.seen[-1][0]["model"] == "sovereign-8b"
 
 
+def test_user_can_override_asset_lock():
+    # The sticky asset lock is user-removable (with a UI warning); once cleared, routing is no
+    # longer forced to sovereign — until another sensitivity-tagged asset is attached.
+    control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
+    control.on_assets_changed([True])   # sensitivity-tagged asset attached -> locked
+    assert control.locked
+    control.clear_asset_lock()          # user override
+    assert not control.locked
+    control.on_assets_changed([True])   # attaching another sensitive asset re-locks
+    assert control.locked
+
+
 def test_ask_mode_strips_write_tools_from_request():
     control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
     gw = FakeGatewayClient()
