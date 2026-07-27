@@ -200,6 +200,13 @@
   .file-row { font-size: 12px; }
   .asset-row button { flex: 0 0 auto; padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
   .asset-row button.attached { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+  .asset-row button.danger { color: var(--lock); border-color: color-mix(in srgb, var(--lock) 35%, var(--border)); }
+  .asset-row button.danger:hover { background: color-mix(in srgb, var(--lock) 8%, transparent); }
+  .upload-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .upload-input { flex: 1 1 auto; min-width: 0; font-size: 12px; }
+  .upload-chk { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .upload-btn { flex: 0 0 auto; padding: 5px 12px; border-radius: 7px; border: none; background: var(--lock); color: #fff; font-weight: 500; font-size: 12px; }
+  .upload-btn:disabled { opacity: .5; cursor: default; }
 
   /* ---------- preview panel ---------- */
   .work { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
@@ -304,10 +311,15 @@
 
       <!-- data / assets popover -->
       <div class="pop" id="data-pop">
-        <h2>Attach data</h2>
+        <h2>Data</h2>
+        <div class="upload-row">
+          <input type="file" id="upload-input" class="upload-input" />
+          <label class="upload-chk" title="Store in the project's sensitive dataset and force the sovereign model"><input type="checkbox" id="upload-sensitive" /> Sensitive</label>
+          <button id="upload-btn" class="upload-btn" onclick="uploadFile()">Upload</button>
+        </div>
         <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets…" oninput="renderAssets()" autocomplete="off" />
         <div id="assets" class="asset-list"><div class="hint">Loading datasets…</div></div>
-        <div class="hint">Attached files are available to the agent at <code>public/data/…</code> — @mention one to use it as your default dataset. A file from a dataset tagged <b id="sens-tag">sensitive</b> forces the sovereign model.</div>
+        <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
       </div>
 
       <div class="composer">
@@ -565,6 +577,17 @@ async function loadAssets() {
 function attachedPaths() { return new Set(attachedFiles.map(e => e.path)); }
 function hintEl(html) { const d = document.createElement('div'); d.className = 'hint'; d.innerHTML = html; return d; }
 function groupHeader(text) { const h = document.createElement('div'); h.className = 'asset-group'; h.textContent = text; return h; }
+function attachedRow(e, isUpload) {
+  const row = document.createElement('div');
+  row.className = 'asset-row';
+  const chip = e.sensitive ? ` <span class="a-chip" title="Sensitive — the sovereign model is locked">sensitive</span>` : '';
+  row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(e.path)}">${esc(e.file)}</span><span class="a-tags">${esc(e.dataset || '')}</span>${chip}</span>`;
+  const btn = document.createElement('button');
+  if (isUpload) { btn.className = 'danger'; btn.textContent = 'Delete'; btn.title = 'Delete this file and its data'; btn.onclick = () => deleteFile(e.path); }
+  else { btn.className = 'attached'; btn.textContent = 'Detach'; btn.title = 'Remove from the workspace (keeps the dataset file)'; btn.onclick = () => detachFile(e.path); }
+  row.appendChild(btn);
+  return row;
+}
 function fmtSize(n) {
   if (!n) return '';
   const u = ['B', 'KB', 'MB', 'GB']; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
@@ -575,23 +598,23 @@ function renderAssets() {
   const el = document.getElementById('assets');
   el.innerHTML = '';
 
-  // Attached files, pinned at the top so the current state and detach are one click away.
-  if (attachedFiles.length) {
-    el.appendChild(groupHeader(`Attached files · ${attachedFiles.length}`));
-    for (const e of attachedFiles) {
-      const row = document.createElement('div');
-      row.className = 'asset-row';
-      row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(e.path)}">${esc(e.file)}</span><span class="a-tags">${esc(e.dataset)}</span></span>`;
-      const btn = document.createElement('button');
-      btn.className = 'attached'; btn.textContent = 'Detach';
-      btn.onclick = () => detachFile(e.path);
-      row.appendChild(btn);
-      el.appendChild(row);
-    }
+  // Uploaded files first ("Your data"): delete removes their bytes. Then dataset-attached files:
+  // detach-only. Both pinned above the dataset browser so current state is one click away.
+  const uploads = attachedFiles.filter(e => e.source === 'upload');
+  const attached = attachedFiles.filter(e => e.source !== 'upload');
+  if (uploads.length) {
+    el.appendChild(groupHeader(`Your data · ${uploads.length}`));
+    for (const e of uploads) el.appendChild(attachedRow(e, true));
+  }
+  if (attached.length) {
+    el.appendChild(groupHeader(`Attached files · ${attached.length}`));
+    for (const e of attached) el.appendChild(attachedRow(e, false));
   }
 
   if (!assetsCache.length) {
-    el.appendChild(hintEl('No datasets are mounted in this project. Import a dataset in Domino, then reopen this panel to attach its files.'));
+    if (!attachedFiles.length) {
+      el.appendChild(hintEl('No data yet. Upload a file above (CSV, JSON, …), or import a dataset in Domino and reopen this panel to attach its files.'));
+    }
     return;
   }
   const q = (document.getElementById('asset-search').value || '').trim().toLowerCase();
@@ -659,7 +682,7 @@ async function attachFile(datasetId, filePath) {
   });
   if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Could not attach file')); return; }
   if (!attachedFiles.some(e => e.path === r.body.path)) {
-    attachedFiles.push({ dataset_id: datasetId, dataset: r.body.dataset, file: filePath, path: r.body.path, size: r.body.size });
+    attachedFiles.push({ dataset_id: datasetId, dataset: r.body.dataset, file: filePath, path: r.body.path, size: r.body.size, sensitive: r.body.sensitive, source: 'dataset' });
   }
   renderAssets();
   updateDataCount();
@@ -679,6 +702,40 @@ async function detachFile(destPath) {
   if (lastModel && lastModel.asset_locked) {
     addStatus('warn', '🔒', `Detached <b>${esc(destPath.split('/').pop())}</b> — sovereign lock stays on for this session.`);
   }
+}
+
+async function uploadFile() {
+  if (!active) { addStatus('err', '⚠️', 'Open a project first'); return; }
+  const input = document.getElementById('upload-input');
+  const file = input.files && input.files[0];
+  if (!file) { addStatus('err', '⚠️', 'Choose a file to upload'); return; }
+  const sensitive = document.getElementById('upload-sensitive').checked;
+  const btn = document.getElementById('upload-btn');
+  btn.disabled = true; btn.textContent = 'Uploading…';
+  try {
+    const r = await api(`/api/project/upload?name=${encodeURIComponent(file.name)}&sensitive=${sensitive ? 1 : 0}`, {
+      method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file,
+    });
+    if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Upload failed')); return; }
+    attachedFiles = attachedFiles.filter(e => e.path !== r.body.path);
+    attachedFiles.push({ dataset_id: null, dataset: r.body.dataset, file: r.body.path.split('/').pop(),
+                         path: r.body.path, size: r.body.size, sensitive: r.body.sensitive, source: 'upload' });
+    input.value = ''; document.getElementById('upload-sensitive').checked = false;
+    renderAssets(); updateDataCount(); refreshStatus();
+    if (r.body.sensitive) addStatus('err', '🔒', `Uploaded <b>${esc(file.name)}</b> — sovereign model locked`);
+    else addStatus('ok', '📄', `Uploaded <b>${esc(file.name)}</b>`);
+  } finally { btn.disabled = false; btn.textContent = 'Upload'; }
+}
+
+async function deleteFile(destPath) {
+  if (!active) return;
+  if (!confirm('Delete this file? This removes it from your project data and can’t be undone.')) return;
+  const r = await api('/api/project/files/delete', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: destPath }),
+  });
+  if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Could not delete file')); return; }
+  attachedFiles = attachedFiles.filter(e => e.path !== destPath);
+  renderAssets(); updateDataCount(); refreshStatus();
 }
 
 function updateDataCount() {

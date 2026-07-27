@@ -32,7 +32,7 @@ from ..feedback.runner import FeedbackRunner
 from ..preview.prefix import domino_base_prefix
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
-from .service import AttachTooLarge, Orchestrator
+from .service import AttachTooLarge, Orchestrator, UploadUnavailable
 
 _feedback = FeedbackRunner()
 
@@ -398,6 +398,46 @@ async def detach_file(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "path required"})
     try:
         return JSONResponse(content=orchestrator.detach_file(path))
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid path"})
+
+
+@control_app.post("/api/project/upload")
+async def upload_file(request: Request) -> JSONResponse:
+    # Raw-body upload (avoids a python-multipart dependency): the file bytes are the request body;
+    # the name + sensitivity ride in query params. The UI sends one file per request.
+    filename = request.query_params.get("name", "")
+    sensitive = request.query_params.get("sensitive", "").lower() in ("1", "true", "yes")
+    data = await request.body()
+    if not data:
+        return JSONResponse(status_code=400, content={"error": "empty upload"})
+    try:
+        return JSONResponse(content=orchestrator.upload_file(filename, data, sensitive))
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid filename"})
+    except UploadUnavailable as e:
+        where = "sensitive" if e.sensitive else "default"
+        msg = (
+            "The sensitive dataset isn't mounted in this workspace. Rebuild the workspace to pick it up."
+            if e.sensitive
+            else "No writable dataset is available to store uploads in this project."
+        )
+        return JSONResponse(status_code=409, content={"error": msg, "target": where})
+    except AttachTooLarge as e:
+        mb = e.cap / (1024 * 1024)
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"uploading this file would exceed the {mb:.0f} MB limit for attached data"},
+        )
+
+
+@control_app.post("/api/project/files/delete")
+async def delete_file(request: Request) -> JSONResponse:
+    path = (await request.json()).get("path")
+    if not path:
+        return JSONResponse(status_code=400, content={"error": "path required"})
+    try:
+        return JSONResponse(content=orchestrator.delete_file(path))
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid path"})
 

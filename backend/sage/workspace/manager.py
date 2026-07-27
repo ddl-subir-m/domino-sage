@@ -104,6 +104,27 @@ class Workspace:
         self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
         self.catalog_overrides_path.write_text(json.dumps(overrides))
 
+    @property
+    def attachments_path(self) -> Path:
+        """Committed manifest of attached/uploaded data files. `public/data/` itself is gitignored
+        (data never enters git), so this manifest is the source of truth that lets the PUBLISHED app
+        rebuild public/data/ from the project's dataset mounts at startup — see the template's
+        scripts/rehydrate-data.mjs. Lives under committed .sage/ (like plan.md / history.jsonl)."""
+        return self.path / ".sage" / "attachments.json"
+
+    def read_attachments(self) -> list[dict]:
+        if not self.attachments_path.exists():
+            return []
+        try:
+            data = json.loads(self.attachments_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def write_attachments(self, entries: list[dict]) -> None:
+        self.attachments_path.parent.mkdir(parents=True, exist_ok=True)
+        self.attachments_path.write_text(json.dumps(entries, indent=2))
+
 
 class WorkspaceManager:
     """Manages the single workspace bound to this builder's Domino project volume.

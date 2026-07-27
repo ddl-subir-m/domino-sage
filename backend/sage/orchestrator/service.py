@@ -60,6 +60,16 @@ class AttachTooLarge(Exception):
         super().__init__(f"attach would exceed cap: {current + incoming} > {cap} bytes")
 
 
+class UploadUnavailable(Exception):
+    """No writable dataset is mounted to receive an upload. For a sensitive upload it means the
+    per-project sensitive dataset isn't mounted (provisioned at project creation — rebuild the
+    workspace); otherwise the project has no writable default dataset mount."""
+
+    def __init__(self, sensitive: bool) -> None:
+        self.sensitive = sensitive
+        super().__init__("sensitive" if sensitive else "default")
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ[name])
@@ -249,8 +259,17 @@ class Orchestrator:
         return self._project
 
     def _rehydrate_attached(self, project: Project) -> None:
-        """Rebuild the attached-files list from symlinks left under public/data/ by a prior process
-        (the in-memory list doesn't survive an orchestrator restart, but the symlinks do)."""
+        """Restore the attached-files list. The manifest (.sage/attachments.json) is the source of
+        truth — it's committed, so it survives clones and orchestrator restarts (the in-memory list
+        does not). Fall back to scanning public/data/ symlinks for older workspaces written before
+        the manifest existed."""
+        entries = project.workspace.read_attachments()
+        if entries:
+            project.attached[:] = entries
+            # The sovereign lock is sticky but in-memory; re-fire it if any restored file is sensitive.
+            if any(e.get("sensitive") for e in entries):
+                project.control.on_assets_changed([True])
+            return
         data_root = project.workspace.path / "public" / "data"
         if not data_root.is_dir():
             return
@@ -264,7 +283,7 @@ class Orchestrator:
                 size = 0
             project.attached.append(
                 {"dataset_id": None, "dataset": link.parent.relative_to(data_root).as_posix() or link.parent.name,
-                 "file": link.name, "path": rel, "size": size}
+                 "file": link.name, "path": rel, "size": size, "source": "dataset"}
             )
 
     def _ensure_opencode(self) -> OpenCodeClient:
@@ -799,6 +818,7 @@ class Orchestrator:
             raise FileNotFoundError(file_path)
         rel = _attach_dest(asset.name, file_path)  # workspace-relative posix path
         already = next((e for e in project.attached if e["path"] == rel), None)
+        sensitive = is_sensitive(asset, self._sensitivity_tag)
         if already is None:
             size = src.stat().st_size
             total = sum(e["size"] for e in project.attached)
@@ -809,12 +829,14 @@ class Orchestrator:
             if dest.is_symlink() or dest.exists():
                 dest.unlink()
             dest.symlink_to(src)
+            # source="dataset": bytes belong to a pre-existing dataset — delete must never remove them.
             project.attached.append(
-                {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel, "size": size}
+                {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel,
+                 "size": size, "sensitive": sensitive, "source": "dataset", "dataset_rel_path": file_path}
             )
             self._ensure_data_gitignored(project.workspace)
             self._write_agents_data_block(project)
-        sensitive = is_sensitive(asset, self._sensitivity_tag)
+            project.workspace.write_attachments(project.attached)
         project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
         size = next((e["size"] for e in project.attached if e["path"] == rel), 0)
         return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size, "sensitive": sensitive, "status": project.status()}
@@ -832,7 +854,98 @@ class Orchestrator:
         _prune_empty_dirs(dest.parent, project.workspace.path / "public" / "data")
         project.attached[:] = [e for e in project.attached if e["path"] != path]
         self._write_agents_data_block(project)
+        project.workspace.write_attachments(project.attached)
         return {"detached": path, "status": project.status()}
+
+    def upload_file(self, filename: str, data: bytes, sensitive: bool = False) -> dict:
+        """Write an uploaded file into the project's writable dataset mount (persisted, and outside
+        git), then attach it under public/data/ like any dataset file. Sensitive uploads target the
+        mounted dataset tagged `sensitive` (provisioned per-project) so the sovereign lock fires;
+        others go to the default writable dataset. The committed manifest lets the published app
+        rebuild public/data/ from the mount. Enforces the same total-size cap as attach."""
+        project = self.project()
+        if not filename or not filename.strip():
+            raise ValueError("filename required")
+        name = _slug(filename)
+        target = self._upload_target_dataset(sensitive)
+        if target is None or not target.mount_path:
+            raise UploadUnavailable(sensitive)
+        size = len(data)
+        total = sum(e["size"] for e in project.attached)
+        if total + size > self._attach_max_bytes:
+            raise AttachTooLarge(self._attach_max_bytes, total, size)
+        rel_in_dataset = PurePosix("uploads", name).as_posix()
+        dest_bytes = _safe_join(Path(target.mount_path), rel_in_dataset)
+        dest_bytes.parent.mkdir(parents=True, exist_ok=True)
+        dest_bytes.write_bytes(data)
+        rel = _attach_dest(target.name, rel_in_dataset)
+        link = _safe_join(project.workspace.path, rel)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(dest_bytes)
+        project.attached[:] = [e for e in project.attached if e["path"] != rel]
+        project.attached.append(
+            {"dataset_id": target.id, "dataset": target.name, "file": rel_in_dataset, "path": rel,
+             "size": size, "sensitive": sensitive, "source": "upload", "dataset_rel_path": rel_in_dataset}
+        )
+        self._ensure_data_gitignored(project.workspace)
+        self._write_agents_data_block(project)
+        project.workspace.write_attachments(project.attached)
+        if sensitive:
+            project.control.on_assets_changed([True])  # sticky sovereign lock
+        return {"uploaded": name, "dataset": target.name, "path": rel, "size": size,
+                "sensitive": sensitive, "status": project.status()}
+
+    def _upload_target_dataset(self, sensitive: bool) -> Asset | None:
+        """Pick a writable mounted dataset for an upload: the sensitive-tagged one when sensitive,
+        else the first writable non-sensitive dataset. None if no matching writable mount exists."""
+        want = bool(sensitive)
+        for a in self._assets.list_datasets(self._domino_project_id):
+            if a.mount_path and os.access(a.mount_path, os.W_OK) and is_sensitive(a, self._sensitivity_tag) == want:
+                return a
+        return None
+
+    def delete_file(self, path: str) -> dict:
+        """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the dataset mount,
+        then forget it. Only Sage-uploaded files (source=='upload') get their bytes deleted; a file
+        attached from a pre-existing dataset is detach-only here (its source bytes are the user's data
+        and are never removed). The sovereign lock stays sticky."""
+        project = self.project()
+        if not path.startswith("public/data/"):
+            raise ValueError(path)
+        entry = next((e for e in project.attached if e["path"] == path), None)
+        link = _safe_join(project.workspace.path, path)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        _prune_empty_dirs(link.parent, project.workspace.path / "public" / "data")
+        if entry and entry.get("source") == "upload":
+            self._delete_upload_bytes(entry)
+        project.attached[:] = [e for e in project.attached if e["path"] != path]
+        self._write_agents_data_block(project)
+        project.workspace.write_attachments(project.attached)
+        return {"deleted": path, "status": project.status()}
+
+    def _delete_upload_bytes(self, entry: dict) -> None:
+        """Remove an uploaded file's bytes from its dataset mount. Guarded to only ever touch a path
+        under uploads/ resolved within the dataset mount — so it can never delete pre-existing data."""
+        rel = entry.get("dataset_rel_path") or ""
+        if not rel.startswith("uploads/"):
+            return
+        asset = next((a for a in self._assets.list_datasets(self._domino_project_id)
+                      if a.id == entry.get("dataset_id")), None)
+        if asset is None or not asset.mount_path:
+            return
+        try:
+            target = _safe_join(Path(asset.mount_path), rel)
+        except ValueError:
+            return
+        try:
+            if target.is_file():
+                target.unlink()
+                _prune_empty_dirs(target.parent, Path(asset.mount_path))
+        except OSError:
+            log.exception("delete_upload_bytes: failed to remove %s", rel)
 
     _AGENTS_BEGIN = "<!-- sage:attached-data:begin -->"
     _AGENTS_END = "<!-- sage:attached-data:end -->"

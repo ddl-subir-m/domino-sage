@@ -18,6 +18,11 @@ export PATH=/usr/bin:/usr/local/bin:$PATH
 # The agent may have added dependencies during the build session, so install from the lockfile.
 npm ci
 
+# Rebuild public/data/ from the project's dataset mounts (attached/uploaded data is gitignored, so
+# it isn't in this checkout — the committed .sage/attachments.json manifest maps it back). Must run
+# BEFORE the build so Vite copies the linked files into dist/. No-op when nothing was attached.
+node scripts/rehydrate-data.mjs
+
 # Production build -> dist/ (base "./" via vite.config, so it works under any app mount prefix).
 npm run build
 

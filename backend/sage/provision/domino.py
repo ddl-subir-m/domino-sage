@@ -32,6 +32,10 @@ log = logging.getLogger("sage.provision.domino")
 
 _PROJECTS_PATH = "/api/projects/beta/projects"
 _APPS_PATH = "/api/apps/beta/apps"  # public apps API (create+launch, then republish new versions)
+_DATASETRW_PATH = "/api/datasetrw/v1"  # dataset create/snapshot/tag (list is v2, see assets/provider)
+# Must match assets.provider.DEFAULT_SENSITIVITY_TAG — the builder reads this tag to detect sensitive
+# datasets and fire the sovereign lock.
+_SENSITIVITY_TAG = "sensitive"
 # Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
 # create API has no tag field, so list_apps filters on the project's git repo URI instead.
 _SAGE_REPO_PREFIX = "sage-"
@@ -60,6 +64,7 @@ class PublishedApp:
 class ControlPlane(Protocol):
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
+    def provision_sensitive_dataset(self, project_id: str, dataset_name: str) -> str | None: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
@@ -203,6 +208,36 @@ class DominoControlPlane:
         if isinstance(data, dict):
             log.info("workspace-create response keys: %s", sorted(data.keys()))
         return data
+
+    def provision_sensitive_dataset(self, project_id: str, dataset_name: str) -> str | None:
+        """Create a project-owned dataset and tag it `sensitive`, so the builder can route sensitive
+        uploads to it (mounted + writable) and the sovereign lock fires on attach. Called at app
+        creation, BEFORE create_workspace, so the dataset is mounted when the builder boots.
+
+        Best-effort: returns the dataset id, or None on any failure — a broken dataset must never
+        block "New app" (sensitive uploads degrade to an actionable error until it exists).
+
+        LIVE-VERIFY seam (unverified against a live cluster): (1) the create/snapshot/tag payload
+        shapes below; (2) that tagging requires a snapshot and that an empty dataset can be
+        snapshotted; (3) that a newly created project-owned dataset AUTO-MOUNTS in the builder
+        workspace and the published app without an explicit externalVolumeMounts entry."""
+        try:
+            created = self._post(f"{_DATASETRW_PATH}/datasets", {"name": dataset_name, "projectId": project_id})
+            ds = (created.get("dataset") or created) if isinstance(created, dict) else {}
+            ds_id = str(ds.get("id") or "")
+            if not ds_id:
+                return None
+            # Tags attach to a snapshot, not the dataset directly (POST .../tags requires snapshotId).
+            snap = self._post(f"{_DATASETRW_PATH}/datasets/{ds_id}/snapshots", {})
+            snap_obj = (snap.get("snapshot") or snap) if isinstance(snap, dict) else {}
+            snap_id = str(snap_obj.get("id") or "")
+            if snap_id:
+                self._post(f"{_DATASETRW_PATH}/datasets/{ds_id}/tags",
+                           {"tagName": _SENSITIVITY_TAG, "snapshotId": snap_id})
+            return ds_id
+        except Exception:  # noqa: BLE001 — never let dataset provisioning break app creation
+            log.exception("provision_sensitive_dataset failed for %s (project %s)", dataset_name, project_id)
+            return None
 
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
         # Stop a running builder so it stops consuming a hardware tier. Path + verb confirmed against
@@ -432,6 +467,7 @@ class FakeControlPlane:
     app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id (find_project_app)
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
+    sensitive_datasets: dict[str, str] = field(default_factory=dict)  # project_id -> sensitive ds name
     _seq: int = 0
 
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
@@ -439,6 +475,10 @@ class FakeControlPlane:
         ref = ProjectRef(id=f"proj-{self._seq}", name=name, git_url=git_url)
         self.projects.append(ref)
         return ref
+
+    def provision_sensitive_dataset(self, project_id: str, dataset_name: str) -> str | None:
+        self.sensitive_datasets[project_id] = dataset_name
+        return f"ds-{dataset_name}"
 
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
         ws = {
