@@ -65,7 +65,16 @@ ARG SAGE_CACHE_BUST=2026-07-27-runtime-node-path
 RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage
 
 # Warm template deps baked (agent-added deps install on top, into the app fs, at runtime).
-RUN cd /opt/sage/template/react-vite && npm ci --include=optional --no-fund --no-audit
+# `npm ci` intermittently SKIPS the platform-native optional binary (@rolldown/binding-linux-x64-gnu)
+# even though the lockfile lists it (npm optional-deps bug) — then `vite`/rolldown dies at startup with
+# "Cannot find module '@rolldown/binding-linux-x64-gnu'". So verify the binding actually loads and
+# self-heal by force-installing the exact version if it's missing. Fails the build if it still can't.
+RUN cd /opt/sage/template/react-vite \
+    && npm ci --include=optional --no-fund --no-audit \
+    && { node -e "require('rolldown')" \
+         || npm install --no-save --include=optional \
+              "@rolldown/binding-linux-x64-gnu@$(node -p "require('./node_modules/rolldown/package.json').version")"; } \
+    && node -e "require('rolldown'); console.log('[sage] rolldown native binding OK')"
 # Python deps for the orchestrator baked into a uv venv.
 RUN cd /opt/sage/backend && (uv sync --frozen || uv sync)
 
