@@ -29,8 +29,10 @@ export SAGE_CONTROL_PORT="${SAGE_CONTROL_PORT:-8888}"
 # (+ creds; the sidecar token at :8899 is used by default and re-acquired per call). Without it the
 # orchestrator still boots and serves the UI/preview, but builds can't reach a model.
 
-# nodesource node must beat conda on PATH (inherited by the Vite + OpenCode children).
-export PATH="/usr/bin:/usr/local/bin:${PATH}"
+# Our node (official tarball at /usr/local/bin, v22) must beat BOTH conda's node and the base
+# image's stale /usr/bin/node (Debian bookworm ships v18.19.1, which lacks node:util styleText and
+# hard-fails rolldown/vite). /usr/local first — this PATH is inherited by the Vite + OpenCode children.
+export PATH="/usr/local/bin:/usr/bin:${PATH}"
 hash -r 2>/dev/null || true
 echo "[sage] node=$(command -v node) $(node -v)  opencode=$(opencode --version 2>/dev/null || echo '<missing>')"
 echo "[sage] app_home=$SAGE_APP_HOME workspace=$SAGE_WORKSPACE_DIR port=$SAGE_CONTROL_PORT"
