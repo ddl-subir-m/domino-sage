@@ -390,7 +390,11 @@ class Orchestrator:
                 # A clean typecheck with no edits means the agent only planned — don't call that a
                 # finished build. Nudge it to implement (once); if it still writes nothing, stop
                 # with an honest, actionable message rather than a false "done — clean".
-                if report.ok and not made_edits:
+                # `made_edits` only trips on tools literally named edit/write; the agent may write
+                # via another (patch/str_replace/create). Confirm against the snapshot's ground truth
+                # so a real edit is never misread as "planned but wrote no code".
+                wrote_code = made_edits or project.snapshot.changed_since_pre_turn()
+                if report.ok and not wrote_code:
                     if nudges < MAX_NUDGES:
                         nudges += 1
                         # Auto starts every turn in PLAN (no writes yet), so the nudge would route

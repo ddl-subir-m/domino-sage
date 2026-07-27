@@ -50,3 +50,10 @@ class TurnSnapshot:
         delete anything new the turn created."""
         self._run("reset", "-q", "--hard", "HEAD")
         self._run("clean", "-fd", "-q")
+
+    def changed_since_pre_turn(self) -> bool:
+        """True if any workspace file changed vs the last commit_before_turn() snapshot
+        (excluding node_modules/dist/.sage). Ground-truth 'did the agent write anything',
+        independent of which write tool the harness happened to name."""
+        self._ensure_repo()
+        return bool(self._run("status", "--porcelain").stdout.strip())

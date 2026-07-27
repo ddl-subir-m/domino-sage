@@ -45,6 +45,29 @@ def test_discard_changes_does_not_touch_excluded_dirs(tmp_path: Path):
     assert (ws.path / "node_modules" / "extra.txt").exists()
 
 
+def test_changed_since_pre_turn_detects_edits_and_new_files(tmp_path: Path):
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
+    snap = TurnSnapshot(ws.path)
+
+    snap.commit_before_turn()
+    assert snap.changed_since_pre_turn() is False  # nothing touched yet
+
+    (ws.path / "src" / "App.tsx").write_text("edited by agent")
+    assert snap.changed_since_pre_turn() is True
+
+
+def test_changed_since_pre_turn_ignores_excluded_dirs(tmp_path: Path):
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
+    snap = TurnSnapshot(ws.path)
+
+    snap.commit_before_turn()
+    (ws.path / "node_modules" / "extra.txt").write_text("install artifact, not agent code")
+
+    assert snap.changed_since_pre_turn() is False
+
+
 def test_history_truncate_drops_entries_after_baseline(tmp_path: Path):
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
     ws = mgr.ensure("p")

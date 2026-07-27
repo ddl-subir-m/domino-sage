@@ -23,6 +23,13 @@ class ModelControl:
 
     def set_mode(self, mode: Mode) -> None:
         self._mode = mode
+        # Keep the phase indicator honest for pinned modes so the UI spinner matches what routes
+        # (the router ignores phase in these modes; only the displayed phase changes). Auto is left
+        # alone — the shim's per-step classifier drives its phase.
+        if mode is Mode.IMPLEMENT:
+            self._phase = Phase.IMPLEMENT
+        elif mode is Mode.PLAN:
+            self._phase = Phase.PLAN
 
     def set_phase(self, phase: Phase) -> None:
         self._phase = phase
