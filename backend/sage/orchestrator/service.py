@@ -287,11 +287,12 @@ class Orchestrator:
         made_edits = False
         nudges = 0
         MAX_NUDGES = 2
-        # Set when a nudge turn temporarily pins Mode.IMPLEMENT (Auto only) to force the implement
-        # model; restored right after that turn's inferences finish so normal per-step plan/implement
-        # routing resumes for later turns.
-        forced_implement = False
+        # Set when a recovery nudge temporarily escalates routing (stronger model + write perms);
+        # both the mode and the model pick are restored right after that turn's inferences finish so
+        # a later prompt routes normally.
+        escalated = False
         saved_mode: Mode | None = None
+        saved_pick: str | None = None
         IMPLEMENT_NUDGE = (
             "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
             "request: edit the project files (start with src/App.tsx) so the app actually builds "
@@ -366,12 +367,13 @@ class Orchestrator:
                     break
                 time.sleep(1.0)
 
-            # A nudge turn (below) may have pinned Mode.IMPLEMENT to force the implement model; its
-            # inferences are done now, so restore Auto before any routing/typecheck decisions and
-            # before any early return, so the override never leaks into a later prompt.
-            if forced_implement:
+            # A recovery nudge (below) may have escalated to the stronger model with write perms;
+            # its inferences are done now, so restore normal routing before any decision or early
+            # return, so the override never leaks into a later prompt.
+            if escalated:
                 project.control.set_mode(saved_mode)
-                forced_implement = False
+                project.control.pick(saved_pick)
+                escalated = False
 
             if project.last_gateway_error is not None:
                 err = project.last_gateway_error
@@ -397,17 +399,20 @@ class Orchestrator:
                 if report.ok and not wrote_code:
                     if nudges < MAX_NUDGES:
                         nudges += 1
-                        # Auto starts every turn in PLAN (no writes yet), so the nudge would route
-                        # back to the same plan model that just planned-without-writing. Pin IMPLEMENT
-                        # for this one turn so the implement model — the one that actually writes
-                        # files — handles the retry; it's restored after the turn (see above). A
-                        # sensitivity lock must keep choosing sovereign models, so skip when locked.
+                        # Recovery: the turn stalled at planning. Both tiers can stall here (the
+                        # strong plan model in Auto, the cheap implement model in Implement), so retry
+                        # on the STRONGER model with full write permission — pin Implement (no
+                        # per-step reclassification, writes allowed) and override the pick to the
+                        # strong `plan` model. Both restored after the turn (see above). Skipped under
+                        # a sensitivity lock, which must keep choosing sovereign models only.
                         snap = project.control.snapshot()
-                        if snap.mode is Mode.AUTO and not snap.sensitivity_locked:
+                        if not snap.sensitivity_locked:
                             saved_mode = snap.mode
+                            saved_pick = snap.picked_model
                             project.control.set_mode(Mode.IMPLEMENT)
-                            forced_implement = True
-                        yield {"type": "iterate", "reason": "planned but wrote no code — implementing"}
+                            project.control.pick(project.shim.catalog.plan)
+                            escalated = True
+                        yield {"type": "iterate", "reason": "planned but wrote no code — retrying on the stronger model"}
                         current = IMPLEMENT_NUDGE
                         continue
                     yield persist({"type": "done", "ok": False,

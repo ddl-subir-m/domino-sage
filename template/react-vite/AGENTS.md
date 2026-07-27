@@ -11,6 +11,12 @@ automatically — there is no build step to run.
   states below. Don't over-plan small tasks; a one-line prompt rarely needs a 7-step todo list.
   Either way, plan once and then implement in a sustained pass — avoid drifting back into
   re-planning unless requirements actually change.
+- **Implement in the same turn — planning alone is a failed turn.** A turn that only writes a todo
+  list, describes an approach, or asks what to do next without editing files under `src/` has
+  accomplished nothing. Do the minimal planning the task needs, then **edit `src/App.tsx` (and any
+  other files) in that same turn** — never stop to wait for confirmation before writing code. If you
+  find yourself planning a second time without having written anything, stop planning and start
+  editing now.
 - **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html` unless the
   user truly needs a new dependency. The config is known-good; regenerating it wastes turns and
   breaks the preview.
