@@ -231,3 +231,37 @@ def test_stop_uses_explicit_workspace_id_override(tmp_path: Path):
     assert out["stopped"] is True
     assert out["workspace_id"] == "ws-42"
     assert cp.workspaces["proj-1"][0]["state"] == "Stopped"
+
+
+def test_record_runtime_error_stores_stamped_error(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.record_runtime_error("boom", "at App (App.tsx:3)")
+    orch.project(start_preview=False)
+    orch.record_runtime_error("d.getFullYear is not a function", "synthetic.ts:239")
+    rt = orch._project.runtime_error
+    assert rt["message"] == "d.getFullYear is not a function"
+    assert rt["stack"] == "synthetic.ts:239"
+    assert isinstance(rt["ts"], float)
+
+
+def test_record_runtime_error_before_attach_is_dropped(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.record_runtime_error("boom", "")  # no active project
+    assert orch._project is None  # dropped, did not attach
+
+
+def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
+    import time
+
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+
+    # A stale error (from a prior turn) is ignored: its ts predates `since`.
+    orch.record_runtime_error("stale", "")
+    since = time.monotonic()
+    assert orch._await_runtime_error(project, since=since, timeout=0.2) is None
+
+    # A fresh error (ts >= since) is returned promptly.
+    orch.record_runtime_error("fresh crash", "stack")
+    rt = orch._await_runtime_error(project, since=since, timeout=1.0)
+    assert rt is not None and rt["message"] == "fresh crash"

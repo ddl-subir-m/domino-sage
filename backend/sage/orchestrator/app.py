@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 _UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
@@ -253,6 +253,19 @@ async def stop() -> JSONResponse:
         log.exception("stop failed")
         return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
     return JSONResponse(content=result)
+
+
+@control_app.post("/api/preview/runtime-error")
+async def preview_runtime_error(request: Request) -> Response:
+    """The live preview posts here when it catches an uncaught/render error (see the template's
+    reportRuntimeError). build_stream reads it after a clean typecheck to autofix runtime crashes
+    that tsc can't see. Fire-and-forget: always 204, never blocks the preview."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — a malformed report must not error the preview
+        return Response(status_code=204)
+    orchestrator.record_runtime_error(str(body.get("message") or ""), str(body.get("stack") or ""))
+    return Response(status_code=204)
 
 
 @control_app.post("/api/project/check")

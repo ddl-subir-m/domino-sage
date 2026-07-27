@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { reportRuntimeError } from "./reportRuntimeError";
 
 // A render/runtime throw in the app used to unmount React to nothing — a silent blank preview
 // whose real error lived only in the browser console. This boundary catches it and shows the
@@ -16,6 +17,9 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error("App crashed:", error, info.componentStack);
+    // Report render-tree throws (which React catches here, so window.onerror never sees them) so
+    // the builder can feed the error back to the agent to autofix.
+    reportRuntimeError(error.message, error.stack || info.componentStack || undefined);
   }
 
   render(): ReactNode {

@@ -94,6 +94,11 @@ class Project:
     last_gateway_error: dict | None = None
     # Set by the /build/stop endpoint; build_stream() polls it to revert and stop early.
     stop_requested: bool = False
+    # Set by /api/preview/runtime-error when the live preview reports an uncaught/render error.
+    # Carries {"message", "stack", "ts"} (ts is a time.monotonic() stamp). build_stream() reads it
+    # after a clean typecheck to catch runtime crashes that tsc can't see (a blank preview) and feed
+    # them back to the agent to autofix. ts-gated so a stale error from a prior turn is ignored.
+    runtime_error: dict | None = None
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -287,10 +292,20 @@ class Orchestrator:
         made_edits = False
         nudges = 0
         MAX_NUDGES = 2
+        # A clean typecheck doesn't mean the app runs: a render/runtime throw (e.g. calling a Date
+        # method on a string) blanks the preview but passes tsc. The open preview reports such throws
+        # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
+        runtime_fixes = 0
+        MAX_RUNTIME_FIXES = 3
         IMPLEMENT_NUDGE = (
             "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
             "request: edit the project files (start with src/App.tsx) so the app actually builds "
             "what was asked. Make the code changes now."
+        )
+        RUNTIME_FIX_NUDGE = (
+            "The app compiled but threw a runtime error when it rendered in the browser, so the "
+            "preview is blank. Fix the code so it renders without throwing. Do not just guard the "
+            "symptom — find and fix the root cause.\n\nError: {message}\n\nStack:\n{stack}"
         )
         while True:
             if project.stop_requested:
@@ -299,6 +314,9 @@ class Orchestrator:
             yield {"type": "turn", "prompt": current[:120]}
             project.last_gateway_error = None
             agent = _agent_for_mode(project.control.snapshot().mode)
+            # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
+            # send belongs to this turn's code (an earlier turn's render reported before send_ts).
+            send_ts = time.monotonic()
             client.send_prompt(sid, current, agent=agent)
             appeared = False
             start = time.monotonic()
@@ -394,6 +412,19 @@ class Orchestrator:
                     yield persist({"type": "done", "ok": False,
                                    "decision": "planned but wrote no code — try Implement mode"})
                     return
+                # Typecheck is clean and code was written — but tsc can't see a runtime crash that
+                # blanks the preview. Wait briefly for the open preview to report one; if it does,
+                # feed the error back so the agent fixes it before we call the build done.
+                if report.ok and wrote_code and runtime_fixes < MAX_RUNTIME_FIXES:
+                    yield {"type": "runtime-check"}
+                    rt = self._await_runtime_error(project, since=send_ts)
+                    if rt is not None:
+                        runtime_fixes += 1
+                        project.runtime_error = None  # consume so a later turn starts clean
+                        first_line = (rt.get("message") or "runtime error").splitlines()[0][:140]
+                        yield {"type": "iterate", "reason": f"app crashed at runtime — fixing ({first_line})"}
+                        current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
+                        continue
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok:
                     saved = self._save_to_git(project, prompt)
@@ -402,6 +433,31 @@ class Orchestrator:
                 return
             yield {"type": "iterate", "reason": decision.reason}
             current = report.as_agent_message()
+
+    def record_runtime_error(self, message: str, stack: str = "") -> None:
+        """Store a runtime error the live preview reported (via /api/preview/runtime-error), stamped
+        so build_stream can tell this turn's crash from a stale one. Best-effort: a report that
+        arrives with no active project is simply dropped."""
+        import time
+
+        if self._project is None:
+            return
+        self._project.runtime_error = {"message": message, "stack": stack, "ts": time.monotonic()}
+
+    def _await_runtime_error(self, project: Project, since: float, timeout: float = 4.0) -> dict | None:
+        """Poll up to `timeout`s for a preview-reported runtime error newer than `since` (this turn's
+        send time). Returns it, or None if the preview stays clean. The HMR update -> re-render ->
+        report round-trip usually lands within a second or two of the agent's last write."""
+        import time
+
+        deadline = time.monotonic() + timeout
+        while True:
+            rt = project.runtime_error
+            if rt is not None and rt.get("ts", 0.0) >= since:
+                return rt
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.5)
 
     def _save_to_git(self, project: Project, prompt: str) -> dict | None:
         """Commit + push the workspace after a clean build so the app and .sage/ transcript are
