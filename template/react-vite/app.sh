@@ -8,6 +8,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Domino's App launcher prepends conda's node (v20.18) to PATH, shadowing the nodesource Node 22 the
+# Environment baked at /usr/bin. vite@8/rolldown require Node >=20.19, and npm SILENTLY skips their
+# platform-native optional binding (@rolldown/binding-linux-x64-gnu) when the running node fails that
+# engine check — then `vite build` dies with "Cannot find native binding". Force the baked Node 22
+# ahead of conda's, the same PATH override the Environment Dockerfile bakes.
+export PATH=/usr/bin:/usr/local/bin:$PATH
+
 # The agent may have added dependencies during the build session, so install from the lockfile.
 npm ci
 
