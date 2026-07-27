@@ -14,13 +14,16 @@
 USER root
 
 # --- Node 22 + uv -----------------------------------------------------------------------------
-# vite@8/rolldown hard-fails below Node 20.19. We install the official Node.js prebuilt tarball into
-# /usr/local rather than NodeSource's `deb.nodesource.com/setup_22.x | bash -`: that CDN started
-# returning 403 to the buildkit workers, failing every rebuild. Pinned for reproducibility; the .gz
-# tarball avoids depending on xz-utils. /usr/local/bin goes first on PATH so this node beats both a
-# stale /usr/bin/node and conda's shadowing node (the recurring gotcha from Phase 1).
+# vite@8 / rolldown@1.1.5 require Node ^20.19 || >=22.12 — v22.11 FAILS that range, which makes npm
+# skip rolldown's optional native binding (@rolldown/binding-linux-x64-gnu) during `npm ci`, and
+# vite then dies at startup with "Cannot find module '@rolldown/binding-linux-x64-gnu'". Pin >=22.12.
+# We install the official Node.js prebuilt tarball into /usr/local rather than NodeSource's
+# `deb.nodesource.com/setup_22.x | bash -`: that CDN started returning 403 to the buildkit workers,
+# failing every rebuild. Pinned for reproducibility; the .gz tarball avoids depending on xz-utils.
+# /usr/local/bin goes first on PATH so this node beats both a stale /usr/bin/node and conda's
+# shadowing node (the recurring gotcha from Phase 1).
 # NOTE: linux-x64 — assumes an amd64 base image (Domino's standard images are amd64).
-ARG NODE_VERSION=v22.11.0
+ARG NODE_VERSION=v22.12.0
 RUN curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.gz" \
     && tar -xzf "node-${NODE_VERSION}-linux-x64.tar.gz" -C /usr/local --strip-components=1 --no-same-owner \
     && rm "node-${NODE_VERSION}-linux-x64.tar.gz" \
@@ -59,22 +62,26 @@ ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if 
 ARG SAGE_REV=main
 # `--branch` takes a ref (branch/tag), not a bare SHA — so to force a fresh clone of the SAME branch
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
-ARG SAGE_CACHE_BUST=2026-07-27-rolldown-binding-heal
+ARG SAGE_CACHE_BUST=2026-07-27-node2212-rolldown-fix
 # NOTE: if the repo is PRIVATE, this clone needs a build-time credential — pass a token via a
 # secret build-arg and use it in the URL, or make a deploy mirror public. Public clone shown here.
 RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage
 
 # Warm template deps baked (agent-added deps install on top, into the app fs, at runtime).
-# `npm ci` intermittently SKIPS the platform-native optional binary (@rolldown/binding-linux-x64-gnu)
-# even though the lockfile lists it (npm optional-deps bug) — then `vite`/rolldown dies at startup with
-# "Cannot find module '@rolldown/binding-linux-x64-gnu'". So verify the binding actually loads and
-# self-heal by force-installing the exact version if it's missing. Fails the build if it still can't.
+# Even with a compatible Node, `npm ci` can still skip rolldown's platform-native optional binary
+# (@rolldown/binding-linux-x64-gnu) — then vite dies at startup with "Cannot find module
+# '@rolldown/binding-linux-x64-gnu'". So after npm ci, check the .node file exists (filesystem —
+# NOT `require('rolldown')`, which is ESM-only and always throws), self-heal by force-installing the
+# exact version if it's missing, then assert it's present so a broken image fails the build here.
 RUN cd /opt/sage/template/react-vite \
     && npm ci --include=optional --no-fund --no-audit \
-    && { node -e "require('rolldown')" \
-         || npm install --no-save --include=optional \
-              "@rolldown/binding-linux-x64-gnu@$(node -p "require('./node_modules/rolldown/package.json').version")"; } \
-    && node -e "require('rolldown'); console.log('[sage] rolldown native binding OK')"
+    && if ! find node_modules/@rolldown/binding-linux-x64-gnu -name '*.node' 2>/dev/null | grep -q .; then \
+         echo "[sage] rolldown linux binding missing after npm ci — installing explicitly"; \
+         npm install --no-save --include=optional \
+           "@rolldown/binding-linux-x64-gnu@$(node -p "require('./node_modules/rolldown/package.json').version")"; \
+       fi \
+    && find node_modules/@rolldown/binding-linux-x64-gnu -name '*.node' 2>/dev/null | grep -q . \
+    && echo "[sage] rolldown native binding OK"
 # Python deps for the orchestrator baked into a uv venv.
 RUN cd /opt/sage/backend && (uv sync --frozen || uv sync)
 
