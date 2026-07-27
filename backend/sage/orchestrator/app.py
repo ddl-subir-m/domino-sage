@@ -455,7 +455,7 @@ async def build_project(request: Request) -> JSONResponse:
 async def chat_completions(request: Request):
     project = orchestrator.project()
     body = await request.json()
-    gen = project.shim.handle(body, project=project.id)
+    gen = project.shim.handle(body, project=project.id, session=project.session_id)
 
     def _peek():  # blocking; runs in a thread so the loop stays free
         try:

@@ -34,20 +34,23 @@ def test_override_forces_sovereign_when_locked():
 
     sent_request, labels = gw.seen[-1]
     assert sent_request["model"] == "sovereign-8b"  # caller's model was overridden
-    assert labels.model == "sovereign-8b"
+    assert labels.mode == "sovereign"  # asset lock is surfaced as the sovereign cost dimension
 
 
-def test_every_request_is_tagged_with_project_and_phase():
+def test_every_request_is_tagged_with_phase_and_component():
     # Implement mode: phase comes straight from the control (no per-step classification), so this
     # deterministically exercises tag propagation. Auto-mode classification has its own test.
+    # Project is NOT tagged — the gateway captures it first-class (a `project` tag is dropped).
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
     gw = FakeGatewayClient()
 
-    list(_shim(control, gw).handle({"messages": []}, project="proj-x"))
+    list(_shim(control, gw).handle({"messages": []}, project="proj-x", session="ses_abc"))
 
     _, labels = gw.seen[-1]
-    assert labels.project == "proj-x"
     assert labels.phase == "implement"  # never empty -> avoids the gateway 'unknown' bucket
+    assert labels.mode == "implement"
+    assert labels.component == "builder"
+    assert labels.session == "ses_abc"  # per-build cost rollup
 
 
 def test_auto_mode_classifies_phase_per_request():

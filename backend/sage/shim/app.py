@@ -71,10 +71,11 @@ _DEFAULT_PROJECT = os.environ.get("DOMINO_PROJECT_NAME", "unknown")
 async def chat_completions(
     request: Request,
     x_sage_project: str = Header(default=_DEFAULT_PROJECT),
+    x_sage_session: str | None = Header(default=None),
 ):
     body = await request.json()
     requested = body.get("model")
-    gen = _shim.handle(body, project=x_sage_project)
+    gen = _shim.handle(body, project=x_sage_project, session=x_sage_session)
 
     # Pull the first chunk eagerly so token-fetch / connect / upstream-status errors
     # surface as a clean JSON error instead of a mid-stream connection reset.

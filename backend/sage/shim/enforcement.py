@@ -10,6 +10,7 @@ this code — this shim only guarantees the *policy* half (right model + tagging
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
@@ -21,6 +22,29 @@ from ..router.models import ModelCatalog, Mode
 from ..router.phase_classifier import WRITE_TOOLS, classify
 
 
+def _resolve_sage_version() -> str | None:
+    """Deploy-level Sage git rev for the `sage-version` cost tag. Best-effort: the baked image is a
+    git clone (see environment/Dockerfile), so read HEAD once at import. SAGE_VERSION env wins if set
+    (e.g. dogfood). Returns None rather than raising — a missing tag is better than a failed boot."""
+    v = os.environ.get("SAGE_VERSION")
+    if v:
+        return v[:64]
+    try:
+        import subprocess
+
+        home = os.environ.get("SAGE_APP_HOME", "/opt/sage")
+        out = subprocess.run(
+            ["git", "-C", home, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+_SAGE_VERSION = _resolve_sage_version()
+
+
 class EnforcementShim:
     def __init__(
         self,
@@ -28,6 +52,7 @@ class EnforcementShim:
         catalog: ModelCatalog,
         gateway: GatewayClient,
         force_model: bool = False,
+        component: str = "builder",
     ) -> None:
         self._control = control
         self._catalog = catalog
@@ -36,6 +61,9 @@ class EnforcementShim:
         # asked. Needed for a single-provider host (e.g. DeepSeek) where OpenCode's other model
         # aliases don't exist upstream. Off for the real multi-model Domino gateway.
         self._force_model = force_model
+        # component: the `sage-component` cost tag — which Sage process this shim serves. Lets cost
+        # analysis separate real build inference (builder) from orchestration overhead (probe).
+        self._component = component
 
     @property
     def catalog(self) -> ModelCatalog:
@@ -46,8 +74,12 @@ class EnforcementShim:
         which model Auto uses for plan/implement). Takes effect on the next request."""
         self._catalog = catalog
 
-    def handle(self, request: dict[str, Any], project: str) -> Iterator[bytes]:
-        """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
+    def handle(self, request: dict[str, Any], project: str, session: str | None = None) -> Iterator[bytes]:
+        """OpenAI-compatible request in, streamed response out. OpenCode points at this.
+
+        `project` is kept for the log line only — the gateway captures the caller's Domino project
+        as a first-class column, so it's not tagged (a `project` tag would be dropped). `session` is
+        the OpenCode session id, tagged as sage-session for per-build cost rollup."""
         requested = request.get("model")
         state = self._control.snapshot()
 
@@ -83,10 +115,13 @@ class EnforcementShim:
             requested, request["model"], decision.reason.value, state.phase.value, decision.locked,
         )
 
-        # Mandatory tagging so the gateway attributes cost (avoids the 'unknown' bucket).
+        # Cost-attribution tags (sent as X-LLM-Tag-sage-*, queryable in the gateway usage dashboard).
+        # sovereign = an asset lock forced the model, the dimension worth isolating spend on.
         labels = CostLabels(
-            project=project,
             phase=state.phase.value,
-            model=request["model"],
+            mode="sovereign" if decision.locked else state.mode.value,
+            component=self._component,
+            session=session,
+            version=_SAGE_VERSION,
         )
         return self._gateway.route(request, labels)

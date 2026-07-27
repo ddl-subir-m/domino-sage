@@ -31,7 +31,7 @@ def main() -> int:
         "max_tokens": 16,
         "stream": True,
     }
-    labels = CostLabels(project="probe", phase="plan", model=model)
+    labels = CostLabels(phase="plan", mode="auto", component="probe")
     try:
         data = b"".join(client.route(req, labels))
         print("OK — response bytes:", len(data))

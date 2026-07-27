@@ -44,15 +44,21 @@ def sidecar_token(url: str = DEFAULT_SIDECAR_URL) -> Callable[[], str]:
 
 @dataclass(frozen=True)
 class CostLabels:
-    """Tags attached to every request so the gateway attributes cost correctly.
+    """Sage's cost-attribution tags, sent to the Domino gateway as X-LLM-Tag-sage-* headers and
+    stored on each UsageLog row (queryable via group_by=tag:sage-*).
 
-    Untagged requests land in the gateway's 'unknown' bucket (observed in its UI), which
-    breaks per-phase attribution. project + phase are mandatory (SPEC.md C4/C7).
+    Only Sage-specific dimensions live here. The gateway already captures project, model, user and
+    org as first-class columns from the caller's Domino context, so tagging those is both redundant
+    AND silently dropped — they're in the gateway's RESERVED_TAG_KEYS (services/tags.py). Everything
+    below is namespaced `sage-` so all Sage traffic is one filter (tag:sage-source=domino-sage) on
+    the shared gateway, and so no key collides with that reserved set.
     """
 
-    project: str
-    phase: str
-    model: str
+    phase: str                  # plan | implement | ask   — build phase
+    mode: str                   # auto | ask | sovereign   — routing mode (sovereign = asset lock)
+    component: str = "builder"  # builder | probe          — which Sage process made the call
+    session: str | None = None  # OpenCode session id      — per-build cost rollup
+    version: str | None = None  # Sage git rev             — cost/quality across Sage releases
 
 
 @dataclass
@@ -137,13 +143,20 @@ class OpenAICompatibleClient:
 
         headers = {"Authorization": f"Bearer {self._token_provider()}"}
         if self._domino_tags:
-            # Stored in the gateway's usage `tags` column (project from Domino context; we add
-            # phase + model so per-phase cost is queryable).
+            # Stored in the gateway's usage `tags` column, queryable as group_by=tag:sage-*.
+            # Namespaced `sage-` to (a) isolate Sage traffic on the shared gateway and (b) dodge
+            # the gateway's RESERVED_TAG_KEYS — project/model/user/org are captured first-class
+            # there, so bare `project`/`model` tags would be silently dropped at ingest.
             headers |= {
-                "X-LLM-Tag-project": labels.project,
-                "X-LLM-Tag-phase": labels.phase,
-                "X-LLM-Tag-model": labels.model,
+                "X-LLM-Tag-sage-source": "domino-sage",
+                "X-LLM-Tag-sage-phase": labels.phase,
+                "X-LLM-Tag-sage-mode": labels.mode,
+                "X-LLM-Tag-sage-component": labels.component,
             }
+            if labels.session:
+                headers["X-LLM-Tag-sage-session"] = labels.session
+            if labels.version:
+                headers["X-LLM-Tag-sage-version"] = labels.version
         url = f"{self._base_url}/chat/completions"  # base already ends in /v1
         with httpx.Client(timeout=self._timeout_s, follow_redirects=False) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:

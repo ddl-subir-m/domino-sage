@@ -41,11 +41,65 @@ MODELS = [OpenModel("fake-model", "FakeVendor", "https://fake.example/v1", "FAKE
 def test_multi_provider_client_unknown_model_raises():
     client = MultiProviderOpenAIClient(MODELS)
     with pytest.raises(GatewayUpstreamError, match="unknown open-weight model"):
-        list(client.route({"model": "not-in-catalog"}, CostLabels(project="p", phase="plan", model="x")))
+        list(client.route({"model": "not-in-catalog"}, CostLabels(phase="plan", mode="auto")))
 
 
 def test_multi_provider_client_missing_api_key_raises(monkeypatch):
     monkeypatch.delenv("FAKE_VENDOR_KEY", raising=False)
     client = MultiProviderOpenAIClient(MODELS)
     with pytest.raises(GatewayUpstreamError, match="FAKE_VENDOR_KEY not set"):
-        list(client.route({"model": "fake-model"}, CostLabels(project="p", phase="plan", model="fake-model")))
+        list(client.route({"model": "fake-model"}, CostLabels(phase="plan", mode="auto")))
+
+
+def test_domino_mode_emits_namespaced_sage_tag_headers(monkeypatch):
+    # Guards the ingest contract: the gateway drops any tag key in RESERVED_TAG_KEYS
+    # (project/model/user/org/...). All Sage tags must be `sage-`-namespaced to survive AND to be
+    # isolable via tag:sage-source=domino-sage. This test locks the exact header wire format.
+    import httpx
+
+    from sage.gateway.client import OpenAICompatibleClient, static_token
+
+    captured: dict[str, str] = {}
+
+    class _Resp:
+        status_code = 200
+        is_redirect = False
+
+        def iter_bytes(self):
+            yield b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def stream(self, method, url, json=None, headers=None):
+            captured.update(headers or {})
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    client = OpenAICompatibleClient("https://gw.example/v1", static_token("t"), domino_tags=True)
+    labels = CostLabels(phase="implement", mode="sovereign", component="builder",
+                        session="ses_1", version="abc123")
+    list(client.route({"model": "m", "messages": []}, labels))
+
+    assert captured["X-LLM-Tag-sage-source"] == "domino-sage"
+    assert captured["X-LLM-Tag-sage-phase"] == "implement"
+    assert captured["X-LLM-Tag-sage-mode"] == "sovereign"
+    assert captured["X-LLM-Tag-sage-component"] == "builder"
+    assert captured["X-LLM-Tag-sage-session"] == "ses_1"
+    assert captured["X-LLM-Tag-sage-version"] == "abc123"
+    # The bare reserved keys must never be sent — they'd be silently dropped, hiding Sage's cost.
+    assert not any(k.lower() in ("x-llm-tag-project", "x-llm-tag-model") for k in captured)
