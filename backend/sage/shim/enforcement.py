@@ -79,8 +79,8 @@ class EnforcementShim:
             request = {**request, "model": decision.model}
 
         logging.getLogger("sage.shim").info(
-            "model policy: requested=%s -> resolved=%s (%s, locked=%s)",
-            requested, request["model"], decision.reason.value, decision.locked,
+            "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s)",
+            requested, request["model"], decision.reason.value, state.phase.value, decision.locked,
         )
 
         # Mandatory tagging so the gateway attributes cost (avoids the 'unknown' bucket).
