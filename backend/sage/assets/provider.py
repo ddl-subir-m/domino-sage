@@ -10,11 +10,33 @@ Deep module, narrow interface: list_datasets(project_id) -> [Asset]. Two adapter
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Protocol
 
 DEFAULT_SENSITIVITY_TAG = "sensitive"
+
+# Where Domino mounts a project's datasets in the running container. DFS projects use
+# /domino/datasets/local; git-based projects use /mnt/data (local) and /mnt/imported/data (shared).
+# DOMINO_DATASET_MOUNT_PATH / DOMINO_MOUNT_PATHS override (os.pathsep- or comma-separated).
+DEFAULT_DATASET_MOUNT_ROOTS = ("/domino/datasets/local", "/mnt/data", "/mnt/imported/data")
+# Backstop so a pathological dataset (millions of files) can't wedge a file listing.
+_MAX_FILES = 5000
+
+
+def resolve_mount_roots(env: dict[str, str] | None = None) -> list[str]:
+    """Dataset mount roots to probe, env overrides first, then the Domino defaults (deduped)."""
+    env = env if env is not None else dict(os.environ)
+    roots: list[str] = []
+    for key in ("DOMINO_DATASET_MOUNT_PATH", "DOMINO_MOUNT_PATHS"):
+        raw = env.get(key)
+        if raw:
+            roots += [p.strip() for p in raw.replace(os.pathsep, ",").split(",") if p.strip()]
+    roots += list(DEFAULT_DATASET_MOUNT_ROOTS)
+    seen: set[str] = set()
+    return [r for r in roots if not (r in seen or seen.add(r))]
 
 
 @dataclass(frozen=True)
@@ -22,7 +44,14 @@ class Asset:
     id: str
     name: str
     tags: list[str] = field(default_factory=list)
-    project: str | None = None  # owning project name, for grouping when listing across projects
+    project: str | None = None  # owning project name
+    mount_path: str | None = None  # absolute in-container path where this dataset is mounted
+
+
+@dataclass(frozen=True)
+class DatasetFile:
+    path: str  # POSIX path relative to the dataset's mount root (e.g. "raw/train.csv")
+    size: int  # bytes
 
 
 def is_sensitive(asset: Asset, sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG) -> bool:
@@ -31,24 +60,65 @@ def is_sensitive(asset: Asset, sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG) -
     return any(t.lower() == want for t in asset.tags)
 
 
+def walk_files(root: Path) -> list[DatasetFile]:
+    """List regular files under a dataset mount, relative + sized. Skips dotfiles and caps count."""
+    out: list[DatasetFile] = []
+    for p in sorted(root.rglob("*")):
+        if len(out) >= _MAX_FILES:
+            break
+        if not p.is_file() or any(part.startswith(".") for part in p.relative_to(root).parts):
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        out.append(DatasetFile(p.relative_to(root).as_posix(), size))
+    return out
+
+
 class AssetProvider(Protocol):
     def list_datasets(self, project_id: str | None) -> list[Asset]: ...
+    def list_files(self, asset: Asset) -> list[DatasetFile]: ...
+
+
+# name -> (tags, project, {filename: contents}). Seeded to a temp dir so the file-attach flow
+# (which symlinks real bytes into the workspace) works end-to-end on a local Mac with no Domino.
+_FAKE_SPEC = {
+    "sales_2026": (["curated"], "Revenue", {"train.csv": "month,revenue\n2026-01,120000\n2026-02,138500\n", "README.md": "Monthly revenue.\n"}),
+    "customer_pii": (["sensitive"], "Revenue", {"customers.csv": "id,email,ssn\n1,a@x.com,000-00-0001\n"}),
+    "app_logs": ([], "Platform", {"2026-07.log": "INFO boot ok\nWARN slow query 812ms\n"}),
+}
 
 
 @dataclass
 class FakeAssetProvider:
-    """In-memory datasets for local testing/demo (no Domino)."""
+    """In-memory datasets for local testing/demo (no Domino). Seeds sample files under a temp
+    mount root so attaching (symlinking) real bytes into the workspace works off-Domino."""
 
-    assets: list[Asset] = field(
-        default_factory=lambda: [
-            Asset("ds_sales", "sales_2026", tags=["curated"], project="Revenue"),
-            Asset("ds_pii", "customer_pii", tags=["sensitive"], project="Revenue"),  # sovereign lock
-            Asset("ds_logs", "app_logs", tags=[], project="Platform"),
-        ]
-    )
+    root: Path | None = None
+    assets: list[Asset] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.root is None:
+            import tempfile
+
+            self.root = Path(tempfile.mkdtemp(prefix="sage-fake-datasets-"))
+        seeded: list[Asset] = []
+        for name, (tags, proj, files) in _FAKE_SPEC.items():
+            d = self.root / name
+            d.mkdir(parents=True, exist_ok=True)
+            for fn, content in files.items():
+                fp = d / fn
+                if not fp.exists():
+                    fp.write_text(content)
+            seeded.append(Asset(f"ds_{name}", name, tags=tags, project=proj, mount_path=str(d)))
+        self.assets = seeded
 
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         return list(self.assets)
+
+    def list_files(self, asset: Asset) -> list[DatasetFile]:
+        return walk_files(Path(asset.mount_path)) if asset.mount_path else []
 
 
 def parse_tags(raw: Any) -> list[str]:
@@ -72,31 +142,43 @@ def parse_tags(raw: Any) -> list[str]:
 
 
 class DominoAssetProvider:
-    """Reads datasets via the Domino public datasetrw v2 API. Needs DOMINO_API_HOST + a token.
+    """Reads datasets via the Domino public datasetrw v2 API, then keeps only those actually
+    MOUNTED in this project's container — because attaching a file symlinks its real bytes from
+    the mount into the workspace, and lists its files from disk. Needs DOMINO_API_HOST + a token.
 
-    Lists every dataset the caller can READ across all projects (minimumPermission scopes to
-    what they have access to), so the builder can attach data from anywhere — not just the
-    current project. Mirrors the AutoML extension's proven use of GET /api/datasetrw/v2/datasets.
-
-    Each envelope item is ``{dataset: {id, name, tags{tagName: snapshotId}, projectId}, projectInfo:
-    {name}}``; sensitivity is read from the tag-map keys. Parsing stays defensive against camelCase
-    drift.
+    The API (minimumPermission=ReadDatasetRwV2) supplies id/name/tags/project + sensitivity (read
+    from the tag map keys); the filesystem supplies which of those are available here and their
+    files. Mirrors the AutoML extension's GET /api/datasetrw/v2/datasets and mount-root resolution.
     """
 
     _PAGE = 100
     _MAX_PAGES = 100  # 10k-dataset backstop against a non-terminating pager
 
-    def __init__(self, api_host: str, token_provider: Callable[[], str], timeout_s: float = 20.0) -> None:
+    def __init__(
+        self,
+        api_host: str,
+        token_provider: Callable[[], str],
+        timeout_s: float = 20.0,
+        mount_roots: list[str] | None = None,
+    ) -> None:
         self._api_host = api_host.rstrip("/")
         self._token_provider = token_provider
         self._timeout_s = timeout_s
+        self._mount_roots = mount_roots if mount_roots is not None else resolve_mount_roots()
+
+    def _mount_path_for(self, name: str) -> str | None:
+        for root in self._mount_roots:
+            p = Path(root) / name
+            if p.is_dir():
+                return str(p)
+        return None
 
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         import httpx
 
         url = f"{self._api_host}/api/datasetrw/v2/datasets"
         headers = {"Authorization": f"Bearer {self._token_provider()}"}
-        out: list[Asset] = []
+        mounted: list[Asset] = []
         offset = 0
         for _ in range(self._MAX_PAGES):
             params = {
@@ -111,17 +193,25 @@ class DominoAssetProvider:
             items = data.get("datasets") or data.get("data") or []
             for item in items:
                 ds = item.get("dataset") or item
+                name = str(ds.get("name") or "unnamed")
+                mount_path = self._mount_path_for(name)
+                if not mount_path:  # not mounted here -> its files aren't on disk to attach
+                    continue
                 proj = (item.get("projectInfo") or {}).get("name")
-                out.append(
+                mounted.append(
                     Asset(
                         id=str(ds.get("id") or ""),
-                        name=str(ds.get("name") or "unnamed"),
+                        name=name,
                         tags=parse_tags(ds.get("tags")),
                         project=str(proj) if proj else None,
+                        mount_path=mount_path,
                     )
                 )
             total = (data.get("metadata") or {}).get("totalCount")
             offset += self._PAGE
-            if not items or (total is not None and len(out) >= total):
+            if not items or (total is not None and offset >= total):
                 break
-        return out
+        return mounted
+
+    def list_files(self, asset: Asset) -> list[DatasetFile]:
+        return walk_files(Path(asset.mount_path)) if asset.mount_path else []

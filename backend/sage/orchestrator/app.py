@@ -32,7 +32,7 @@ from ..feedback.runner import FeedbackRunner
 from ..preview.prefix import domino_base_prefix
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
-from .service import Orchestrator
+from .service import AttachTooLarge, Orchestrator
 
 _feedback = FeedbackRunner()
 
@@ -362,20 +362,44 @@ def list_assets() -> dict:
     return {"assets": orchestrator.list_assets(), "sensitivity_tag": orchestrator._sensitivity_tag}
 
 
-@control_app.post("/api/project/assets/{dataset_id}/attach")
-def attach_asset(dataset_id: str) -> JSONResponse:
+@control_app.get("/api/project/assets/{dataset_id}/files")
+def list_asset_files(dataset_id: str) -> JSONResponse:
     try:
-        return JSONResponse(content=orchestrator.attach_asset(dataset_id))
+        return JSONResponse(content={"files": orchestrator.list_asset_files(dataset_id)})
     except LookupError:
         return JSONResponse(status_code=404, content={"error": "dataset not found"})
 
 
-@control_app.post("/api/project/assets/{dataset_id}/detach")
-def detach_asset(dataset_id: str) -> JSONResponse:
+@control_app.post("/api/project/assets/{dataset_id}/files/attach")
+async def attach_file(dataset_id: str, request: Request) -> JSONResponse:
+    path = (await request.json()).get("path")
+    if not path:
+        return JSONResponse(status_code=400, content={"error": "path required"})
     try:
-        return JSONResponse(content=orchestrator.detach_asset(dataset_id))
+        return JSONResponse(content=orchestrator.attach_file(dataset_id, path))
     except LookupError:
-        return JSONResponse(status_code=404, content={"error": "dataset not found"})
+        return JSONResponse(status_code=404, content={"error": "dataset not mounted in this project"})
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "file not found in dataset"})
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid file path"})
+    except AttachTooLarge as e:
+        mb = e.cap / (1024 * 1024)
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"attaching this file would exceed the {mb:.0f} MB limit for attached data"},
+        )
+
+
+@control_app.post("/api/project/files/detach")
+async def detach_file(request: Request) -> JSONResponse:
+    path = (await request.json()).get("path")
+    if not path:
+        return JSONResponse(status_code=400, content={"error": "path required"})
+    try:
+        return JSONResponse(content=orchestrator.detach_file(path))
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid path"})
 
 
 @control_app.post("/api/project/build/stream")

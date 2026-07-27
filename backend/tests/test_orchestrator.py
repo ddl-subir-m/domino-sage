@@ -65,6 +65,80 @@ def test_history_reads_disk_without_attaching(tmp_path: Path):
     assert orch2.history() == [{"type": "user", "text": "hi"}]
 
 
+# --- file attach (Domino datasets) -----------------------------------------------------------
+
+def _dataset(orch: Orchestrator, name: str) -> str:
+    return next(a["id"] for a in orch.list_assets() if a["name"] == name)
+
+
+def test_attach_file_symlinks_live_bytes_into_public_data(tmp_path: Path):
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    ds = _dataset(orch, "sales_2026")
+
+    files = orch.list_asset_files(ds)
+    assert {f["path"] for f in files} == {"train.csv", "README.md"}
+    assert all(not f["attached"] for f in files)
+
+    res = orch.attach_file(ds, "train.csv")
+    link = ws / "public" / "data" / "sales_2026" / "train.csv"
+    assert res["path"] == "public/data/sales_2026/train.csv"
+    assert link.is_symlink() and link.is_file()          # points at the live mount, not a copy
+    assert "month,revenue" in link.read_text()
+    assert [e["file"] for e in orch.project().attached] == ["train.csv"]
+    assert orch.list_asset_files(ds)[0]["attached"] or orch.list_asset_files(ds)[1]["attached"]
+
+    # gitignored + advertised to the agent in AGENTS.md
+    assert "public/data/" in (ws / ".gitignore").read_text().split()
+    assert "public/data/sales_2026/train.csv" in (ws / "AGENTS.md").read_text()
+
+
+def test_attaching_sensitive_dataset_file_locks_sovereign(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)  # memoize without Vite
+    res = orch.attach_file(_dataset(orch, "customer_pii"), "customers.csv")
+    assert res["sensitive"] is True
+    assert orch.project().control.locked
+
+
+def test_detach_removes_symlink_but_keeps_sticky_lock(tmp_path: Path):
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    ds = _dataset(orch, "customer_pii")
+    orch.attach_file(ds, "customers.csv")
+    link = ws / "public" / "data" / "customer_pii" / "customers.csv"
+    assert link.is_symlink()
+
+    orch.detach_file("public/data/customer_pii/customers.csv")
+    assert not link.exists()
+    assert orch.project().attached == []
+    assert orch.project().control.locked           # sticky: detach does not unlock
+    assert "customer_pii" not in (ws / "AGENTS.md").read_text()
+
+
+def test_attach_respects_configurable_size_cap(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SAGE_ATTACH_MAX_BYTES", "10")  # smaller than any sample file
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+    from sage.orchestrator.service import AttachTooLarge
+
+    with pytest.raises(AttachTooLarge):
+        orch.attach_file(_dataset(orch, "sales_2026"), "train.csv")
+    assert orch.project().attached == []           # nothing attached, no symlink left behind
+    assert not (orch.project().workspace.path / "public" / "data").exists()
+
+
+def test_attached_files_rehydrate_from_symlinks_after_restart(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)  # memoize without Vite
+    ds = _dataset(orch, "sales_2026")
+    orch.attach_file(ds, "train.csv")
+
+    fresh = _orch(tmp_path)                          # new process over the same workspace volume
+    attached = fresh.project(start_preview=False).attached
+    assert [e["path"] for e in attached] == ["public/data/sales_2026/train.csv"]
+
+
 def test_shutdown_saves_work_before_stopping_resources(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.project(start_preview=False)  # attach so there's a project to save

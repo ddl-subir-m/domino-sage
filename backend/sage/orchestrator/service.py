@@ -10,8 +10,10 @@ Deep module, narrow interface: project / build / build_stream / shutdown.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from pathlib import PurePosixPath as PurePosix
 from typing import TYPE_CHECKING
 
 import httpx
@@ -50,6 +52,56 @@ _RUNNING_STATES = frozenset({"running"})
 _FAILED_STATES = frozenset({"failed", "error"})
 
 
+class AttachTooLarge(Exception):
+    """Attaching a file would push the total attached size over the configured cap."""
+
+    def __init__(self, cap: int, current: int, incoming: int) -> None:
+        self.cap, self.current, self.incoming = cap, current, incoming
+        super().__init__(f"attach would exceed cap: {current + incoming} > {cap} bytes")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+def _slug(name: str) -> str:
+    """Collapse a dataset name into a safe single path segment for public/data/<slug>/."""
+    return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name).strip("_") or "dataset"
+
+
+def _attach_dest(dataset_name: str, file_path: str) -> str:
+    """Workspace-relative POSIX path a dataset file is symlinked to."""
+    rel = PurePosix(file_path.replace("\\", "/"))
+    parts = [p for p in rel.parts if p not in ("", ".", "..")]
+    return PurePosix("public/data", _slug(dataset_name), *parts).as_posix()
+
+
+def _safe_join(root: Path, rel: str) -> Path:
+    """Join rel under root, rejecting anything that escapes it (.., absolute). Resolves the escape
+    check LEXICALLY (os.path.normpath) so it doesn't follow the attached symlink at the leaf —
+    which points at the dataset mount OUTSIDE the workspace and would false-positive on detach."""
+    base = root.resolve()
+    target = Path(os.path.normpath(base / rel))
+    if target != base and base not in target.parents:
+        raise ValueError(f"path escapes {base}: {rel}")
+    return target
+
+
+def _prune_empty_dirs(start: Path, stop: Path) -> None:
+    """Remove now-empty dirs from `start` up to (not including) `stop`. Best-effort."""
+    stop = stop.resolve()
+    cur = start.resolve()
+    while cur != stop and stop in cur.parents:
+        try:
+            cur.rmdir()
+        except OSError:
+            break
+        cur = cur.parent
+
+
 def _agent_for_mode(mode: Mode) -> str | None:
     return _READ_ONLY_AGENT.get(mode)
 
@@ -86,7 +138,9 @@ class Project:
     shim: EnforcementShim
     snapshot: TurnSnapshot
     session_id: str | None = None
-    attached: list[str] = field(default_factory=list)
+    # Attached dataset FILES: [{dataset_id, dataset, file, path, size}]. `path` is the
+    # workspace-relative symlink under public/data/ (what OpenCode @mentions and the app fetches).
+    attached: list[dict] = field(default_factory=list)
     # Set by the /v1/chat/completions handler when a model call the agent made this turn fails
     # upstream (bad model id, gateway auth, etc). build()/build_stream() check + clear this so a
     # failed turn is reported as an error instead of silently falling through to "typecheck clean"
@@ -156,6 +210,9 @@ class Orchestrator:
         self._force_model = force_model
         self._assets = assets or FakeAssetProvider()
         self._sensitivity_tag = sensitivity_tag
+        # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
+        # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
+        self._attach_max_bytes = _env_int("SAGE_ATTACH_MAX_BYTES", 500 * 1024 * 1024)
         self._domino_project_id = domino_project_id
         # Domino control-plane wiring for Publish / Stop (None off-Domino / local runs -> the
         # endpoints report a clear "not available" instead of crashing).
@@ -188,7 +245,27 @@ class Orchestrator:
         if start_preview:
             supervisor.start()
         self._project = Project(self._project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
+        self._rehydrate_attached(self._project)
         return self._project
+
+    def _rehydrate_attached(self, project: Project) -> None:
+        """Rebuild the attached-files list from symlinks left under public/data/ by a prior process
+        (the in-memory list doesn't survive an orchestrator restart, but the symlinks do)."""
+        data_root = project.workspace.path / "public" / "data"
+        if not data_root.is_dir():
+            return
+        for link in sorted(data_root.rglob("*")):
+            if not link.is_symlink():
+                continue
+            rel = link.relative_to(project.workspace.path).as_posix()
+            try:
+                size = link.stat().st_size  # follows the symlink to the mount
+            except OSError:
+                size = 0
+            project.attached.append(
+                {"dataset_id": None, "dataset": link.parent.relative_to(data_root).as_posix() or link.parent.name,
+                 "file": link.name, "path": rel, "size": size}
+            )
 
     def _ensure_opencode(self) -> OpenCodeClient:
         """Start the shared OpenCode server on first use (opencode.json in opencode_cwd points
@@ -680,7 +757,7 @@ class Orchestrator:
         return Workspace(self._project_id, self._wm.path).read_history()
 
     def list_assets(self) -> list[dict]:
-        assets = self._assets.list_datasets(self._domino_project_id)
+        """Datasets mounted in this project (the ones whose files can actually be attached)."""
         return [
             {
                 "id": a.id,
@@ -689,33 +766,102 @@ class Orchestrator:
                 "project": a.project,
                 "sensitive": is_sensitive(a, self._sensitivity_tag),
             }
-            for a in assets
+            for a in self._assets.list_datasets(self._domino_project_id)
         ]
 
-    def attach_asset(self, dataset_id: str) -> dict:
-        """Attach a dataset to the project. If it carries the sensitivity tag, fire the sovereign
-        lock (sticky). This is the real signal that replaces the manual lock toggle."""
-        project = self.project()
+    def _find_asset(self, dataset_id: str) -> Asset:
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
         if asset is None:
             raise LookupError(dataset_id)
-        if dataset_id not in project.attached:
-            project.attached.append(dataset_id)
+        return asset
+
+    def list_asset_files(self, dataset_id: str) -> list[dict]:
+        """Files under a mounted dataset, each with its size and whether it's already attached."""
+        asset = self._find_asset(dataset_id)
+        attached = {e["path"] for e in self.project().attached}
+        out = []
+        for f in self._assets.list_files(asset):
+            dest = _attach_dest(asset.name, f.path)
+            out.append({"path": f.path, "size": f.size, "dest": dest, "attached": dest in attached})
+        return out
+
+    def attach_file(self, dataset_id: str, file_path: str) -> dict:
+        """Symlink one dataset file into the workspace under public/data/ so OpenCode can @mention
+        it and the (static) preview/published app can fetch it — no byte copy, the symlink points
+        at the live Domino mount. A sensitivity-tagged dataset still fires the sticky sovereign lock.
+        Enforces a configurable total-size cap across all attached files."""
+        project = self.project()
+        asset = self._find_asset(dataset_id)
+        if not asset.mount_path:
+            raise LookupError(dataset_id)  # not mounted here -> nothing to attach
+        src = _safe_join(Path(asset.mount_path), file_path)
+        if not src.is_file():
+            raise FileNotFoundError(file_path)
+        rel = _attach_dest(asset.name, file_path)  # workspace-relative posix path
+        already = next((e for e in project.attached if e["path"] == rel), None)
+        if already is None:
+            size = src.stat().st_size
+            total = sum(e["size"] for e in project.attached)
+            if total + size > self._attach_max_bytes:
+                raise AttachTooLarge(self._attach_max_bytes, total, size)
+            dest = _safe_join(project.workspace.path, rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.is_symlink() or dest.exists():
+                dest.unlink()
+            dest.symlink_to(src)
+            project.attached.append(
+                {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel, "size": size}
+            )
+            self._ensure_data_gitignored(project.workspace)
+            self._write_agents_data_block(project)
         sensitive = is_sensitive(asset, self._sensitivity_tag)
         project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
-        return {"attached": asset.name, "sensitive": sensitive, "status": project.status()}
+        size = next((e["size"] for e in project.attached if e["path"] == rel), 0)
+        return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size, "sensitive": sensitive, "status": project.status()}
 
-    def detach_asset(self, dataset_id: str) -> dict:
-        """Detach a dataset from the project. Does NOT clear the sovereign lock even if the
-        dataset was sensitivity-tagged — the asset-driven lock is sticky for the session
-        (see ModelControl.on_assets_changed); use the manual lock toggle to unlock."""
+    def detach_file(self, path: str) -> dict:
+        """Remove an attached file's symlink (keyed by its workspace path, so rehydrated entries
+        with no dataset_id detach too) and forget it. Does NOT clear the sovereign lock even for a
+        sensitivity-tagged dataset — the asset-driven lock is sticky (ModelControl); unlock manually."""
         project = self.project()
-        asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
-        if asset is None:
-            raise LookupError(dataset_id)
-        if dataset_id in project.attached:
-            project.attached.remove(dataset_id)
-        return {"detached": asset.name, "status": project.status()}
+        if not path.startswith("public/data/"):
+            raise ValueError(path)
+        dest = _safe_join(project.workspace.path, path)
+        if dest.is_symlink() or dest.exists():
+            dest.unlink()
+        _prune_empty_dirs(dest.parent, project.workspace.path / "public" / "data")
+        project.attached[:] = [e for e in project.attached if e["path"] != path]
+        self._write_agents_data_block(project)
+        return {"detached": path, "status": project.status()}
+
+    _AGENTS_BEGIN = "<!-- sage:attached-data:begin -->"
+    _AGENTS_END = "<!-- sage:attached-data:end -->"
+
+    def _write_agents_data_block(self, project: Project) -> None:
+        """Maintain a managed block in the workspace AGENTS.md listing attached data files, so the
+        agent knows they exist (and their served paths) even without an explicit @mention."""
+        agents = project.workspace.path / "AGENTS.md"
+        if project.attached:
+            lines = ["## Attached data", "", "Files attached by the user (served at `/data/...`, @mention by path):", ""]
+            lines += [f"- `{e['path']}` — from dataset **{e['dataset']}**" for e in project.attached]
+            block = f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}"
+        else:
+            block = ""
+        existing = agents.read_text() if agents.exists() else ""
+        b, e = existing.find(self._AGENTS_BEGIN), existing.find(self._AGENTS_END)
+        if b != -1 and e != -1:
+            existing = existing[:b] + block + existing[e + len(self._AGENTS_END):]
+        elif block:
+            existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
+        agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+
+    @staticmethod
+    def _ensure_data_gitignored(workspace: Workspace) -> None:
+        gi = workspace.path / ".gitignore"
+        line = "public/data/"
+        existing = gi.read_text() if gi.exists() else ""
+        if line not in existing.split():
+            gi.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")
 
     def shutdown(self) -> None:
         # Stop-safe backstop: on a graceful SIGTERM (Domino /stop, idle cull, or the hub button),

@@ -193,6 +193,11 @@
   .asset-row .a-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
   .asset-row .a-name .a-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .a-chip { flex: 0 0 auto; font-size: 10px; padding: 1px 6px; border-radius: 999px; color: var(--lock); border: 1px solid color-mix(in srgb, var(--lock) 40%, var(--border)); background: color-mix(in srgb, var(--lock) 8%, transparent); }
+  .asset-row .a-tags { flex: 0 0 auto; color: var(--faint); font-size: 11px; }
+  .ds-row { cursor: pointer; user-select: none; }
+  .a-caret { flex: 0 0 auto; color: var(--faint); font-size: 10px; width: 10px; display: inline-block; }
+  .file-list { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }
+  .file-row { font-size: 12px; }
   .asset-row button { flex: 0 0 auto; padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
   .asset-row button.attached { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
 
@@ -302,7 +307,7 @@
         <h2>Attach data</h2>
         <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets…" oninput="renderAssets()" autocomplete="off" />
         <div id="assets" class="asset-list"><div class="hint">Loading datasets…</div></div>
-        <div class="hint">Attaching a dataset tagged <b id="sens-tag">sensitive</b> forces the sovereign model.</div>
+        <div class="hint">Attached files are available to the agent at <code>public/data/…</code> — @mention one to use it as your default dataset. A file from a dataset tagged <b id="sens-tag">sensitive</b> forces the sovereign model.</div>
       </div>
 
       <div class="composer">
@@ -539,9 +544,11 @@ function enterProject() {
   if (workTab === 'code') loadFileTree();
 }
 
-/* ---------- assets ---------- */
-let assetsCache = [];        // all datasets the user can access (from /api/assets)
-let attachedIds = [];        // dataset ids currently attached to this project
+/* ---------- assets: Domino datasets -> attach individual files ---------- */
+let assetsCache = [];        // datasets mounted in this project [{id,name,sensitive,...}]
+let attachedFiles = [];      // [{dataset_id, dataset, file, path, size}] (path = public/data/… symlink)
+const filesCache = {};       // datasetId -> [{path,size,dest,attached}]
+const expanded = new Set();  // dataset ids whose file list is expanded
 
 async function loadAssets() {
   const { body } = await api('/api/assets');
@@ -549,89 +556,134 @@ async function loadAssets() {
   assetsCache = body.assets || [];
   if (active) {
     const proj = await api('/api/project');
-    attachedIds = proj.body.attached || [];
+    attachedFiles = proj.body.attached || [];
   }
   renderAssets();
   updateDataCount();
 }
 
+function attachedPaths() { return new Set(attachedFiles.map(e => e.path)); }
+function hintEl(html) { const d = document.createElement('div'); d.className = 'hint'; d.innerHTML = html; return d; }
+function groupHeader(text) { const h = document.createElement('div'); h.className = 'asset-group'; h.textContent = text; return h; }
+function fmtSize(n) {
+  if (!n) return '';
+  const u = ['B', 'KB', 'MB', 'GB']; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n < 10 && i ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+}
+
 function renderAssets() {
   const el = document.getElementById('assets');
-  if (!assetsCache.length) { el.innerHTML = '<div class="hint">No datasets you can access.</div>'; return; }
+  el.innerHTML = '';
+
+  // Attached files, pinned at the top so the current state and detach are one click away.
+  if (attachedFiles.length) {
+    el.appendChild(groupHeader(`Attached files · ${attachedFiles.length}`));
+    for (const e of attachedFiles) {
+      const row = document.createElement('div');
+      row.className = 'asset-row';
+      row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(e.path)}">${esc(e.file)}</span><span class="a-tags">${esc(e.dataset)}</span></span>`;
+      const btn = document.createElement('button');
+      btn.className = 'attached'; btn.textContent = 'Detach';
+      btn.onclick = () => detachFile(e.path);
+      row.appendChild(btn);
+      el.appendChild(row);
+    }
+  }
+
+  if (!assetsCache.length) {
+    el.appendChild(hintEl('No datasets are mounted in this project. Import a dataset in Domino, then reopen this panel to attach its files.'));
+    return;
+  }
   const q = (document.getElementById('asset-search').value || '').trim().toLowerCase();
   const matches = q ? assetsCache.filter(a => a.name.toLowerCase().includes(q)) : assetsCache;
-  if (!matches.length) { el.innerHTML = `<div class="hint">No datasets match “${esc(q)}”.</div>`; return; }
-
-  const attachedSet = new Set(attachedIds);
-  const attached = matches.filter(a => attachedSet.has(a.id));
-  const available = matches.filter(a => !attachedSet.has(a.id));
-
-  el.innerHTML = '';
-  if (attached.length) {
-    el.appendChild(groupHeader(`Attached · ${attached.length}`));
-    attached.forEach(a => el.appendChild(assetRow(a, true)));
-  }
-  // Available datasets grouped by owning project so same-named datasets are distinguishable.
-  const byProject = new Map();
-  for (const a of available) {
-    const p = a.project || 'Other';
-    if (!byProject.has(p)) byProject.set(p, []);
-    byProject.get(p).push(a);
-  }
-  for (const p of [...byProject.keys()].sort((x, y) => x.localeCompare(y))) {
-    el.appendChild(groupHeader(p));
-    byProject.get(p).forEach(a => el.appendChild(assetRow(a, false)));
-  }
+  el.appendChild(groupHeader('Datasets'));
+  if (!matches.length) { el.appendChild(hintEl(`No datasets match “${esc(q)}”.`)); return; }
+  for (const a of matches) el.appendChild(datasetRow(a));
 }
 
-function groupHeader(text) {
-  const h = document.createElement('div');
-  h.className = 'asset-group';
-  h.textContent = text;
-  return h;
-}
-
-function assetRow(a, attached) {
+function datasetRow(a) {
+  const wrap = document.createElement('div');
   const row = document.createElement('div');
-  row.className = 'asset-row';
-  const chip = a.sensitive ? `<span class="a-chip" title="Tagged sensitive — forces the sovereign model">Sensitive</span>` : '';
-  const tagTitle = a.tags && a.tags.length ? ` title="${esc(a.tags.join(', '))}"` : '';
-  row.innerHTML = `<span class="a-name"><span class="a-label"${tagTitle}>${esc(a.name)}</span>${chip}</span>`;
-  const btn = document.createElement('button');
-  btn.dataset.id = a.id;
-  setAssetButtonState(btn, attached);
-  btn.onclick = () => btn.classList.contains('attached') ? detachAsset(a.id) : attachAsset(a.id);
-  row.appendChild(btn);
-  return row;
+  row.className = 'asset-row ds-row';
+  const chip = a.sensitive ? `<span class="a-chip" title="Tagged sensitive — attaching a file forces the sovereign model">Sensitive</span>` : '';
+  const caret = expanded.has(a.id) ? '▾' : '▸';
+  row.innerHTML = `<span class="a-name"><span class="a-caret">${caret}</span><span class="a-label">${esc(a.name)}</span>${chip}</span>`;
+  row.onclick = () => toggleDataset(a.id);
+  wrap.appendChild(row);
+
+  if (expanded.has(a.id)) {
+    const box = document.createElement('div');
+    box.className = 'file-list';
+    const files = filesCache[a.id];
+    if (!files) box.appendChild(hintEl('Loading files…'));
+    else if (!files.length) box.appendChild(hintEl('No files in this dataset.'));
+    else {
+      const aset = attachedPaths();
+      for (const f of files) {
+        const attached = aset.has(f.dest);
+        const fr = document.createElement('div');
+        fr.className = 'asset-row file-row';
+        fr.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(f.path)}">${esc(f.path)}</span><span class="a-tags">${fmtSize(f.size)}</span></span>`;
+        const btn = document.createElement('button');
+        setAssetButtonState(btn, attached);
+        btn.onclick = () => attached ? detachFile(f.dest) : attachFile(a.id, f.path);
+        fr.appendChild(btn);
+        box.appendChild(fr);
+      }
+    }
+    wrap.appendChild(box);
+  }
+  return wrap;
+}
+
+async function toggleDataset(id) {
+  if (expanded.has(id)) { expanded.delete(id); renderAssets(); return; }
+  expanded.add(id);
+  renderAssets();
+  if (!filesCache[id]) {
+    const { body } = await api(`/api/project/assets/${id}/files`);
+    filesCache[id] = body.files || [];
+    renderAssets();
+  }
 }
 
 function setAssetButtonState(btn, attached) {
   btn.textContent = attached ? 'Detach' : 'Attach';
   btn.classList.toggle('attached', attached);
 }
-async function attachAsset(datasetId) {
+
+async function attachFile(datasetId, filePath) {
   if (!active) return;
-  const { body } = await api(`/api/project/assets/${datasetId}/attach`, { method: 'POST' });
-  if (!attachedIds.includes(datasetId)) attachedIds.push(datasetId);
+  const r = await api(`/api/project/assets/${datasetId}/files/attach`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: filePath }),
+  });
+  if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Could not attach file')); return; }
+  if (!attachedFiles.some(e => e.path === r.body.path)) {
+    attachedFiles.push({ dataset_id: datasetId, dataset: r.body.dataset, file: filePath, path: r.body.path, size: r.body.size });
+  }
   renderAssets();
   updateDataCount();
   refreshStatus();
-  if (body.sensitive) addStatus('err', '🔒', `Attached <b>${esc(body.attached)}</b> — sovereign model locked`);
+  if (r.body.sensitive) addStatus('err', '🔒', `Attached <b>${esc(filePath)}</b> — sovereign model locked`);
 }
-async function detachAsset(datasetId) {
+
+async function detachFile(destPath) {
   if (!active) return;
-  const { body } = await api(`/api/project/assets/${datasetId}/detach`, { method: 'POST' });
-  attachedIds = attachedIds.filter(id => id !== datasetId);
+  await api('/api/project/files/detach', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: destPath }),
+  });
+  attachedFiles = attachedFiles.filter(e => e.path !== destPath);
   renderAssets();
   updateDataCount();
   refreshStatus();
   if (lastModel && lastModel.asset_locked) {
-    addStatus('warn', '🔒', `Detached <b>${esc(body.detached)}</b> — sovereign lock stays on for this session.`);
+    addStatus('warn', '🔒', `Detached <b>${esc(destPath.split('/').pop())}</b> — sovereign lock stays on for this session.`);
   }
 }
+
 function updateDataCount() {
-  const n = attachedIds.length;
-  document.getElementById('data-count').textContent = n ? `${n} attached` : 'Data';
+  const n = attachedFiles.length;
+  document.getElementById('data-count').textContent = n ? `${n} file${n === 1 ? '' : 's'}` : 'Data';
 }
 
 /* ---------- model control ---------- */
