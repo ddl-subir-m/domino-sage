@@ -287,12 +287,6 @@ class Orchestrator:
         made_edits = False
         nudges = 0
         MAX_NUDGES = 2
-        # Set when a recovery nudge temporarily escalates routing (stronger model + write perms);
-        # both the mode and the model pick are restored right after that turn's inferences finish so
-        # a later prompt routes normally.
-        escalated = False
-        saved_mode: Mode | None = None
-        saved_pick: str | None = None
         IMPLEMENT_NUDGE = (
             "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
             "request: edit the project files (start with src/App.tsx) so the app actually builds "
@@ -367,14 +361,6 @@ class Orchestrator:
                     break
                 time.sleep(1.0)
 
-            # A recovery nudge (below) may have escalated to the stronger model with write perms;
-            # its inferences are done now, so restore normal routing before any decision or early
-            # return, so the override never leaks into a later prompt.
-            if escalated:
-                project.control.set_mode(saved_mode)
-                project.control.pick(saved_pick)
-                escalated = False
-
             if project.last_gateway_error is not None:
                 err = project.last_gateway_error
                 yield persist({"type": "error", "message": f"model call failed: {err['message']}"})
@@ -399,20 +385,10 @@ class Orchestrator:
                 if report.ok and not wrote_code:
                     if nudges < MAX_NUDGES:
                         nudges += 1
-                        # Recovery: the turn stalled at planning. Both tiers can stall here (the
-                        # strong plan model in Auto, the cheap implement model in Implement), so retry
-                        # on the STRONGER model with full write permission — pin Implement (no
-                        # per-step reclassification, writes allowed) and override the pick to the
-                        # strong `plan` model. Both restored after the turn (see above). Skipped under
-                        # a sensitivity lock, which must keep choosing sovereign models only.
-                        snap = project.control.snapshot()
-                        if not snap.sensitivity_locked:
-                            saved_mode = snap.mode
-                            saved_pick = snap.picked_model
-                            project.control.set_mode(Mode.IMPLEMENT)
-                            project.control.pick(project.shim.catalog.plan)
-                            escalated = True
-                        yield {"type": "iterate", "reason": "planned but wrote no code — retrying on the stronger model"}
+                        # On Domino the model is fixed (opencode.json's default, honored by the shim
+                        # unless locked/force_model), so there's no stronger model to escalate to —
+                        # the lever is the forceful re-prompt, not routing.
+                        yield {"type": "iterate", "reason": "planned but wrote no code — retrying"}
                         current = IMPLEMENT_NUDGE
                         continue
                     yield persist({"type": "done", "ok": False,

@@ -4,6 +4,10 @@ A warm **React + TypeScript + Vite** starter. Dependencies are installed and the
 already running with live reload. **Build the user's app by editing `src/`.** The preview reloads
 automatically — there is no build step to run.
 
+> **Every turn must end with edits to `src/`.** Do the minimal planning the task needs, then write
+> code in the *same* turn — never stop at a plan, a todo list, or a question and wait for the user.
+> A turn that produces no file edits has accomplished nothing.
+
 ## Project rules
 - **Plan proportionally, then build.** Match the planning to the task. A simple app (one screen, a
   list, a form) needs only a quick mental plan — just start building. A complex one (multiple views,
