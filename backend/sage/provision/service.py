@@ -342,6 +342,17 @@ class HubService:
         """Delete an app: stop any running builder, then archive its Domino project (soft delete —
         a Domino admin can restore it). The GitHub repo is intentionally kept."""
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
+        # A project that still contains a published Domino App can't be archived (same failure mode as
+        # a lingering workspace), so every published App is deleted first. Collect failures and raise
+        # the real per-app reason rather than letting archive fail with a misleading message.
+        app_failures: list[str] = []
+        for pub in self._cp.list_project_apps(project_id):
+            try:
+                self._cp.delete_app_deployment(pub.id)
+            except Exception as e:  # noqa: BLE001 — collect, so one bad App reports clearly
+                app_failures.append(f"{pub.id}: {e}")
+        if app_failures:
+            raise RuntimeError("couldn't delete published App(s) before archiving — " + " | ".join(app_failures))
         # The project can't be archived while it still contains a workspace (even a stopped one), so
         # every workspace is deleted first. If a workspace can't be removed, raise the real reason —
         # otherwise the archive fails downstream with a misleading "contains N workspace" 500.

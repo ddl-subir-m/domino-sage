@@ -124,3 +124,110 @@ def test_sync_pulls_teammate_changes_and_pushes(tmp_path: Path):
 def test_no_multi_project_surface():
     for gone in ("create_project", "open_project", "get", "active", "list_ids", "list_all_ids", "delete_project"):
         assert not hasattr(Orchestrator, gone), f"{gone} should be retired in Phase 2"
+
+
+# ---------------------------------------------------------------------------
+# Publish / Stop (Domino control-plane wiring). Uses FakeControlPlane — no network.
+# ---------------------------------------------------------------------------
+from sage.provision.domino import FakeControlPlane, PublishedApp
+
+
+def _template_with_app_sh(tmp: Path) -> Path:
+    t = _template(tmp)
+    (t / "app.sh").write_text("#!/bin/bash\n")  # seeded into the workspace -> publish pre-check passes
+    return t
+
+
+def _domino_orch(tmp: Path, cp: FakeControlPlane, *, run_id: str | None = None,
+                 workspace_id: str | None = None, template: Path | None = None) -> Orchestrator:
+    orch = Orchestrator(
+        workspace_dir=tmp / "mnt" / "code",
+        template=template or _template_with_app_sh(tmp),
+        gateway=object(),
+        catalog=_catalog(),
+        project_id="Sage",
+        control_plane=cp,
+        domino_project_id="proj-1",
+        domino_project_name="Sales dashboard",
+        domino_run_id=run_id,
+        workspace_id=workspace_id,
+    )
+    orch.project(start_preview=False)  # attach + seed the workspace without starting Vite
+    return orch
+
+
+def test_publish_creates_a_new_app(tmp_path: Path):
+    cp = FakeControlPlane()
+    orch = _domino_orch(tmp_path, cp)
+    out = orch.publish()
+    assert out["published"] is True
+    assert out["republished"] is False
+    assert out["app_id"] and out["url"]
+    assert out["manage_url"] == f"/u/owner/Sales dashboard/apps/proj-1/{out['app_id']}/details/overview"
+    assert cp.app_projects[out["app_id"]] == "proj-1"  # the app is tied to this project
+
+
+def test_publish_republishes_an_existing_app(tmp_path: Path):
+    cp = FakeControlPlane()
+    cp.published["app-9"] = PublishedApp(id="app-9", url="https://fake.domino/app/app-9")
+    cp.app_projects["app-9"] = "proj-1"  # already published for this project
+    orch = _domino_orch(tmp_path, cp)
+    out = orch.publish()
+    assert out["republished"] is True
+    assert out["app_id"] == "app-9"  # targets the existing app, stable URL
+    assert out["url"] == "https://fake.domino/app/app-9"
+
+
+def test_publish_fails_fast_when_app_sh_missing(tmp_path: Path):
+    cp = FakeControlPlane()
+    orch = _domino_orch(tmp_path, cp, template=_template(tmp_path))  # template has no app.sh
+    with pytest.raises(RuntimeError, match="app.sh"):
+        orch.publish()
+    assert not cp.published  # never reached the control plane
+
+
+def test_publish_requires_domino(tmp_path: Path):
+    orch = _orch(tmp_path)  # no control plane
+    with pytest.raises(RuntimeError, match="only available when this builder runs on Domino"):
+        orch.publish()
+
+
+@pytest.mark.parametrize("raw,phase", [
+    ("Running", "running"), ("Failed", "failed"), ("Error", "failed"),
+    ("Preparing", "pending"), ("", "pending"),
+])
+def test_publish_status_maps_phase(tmp_path: Path, raw: str, phase: str):
+    cp = FakeControlPlane()
+    cp.app_statuses["app-1"] = raw
+    orch = _domino_orch(tmp_path, cp)
+    out = orch.publish_status("app-1")
+    assert out == {"app_id": "app-1", "status": raw, "phase": phase}
+
+
+def test_stop_resolves_workspace_id_from_run_id_and_stops(tmp_path: Path):
+    cp = FakeControlPlane()
+    ws = cp.create_workspace("proj-1")  # executionId == "run-proj-1"
+    orch = _domino_orch(tmp_path, cp, run_id="run-proj-1")
+    out = orch.stop()
+    assert out["stopped"] is True
+    assert out["workspace_id"] == ws["id"]
+    assert cp.workspaces["proj-1"][0]["state"] == "Stopped"  # the workspace was stopped
+
+
+def test_stop_saves_but_reports_when_workspace_id_unknown(tmp_path: Path):
+    cp = FakeControlPlane()  # no workspace matching the run id -> id undiscoverable
+    orch = _domino_orch(tmp_path, cp, run_id="run-unknown")
+    out = orch.stop()
+    assert out["stopped"] is False
+    assert out["saved"] is True  # work is still saved (best-effort)
+    assert "couldn't stop" in out["detail"]
+
+
+def test_stop_uses_explicit_workspace_id_override(tmp_path: Path):
+    cp = FakeControlPlane()
+    cp.workspaces["proj-1"] = [{"id": "ws-42"}]
+    orch = _domino_orch(tmp_path, cp, workspace_id="ws-42")
+    out = orch.stop()
+    assert out["stopped"] is True
+    assert out["workspace_id"] == "ws-42"
+    assert cp.workspaces["proj-1"][0]["state"] == "Stopped"

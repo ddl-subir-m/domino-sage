@@ -331,6 +331,10 @@
       <button class="icon-btn" title="Typecheck the workspace" onclick="check()">✓</button>
       <button class="icon-btn" id="preview-refresh-btn" title="Refresh" onclick="refreshPreview()">⟳</button>
       <button class="icon-btn" id="preview-open-btn" title="Open in new tab" onclick="openPreview()">↗</button>
+      <!-- Domino app controls: shown only when this builder runs on Domino (see loadHealth). -->
+      <button class="icon-btn" id="publish-btn" title="Publish as a live Domino App" onclick="publishApp()" style="display:none">🚀</button>
+      <a class="icon-btn" id="manage-btn" title="Manage app settings in Domino" target="_blank" rel="noopener" href="#" style="display:none; text-decoration:none">⚙</a>
+      <button class="icon-btn" id="stop-btn" title="Stop this workspace" onclick="stopWorkspace()" style="display:none">⏻</button>
     </div>
     <div class="work-body">
       <div class="work-main">
@@ -405,6 +409,93 @@ async function loadHealth() {
   document.getElementById('mode-text').textContent = `gateway: ${mode}`;
   chip.className = 'mode-chip ' + mode;
   chip.title = mode === 'openai' ? 'mechanism only — NOT the real sovereign guarantee' : '';
+  // Publish/Stop go through the Domino control plane, so only surface them on Domino.
+  if (body.domino) {
+    document.getElementById('publish-btn').style.display = '';
+    document.getElementById('stop-btn').style.display = '';
+  }
+}
+
+// A published Domino App and its settings page live on the MAIN host. The builder is served from
+// that host already (notebookSession path), so a host-relative URL resolves correctly as-is; still,
+// mirror the hub's builderUrl — drop a leading "apps." host prefix — so an absolute apps.<host> URL
+// (should Domino ever return one) is rewritten to the main host. Absolute non-apps URLs pass through.
+function mainHostUrl(u) {
+  if (!u) return u;
+  if (/^https?:\/\//i.test(u)) {
+    try { const p = new URL(u); if (p.hostname.startsWith('apps.')) { p.hostname = p.hostname.slice(5); return p.toString(); } } catch {}
+    return u;
+  }
+  const host = location.hostname;
+  if (host.startsWith('apps.')) return `${location.protocol}//${host.slice(5)}${u}`;
+  return u;
+}
+
+// Publish this app's committed code as a live, shareable Domino App, then poll the deploy to a
+// terminal state. Surfaces "Open app ↗" and "Manage settings in Domino ↗" links in the chat pane,
+// and reveals the toolbar Manage button once we know the app's settings URL.
+async function publishApp() {
+  if (!confirm('Publish this app as a live Domino App?\n\nThis deploys the latest saved (committed) code. Any in-progress edits are saved first.')) return;
+  const btn = document.getElementById('publish-btn');
+  btn.disabled = true;
+  const s = addStatus('spin', '◐', 'Publishing to Domino…');
+  try {
+    const { ok, body } = await api('/api/publish', { method: 'POST' });
+    s.remove();
+    if (!ok) { addStatus('err', '⚠', `Couldn't publish — ${esc(body.error || 'unknown error')}`); return; }
+    const verb = body.republished ? 'Re-published' : 'Published';
+    const links = [];
+    if (body.url) links.push(`<a href="${esc(mainHostUrl(body.url))}" target="_blank" rel="noopener">Open app ↗</a>`);
+    if (body.manage_url) {
+      const mu = mainHostUrl(body.manage_url);
+      links.push(`<a href="${esc(mu)}" target="_blank" rel="noopener">Manage settings in Domino ↗</a>`);
+      const mb = document.getElementById('manage-btn'); mb.href = mu; mb.style.display = '';  // reveal toolbar Manage
+    }
+    addStatus('ok', '🚀', `${verb} — deploying…${links.length ? ' &nbsp; ' + links.join(' &nbsp;·&nbsp; ') : ''}`);
+    if (body.app_id) pollPublish(body.app_id, links);
+  } catch (e) {
+    s.remove();
+    addStatus('err', '⚠', `Couldn't publish — ${esc(String(e))}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Poll a published app's deploy status until it goes live or fails (deploy = npm ci + build + serve,
+// several minutes). Caps at ~8 min so it never polls forever.
+function pollPublish(appId, links) {
+  let tries = 0;
+  const MAX = 96;  // 96 * 5s = 8 min
+  const tail = links.length ? ' &nbsp; ' + links.join(' &nbsp;·&nbsp; ') : '';
+  const timer = setInterval(async () => {
+    if (++tries > MAX) { clearInterval(timer); return; }
+    try {
+      const { ok, body } = await api(`/api/publish-status?app_id=${encodeURIComponent(appId)}`);
+      if (!ok) return;  // transient — keep polling
+      if (body.phase === 'running') { clearInterval(timer); addStatus('ok', '✓', `Your app is live.${tail}`); }
+      else if (body.phase === 'failed') { clearInterval(timer); addStatus('err', '⚠', `Publishing failed (status: ${esc(body.status || 'Failed')}). Check the app logs in Domino.`); }
+      // pending -> keep polling
+    } catch { /* network blip — keep polling */ }
+  }, 5000);
+}
+
+// Stop this builder's workspace. Saves in-progress work first (server-side), then stops.
+async function stopWorkspace() {
+  if (!confirm('Stop this workspace?\n\nYour work is saved (committed and pushed) first, then the workspace stops and this builder closes.')) return;
+  const btn = document.getElementById('stop-btn');
+  btn.disabled = true;
+  const s = addStatus('spin', '◐', 'Saving your work and stopping…');
+  try {
+    const { ok, body } = await api('/api/stop', { method: 'POST' });
+    s.remove();
+    if (!ok) { addStatus('err', '⚠', `Couldn't stop — ${esc(body.error || 'unknown error')}`); btn.disabled = false; return; }
+    if (body.stopped) addStatus('ok', '⏻', 'Workspace stopping — this builder will close shortly.');
+    else addStatus('warn', '⚠', `Saved your work, but couldn't stop the workspace — ${esc(body.detail || 'stop it from the Sage apps list')}.`);
+  } catch (e) {
+    s.remove();
+    addStatus('err', '⚠', `Couldn't stop — ${esc(String(e))}`);
+    btn.disabled = false;
+  }
 }
 
 /* ---------- project boot ---------- */

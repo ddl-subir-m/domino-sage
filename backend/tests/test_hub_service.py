@@ -391,6 +391,42 @@ def test_delete_app_surfaces_real_error_when_delete_keeps_failing(tmp_path, monk
     assert archived == []  # project archive not attempted while a workspace remains
 
 
+def test_delete_app_deletes_published_apps_before_archiving(tmp_path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url="https://github.com/me/sage-sales-app.git")
+    app = cp.publish_app(ref.id, name="Sales App")
+
+    order = []
+    orig_del_app, orig_archive = cp.delete_app_deployment, cp.archive_project
+    cp.delete_app_deployment = lambda a: order.append(("del-app", a)) or orig_del_app(a)
+    cp.archive_project = lambda p: order.append(("archive", p)) or orig_archive(p)
+
+    assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
+    # Published App deleted BEFORE the project is archived (archive is rejected while it contains one).
+    assert order == [("del-app", app.id), ("archive", ref.id)]
+    assert cp.published == {}
+    assert cp.list_apps() == []
+
+
+def test_delete_app_raises_real_error_when_app_delete_fails(tmp_path):
+    # A published App that can't be deleted must surface its real reason, not let archive fail later.
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url="https://github.com/me/sage-sales-app.git")
+    app = cp.publish_app(ref.id, name="Sales App")
+
+    def boom(app_id):
+        raise RuntimeError("app still deploying")
+
+    cp.delete_app_deployment = boom
+    archived = []
+    cp.archive_project = lambda p: archived.append(p)  # must NOT be reached
+
+    with pytest.raises(RuntimeError) as ei:
+        _hub(tmp_path, cp).delete_app(ref.id)
+    assert app.id in str(ei.value) and "app still deploying" in str(ei.value)
+    assert archived == []  # archive not attempted while a published App remains
+
+
 def test_stop_app_noop_when_nothing_to_stop(tmp_path):
     result = _hub(tmp_path, FakeControlPlane()).stop_app("proj-x")
     assert result == {"stopped": False, "workspace_id": None, "detail": "no workspace to stop"}

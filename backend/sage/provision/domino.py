@@ -73,6 +73,8 @@ class ControlPlane(Protocol):
     def republish_app(self, app_id: str, *, git_ref_type: str = "head",
                       git_ref_value: str | None = None) -> PublishedApp: ...
     def find_project_app(self, project_id: str) -> PublishedApp | None: ...
+    def list_project_apps(self, project_id: str) -> list[PublishedApp]: ...
+    def delete_app_deployment(self, app_id: str) -> dict[str, Any]: ...
     def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str: ...
     def app_status(self, app_id: str) -> str: ...
 
@@ -332,23 +334,36 @@ class DominoControlPlane:
         d = d if isinstance(d, dict) else {}
         return PublishedApp(id=app_id, url=str(d.get("url") or ""))
 
-    def find_project_app(self, project_id: str) -> PublishedApp | None:
-        """The published Domino App for this project, if one already exists — so a re-publish targets
-        it (new version, stable URL) instead of creating a duplicate App.
+    def list_project_apps(self, project_id: str) -> list[PublishedApp]:
+        """Every published Domino App belonging to this project.
 
         Live-verified schema of the beta apps API: results are wrapped as {"items": [...], "metadata":
         {...}}, the list is GLOBAL (every app on the deployment), and each item nests its project as
         `project.id` (no top-level projectId, and the ?projectId= query filter isn't reliably honored).
-        So we match on project.id defensively — never return another project's app."""
+        So we match on project.id client-side — never include another project's app."""
         d = self._get(_APPS_PATH, params={"projectId": project_id, "offset": 0, "limit": 100})
         items = d if isinstance(d, list) else (d.get("items") or [])
+        out: list[PublishedApp] = []
         for a in items:
             if not isinstance(a, dict) or not a.get("id"):
                 continue
             if (a.get("project") or {}).get("id") != project_id:
                 continue
-            return PublishedApp(id=str(a["id"]), url=str(a.get("url") or ""))
-        return None
+            out.append(PublishedApp(id=str(a["id"]), url=str(a.get("url") or "")))
+        return out
+
+    def find_project_app(self, project_id: str) -> PublishedApp | None:
+        """The published Domino App for this project, if one already exists — so a re-publish targets
+        it (new version, stable URL) instead of creating a duplicate App."""
+        apps = self.list_project_apps(project_id)
+        return apps[0] if apps else None
+
+    def delete_app_deployment(self, app_id: str) -> dict[str, Any]:
+        """Delete a published App deployment: DELETE /api/apps/beta/apps/{app_id}. Required before the
+        project can be archived — a project that still contains a published App is rejected the same
+        way it is while it contains a workspace."""
+        data = self._delete(f"{_APPS_PATH}/{app_id}")
+        return data if isinstance(data, dict) else {"deleted": True}
 
     def app_status(self, app_id: str) -> str:
         """Deploy status of the app's current instance (Running / Failed / Preparing / '' if unknown),
@@ -472,9 +487,18 @@ class FakeControlPlane:
                       git_ref_value: str | None = None) -> PublishedApp:
         return self.published.get(app_id, PublishedApp(id=app_id, url=""))
 
+    def list_project_apps(self, project_id: str) -> list[PublishedApp]:
+        return [self.published[aid] for aid, pid in self.app_projects.items()
+                if pid == project_id and aid in self.published]
+
     def find_project_app(self, project_id: str) -> PublishedApp | None:
-        app_id = next((aid for aid, pid in self.app_projects.items() if pid == project_id), None)
-        return self.published.get(app_id) if app_id else None
+        apps = self.list_project_apps(project_id)
+        return apps[0] if apps else None
+
+    def delete_app_deployment(self, app_id: str) -> dict[str, Any]:
+        self.published.pop(app_id, None)
+        self.app_projects.pop(app_id, None)
+        return {"deleted": True}
 
     def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
         return f"/u/owner/{project_name}/apps/{project_id}/{app_id}/details/overview"

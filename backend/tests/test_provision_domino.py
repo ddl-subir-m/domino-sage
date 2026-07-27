@@ -260,6 +260,33 @@ def test_find_project_app_matches_on_nested_project_id():
     assert app.url == "https://d/mine"
 
 
+def test_list_project_apps_filters_by_nested_project_id():
+    # Global list; only the two items nested under our project.id (and carrying an id) are returned.
+    apps = {"items": [
+        {"id": "app-a", "project": {"id": "proj-42"}, "url": "https://d/a"},
+        {"id": "app-b", "project": {"id": "proj-99"}, "url": "https://d/b"},
+        {"id": "app-c", "project": {"id": "proj-42"}, "url": "https://d/c"},
+        {"project": {"id": "proj-42"}},  # no id -> skipped
+    ], "metadata": {}}
+    out = _cp(lambda req: httpx.Response(200, json=apps)).list_project_apps("proj-42")
+    assert [a.id for a in out] == ["app-a", "app-c"]
+    assert out[0].url == "https://d/a"
+
+
+def test_delete_app_deployment_deletes_via_beta_apps_api():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"deleted": True})
+
+    out = _cp(handler).delete_app_deployment("app-9")
+    assert seen["method"] == "DELETE"
+    assert seen["path"] == "/api/apps/beta/apps/app-9"
+    assert out == {"deleted": True}
+
+
 def test_app_manage_url_builds_settings_deep_link():
     def handler(request):
         assert request.url.path == "/api/users/v1/self"

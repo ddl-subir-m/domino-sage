@@ -188,6 +188,14 @@
 
     const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
+    // Parse a response as JSON, tolerating a non-JSON body — a request that times out at Domino's app
+    // proxy comes back as an HTML error page, and `await r.json()` on that throws "Unexpected token
+    // '<'". Fall back to a readable error object instead.
+    async function parseJson(r) {
+      try { return await r.json(); }
+      catch { return { error: `Request failed (${r.status})` }; }
+    }
+
     // A running workspace's builder lives on the MAIN Domino host. When the hub is published as a
     // Domino App it's served from apps.<host>, so the host-relative open URL would resolve against
     // the apps origin and 404. Rewrite it to an absolute URL on the main host (drop the leading
@@ -267,18 +275,48 @@
     // builder. The GitHub repo is intentionally kept.
     async function deleteApp(id, btn) {
       const name = APP_NAMES[id] || 'this app';
-      if (!confirm(`Delete “${name}”?\n\nThis archives the Domino project and stops its builder. The GitHub repo is kept, and a Domino admin can restore the project.`)) return;
+      if (!confirm(`Delete “${name}”?\n\nThis deletes any published Domino App, archives the Domino project, and stops its builder. The GitHub repo is kept, and a Domino admin can restore the project.`)) return;
       banner(null);
-      const label = btn.textContent; btn.disabled = true; btn.textContent = 'Deleting…';
+      // Disable the whole card while the (background) delete runs, and reflect progress in its status.
+      const card = btn.closest('.card');
+      const actions = card ? Array.from(card.querySelectorAll('button')) : [btn];
+      const labels = actions.map(b => b.textContent);
+      actions.forEach(b => b.disabled = true);
+      btn.textContent = 'Deleting…';
+      const statusEl = $(`status-${id}`);
+      if (statusEl) { statusEl.className = 'status'; statusEl.innerHTML = '<span class="dot"></span><span>Deleting…</span>'; }
       try {
         const r = await fetch(api(`/api/apps/${id}`), { method: 'DELETE' });
-        const data = await r.json();
+        const data = await parseJson(r);
         if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
-        await load();  // the app drops out of the list
+        await pollDelete(id);  // delete runs in the background; poll until the app is gone or it fails
       } catch (e) {
         banner(e.message || 'Couldn’t delete the app.');
-        btn.disabled = false; btn.textContent = label;
+        actions.forEach((b, i) => { b.disabled = false; b.textContent = labels[i]; });
       }
+    }
+
+    // The server deletes in the background (stop → delete Apps → delete workspaces → archive can take
+    // ~75s). Poll delete-status until the project is gone ("done") or the server reports "failed".
+    // Caps at ~2.5 min so it never polls forever; on timeout it just refreshes to reflect reality.
+    async function pollDelete(id, tries = 50, every = 3000) {
+      const name = APP_NAMES[id] || 'this app';
+      for (let i = 0; i < tries; i++) {
+        try {
+          const r = await fetch(api(`/api/apps/${id}/delete-status`));
+          if (r.ok) {
+            const d = await parseJson(r);
+            if (d.phase === 'done') { await load(); return; }
+            if (d.phase === 'failed') {
+              banner(`Couldn’t delete “${name}”: ${d.error || 'unknown error'}`);
+              await load();
+              return;
+            }
+          }
+        } catch { /* transient — keep polling */ }
+        await sleep(every);
+      }
+      await load();
     }
 
     // A published Domino App URL is usually absolute; if it comes back host-relative, resolve it

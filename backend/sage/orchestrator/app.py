@@ -63,6 +63,29 @@ def _build_assets():
     return DominoAssetProvider(api_host, token)
 
 
+def _build_control_plane():
+    """A Domino control plane for Publish / Stop when this builder runs on Domino (DOMINO_API_HOST +
+    the Environment/hardware ids Domino injects), else None so those endpoints report a clear
+    "only on Domino" error instead of crashing local/fake runs."""
+    api_host = os.environ.get("DOMINO_API_HOST")
+    env_id = os.environ.get("DOMINO_ENVIRONMENT_ID")
+    tier_id = os.environ.get("DOMINO_HARDWARE_TIER_ID")
+    if not (api_host and env_id and tier_id):
+        log.info("no DOMINO_API_HOST/ENVIRONMENT_ID/HARDWARE_TIER_ID — Publish/Stop disabled (local run)")
+        return None
+    from ..provision.domino import DominoControlPlane
+
+    token = sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    return DominoControlPlane(
+        api_host,
+        token,
+        environment_id=env_id,
+        environment_revision_id=os.environ.get("DOMINO_ENVIRONMENT_REVISION_ID"),
+        hardware_tier_id=tier_id,
+        builder_tool=os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder"),
+    )
+
+
 _gateway, GATEWAY_MODE = build_gateway()
 # One builder is bound to one project volume. On Domino (git-based) that's the mounted repo at
 # /mnt/code; locally it defaults to a scratch dir. The display id is the Domino project name.
@@ -79,6 +102,9 @@ orchestrator = Orchestrator(
     assets=_build_assets(),
     sensitivity_tag=os.environ.get("SAGE_SENSITIVITY_TAG", DEFAULT_SENSITIVITY_TAG),
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
+    control_plane=_build_control_plane(),
+    domino_project_name=os.environ.get("DOMINO_PROJECT_NAME"),
+    domino_run_id=os.environ.get("DOMINO_RUN_ID"),
 )
 
 control_app = FastAPI(title="sage orchestrator")
@@ -132,6 +158,9 @@ def healthz() -> dict:
         "ok": True,
         "project": orchestrator._project_id,
         "gateway_mode": GATEWAY_MODE,
+        # True when this builder can Publish/Stop through the Domino control plane (Domino runs
+        # only); the UI hides those controls otherwise.
+        "domino": orchestrator._control_plane is not None,
         "open_weight_models": [
             {"id": m.id, "provider": m.provider} for m in OPEN_WEIGHT_MODELS
         ] if GATEWAY_MODE == "openai" else [],
@@ -184,6 +213,45 @@ async def sync_project() -> JSONResponse:
     except Exception as e:  # noqa: BLE001
         log.exception("sync failed")
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
+    return JSONResponse(content=result)
+
+
+@control_app.post("/api/publish")
+async def publish() -> JSONResponse:
+    """Publish (or republish) THIS app's project as a live Domino App. Offloaded to a thread — it
+    saves work (a git push) and makes several control-plane REST calls."""
+    try:
+        result = await run_in_threadpool(orchestrator.publish)
+    except RuntimeError as e:  # not-on-Domino / missing app.sh — human-readable, expected failures
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:  # noqa: BLE001
+        log.exception("publish failed")
+        return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
+    return JSONResponse(content=result)
+
+
+@control_app.get("/api/publish-status")
+async def publish_status(app_id: str) -> JSONResponse:
+    """Deploy status of a published app so the UI can poll after Publish: {phase, status, app_id}."""
+    try:
+        result = await run_in_threadpool(orchestrator.publish_status, app_id)
+    except RuntimeError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:  # noqa: BLE001
+        log.exception("publish-status failed")
+        return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
+    return JSONResponse(content=result)
+
+
+@control_app.post("/api/stop")
+async def stop() -> JSONResponse:
+    """Stop THIS builder's workspace (saving in-progress work first). Offloaded to a thread — it
+    drives a git push and a control-plane call."""
+    try:
+        result = await run_in_threadpool(orchestrator.stop)
+    except Exception as e:  # noqa: BLE001
+        log.exception("stop failed")
+        return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
     return JSONResponse(content=result)
 
 

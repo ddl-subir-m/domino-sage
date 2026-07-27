@@ -12,8 +12,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from ..provision.domino import ControlPlane
 
 from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, is_sensitive
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG
@@ -36,6 +40,14 @@ log = logging.getLogger("sage.orchestrator")
 # block OpenCode enforces natively (edit/bash denied), not just hidden from the model's tools
 # list. Auto/Implement keep OpenCode's default agent (full permissions).
 _READ_ONLY_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan"}
+
+# The entry script Domino runs to serve a published app (repo root). The builder has the working
+# tree, so publish pre-checks it exists locally before deploying (a missing one fails opaquely).
+_ENTRY_POINT = "app.sh"
+# Published-app deploy status -> terminal phase (mirrors HubService.publish_status). Matched
+# case-insensitively; anything else means the deploy is still in progress.
+_RUNNING_STATES = frozenset({"running"})
+_FAILED_STATES = frozenset({"failed", "error"})
 
 
 def _agent_for_mode(mode: Mode) -> str | None:
@@ -127,6 +139,10 @@ class Orchestrator:
         assets: AssetProvider | None = None,
         sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG,
         domino_project_id: str | None = None,
+        control_plane: ControlPlane | None = None,
+        domino_project_name: str | None = None,
+        workspace_id: str | None = None,
+        domino_run_id: str | None = None,
     ) -> None:
         self._wm = WorkspaceManager(workspace_dir, template)
         self._project_id = project_id
@@ -136,6 +152,15 @@ class Orchestrator:
         self._assets = assets or FakeAssetProvider()
         self._sensitivity_tag = sensitivity_tag
         self._domino_project_id = domino_project_id
+        # Domino control-plane wiring for Publish / Stop (None off-Domino / local runs -> the
+        # endpoints report a clear "not available" instead of crashing).
+        self._control_plane = control_plane
+        self._domino_project_name = domino_project_name
+        # Domino injects DOMINO_RUN_ID (the workspace SESSION's executionId), NOT the workspace id
+        # stop_workspace() needs. We map run id -> workspace id by matching it against the project's
+        # workspaces (mostRecentSession.executionId). `workspace_id` is a direct override (tests).
+        self._workspace_id = workspace_id
+        self._domino_run_id = domino_run_id
         self._opencode_cwd = Path(opencode_cwd) if opencode_cwd else Path.cwd()
         self._feedback = feedback or FeedbackRunner()
         # One container hosts one project (D9): a single bound project, attached lazily on first
@@ -464,6 +489,98 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             log.exception("sync failed")
             return {"status": "error", "conflicts": [], "pushed": False, "detail": f"{type(e).__name__}: {e}"}
+
+    def publish(self) -> dict:
+        """Publish (or republish) THIS app's project as a live Domino App, deploying the latest
+        committed code on the default branch. Mirrors HubService.publish_app: an existing App gets a
+        new version (stable URL); otherwise a new App is created + launched. Best-effort saves the
+        current work first so the deploy ships the newest code. Returns {published, app_id, url,
+        manage_url, republished}."""
+        if self._control_plane is None or not self._domino_project_id:
+            raise RuntimeError(
+                "Publish is only available when this builder runs on Domino (missing control-plane "
+                "or DOMINO_PROJECT_ID)."
+            )
+        project = self.project()
+        # The builder holds the working tree, so a fast local check beats the hub's GitHub-API probe.
+        if not (project.workspace.path / _ENTRY_POINT).exists():
+            raise RuntimeError(
+                f"'{_ENTRY_POINT}' is missing from the workspace, so Domino has no entry script to "
+                f"run. Add {_ENTRY_POINT} to the project root and rebuild, then publish again."
+            )
+        # Deploy the newest code: commit + push before publishing. Best-effort — a save failure (no
+        # remote, offline) must not block a publish of whatever is already committed.
+        try:
+            self._save_to_git(project, "save before publish")
+        except Exception:  # noqa: BLE001
+            log.exception("publish: pre-publish save failed; publishing the last committed code")
+
+        cp = self._control_plane
+        pid = self._domino_project_id
+        name = self._domino_project_name or self._project_id
+        existing = cp.find_project_app(pid)
+        if existing and existing.id:  # already published — ship a new version, keep the URL
+            app = cp.republish_app(existing.id)
+            out = {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
+        else:
+            app = cp.publish_app(pid, name=name)
+            out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+        out["manage_url"] = cp.app_manage_url(pid, app.id, name)
+        return out
+
+    def publish_status(self, app_id: str) -> dict:
+        """Deploy status of a published app so the UI can poll after Publish. Maps the raw instance
+        status to a phase: running (live) / failed / pending (still deploying)."""
+        if self._control_plane is None:
+            raise RuntimeError("Publish status is only available when this builder runs on Domino.")
+        raw = self._control_plane.app_status(app_id)
+        s = raw.lower()
+        if s in _RUNNING_STATES:
+            phase = "running"
+        elif s in _FAILED_STATES:
+            phase = "failed"
+        else:
+            phase = "pending"
+        return {"app_id": app_id, "status": raw, "phase": phase}
+
+    def stop(self) -> dict:
+        """Stop THIS builder's workspace so it stops consuming compute. Saves in-progress work first
+        (commit + pull/resolve + push), then stops the workspace if the workspace id is known.
+        Returns {saved, stopped, workspace_id, detail}."""
+        project = self.project()
+        saved = self._save_to_git(project, "save before stop")
+        saved_ok = saved is None or bool(saved.get("ok"))
+        wid = self._resolve_workspace_id()
+        if self._control_plane is None or not self._domino_project_id or not wid:
+            # Off-Domino, or the workspace id wasn't discoverable from the env — we can't stop the
+            # workspace ourselves, so at least the work is saved. Report clearly.
+            return {"saved": saved_ok, "stopped": False, "workspace_id": wid,
+                    "detail": "workspace id unavailable — saved work, but couldn't stop the workspace"}
+        self._control_plane.stop_workspace(self._domino_project_id, wid)
+        return {"saved": saved_ok, "stopped": True, "workspace_id": wid, "detail": "stopping workspace"}
+
+    def _resolve_workspace_id(self) -> str | None:
+        """This builder's own workspace id, needed to stop it. Prefer the explicit override; else map
+        DOMINO_RUN_ID (the session executionId) to its workspace by scanning the project's workspaces
+        for a matching mostRecentSession.executionId. Returns None when it can't be determined."""
+        if self._workspace_id:
+            return self._workspace_id
+        if self._control_plane is None or not self._domino_project_id or not self._domino_run_id:
+            return None
+        try:
+            workspaces = self._control_plane.list_workspaces(self._domino_project_id)
+        except Exception:  # noqa: BLE001 — best-effort discovery; a failure just means "unknown"
+            log.exception("stop: couldn't list workspaces to resolve this workspace's id")
+            return None
+        for ws in workspaces:
+            if not isinstance(ws, dict):
+                continue
+            session = ws.get("mostRecentSession") or {}
+            exec_id = session.get("executionId") or session.get("id") if isinstance(session, dict) else None
+            if exec_id and str(exec_id) == str(self._domino_run_id) and ws.get("id"):
+                self._workspace_id = str(ws["id"])  # cache for a subsequent call
+                return self._workspace_id
+        return None
 
     def stop_build(self) -> None:
         """Interrupt the in-flight build_stream() turn; it reverts files/history and stops."""

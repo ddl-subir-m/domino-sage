@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -263,15 +264,56 @@ async def publish_status(app_id: str) -> JSONResponse:
     return JSONResponse(result)
 
 
+# Per-project delete progress for the non-blocking delete flow. Delete stops the builder, deletes any
+# published Apps, deletes workspaces, then archives the project — Domino's async workspace delete
+# retries for up to ~75s, so doing it inline blocks long enough that Domino's app proxy times out and
+# returns an HTML error page. Instead the DELETE endpoint kicks the work off in a background thread
+# and returns immediately; the UI polls delete-status. Only failures are recorded here — success is
+# detected by the project vanishing from list_apps() (the async delete truly completing is the real
+# signal, and a DELETE call can report failure while the delete still completes).
+_delete_state: dict[str, dict] = {}
+_delete_lock = threading.Lock()
+
+
+def _run_delete(project_id: str) -> None:
+    try:
+        hub.delete_app(project_id)
+        with _delete_lock:
+            _delete_state.pop(project_id, None)
+    except Exception as e:  # noqa: BLE001 — record so delete-status can surface the real reason
+        log.exception("delete_app failed")
+        with _delete_lock:
+            _delete_state[project_id] = {"phase": "failed", "error": str(e)}
+
+
 @app.delete("/api/apps/{project_id}")
 async def delete_app(project_id: str) -> JSONResponse:
-    """Delete an app: stop its builder and archive the Domino project (soft; the repo is kept)."""
+    """Kick off a non-blocking delete (stop → delete Apps → delete workspaces → archive) in the
+    background and return immediately. The UI polls /delete-status. Soft delete; the repo is kept."""
+    with _delete_lock:
+        _delete_state[project_id] = {"phase": "deleting", "error": ""}
+    threading.Thread(target=_run_delete, args=(project_id,), daemon=True).start()
+    return JSONResponse({"deleting": True}, status_code=202)
+
+
+@app.get("/api/apps/{project_id}/delete-status")
+async def delete_status(project_id: str) -> JSONResponse:
+    """Poll target for a background delete: done once the project no longer appears in list_apps()
+    (the real success signal), failed if the background worker recorded an error, else deleting."""
     try:
-        result = await run_in_threadpool(hub.delete_app, project_id)
-    except Exception as e:  # provisioning failure — human-readable, not a stack trace
-        log.exception("delete_app failed")
-        return JSONResponse({"error": f"Couldn't delete the app: {e}"}, status_code=502)
-    return JSONResponse(result)
+        apps = await run_in_threadpool(hub.list_apps)
+    except Exception as e:
+        log.exception("delete_status failed")
+        return JSONResponse({"error": f"Couldn't check delete status: {e}"}, status_code=502)
+    still_present = any(a.id == project_id for a in apps)
+    with _delete_lock:
+        state = _delete_state.get(project_id)
+    # A vanished project is success even if the DELETE call reported failure (mirrors _workspace_gone).
+    if not still_present:
+        return JSONResponse({"phase": "done", "error": ""})
+    if state and state["phase"] == "failed":
+        return JSONResponse({"phase": "failed", "error": state["error"]})
+    return JSONResponse({"phase": "deleting", "error": ""})
 
 
 @app.get("/api/apps/{project_id}/status")
