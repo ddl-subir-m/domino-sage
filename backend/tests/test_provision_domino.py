@@ -240,12 +240,13 @@ def test_republish_app_posts_new_version_and_keeps_app_id():
     assert app.id == "app-9"  # keeps the caller's app id, not the version id
 
 
-def test_find_project_app_returns_first_non_archived():
+def test_find_project_app_matches_on_nested_project_id():
     seen = {}
-    apps = {"apps": [
-        {"id": "app-old", "status": "Archived", "url": "https://d/app-old"},
-        {"id": "app-live", "status": "Running", "url": "https://d/app-live"},
-    ]}
+    # Live schema: {"items": [...]}, global list, project nested under item["project"]["id"].
+    apps = {"items": [
+        {"id": "app-other", "project": {"id": "proj-99"}, "url": "https://d/other"},
+        {"id": "app-mine", "project": {"id": "proj-42"}, "url": "https://d/mine"},
+    ], "metadata": {}}
 
     def handler(request):
         seen["path"] = request.url.path
@@ -255,8 +256,8 @@ def test_find_project_app_returns_first_non_archived():
     app = _cp(handler).find_project_app("proj-42")
     assert seen["path"] == "/api/apps/beta/apps"
     assert "projectId=proj-42" in seen["query"]
-    assert app is not None and app.id == "app-live"  # skipped the archived one
-    assert app.url == "https://d/app-live"
+    assert app is not None and app.id == "app-mine"  # matched project.id, skipped the other project's app
+    assert app.url == "https://d/mine"
 
 
 def test_app_manage_url_builds_settings_deep_link():
@@ -269,11 +270,10 @@ def test_app_manage_url_builds_settings_deep_link():
     assert url == "/u/subir_mansukhani/My%20App/apps/proj-42/app-9/details/overview"
 
 
-def test_find_project_app_reads_items_envelope():
-    # The live beta apps API wraps results as {"items": [...], "metadata": {...}}.
-    apps = {"items": [{"id": "app-live", "status": "Running", "url": "https://d/app-live"}], "metadata": {}}
-    app = _cp(lambda req: httpx.Response(200, json=apps)).find_project_app("proj-42")
-    assert app is not None and app.id == "app-live"
+def test_find_project_app_returns_none_when_no_app_matches():
+    # Global list with only another project's app -> no match for ours.
+    apps = {"items": [{"id": "app-other", "project": {"id": "proj-99"}}], "metadata": {}}
+    assert _cp(lambda req: httpx.Response(200, json=apps)).find_project_app("proj-42") is None
 
 
 def test_find_project_app_returns_none_when_no_apps():

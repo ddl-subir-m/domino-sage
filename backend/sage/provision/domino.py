@@ -333,16 +333,18 @@ class DominoControlPlane:
 
     def find_project_app(self, project_id: str) -> PublishedApp | None:
         """The published Domino App for this project, if one already exists — so a re-publish targets
-        it (new version, stable URL) instead of creating a duplicate App. The public create API has
-        no tag field, so we list by projectId and take the first non-archived app."""
-        d = self._get(_APPS_PATH, params={"projectId": project_id, "offset": 0, "limit": 50})
-        # The beta apps API wraps results as {"items": [...], "metadata": {...}} (live-verified).
-        items = d if isinstance(d, list) else (d.get("items") or d.get("apps") or d.get("data") or [])
+        it (new version, stable URL) instead of creating a duplicate App.
+
+        Live-verified schema of the beta apps API: results are wrapped as {"items": [...], "metadata":
+        {...}}, the list is GLOBAL (every app on the deployment), and each item nests its project as
+        `project.id` (no top-level projectId, and the ?projectId= query filter isn't reliably honored).
+        So we match on project.id defensively — never return another project's app."""
+        d = self._get(_APPS_PATH, params={"projectId": project_id, "offset": 0, "limit": 100})
+        items = d if isinstance(d, list) else (d.get("items") or [])
         for a in items:
             if not isinstance(a, dict) or not a.get("id"):
                 continue
-            status = str(a.get("status") or a.get("state") or "").lower()
-            if "archiv" in status or "delet" in status:  # skip a soft-deleted App — republish would fail
+            if (a.get("project") or {}).get("id") != project_id:
                 continue
             return PublishedApp(id=str(a["id"]), url=str(a.get("url") or ""))
         return None
