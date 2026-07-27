@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from . import naming
 from .domino import BUILDER_WORKSPACE_NAME, ControlPlane, ProjectRef
@@ -72,6 +72,10 @@ _STOPPED_STATES = frozenset({"stopped", "stopping"})
 # these before deleting. Matched case-insensitively.
 _REMOVABLE_STATES = frozenset({"stopped", "failed", "error"})
 
+# Published-app deploy status -> terminal phase (see publish_status). Anything else is still deploying.
+_RUNNING_STATES = frozenset({"running"})
+_FAILED_STATES = frozenset({"failed", "error"})
+
 # A delete on a Stopped workspace keeps failing transiently ("Workspace delete wasn't completed
 # successfully. Please try again.") for a while after the stop — Domino's delete is async and needs
 # time to settle. So retry over a generous window (~75s), treating the workspace having disappeared
@@ -79,6 +83,17 @@ _REMOVABLE_STATES = frozenset({"stopped", "failed", "error"})
 # reports failure).
 _DELETE_RETRIES = 15
 _DELETE_RETRY_DELAY = 5.0
+
+
+_ENTRY_POINT = "app.sh"  # the entry script Domino runs to serve a published app (repo root)
+
+
+def _repo_full_name(git_url: str | None) -> str | None:
+    """owner/name from an https clone URL (https://github.com/owner/name.git -> owner/name)."""
+    if not git_url:
+        return None
+    path = urlparse(git_url).path.strip("/")
+    return path[:-4] if path.endswith(".git") else (path or None)
 
 
 def is_builder_workspace(ws: dict[str, Any]) -> bool:
@@ -279,7 +294,24 @@ class HubService:
         stable. Deploys the latest committed code on the project's default branch (gitRef "head"), so
         it's independent of whether the builder is running. Returns {published, app_id, url,
         republished}."""
-        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
+        ref = next((a for a in self._cp.list_apps() if a.id == project_id), None)
+        name = ref.name if ref else None
+        # Fail fast if the deploy entry script isn't on the branch. Apps seeded before app.sh was
+        # added to the template have no entry script, so Domino fails the deploy opaquely ("entry
+        # script './app.sh' not found") — surface a clear, actionable message instead.
+        full = _repo_full_name(ref.git_url) if ref else None
+        if full:
+            try:
+                has_entry = self._repo.file_exists(full, _ENTRY_POINT, self._branch)
+            except Exception:  # provider hiccup — don't block publish on a best-effort pre-check
+                log.exception("publish: entry-script pre-check failed; proceeding")
+                has_entry = True
+            if not has_entry:
+                raise RuntimeError(
+                    f"'{_ENTRY_POINT}' is missing from the {self._branch} branch, so Domino has no entry "
+                    "script to run. This app was created before Sage added the publish entry script — "
+                    f"recreate the app, or add {_ENTRY_POINT} to the repo root and rebuild."
+                )
         existing = self._cp.find_project_app(project_id)
         if existing and existing.id:  # already published — ship a new version, keep the URL
             app = self._cp.republish_app(existing.id)
@@ -291,6 +323,20 @@ class HubService:
         # publish stays frictionless while the full config is one click away.
         out["manage_url"] = self._cp.app_manage_url(project_id, app.id, name or "")
         return out
+
+    def publish_status(self, app_id: str) -> dict[str, Any]:
+        """Deploy status of a published app, so the hub can poll after Publish and show whether it
+        went live or failed (the deploy is async — npm ci + build + serve takes minutes). Maps the
+        raw instance status to a phase: running (live) / failed / pending (still deploying)."""
+        raw = self._cp.app_status(app_id)
+        s = raw.lower()
+        if s in _RUNNING_STATES:
+            phase = "running"
+        elif s in _FAILED_STATES:
+            phase = "failed"
+        else:
+            phase = "pending"
+        return {"app_id": app_id, "status": raw, "phase": phase}
 
     def delete_app(self, project_id: str) -> dict[str, Any]:
         """Delete an app: stop any running builder, then archive its Domino project (soft delete —

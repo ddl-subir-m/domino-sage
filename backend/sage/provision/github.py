@@ -53,6 +53,10 @@ class RepoProvider(Protocol):
         """Delete a repo ("owner/name"). Used to roll back a half-provisioned app."""
         ...
 
+    def file_exists(self, full_name: str, path: str, ref: str) -> bool:
+        """True if `path` exists on branch/ref `ref` in repo `full_name` ("owner/name")."""
+        ...
+
 
 @dataclass
 class FakeRepoProvider:
@@ -72,6 +76,9 @@ class FakeRepoProvider:
 
     def delete_repo(self, full_name: str) -> None:
         self.created = [r for r in self.created if r.full_name != full_name]
+
+    def file_exists(self, full_name: str, path: str, ref: str) -> bool:
+        return True  # fake mode: seeded repos always carry the template entry script
 
 
 class GitHubProvider:
@@ -122,3 +129,13 @@ class GitHubProvider:
             r = client.delete(f"{self._base_url}/repos/{full_name}", headers=self._headers())
         if r.status_code >= 400 and r.status_code != 404:  # 404 = already gone; treat as success
             raise RepoProviderError(r.status_code, r.text)
+
+    def file_exists(self, full_name: str, path: str, ref: str) -> bool:
+        with httpx.Client(transport=self._transport, timeout=self._timeout_s) as client:
+            r = client.get(f"{self._base_url}/repos/{full_name}/contents/{path}",
+                           params={"ref": ref}, headers=self._headers())
+        if r.status_code == 200:
+            return True
+        if r.status_code == 404:  # file (or ref) absent
+            return False
+        raise RepoProviderError(r.status_code, r.text)

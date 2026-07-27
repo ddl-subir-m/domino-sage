@@ -270,6 +270,23 @@ def test_app_manage_url_builds_settings_deep_link():
     assert url == "/u/subir_mansukhani/My%20App/apps/proj-42/app-9/details/overview"
 
 
+def test_app_status_reads_nested_instance_status():
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"currentVersion": {"currentInstance": {"status": "Failed"}}})
+
+    status = _cp(handler).app_status("app-9")
+    assert seen["path"] == "/api/apps/beta/apps/app-9"
+    assert status == "Failed"
+
+
+def test_app_status_tolerates_missing_instance():
+    cp = _cp(lambda req: httpx.Response(200, json={"currentVersion": {}}))
+    assert cp.app_status("app-9") == ""
+
+
 def test_find_project_app_returns_none_when_no_app_matches():
     # Global list with only another project's app -> no match for ours.
     apps = {"items": [{"id": "app-other", "project": {"id": "proj-99"}}], "metadata": {}}

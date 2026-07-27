@@ -252,6 +252,17 @@ async def publish_app(project_id: str) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.get("/api/apps/publish-status")
+async def publish_status(app_id: str) -> JSONResponse:
+    """Deploy status of a published app (running/failed/pending) — the hub polls this after Publish."""
+    try:
+        result = await run_in_threadpool(hub.publish_status, app_id)
+    except Exception as e:
+        log.exception("publish_status failed")
+        return JSONResponse({"error": f"Couldn't get publish status: {e}"}, status_code=502)
+    return JSONResponse(result)
+
+
 @app.delete("/api/apps/{project_id}")
 async def delete_app(project_id: str) -> JSONResponse:
     """Delete an app: stop its builder and archive the Domino project (soft; the repo is kept)."""

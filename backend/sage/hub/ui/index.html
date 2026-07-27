@@ -307,11 +307,34 @@
         // manage_url is a host-relative path; builderUrl resolves it to the external host
         // (DOMINO_API_HOST is the internal cluster address, not browser-reachable).
         if (data.manage_url) links.push(link(builderUrl(data.manage_url), 'Manage settings in Domino ↗'));
-        info(`${verb} “${name}” — it may take a moment to finish deploying.`, links);
-        if (data.url) window.open(publishedUrl(data.url), '_blank');
+        info(`${verb} “${name}” — deploying…`, links);
+        if (data.app_id) pollPublish(data.app_id, name, links);
       } catch (e) {
         banner(e.message || 'Couldn’t publish the app.');
       } finally { btn.disabled = false; btn.textContent = label; }
+    }
+
+    // Poll a published app's deploy status until it goes live or fails (deploy = npm ci + build +
+    // serve, several minutes). Updates the banner in place; caps at ~8 min so it never polls forever.
+    function pollPublish(appId, name, links) {
+      let tries = 0;
+      const MAX = 96;  // 96 * 5s = 8 min
+      const timer = setInterval(async () => {
+        if (++tries > MAX) { clearInterval(timer); return; }
+        try {
+          const r = await fetch(api(`/api/apps/publish-status?app_id=${encodeURIComponent(appId)}`));
+          if (!r.ok) return;  // transient — keep polling
+          const d = await r.json();
+          if (d.phase === 'running') {
+            clearInterval(timer);
+            info(`“${name}” is live.`, links);
+          } else if (d.phase === 'failed') {
+            clearInterval(timer);
+            banner(`Publishing “${name}” failed (status: ${d.status || 'Failed'}). Check the app logs in Domino for details.`);
+          }
+          // pending -> keep polling
+        } catch { /* network blip — keep polling */ }
+      }, 5000);
     }
 
     async function openApp(id, btn) {

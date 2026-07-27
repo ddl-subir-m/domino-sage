@@ -451,3 +451,31 @@ def test_publish_app_reuses_existing_app_and_keeps_url(tmp_path):
     assert second["app_id"] == first["app_id"]  # same App, not a duplicate
     assert second["url"] == first["url"]        # URL stays stable across versions
     assert len(cp.published) == 1
+
+
+def test_publish_app_fails_fast_when_entry_script_missing(tmp_path):
+    # A repo provider that reports app.sh absent -> publish should raise a clear error, not deploy.
+    class NoEntryRepo(FakeRepoProvider):
+        def file_exists(self, full_name, path, ref):
+            return False
+
+    cp = FakeControlPlane()
+    ref = cp.create_project("Old App", git_url="https://github.com/me/sage-old-app.git")
+    hub = _hub(tmp_path, cp, repo=NoEntryRepo())
+
+    with pytest.raises(RuntimeError, match="app.sh"):
+        hub.publish_app(ref.id)
+    assert cp.published == {}  # nothing was published
+
+
+def test_publish_status_maps_phases(tmp_path):
+    cp = FakeControlPlane()
+    hub = _hub(tmp_path, cp)
+    cp.app_statuses["a-run"] = "Running"
+    cp.app_statuses["a-fail"] = "Failed"
+    cp.app_statuses["a-prep"] = "Preparing"
+
+    assert hub.publish_status("a-run")["phase"] == "running"
+    assert hub.publish_status("a-fail")["phase"] == "failed"
+    assert hub.publish_status("a-prep")["phase"] == "pending"
+    assert hub.publish_status("a-prep")["status"] == "Preparing"  # raw status passed through

@@ -74,6 +74,7 @@ class ControlPlane(Protocol):
                       git_ref_value: str | None = None) -> PublishedApp: ...
     def find_project_app(self, project_id: str) -> PublishedApp | None: ...
     def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str: ...
+    def app_status(self, app_id: str) -> str: ...
 
 
 class DominoControlPlane:
@@ -349,6 +350,15 @@ class DominoControlPlane:
             return PublishedApp(id=str(a["id"]), url=str(a.get("url") or ""))
         return None
 
+    def app_status(self, app_id: str) -> str:
+        """Deploy status of the app's current instance (Running / Failed / Preparing / '' if unknown),
+        read from currentVersion.currentInstance.status. Used to poll a publish to a terminal state."""
+        d = self._get(f"{_APPS_PATH}/{app_id}")
+        if not isinstance(d, dict):
+            return ""
+        inst = (d.get("currentVersion") or {}).get("currentInstance") or {}
+        return str(inst.get("status") or "")
+
     def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
         """Host-relative deep-link to the App's settings/overview page in Domino (tier, autoscaling,
         data, sharing), so 1-click Publish stays frictionless while the full native config is one
@@ -388,6 +398,7 @@ class FakeControlPlane:
     workspaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     published: dict[str, PublishedApp] = field(default_factory=dict)  # app_id -> app
     app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id (find_project_app)
+    app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
     _seq: int = 0
 
@@ -467,3 +478,6 @@ class FakeControlPlane:
 
     def app_manage_url(self, project_id: str, app_id: str, project_name: str) -> str:
         return f"/u/owner/{project_name}/apps/{project_id}/{app_id}/details/overview"
+
+    def app_status(self, app_id: str) -> str:
+        return self.app_statuses.get(app_id, "Running")
