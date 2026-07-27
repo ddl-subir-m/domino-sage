@@ -14,13 +14,22 @@
 USER root
 
 # --- Node 22 + uv -----------------------------------------------------------------------------
-# vite@8/rolldown hard-fails below Node 20.19; conda's node commonly shadows nodesource, so we
-# force the system node onto PATH for every shell (the recurring gotcha from Phase 1).
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs git \
+# vite@8/rolldown hard-fails below Node 20.19. We install the official Node.js prebuilt tarball into
+# /usr/local rather than NodeSource's `deb.nodesource.com/setup_22.x | bash -`: that CDN started
+# returning 403 to the buildkit workers, failing every rebuild. Pinned for reproducibility; the .gz
+# tarball avoids depending on xz-utils. /usr/local/bin goes first on PATH so this node beats both a
+# stale /usr/bin/node and conda's shadowing node (the recurring gotcha from Phase 1).
+# NOTE: linux-x64 — assumes an amd64 base image (Domino's standard images are amd64).
+ARG NODE_VERSION=v22.11.0
+RUN curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.gz" \
+    && tar -xzf "node-${NODE_VERSION}-linux-x64.tar.gz" -C /usr/local --strip-components=1 --no-same-owner \
+    && rm "node-${NODE_VERSION}-linux-x64.tar.gz" \
+    && apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && mv /root/.local/bin/uv /usr/local/bin/uv
-ENV PATH=/usr/bin:/usr/local/bin:$PATH
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && node --version && npm --version
+ENV PATH=/usr/local/bin:/usr/bin:$PATH
 
 # --- OpenCode ---------------------------------------------------------------------------------
 # The agent runtime the driver spawns via `npx opencode serve`. Pinned; installed globally so it
