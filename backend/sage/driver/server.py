@@ -35,6 +35,15 @@ class OpenCodeServer:
         cmd = ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
         if self._log_path:
             cmd.append("--print-logs")
+        # OpenCode discovers PROJECT config by walking up from the session's dir (the workspace) to the
+        # git root, and GLOBAL config from ~/.config/opencode — neither reaches our opencode.json here
+        # in cwd. Without it OpenCode never loads the sage-gateway provider/agents and silently falls
+        # back to its built-in free tier (429 FreeUsageLimitError). OPENCODE_CONFIG loads our file as
+        # "custom config" (above global, below project) — the documented way to point it at our config.
+        env = dict(os.environ)
+        cfg = self._cwd / "opencode.json"
+        if cfg.exists():
+            env["OPENCODE_CONFIG"] = str(cfg)
         self._proc = subprocess.Popen(
             cmd,
             cwd=self._cwd,
@@ -42,6 +51,7 @@ class OpenCodeServer:
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            env=env,
         )
         threading.Thread(target=self._read, args=(self._proc,), daemon=True).start()
         if not self._ready.wait(timeout=ready_timeout_s):
