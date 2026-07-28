@@ -497,6 +497,10 @@ class Orchestrator:
         # never ran) — shown as a warning in-stream since the deployed workspace has no shell/logs.
         control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
         base_port = _opencode_base_port(self._opencode_cwd)
+        # Direct vendor keys OpenCode can auto-detect and use to reach a model WITHOUT going through
+        # the shim's provider (localhost baseURL). If the shim is bypassed, their presence is the
+        # likely reason inference still worked — and means sovereignty/routing were silently skipped.
+        vendor_keys = [k for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY") if os.environ.get(k)]
         # A clean typecheck doesn't mean the app runs: a render/runtime throw (e.g. calling a Date
         # method on a string) blanks the preview but passes tsc. The open preview reports such throws
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
@@ -624,7 +628,8 @@ class Orchestrator:
                 shim_bypassed = (project.model_calls == 0 and base_port is not None and base_port != control_port)
                 yield {"type": "turn-summary", "model_calls": project.model_calls,
                        "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code,
-                       "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port}
+                       "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port,
+                       "vendor_keys": vendor_keys}
                 if report.ok and not wrote_code:
                     if nudges < MAX_NUDGES:
                         nudges += 1
