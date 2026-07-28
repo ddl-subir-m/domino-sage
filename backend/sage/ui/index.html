@@ -711,7 +711,15 @@ async function attachFile(datasetId, filePath) {
   const r = await api(`/api/project/assets/${datasetId}/files/attach`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: filePath }),
   });
-  if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Could not attach file')); return; }
+  if (!r.ok) {
+    // File vanished from the mount (e.g. deleted meanwhile) — drop the stale browser row.
+    if (r.status === 404 && filesCache[datasetId]) {
+      filesCache[datasetId] = filesCache[datasetId].filter(f => f.path !== filePath);
+      renderAssets();
+    }
+    addStatus('err', '⚠️', esc(r.body.error || 'Could not attach file'));
+    return;
+  }
   if (!attachedFiles.some(e => e.path === r.body.path)) {
     attachedFiles.push({ dataset_id: datasetId, dataset: r.body.dataset, file: filePath, path: r.body.path, size: r.body.size, sensitive: r.body.sensitive, source: 'dataset' });
   }
@@ -766,6 +774,9 @@ async function deleteFile(destPath) {
   });
   if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Could not delete file')); return; }
   attachedFiles = attachedFiles.filter(e => e.path !== destPath);
+  // The bytes are gone from the dataset mount too, so drop the file from the browser cache —
+  // otherwise it lingers under its dataset and Attach 404s ("file not found in dataset").
+  for (const id in filesCache) filesCache[id] = filesCache[id].filter(f => f.dest !== destPath);
   renderAssets(); updateDataCount(); refreshStatus();
 }
 
