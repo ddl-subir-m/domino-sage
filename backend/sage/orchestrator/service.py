@@ -432,15 +432,17 @@ class Orchestrator:
         # Auto may be escalated to Implement mid-stream to force a stalled build to actually write
         # code (see the nudge branch below). Restore the user's mode on every exit from the stream.
         original_mode = project.control.snapshot().mode
-        # Set when a planning stall forces us to pin the strong model for the Implement retry (see
-        # the nudge branch). Cleared on exit so we never leave the user's own model pick clobbered.
+        # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
+        # strong model for the Implement retry (see the nudge branch); restored on exit so we never
+        # leave the user's own pick clobbered.
+        original_pick = project.control.snapshot().picked_model
         escalated_pick = False
 
         def restore_mode() -> None:
             if project.control.snapshot().mode is not original_mode:
                 project.control.set_mode(original_mode)
             if escalated_pick:
-                project.control.pick(None)
+                project.control.pick(original_pick)
 
         def handle_stop() -> dict:
             project.stop_requested = False
@@ -460,7 +462,11 @@ class Orchestrator:
         # can't loop forever.
         made_edits = False
         nudges = 0
-        MAX_NUDGES = 2
+        MAX_NUDGES = _env_int("SAGE_MAX_NUDGES", 3)
+        # When a turn routed to the cheap implement-tier coder writes nothing, pin the strong
+        # plan-tier model for the retry (works from Auto or explicit Implement). On by default;
+        # set SAGE_IMPLEMENT_STRONG_FALLBACK=0 to keep retries on the originally-routed model.
+        strong_fallback = os.environ.get("SAGE_IMPLEMENT_STRONG_FALLBACK", "1").strip().lower() not in ("0", "false", "no")
         # A clean typecheck doesn't mean the app runs: a render/runtime throw (e.g. calling a Date
         # method on a string) blanks the preview but passes tsc. The open preview reports such throws
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
@@ -586,16 +592,22 @@ class Orchestrator:
                         # PLAN (it biases plan until the first write) — in Auto the model can just plan
                         # again and stall. Pin Implement for the retry so it actually writes: the "try
                         # Implement mode" advice, applied automatically instead of shown as a dead end.
-                        if project.control.snapshot().mode is Mode.AUTO:
+                        mode_now = project.control.snapshot().mode
+                        if mode_now is Mode.AUTO:
                             project.control.set_mode(Mode.IMPLEMENT)
-                            # Mode.IMPLEMENT alone pins resolve() to catalog.implement — the cheap
-                            # coder that just failed to write. Pin the strong plan-tier model for the
-                            # retry so the edit-forward sage-implement agent is driven by a model
-                            # capable of actually calling the edit tool. Cleared in restore_mode();
-                            # no-op under a sensitivity lock, where resolve() forces sovereign.
+                            reason = "planned but wrote no code — switching to Implement"
+                        else:
+                            reason = "wrote no code — retrying"
+                        # Whether we just switched out of Auto or the user is already in Implement,
+                        # resolve() routes to catalog.implement — the cheap coder that just wrote
+                        # nothing. With the fallback on, pin the strong plan-tier model for the retry
+                        # so a model capable of calling the edit tool drives it. Restored to the user's
+                        # own pick in restore_mode(); no-op under a sensitivity lock (sovereign forced).
+                        if strong_fallback and not escalated_pick and mode_now in (Mode.AUTO, Mode.IMPLEMENT):
                             project.control.pick(project.shim.catalog.plan)
                             escalated_pick = True
-                        yield {"type": "iterate", "reason": "planned but wrote no code — switching to Implement"}
+                            reason += " with the strong model"
+                        yield {"type": "iterate", "reason": reason}
                         current = IMPLEMENT_NUDGE
                         continue
                     restore_mode()
