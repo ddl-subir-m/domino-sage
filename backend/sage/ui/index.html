@@ -908,7 +908,12 @@ function togglePop(id) {
   if (!open) el.classList.add('open');
 }
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('.pop') && !e.target.closest('.chip') && !e.target.closest('.icon-btn')) {
+  // Use composedPath() (snapshotted at dispatch), NOT e.target.closest(): clicking a dataset
+  // folder/attach button re-renders #assets synchronously, detaching the clicked node — a later
+  // .closest('.pop') on that orphan returns null and would wrongly close the panel.
+  const inChrome = e.composedPath().some(n =>
+    n instanceof Element && (n.classList.contains('pop') || n.classList.contains('chip') || n.classList.contains('icon-btn')));
+  if (!inChrome) {
     document.querySelectorAll('.pop').forEach(p => p.classList.remove('open'));
   }
 });
