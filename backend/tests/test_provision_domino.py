@@ -85,6 +85,32 @@ def test_create_project_surfaces_error_body():
         raise AssertionError("expected RuntimeError on 400")
 
 
+def test_provision_sensitive_dataset_tags_create_time_snapshot():
+    # A newly created dataset already carries an initial snapshot; we tag that one directly
+    # instead of POSTing an empty snapshot (which 400s: relativeFilePaths required).
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path, json.loads(request.content)))
+        if request.url.path == "/api/datasetrw/v1/datasets":
+            return httpx.Response(200, json={"dataset": {"id": "ds-1", "snapshotIds": ["snap-1"]}})
+        if request.url.path == "/api/datasetrw/v1/datasets/ds-1/tags":
+            return httpx.Response(200, json={"dataset": {"id": "ds-1", "tags": {"sensitive": "snap-1"}}})
+        raise AssertionError(f"unexpected call: {request.url.path}")
+
+    ds_id = _cp(handler).provision_sensitive_dataset("proj-1", "app-sensitive")
+    assert ds_id == "ds-1"
+    paths = [p for _, p, _ in calls]
+    assert "/api/datasetrw/v1/datasets/ds-1/snapshots" not in paths  # the broken step is gone
+    assert calls[-1] == ("POST", "/api/datasetrw/v1/datasets/ds-1/tags",
+                         {"tagName": "sensitive", "snapshotId": "snap-1"})
+
+
+def test_provision_sensitive_dataset_returns_none_on_failure():
+    # Best-effort: a datasetrw error must never bubble up and block "New app".
+    assert _cp(lambda req: httpx.Response(500, text="boom")).provision_sensitive_dataset("p", "x") is None
+
+
 def test_create_workspace_body():
     seen = {}
 

@@ -217,10 +217,11 @@ class DominoControlPlane:
         Best-effort: returns the dataset id, or None on any failure — a broken dataset must never
         block "New app" (sensitive uploads degrade to an actionable error until it exists).
 
-        LIVE-VERIFY seam (unverified against a live cluster): (1) the create/snapshot/tag payload
-        shapes below; (2) that tagging requires a snapshot and that an empty dataset can be
-        snapshotted; (3) that a newly created project-owned dataset AUTO-MOUNTS in the builder
-        workspace and the published app without an explicit externalVolumeMounts entry."""
+        Verified against a live cluster: a newly created dataset already carries an initial
+        snapshot (`snapshotIds` in the create response), and tags attach to a snapshot via
+        POST .../datasets/{id}/tags {tagName, snapshotId}. We tag that create-time snapshot
+        directly — an explicit POST .../snapshots with an empty body 400s (requires
+        relativeFilePaths). Auto-mount into the builder workspace is confirmed."""
         try:
             created = self._post(f"{_DATASETRW_PATH}/datasets", {"name": dataset_name, "projectId": project_id})
             ds = (created.get("dataset") or created) if isinstance(created, dict) else {}
@@ -228,12 +229,15 @@ class DominoControlPlane:
             if not ds_id:
                 return None
             # Tags attach to a snapshot, not the dataset directly (POST .../tags requires snapshotId).
-            snap = self._post(f"{_DATASETRW_PATH}/datasets/{ds_id}/snapshots", {})
-            snap_obj = (snap.get("snapshot") or snap) if isinstance(snap, dict) else {}
-            snap_id = str(snap_obj.get("id") or "")
-            if snap_id:
-                self._post(f"{_DATASETRW_PATH}/datasets/{ds_id}/tags",
-                           {"tagName": _SENSITIVITY_TAG, "snapshotId": snap_id})
+            # A brand-new dataset already has an initial snapshot, so tag that one.
+            snap_ids = ds.get("snapshotIds") or []
+            snap_id = str(snap_ids[0]) if snap_ids else ""
+            if not snap_id:
+                log.error("provision_sensitive_dataset: dataset %s (%s) has no snapshot to tag",
+                          dataset_name, ds_id)
+                return ds_id
+            self._post(f"{_DATASETRW_PATH}/datasets/{ds_id}/tags",
+                       {"tagName": _SENSITIVITY_TAG, "snapshotId": snap_id})
             return ds_id
         except Exception:  # noqa: BLE001 — never let dataset provisioning break app creation
             log.exception("provision_sensitive_dataset failed for %s (project %s)", dataset_name, project_id)
