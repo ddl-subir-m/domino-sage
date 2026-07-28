@@ -461,6 +461,14 @@ class Orchestrator:
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
         runtime_fixes = 0
         MAX_RUNTIME_FIXES = 3
+        leak_fixes = 0
+        MAX_LEAK_FIXES = 2
+        LEAK_FIX_NUDGE = (
+            "You copied attached data into the app's source, which leaks it into git — attached files "
+            "live under public/data/ (gitignored on purpose) and must be READ from there at runtime, "
+            "not duplicated into src/. Delete the copy you made and load the data by fetching its "
+            "served path instead (see the 'Attached data' section in AGENTS.md for the exact URL)."
+        )
         IMPLEMENT_NUDGE = (
             "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
             "request: edit the project files (start with src/App.tsx) so the app actually builds "
@@ -600,18 +608,21 @@ class Orchestrator:
                         yield {"type": "iterate", "reason": f"app crashed at runtime — fixing ({first_line})"}
                         current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                         continue
+                # The agent may have copied attached data into src/ — that leaks it into git
+                # (public/data/ is gitignored on purpose) and is why deleting the attachment leaves the
+                # dashboard still working. Treat it like a build error: nudge the agent to remove the
+                # copy and fetch from data/ instead, bounded. If it won't, _save_to_git strips the copy
+                # from the commit anyway (the bytes never reach git), so this loop is UX, not the guard.
+                if report.ok and wrote_code and leak_fixes < MAX_LEAK_FIXES:
+                    leaks = self._detect_leaks(project)
+                    if leaks:
+                        leak_fixes += 1
+                        for name, where in leaks:
+                            yield persist({"type": "data-leak", "file": name, "where": where[:3]})
+                        yield {"type": "iterate", "reason": "copied attached data into source — moving it back to data/"}
+                        current = LEAK_FIX_NUDGE
+                        continue
                 restore_mode()
-                if report.ok and project.attached:
-                    # Warn if the agent copied attached data into the app's source — public/data/ is
-                    # gitignored on purpose, so a copy leaks the (possibly sensitive) data into git and
-                    # silently survives deleting the attachment. Flag it; the fetch-from-data/ pattern
-                    # in AGENTS.md is the intended one.
-                    sources = self._scan_app_sources(project)
-                    for e in project.attached:
-                        copies = self._data_usage(project, e, sources)["copies"]
-                        if copies:
-                            yield persist({"type": "data-leak", "file": PurePosix(e["path"]).name,
-                                           "where": copies[:3]})
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok:
                     saved = self._save_to_git(project, prompt)
@@ -656,8 +667,10 @@ class Orchestrator:
         if not git.is_repo(path):
             return None
         message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
+        # Hard backstop: never stage attached-data copies, even if the agent ignored the fix nudge.
+        leaked = self._leaked_copy_paths(project)
         try:
-            committed = git.commit_all(path, message)
+            committed = git.commit_all(path, message, exclude=leaked)
             # Integrate any teammate changes before pushing, or the push is rejected as non-ff and
             # the build's work silently never reaches the repo.
             synced = self._integrate_remote(project)
@@ -667,7 +680,10 @@ class Orchestrator:
             if not committed and (synced is None or synced.status == "up-to-date"):
                 return {"type": "saved", "ok": True, "pushed": False, "detail": "no changes to commit"}
             result = git.push(path)
-            return {"type": "saved", "ok": True, "pushed": result.pushed, "detail": result.detail}
+            detail = result.detail
+            if leaked:
+                detail += f" — kept {len(leaked)} copied data file(s) out of git; fetch attached data from data/ instead"
+            return {"type": "saved", "ok": True, "pushed": result.pushed, "detail": detail}
         except Exception as e:  # noqa: BLE001
             log.exception("git save failed")
             return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}
@@ -727,7 +743,7 @@ class Orchestrator:
             return {"status": "no-remote", "conflicts": [], "pushed": False,
                     "detail": "this app has no git remote to pull from"}
         try:
-            git.commit_all(path, "sage: save before pull")
+            git.commit_all(path, "sage: save before pull", exclude=self._leaked_copy_paths(project))
             result = self._integrate_remote(project)
             if result is None or result.status in ("conflict-unresolved", "error"):
                 detail = result.detail if result else "no remote to pull from"
@@ -1097,6 +1113,24 @@ class Orchestrator:
             elif served in text or name in text:
                 refs.append(rel)
         return {"refs": refs, "copies": copies}
+
+    def _detect_leaks(self, project: Project) -> list[tuple[str, list[str]]]:
+        """(attachment name, [source files that copy it]) for every attached file whose bytes were
+        duplicated into the app tree. Empty when nothing was copied. One source scan for all files."""
+        if not project.attached:
+            return []
+        sources = self._scan_app_sources(project)
+        out: list[tuple[str, list[str]]] = []
+        for e in project.attached:
+            copies = self._data_usage(project, e, sources)["copies"]
+            if copies:
+                out.append((PurePosix(e["path"]).name, copies))
+        return out
+
+    def _leaked_copy_paths(self, project: Project) -> list[str]:
+        """Flat list of workspace-relative source files that are copies of attached data — passed to
+        commit_all(exclude=...) so the (possibly sensitive) bytes are never staged into a commit."""
+        return [f for _, files in self._detect_leaks(project) for f in files]
 
     def _attachment_bytes(self, project: Project, entry: dict) -> bytes | None:
         """Read an attached file's bytes (follows the symlink to the dataset mount). None if absent."""

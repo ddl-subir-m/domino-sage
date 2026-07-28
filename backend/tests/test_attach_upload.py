@@ -187,6 +187,26 @@ def test_data_usage_flags_inlined_bytes_as_a_copy(tmp_path: Path):
     assert "src/rows.ts" in usage["copies"]
 
 
+def test_detect_leaks_finds_copied_data_for_the_commit_backstop(tmp_path: Path):
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    orch.upload_file("sales.csv", b"a,b\n1,2\n", sensitive=False)
+    (proj.workspace.path / "src" / "sales.csv").write_text("a,b\n1,2\n")   # agent copied it into src/
+
+    assert orch._detect_leaks(proj) == [("sales.csv", ["src/sales.csv"])]
+    assert orch._leaked_copy_paths(proj) == ["src/sales.csv"]
+
+
+def test_no_leak_when_app_only_fetches_from_data(tmp_path: Path):
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    orch.upload_file("sales.csv", b"a,b\n1,2\n", sensitive=False)
+    (proj.workspace.path / "src" / "App.tsx").write_text('fetch("data/sales_2026/uploads/sales.csv")')
+
+    assert orch._detect_leaks(proj) == []          # a fetch is the intended pattern, not a leak
+    assert orch._leaked_copy_paths(proj) == []
+
+
 def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)

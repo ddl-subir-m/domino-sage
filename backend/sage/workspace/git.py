@@ -59,9 +59,14 @@ def _identity_args(path: Path) -> list[str]:
     return args
 
 
-def commit_all(path: Path, message: str) -> bool:
-    """Stage everything and commit. Returns False (not an error) when there's nothing to commit."""
+def commit_all(path: Path, message: str, exclude: list[str] | None = None) -> bool:
+    """Stage everything and commit. Returns False (not an error) when there's nothing to commit.
+    `exclude` unstages the given workspace-relative paths after staging, so bytes that must never be
+    committed (attached-data copies leaked into src/) are kept out of the commit — they stay on disk,
+    just untracked."""
     _git(path, "add", "-A")
+    if exclude:
+        _git(path, "reset", "-q", "--", *exclude, check=False)
     if _git(path, "diff", "--cached", "--quiet", check=False).returncode == 0:
         return False
     _git(path, *_identity_args(path), "commit", "-m", message)

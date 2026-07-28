@@ -47,6 +47,21 @@ def test_commit_and_push_pushes_to_remote(tmp_path: Path):
     assert "App.tsx" in files
 
 
+def test_commit_all_exclude_keeps_paths_out_of_the_commit(tmp_path: Path):
+    # A leaked data copy must never be staged, but stays on disk (untracked) so the preview still works.
+    work = _work_repo(tmp_path, with_remote=False)
+    (work / "App.tsx").write_text("built by agent")
+    (work / "src").mkdir()
+    (work / "src" / "sales.csv").write_text("a,b\n1,2\n")
+
+    committed = git.commit_all(work, "sage: build", exclude=["src/sales.csv"])
+
+    assert committed is True
+    tracked = _run(work, "ls-files")
+    assert "App.tsx" in tracked and "src/sales.csv" not in tracked   # copy excluded from git
+    assert (work / "src" / "sales.csv").is_file()                    # but still on disk
+
+
 def test_commit_without_remote_is_not_an_error(tmp_path: Path):
     work = _work_repo(tmp_path, with_remote=False)
     (work / "App.tsx").write_text("built by agent")
