@@ -197,6 +197,14 @@ class Project:
     # after a clean typecheck to catch runtime crashes that tsc can't see (a blank preview) and feed
     # them back to the agent to autofix. ts-gated so a stale error from a prior turn is ignored.
     runtime_error: dict | None = None
+    # Per-turn model-call telemetry, wired by the /v1/chat/completions stream wrapper and read by
+    # build_stream() to explain why a turn wrote nothing. model_calls = model inferences OpenCode ran
+    # this turn; tool_call_responses = how many of those responses carried a tool_call. build_stream
+    # resets both before each send. Reading them apart splits the three failure modes: 0 model calls =
+    # OpenCode never invoked the model; model calls but 0 tool-call responses = the model never tried a
+    # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
+    model_calls: int = 0
+    tool_call_responses: int = 0
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -496,6 +504,10 @@ class Orchestrator:
                 return
             yield {"type": "turn", "prompt": current[:120]}
             project.last_gateway_error = None
+            # Reset per-turn model-call telemetry; the shim stream wrapper repopulates it as OpenCode
+            # drives this turn's inferences (see Project.model_calls).
+            project.model_calls = 0
+            project.tool_call_responses = 0
             agent = _agent_for_mode(project.control.snapshot().mode)
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
@@ -585,6 +597,10 @@ class Orchestrator:
                 # via another (patch/str_replace/create). Confirm against the snapshot's ground truth
                 # so a real edit is never misread as "planned but wrote no code".
                 wrote_code = made_edits or project.snapshot.changed_since_pre_turn()
+                # Surface why a turn landed where it did — especially a no-edit turn. Reads apart the
+                # three failure modes (see Project.model_calls); rendered as a status line in the UI.
+                yield {"type": "turn-summary", "model_calls": project.model_calls,
+                       "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code}
                 if report.ok and not wrote_code:
                     if nudges < MAX_NUDGES:
                         nudges += 1

@@ -1036,6 +1036,14 @@ function addToolCard(tool, detail) {
     + `</span><span class="check">✓</span>`;
   return append(d);
 }
+function turnSummaryMsg(ev) {
+  const calls = ev.model_calls || 0, tc = ev.tool_call_responses || 0;
+  const pl = n => n === 1 ? '' : 's';
+  if (ev.wrote_code) return `Applied edits — ${calls} model call${pl(calls)}, ${tc} with tool calls`;
+  if (calls === 0) return 'Wrote nothing: the model was never called this turn — OpenCode didn\'t reach the gateway (agent/config/connectivity)';
+  if (tc === 0) return `Wrote nothing: ${calls} model call${pl(calls)} but the model returned no tool calls — it only produced text`;
+  return `Wrote nothing: model returned tool calls (${tc}/${calls} responses) but none landed on disk — OpenCode didn\'t apply them (permission/execution)`;
+}
 function addStatus(cls, ico, html) {
   const d = document.createElement('div'); d.className = 'status-line ' + (cls || '');
   d.innerHTML = `<span class="ico">${ico}</span><span>${html}</span>`;
@@ -1205,7 +1213,8 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'agent' && ev.kind === 'text') { addAgent(ev.text); trail(); }
   else if (ev.type === 'typecheck-start') { setWorking('Typechecking'); }
   else if (ev.type === 'typecheck') { stopWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); trail(); }
-  else if (ev.type === 'iterate') { setWorking('Fixing errors'); }
+  else if (ev.type === 'turn-summary') { stopWorking(); addStatus(ev.wrote_code ? 'ok' : '', ev.wrote_code ? '✎' : 'ℹ', turnSummaryMsg(ev)); trail(); }
+  else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
   else if (ev.type === 'done') { stopWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'saved') { renderSaved(ev); }

@@ -503,6 +503,10 @@ async def build_project(request: Request) -> JSONResponse:
 async def chat_completions(request: Request):
     project = orchestrator.project()
     body = await request.json()
+    # Per-turn telemetry: every inference OpenCode runs this turn passes through here. Count it, and
+    # (below) flag whether the model's response carried a tool call. build_stream reads these to explain
+    # a no-edit turn. See Project.model_calls.
+    project.model_calls += 1
     gen = project.shim.handle(body, project=project.id, session=project.session_id)
 
     def _peek():  # blocking; runs in a thread so the loop stays free
@@ -524,8 +528,22 @@ async def chat_completions(request: Request):
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(err).__name__}: {err}"}})
 
     def stream():
+        # Flag once if this response carries a tool call (streamed as choices[].delta.tool_calls, or
+        # finish_reason "tool_calls"). Substring sniff is enough — we only need "did the model try a
+        # tool this turn", and it stays harness-agnostic (no SSE parsing).
+        flagged = False
+
+        def sniff(chunk: bytes) -> None:
+            nonlocal flagged
+            if not flagged and b"tool_calls" in chunk:
+                flagged = True
+                project.tool_call_responses += 1
+
+        sniff(first)
         yield first
-        yield from gen
+        for chunk in gen:
+            sniff(chunk)
+            yield chunk
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
