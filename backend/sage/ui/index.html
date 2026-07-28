@@ -36,6 +36,7 @@
   button, input, select, textarea { font: inherit; color: inherit; }
   button { cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
+  .link-btn { background: none; border: none; padding: 0; color: var(--primary); font-weight: 500; text-decoration: underline; }
 
   /* ---------- header ---------- */
   header {
@@ -750,16 +751,58 @@ async function attachFile(datasetId, filePath) {
 
 async function detachFile(destPath) {
   if (!active) return;
-  await api('/api/project/files/detach', {
+  const name = destPath.split('/').pop();
+  const r = await api('/api/project/files/detach', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: destPath }),
   });
   attachedFiles = attachedFiles.filter(e => e.path !== destPath);
   renderAssets();
   updateDataCount();
   refreshStatus();
-  if (lastModel && lastModel.asset_locked) {
-    addStatus('warn', '🔒', `Detached <b>${esc(destPath.split('/').pop())}</b> — sovereign lock stays on for this session.`);
+  const body = (r && r.body) || {};
+  // The backend removed any standalone copy of the raw file the agent had leaked into src/.
+  if ((body.removed_copies || []).length) {
+    const n = body.removed_copies.length;
+    addStatus('ok', '🧹', `Removed ${n} leaked cop${n === 1 ? 'y' : 'ies'} of <b>${esc(name)}</b> from the app.`);
   }
+  // Code still fetches or inlines the file (#2): warn that the app will show empty data, and offer to
+  // have Sage strip that usage (#3). Not automatic — it's a real edit to the app's logic.
+  const refs = body.refs || [];
+  if (refs.length) {
+    const files = refs.slice(0, 3).map(esc).join(', ') + (refs.length > 3 ? '…' : '');
+    const s = addStatus('warn', '⚠️',
+      `Detached <b>${esc(name)}</b>, but your app still reads it (${files}) — it will show empty data. ` +
+      `<button class="link-btn">Remove it from the app</button>`);
+    const b = s && s.querySelector('.link-btn');
+    if (b) b.onclick = () => { b.disabled = true; removeDataFromApp(name, refs); };
+  }
+  if (lastModel && lastModel.asset_locked) {
+    addStatus('warn', '🔒', `Detached <b>${esc(name)}</b> — sovereign lock stays on for this session.`);
+  }
+}
+
+// Agent cleanup after a detach left dangling references (#3): run a normal build turn that strips the
+// app's use of the now-removed file. Goes through the same sovereign build path as any prompt.
+function removeDataFromApp(name, refs) {
+  if (!active) return;
+  const where = (refs && refs.length) ? ` It's referenced in: ${refs.join(', ')}.` : '';
+  const prompt = `The data file "${name}" was removed and is no longer available. Remove it from the app: `
+    + `delete the code that fetches or reads "${name}", and remove or update any UI that depended on it `
+    + `(show an appropriate empty state if a view still needs data).${where} `
+    + `Do not re-create, re-add, or re-fetch this file.`;
+  runPrompt(prompt);
+}
+
+// Start a build turn from a programmatic prompt (not the composer). Mirrors build() minus the textarea
+// and the one-shot plan-first arming — used by the detach cleanup affordance.
+function runPrompt(prompt) {
+  if (!active) enterProject();
+  const msgBox = document.getElementById('messages');
+  const turnStart = msgBox.children.length;
+  addUser(prompt);
+  buildPhase = 'plan';
+  setWorking(workLabel());
+  return runStream('/api/project/build/stream', { prompt, mentions: [] }, turnStart);
 }
 
 async function uploadFile() {

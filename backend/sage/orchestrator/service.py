@@ -1105,11 +1105,27 @@ class Orchestrator:
 
     def detach_file(self, path: str) -> dict:
         """Remove an attached file's symlink (keyed by its workspace path, so rehydrated entries
-        with no dataset_id detach too) and forget it. Does NOT clear the sovereign lock even for a
+        with no dataset_id detach too) and forget it. Also deletes any standalone COPY of the file the
+        agent leaked into the app tree (same basename under src/ etc.): once the entry leaves
+        project.attached the commit backstop (_detect_leaks) stops covering it, so a leaked copy would
+        otherwise get staged into the next save — pushing the (possibly sensitive) bytes into git.
+        Inlined-into-code copies are left in place (deleting the source file would nuke app logic) and
+        reported, alongside code that fetches the served path, as `refs` so the UI can warn and offer an
+        agent cleanup. Keeps the dataset bytes. Does NOT clear the sovereign lock even for a
         sensitivity-tagged dataset — the asset-driven lock is sticky (ModelControl); unlock manually."""
         project = self.project()
         if not path.startswith("public/data/"):
             raise ValueError(path)
+        entry = next((e for e in project.attached if e["path"] == path), None)
+        usage = self._data_usage(project, entry) if entry else {"refs": [], "copies": []}
+        name = PurePosix(path).name
+        removed: list[str] = []
+        for rel in usage["copies"]:
+            if PurePosix(rel).name == name:  # the raw file copied in — leaked data, no app logic of its own
+                cp = _safe_join(project.workspace.path, rel)
+                if cp.is_symlink() or cp.is_file():
+                    cp.unlink()
+                    removed.append(rel)
         dest = _safe_join(project.workspace.path, path)
         if dest.is_symlink() or dest.exists():
             dest.unlink()
@@ -1117,7 +1133,8 @@ class Orchestrator:
         project.attached[:] = [e for e in project.attached if e["path"] != path]
         self._write_agents_data_block(project)
         project.workspace.write_attachments(project.attached)
-        return {"detached": path, "status": project.status()}
+        still_used = sorted(set(usage["refs"] + [r for r in usage["copies"] if PurePosix(r).name != name]))
+        return {"detached": path, "removed_copies": removed, "refs": still_used, "status": project.status()}
 
     def upload_file(self, filename: str, data: bytes, sensitive: bool = False) -> dict:
         """Write an uploaded file into the project's writable dataset mount (persisted, and outside

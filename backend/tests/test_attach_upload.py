@@ -207,6 +207,38 @@ def test_no_leak_when_app_only_fetches_from_data(tmp_path: Path):
     assert orch._leaked_copy_paths(proj) == []
 
 
+def test_detach_removes_a_leaked_copy_so_it_cant_reach_git(tmp_path: Path):
+    # The core hole: while attached, a copy in src/ is kept out of commits by _detect_leaks. Detaching
+    # forgets the entry, so the commit backstop stops covering it — detach must delete the copy itself.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=True)
+    (proj.workspace.path / "src" / "data").mkdir(parents=True, exist_ok=True)
+    (proj.workspace.path / "src" / "data" / "d.csv").write_text("a,b\n1,2\n")   # agent copied it into src/
+
+    out = orch.detach_file(res["path"])
+
+    assert out["removed_copies"] == ["src/data/d.csv"]
+    assert not (proj.workspace.path / "src" / "data" / "d.csv").exists()   # leaked bytes gone from the tree
+    assert orch._leaked_copy_paths(proj) == []                            # nothing left for the backstop
+    assert _manifest(proj.workspace.path) == []
+
+
+def test_detach_reports_still_referenced_files_without_deleting_source(tmp_path: Path):
+    # A fetch (or bytes inlined into a code file) is app logic, not a raw-file copy: detach must NOT
+    # delete the source, but must report it so the UI can warn and offer the agent cleanup.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"x", sensitive=False)
+    (proj.workspace.path / "src" / "App.tsx").write_text('fetch("data/sales_2026/uploads/d.csv")')
+
+    out = orch.detach_file(res["path"])
+
+    assert out["removed_copies"] == []
+    assert "src/App.tsx" in out["refs"]
+    assert (proj.workspace.path / "src" / "App.tsx").exists()   # app code left untouched
+
+
 def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
