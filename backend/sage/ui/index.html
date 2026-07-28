@@ -154,6 +154,23 @@
   }
   .chip:hover { border-color: var(--border-strong); color: var(--text); }
   .chip.locked { color: var(--lock); border-color: color-mix(in srgb, var(--lock) 40%, var(--border)); }
+  .chip.on { color: var(--primary); border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--surface)); }
+  /* Plan-gate approval card (SPEC P6) */
+  .plan-card { border: 1px solid var(--primary); border-radius: var(--radius); background: color-mix(in srgb, var(--primary) 5%, var(--surface)); padding: 14px 16px; gap: 10px; }
+  .plan-card .plan-head { font-weight: 600; color: var(--text); }
+  .plan-card .plan-body { line-height: 1.6; color: var(--text); }
+  .plan-card .plan-body > :first-child { margin-top: 0; }
+  .plan-card .plan-lbl { font-size: 12.5px; color: var(--muted); }
+  .plan-card textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; resize: vertical; }
+  .plan-card .plan-edit { min-height: 160px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  .plan-card .plan-skip { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+  .plan-card .plan-actions { display: flex; gap: 8px; margin-top: 2px; }
+  .plan-btn { font: inherit; font-size: 13px; font-weight: 500; border-radius: 8px; padding: 7px 14px; cursor: pointer; border: 1px solid transparent; }
+  .plan-btn.primary { background: var(--primary); color: #fff; }
+  .plan-btn.primary:hover { background: var(--primary-hover); }
+  .plan-btn.ghost { background: transparent; border-color: var(--border); color: var(--muted); }
+  .plan-btn.ghost:hover { border-color: var(--border-strong); color: var(--text); }
+  .plan-card .plan-note { font-size: 13px; color: var(--muted); border-left: 2px solid var(--border-strong); padding-left: 10px; white-space: pre-wrap; }
   .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
   .chip.locked .dot { background: var(--lock); }
   .chip .caret { color: var(--faint); font-size: 10px; }
@@ -350,6 +367,7 @@
             <span class="dot"></span><span id="chip-text">model</span><span class="caret">▾</span>
           </button>
           <button class="chip" id="data-chip" onclick="togglePop('data-pop')">📎 <span id="data-count">Data</span><span class="caret">▾</span></button>
+          <button class="chip" id="plan-chip" onclick="togglePlanFirst()" title="Plan the build and get your sign-off before Sage writes code">◇ Plan first</button>
           <button class="send" id="build-btn" onclick="sendOrStop()" title="Send (Enter)">↑</button>
         </div>
       </div>
@@ -1133,19 +1151,26 @@ async function build() {
   hideMentionMenu();
   const mentions = collectMentions(prompt);   // "@file" tokens -> attached-file paths
   if (!active) enterProject();
-  const btn = document.getElementById('build-btn');
-  building = true;
-  btn.textContent = '■'; btn.title = 'Stop';
   const msgBox = document.getElementById('messages');
   const turnStart = msgBox.children.length; // first DOM node belonging to this turn
   addUser(prompt);
   ta.value = ''; autogrow(ta);
   buildPhase = 'plan';
   setWorking(workLabel());
+  const payload = { prompt, mentions };
+  if (planFirst) { payload.plan_first = true; setPlanFirst(false); }  // one-shot arming
+  await runStream('/api/project/build/stream', payload, turnStart);
+}
 
+// Shared build/approve turn: POST, read the SSE frames, render each event, then tear down the
+// working spinner and send button. Used by both a normal build and an approved-plan build.
+async function runStream(url, payload, turnStart) {
+  const btn = document.getElementById('build-btn');
+  building = true;
+  btn.textContent = '■'; btn.title = 'Stop';
   try {
-    const resp = await fetch(BASE + '/api/project/build/stream', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, mentions }),
+    const resp = await fetch(BASE + url, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
     });
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -1170,6 +1195,62 @@ async function build() {
   building = false;
 }
 
+// "Plan first" arming: forces the plan gate (SPEC P6) on the next build even after the first turn.
+let planFirst = false;
+function setPlanFirst(on) { planFirst = on; document.getElementById('plan-chip').classList.toggle('on', on); }
+function togglePlanFirst() { setPlanFirst(!planFirst); }
+
+// The approval card for a proposed plan (SPEC P6). Renders the plan, an optional answers box and
+// plan editor, and Approve/Edit/Cancel — Approve streams the resulting build from .sage/plan.md.
+function addPlanCard(planMd) {
+  const card = document.createElement('div');
+  card.className = 'msg agent plan-card';
+  card.innerHTML =
+    '<div class="plan-head">Review the plan before building</div>' +
+    '<div class="plan-body md"></div>' +
+    '<textarea class="plan-edit" style="display:none"></textarea>' +
+    '<label class="plan-lbl">Answer the open questions or add notes (optional)</label>' +
+    '<textarea class="plan-answers" rows="2" placeholder="e.g. columns: id, amount, status · Approve = mark resolved"></textarea>' +
+    '<label class="plan-skip"><input type="checkbox" class="plan-skip-cb"> Skip planning for future builds in this project</label>' +
+    '<div class="plan-actions">' +
+      '<button class="plan-btn primary">Approve &amp; build</button>' +
+      '<button class="plan-btn ghost edit">Edit plan</button>' +
+      '<button class="plan-btn ghost cancel">Cancel</button>' +
+    '</div>';
+  const bodyEl = card.querySelector('.plan-body');
+  const editTa = card.querySelector('.plan-edit');
+  bodyEl.innerHTML = md(planMd || '_No plan text was produced._');
+  editTa.value = planMd || '';
+  const editBtn = card.querySelector('.edit');
+  editBtn.onclick = () => {
+    const editing = editTa.style.display === 'none';
+    editTa.style.display = editing ? 'block' : 'none';
+    bodyEl.style.display = editing ? 'none' : 'block';
+    editBtn.textContent = editing ? 'Preview' : 'Edit plan';
+  };
+  card.querySelector('.cancel').onclick = () => card.remove();
+  card.querySelector('.primary').onclick = async () => {
+    const answers = card.querySelector('.plan-answers').value.trim();
+    const edited = editTa.value.trim() !== (planMd || '').trim();
+    const payload = { answers };
+    if (edited) payload.plan_edits = editTa.value;
+    if (card.querySelector('.plan-skip-cb').checked) {
+      api('/api/project/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ skip_planning: true }) });
+    }
+    // Lock the card to its approved state, keep the plan visible as a record.
+    editTa.style.display = 'none'; bodyEl.style.display = 'block';
+    card.querySelector('.plan-actions').remove();
+    card.querySelector('.plan-lbl').remove();
+    card.querySelector('.plan-answers').remove();
+    card.querySelector('.plan-skip').remove();
+    editTa.remove();
+    if (answers) card.insertAdjacentHTML('beforeend', '<div class="plan-note">' + esc(answers) + '</div>');
+    const turnStart = document.getElementById('messages').children.length;
+    await runStream('/api/project/build/approve', payload, turnStart);
+  };
+  return append(card);
+}
+
 // Replays the project's persisted chat transcript (see Workspace.append_history) so a reload or
 // restart shows the prior conversation instead of a blank slate. Returns whether any existed.
 async function loadHistory() {
@@ -1189,7 +1270,8 @@ function replayEvent(ev) {
   else if (ev.type === 'agent' && ev.kind === 'text') addAgent(ev.text);
   else if (ev.type === 'typecheck') addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`);
   else if (ev.type === 'data-leak') addStatus('warn', '⚠', leakMsg(ev));
-  else if (ev.type === 'done') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`);
+  else if (ev.type === 'plan-proposed') addPlanCard(ev.plan);
+  else if (ev.type === 'done') { if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); }
   else if (ev.type === 'saved') renderSaved(ev);
 }
 
@@ -1217,7 +1299,8 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'turn-summary') { stopWorking(); if (ev.shim_bypassed) addStatus('err', '⚠', `Inference bypassed Sage — OpenCode dialed :${ev.base_port} but the shim serves :${ev.control_port}. This turn ran 0 model calls through Sage; model routing and the sovereignty lock did not apply.` + ((ev.vendor_keys && ev.vendor_keys.length) ? ` A direct vendor key (${esc(ev.vendor_keys.join(', '))}) is in the workspace — that's how a model was reached, entirely outside Sage.` : ` No direct vendor key is set, so a model shouldn't have been reachable this way — check what OpenCode connected to.`) + ` Fix the opencode.json baseURL port.`); addStatus(ev.wrote_code ? 'ok' : '', ev.wrote_code ? '✎' : 'ℹ', turnSummaryMsg(ev)); trail(); }
   else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
   else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
-  else if (ev.type === 'done') { stopWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
+  else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan); trail(); }
+  else if (ev.type === 'done') { stopWorking(); if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'saved') { renderSaved(ev); }
   else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(workLabel()); refreshStatus(); }
