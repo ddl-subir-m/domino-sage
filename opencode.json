@@ -20,6 +20,9 @@
     }
   },
   "model": "sage-gateway/gpt-5.4",
+  "permission": {
+    "skill": { "*": "allow" }
+  },
   "agent": {
     "sage-ask": {
       "mode": "primary",
