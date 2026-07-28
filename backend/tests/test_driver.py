@@ -16,23 +16,26 @@ class _Resp:
             raise httpx.HTTPStatusError("boom", request=None, response=None)
 
 
-def test_send_prompt_attaches_files_as_uri_parts(monkeypatch):
+def test_send_prompt_embeds_attachment_paths_in_prompt_text(monkeypatch):
+    # 1.18.4's /prompt carries no file-part field, so @mentioned attachments are named as real
+    # local paths in the prompt TEXT (the agent's read tool follows the symlinks).
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
                         lambda url, json, timeout: calls.append(json) or _Resp(200))
-    OpenCodeClient("http://x").send_prompt("s1", "hi", files=["/mnt/data/foo/bar.csv"])
+    OpenCodeClient("http://x").send_prompt("s1", "use this", files=["/mnt/data/foo/bar.csv"])
     assert len(calls) == 1
-    assert calls[0]["prompt"]["files"] == [{"uri": "file:///mnt/data/foo/bar.csv", "name": "bar.csv"}]
+    text = calls[0]["prompt"]["text"]
+    assert text.startswith("use this")
+    assert "/mnt/data/foo/bar.csv" in text          # the real path the agent reads
+    assert "files" not in calls[0]["prompt"]         # no phantom file-part field
 
 
-def test_send_prompt_retries_text_only_when_attachments_rejected(monkeypatch):
-    statuses = iter([422, 200])
-    bodies = []
+def test_send_prompt_text_only_when_no_attachments(monkeypatch):
+    calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: bodies.append(json) or _Resp(next(statuses)))
-    OpenCodeClient("http://x").send_prompt("s1", "hi", files=["/a/b.csv"])
-    assert len(bodies) == 2                                  # rejected once, retried
-    assert "files" in bodies[0]["prompt"] and "files" not in bodies[1]["prompt"]
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt("s1", "just text")
+    assert calls[0]["prompt"] == {"text": "just text"}   # untouched when nothing attached
 
 
 def test_parse_server_url():

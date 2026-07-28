@@ -9,8 +9,6 @@ Leak rule (DESIGN): the shim/router never see OpenCode types; all OpenCode speci
 from __future__ import annotations
 
 import json
-import logging
-import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
@@ -19,8 +17,6 @@ import httpx
 from ..feedback.circuit_breaker import CircuitBreaker, Decision
 from ..feedback.runner import FeedbackReport
 from .agent_driver import AgentEvent
-
-log = logging.getLogger(__name__)
 
 
 def map_event(raw: dict) -> AgentEvent:
@@ -77,26 +73,22 @@ class OpenCodeClient:
         the model's view of one request and can't stop OpenCode from running a tool it already
         knows about (e.g. `bash`, which the tools filter never covered either).
 
-        `files` are absolute paths to attach as prompt file parts (`file://` URIs), so the agent
-        receives the referenced data directly. Attachments are best-effort: if the server rejects
-        the prompt because of them, we retry text-only rather than lose the turn — the agent can
-        still resolve the same paths from the workspace AGENTS.md block."""
-        def _body() -> dict:
-            b: dict = {"prompt": {"text": text}}
-            if model:
-                b["model"] = model
-            if agent:
-                b["agent"] = agent
-            return b
-
-        url = f"{self.base_url}/api/session/{session_id}/prompt"
-        body = _body()
+        `files` are absolute paths of user-@mentioned attachments. We surface them by appending an
+        explicit "Attached files" section to the prompt TEXT (not as OpenCode file parts): 1.18.4's
+        `/prompt` body carries no `files`/attachment field, so a `files` key is silently dropped and
+        the reference never reaches the agent. Naming the real local paths in the text is
+        version-independent and definitely seen — the agent's read tool follows the symlinks. This
+        rides the same `{"prompt":{"text":...}}` shape the base turn already uses."""
         if files:
-            body["prompt"]["files"] = [{"uri": f"file://{p}", "name": os.path.basename(p)} for p in files]
-        r = httpx.post(url, json=body, timeout=self.timeout_s)
-        if files and r.status_code >= 400:
-            log.warning("send_prompt: server rejected file attachments (HTTP %s); retrying text-only", r.status_code)
-            r = httpx.post(url, json=_body(), timeout=self.timeout_s)
+            listing = "\n".join(f"- {p}" for p in files)
+            text = (f"{text}\n\nAttached files (the user @mentioned these — read them directly at "
+                    f"these local paths):\n{listing}")
+        body: dict = {"prompt": {"text": text}}
+        if model:
+            body["model"] = model
+        if agent:
+            body["agent"] = agent
+        r = httpx.post(f"{self.base_url}/api/session/{session_id}/prompt", json=body, timeout=self.timeout_s)
         r.raise_for_status()
 
     def is_running(self, session_id: str) -> bool:
