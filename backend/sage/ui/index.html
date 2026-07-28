@@ -601,10 +601,19 @@ function attachedRow(e, isUpload) {
   row.className = 'asset-row';
   const chip = e.sensitive ? ` <span class="a-chip" title="Sensitive — the sovereign model is locked">sensitive</span>` : '';
   row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(e.path)}">${esc(e.file)}</span><span class="a-tags">${esc(e.dataset || '')}</span>${chip}</span>`;
-  const btn = document.createElement('button');
-  if (isUpload) { btn.className = 'danger'; btn.textContent = 'Delete'; btn.title = 'Delete this file and its data'; btn.onclick = () => deleteFile(e.path); }
-  else { btn.className = 'attached'; btn.textContent = 'Detach'; btn.title = 'Remove from the workspace (keeps the dataset file)'; btn.onclick = () => detachFile(e.path); }
-  row.appendChild(btn);
+  const mkBtn = (cls, label, title, fn) => {
+    const b = document.createElement('button');
+    b.className = cls; b.textContent = label; b.title = title; b.onclick = fn;
+    return b;
+  };
+  if (isUpload) {
+    // An upload gets BOTH actions: Detach removes it from the app + agent context but keeps the
+    // uploaded bytes on the dataset mount; Delete also removes the bytes and can't be undone.
+    row.appendChild(mkBtn('attached', 'Detach', 'Remove from the app and agent context — keeps the uploaded data', () => detachFile(e.path)));
+    row.appendChild(mkBtn('danger', 'Delete', 'Delete this file and its data — can’t be undone', () => deleteFile(e.path)));
+  } else {
+    row.appendChild(mkBtn('attached', 'Detach', 'Remove from the workspace (keeps the dataset file)', () => detachFile(e.path)));
+  }
   return row;
 }
 function fmtSize(n) {
