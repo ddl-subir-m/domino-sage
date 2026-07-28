@@ -458,19 +458,57 @@ def build_stream(body: dict) -> StreamingResponse:
 
     prompt = (body or {}).get("prompt", "")
     mentions = (body or {}).get("mentions") or None  # workspace paths of @-referenced attached files
+    plan_first = bool((body or {}).get("plan_first"))  # force the plan gate (SPEC P6) on this turn
 
     def sse():
         if not prompt:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
             return
         try:
-            for evt in orchestrator.build_stream(prompt, mentions):
+            for evt in orchestrator.build_stream(prompt, mentions, plan_first=plan_first):
                 yield f"data: {_json.dumps(evt)}\n\n"
         except Exception as e:  # noqa: BLE001
             log.exception("build_stream failed")
             yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@control_app.post("/api/project/build/approve")
+def build_approve(body: dict) -> StreamingResponse:
+    """Approve a gated plan (SPEC P6) and stream the resulting build. Body: {answers?, plan_edits?}."""
+    import json as _json
+
+    answers = (body or {}).get("answers", "") or ""
+    plan_edits = (body or {}).get("plan_edits")  # None = approve the plan as proposed
+
+    def sse():
+        try:
+            for evt in orchestrator.approve_stream(answers, plan_edits):
+                yield f"data: {_json.dumps(evt)}\n\n"
+        except Exception as e:  # noqa: BLE001
+            log.exception("approve_stream failed")
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@control_app.get("/api/project/settings")
+def get_settings() -> JSONResponse:
+    """Per-project Sage settings (e.g. skip_planning — opt out of the first-build plan gate)."""
+    return JSONResponse(content=orchestrator.project().workspace.read_settings())
+
+
+@control_app.post("/api/project/settings")
+async def set_settings(request: Request) -> JSONResponse:
+    """Update per-project settings. Currently just skip_planning (SPEC P6 opt-out)."""
+    body = await request.json()
+    workspace = orchestrator.project().workspace
+    settings = workspace.read_settings()
+    if "skip_planning" in body:
+        settings["skip_planning"] = bool(body["skip_planning"])
+    workspace.write_settings(settings)
+    return JSONResponse(content=settings)
 
 
 @control_app.post("/api/project/build/stop")

@@ -339,3 +339,62 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
     orch.record_runtime_error("fresh crash", "stack")
     rt = orch._await_runtime_error(project, since=since, timeout=1.0)
     assert rt is not None and rt["message"] == "fresh crash"
+
+
+# --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
+from sage.orchestrator.service import _approve_prompt, _should_gate  # noqa: E402
+from sage.workspace.manager import Workspace  # noqa: E402
+
+
+def test_should_gate_fires_on_first_build_only():
+    assert _should_gate(history_baseline=0, plan_first=False, skip_planning=False) is True
+    assert _should_gate(history_baseline=3, plan_first=False, skip_planning=False) is False
+
+
+def test_should_gate_plan_first_forces_gate_on_later_turns():
+    assert _should_gate(history_baseline=5, plan_first=True, skip_planning=False) is True
+
+
+def test_should_gate_opt_out_wins_over_everything():
+    assert _should_gate(history_baseline=0, plan_first=True, skip_planning=True) is False
+
+
+def test_approve_prompt_includes_plan_and_answers():
+    p = _approve_prompt("## Plan\n1. do it", "cols: id, amount")
+    assert "## Approved plan" in p and "1. do it" in p
+    assert "cols: id, amount" in p and "## Answers to the open questions" in p
+
+
+def test_approve_prompt_omits_answers_section_when_blank():
+    assert "Open questions" not in _approve_prompt("## Plan\n1. do it", "   ")
+
+
+def test_archive_plan_moves_plan_out_of_live_view(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    ws.write_plan("build a queue")
+    dest = ws.archive_plan()
+    assert dest is not None and dest.exists()
+    assert ws.read_plan() is None  # no live plan.md remains for a later turn to misread
+    assert dest.read_text() == "build a queue"
+
+
+def test_archive_plan_is_a_noop_without_a_live_plan(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    assert ws.archive_plan() is None
+
+
+def test_archive_plan_never_clobbers_prior_archives(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    ws.write_plan("first")
+    ws.archive_plan()
+    ws.write_plan("second")
+    ws.archive_plan()
+    archived = sorted((tmp_path / ".sage" / "plans").glob("*.md"))
+    assert [p.read_text() for p in archived] == ["first", "second"]
+
+
+def test_settings_roundtrip_and_default_empty(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    assert ws.read_settings() == {}
+    ws.write_settings({"skip_planning": True})
+    assert ws.read_settings()["skip_planning"] is True

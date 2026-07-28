@@ -44,6 +44,43 @@ class Workspace:
     def read_plan(self) -> str | None:
         return self.plan_path.read_text() if self.plan_path.exists() else None
 
+    def archive_plan(self) -> Path | None:
+        """Move the consumed plan out of the agent's live view (SPEC P6). The plan artifact is a
+        one-shot handoff, not a living spec: once the Implement turn has built from it, a leftover
+        `.sage/plan.md` reads like *current* intent/state and can mislead a later turn — it's the
+        one .sage/ file that looks like instructions. Archived copies stay under .sage/plans/ so git
+        retains the history. Returns the archive path, or None if there was no live plan."""
+        if not self.plan_path.exists():
+            return None
+        archive_dir = self.path / ".sage" / "plans"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        n = len(list(archive_dir.glob("[0-9]*.md"))) + 1
+        dest = archive_dir / f"{n:03d}.md"
+        while dest.exists():  # never clobber a prior archived plan
+            n += 1
+            dest = archive_dir / f"{n:03d}.md"
+        self.plan_path.rename(dest)
+        return dest
+
+    @property
+    def settings_path(self) -> Path:
+        """Per-project Sage settings (e.g. skip_planning to opt out of the first-build plan gate).
+        Same committed-.sage pattern as model_overrides.json."""
+        return self.path / ".sage" / "settings.json"
+
+    def read_settings(self) -> dict:
+        if not self.settings_path.exists():
+            return {}
+        try:
+            data = json.loads(self.settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def write_settings(self, settings: dict) -> None:
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings_path.write_text(json.dumps(settings, indent=2))
+
     @property
     def session_path(self) -> Path:
         """Persisted OpenCode session id, so the project re-attached after an orchestrator restart

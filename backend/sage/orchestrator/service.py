@@ -137,6 +137,24 @@ def _agent_for_mode(mode: Mode) -> str | None:
     return _MODE_AGENT.get(mode)
 
 
+def _should_gate(*, history_baseline: int, plan_first: bool, skip_planning: bool) -> bool:
+    """First-build plan gate (SPEC P6). Gate the first turn of a fresh project (nothing built yet),
+    or any turn the user explicitly asked to plan first — unless the project opted out."""
+    if skip_planning:
+        return False
+    return plan_first or history_baseline == 0
+
+
+def _approve_prompt(plan_md: str, answers: str) -> str:
+    """The Implement-turn prompt built from an approved plan (SPEC P6): the plan is fed in as
+    context so the build turn constructs exactly what the user signed off on."""
+    parts = ["The user approved this plan. Build the app it describes now — implement it, don't re-plan.",
+             "", "## Approved plan", plan_md]
+    if answers.strip():
+        parts += ["", "## Answers to the open questions", answers.strip()]
+    return "\n".join(parts)
+
+
 def _opencode_base_port(opencode_cwd: Path) -> int | None:
     """The port from opencode.json's sage-gateway baseURL — the port OpenCode dials for every
     inference. Compared against SAGE_CONTROL_PORT (the port the shim's /v1 endpoint actually serves) to
@@ -420,7 +438,7 @@ class Orchestrator:
                 out.append(str(real))
         return out or None
 
-    def build_stream(self, prompt: str, mentions: list[str] | None = None):
+    def build_stream(self, prompt: str, mentions: list[str] | None = None, plan_first: bool = False):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -441,7 +459,7 @@ class Orchestrator:
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
         def persist(ev: dict) -> dict:
-            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved", "data-leak"):
+            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved", "data-leak", "plan-proposed"):
                 project.workspace.append_history(ev)
             return ev
 
@@ -450,6 +468,15 @@ class Orchestrator:
         # everything appended since (the turn disappears from the transcript entirely).
         project.snapshot.commit_before_turn()
         history_baseline = project.workspace.history_len()
+
+        # First-build plan gate (SPEC P6): on the first turn (or an explicit "Plan first"), run the
+        # read-only planner and stop for the user to approve — this turn deliberately writes no code.
+        gate = _should_gate(
+            history_baseline=history_baseline,
+            plan_first=plan_first,
+            skip_planning=bool(project.workspace.read_settings().get("skip_planning")),
+        )
+        plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
         project.workspace.append_history({"type": "user", "text": prompt})
 
@@ -539,7 +566,9 @@ class Orchestrator:
             # turn writes a file every later (possibly no-op) turn reads as "wrote code".
             made_edits = False
             turn_start_tree = project.snapshot.working_tree_hash()
-            agent = _agent_for_mode(project.control.snapshot().mode)
+            # A gated turn is pinned to the read-only planner regardless of the user's mode; it
+            # proposes a plan and never edits, so it always lands in the no-edit fork below.
+            agent = "sage-plan" if gate else _agent_for_mode(project.control.snapshot().mode)
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
@@ -593,6 +622,8 @@ class Orchestrator:
                             yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
+                            if gate:
+                                plan_text_parts.append(part["text"])
                             yield persist({"type": "agent", "kind": "text", "text": part["text"]})
                 cur_phase = project.control.snapshot().phase.value
                 if cur_phase != last_phase:
@@ -637,6 +668,16 @@ class Orchestrator:
                        "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port,
                        "vendor_keys": vendor_keys}
                 if report.ok and not wrote_code:
+                    if gate:
+                        # First-build gate (SPEC P6): the planner proposed a plan and wrote no code —
+                        # that's success here, not a stall, so short-circuit the nudge loop. Persist
+                        # the plan as the handoff artifact and stop for the user to approve.
+                        plan_md = "\n".join(plan_text_parts).strip()
+                        project.workspace.write_plan(plan_md)
+                        restore_mode()
+                        yield persist({"type": "plan-proposed", "plan": plan_md})
+                        yield persist({"type": "done", "ok": True, "decision": "awaiting approval"})
+                        return
                     if nudges < MAX_NUDGES:
                         nudges += 1
                         # The nudge is a fresh user turn, so the shim's per-step classifier resets to
@@ -706,6 +747,20 @@ class Orchestrator:
                 return
             yield {"type": "iterate", "reason": decision.reason}
             current = report.as_agent_message()
+
+    def approve_stream(self, answers: str = "", plan_edits: str | None = None):
+        """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
+        build turn as context, then archives the plan so no live .sage/plan.md is left for a later
+        turn to misread. The gate turn already appended to history, so this turn is never re-gated."""
+        project = self.project()
+        if plan_edits is not None:
+            project.workspace.write_plan(plan_edits)
+        plan_md = project.workspace.read_plan() or ""
+        try:
+            yield from self.build_stream(_approve_prompt(plan_md, answers))
+        finally:
+            # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
+            project.workspace.archive_plan()
 
     def record_runtime_error(self, message: str, stack: str = "") -> None:
         """Store a runtime error the live preview reported (via /api/preview/runtime-error), stamped

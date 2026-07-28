@@ -25,6 +25,7 @@ automatically — there is no build step to run.
   user truly needs a new dependency. The config is known-good; regenerating it wastes turns and
   breaks the preview.
 - Put the app UI in `src/App.tsx` (replace the placeholder). Split into `src/components/` as it grows.
+- **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, history, settings) as the current app spec or state — the code in `src/` is the source of truth.
 - TypeScript everywhere. Small, typed components. Prefer plain React + CSS; add a library only if
   the task genuinely needs it.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse
