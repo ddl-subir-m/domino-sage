@@ -55,6 +55,20 @@ def test_upload_writes_to_default_dataset_mount_and_attaches(tmp_path: Path):
     assert not orch.project().control.locked            # non-sensitive -> no lock
 
 
+def test_agents_block_gives_exact_served_path_and_guardrails(tmp_path: Path):
+    # The agent must be told the EXACT nested served URL (not a flat /data/<name> it would guess,
+    # which 404s to the SPA fallback and reads as null data) and be steered off the git-leaking
+    # workaround of copying data into src/.
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    orch.upload_file("my data.csv", b"a,b\n1,2\n", sensitive=False)
+
+    agents = (ws / "AGENTS.md").read_text()
+    assert "fetch `data/sales_2026/uploads/my_data.csv`" in agents   # nested, base-relative
+    assert "import.meta.env.BASE_URL" in agents                      # base-aware fetch pattern
+    assert "src/" in agents and "gitignored" in agents               # don't-copy-into-git guardrail
+
+
 def test_sensitive_upload_targets_sensitive_dataset_and_locks(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.project(start_preview=False)

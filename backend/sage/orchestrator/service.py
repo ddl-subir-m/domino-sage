@@ -1007,8 +1007,28 @@ class Orchestrator:
         agent knows they exist (and their served paths) even without an explicit @mention."""
         agents = project.workspace.path / "AGENTS.md"
         if project.attached:
-            lines = ["## Attached data", "", "Files attached by the user (served at `/data/...`, @mention by path):", ""]
-            lines += [f"- `{e['path']}` — from dataset **{e['dataset']}**" for e in project.attached]
+            # Be prescriptive: give the EXACT disk path and the EXACT served URL per file. Agents
+            # otherwise guess a flat `/data/<name>` (the files are nested under a dataset slug), hit
+            # the SPA fallback (index.html) instead of the CSV, and "fix" it by copying the file into
+            # src/ — which leaks the data into git (public/data/ is gitignored on purpose).
+            lines = [
+                "## Attached data", "",
+                "The user attached the files below. Each lives on disk at the path shown (read or "
+                "edit it there) and the running app serves it at the URL shown. Load one in app code "
+                "by fetching it RELATIVE TO THE APP BASE, so it resolves in both the dev preview and "
+                "the published app:", "",
+                "```js",
+                'const url = new URL("data/<slug>/<name>", import.meta.env.BASE_URL).href;',
+                "const text = await fetch(url).then((r) => r.text());",
+                "```", "",
+                "Do NOT fetch a leading-slash path like `/data/...` — it breaks under the app's base "
+                "prefix. Do NOT copy these files into `src/`: `public/data/` is gitignored on purpose, "
+                "so copying leaks the data into the app's git repo. @mention a file by its disk path.", "",
+            ]
+            for e in project.attached:
+                path = e["path"]
+                served = path[len("public/"):] if path.startswith("public/") else path
+                lines.append(f"- disk `{path}` — fetch `{served}` (relative to base) — from dataset **{e['dataset']}**")
             block = f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}"
         else:
             block = ""
