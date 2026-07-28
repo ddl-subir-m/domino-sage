@@ -558,6 +558,32 @@ def _preview_upstream() -> str:
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX))
 
 
+def _log_opencode_wiring(opencode_cwd: Path, control_port: int) -> None:
+    """Boot-time self-check for the OpenCode->shim wiring, logged to the app logs (the deployed
+    container has no shell). OpenCode dials opencode.json's provider baseURL for every inference; the
+    shim (model routing + sovereignty lock + cost tagging) is THIS process's /v1 endpoint on
+    control_port. If the baseURL port drifts from control_port (e.g. Domino sets SAGE_CONTROL_PORT=8888
+    while opencode.json still says 8080), OpenCode dials a dead port and inference silently bypasses the
+    shim. This only LOGS the diagnosis — it changes no behavior."""
+    import json
+    import re
+
+    try:
+        cfg = json.loads((opencode_cwd / "opencode.json").read_text())
+        base = ((((cfg.get("provider") or {}).get("sage-gateway") or {}).get("options")) or {}).get("baseURL", "")
+    except Exception as e:  # missing/unreadable config — worth flagging, not crashing
+        log.warning("[wiring] could not read %s/opencode.json: %s", opencode_cwd, e)
+        return
+    m = re.search(r"://[^/:]+:(\d+)", base or "")
+    base_port = int(m.group(1)) if m else None
+    verdict = "MATCH" if base_port == control_port else "MISMATCH — OpenCode dials a port the shim doesn't serve; inference bypasses routing/sovereignty"
+    log.warning("[wiring] opencode baseURL=%r (port %s) vs shim /v1 control_port=%s -> %s",
+                base, base_port, control_port, verdict)
+    vendor = [k for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY") if os.environ.get(k)]
+    log.warning("[wiring] direct vendor keys in env (could let OpenCode reach a model bypassing the shim): %s",
+                vendor or "none")
+
+
 def run() -> None:
     """Run the single control app (:8080, preview mounted at /preview) in one process."""
     import asyncio
@@ -567,6 +593,7 @@ def run() -> None:
     import uvicorn
 
     control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
+    _log_opencode_wiring(Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)), control_port)
     # Loopback locally; Domino's pluggable-tool proxy reaches the tool port from outside the
     # process, so set SAGE_CONTROL_HOST=0.0.0.0 there (matches the Phase-0 spike).
     control_host = os.environ.get("SAGE_CONTROL_HOST", "127.0.0.1")
