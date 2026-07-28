@@ -596,45 +596,45 @@ def _preview_upstream() -> str:
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX))
 
 
-def _align_opencode_baseurl(opencode_cwd: Path, control_port: int) -> None:
-    """Point opencode.json's sage-gateway baseURL at the port THIS process serves /v1 on, at startup,
-    before any `opencode serve` reads the config.
+def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
+    """Make OpenCode actually load Sage's provider/agents/model — the real fix.
 
-    OpenCode dials that baseURL for every inference; the shim (model routing + sovereignty lock + cost
-    tagging) is the /v1 endpoint on control_port. The committed baseURL hardcodes a port that's right for
-    local dev (control_port defaults to the same), but a deployment that moves the port — Domino sets
-    SAGE_CONTROL_PORT=8888 — leaves OpenCode dialing a dead port: inference never reaches the shim or the
-    gateway, so the agent writes nothing. Rewriting the port to match here self-heals that for any
-    deployment. Idempotent; logs what it did (the deployed workspace has no shell)."""
+    OpenCode's own server log proves it loads config ONLY from ~/.config/opencode (global) and from
+    project config walked up from the *session* dir (the workspace); it NEVER reads SAGE_OPENCODE_CWD.
+    So /opt/sage/opencode.json was never loaded, and OpenCode silently fell back to its built-in free
+    tier (HTTP 429 FreeUsageLimitError). OPENCODE_CONFIG (env) didn't take effect either.
+
+    So write our config into the global path OpenCode demonstrably reads — no env-var dependency, no
+    precedence guesswork. Align the sage-gateway baseURL to the port the shim serves, then write to both
+    opencode.json and opencode.jsonc so ours is the last-loaded global source and wins over any free-tier
+    default. Keep the source file aligned too (in case OPENCODE_CONFIG is honored). Logs to app logs."""
     import json
     import re
 
-    path = opencode_cwd / "opencode.json"
+    src = opencode_cwd / "opencode.json"
     try:
-        cfg = json.loads(path.read_text())
-        opts = ((cfg.get("provider") or {}).get("sage-gateway") or {}).setdefault("options", {})
-        old = opts.get("baseURL", "")
-    except Exception as e:  # missing/unreadable config — flag, don't crash the boot
-        log.error("[wiring] could not read %s: %s — OpenCode may dial the wrong port", path, e)
+        cfg = json.loads(src.read_text())
+    except Exception as e:  # missing/unreadable — flag, don't crash the boot
+        log.error("[wiring] cannot read %s: %s — OpenCode will stay on its free tier", src, e)
         return
-    new = re.sub(r"(://[^/:]+):\d+", rf"\g<1>:{control_port}", old) if old else old
-    if not new:
-        log.warning("[wiring] opencode.json has no sage-gateway baseURL to align")
-    elif new == old:
-        log.info("[wiring] opencode.json baseURL already targets control_port %d (%s)", control_port, old)
-    else:
-        opts["baseURL"] = new
-        try:
-            path.write_text(json.dumps(cfg, indent=2) + "\n")
-            log.warning("[wiring] realigned opencode.json baseURL %s -> %s to match control_port %d",
-                        old, new, control_port)
-        except OSError as e:
-            log.error("[wiring] baseURL is %s but could not rewrite %s (%s); OpenCode will dial the wrong "
-                      "port and inference will bypass the shim", old, path, e)
-    vendor = [k for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY") if os.environ.get(k)]
-    if vendor:
-        log.warning("[wiring] direct vendor keys present (%s): OpenCode could reach a model bypassing the "
-                    "shim if the provider is misconfigured", ", ".join(vendor))
+    opts = ((cfg.get("provider") or {}).get("sage-gateway") or {}).get("options") or {}
+    base = opts.get("baseURL", "")
+    if base:
+        opts["baseURL"] = re.sub(r"(://[^/:]+):\d+", rf"\g<1>:{control_port}", base)
+    blob = json.dumps(cfg, indent=2) + "\n"
+    try:  # keep the source aligned (OPENCODE_CONFIG path, if honored)
+        src.write_text(blob)
+    except OSError as e:
+        log.warning("[wiring] could not rewrite %s: %s", src, e)
+    global_dir = Path(os.path.expanduser("~/.config/opencode"))
+    try:
+        global_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("opencode.json", "opencode.jsonc"):
+            (global_dir / name).write_text(blob)
+        log.warning("[wiring] installed Sage config into %s (model=%s, sage-gateway baseURL -> :%d)",
+                    global_dir, cfg.get("model"), control_port)
+    except OSError as e:
+        log.error("[wiring] could NOT install global opencode config (%s) — OpenCode will use its free tier", e)
 
 
 def run() -> None:
@@ -646,7 +646,7 @@ def run() -> None:
     import uvicorn
 
     control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
-    _align_opencode_baseurl(Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)), control_port)
+    _install_opencode_config(Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)), control_port)
     # Loopback locally; Domino's pluggable-tool proxy reaches the tool port from outside the
     # process, so set SAGE_CONTROL_HOST=0.0.0.0 there (matches the Phase-0 spike).
     control_host = os.environ.get("SAGE_CONTROL_HOST", "127.0.0.1")
