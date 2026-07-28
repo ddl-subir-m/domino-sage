@@ -553,8 +553,13 @@ class Orchestrator:
                         current = IMPLEMENT_NUDGE
                         continue
                     restore_mode()
-                    yield persist({"type": "done", "ok": False,
-                                   "decision": "couldn't get past planning — try rephrasing or a smaller step"})
+                    # "couldn't get past planning" only makes sense when the user let us plan (Auto/
+                    # Plan). In explicit Implement mode the model simply replied without editing — say
+                    # that instead, so the message doesn't contradict the mode the user picked.
+                    stop_msg = ("the model replied but didn't change any files — try rephrasing or a smaller step"
+                                if original_mode is Mode.IMPLEMENT
+                                else "couldn't get past planning — try rephrasing or a smaller step")
+                    yield persist({"type": "done", "ok": False, "decision": stop_msg})
                     return
                 # Typecheck is clean and code was written — but tsc can't see a runtime crash that
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,

@@ -1049,6 +1049,15 @@ let buildPhase = 'plan';   // last phase seen this build; drives the default lab
 const PHASE_WORK = { plan: 'Planning', implement: 'Building' };
 // present-participle labels for a live in-progress step ("active" events from the driver)
 const ACTIVE_VERB = { edit: 'Editing', write: 'Creating', read: 'Reading', bash: 'Running', grep: 'Searching' };
+// The idle "working" label the spinner trails with. Only Auto mode plans-then-builds, so only there
+// does the phase classifier (plan/implement) describe the real activity. In an explicit mode the
+// phase is an internal routing artifact — showing "Planning" while the user is in Implement mode is
+// just wrong (the router pins the implement model regardless of phase), so label by mode instead.
+const MODE_WORK = { ask: 'Thinking', plan: 'Planning', implement: 'Building' };
+function workLabel() {
+  const mode = (lastModel && lastModel.mode) || 'auto';
+  return mode === 'auto' ? (PHASE_WORK[buildPhase] || 'Working') : (MODE_WORK[mode] || 'Working');
+}
 
 function paintWorking() {
   if (!working) return;
@@ -1070,7 +1079,7 @@ function stopWorking() {
 // Render the just-finished step, then move the live spinner back to the bottom so it keeps
 // trailing the newest card with the phase-appropriate label.
 function trail() {
-  setWorking(PHASE_WORK[buildPhase] || 'Working');
+  setWorking(workLabel());
   document.getElementById('messages').appendChild(working);
   scrollDown();
 }
@@ -1112,7 +1121,7 @@ async function build() {
   addUser(prompt);
   ta.value = ''; autogrow(ta);
   buildPhase = 'plan';
-  setWorking(PHASE_WORK[buildPhase]);
+  setWorking(workLabel());
 
   try {
     const resp = await fetch(BASE + '/api/project/build/stream', {
@@ -1180,7 +1189,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'iterate') { setWorking('Fixing errors'); }
   else if (ev.type === 'done') { stopWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
   else if (ev.type === 'saved') { renderSaved(ev); }
-  else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(PHASE_WORK[buildPhase] || 'Working'); refreshStatus(); }
+  else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(workLabel()); refreshStatus(); }
   else if (ev.type === 'error') {
     stopWorking(); addStatus('err', '⚠', 'Error: ' + esc(ev.message));
   }
