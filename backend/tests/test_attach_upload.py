@@ -239,6 +239,26 @@ def test_detach_reports_still_referenced_files_without_deleting_source(tmp_path:
     assert (proj.workspace.path / "src" / "App.tsx").exists()   # app code left untouched
 
 
+def test_read_file_previews_an_attached_symlink_but_still_blocks_escapes(tmp_path: Path, monkeypatch):
+    # The attachment is a symlink under public/data/ pointing at the dataset mount (outside the
+    # workspace); the file-open endpoint must preview it read-only, while a real escape still 400s.
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
+
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=False)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    client = TestClient(appmod.control_app)
+
+    ok = client.get("/api/project/file", params={"path": res["path"]})
+    assert ok.status_code == 200 and ok.json()["content"] == "a,b\n1,2\n"
+
+    escape = client.get("/api/project/file", params={"path": "../../../../../../etc/passwd"})
+    assert escape.status_code == 400            # not a known attachment -> resolver rejects the escape
+
+
 def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)

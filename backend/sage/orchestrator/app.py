@@ -326,10 +326,18 @@ def list_files() -> JSONResponse:
 @control_app.get("/api/project/file")
 def read_file(path: str) -> JSONResponse:
     project = orchestrator.project()
-    try:
-        target = _resolve_workspace_file(project.workspace.path, path)
-    except ValueError:
-        return JSONResponse(status_code=400, content={"error": "invalid path"})
+    # Attached data files live as symlinks under public/data/ pointing at the dataset mount, which is
+    # OUTSIDE the workspace — _resolve_workspace_file (which .resolve()s through the symlink) would
+    # reject them as an escape. They're trusted (Sage created the symlink to a dataset the user owns),
+    # so allow a read-only preview when the path exactly matches a known attachment; membership in the
+    # manifest is the whitelist, so no traversal is possible.
+    if any(e["path"] == path for e in project.attached):
+        target = project.workspace.path / path  # is_file()/read_text() follow the symlink to the mount
+    else:
+        try:
+            target = _resolve_workspace_file(project.workspace.path, path)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "invalid path"})
     if not target.is_file():
         return JSONResponse(status_code=404, content={"error": "file not found"})
     try:

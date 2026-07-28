@@ -158,7 +158,14 @@ class OpenAICompatibleClient:
             if labels.version:
                 headers["X-LLM-Tag-sage-version"] = labels.version
         url = f"{self._base_url}/chat/completions"  # base already ends in /v1
-        with httpx.Client(timeout=self._timeout_s, follow_redirects=False) as client:
+        # read=None disables the inter-chunk read timeout: httpx applies the read timeout to the GAP
+        # between streamed chunks, and LLM turns routinely pause >timeout_s mid-stream (extended
+        # thinking, a large tool-result being processed). A scalar timeout would raise ReadTimeout
+        # mid-stream -> the connection to OpenCode is severed -> its Node fetch reports the aborted
+        # stream as "TypeError: network error". connect/write/pool stay bounded so a dead gateway
+        # still fails fast into the eager-first-chunk 502 path (shim/app.py) instead of hanging.
+        timeout = httpx.Timeout(self._timeout_s, read=None)
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
                 # Surface upstream errors BEFORE streaming so the caller gets a clean message
                 # instead of a mid-stream reset. A 3xx here means auth bounced to a login page.
@@ -194,7 +201,8 @@ class MultiProviderOpenAIClient:
 
         headers = {"Authorization": f"Bearer {key}"}
         url = f"{model.base_url.rstrip('/')}/chat/completions"
-        with httpx.Client(timeout=self._timeout_s, follow_redirects=False) as client:
+        timeout = httpx.Timeout(self._timeout_s, read=None)  # no inter-chunk read timeout (see route above)
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
                 if resp.status_code >= 400 or resp.is_redirect:
                     body = resp.read().decode(errors="replace")[:800]
