@@ -137,6 +137,22 @@ def _agent_for_mode(mode: Mode) -> str | None:
     return _MODE_AGENT.get(mode)
 
 
+def _opencode_base_port(opencode_cwd: Path) -> int | None:
+    """The port from opencode.json's sage-gateway baseURL — the port OpenCode dials for every
+    inference. Compared against SAGE_CONTROL_PORT (the port the shim's /v1 endpoint actually serves) to
+    detect a wiring drift that silently routes inference around the shim. None if unreadable."""
+    import json
+
+    try:
+        cfg = json.loads((opencode_cwd / "opencode.json").read_text())
+        base = ((((cfg.get("provider") or {}).get("sage-gateway") or {}).get("options")) or {}).get("baseURL", "")
+    except Exception:
+        return None
+    host_port = base.split("://", 1)[-1].split("/", 1)[0]  # e.g. "localhost:8080"
+    port = host_port.rsplit(":", 1)[-1] if ":" in host_port else ""
+    return int(port) if port.isdigit() else None
+
+
 # Directories skipped when scanning the app's own source for data references/copies: dependencies,
 # build output, git, sage metadata, and public/ (which holds the attached-data symlinks themselves).
 _SCAN_SKIP_DIRS = frozenset({"node_modules", "dist", ".git", ".sage", "public"})
@@ -475,6 +491,12 @@ class Orchestrator:
         # plan-tier model for the retry (works from Auto or explicit Implement). On by default;
         # set SAGE_IMPLEMENT_STRONG_FALLBACK=0 to keep retries on the originally-routed model.
         strong_fallback = os.environ.get("SAGE_IMPLEMENT_STRONG_FALLBACK", "1").strip().lower() not in ("0", "false", "no")
+        # Ports for the OpenCode->shim wiring check surfaced in each turn-summary: control_port is what
+        # this process serves /v1 on; base_port is what opencode.json tells OpenCode to dial. If they
+        # differ and a turn records 0 model calls, inference bypassed the shim (routing/sovereignty
+        # never ran) — shown as a warning in-stream since the deployed workspace has no shell/logs.
+        control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
+        base_port = _opencode_base_port(self._opencode_cwd)
         # A clean typecheck doesn't mean the app runs: a render/runtime throw (e.g. calling a Date
         # method on a string) blanks the preview but passes tsc. The open preview reports such throws
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
@@ -599,8 +621,10 @@ class Orchestrator:
                 wrote_code = made_edits or project.snapshot.changed_since_pre_turn()
                 # Surface why a turn landed where it did — especially a no-edit turn. Reads apart the
                 # three failure modes (see Project.model_calls); rendered as a status line in the UI.
+                shim_bypassed = (project.model_calls == 0 and base_port is not None and base_port != control_port)
                 yield {"type": "turn-summary", "model_calls": project.model_calls,
-                       "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code}
+                       "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code,
+                       "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port}
                 if report.ok and not wrote_code:
                     if nudges < MAX_NUDGES:
                         nudges += 1
