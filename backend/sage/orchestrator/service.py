@@ -38,10 +38,13 @@ from ..workspace.snapshot import TurnSnapshot
 
 log = logging.getLogger("sage.orchestrator")
 
-# Ask/Plan are the two read-only modes: routed to an opencode.json agent whose `permission`
-# block OpenCode enforces natively (edit/bash denied), not just hidden from the model's tools
-# list. Auto/Implement keep OpenCode's default agent (full permissions).
-_READ_ONLY_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan"}
+# Each explicit mode routes to a named opencode.json agent. Ask/Plan are read-only — their
+# `permission` block is enforced natively by OpenCode (edit/bash denied), not just hidden from the
+# model's tool list. Implement carries a strong system prompt that forces the model to actually
+# edit files rather than reply with a plan (the gpt-5.4 "described it but wrote no code" stall).
+# Auto stays on OpenCode's default agent: a single Auto turn may be a question, a plan, or an edit,
+# so it can't be pinned to any one persona.
+_MODE_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan", Mode.IMPLEMENT: "sage-implement"}
 
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
 # tree, so publish pre-checks it exists locally before deploying (a missing one fails opaquely).
@@ -121,7 +124,7 @@ def _prune_empty_dirs(start: Path, stop: Path) -> None:
 
 
 def _agent_for_mode(mode: Mode) -> str | None:
-    return _READ_ONLY_AGENT.get(mode)
+    return _MODE_AGENT.get(mode)
 
 
 def _tool_detail(tool: str, part: dict) -> str:
