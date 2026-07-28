@@ -450,13 +450,14 @@ def build_stream(body: dict) -> StreamingResponse:
     import json as _json
 
     prompt = (body or {}).get("prompt", "")
+    mentions = (body or {}).get("mentions") or None  # workspace paths of @-referenced attached files
 
     def sse():
         if not prompt:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
             return
         try:
-            for evt in orchestrator.build_stream(prompt):
+            for evt in orchestrator.build_stream(prompt, mentions):
                 yield f"data: {_json.dumps(evt)}\n\n"
         except Exception as e:  # noqa: BLE001
             log.exception("build_stream failed")

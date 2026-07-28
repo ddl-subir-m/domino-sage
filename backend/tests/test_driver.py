@@ -1,8 +1,38 @@
 """OpenCode driver: event mapping + feedback-loop control flow (Step 5 wiring / Seam 3)."""
-from sage.driver.opencode import map_event, run_feedback_loop
+import httpx
+
+from sage.driver.opencode import OpenCodeClient, map_event, run_feedback_loop
 from sage.driver.server import parse_server_url
 from sage.feedback.circuit_breaker import CircuitBreaker
 from sage.feedback.runner import FeedbackError, FeedbackReport
+
+
+class _Resp:
+    def __init__(self, status: int):
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+
+def test_send_prompt_attaches_files_as_uri_parts(monkeypatch):
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt("s1", "hi", files=["/mnt/data/foo/bar.csv"])
+    assert len(calls) == 1
+    assert calls[0]["prompt"]["files"] == [{"uri": "file:///mnt/data/foo/bar.csv", "name": "bar.csv"}]
+
+
+def test_send_prompt_retries_text_only_when_attachments_rejected(monkeypatch):
+    statuses = iter([422, 200])
+    bodies = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: bodies.append(json) or _Resp(next(statuses)))
+    OpenCodeClient("http://x").send_prompt("s1", "hi", files=["/a/b.csv"])
+    assert len(bodies) == 2                                  # rejected once, retried
+    assert "files" in bodies[0]["prompt"] and "files" not in bodies[1]["prompt"]
 
 
 def test_parse_server_url():

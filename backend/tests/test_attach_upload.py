@@ -104,6 +104,35 @@ def test_delete_never_removes_a_pre_existing_dataset_files_bytes(tmp_path: Path)
     assert src.is_file()                     # the user's original data is preserved
 
 
+def test_delete_removes_bytes_for_an_uploads_file_reattached_as_dataset(tmp_path: Path):
+    # A Sage upload that later shows up as a dataset-browser attachment (source flips to
+    # 'dataset', e.g. rehydrated that way) still lives under uploads/, so it's Sage-managed
+    # and delete must remove its bytes — sensitivity is irrelevant to this.
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_file("d.csv", b"x", sensitive=True)   # sensitive path -> customer_pii/uploads/
+    src = (ws / res["path"]).resolve()
+    assert src.is_file()
+    for e in orch.project().attached:                        # simulate the re-attach reclassification
+        e["source"] = "dataset"
+
+    orch.delete_file(res["path"])
+
+    assert not (ws / res["path"]).exists() and not src.exists()  # symlink AND dataset bytes gone
+    assert _manifest(ws) == []
+
+
+def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"x", sensitive=False)
+    real = str((proj.workspace.path / res["path"]).resolve())   # resolves the symlink to the mount
+
+    assert orch._resolve_mentions(proj, [res["path"]]) == [real]
+    assert orch._resolve_mentions(proj, ["public/data/not-attached.csv"]) is None  # unknown -> ignored
+    assert orch._resolve_mentions(proj, None) is None
+
+
 def test_sensitive_upload_without_a_sensitive_dataset_is_unavailable(tmp_path: Path):
     prov = FakeAssetProvider()
     prov.assets = [a for a in prov.assets if "sensitive" not in {t.lower() for t in a.tags}]

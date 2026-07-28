@@ -89,6 +89,14 @@ def _attach_dest(dataset_name: str, file_path: str) -> str:
     return PurePosix("public/data", _slug(dataset_name), *parts).as_posix()
 
 
+def _is_sage_upload(entry: dict) -> bool:
+    """A Sage-managed upload: bytes Sage wrote under the dataset's `uploads/` folder. True for
+    `source=='upload'` and for such a file later re-attached from the dataset browser (source
+    becomes 'dataset' but its dataset_rel_path still lives under uploads/). These are safe to
+    delete; a genuine pre-existing dataset file is not."""
+    return entry.get("source") == "upload" or str(entry.get("dataset_rel_path") or "").startswith("uploads/")
+
+
 def _safe_join(root: Path, rel: str) -> Path:
     """Join rel under root, rejecting anything that escapes it (.., absolute). Resolves the escape
     check LEXICALLY (os.path.normpath) so it doesn't follow the attached symlink at the leaf —
@@ -343,10 +351,32 @@ class Orchestrator:
         )
         return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
 
-    def build_stream(self, prompt: str):
+    def _resolve_mentions(self, project: Project, mentions: list[str] | None) -> list[str] | None:
+        """Map @-mentioned workspace paths to absolute files to attach to a prompt. Only paths that
+        are actually in this project's attachment list are honored (never an arbitrary caller path),
+        and each must resolve (through its symlink) to a real file. None when nothing to attach."""
+        if not mentions:
+            return None
+        known = {e["path"] for e in project.attached}
+        out: list[str] = []
+        for m in mentions:
+            if m not in known:
+                continue
+            try:
+                real = _safe_join(project.workspace.path, m).resolve()
+            except (ValueError, OSError):
+                continue
+            if real.is_file():
+                out.append(str(real))
+        return out or None
+
+    def build_stream(self, prompt: str, mentions: list[str] | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
-        each call is a follow-up turn (modify/add features) with full context."""
+        each call is a follow-up turn (modify/add features) with full context.
+
+        `mentions` are workspace paths of attached files the user @-referenced; they're resolved to
+        real files and attached to this turn's prompt (see _resolve_mentions)."""
         import time
 
         project = self.project()
@@ -354,6 +384,9 @@ class Orchestrator:
         sid = self._ensure_session(project)
         breaker = CircuitBreaker()
         current = prompt
+        # Attach the @-mentioned files to the user's turn only — not to the internal nudge/fix
+        # follow-ups below, which carry no new user reference.
+        mention_files = self._resolve_mentions(project, mentions)
 
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
@@ -422,7 +455,8 @@ class Orchestrator:
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
-            client.send_prompt(sid, current, agent=agent)
+            client.send_prompt(sid, current, agent=agent, files=mention_files)
+            mention_files = None  # attach only on the first (user) turn, not the nudge/fix follow-ups
             appeared = False
             start = time.monotonic()
             # The shim classifies plan/implement per model call (phase_classifier). We only observe
@@ -923,9 +957,12 @@ class Orchestrator:
 
     def delete_file(self, path: str) -> dict:
         """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the dataset mount,
-        then forget it. Only Sage-uploaded files (source=='upload') get their bytes deleted; a file
-        attached from a pre-existing dataset is detach-only here (its source bytes are the user's data
-        and are never removed). The sovereign lock stays sticky."""
+        then forget it. Bytes are deleted only for Sage-managed uploads — files under a dataset's
+        `uploads/` folder, which Sage always created (whether attached as source=='upload' or later
+        re-attached from the dataset browser as source=='dataset'). A genuine pre-existing dataset
+        file (not under uploads/) is detach-only here; its bytes are the user's data and never
+        removed. Sensitivity is irrelevant to deletability — it only drives the sovereign lock.
+        The sovereign lock stays sticky."""
         project = self.project()
         if not path.startswith("public/data/"):
             raise ValueError(path)
@@ -934,7 +971,7 @@ class Orchestrator:
         if link.is_symlink() or link.exists():
             link.unlink()
         _prune_empty_dirs(link.parent, project.workspace.path / "public" / "data")
-        if entry and entry.get("source") == "upload":
+        if entry and _is_sage_upload(entry):
             self._delete_upload_bytes(entry)
         project.attached[:] = [e for e in project.attached if e["path"] != path]
         self._write_agents_data_block(project)

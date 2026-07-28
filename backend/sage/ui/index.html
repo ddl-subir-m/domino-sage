@@ -162,6 +162,22 @@
   }
   .send:hover:not(:disabled) { background: var(--primary-hover); }
 
+  /* ---------- @mention menu (attached files) ---------- */
+  .mention-menu {
+    position: absolute; left: 16px; right: 16px; bottom: 74px; z-index: 25; max-height: 220px; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: var(--shadow);
+    padding: 4px; display: none;
+  }
+  .mention-menu.open { display: block; }
+  .mention-menu .mm-empty { padding: 10px 12px; font-size: 12px; color: var(--faint); }
+  .mm-item {
+    display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-radius: 7px; cursor: pointer;
+  }
+  .mm-item.active, .mm-item:hover { background: var(--surface-2); }
+  .mm-item .mm-name { font-size: 13px; color: var(--text); font-weight: 500; }
+  .mm-item .mm-src { font-size: 11px; color: var(--faint); margin-left: auto; }
+  .mm-item .mm-lock { font-size: 11px; color: var(--lock); }
+
   /* ---------- popovers ---------- */
   .pop {
     position: absolute; bottom: 74px; z-index: 20; width: 300px; background: var(--surface);
@@ -275,6 +291,8 @@
     </div>
 
     <div class="composer-wrap">
+      <!-- @mention menu: attached files, filtered as you type @ -->
+      <div class="mention-menu" id="mention-menu"></div>
       <!-- model popover -->
       <div class="pop" id="model-pop">
         <h2>Model</h2>
@@ -324,7 +342,8 @@
 
       <div class="composer">
         <textarea id="prompt" rows="1" placeholder="Describe your app, or a change to make…"
-                  oninput="autogrow(this)" onkeydown="composerKey(event)"></textarea>
+                  oninput="autogrow(this); updateMentionMenu()" onkeydown="composerKey(event)"
+                  onblur="setTimeout(hideMentionMenu, 120)"></textarea>
         <div class="composer-bar">
           <button class="chip" id="model-chip" onclick="togglePop('model-pop')">
             <span class="dot"></span><span id="chip-text">model</span><span class="caret">▾</span>
@@ -600,8 +619,11 @@ function renderAssets() {
 
   // Uploaded files first ("Your data"): delete removes their bytes. Then dataset-attached files:
   // detach-only. Both pinned above the dataset browser so current state is one click away.
-  const uploads = attachedFiles.filter(e => e.source === 'upload');
-  const attached = attachedFiles.filter(e => e.source !== 'upload');
+  // A file under a dataset's uploads/ folder is Sage-managed data (deletable) even if it was
+  // re-attached from the dataset browser as source='dataset' — sensitivity never changes this.
+  const isSageUpload = e => e.source === 'upload' || (e.dataset_rel_path || e.file || '').startsWith('uploads/');
+  const uploads = attachedFiles.filter(isSageUpload);
+  const attached = attachedFiles.filter(e => !isSageUpload(e));
   if (uploads.length) {
     el.appendChild(groupHeader(`Your data · ${uploads.length}`));
     for (const e of uploads) el.appendChild(attachedRow(e, true));
@@ -1065,6 +1087,8 @@ async function build() {
   const ta = document.getElementById('prompt');
   const prompt = ta.value.trim();
   if (!prompt) return;
+  hideMentionMenu();
+  const mentions = collectMentions(prompt);   // "@file" tokens -> attached-file paths
   if (!active) enterProject();
   const btn = document.getElementById('build-btn');
   building = true;
@@ -1078,7 +1102,7 @@ async function build() {
 
   try {
     const resp = await fetch(BASE + '/api/project/build/stream', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, mentions }),
     });
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -1406,7 +1430,88 @@ async function saveOpenFile() {
 
 /* ---------- composer helpers ---------- */
 function autogrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
+
+/* ---------- @mention: reference an attached file by name ----------
+   Typing "@" opens a menu of attached files. Selecting inserts "@<filename>" into the prompt;
+   on send, build() maps each "@<filename>" back to its workspace path and passes it to the agent
+   (see collectMentions + build). The agent can already resolve these paths from AGENTS.md, so the
+   mention is a strong hint even if the server doesn't pre-attach file bytes. */
+let mentionState = null;   // { items: [attachedFile], active: idx } while the menu is open
+
+function mentionBase(e) { return (e.file || e.path || '').split('/').pop(); }
+
+function updateMentionMenu() {
+  const ta = document.getElementById('prompt');
+  const before = ta.value.slice(0, ta.selectionStart);
+  const m = before.match(/(^|\s)@([^\s@]*)$/);       // an @token being typed, at the caret
+  if (!m || !attachedFiles.length) return hideMentionMenu();
+  const q = m[2].toLowerCase();
+  const items = attachedFiles.filter(e => (mentionBase(e) + ' ' + (e.dataset || '')).toLowerCase().includes(q)).slice(0, 8);
+  if (!items.length) return hideMentionMenu();
+  mentionState = { items, active: 0 };
+  renderMentionMenu();
+}
+
+function renderMentionMenu() {
+  const menu = document.getElementById('mention-menu');
+  menu.innerHTML = '';
+  mentionState.items.forEach((e, i) => {
+    const row = document.createElement('div');
+    row.className = 'mm-item' + (i === mentionState.active ? ' active' : '');
+    const lock = e.sensitive ? `<span class="mm-lock" title="Sensitive — the sovereign model is locked">🔒</span>` : '';
+    row.innerHTML = `<span class="mm-name">${esc(mentionBase(e))}</span>${lock}<span class="mm-src">${esc(e.dataset || '')}</span>`;
+    row.onmousedown = ev => { ev.preventDefault(); selectMention(i); };  // mousedown beats the textarea blur
+    row.onmouseenter = () => { mentionState.active = i; renderMentionMenu(); };
+    menu.appendChild(row);
+  });
+  menu.classList.add('open');
+}
+
+function hideMentionMenu() {
+  mentionState = null;
+  document.getElementById('mention-menu').classList.remove('open');
+}
+
+function moveMention(d) {
+  if (!mentionState) return;
+  const n = mentionState.items.length;
+  mentionState.active = (mentionState.active + d + n) % n;
+  renderMentionMenu();
+}
+
+function selectMention(idx) {
+  const e = mentionState && mentionState.items[idx];
+  if (!e) return;
+  const ta = document.getElementById('prompt');
+  const caret = ta.selectionStart;
+  const m = ta.value.slice(0, caret).match(/(^|\s)@([^\s@]*)$/);
+  if (!m) return hideMentionMenu();
+  const atPos = caret - m[2].length - 1;             // index of the '@'
+  const insert = '@' + mentionBase(e) + ' ';
+  ta.value = ta.value.slice(0, atPos) + insert + ta.value.slice(caret);
+  const pos = atPos + insert.length;
+  ta.setSelectionRange(pos, pos);
+  autogrow(ta); hideMentionMenu(); ta.focus();
+}
+
+// Map "@<filename>" tokens still present in the prompt back to attached-file workspace paths.
+function collectMentions(text) {
+  const out = [];
+  for (const e of attachedFiles) {
+    const base = mentionBase(e);
+    const re = new RegExp('(^|\\s)@' + base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?=\\s|$)');
+    if (re.test(text) && !out.includes(e.path)) out.push(e.path);
+  }
+  return out;
+}
+
 function composerKey(e) {
+  if (mentionState) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); return moveMention(1); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); return moveMention(-1); }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return selectMention(mentionState.active); }
+    if (e.key === 'Escape') { e.preventDefault(); return hideMentionMenu(); }
+  }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); build(); }
 }
 
