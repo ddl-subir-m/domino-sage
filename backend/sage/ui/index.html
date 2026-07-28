@@ -155,7 +155,6 @@
   }
   .chip:hover { border-color: var(--border-strong); color: var(--text); }
   .chip.locked { color: var(--lock); border-color: color-mix(in srgb, var(--lock) 40%, var(--border)); }
-  .chip.on { color: var(--primary); border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--surface)); }
   /* Plan-gate approval card (SPEC P6) */
   .plan-card { border: 1px solid var(--primary); border-radius: var(--radius); background: color-mix(in srgb, var(--primary) 5%, var(--surface)); padding: 14px 16px; gap: 10px; }
   .plan-card .plan-head { font-weight: 600; color: var(--text); }
@@ -319,7 +318,7 @@
         <label>Mode</label>
         <select id="mode-sel" onchange="setModel()">
           <option value="ask">Ask — read-only, no code changes</option>
-          <option value="plan">Plan — reasons about the task, model fixed unless overridden</option>
+          <option value="plan">Plan — proposes a plan for your approval, then builds it</option>
           <option value="implement">Implement — writes code, model fixed unless overridden</option>
           <option value="auto">Auto — picks the best model per step</option>
         </select>
@@ -368,7 +367,6 @@
             <span class="dot"></span><span id="chip-text">model</span><span class="caret">▾</span>
           </button>
           <button class="chip" id="data-chip" onclick="togglePop('data-pop')">📎 <span id="data-count">Data</span><span class="caret">▾</span></button>
-          <button class="chip" id="plan-chip" onclick="togglePlanFirst()" title="Plan the build and get your sign-off before Sage writes code">◇ Plan first</button>
           <button class="send" id="build-btn" onclick="sendOrStop()" title="Send (Enter)">↑</button>
         </div>
       </div>
@@ -1201,7 +1199,6 @@ async function build() {
   buildPhase = 'plan';
   setWorking(workLabel());
   const payload = { prompt, mentions };
-  if (planFirst) { payload.plan_first = true; setPlanFirst(false); }  // one-shot arming
   await runStream('/api/project/build/stream', payload, turnStart);
 }
 
@@ -1237,11 +1234,6 @@ async function runStream(url, payload, turnStart) {
   refreshStatus();
   building = false;
 }
-
-// "Plan first" arming: forces the plan gate (SPEC P6) on the next build even after the first turn.
-let planFirst = false;
-function setPlanFirst(on) { planFirst = on; document.getElementById('plan-chip').classList.toggle('on', on); }
-function togglePlanFirst() { setPlanFirst(!planFirst); }
 
 // The approval card for a proposed plan (SPEC P6). Renders the plan, an optional answers box and
 // plan editor, and Approve/Edit/Cancel — Approve streams the resulting build from .sage/plan.md.

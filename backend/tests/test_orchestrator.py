@@ -343,20 +343,25 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import _approve_prompt, _should_gate  # noqa: E402
+from sage.router.models import Mode  # noqa: E402
 from sage.workspace.manager import Workspace  # noqa: E402
 
 
 def test_should_gate_fires_on_first_build_only():
-    assert _should_gate(history_baseline=0, plan_first=False, skip_planning=False) is True
-    assert _should_gate(history_baseline=3, plan_first=False, skip_planning=False) is False
+    assert _should_gate(mode=Mode.IMPLEMENT, history_baseline=0, skip_planning=False) is True
+    assert _should_gate(mode=Mode.IMPLEMENT, history_baseline=3, skip_planning=False) is False
 
 
-def test_should_gate_plan_first_forces_gate_on_later_turns():
-    assert _should_gate(history_baseline=5, plan_first=True, skip_planning=False) is True
+def test_should_gate_plan_mode_gates_on_later_turns():
+    assert _should_gate(mode=Mode.PLAN, history_baseline=5, skip_planning=False) is True
+
+
+def test_should_gate_never_gates_ask_mode():
+    assert _should_gate(mode=Mode.ASK, history_baseline=0, skip_planning=False) is False
 
 
 def test_should_gate_opt_out_wins_over_everything():
-    assert _should_gate(history_baseline=0, plan_first=True, skip_planning=True) is False
+    assert _should_gate(mode=Mode.PLAN, history_baseline=0, skip_planning=True) is False
 
 
 def test_approve_prompt_includes_plan_and_answers():

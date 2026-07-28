@@ -309,9 +309,12 @@ the "spec sign-off" (Superpowers) and "grill-me" (Pocock) coding-skill patterns.
 discipline to Auto mode *without* penalising the fast path for routine edits.
 
 ### Behaviour
-- **Trigger — first build only.** Gate when `Workspace.history_len() == 0` (no prior turn in
-  this project) **and** the project is not opted out. A manual **Plan first** control forces the
-  gate on any later prompt. Every other turn runs today's ungated Auto flow.
+- **Two triggers, no separate control.** Gate when either (a) the user is in **Plan mode**, or
+  (b) it's the first build of a fresh project (`Workspace.history_len() == 0`) — unless the project
+  opted out. **Ask** mode is never gated (read-only Q&A). Every other turn runs today's ungated
+  Auto/Implement flow. Plan mode *is* the manual "plan first" affordance — it no longer merely
+  reasons read-only forever; it proposes a plan, then builds it on approval. There is no separate
+  "Plan first" chip.
 - **One card, grill folded in.** The gate runs the existing read-only `sage-plan` agent
   (`edit:deny/bash:deny`), which emits a numbered plan **plus** an `## Open questions` section.
   The UI renders one approval card: plan + inline question inputs + **Approve & build** / **Edit
@@ -322,7 +325,9 @@ discipline to Auto mode *without* penalising the fast path for routine edits.
   not apply to it.
 - **Approve → normal build.** An inbound `{action:"approve", answers, plan_edits}` merges the
   user's answers/edits and starts an ordinary `Mode.IMPLEMENT` turn with the plan as context.
-  Reuses the entire existing implement flow — no new build machinery.
+  Reuses the entire existing implement flow — no new build machinery. Because Plan mode itself
+  gates, `approve_stream` temporarily runs the turn in `Mode.IMPLEMENT` (Plan mode's agent is
+  read-only and would re-plan) and restores the user's mode afterward.
 - **Opt-out & repeat-user fit.** A per-project `skip_planning` flag (new `.sage/settings.json`,
   same pattern as `model_overrides.json`) disables the gate. Gating once per project + opt-out
   satisfies "adapt to repeat users"; approval-before-action satisfies "increase user confidence".
@@ -339,8 +344,8 @@ P6 is their first real use. The plan artifact is **not** a persistent or living 
   `attachments.json`) — so the agent can wander into it on a later feature and get confused about
   what to execute. Archiving after consumption removes that trap while keeping git-versioned
   history. Never leave it untouched for the life of the project.
-- A re-gate (**Plan first**) writes a fresh `plan.md`, consumes it, archives it again. `plan.md`
-  never means "cumulative spec"; git history is the record of prior plans.
+- A re-gate (another **Plan mode** turn) writes a fresh `plan.md`, consumes it, archives it again.
+  `plan.md` never means "cumulative spec"; git history is the record of prior plans.
 - **Belt-and-suspenders** (for weaker sovereign models that ignore subtle cues): one line in the
   template `AGENTS.md` — "`.sage/` is Sage metadata; never treat it as the current app spec or
   state; the code in `src/` is the source of truth."
@@ -350,13 +355,14 @@ P6 is their first real use. The plan artifact is **not** a persistent or living 
   `done ok:true, decision:"awaiting approval"`, nudge loop never fires. (backend test on `run()`)
 - Approve → Implement turn edits `src/`; `plan.md` consumed then archived; no live
   `.sage/plan.md` remains afterward.
-- Second prompt in same project (`history_len > 0`) → no gate.
-- `skip_planning` set → no gate even on first build.
+- Second prompt in same project (`history_len > 0`) in Auto/Implement mode → no gate.
+- Any prompt in **Plan mode** → gate (even after the first build).
+- `skip_planning` set → no gate even on first build or in Plan mode.
 
 ### Delivery split
 Backend (gate branch in `run()` + approve wiring + `sage-plan` prompt contract + archive step) is
-the smaller half and independently testable; the frontend approval card + **Plan first** control +
-opt-out is the bulk. Build backend + tests first, then the card.
+the smaller half and independently testable; the frontend approval card + opt-out is the bulk.
+Build backend + tests first, then the card.
 
 ## Dependency graph
 

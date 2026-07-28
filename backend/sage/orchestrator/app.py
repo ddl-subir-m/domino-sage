@@ -458,14 +458,13 @@ def build_stream(body: dict) -> StreamingResponse:
 
     prompt = (body or {}).get("prompt", "")
     mentions = (body or {}).get("mentions") or None  # workspace paths of @-referenced attached files
-    plan_first = bool((body or {}).get("plan_first"))  # force the plan gate (SPEC P6) on this turn
 
     def sse():
         if not prompt:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
             return
         try:
-            for evt in orchestrator.build_stream(prompt, mentions, plan_first=plan_first):
+            for evt in orchestrator.build_stream(prompt, mentions):
                 yield f"data: {_json.dumps(evt)}\n\n"
         except Exception as e:  # noqa: BLE001
             log.exception("build_stream failed")

@@ -138,12 +138,13 @@ def _agent_for_mode(mode: Mode) -> str | None:
     return _MODE_AGENT.get(mode)
 
 
-def _should_gate(*, history_baseline: int, plan_first: bool, skip_planning: bool) -> bool:
-    """First-build plan gate (SPEC P6). Gate the first turn of a fresh project (nothing built yet),
-    or any turn the user explicitly asked to plan first — unless the project opted out."""
-    if skip_planning:
+def _should_gate(*, mode: Mode, history_baseline: int, skip_planning: bool) -> bool:
+    """Plan gate (SPEC P6): run the read-only planner and stop for the user to approve before any
+    code is written. Fires whenever the user is in Plan mode, or automatically on the first turn of a
+    fresh project (nothing built yet) — unless the project opted out. Never gates Ask (read-only Q&A)."""
+    if skip_planning or mode is Mode.ASK:
         return False
-    return plan_first or history_baseline == 0
+    return mode is Mode.PLAN or history_baseline == 0
 
 
 def _approve_prompt(plan_md: str, answers: str) -> str:
@@ -457,7 +458,7 @@ class Orchestrator:
                 out.append(str(real))
         return out or None
 
-    def build_stream(self, prompt: str, mentions: list[str] | None = None, plan_first: bool = False):
+    def build_stream(self, prompt: str, mentions: list[str] | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -488,11 +489,11 @@ class Orchestrator:
         project.snapshot.commit_before_turn()
         history_baseline = project.workspace.history_len()
 
-        # First-build plan gate (SPEC P6): on the first turn (or an explicit "Plan first"), run the
+        # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
         # read-only planner and stop for the user to approve — this turn deliberately writes no code.
         gate = _should_gate(
+            mode=project.control.snapshot().mode,
             history_baseline=history_baseline,
-            plan_first=plan_first,
             skip_planning=bool(project.workspace.read_settings().get("skip_planning")),
         )
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
@@ -776,14 +777,22 @@ class Orchestrator:
     def approve_stream(self, answers: str = "", plan_edits: str | None = None):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
-        turn to misread. The gate turn already appended to history, so this turn is never re-gated."""
+        turn to misread. Approval means "build it now", so if the user is in Plan mode we run this
+        turn in Implement mode — Plan mode's agent is read-only and its gate would just re-plan — and
+        restore their mode afterwards. An Auto/Implement approve already has history, so it's never
+        re-gated regardless."""
         project = self.project()
         if plan_edits is not None:
             project.workspace.write_plan(plan_edits)
         plan_md = project.workspace.read_plan() or ""
+        prior_mode = project.control.snapshot().mode
+        if prior_mode is Mode.PLAN:
+            project.control.set_mode(Mode.IMPLEMENT)
         try:
             yield from self.build_stream(_approve_prompt(plan_md, answers))
         finally:
+            if project.control.snapshot().mode is not prior_mode:
+                project.control.set_mode(prior_mode)
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
             project.workspace.archive_plan()
 
