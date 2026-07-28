@@ -534,6 +534,11 @@ class Orchestrator:
             # drives this turn's inferences (see Project.model_calls).
             project.model_calls = 0
             project.tool_call_responses = 0
+            # Detect edits made by THIS turn, not cumulatively since build start. Reset the tool-based
+            # flag and fingerprint the working tree now; compare after the turn. Without this, once any
+            # turn writes a file every later (possibly no-op) turn reads as "wrote code".
+            made_edits = False
+            turn_start_tree = project.snapshot.working_tree_hash()
             agent = _agent_for_mode(project.control.snapshot().mode)
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
@@ -619,10 +624,11 @@ class Orchestrator:
                 # A clean typecheck with no edits means the agent only planned — don't call that a
                 # finished build. Nudge it to implement (once); if it still writes nothing, stop
                 # with an honest, actionable message rather than a false "done — clean".
-                # `made_edits` only trips on tools literally named edit/write; the agent may write
+                # `made_edits` only trips on tools literally named edit/write this turn; the agent may write
                 # via another (patch/str_replace/create). Confirm against the snapshot's ground truth
-                # so a real edit is never misread as "planned but wrote no code".
-                wrote_code = made_edits or project.snapshot.changed_since_pre_turn()
+                # so a real edit is never misread as "planned but wrote no code". Compare the tree hash
+                # to this turn's start (not the build-start baseline) so only edits made THIS turn count.
+                wrote_code = made_edits or project.snapshot.working_tree_hash() != turn_start_tree
                 # Surface why a turn landed where it did — especially a no-edit turn. Reads apart the
                 # three failure modes (see Project.model_calls); rendered as a status line in the UI.
                 shim_bypassed = (project.model_calls == 0 and base_port is not None and base_port != control_port)

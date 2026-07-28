@@ -57,3 +57,14 @@ class TurnSnapshot:
         independent of which write tool the harness happened to name."""
         self._ensure_repo()
         return bool(self._run("status", "--porcelain").stdout.strip())
+
+    def working_tree_hash(self) -> str:
+        """A content hash of the whole working tree (a git tree object over everything except
+        _EXCLUDE). Capture it at a turn's start and compare at its end to tell whether THAT turn
+        changed any file — a per-turn signal, unlike changed_since_pre_turn() which is cumulative
+        vs the build-start commit. Stages into the index (add -A) and writes a tree object but never
+        commits, so the commit_before_turn() snapshot stays the stop-button revert point. Empty
+        string if git is unavailable, so callers degrade to their tool-based edit signal."""
+        self._ensure_repo()
+        self._run("add", "-A")
+        return self._run("write-tree").stdout.strip()
