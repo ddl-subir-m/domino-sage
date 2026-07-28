@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from sage.assets.provider import FakeAssetProvider
-from sage.orchestrator.service import Orchestrator, UploadUnavailable
+from sage.orchestrator.service import DataReferenced, Orchestrator, UploadUnavailable
 from sage.router.models import ModelCatalog
 
 
@@ -134,6 +134,57 @@ def test_delete_removes_bytes_for_an_uploads_file_reattached_as_dataset(tmp_path
 
     assert not (ws / res["path"]).exists() and not src.exists()  # symlink AND dataset bytes gone
     assert _manifest(ws) == []
+
+
+def test_delete_blocked_while_app_fetches_the_file(tmp_path: Path):
+    # Deleting data the dashboard fetches at runtime would orphan that code — block it (Detach stays).
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=False)
+    (ws / "src" / "App.tsx").write_text('fetch(new URL("data/sales_2026/uploads/d.csv", import.meta.env.BASE_URL))')
+
+    with pytest.raises(DataReferenced) as ei:
+        orch.delete_file(res["path"])
+
+    assert ei.value.refs and not ei.value.copies
+    assert (ws / res["path"]).exists()               # nothing removed — the block ran first
+
+
+def test_delete_blocked_when_data_was_copied_into_src(tmp_path: Path):
+    # A copied file (same basename under the app tree) is the git-leak — and why delete "does nothing".
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=False)
+    (ws / "src" / "data").mkdir(parents=True, exist_ok=True)
+    (ws / "src" / "data" / "d.csv").write_text("a,b\n1,2\n")     # agent copied it into src/
+
+    with pytest.raises(DataReferenced) as ei:
+        orch.delete_file(res["path"])
+
+    assert ei.value.copies == ["src/data/d.csv"]
+
+
+def test_delete_allowed_when_app_does_not_use_the_file(tmp_path: Path):
+    # The template App.tsx is a placeholder that never references the upload -> delete proceeds.
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_file("d.csv", b"x", sensitive=False)
+
+    orch.delete_file(res["path"])                    # no DataReferenced
+
+    assert not (ws / res["path"]).exists() and _manifest(ws) == []
+
+
+def test_data_usage_flags_inlined_bytes_as_a_copy(tmp_path: Path):
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    body = b"name,score\n" + b"".join(b"row%d,%d\n" % (i, i) for i in range(20))
+    res = orch.upload_file("d.csv", body, sensitive=False)
+    (proj.workspace.path / "src" / "rows.ts").write_text("export const RAW = `" + body.decode() + "`;")
+
+    entry = next(e for e in proj.attached if e["path"] == res["path"])
+    usage = orch._data_usage(proj, entry)
+    assert "src/rows.ts" in usage["copies"]
 
 
 def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):

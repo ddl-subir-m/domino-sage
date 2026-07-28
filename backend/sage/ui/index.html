@@ -1179,8 +1179,16 @@ function replayEvent(ev) {
   else if (ev.type === 'agent' && ev.kind === 'tool') addToolCard(ev.tool, ev.detail || '');
   else if (ev.type === 'agent' && ev.kind === 'text') addAgent(ev.text);
   else if (ev.type === 'typecheck') addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`);
+  else if (ev.type === 'data-leak') addStatus('warn', '⚠', leakMsg(ev));
   else if (ev.type === 'done') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`);
   else if (ev.type === 'saved') renderSaved(ev);
+}
+
+function leakMsg(ev) {
+  const where = (ev.where || []).map(esc).join(', ');
+  return `<b>${esc(ev.file)}</b> was copied into your app code${where ? ` (${where})` : ''}. `
+    + `Attached data should be read from <code>data/…</code> at runtime, not copied into source — `
+    + `copies get committed to git.`;
 }
 
 function renderEvent(ev, turnStart) {
@@ -1199,6 +1207,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'typecheck') { stopWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); trail(); }
   else if (ev.type === 'iterate') { setWorking('Fixing errors'); }
   else if (ev.type === 'done') { stopWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
+  else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'saved') { renderSaved(ev); }
   else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(workLabel()); refreshStatus(); }
   else if (ev.type === 'error') {

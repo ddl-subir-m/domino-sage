@@ -73,6 +73,16 @@ class UploadUnavailable(Exception):
         super().__init__("sensitive" if sensitive else "default")
 
 
+class DataReferenced(Exception):
+    """The app's source still uses an attached file — either fetches it (`refs`) or has copied its
+    bytes into `src/` (`copies`, the git-leaking pattern we forbid). Deleting the data would leave
+    that code dangling, so delete is blocked; the user edits the app to stop using it, or Detaches."""
+
+    def __init__(self, path: str, refs: list[str], copies: list[str]) -> None:
+        self.path, self.refs, self.copies = path, refs, copies
+        super().__init__(f"{path} is used by the app")
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ[name])
@@ -125,6 +135,19 @@ def _prune_empty_dirs(start: Path, stop: Path) -> None:
 
 def _agent_for_mode(mode: Mode) -> str | None:
     return _MODE_AGENT.get(mode)
+
+
+# Directories skipped when scanning the app's own source for data references/copies: dependencies,
+# build output, git, sage metadata, and public/ (which holds the attached-data symlinks themselves).
+_SCAN_SKIP_DIRS = frozenset({"node_modules", "dist", ".git", ".sage", "public"})
+# Extensions whose text we read to look for a reference/inlined copy. Data files (.csv, …) aren't
+# here — a copied data file is caught by its basename below, not by scanning its contents. AGENTS.md
+# is excluded (Sage writes it and it lists every attachment) so it never reads as a real reference.
+_SCAN_EXTS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".css", ".html",
+                        ".vue", ".svelte"})
+# Cap the bytes we compare for a verbatim copy — a source file that fully contains the data is the
+# leak; larger attachments are still caught by the basename-copy check below without a big scan.
+_COPY_SCAN_MAX = 512 * 1024
 
 
 def _tool_detail(tool: str, part: dict) -> str:
@@ -394,7 +417,7 @@ class Orchestrator:
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
         def persist(ev: dict) -> dict:
-            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved"):
+            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved", "data-leak"):
                 project.workspace.append_history(ev)
             return ev
 
@@ -578,6 +601,17 @@ class Orchestrator:
                         current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                         continue
                 restore_mode()
+                if report.ok and project.attached:
+                    # Warn if the agent copied attached data into the app's source — public/data/ is
+                    # gitignored on purpose, so a copy leaks the (possibly sensitive) data into git and
+                    # silently survives deleting the attachment. Flag it; the fetch-from-data/ pattern
+                    # in AGENTS.md is the intended one.
+                    sources = self._scan_app_sources(project)
+                    for e in project.attached:
+                        copies = self._data_usage(project, e, sources)["copies"]
+                        if copies:
+                            yield persist({"type": "data-leak", "file": PurePosix(e["path"]).name,
+                                           "where": copies[:3]})
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok:
                     saved = self._save_to_git(project, prompt)
@@ -975,6 +1009,13 @@ class Orchestrator:
         if not path.startswith("public/data/"):
             raise ValueError(path)
         entry = next((e for e in project.attached if e["path"] == path), None)
+        # Refuse to delete data the app still uses — otherwise the code that fetches (or has copied)
+        # it is left dangling, and a copied file keeps the dashboard "working" after the data is gone.
+        # Detach stays available for a deliberate drop; here we protect the user's built app.
+        if entry:
+            usage = self._data_usage(project, entry)
+            if usage["refs"] or usage["copies"]:
+                raise DataReferenced(path, usage["refs"], usage["copies"])
         link = _safe_join(project.workspace.path, path)
         if link.is_symlink() or link.exists():
             link.unlink()
@@ -1006,6 +1047,64 @@ class Orchestrator:
                 _prune_empty_dirs(target.parent, Path(asset.mount_path))
         except OSError:
             log.exception("delete_upload_bytes: failed to remove %s", rel)
+
+    def _scan_app_sources(self, project: Project) -> list[tuple[str, str | None]]:
+        """(workspace-relative posix path, text) for each file under the app tree — skips
+        dependencies, build output, git, and public/ (the attached-data symlinks live there). Text is
+        the file's contents for code files (see _SCAN_EXTS) and None otherwise, so a copied data file
+        is still listed (matched by basename) without reading megabytes of CSV."""
+        root = project.workspace.path
+        out: list[tuple[str, str | None]] = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SCAN_SKIP_DIRS]
+            for fn in filenames:
+                fp = Path(dirpath) / fn
+                text: str | None = None
+                if Path(fn).suffix.lower() in _SCAN_EXTS:
+                    try:
+                        text = fp.read_text(encoding="utf-8", errors="ignore")
+                    except OSError:
+                        continue
+                out.append((fp.relative_to(root).as_posix(), text))
+        return out
+
+    def _data_usage(self, project: Project, entry: dict,
+                    sources: list[tuple[str, str | None]] | None = None) -> dict:
+        """How the app's source uses an attached file, so delete can refuse to orphan code:
+          refs   — source files that fetch it by its served path/name (the intended runtime dependency)
+          copies — source files that ARE a copy of the data: same basename under the app tree, or its
+                   bytes inlined. This is the leak we forbid (public/data/ is gitignored on purpose),
+                   and it's why deleting the attachment leaves the dashboard still working.
+        """
+        if sources is None:
+            sources = self._scan_app_sources(project)
+        served = entry["path"][len("public/"):]        # data/<slug>/uploads/<name>
+        name = PurePosix(entry["path"]).name
+        refs: list[str] = []
+        copies: list[str] = []
+        raw: bytes | None = None
+        for rel, text in sources:
+            if PurePosix(rel).name == name:            # a file copied under the app tree (any type)
+                copies.append(rel)
+                continue
+            if text is None:                            # non-code file, nothing more to inspect
+                continue
+            if raw is None:
+                raw = self._attachment_bytes(project, entry)
+            if raw is not None and 64 <= len(raw) <= _COPY_SCAN_MAX \
+                    and raw.decode("utf-8", "ignore") in text:
+                copies.append(rel)                      # data bytes inlined into source
+            elif served in text or name in text:
+                refs.append(rel)
+        return {"refs": refs, "copies": copies}
+
+    def _attachment_bytes(self, project: Project, entry: dict) -> bytes | None:
+        """Read an attached file's bytes (follows the symlink to the dataset mount). None if absent."""
+        try:
+            p = project.workspace.path / entry["path"]
+            return p.read_bytes() if p.is_file() else None
+        except OSError:
+            return None
 
     _AGENTS_BEGIN = "<!-- sage:attached-data:begin -->"
     _AGENTS_END = "<!-- sage:attached-data:end -->"

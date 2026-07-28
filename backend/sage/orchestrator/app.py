@@ -32,7 +32,7 @@ from ..feedback.runner import FeedbackRunner
 from ..preview.prefix import domino_base_prefix
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
-from .service import AttachTooLarge, Orchestrator, UploadUnavailable
+from .service import AttachTooLarge, DataReferenced, Orchestrator, UploadUnavailable
 
 _feedback = FeedbackRunner()
 
@@ -438,6 +438,13 @@ async def delete_file(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "path required"})
     try:
         return JSONResponse(content=orchestrator.delete_file(path))
+    except DataReferenced as e:
+        where = sorted(set(e.copies or e.refs))
+        files = ", ".join(where[:3]) + ("…" if len(where) > 3 else "")
+        verb = "has a copy of" if e.copies else "uses"
+        msg = (f"Can't delete — your app {verb} this file ({files}). Remove it from the app first, "
+               f"or use Detach to drop it from the workspace while keeping the data.")
+        return JSONResponse(status_code=409, content={"error": msg, "refs": e.refs, "copies": e.copies})
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid path"})
 
