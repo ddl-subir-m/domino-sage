@@ -432,10 +432,15 @@ class Orchestrator:
         # Auto may be escalated to Implement mid-stream to force a stalled build to actually write
         # code (see the nudge branch below). Restore the user's mode on every exit from the stream.
         original_mode = project.control.snapshot().mode
+        # Set when a planning stall forces us to pin the strong model for the Implement retry (see
+        # the nudge branch). Cleared on exit so we never leave the user's own model pick clobbered.
+        escalated_pick = False
 
         def restore_mode() -> None:
             if project.control.snapshot().mode is not original_mode:
                 project.control.set_mode(original_mode)
+            if escalated_pick:
+                project.control.pick(None)
 
         def handle_stop() -> dict:
             project.stop_requested = False
@@ -583,6 +588,13 @@ class Orchestrator:
                         # Implement mode" advice, applied automatically instead of shown as a dead end.
                         if project.control.snapshot().mode is Mode.AUTO:
                             project.control.set_mode(Mode.IMPLEMENT)
+                            # Mode.IMPLEMENT alone pins resolve() to catalog.implement — the cheap
+                            # coder that just failed to write. Pin the strong plan-tier model for the
+                            # retry so the edit-forward sage-implement agent is driven by a model
+                            # capable of actually calling the edit tool. Cleared in restore_mode();
+                            # no-op under a sensitivity lock, where resolve() forces sovereign.
+                            project.control.pick(project.shim.catalog.plan)
+                            escalated_pick = True
                         yield {"type": "iterate", "reason": "planned but wrote no code — switching to Implement"}
                         current = IMPLEMENT_NUDGE
                         continue
