@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from pathlib import PurePosixPath as PurePosix
@@ -316,6 +317,7 @@ class Orchestrator:
         self._project: Project | None = None
         self._oc_server: OpenCodeServer | None = None
         self._oc_client: OpenCodeClient | None = None
+        self._oc_log_path: str | None = None  # OpenCode server stdout log, tailed into the stream on a no-call turn
 
     def project(self, start_preview: bool = True) -> Project:
         """Get-or-attach the single bound project. Idempotent: on first call it seeds the volume
@@ -366,9 +368,26 @@ class Orchestrator:
         """Start the shared OpenCode server on first use (opencode.json in opencode_cwd points
         it at the shim). One server per container; sessions are scoped per workspace."""
         if self._oc_client is None:
-            self._oc_server = OpenCodeServer(cwd=self._opencode_cwd)
+            # Always capture OpenCode's server log (--print-logs) so a no-model-call turn can surface
+            # its actual error (connection refused, provider/model load, auth) into the build stream —
+            # the deployed workspace has no shell. Honor SAGE_OPENCODE_LOG if set, else a temp path.
+            self._oc_log_path = os.environ.get("SAGE_OPENCODE_LOG") or str(
+                Path(tempfile.gettempdir()) / "sage-opencode.log")
+            self._oc_server = OpenCodeServer(cwd=self._opencode_cwd, log_path=self._oc_log_path)
             self._oc_client = OpenCodeClient(base_url=self._oc_server.start())
         return self._oc_client
+
+    def _opencode_log_tail(self, lines: int = 30) -> list[str]:
+        """Last few lines of OpenCode's server log — surfaced when a turn makes no model call so the
+        real reason (e.g. 'connect ECONNREFUSED 127.0.0.1:8080', a provider/auth error) is visible in
+        the UI without shell access. Empty if logging isn't active or the file can't be read."""
+        if not self._oc_log_path:
+            return []
+        try:
+            with open(self._oc_log_path, encoding="utf-8", errors="replace") as f:
+                return [ln.rstrip() for ln in f.readlines()[-lines:] if ln.strip()]
+        except OSError:
+            return []
 
     def _ensure_session(self, project: Project) -> str:
         client = self._ensure_opencode()
@@ -667,6 +686,12 @@ class Orchestrator:
                        "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code,
                        "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port,
                        "vendor_keys": vendor_keys}
+                # No inference reached the shim this turn: surface OpenCode's own log tail so its actual
+                # error (which port it dialed, provider/model/auth failure) is visible without a shell.
+                if project.model_calls == 0:
+                    tail = self._opencode_log_tail()
+                    if tail:
+                        yield {"type": "opencode-log", "lines": tail}
                 if report.ok and not wrote_code:
                     if gate:
                         # First-build gate (SPEC P6): the planner proposed a plan and wrote no code —

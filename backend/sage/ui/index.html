@@ -124,6 +124,7 @@
 
   /* transient status pill (working / typechecking / fixing) */
   .status-line { display: flex; align-items: center; gap: 9px; align-self: flex-start; font-size: 13px; color: var(--muted); padding: 2px 2px; }
+  .oc-log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.45; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin: 2px 0 6px; max-height: 240px; overflow: auto; white-space: pre; }
   .status-line .ico { display: inline-block; }
   .status-line.spin .ico { animation: spin 1s linear infinite; }
   .status-line.ok { color: var(--ok); } .status-line.err { color: var(--lock); } .status-line.warn { color: var(--warn); }
@@ -1214,6 +1215,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'typecheck-start') { setWorking('Typechecking'); }
   else if (ev.type === 'typecheck') { stopWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); trail(); }
   else if (ev.type === 'turn-summary') { stopWorking(); if (ev.shim_bypassed) addStatus('err', '⚠', `Inference bypassed Sage — OpenCode dialed :${ev.base_port} but the shim serves :${ev.control_port}. This turn ran 0 model calls through Sage; model routing and the sovereignty lock did not apply.` + ((ev.vendor_keys && ev.vendor_keys.length) ? ` A direct vendor key (${esc(ev.vendor_keys.join(', '))}) is in the workspace — that's how a model was reached, entirely outside Sage.` : ` No direct vendor key is set, so a model shouldn't have been reachable this way — check what OpenCode connected to.`) + ` Fix the opencode.json baseURL port.`); addStatus(ev.wrote_code ? 'ok' : '', ev.wrote_code ? '✎' : 'ℹ', turnSummaryMsg(ev)); trail(); }
+  else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
   else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
   else if (ev.type === 'done') { stopWorking(); addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
