@@ -370,10 +370,19 @@ class Orchestrator:
 
         project.workspace.append_history({"type": "user", "text": prompt})
 
+        # Auto may be escalated to Implement mid-stream to force a stalled build to actually write
+        # code (see the nudge branch below). Restore the user's mode on every exit from the stream.
+        original_mode = project.control.snapshot().mode
+
+        def restore_mode() -> None:
+            if project.control.snapshot().mode is not original_mode:
+                project.control.set_mode(original_mode)
+
         def handle_stop() -> dict:
             project.stop_requested = False
             project.snapshot.discard_changes()
             project.workspace.truncate_history(history_baseline)
+            restore_mode()
             return {"type": "stopped"}
 
         # Scoped to the whole build_stream call (not per turn): client.messages(sid) returns the
@@ -477,6 +486,7 @@ class Orchestrator:
 
             if project.last_gateway_error is not None:
                 err = project.last_gateway_error
+                restore_mode()
                 yield persist({"type": "error", "message": f"model call failed: {err['message']}"})
                 yield persist({"type": "done", "ok": False, "decision": "gateway error"})
                 return
@@ -499,14 +509,18 @@ class Orchestrator:
                 if report.ok and not wrote_code:
                     if nudges < MAX_NUDGES:
                         nudges += 1
-                        # On Domino the model is fixed (opencode.json's default, honored by the shim
-                        # unless locked/force_model), so there's no stronger model to escalate to —
-                        # the lever is the forceful re-prompt, not routing.
-                        yield {"type": "iterate", "reason": "planned but wrote no code — retrying"}
+                        # The nudge is a fresh user turn, so the shim's per-step classifier resets to
+                        # PLAN (it biases plan until the first write) — in Auto the model can just plan
+                        # again and stall. Pin Implement for the retry so it actually writes: the "try
+                        # Implement mode" advice, applied automatically instead of shown as a dead end.
+                        if project.control.snapshot().mode is Mode.AUTO:
+                            project.control.set_mode(Mode.IMPLEMENT)
+                        yield {"type": "iterate", "reason": "planned but wrote no code — switching to Implement"}
                         current = IMPLEMENT_NUDGE
                         continue
+                    restore_mode()
                     yield persist({"type": "done", "ok": False,
-                                   "decision": "planned but wrote no code — try Implement mode"})
+                                   "decision": "couldn't get past planning — try rephrasing or a smaller step"})
                     return
                 # Typecheck is clean and code was written — but tsc can't see a runtime crash that
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,
@@ -521,6 +535,7 @@ class Orchestrator:
                         yield {"type": "iterate", "reason": f"app crashed at runtime — fixing ({first_line})"}
                         current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                         continue
+                restore_mode()
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok:
                     saved = self._save_to_git(project, prompt)
