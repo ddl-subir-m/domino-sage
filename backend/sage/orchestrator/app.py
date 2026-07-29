@@ -10,6 +10,7 @@ Run:  uv run python -m sage.orchestrator.app
 """
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import queue
@@ -42,6 +43,42 @@ _feedback = FeedbackRunner()
 
 log = logging.getLogger("sage.orchestrator")
 logging.basicConfig(level=logging.INFO)
+
+# In-memory tail of recent sage.* logs so /api/diag can surface what happened during a build (which
+# port OpenCode dialed, "model call -> streaming (first byte Xs)", "gateway stream broke ...") without
+# shell access in the deployed builder. Bounded; captures INFO+ from the whole sage.* hierarchy.
+_LOG_RING: "collections.deque[str]" = collections.deque(maxlen=400)
+
+
+class _RingHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            _LOG_RING.append(self.format(record))
+        except Exception:  # never let logging crash a request
+            pass
+
+
+_ring = _RingHandler()
+_ring.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+_ring.setLevel(logging.INFO)
+_sage_log = logging.getLogger("sage")
+_sage_log.addHandler(_ring)
+_sage_log.setLevel(logging.INFO)
+
+
+def _sage_rev() -> str | None:
+    """Short git HEAD of the deployed Sage checkout — lets /api/diag confirm which code is running."""
+    import subprocess
+    home = os.environ.get("SAGE_APP_HOME", "/opt/sage")
+    try:
+        out = subprocess.run(["git", "-C", home, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=3)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+_SAGE_REV = _sage_rev()
 
 _REPO = Path(__file__).resolve().parents[3]
 
@@ -169,6 +206,41 @@ def healthz() -> dict:
             {"id": m.id, "provider": m.provider} for m in OPEN_WEIGHT_MODELS
         ] if GATEWAY_MODE == "openai" else [],
     }
+
+
+@control_app.get("/api/diag")
+def diag() -> JSONResponse:
+    """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
+    project without starting anything, so it's safe to hit mid-build. Key signals:
+      - sage_rev: which code is actually running (confirm a rebuild took effect)
+      - model_calls: how many inferences reached the shim THIS turn. 0 while a turn is live means the
+        model call never got to the gateway (OpenCode stuck earlier, e.g. on a tool), not a gateway hang
+      - last_gateway_error: set if a model call failed/severed
+      - ports: base_port (what opencode.json tells OpenCode to dial) must equal control_port
+      - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
+    """
+    from .service import _opencode_base_port
+
+    p = orchestrator._project  # may be None if no project bound yet; do NOT create one here
+    control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
+    try:
+        base_port = _opencode_base_port(orchestrator._opencode_cwd)
+    except Exception:
+        base_port = None
+    return JSONResponse(content={
+        "sage_rev": _SAGE_REV,
+        "gateway_mode": GATEWAY_MODE,
+        "ports": {"control_port": control_port, "base_port": base_port,
+                  "match": base_port == control_port},
+        "project": None if p is None else {
+            "model_calls": p.model_calls,
+            "tool_call_responses": p.tool_call_responses,
+            "last_gateway_error": p.last_gateway_error,
+            "session_id": p.session_id,
+        },
+        "log_tail": list(_LOG_RING)[-60:],
+        "opencode_log_tail": orchestrator._opencode_log_tail(30),
+    })
 
 
 @control_app.get("/api/project")

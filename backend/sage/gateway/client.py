@@ -129,6 +129,7 @@ class OpenAICompatibleClient:
         *,
         domino_tags: bool = False,
         timeout_s: float = 60.0,
+        read_timeout_s: float = 300.0,
     ) -> None:
         # base_url is the OpenAI base ending in /v1, e.g.
         #   https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1  (domino)
@@ -137,6 +138,7 @@ class OpenAICompatibleClient:
         self._token_provider = token_provider
         self._domino_tags = domino_tags
         self._timeout_s = timeout_s
+        self._read_timeout_s = read_timeout_s
 
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
         import httpx  # local import so tests that never hit the network don't need it
@@ -158,13 +160,14 @@ class OpenAICompatibleClient:
             if labels.version:
                 headers["X-LLM-Tag-sage-version"] = labels.version
         url = f"{self._base_url}/chat/completions"  # base already ends in /v1
-        # read=None disables the inter-chunk read timeout: httpx applies the read timeout to the GAP
-        # between streamed chunks, and LLM turns routinely pause >timeout_s mid-stream (extended
-        # thinking, a large tool-result being processed). A scalar timeout would raise ReadTimeout
-        # mid-stream -> the connection to OpenCode is severed -> its Node fetch reports the aborted
-        # stream as "TypeError: network error". connect/write/pool stay bounded so a dead gateway
-        # still fails fast into the eager-first-chunk 502 path (shim/app.py) instead of hanging.
-        timeout = httpx.Timeout(self._timeout_s, read=None)
+        # read_timeout_s (default 300s) is the inter-chunk read timeout: httpx applies the read
+        # timeout to the GAP between streamed chunks. The original scalar 60s was too SHORT — LLM
+        # turns routinely pause >60s mid-stream (extended thinking) -> ReadTimeout -> the stream to
+        # OpenCode severs -> "TypeError: network error". But read=None (unbounded) is WRONG too: a
+        # gateway that stops sending would hang the turn forever. A large FINITE value tolerates real
+        # thinking gaps yet still surfaces a dead stream as a clean error (the shim wraps it into a
+        # readable message). connect/write/pool stay bounded via _timeout_s.
+        timeout = httpx.Timeout(self._timeout_s, read=self._read_timeout_s)
         with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
                 # Surface upstream errors BEFORE streaming so the caller gets a clean message
@@ -182,9 +185,10 @@ class MultiProviderOpenAIClient:
     catalog entry matching request["model"] decides which vendor endpoint and API key to use.
     """
 
-    def __init__(self, models: list[OpenModel], *, timeout_s: float = 60.0) -> None:
+    def __init__(self, models: list[OpenModel], *, timeout_s: float = 60.0, read_timeout_s: float = 300.0) -> None:
         self._by_id = {m.id: m for m in models}
         self._timeout_s = timeout_s
+        self._read_timeout_s = read_timeout_s
 
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
         import httpx  # local import so tests that never hit the network don't need it
@@ -201,7 +205,7 @@ class MultiProviderOpenAIClient:
 
         headers = {"Authorization": f"Bearer {key}"}
         url = f"{model.base_url.rstrip('/')}/chat/completions"
-        timeout = httpx.Timeout(self._timeout_s, read=None)  # no inter-chunk read timeout (see route above)
+        timeout = httpx.Timeout(self._timeout_s, read=self._read_timeout_s)  # large FINITE inter-chunk read (see route above)
         with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             with client.stream("POST", url, json=request, headers=headers) as resp:
                 if resp.status_code >= 400 or resp.is_redirect:

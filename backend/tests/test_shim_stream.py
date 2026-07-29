@@ -93,6 +93,15 @@ def _shim_client(monkeypatch, gen_factory):
     return TestClient(shimmod.app)
 
 
+def test_diag_reports_rev_ports_and_logs_without_starting_a_project():
+    client = TestClient(orchmod.control_app)
+    r = client.get("/api/diag")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) >= {"sage_rev", "gateway_mode", "ports", "project", "log_tail", "opencode_log_tail"}
+    assert set(body["ports"]) == {"control_port", "base_port", "match"}
+
+
 def test_shim_app_mid_stream_break_is_readable(monkeypatch):
     def gen():
         yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
