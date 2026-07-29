@@ -1,7 +1,8 @@
-"""Streaming behavior of the shim endpoint: keep OpenCode's fetch alive through gpt-5.4's silent
-thinking gaps, and end a broken stream readably instead of leaking a raw truncation.
+"""Streaming behavior of BOTH chat endpoints: the live orchestrator `control_app` one (what OpenCode
+actually hits at runtime) and the standalone shim `app`. They share sage.shim.keepalive, so both must
+keep OpenCode's fetch alive through gpt-5.4's silent thinking gaps and end a broken stream readably.
 
-The failure this guards: the shim used to pull the first byte before returning the response, so a
+The failure this guards: the endpoint used to pull the first byte before returning the response, so a
 model that thought for minutes withheld all headers/body -> OpenCode's Node fetch aborted with
 "TypeError: network error". Now the response commits early and emits SSE keepalive comments during
 silent gaps; a mid-stream upstream break becomes a readable assistant message + clean [DONE].
@@ -9,66 +10,96 @@ silent gaps; a mid-stream upstream break becomes a readable assistant message + 
 from __future__ import annotations
 
 import time
+import types
 
 from fastapi.testclient import TestClient
 
-import sage.shim.app as appmod
+import sage.orchestrator.app as orchmod
+import sage.shim.app as shimmod
+import sage.shim.keepalive as ka
 from sage.gateway.client import GatewayUpstreamError
 
 
-def _client(monkeypatch, gen_factory):
-    """Point the app's shim at a fake whose handle() returns gen_factory()'s generator."""
-    class _FakeShim:
-        def handle(self, body, project, session=None):
-            return gen_factory()
-
-    monkeypatch.setattr(appmod, "_shim", _FakeShim())
-    return TestClient(appmod.control_app if hasattr(appmod, "control_app") else appmod.app)
+def _fast(monkeypatch):
+    # Tiny timers so silent-gap tests run in milliseconds, not the 8s/15s production budgets.
+    monkeypatch.setattr(ka, "FIRST_BYTE_BUDGET_S", 0.05)
+    monkeypatch.setattr(ka, "KEEPALIVE_INTERVAL_S", 0.05)
 
 
 def _post(client):
     return client.post("/v1/chat/completions", json={"model": "gpt-5.4", "messages": []})
 
 
-def test_keepalive_is_emitted_during_a_silent_gap(monkeypatch):
-    # Tiny timers so the test is fast: no byte within the budget -> commit + keepalive; the real
-    # chunk lands one keepalive interval later.
-    monkeypatch.setattr(appmod, "_FIRST_BYTE_BUDGET_S", 0.05)
-    monkeypatch.setattr(appmod, "_KEEPALIVE_INTERVAL_S", 0.05)
+# ---- live path: orchestrator control_app (what OpenCode hits at runtime) --------------------------
+
+def _fake_project(gen_factory):
+    shim = types.SimpleNamespace(handle=lambda body, project, session=None: gen_factory())
+    return types.SimpleNamespace(
+        id="p", session_id="s", shim=shim,
+        model_calls=0, tool_call_responses=0, last_gateway_error=None,
+    )
+
+
+def _control_client(monkeypatch, gen_factory):
+    proj = _fake_project(gen_factory)
+    monkeypatch.setattr(orchmod, "orchestrator", types.SimpleNamespace(project=lambda: proj))
+    return TestClient(orchmod.control_app), proj
+
+
+def test_control_app_emits_keepalive_during_a_silent_gap(monkeypatch):
+    _fast(monkeypatch)
 
     def gen():
-        time.sleep(0.2)              # model "thinks" past both the budget and a keepalive interval
+        time.sleep(0.2)  # model "thinks" past the budget and a keepalive interval
         yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
 
-    client = _client(monkeypatch, gen)
+    client, _ = _control_client(monkeypatch, gen)
     body = _post(client).text
     assert ": keepalive" in body          # connection kept warm during the silent gap
     assert '"content":"hi"' in body       # the real chunk still arrives intact afterwards
 
 
-def test_mid_stream_break_becomes_a_readable_message_not_a_raw_truncation(monkeypatch):
-    monkeypatch.setattr(appmod, "_FIRST_BYTE_BUDGET_S", 0.5)
-
+def test_control_app_mid_stream_break_is_readable_not_a_raw_truncation(monkeypatch):
     def gen():
         yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
         raise RuntimeError("RemoteProtocolError: peer closed connection")
 
-    client = _client(monkeypatch, gen)
+    client, proj = _control_client(monkeypatch, gen)
     resp = _post(client)
-    assert resp.status_code == 200                 # already committed to the stream
-    assert '"content":"partial"' in resp.text      # the bytes we did get are preserved
+    assert resp.status_code == 200                        # already committed to the stream
+    assert '"content":"partial"' in resp.text             # the bytes we did get are preserved
     assert "closed the stream mid-response" in resp.text  # readable graceful ending
-    assert "data: [DONE]" in resp.text             # turn closed cleanly
+    assert "data: [DONE]" in resp.text
+    assert proj.last_gateway_error is not None            # telemetry recorded the break
 
 
-def test_fast_upstream_error_still_returns_a_clean_502(monkeypatch):
-    monkeypatch.setattr(appmod, "_FIRST_BYTE_BUDGET_S", 0.5)
-
+def test_control_app_fast_upstream_error_still_returns_502(monkeypatch):
     def gen():
         raise GatewayUpstreamError(401, "http://gw/v1/chat/completions", "unauthorized")
         yield  # pragma: no cover - generator marker
 
-    client = _client(monkeypatch, gen)
+    client, proj = _control_client(monkeypatch, gen)
     resp = _post(client)
     assert resp.status_code == 502
     assert resp.json()["error"]["upstream_status"] == 401
+    assert proj.model_calls == 1
+
+
+# ---- standalone shim app (shares the same keepalive logic) ---------------------------------------
+
+def _shim_client(monkeypatch, gen_factory):
+    fake = types.SimpleNamespace(handle=lambda body, project, session=None: gen_factory())
+    monkeypatch.setattr(shimmod, "_shim", fake)
+    return TestClient(shimmod.app)
+
+
+def test_shim_app_mid_stream_break_is_readable(monkeypatch):
+    def gen():
+        yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+        raise RuntimeError("boom")
+
+    client = _shim_client(monkeypatch, gen)
+    resp = _post(client)
+    assert resp.status_code == 200
+    assert "closed the stream mid-response" in resp.text
+    assert "data: [DONE]" in resp.text

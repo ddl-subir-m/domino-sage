@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
+import threading
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +35,7 @@ from ..feedback.runner import FeedbackRunner
 from ..preview.prefix import domino_base_prefix
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
+from ..shim import keepalive as ka
 from .service import AttachTooLarge, DataReferenced, Orchestrator, UploadUnavailable
 
 _feedback = FeedbackRunner()
@@ -554,23 +558,32 @@ async def chat_completions(request: Request):
     project.model_calls += 1
     gen = project.shim.handle(body, project=project.id, session=project.session_id)
 
-    def _peek():  # blocking; runs in a thread so the loop stays free
-        try:
-            return next(gen), None
-        except StopIteration:
-            return b"", None
-        except Exception as e:  # noqa: BLE001
-            return None, e
+    # Drain the (blocking) gateway generator on a worker thread so the response side can interleave SSE
+    # keepalives during silent gaps. Without this, we'd have to withhold the whole HTTP response until
+    # the model's first token — minutes for a gpt-5.4 plan turn — and OpenCode's fetch (undici) aborts
+    # the silent request as "TypeError: network error". See sage.shim.keepalive.
+    q: "queue.Queue" = queue.Queue()
+    started = time.monotonic()
+    threading.Thread(target=ka.pump, args=(gen, q), daemon=True).start()
 
-    first, err = await run_in_threadpool(_peek)
-    if err is not None:
+    # Bounded eager pull: a fast pre-stream failure (auth, bad model) inside the budget -> clean JSON
+    # 502, exactly as before. If nothing arrives, the model is just thinking: commit to the stream and
+    # keep it warm with keepalives below.
+    first = await run_in_threadpool(ka.get, q, ka.FIRST_BYTE_BUDGET_S)
+    if ka.is_error(first):
+        err = first[1]
         if isinstance(err, GatewayUpstreamError):
             log.error("gateway %s: %s", err.status, err.body)
             project.last_gateway_error = {"message": str(err), "upstream_status": err.status}
             return JSONResponse(status_code=502, content={"error": {"message": str(err), "upstream_status": err.status}})
-        log.exception("shim upstream failure", exc_info=err)
+        log.error("shim upstream failure: %s", err)
         project.last_gateway_error = {"message": f"{type(err).__name__}: {err}"}
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(err).__name__}: {err}"}})
+
+    log.info(
+        "model call -> streaming (first byte %.1fs%s)",
+        time.monotonic() - started, ", pending; keepalive engaged" if first is ka.EMPTY else "",
+    )
 
     def stream():
         # Flag once if this response carries a tool call (streamed as choices[].delta.tool_calls, or
@@ -584,11 +597,32 @@ async def chat_completions(request: Request):
                 flagged = True
                 project.tool_call_responses += 1
 
-        sniff(first)
-        yield first
-        for chunk in gen:
-            sniff(chunk)
-            yield chunk
+        if first is ka.DONE:
+            return
+        if first is not ka.EMPTY:
+            sniff(first)
+            yield first  # the first real chunk the eager pull already consumed
+        while True:
+            item = ka.get(q, ka.KEEPALIVE_INTERVAL_S)
+            if item is ka.EMPTY:
+                yield ka.KEEPALIVE  # SSE comment: ignored by the parser, resets the client's read timer
+                continue
+            if item is ka.DONE:
+                return
+            if ka.is_error(item):
+                e = item[1]
+                log.warning(
+                    "gateway stream broke mid-response after %.1fs (%s): %s",
+                    time.monotonic() - started, type(e).__name__, e,
+                )
+                project.last_gateway_error = {"message": f"{type(e).__name__}: {e}"}
+                yield from ka.error_sse(
+                    f"\n\n⚠️ The model gateway closed the stream mid-response ({type(e).__name__}). "
+                    "This is usually an upstream idle or duration limit — please retry."
+                )
+                return
+            sniff(item)
+            yield item
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
