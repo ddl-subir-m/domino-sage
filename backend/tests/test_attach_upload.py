@@ -242,6 +242,24 @@ def test_detach_reports_still_referenced_files_without_deleting_source(tmp_path:
     assert (proj.workspace.path / "src" / "App.tsx").exists()   # app code left untouched
 
 
+def test_detach_reports_a_hardcoded_sample_of_the_file_not_just_a_full_copy(tmp_path: Path):
+    # The agent hardcoded the prompt PREVIEW (leading rows) into the app instead of fetching the
+    # file. That's a partial copy: the app renders a stale sample, so detach must still report it.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    rows = "event_id,patient,outcome\n" + "\n".join(
+        f"EV{i:04d},patient_{i:04d},outcome_value_{i}" for i in range(200))  # 200-row dataset
+    res = orch.upload_file("big.csv", rows.encode(), sensitive=False)
+    sample = "\n".join(rows.splitlines()[:6])                              # header + first 5 rows only
+    (proj.workspace.path / "src" / "App.tsx").write_text(f"const data = `{sample}`;")
+
+    out = orch.detach_file(res["path"])
+
+    assert out["removed_copies"] == []                    # inlined into code -> source left in place
+    assert "src/App.tsx" in out["refs"]                   # but reported so the UI warns
+    assert (proj.workspace.path / "src" / "App.tsx").exists()
+
+
 def test_read_file_previews_an_attached_symlink_but_still_blocks_escapes(tmp_path: Path, monkeypatch):
     # The attachment is a symlink under public/data/ pointing at the dataset mount (outside the
     # workspace); the file-open endpoint must preview it read-only, while a real escape still 400s.

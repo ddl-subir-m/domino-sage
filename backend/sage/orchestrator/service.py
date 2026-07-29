@@ -188,6 +188,29 @@ _SCAN_EXTS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", "
 # Cap the bytes we compare for a verbatim copy — a source file that fully contains the data is the
 # leak; larger attachments are still caught by the basename-copy check below without a big scan.
 _COPY_SCAN_MAX = 512 * 1024
+# A source file needn't contain the WHOLE file to be a leak: an agent that hardcodes the prompt
+# preview (the first rows) into the app is inlining a partial copy — so the app renders a stale
+# sample and never fetches the real file. Flag it when this many leading lines (header + rows) appear
+# verbatim; requiring a multi-line contiguous run keeps false positives on ordinary code negligible.
+_SAMPLE_MATCH_ROWS = 6
+_SAMPLE_MATCH_MIN_BYTES = 64
+
+
+def _is_inlined_copy(raw: bytes, text: str) -> bool:
+    """True if `text` (a source file) inlines the attachment `raw` — the whole file, or just a
+    leading sample of it (the agent hardcoding the prompt preview instead of fetching at runtime).
+
+    The sample check requires the first `_SAMPLE_MATCH_ROWS` lines to appear verbatim as a contiguous
+    block: a multi-line run makes an accidental match on ordinary code vanishingly unlikely.
+    """
+    body = raw.decode("utf-8", "ignore")
+    if 64 <= len(raw) <= _COPY_SCAN_MAX and body in text:
+        return True
+    lines = body.splitlines()
+    if len(lines) <= _SAMPLE_MATCH_ROWS:
+        return False  # too few lines to tell a "sample" from the whole file (covered by the check above)
+    sample = "\n".join(lines[:_SAMPLE_MATCH_ROWS]).strip()
+    return len(sample) >= _SAMPLE_MATCH_MIN_BYTES and sample in text
 
 
 def _tool_detail(tool: str, part: dict) -> str:
@@ -1316,9 +1339,8 @@ class Orchestrator:
                 continue
             if raw is None:
                 raw = self._attachment_bytes(project, entry)
-            if raw is not None and 64 <= len(raw) <= _COPY_SCAN_MAX \
-                    and raw.decode("utf-8", "ignore") in text:
-                copies.append(rel)                      # data bytes inlined into source
+            if raw is not None and _is_inlined_copy(raw, text):
+                copies.append(rel)                      # data bytes inlined into source (full or sample)
             elif served in text or name in text:
                 refs.append(rel)
         return {"refs": refs, "copies": copies}

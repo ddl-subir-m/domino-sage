@@ -100,12 +100,15 @@ class OpenCodeClient:
         if files:
             listing = "\n\n".join(f"- {p}\n{_file_preview(p)}" for p in files)
             text = (
-                f"{text}\n\nAttached data files (the user @mentioned these). A PREVIEW of each is "
-                f"included below. Do NOT open these with the read tool — they can be large and reading "
-                f"them is unnecessary and slow (and files on mounts outside the project root can stall "
-                f"the read tool). Use the preview to learn the schema; the built app loads the FULL file "
-                f"at runtime from its served URL (see the 'Attached data' section in AGENTS.md). The "
-                f"absolute path is shown only for reference:\n\n{listing}")
+                f"{text}\n\nAttached data files (the user @mentioned these). A truncated SCHEMA SAMPLE "
+                f"of each is included below — only the first few rows, NOT the full dataset. Do NOT open "
+                f"these with the read tool — they can be large and reading them is unnecessary and slow "
+                f"(and files on mounts outside the project root can stall the read tool). Use the sample "
+                f"ONLY to learn the schema (column names and types). "
+                f"Do NOT hardcode, paste, or copy these sample rows into the app as its data — they are "
+                f"an incomplete preview and the real file has many more rows. The built app MUST load the "
+                f"FULL file at runtime by fetching its served URL (see the 'Attached data' section in "
+                f"AGENTS.md); the absolute path is shown only for reference:\n\n{listing}")
         body: dict = {"prompt": {"text": text}}
         if model:
             body["model"] = model
