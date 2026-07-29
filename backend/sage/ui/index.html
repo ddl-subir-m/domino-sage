@@ -55,6 +55,13 @@
   .icon-btn:hover { border-color: var(--border-strong); color: var(--text); }
   .icon-btn:disabled { opacity: .4; cursor: default; }
   .icon-btn:disabled:hover { border-color: var(--border); color: var(--muted); }
+  .hbtn {
+    display: inline-flex; align-items: center; gap: 7px; background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 11px; font-size: 12.5px;
+    font-weight: 500; color: var(--muted);
+  }
+  .hbtn:hover { border-color: var(--border-strong); color: var(--text); }
+  .hbtn.active { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, var(--surface-2)); }
   .spacer { flex: 1; }
   .mode-chip {
     font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
@@ -153,7 +160,7 @@
   .queued-msg .qcancel:hover { color: var(--text); background: var(--border); }
   .composer {
     border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface);
-    box-shadow: var(--shadow); transition: border-color .15s;
+    box-shadow: var(--shadow); transition: border-color .15s; position: relative;
   }
   .composer:focus-within { border-color: var(--primary); }
   .composer textarea {
@@ -161,7 +168,19 @@
     max-height: 180px; outline: none;
   }
   .composer textarea::placeholder { color: var(--faint); }
+  /* attachment pills — a view of attachedFiles above the textarea (Phase A) */
+  .attach-pills { display: flex; flex-wrap: wrap; gap: 6px; padding: 11px 12px 2px; }
+  .attach-pills:empty { display: none; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 4px 5px 4px 9px; max-width: 180px; }
+  .pill .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pill .lock { color: var(--lock); font-size: 11px; }
+  .pill.sensitive { border-color: color-mix(in srgb, var(--lock) 35%, var(--border)); }
+  .pill .px { border: 0; background: transparent; color: var(--faint); cursor: pointer; font-size: 13px; line-height: 1; padding: 1px 3px; border-radius: 5px; }
+  .pill .px:hover { color: var(--text); background: var(--border); }
   .composer-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px 10px; }
+  .bar-left, .bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .bar-right { margin-left: auto; }
+  .chip.plus { font-size: 16px; padding: 4px 9px; line-height: 1; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500;
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; color: var(--muted);
@@ -211,10 +230,14 @@
 
   /* ---------- popovers ---------- */
   .pop {
-    position: absolute; bottom: 74px; z-index: 20; width: 300px; background: var(--surface);
+    position: absolute; bottom: calc(100% + 8px); z-index: 20; width: 300px; background: var(--surface);
     border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 14px; display: none;
+    max-height: min(360px, 54vh); overflow-y: auto;
   }
+  .pop.left { left: 4px; } .pop.right { right: 4px; }
   .pop.open { display: block; }
+  .caution { display: none; margin-top: 8px; font-size: 11.5px; line-height: 1.45; color: var(--lock); background: color-mix(in srgb, var(--lock) 8%, transparent); border: 1px solid color-mix(in srgb, var(--lock) 30%, var(--border)); border-radius: 7px; padding: 7px 9px; }
+  .caution.show { display: block; }
   .pop h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); font-weight: 600; }
   .pop label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   .pop select, .pop input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
@@ -316,12 +339,37 @@
   .ft-row .ft-dot.visible { opacity: .7; }
   .ft-children { display: none; }
   .ft-children.open { display: block; }
+
+  /* ---------- project instructions panel (Phase B) ---------- */
+  .instr-panel {
+    flex: 0 0 auto; width: 0; overflow: hidden; border-left: 1px solid var(--border);
+    background: var(--surface); transition: width .24s cubic-bezier(.4,0,.2,1);
+  }
+  .instr-panel.open { width: min(400px, 40%); }
+  @media (prefers-reduced-motion: reduce) { .instr-panel { transition: none; } }
+  .instr-inner { width: 400px; height: 100%; display: flex; flex-direction: column; }
+  .instr-head { flex: 0 0 auto; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 12px; }
+  .instr-head h2 { margin: 0; font-size: 14.5px; font-weight: 650; }
+  .instr-head .dsub { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+  .instr-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px; gap: 9px; }
+  .instr-label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .instr-label .tag { font-size: 10.5px; font-weight: 600; color: var(--faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, monospace; }
+  textarea.instr { flex: 1; min-height: 180px; width: 100%; resize: none; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); padding: 11px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; outline: none; }
+  textarea.instr:focus { border-color: var(--primary); }
+  textarea.instr::placeholder { color: var(--faint); }
+  .instr-foot { flex: 0 0 auto; padding: 11px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .instr-foot .foot-note { font-size: 11px; color: var(--faint); line-height: 1.4; }
+  .instr-foot .foot-note code { font-family: ui-monospace, monospace; font-size: 10.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 4px; color: var(--muted); }
+  .saved-flag { font-size: 12px; color: var(--ok); font-weight: 500; opacity: 0; transition: opacity .2s; }
+  .saved-flag.show { opacity: 1; }
+  .instr-foot .btn-primary { margin-left: auto; }
 </style>
 </head>
 <body>
 <header>
   <div class="brand"><span class="glyph">S</span> sage</div>
   <div class="spacer"></div>
+  <button class="hbtn" id="instr-btn" onclick="toggleInstr()" aria-haspopup="dialog" aria-expanded="false" title="Guidance the agent follows in every chat in this project"><span aria-hidden="true">◧</span> Instructions</button>
   <div class="mode-chip" id="mode-chip" title=""><span class="dot"></span><span id="mode-text">…</span></div>
 </header>
 
@@ -340,11 +388,12 @@
     <div class="composer-wrap">
       <!-- @mention menu: attached files, filtered as you type @ -->
       <div class="mention-menu" id="mention-menu"></div>
-      <!-- model popover -->
-      <div class="pop" id="model-pop">
-        <h2>Model</h2>
-        <div class="chip" style="cursor:default" id="pop-badge"><span class="dot"></span><span id="pop-badge-text">—</span></div>
-        <label>Mode</label>
+
+      <div class="queue" id="queue"></div>
+      <div class="composer">
+      <!-- mode popover (Phase A): just the mode selector + sensitivity-lock hint -->
+      <div class="pop left" id="mode-pop">
+        <h2>Mode</h2>
         <select id="mode-sel" onchange="setModel()">
           <option value="ask">Ask — read-only, no code changes</option>
           <option value="plan">Plan — proposes a plan for your approval, then builds it</option>
@@ -352,6 +401,11 @@
           <option value="auto">Auto — picks the best model per step</option>
         </select>
         <div class="hint" id="sensitivity-lock-hint" style="display:none">Sensitivity lock is on — only sovereign models are used, in every mode.</div>
+      </div>
+      <!-- model popover -->
+      <div class="pop right" id="model-pop">
+        <h2>Model</h2>
+        <div class="chip" style="cursor:default" id="pop-badge"><span class="dot"></span><span id="pop-badge-text">—</span></div>
         <div id="auto-models" style="display:none">
           <div class="hint"><span id="auto-plan-row">Plan → <b id="auto-plan-model">—</b></span></div>
           <div class="hint"><span id="auto-implement-row">Implement → <b id="auto-implement-model">—</b></span></div>
@@ -371,11 +425,12 @@
           <label>Ask</label><input id="cat-ask" onchange="setCatalog()" />
         </details>
         <button class="btn-block" id="lock-btn" onclick="lockSovereign()">Force sovereign (lock)</button>
+        <div class="caution" id="lock-caution">You unlocked sovereign routing while sensitive data is attached — prompts and data may now reach non-sovereign models this session. Lock it again to keep them on sovereign models.</div>
         <div class="hint" id="lock-hint">Attaching a sensitivity-tagged dataset locks this automatically and permanently for the session.</div>
       </div>
 
       <!-- data / assets popover -->
-      <div class="pop" id="data-pop">
+      <div class="pop left" id="data-pop">
         <h2>Data</h2>
         <div class="upload-row">
           <input type="file" id="upload-input" class="upload-input" />
@@ -387,17 +442,21 @@
         <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
       </div>
 
-      <div class="queue" id="queue"></div>
-      <div class="composer">
+        <div class="attach-pills" id="attach-pills"></div>
         <textarea id="prompt" rows="1" placeholder="Describe your app, or a change to make…"
                   oninput="autogrow(this); updateMentionMenu()" onkeydown="composerKey(event)"
                   onblur="setTimeout(hideMentionMenu, 120)"></textarea>
         <div class="composer-bar">
-          <button class="chip" id="model-chip" onclick="togglePop('model-pop')">
-            <span class="dot"></span><span id="chip-text">model</span><span class="caret">▾</span>
-          </button>
-          <button class="chip" id="data-chip" onclick="togglePop('data-pop')">📎 <span id="data-count">Data</span><span class="caret">▾</span></button>
-          <button class="send" id="build-btn" onclick="sendOrStop()" title="Send (Enter)">↑</button>
+          <div class="bar-left">
+            <button class="chip" id="mode-btn" onclick="togglePop('mode-pop')"><span id="mode-btn-label">Auto</span><span class="caret">▾</span></button>
+            <button class="chip plus" id="data-chip" onclick="togglePop('data-pop')" title="Attach data" aria-label="Attach data">+</button>
+          </div>
+          <div class="bar-right">
+            <button class="chip" id="model-chip" onclick="togglePop('model-pop')">
+              <span class="dot"></span><span id="chip-text">model</span><span class="caret">▾</span>
+            </button>
+            <button class="send" id="build-btn" onclick="sendOrStop()" title="Send (Enter)">↑</button>
+          </div>
         </div>
       </div>
     </div>
@@ -445,6 +504,24 @@
         </div>
         <div class="file-tree" id="file-tree"></div>
       </div>
+      <!-- project instructions panel (Phase B): right-side, keeps preview centered -->
+      <aside class="instr-panel" id="instr-panel" role="dialog" aria-label="Project instructions" aria-hidden="true">
+        <div class="instr-inner">
+          <div class="instr-head">
+            <div><h2>Instructions</h2><p class="dsub">Guidance the agent follows in every chat in this project.</p></div>
+            <button class="icon-btn" style="margin-left:auto" onclick="toggleInstr()" aria-label="Close instructions">✕</button>
+          </div>
+          <div class="instr-body">
+            <div class="instr-label">Project instructions <span class="tag">AGENTS.md</span></div>
+            <textarea class="instr" id="instr-text" placeholder="e.g. You are an expert clinical presentation designer. Turn raw medical text into clean, accessible slides. Always cite sources on the slide. Prefer the project's design tokens; never invent new colors."></textarea>
+          </div>
+          <div class="instr-foot">
+            <span class="foot-note">Applied on the agent's next turn.<br>Saved to <code>AGENTS.md</code>.</span>
+            <span class="saved-flag" id="instr-saved">Saved ✓</span>
+            <button class="btn-primary" id="instr-save-btn" onclick="saveInstructions()">Save</button>
+          </div>
+        </div>
+      </aside>
     </div>
   </section>
 </div>
@@ -875,8 +952,29 @@ async function deleteFile(destPath) {
 }
 
 function updateDataCount() {
-  const n = attachedFiles.length;
-  document.getElementById('data-count').textContent = n ? `${n} file${n === 1 ? '' : 's'}` : 'Data';
+  // The old "N files" label was removed from the data chip (now a bare "+"); the count is
+  // carried by the attachment pills. Keep this guarded so any stray #data-count consumer is safe.
+  const el = document.getElementById('data-count');
+  if (el) { const n = attachedFiles.length; el.textContent = n ? `${n} file${n === 1 ? '' : 's'}` : 'Data'; }
+  renderAttachPills();
+}
+
+// Pills above the textarea: a view of the real attachedFiles state (same source as the @mention
+// menu). "×" routes to the real remove path — delete for Sage uploads, detach for dataset files.
+function isSageUploadEntry(e) { return e.source === 'upload' || (e.dataset_rel_path || e.file || '').startsWith('uploads/'); }
+function renderAttachPills() {
+  const box = document.getElementById('attach-pills');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const e of attachedFiles) {
+    const name = mentionBase(e);
+    const pill = document.createElement('span');
+    pill.className = 'pill' + (e.sensitive ? ' sensitive' : '');
+    const lock = e.sensitive ? '<span class="lock" title="Sensitive — the sovereign model is locked">🔒</span>' : '';
+    pill.innerHTML = lock + `<span class="pname" title="${esc(e.path)}">${esc(name)}</span><button class="px" aria-label="Remove ${esc(name)}">×</button>`;
+    pill.querySelector('.px').onclick = () => (isSageUploadEntry(e) ? deleteFile(e.path) : detachFile(e.path));
+    box.appendChild(pill);
+  }
 }
 
 /* ---------- model control ---------- */
@@ -886,6 +984,7 @@ async function refreshStatus() {
   const m = body.model || {};
   const showOverride = m.mode === 'plan' || m.mode === 'implement';
   document.getElementById('mode-sel').value = m.mode || 'auto';
+  updateModeChip(m.mode || 'auto');
   document.getElementById('manual-pick').style.display = showOverride ? 'block' : 'none';
   document.getElementById('auto-models').style.display = m.mode === 'auto' ? 'block' : 'none';
   document.getElementById('catalog-editor').style.display = m.mode === 'auto' ? 'block' : 'none';
@@ -898,7 +997,16 @@ async function refreshStatus() {
   renderModelChip(m);
   renderLockButton(m);
   document.getElementById('sensitivity-lock-hint').style.display = m.sensitivity_locked ? 'block' : 'none';
+  // Non-blocking caution: sensitive data is attached but sovereign routing is NOT locked (the user
+  // unlocked it). Attribute the off-state to the user's action and name the recovery.
+  const sensitiveAttached = attachedFiles.some(e => e.sensitive);
+  document.getElementById('lock-caution').classList.toggle('show', sensitiveAttached && !m.sensitivity_locked);
   lastModel = m;
+}
+const MODE_LABEL = { ask: 'Ask', plan: 'Plan', implement: 'Implement', auto: 'Auto' };
+function updateModeChip(mode) {
+  const el = document.getElementById('mode-btn-label');
+  if (el) el.textContent = MODE_LABEL[mode] || mode;
 }
 function renderLockButton(m) {
   const btn = document.getElementById('lock-btn');
@@ -990,13 +1098,9 @@ async function setModel() {
 }
 async function lockSovereign() {
   if (!active) return;
+  // Manual lock/unlock is silent (no blocking confirm). Unlocking while sensitive data is attached
+  // is instant; refreshStatus surfaces a non-blocking inline caution (#lock-caution) in this case.
   const next = !(lastModel.asset_locked || lastModel.manual_locked);
-  if (!next) {
-    const msg = lastModel.asset_locked
-      ? 'Unlock sovereign routing? A sensitivity-tagged dataset is attached — unlocking means prompts and data may be routed to non-sovereign models for the rest of this session.'
-      : 'Unlock sovereign routing? Model selection will go back to normal for this project.';
-    if (!confirm(msg)) return;
-  }
   await api('/api/project/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lock: next }) });
   refreshStatus();
 }
@@ -1874,6 +1978,54 @@ function composerKey(e) {
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); build(); }
 }
+
+/* ---------- project instructions drawer (Phase B) ----------
+   Right-side panel (sibling of the file tree) so the preview stays centered. Reads/writes the
+   user-owned region of AGENTS.md via the parallel backend routes, using the same BASE-aware api(). */
+function toggleInstr() {
+  const panel = document.getElementById('instr-panel');
+  const btn = document.getElementById('instr-btn');
+  const open = panel.classList.toggle('open');
+  btn.classList.toggle('active', open);
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  panel.setAttribute('aria-hidden', open ? 'false' : 'true');
+  if (open) {
+    loadInstructions();
+    setTimeout(() => document.getElementById('instr-text').focus(), 260);
+  }
+}
+function closeInstr() {
+  const panel = document.getElementById('instr-panel');
+  if (!panel.classList.contains('open')) return;
+  panel.classList.remove('open');
+  panel.setAttribute('aria-hidden', 'true');
+  const btn = document.getElementById('instr-btn');
+  btn.classList.remove('active');
+  btn.setAttribute('aria-expanded', 'false');
+}
+async function loadInstructions() {
+  const { ok, body } = await api('/api/project/instructions');
+  if (ok) document.getElementById('instr-text').value = (body && body.content) || '';
+}
+function flashSaved(text, isError) {
+  const flag = document.getElementById('instr-saved');
+  flag.textContent = text;
+  flag.style.color = isError ? 'var(--lock)' : '';
+  flag.classList.add('show');
+  setTimeout(() => flag.classList.remove('show'), isError ? 3500 : 1800);
+}
+async function saveInstructions() {
+  const btn = document.getElementById('instr-save-btn');
+  const content = document.getElementById('instr-text').value;
+  btn.disabled = true;
+  const { ok, body } = await api('/api/project/instructions', {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }),
+  });
+  btn.disabled = false;
+  if (ok) flashSaved('Saved ✓', false);
+  else flashSaved((body && body.error) || 'Save failed', true);
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeInstr(); });
 
 /* ---------- init ---------- */
 function renderVerticals() {

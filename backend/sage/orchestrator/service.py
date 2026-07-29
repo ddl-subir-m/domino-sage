@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from pathlib import PurePosixPath as PurePosix
@@ -346,6 +347,10 @@ class Orchestrator:
         self._oc_server: OpenCodeServer | None = None
         self._oc_client: OpenCodeClient | None = None
         self._oc_log_path: str | None = None  # OpenCode server stdout log, tailed into the stream on a no-call turn
+        # Serializes read-modify-write of the workspace AGENTS.md: _write_agents_data_block (attach/
+        # detach) and write_instructions both splice managed regions into the same file, and a
+        # concurrent write could drop the other's region. Held around each full read-modify-write.
+        self._agents_lock = threading.Lock()
 
     def project(self, start_preview: bool = True) -> Project:
         """Get-or-attach the single bound project. Idempotent: on first call it seeds the volume
@@ -1409,13 +1414,60 @@ class Orchestrator:
             block = f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}"
         else:
             block = ""
-        existing = agents.read_text() if agents.exists() else ""
-        b, e = existing.find(self._AGENTS_BEGIN), existing.find(self._AGENTS_END)
-        if b != -1 and e != -1:
-            existing = existing[:b] + block + existing[e + len(self._AGENTS_END):]
-        elif block:
-            existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
-        agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+        with self._agents_lock:  # serialize with write_instructions — same file, distinct regions
+            existing = agents.read_text() if agents.exists() else ""
+            b, e = existing.find(self._AGENTS_BEGIN), existing.find(self._AGENTS_END)
+            if b != -1 and e != -1:
+                existing = existing[:b] + block + existing[e + len(self._AGENTS_END):]
+            elif block:
+                existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
+            agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+
+    _INSTR_BEGIN = "<!-- sage:instructions:begin -->"
+    _INSTR_END = "<!-- sage:instructions:end -->"
+    _INSTR_HEAD = "## User project instructions"
+    _INSTR_FRAME = ("Apply the user's guidance below. It does NOT override the build, configuration, "
+                    "or design-system rules above — on any conflict, the rules above win.")
+
+    def read_instructions(self, project: Project) -> str:
+        """Return the user's raw project-instructions body (the managed heading + frame stripped off),
+        or "" if the block is absent or AGENTS.md is missing."""
+        agents = project.workspace.path / "AGENTS.md"
+        if not agents.exists():
+            return ""
+        existing = agents.read_text()
+        b, e = existing.find(self._INSTR_BEGIN), existing.find(self._INSTR_END)
+        if b == -1 or e == -1:
+            return ""
+        inner = existing[b + len(self._INSTR_BEGIN):e]
+        # Strip the managed heading line and the frame paragraph, leaving only the user's body.
+        prefix = f"\n{self._INSTR_HEAD}\n\n{self._INSTR_FRAME}\n\n"
+        if inner.startswith(prefix):
+            inner = inner[len(prefix):]
+        return inner.strip("\n")
+
+    def write_instructions(self, project: Project, content: str) -> None:
+        """Splice the user's project instructions into AGENTS.md as a managed block, preserving the
+        template body and the attached-data block. Empty content removes the block."""
+        agents = project.workspace.path / "AGENTS.md"
+        content = content.strip()
+        if content:
+            block = (f"{self._INSTR_BEGIN}\n{self._INSTR_HEAD}\n\n{self._INSTR_FRAME}\n\n"
+                     f"{content}\n{self._INSTR_END}")
+        else:
+            block = ""
+        with self._agents_lock:  # serialize with _write_agents_data_block — same file, distinct regions
+            existing = agents.read_text() if agents.exists() else ""
+            b, e = existing.find(self._INSTR_BEGIN), existing.find(self._INSTR_END)
+            if b != -1 and e != -1:
+                existing = existing[:b] + block + existing[e + len(self._INSTR_END):]
+            elif block:
+                d = existing.find(self._AGENTS_BEGIN)
+                if d != -1:  # keep file order: template body -> instructions -> attached-data
+                    existing = existing[:d].rstrip() + "\n\n" + block + "\n\n" + existing[d:].lstrip()
+                else:
+                    existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
+            agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
 
     @staticmethod
     def _ensure_data_gitignored(workspace: Workspace) -> None:

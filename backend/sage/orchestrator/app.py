@@ -457,6 +457,23 @@ async def write_file(request: Request) -> JSONResponse:
     return JSONResponse(content={"path": path, "saved": True})
 
 
+@control_app.get("/api/project/instructions")
+def read_instructions() -> JSONResponse:
+    project = orchestrator.project()
+    return JSONResponse(content={"content": orchestrator.read_instructions(project)})
+
+
+@control_app.put("/api/project/instructions")
+async def write_instructions(request: Request) -> JSONResponse:
+    project = orchestrator.project()
+    body = await request.json()
+    content = body.get("content", "")
+    if not isinstance(content, str):
+        return JSONResponse(status_code=400, content={"error": "content must be a string"})
+    orchestrator.write_instructions(project, content)
+    return JSONResponse(content={"ok": True, "content": orchestrator.read_instructions(project)})
+
+
 @control_app.get("/api/assets")
 def list_assets() -> dict:
     return {"assets": orchestrator.list_assets(), "sensitivity_tag": orchestrator._sensitivity_tag}
