@@ -960,8 +960,8 @@ function updateDataCount() {
 }
 
 // Pills above the textarea: a view of the real attachedFiles state (same source as the @mention
-// menu). "×" routes to the real remove path — delete for Sage uploads, detach for dataset files.
-function isSageUploadEntry(e) { return e.source === 'upload' || (e.dataset_rel_path || e.file || '').startsWith('uploads/'); }
+// menu). "×" detaches — a lightweight "remove from context" that keeps the underlying data;
+// destructive delete stays a deliberate action in the data popover.
 function renderAttachPills() {
   const box = document.getElementById('attach-pills');
   if (!box) return;
@@ -972,7 +972,7 @@ function renderAttachPills() {
     pill.className = 'pill' + (e.sensitive ? ' sensitive' : '');
     const lock = e.sensitive ? '<span class="lock" title="Sensitive — the sovereign model is locked">🔒</span>' : '';
     pill.innerHTML = lock + `<span class="pname" title="${esc(e.path)}">${esc(name)}</span><button class="px" aria-label="Remove ${esc(name)}">×</button>`;
-    pill.querySelector('.px').onclick = () => (isSageUploadEntry(e) ? deleteFile(e.path) : detachFile(e.path));
+    pill.querySelector('.px').onclick = () => detachFile(e.path);
     box.appendChild(pill);
   }
 }
