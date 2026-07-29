@@ -65,7 +65,10 @@ def test_agents_block_gives_exact_served_path_and_guardrails(tmp_path: Path):
 
     agents = (ws / "AGENTS.md").read_text()
     assert "fetch `data/sales_2026/uploads/my_data.csv`" in agents   # nested, base-relative
-    assert "import.meta.env.BASE_URL" in agents                      # base-aware fetch pattern
+    # Base-aware fetch by string concatenation, NOT new URL(path, BASE_URL) — BASE_URL is a path,
+    # so new URL() throws "Invalid base URL" and crashes the built app on load.
+    assert 'import.meta.env.BASE_URL + "data/' in agents
+    assert "Invalid base URL" in agents                              # warns off the crashing pattern
     assert "src/" in agents and "gitignored" in agents               # don't-copy-into-git guardrail
 
 
@@ -141,7 +144,7 @@ def test_delete_blocked_while_app_fetches_the_file(tmp_path: Path):
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
     res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=False)
-    (ws / "src" / "App.tsx").write_text('fetch(new URL("data/sales_2026/uploads/d.csv", import.meta.env.BASE_URL))')
+    (ws / "src" / "App.tsx").write_text('fetch(import.meta.env.BASE_URL + "data/sales_2026/uploads/d.csv")')
 
     with pytest.raises(DataReferenced) as ei:
         orch.delete_file(res["path"])

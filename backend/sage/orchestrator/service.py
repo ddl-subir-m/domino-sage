@@ -1368,9 +1368,14 @@ class Orchestrator:
                 "by fetching it RELATIVE TO THE APP BASE, so it resolves in both the dev preview and "
                 "the published app:", "",
                 "```js",
-                'const url = new URL("data/<slug>/<name>", import.meta.env.BASE_URL).href;',
+                "// import.meta.env.BASE_URL always ends in '/', so this string is a valid relative",
+                "// URL in both the dev preview and the published app.",
+                'const url = import.meta.env.BASE_URL + "data/<slug>/<name>";',
                 "const text = await fetch(url).then((r) => r.text());",
                 "```", "",
+                "Do NOT wrap it in `new URL(path, import.meta.env.BASE_URL)` — BASE_URL is a path "
+                "(e.g. `/`), not an absolute URL, so `new URL()` throws `Invalid base URL` and crashes "
+                "the app on load. Just concatenate as shown. "
                 "Do NOT fetch a leading-slash path like `/data/...` — it breaks under the app's base "
                 "prefix. Do NOT copy these files into `src/`: `public/data/` is gitignored on purpose, "
                 "so copying leaks the data into the app's git repo. @mention a file by its disk path.", "",
