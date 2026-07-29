@@ -235,7 +235,7 @@ def diag() -> JSONResponse:
         "gateway_mode": GATEWAY_MODE,
         "ports": {"control_port": control_port, "base_port": base_port,
                   "match": base_port == control_port},
-        "agents": orchestrator.resolved_agent_names(),
+        "agents": orchestrator.resolved_agents(),
         "project": None if p is None else {
             "model_calls": p.model_calls,
             "tool_call_responses": p.tool_call_responses,
@@ -526,21 +526,22 @@ async def detach_file(request: Request) -> JSONResponse:
 @control_app.post("/api/project/upload")
 async def upload_file(request: Request) -> JSONResponse:
     # Raw-body upload (avoids a python-multipart dependency): the file bytes are the request body;
-    # the name + sensitivity ride in query params. The UI sends one file per request.
+    # the name, sensitivity, and optional target dataset ride in query params. One file per request.
     filename = request.query_params.get("name", "")
     sensitive = request.query_params.get("sensitive", "").lower() in ("1", "true", "yes")
+    dataset_id = request.query_params.get("dataset") or None
     data = await request.body()
     if not data:
         return JSONResponse(status_code=400, content={"error": "empty upload"})
     try:
-        return JSONResponse(content=orchestrator.upload_file(filename, data, sensitive))
+        return JSONResponse(content=orchestrator.upload_file(filename, data, sensitive, dataset_id))
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid filename"})
     except UploadUnavailable as e:
         where = "sensitive" if e.sensitive else "default"
         msg = (
-            "The sensitive dataset isn't mounted in this workspace. Rebuild the workspace to pick it up."
-            if e.sensitive
+            "The dataset you picked isn't mounted and writable in this workspace."
+            if dataset_id
             else "No writable dataset is available to store uploads in this project."
         )
         return JSONResponse(status_code=409, content={"error": msg, "target": where})

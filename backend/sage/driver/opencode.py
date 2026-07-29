@@ -117,15 +117,29 @@ class OpenCodeClient:
         r = httpx.post(f"{self.base_url}/api/session/{session_id}/prompt", json=body, timeout=self.timeout_s)
         r.raise_for_status()
 
-    def agent_names(self) -> list[str]:
+    def agent_summaries(self) -> list[dict]:
         """The agents OpenCode actually resolved from its config. `send_prompt(agent=...)` silently
         falls back to the default build agent when a name is missing, so a mode's `permission`/`prompt`
-        block goes inert with no error — this is the only way to see that without a shell."""
+        block goes inert with no error — this is the only way to see that without a shell.
+
+        Field names in the response aren't pinned by us, so keep every short scalar rather than
+        picking an identifier key: whatever OpenCode calls it (name/id/...), it survives. Long values
+        (agent system prompts) are dropped so the diag payload stays readable."""
         r = httpx.get(f"{self.base_url}/api/agent", timeout=30)
         r.raise_for_status()
         payload = r.json()
         agents = payload.get("data", payload) if isinstance(payload, dict) else payload
-        return sorted(a.get("name", "") for a in agents if isinstance(a, dict))
+        if isinstance(agents, dict):  # keyed by name rather than a list
+            agents = [{"key": k, **v} if isinstance(v, dict) else {"key": k} for k, v in agents.items()]
+        out = []
+        for a in agents if isinstance(agents, list) else []:
+            if not isinstance(a, dict):
+                out.append({"raw": str(a)[:80]})
+                continue
+            out.append({k: v for k, v in a.items()
+                        if isinstance(v, (str, bool, int, float, type(None)))
+                        and len(str(v)) <= 80} or {"keys": sorted(a)[:12]})
+        return out
 
     def is_running(self, session_id: str) -> bool:
         # 30s (was 15s): OpenCode's Node server can be briefly CPU-bound (serializing a large context)

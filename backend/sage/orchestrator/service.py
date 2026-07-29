@@ -108,12 +108,19 @@ def _attach_dest(dataset_name: str, file_path: str) -> str:
     return PurePosix("public/data", _slug(dataset_name), *parts).as_posix()
 
 
+# Subfolders Sage writes uploaded bytes into: `uploads/` (non-sensitive) and `sensitive/` (a
+# sensitive upload into the shared default dataset, which we deliberately don't tag). Both are
+# Sage-created, so both are safe to delete; a genuine pre-existing dataset file is neither.
+_SAGE_UPLOAD_PREFIXES = ("uploads/", "sensitive/")
+
+
 def _is_sage_upload(entry: dict) -> bool:
-    """A Sage-managed upload: bytes Sage wrote under the dataset's `uploads/` folder. True for
-    `source=='upload'` and for such a file later re-attached from the dataset browser (source
-    becomes 'dataset' but its dataset_rel_path still lives under uploads/). These are safe to
-    delete; a genuine pre-existing dataset file is not."""
-    return entry.get("source") == "upload" or str(entry.get("dataset_rel_path") or "").startswith("uploads/")
+    """A Sage-managed upload: bytes Sage wrote under a dataset's `uploads/` or `sensitive/` folder.
+    True for `source=='upload'` and for such a file later re-attached from the dataset browser
+    (source becomes 'dataset' but its dataset_rel_path still lives under one of those folders).
+    These are safe to delete; a genuine pre-existing dataset file is not."""
+    rel = str(entry.get("dataset_rel_path") or "")
+    return entry.get("source") == "upload" or rel.startswith(_SAGE_UPLOAD_PREFIXES)
 
 
 def _safe_join(root: Path, rel: str) -> Path:
@@ -410,13 +417,13 @@ class Orchestrator:
             self._oc_client = OpenCodeClient(base_url=self._oc_server.start())
         return self._oc_client
 
-    def resolved_agent_names(self) -> list[str] | None:
+    def resolved_agents(self) -> list[dict] | None:
         """The agents OpenCode resolved, for /api/diag. None when the server isn't up yet or the
         query failed — deliberately does NOT start it, so diag stays safe to hit mid-build."""
         if self._oc_client is None:
             return None
         try:
-            return self._oc_client.agent_names()
+            return self._oc_client.agent_summaries()
         except Exception:
             return None
 
@@ -1126,6 +1133,7 @@ class Orchestrator:
                 "tags": a.tags,
                 "project": a.project,
                 "sensitive": is_sensitive(a, self._sensitivity_tag),
+                "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
             }
             for a in self._assets.list_datasets(self._domino_project_id)
         ]
@@ -1216,24 +1224,32 @@ class Orchestrator:
         still_used = sorted(set(usage["refs"] + [r for r in usage["copies"] if PurePosix(r).name != name]))
         return {"detached": path, "removed_copies": removed, "refs": still_used, "status": project.status()}
 
-    def upload_file(self, filename: str, data: bytes, sensitive: bool = False) -> dict:
-        """Write an uploaded file into the project's writable dataset mount (persisted, and outside
-        git), then attach it under public/data/ like any dataset file. Sensitive uploads target the
-        mounted dataset tagged `sensitive` (provisioned per-project) so the sovereign lock fires;
-        others go to the default writable dataset. The committed manifest lets the published app
-        rebuild public/data/ from the mount. Enforces the same total-size cap as attach."""
+    def upload_file(self, filename: str, data: bytes, sensitive: bool = False,
+                    dataset_id: str | None = None) -> dict:
+        """Write an uploaded file into a writable dataset mount (persisted, and outside git), then
+        attach it under public/data/ like any dataset file. Hybrid sensitivity:
+
+        - No `dataset_id` -> the shared default project dataset. A sensitive upload goes to its
+          `sensitive/` subfolder and is recorded sensitive in the manifest (which drives the
+          sovereign lock); the dataset is NOT tagged (its non-sensitive data must stay unmarked).
+        - A picked `dataset_id` -> a real Domino tag. If the dataset is already tagged `sensitive`
+          the file is sensitive regardless; if it's untagged and the upload is marked sensitive we
+          tag the whole dataset (best-effort) so the tag governs it and every future attachment.
+
+        The committed manifest lets the published app rebuild public/data/ from the mount. Enforces
+        the same total-size cap as attach."""
         project = self.project()
         if not filename or not filename.strip():
             raise ValueError("filename required")
         name = _slug(filename)
-        target = self._upload_target_dataset(sensitive)
+        target, effective_sensitive, subfolder = self._resolve_upload_target(sensitive, dataset_id)
         if target is None or not target.mount_path:
             raise UploadUnavailable(sensitive)
         size = len(data)
         total = sum(e["size"] for e in project.attached)
         if total + size > self._attach_max_bytes:
             raise AttachTooLarge(self._attach_max_bytes, total, size)
-        rel_in_dataset = PurePosix("uploads", name).as_posix()
+        rel_in_dataset = PurePosix(subfolder, name).as_posix()
         dest_bytes = _safe_join(Path(target.mount_path), rel_in_dataset)
         dest_bytes.parent.mkdir(parents=True, exist_ok=True)
         dest_bytes.write_bytes(data)
@@ -1246,24 +1262,70 @@ class Orchestrator:
         project.attached[:] = [e for e in project.attached if e["path"] != rel]
         project.attached.append(
             {"dataset_id": target.id, "dataset": target.name, "file": rel_in_dataset, "path": rel,
-             "size": size, "sensitive": sensitive, "source": "upload", "dataset_rel_path": rel_in_dataset}
+             "size": size, "sensitive": effective_sensitive, "source": "upload",
+             "dataset_rel_path": rel_in_dataset}
         )
         self._ensure_data_gitignored(project.workspace)
         self._write_agents_data_block(project)
         project.workspace.write_attachments(project.attached)
-        if sensitive:
+        if effective_sensitive:
             project.control.on_assets_changed([True])  # sticky sovereign lock
-        return {"uploaded": name, "dataset": target.name, "path": rel, "size": size,
-                "sensitive": sensitive, "status": project.status()}
+        return {"uploaded": name, "dataset": target.name, "dataset_id": target.id, "path": rel,
+                "size": size, "sensitive": effective_sensitive, "status": project.status()}
 
-    def _upload_target_dataset(self, sensitive: bool) -> Asset | None:
-        """Pick a writable mounted dataset for an upload: the sensitive-tagged one when sensitive,
-        else the first writable non-sensitive dataset. None if no matching writable mount exists."""
-        want = bool(sensitive)
-        for a in self._assets.list_datasets(self._domino_project_id):
-            if a.mount_path and os.access(a.mount_path, os.W_OK) and is_sensitive(a, self._sensitivity_tag) == want:
+    def _resolve_upload_target(self, sensitive: bool, dataset_id: str | None) -> tuple[Asset | None, bool, str]:
+        """Resolve (target dataset, effective sensitivity, subfolder) for an upload.
+
+        Without a picked dataset the target is the shared default dataset and sensitivity uses the
+        `sensitive/` subfolder without tagging. With a picked dataset, sensitivity is tag-driven:
+        an already-tagged dataset forces sensitive; an untagged one gets tagged (best-effort) when
+        the upload is marked sensitive. Picked datasets always write to `uploads/`."""
+        if dataset_id:
+            try:
+                target = self._find_asset(dataset_id)
+            except LookupError:
+                return None, False, "uploads"
+            if not target.mount_path or not os.access(target.mount_path, os.W_OK):
+                return None, False, "uploads"
+            already = is_sensitive(target, self._sensitivity_tag)
+            effective = already or bool(sensitive)
+            if effective and not already:
+                self._tag_dataset_sensitive(target)  # best-effort governance tag
+            return target, effective, "uploads"
+        # Default (shared) project dataset: subfolder + manifest drive sensitivity, no tag.
+        target = self._default_dataset()
+        subfolder = "sensitive" if sensitive else "uploads"
+        return target, bool(sensitive), subfolder
+
+    def _default_dataset(self) -> Asset | None:
+        """The shared default project dataset to write uploads into: a writable, mounted dataset,
+        preferring the project's own (named after / owned by the project, mounted under /mnt/data),
+        falling back to the first writable non-sensitive dataset (covers the local fake harness)."""
+        writable = [a for a in self._assets.list_datasets(self._domino_project_id)
+                    if a.mount_path and os.access(a.mount_path, os.W_OK)]
+        pname = self._domino_project_name
+        if pname:
+            for a in writable:
+                if a.name == pname and str(a.mount_path).startswith("/mnt/data"):
+                    return a
+            for a in writable:
+                if a.project == pname or a.name == pname:
+                    return a
+        for a in writable:
+            if not is_sensitive(a, self._sensitivity_tag):
                 return a
-        return None
+        return writable[0] if writable else None
+
+    def _tag_dataset_sensitive(self, target: Asset) -> bool:
+        """Tag a picked dataset `sensitive` via the control plane (best-effort). Reuses the snapshot
+        id from the dataset's tag map when present, else lets the control plane fetch one. Returns
+        False (without raising) when there's no control plane or the tag write fails — the upload
+        still proceeds and the manifest carries the per-file sensitive flag."""
+        if self._control_plane is None:
+            log.warning("tag_dataset_sensitive skipped: no control plane (dataset %s)", target.id)
+            return False
+        snap = next(iter(target.tag_snapshots.values()), None) if target.tag_snapshots else None
+        return bool(self._control_plane.tag_dataset_sensitive(target.id, snapshot_id=snap))
 
     def delete_file(self, path: str) -> dict:
         """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the dataset mount,
@@ -1297,9 +1359,10 @@ class Orchestrator:
 
     def _delete_upload_bytes(self, entry: dict) -> None:
         """Remove an uploaded file's bytes from its dataset mount. Guarded to only ever touch a path
-        under uploads/ resolved within the dataset mount — so it can never delete pre-existing data."""
+        under a Sage upload folder (uploads/ or sensitive/) resolved within the dataset mount — so
+        it can never delete pre-existing data."""
         rel = entry.get("dataset_rel_path") or ""
-        if not rel.startswith("uploads/"):
+        if not rel.startswith(_SAGE_UPLOAD_PREFIXES):
             return
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id)
                       if a.id == entry.get("dataset_id")), None)
