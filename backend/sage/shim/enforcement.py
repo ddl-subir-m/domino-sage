@@ -19,7 +19,7 @@ from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import ModelCatalog, Mode
-from ..router.phase_classifier import WRITE_TOOLS, classify
+from ..router.phase_classifier import READ_ONLY_DENIED, classify
 
 
 def _resolve_sage_version() -> str | None:
@@ -93,13 +93,16 @@ class EnforcementShim:
             state = replace(state, phase=phase)
             self._control.set_phase(phase)
 
-        # Ask mode is read-only: strip write tools from the request so the model is never
-        # offered them. This only controls what this shim advertises upstream — it can't reach
-        # into OpenCode's own tool-execution layer, which is out of scope for this guarantee.
-        if state.mode is Mode.ASK and "tools" in request:
+        # Read-only turns (Ask mode, or a plan turn held at the approval gate) get every write AND
+        # shell tool stripped from the request, so the model is never offered one. This is the whole
+        # read-only guarantee, not a best-effort layer on top of another: OpenCode's per-agent
+        # `permission: {edit: deny, bash: deny}` does nothing on the headless server path (see
+        # READ_ONLY_DENIED), so if a tool survives this filter, it runs. Shell matters most — that's
+        # the hole that let Ask mode write files with `printf > file` for as long as it existed.
+        if (state.mode is Mode.ASK or state.read_only_turn) and "tools" in request:
             tools = [
                 t for t in request["tools"]
-                if (t.get("function") or {}).get("name", "").lower() not in WRITE_TOOLS
+                if (t.get("function") or {}).get("name", "").lower() not in READ_ONLY_DENIED
             ]
             request = {**request, "tools": tools}
 

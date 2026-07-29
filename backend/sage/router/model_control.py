@@ -20,6 +20,7 @@ class ModelControl:
         self._picked_model: ModelId | None = None
         self._asset_locked = False   # sticky once True: set by an attached sensitivity-tagged asset
         self._manual_locked = False  # user-toggled via the "Force sovereign" button; freely reversible
+        self._read_only_turn = False  # armed by the orchestrator for a gated plan turn; cleared after
 
     def set_mode(self, mode: Mode) -> None:
         self._mode = mode
@@ -65,10 +66,16 @@ class ModelControl:
     def manual_locked(self) -> bool:
         return self._manual_locked
 
+    def set_read_only_turn(self, value: bool) -> None:
+        """Arm/disarm the read-only guarantee for the current turn (see SessionState.read_only_turn).
+        Per-turn, not sticky: the orchestrator clears it on every exit from the stream."""
+        self._read_only_turn = value
+
     def snapshot(self) -> SessionState:
         return SessionState(
             sensitivity_locked=self.locked,
             mode=self._mode,
             phase=self._phase,
             picked_model=self._picked_model,
+            read_only_turn=self._read_only_turn,
         )

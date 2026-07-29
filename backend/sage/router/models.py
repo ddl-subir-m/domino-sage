@@ -54,6 +54,10 @@ class SessionState:
     mode: Mode
     phase: Phase
     picked_model: ModelId | None = None
+    # This turn must not touch the filesystem. Ask mode implies it, but a gated plan turn does too
+    # while `mode` is still auto/plan — the gate is a per-turn decision the mode can't express, so
+    # the orchestrator sets it explicitly and the shim strips write/shell tools on that basis.
+    read_only_turn: bool = False
 
 
 @dataclass(frozen=True)

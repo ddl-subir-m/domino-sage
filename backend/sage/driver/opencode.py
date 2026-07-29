@@ -85,11 +85,13 @@ class OpenCodeClient:
         """Send a prompt. `/prompt` returns before the turn completes (async), so callers must
         wait_for_completion() to know the edits landed.
 
-        `agent` selects a named agent from opencode.json (e.g. "sage-ask", "sage-plan") whose
-        `permission` block OpenCode enforces at its own tool-execution layer — the real read-only
-        guarantee for Ask/Plan modes, since the shim's tools-list filtering only hides tools from
-        the model's view of one request and can't stop OpenCode from running a tool it already
-        knows about (e.g. `bash`, which the tools filter never covered either).
+        `agent` selects a named agent from opencode.json (e.g. "sage-ask", "sage-plan"), which
+        applies that agent's system prompt. Do NOT rely on its `permission` block for read-only:
+        OpenCode does not enforce `deny` on this path. Verified 2026-07-29 against 1.18.4 — the
+        config loads, `GET /api/agent` lists sage-ask as resolved, the turn requests it, and it
+        still ran `bash` and wrote a file. Only `"ask"` diverts a tool to the approval handler;
+        `"deny"` is treated as preapproved and executes. The read-only guarantee lives entirely in
+        the shim, which strips READ_ONLY_DENIED from the request so the tool is never offered.
 
         `files` are absolute paths of user-@mentioned attachments. We surface them by appending an
         explicit "Attached files" section to the prompt TEXT (not as OpenCode file parts): 1.18.4's

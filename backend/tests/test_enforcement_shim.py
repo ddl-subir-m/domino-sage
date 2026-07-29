@@ -105,6 +105,66 @@ def test_ask_mode_strips_write_tools_from_request():
     assert "read" in tool_names
 
 
+def test_ask_mode_strips_shell_tools_too():
+    """The hole that made Ask mode writable: `bash` was never in the strip set, and OpenCode's own
+    `permission: {bash: deny}` is inert headless — so the model wrote files with `printf > file`."""
+    control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "bash"}},
+        {"type": "function", "function": {"name": "grep"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    tool_names = [t["function"]["name"] for t in sent_request["tools"]]
+    assert "bash" not in tool_names
+    assert "grep" in tool_names
+
+
+def test_gated_plan_turn_strips_tools_even_outside_ask_mode():
+    """The plan gate fires from Auto too, where `mode` alone can't express "this turn is read-only"."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.set_read_only_turn(True)
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "bash"}},
+        {"type": "function", "function": {"name": "write"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert [t["function"]["name"] for t in sent_request["tools"]] == ["read"]
+
+
+def test_read_only_turn_is_per_turn_not_sticky():
+    """The orchestrator clears this on every exit from a turn; a stuck flag would silently make
+    every later build read-only, which looks like the agent refusing to write."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    assert control.snapshot().read_only_turn is False
+    control.set_read_only_turn(True)
+    assert control.snapshot().read_only_turn is True
+    control.set_read_only_turn(False)
+    assert control.snapshot().read_only_turn is False
+
+
+def test_write_tools_reach_an_ordinary_build_turn():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "bash"}},
+        {"type": "function", "function": {"name": "write"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert [t["function"]["name"] for t in sent_request["tools"]] == ["bash", "write"]
+
+
 def test_ask_mode_with_no_tools_key_is_untouched():
     control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
     gw = FakeGatewayClient()

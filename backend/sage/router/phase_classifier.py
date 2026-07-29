@@ -34,6 +34,17 @@ WRITE_TOOLS = frozenset(
     {"edit", "write", "patch", "multiedit", "multi_edit", "str_replace", "str_replace_editor",
      "create", "create_file", "apply_patch"}
 )
+# Shell tools are deliberately NOT in WRITE_TOOLS: that set also drives classify() below, where a
+# tool call means "the agent started implementing". A read-only turn legitimately shells out to look
+# around (grep/ls), so folding these in would misclassify exploration as implementation and reroute
+# the model. They belong only to the read-only guarantee.
+SHELL_TOOLS = frozenset({"bash", "shell", "sh", "run", "run_command", "execute", "exec", "terminal"})
+# What a read-only turn (Ask mode, or a gated plan turn) must never be offered. Stripping these from
+# the request is the ONLY thing that actually enforces read-only: OpenCode's per-agent
+# `permission: {edit: deny, bash: deny}` is inert on the headless server path — its config loads and
+# the agent resolves, but only `"ask"` diverts a tool to the approval handler, so `"deny"` is
+# preapproved and runs. Verified 2026-07-29: sage-ask wrote a file via bash.
+READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS
 _TURN_BOUNDARY_ROLES = frozenset({"user", "human"})
 
 

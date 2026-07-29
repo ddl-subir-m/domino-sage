@@ -558,11 +558,17 @@ class Orchestrator:
         original_pick = project.control.snapshot().picked_model
         escalated_pick = False
 
+        # Arm the read-only guarantee for a gated turn: the shim strips every write/shell tool from
+        # each request, which is what actually stops the planner writing code (OpenCode's own
+        # per-agent permission block doesn't). Cleared on every exit alongside the mode.
+        project.control.set_read_only_turn(gate)
+
         def restore_mode() -> None:
             if project.control.snapshot().mode is not original_mode:
                 project.control.set_mode(original_mode)
             if escalated_pick:
                 project.control.pick(original_pick)
+            project.control.set_read_only_turn(False)
 
         def handle_stop() -> dict:
             project.stop_requested = False
@@ -771,6 +777,20 @@ class Orchestrator:
                     tail = self._opencode_log_tail()
                     if tail:
                         yield {"type": "opencode-log", "lines": tail}
+                # A gated turn that wrote code broke the guarantee it exists to provide: the user was
+                # promised a plan to approve and got an unreviewed build instead. Don't fall through
+                # to the ordinary build path (that's what silently swallowed the gate before the shim
+                # enforced read-only) — revert to the pre-turn tree and say so.
+                if gate and wrote_code:
+                    log.error("gated turn wrote code — reverting; read-only enforcement was bypassed")
+                    project.snapshot.discard_changes()
+                    restore_mode()
+                    yield persist({"type": "error", "message":
+                                   "Planning was expected, but the agent edited files — nothing was "
+                                   "applied. Send the request again, or switch to Implement to build "
+                                   "directly."})
+                    yield persist({"type": "done", "ok": False, "decision": "gate violated"})
+                    return
                 if report.ok and not wrote_code:
                     if gate:
                         # First-build gate (SPEC P6): the planner proposed a plan and wrote no code —
