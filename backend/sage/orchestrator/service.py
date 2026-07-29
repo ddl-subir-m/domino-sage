@@ -39,6 +39,10 @@ from ..workspace.snapshot import TurnSnapshot
 
 log = logging.getLogger("sage.orchestrator")
 
+# Consecutive OpenCode poll (is_running/messages) failures tolerated before halting a build. Each poll
+# can block up to its httpx timeout, so this is ~a minute of sustained unresponsiveness, not a blip.
+_MAX_POLL_FAILURES = 4
+
 # Each explicit mode routes to a named opencode.json agent. Ask/Plan are read-only — their
 # `permission` block is enforced natively by OpenCode (edit/bash denied), not just hidden from the
 # model's tool list. Implement carries a strong system prompt that forces the model to actually
@@ -601,14 +605,34 @@ class Orchestrator:
             # in the shim, not here, so it stays per-step and race-free.
             last_phase = project.control.snapshot().phase.value
             last_active: str | None = None  # last "active" label emitted (dedup across 1s polls)
+            poll_failures = 0
             while True:
                 if project.stop_requested:
                     client.interrupt(sid)
                     yield handle_stop()
                     return
-                running = client.is_running(sid)
+                # Poll OpenCode for turn status + new messages. A transient slow/unresponsive OpenCode
+                # (e.g. CPU-bound serializing a huge context) must NOT hard-crash the build: a single
+                # is_running/messages ReadTimeout used to escape and kill the whole SSE. Tolerate it —
+                # assume still running and retry — and give up only after a sustained outage.
+                try:
+                    running = client.is_running(sid)
+                    msgs = client.messages(sid)
+                    poll_failures = 0
+                except httpx.HTTPError as e:
+                    poll_failures += 1
+                    log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
+                    if poll_failures >= _MAX_POLL_FAILURES:
+                        restore_mode()
+                        yield persist({"type": "error", "message": (
+                            "OpenCode stopped responding, so the build was halted. Try again — if it "
+                            "keeps happening, the request may be pulling too much data into context.")})
+                        yield persist({"type": "done", "ok": False, "decision": "opencode unresponsive"})
+                        return
+                    time.sleep(2.0)
+                    continue
                 appeared = appeared or running
-                for m in client.messages(sid):
+                for m in msgs:
                     if m.get("type") != "assistant":
                         continue
                     for i, part in enumerate(m.get("content", [])):

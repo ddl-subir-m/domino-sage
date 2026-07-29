@@ -115,7 +115,10 @@ class OpenCodeClient:
         r.raise_for_status()
 
     def is_running(self, session_id: str) -> bool:
-        r = httpx.get(f"{self.base_url}/api/session/active", timeout=15)
+        # 30s (was 15s): OpenCode's Node server can be briefly CPU-bound (serializing a large context)
+        # and slow to answer this health poll. build_stream also tolerates a poll timeout, but a more
+        # generous window avoids tripping that path on a normal busy turn.
+        r = httpx.get(f"{self.base_url}/api/session/active", timeout=30)
         r.raise_for_status()
         return session_id in r.json().get("data", {})
 
