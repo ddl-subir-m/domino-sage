@@ -423,6 +423,22 @@ def read_file(path: str) -> JSONResponse:
     return JSONResponse(content={"path": path, "content": content})
 
 
+@control_app.get("/api/project/file/raw")
+def read_file_raw(path: str) -> Response:
+    # Serve raw file bytes with a content type so binary files (e.g. images) render in the code view.
+    project = orchestrator.project()
+    if any(e["path"] == path for e in project.attached):
+        target = project.workspace.path / path  # follow the symlink to the dataset mount
+    else:
+        try:
+            target = _resolve_workspace_file(project.workspace.path, path)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "invalid path"})
+    if not target.is_file():
+        return JSONResponse(status_code=404, content={"error": "file not found"})
+    return FileResponse(target, headers={"Cache-Control": "no-store"})
+
+
 @control_app.put("/api/project/file")
 async def write_file(request: Request) -> JSONResponse:
     project = orchestrator.project()

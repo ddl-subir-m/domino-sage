@@ -268,6 +268,22 @@
   #editor-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .editor-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
   #monaco-editor { flex: 1; min-height: 0; display: none; }
+  #image-view { flex: 1; min-height: 0; display: none; place-items: center; overflow: auto; padding: 16px; background: var(--bg, #f6f7f9); }
+  #image-view.show { display: grid; }
+  #image-view img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #doc-view { flex: 1; min-height: 0; display: none; }
+  #doc-view.show { display: block; }
+  #doc-view iframe { width: 100%; height: 100%; border: 0; }
+  #office-view { flex: 1; min-height: 0; display: none; overflow: auto; background: var(--bg, #f6f7f9); }
+  #office-view.show { display: block; }
+  #office-view .office-loading { display: grid; place-items: center; height: 100%; color: var(--faint); font-size: 13px; padding: 16px; text-align: center; }
+  #office-view .docx-wrapper { padding: 16px; }
+  #office-view .sheet-tabs { display: flex; gap: 4px; padding: 6px 8px; position: sticky; top: 0; background: var(--surface); border-bottom: 1px solid var(--border); overflow-x: auto; }
+  #office-view .sheet-tabs button { border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 4px; padding: 3px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  #office-view .sheet-tabs button.active { background: var(--primary); color: #fff; border-color: transparent; }
+  #office-view .sheet-body { padding: 12px; overflow-x: auto; }
+  #office-view .sheet-body table { border-collapse: collapse; font-size: 12px; }
+  #office-view .sheet-body td, #office-view .sheet-body th { border: 1px solid var(--border); padding: 3px 8px; white-space: nowrap; }
   .file-tree-panel {
     width: 240px; flex: 0 0 auto; display: none; flex-direction: column;
     border-left: 1px solid var(--border); background: var(--surface); overflow: hidden;
@@ -402,6 +418,9 @@
         <div id="editor-pane" style="display:none">
           <div class="editor-empty" id="editor-empty">Select a file from the tree to view and edit it.</div>
           <div id="monaco-editor"></div>
+          <div id="image-view"><img id="image-view-img" alt="" /></div>
+          <div id="doc-view"><iframe id="doc-view-frame" title="Document preview"></iframe></div>
+          <div id="office-view"></div>
         </div>
         <div class="work-empty" id="work-empty">Describe an app to start the live preview.</div>
       </div>
@@ -589,6 +608,7 @@ function enterProject() {
   fileTreeRows.clear();
   document.getElementById('editor-empty').style.display = 'grid';
   document.getElementById('monaco-editor').style.display = 'none';
+  hideMediaViews();
   document.getElementById('editor-save-btn').disabled = true;
   if (workTab === 'code') loadFileTree();
 }
@@ -1564,10 +1584,114 @@ function renderFileTree(nodes, depth) {
   return frag;
 }
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico', 'avif']);
+const ext = (p) => (p.split('.').pop() || '').toLowerCase();
+const isImagePath = (p) => IMAGE_EXTS.has(ext(p));
+const isPdfPath = (p) => ext(p) === 'pdf';
+const isDocxPath = (p) => ext(p) === 'docx';
+const isSheetPath = (p) => ['xlsx', 'xls', 'csv', 'tsv'].includes(ext(p));
+const isMediaPath = (p) => isImagePath(p) || isPdfPath(p) || isDocxPath(p) || isSheetPath(p);
+
+function hideMediaViews() {
+  document.getElementById('image-view').classList.remove('show');
+  document.getElementById('doc-view').classList.remove('show');
+  document.getElementById('office-view').classList.remove('show');
+}
+
+// Lazy-load a CDN script once; resolves when it (and its globals) are ready.
+const scriptPromises = {};
+function loadScript(url) {
+  if (scriptPromises[url]) return scriptPromises[url];
+  scriptPromises[url] = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url; s.onload = resolve; s.onerror = () => reject(new Error(`failed to load ${url}`));
+    document.head.appendChild(s);
+  });
+  return scriptPromises[url];
+}
+
+let docxLibReady, xlsxLibReady;
+function ensureDocxLib() {
+  // docx-preview needs JSZip present as a global first.
+  docxLibReady = docxLibReady || loadScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js')
+    .then(() => loadScript('https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js'));
+  return docxLibReady;
+}
+function ensureXlsxLib() {
+  xlsxLibReady = xlsxLibReady || loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+  return xlsxLibReady;
+}
+
+async function renderOffice(path) {
+  const container = document.getElementById('office-view');
+  container.innerHTML = '<div class="office-loading">Loading preview…</div>';
+  try {
+    const res = await fetch(`${BASE}/api/project/file/raw?path=${encodeURIComponent(path)}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (openFilePath !== path) return;  // user switched files while we fetched
+    container.innerHTML = '';
+    if (isDocxPath(path)) {
+      await docx.renderAsync(buf, container, null, { className: 'docx', inWrapper: true });
+    } else {
+      const wb = XLSX.read(buf, { type: 'array' });
+      renderWorkbook(wb, container);
+    }
+  } catch (e) {
+    if (openFilePath !== path) return;
+    container.innerHTML = `<div class="office-loading">Could not preview ${esc(path)} — ${esc(String(e.message || e))}</div>`;
+  }
+}
+
+function renderWorkbook(wb, container) {
+  const tabs = document.createElement('div'); tabs.className = 'sheet-tabs';
+  const body = document.createElement('div'); body.className = 'sheet-body';
+  const show = (name) => {
+    body.innerHTML = XLSX.utils.sheet_to_html(wb.Sheets[name], { editable: false });
+    tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.sheet === name));
+  };
+  wb.SheetNames.forEach((name) => {
+    const b = document.createElement('button');
+    b.textContent = name; b.dataset.sheet = name; b.onclick = () => show(name);
+    tabs.appendChild(b);
+  });
+  if (wb.SheetNames.length > 1) container.appendChild(tabs);
+  container.appendChild(body);
+  show(wb.SheetNames[0]);
+}
+
 async function openFile(path, rowEl) {
   if (!active) return;
   document.querySelectorAll('.ft-row.active').forEach(el => el.classList.remove('active'));
   (rowEl || fileTreeRows.get(path))?.classList.add('active');
+  document.getElementById('editor-empty').style.display = 'none';
+
+  if (isMediaPath(path)) {
+    // Non-text files can't be shown in Monaco.
+    openFilePath = path;
+    document.getElementById('monaco-editor').style.display = 'none';
+    document.getElementById('editor-save-btn').style.display = 'none';
+    document.getElementById('editor-save-btn').disabled = true;
+    hideMediaViews();
+    const src = `${BASE}/api/project/file/raw?path=${encodeURIComponent(path)}`;
+    if (isImagePath(path)) {
+      document.getElementById('image-view').classList.add('show');
+      const img = document.getElementById('image-view-img');
+      img.src = src; img.alt = path;
+    } else if (isPdfPath(path)) {
+      document.getElementById('doc-view').classList.add('show');
+      document.getElementById('doc-view-frame').src = src;
+    } else {
+      // docx / xlsx — rendered client-side into #office-view.
+      document.getElementById('office-view').classList.add('show');
+      (isDocxPath(path) ? ensureDocxLib() : ensureXlsxLib())
+        .then(() => { if (openFilePath === path) renderOffice(path); })
+        .catch(() => { if (openFilePath === path) document.getElementById('office-view').innerHTML =
+          `<div class="office-loading">Could not load the preview library.</div>`; });
+    }
+    return;
+  }
+
   await ensureMonaco();
   let buf = fileBuffers.get(path);
   if (!buf) {
@@ -1577,8 +1701,9 @@ async function openFile(path, rowEl) {
     buf = { model, saved: body.content, dirty: false };
     fileBuffers.set(path, buf);
   }
-  document.getElementById('editor-empty').style.display = 'none';
+  hideMediaViews();
   document.getElementById('monaco-editor').style.display = 'block';
+  document.getElementById('editor-save-btn').style.display = '';
   openFilePath = path;
   monacoEditor.setModel(buf.model);
   document.getElementById('editor-save-btn').disabled = !buf.dirty;
