@@ -138,6 +138,19 @@
 
   /* ---------- composer ---------- */
   .composer-wrap { padding: 12px 16px 16px; border-top: 1px solid var(--border); background: var(--surface); position: relative; }
+  .queue { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .queued-msg {
+    display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted);
+    background: var(--surface-2); border: 1px dashed var(--border-strong); border-radius: var(--radius);
+    padding: 7px 8px 7px 11px;
+  }
+  .queued-msg .qico { flex: none; opacity: .7; }
+  .queued-msg .qtext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queued-msg .qcancel {
+    flex: none; border: 0; background: transparent; cursor: pointer; color: var(--faint);
+    font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 6px; transition: color .12s, background .12s;
+  }
+  .queued-msg .qcancel:hover { color: var(--text); background: var(--border); }
   .composer {
     border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface);
     box-shadow: var(--shadow); transition: border-color .15s;
@@ -374,6 +387,7 @@
         <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
       </div>
 
+      <div class="queue" id="queue"></div>
       <div class="composer">
         <textarea id="prompt" rows="1" placeholder="Describe your app, or a change to make…"
                   oninput="autogrow(this); updateMentionMenu()" onkeydown="composerKey(event)"
@@ -1196,6 +1210,7 @@ function sendOrStop() {
 // that removes the turn's messages from the chat pane.
 async function stopBuild() {
   if (!building) return;
+  clearQueue(); // stopping means "halt everything" — don't auto-fire messages queued behind this turn
   const btn = document.getElementById('build-btn');
   btn.disabled = true;
   try {
@@ -1211,15 +1226,62 @@ async function build() {
   if (!prompt) return;
   hideMentionMenu();
   const mentions = collectMentions(prompt);   // "@file" tokens -> attached-file paths
+  ta.value = ''; autogrow(ta);
+  // A turn is already streaming: queue this message instead of starting a second, concurrent
+  // runStream. Two streams would share one #messages DOM, one `working` spinner and one
+  // `building` flag — so they'd interleave cards (turns out of chronological order) and a
+  // teardown in one would slice the other's messages out by turnStart (messages "disappear").
+  // The queued message sends automatically when the current turn ends; it can be cancelled.
+  if (building) { enqueueMessage(prompt, mentions); return; }
+  await startTurn(prompt, mentions);
+}
+
+// Render one user turn and stream its build. Assumes no turn is currently in flight.
+async function startTurn(prompt, mentions) {
   if (!active) enterProject();
   const msgBox = document.getElementById('messages');
   const turnStart = msgBox.children.length; // first DOM node belonging to this turn
   addUser(prompt);
-  ta.value = ''; autogrow(ta);
   buildPhase = 'plan';
   setWorking(workLabel());
-  const payload = { prompt, mentions };
-  await runStream('/api/project/build/stream', payload, turnStart);
+  await runStream('/api/project/build/stream', { prompt, mentions }, turnStart);
+}
+
+/* ---------- queued messages (typed while a turn is streaming) ---------- */
+let queue = []; // [{ prompt, mentions, el }] pending turns, sent FIFO when the stream frees up
+
+function enqueueMessage(prompt, mentions) {
+  const box = document.getElementById('queue');
+  const el = document.createElement('div');
+  el.className = 'queued-msg';
+  el.innerHTML = '<span class="qico">⏳</span><span class="qtext"></span>'
+    + '<button class="qcancel" title="Remove from queue">✕</button>';
+  el.querySelector('.qtext').textContent = prompt;
+  const item = { prompt, mentions, el };
+  el.querySelector('.qcancel').onclick = () => {
+    const i = queue.indexOf(item);
+    if (i >= 0) queue.splice(i, 1);
+    el.remove();
+  };
+  queue.push(item);
+  box.appendChild(el);
+}
+
+// Called when a turn finishes: send the next queued message, if any.
+function drainQueue() {
+  if (building || !queue.length) return;
+  // A proposed plan is awaiting Approve/Cancel (building went false but the turn isn't really over).
+  // Don't fire a queued message now — it would start a fresh turn and bypass the pending plan.
+  if (document.querySelector('.plan-card .plan-actions')) return;
+  const next = queue.shift();
+  next.el.remove();
+  startTurn(next.prompt, next.mentions); // fire-and-forget; sets building=true, chains on completion
+}
+
+// Drop all pending messages (e.g. the user stopped the current turn).
+function clearQueue() {
+  queue.forEach(item => item.el.remove());
+  queue = [];
 }
 
 // Shared build/approve turn: POST, read the SSE frames, render each event, then tear down the
@@ -1253,6 +1315,7 @@ async function runStream(url, payload, turnStart) {
   refreshPreview();
   refreshStatus();
   building = false;
+  drainQueue(); // this turn is done — send the next message the user queued while it streamed
 }
 
 // The approval card for a proposed plan (SPEC P6). Renders the plan, an optional answers box and
@@ -1283,7 +1346,7 @@ function addPlanCard(planMd) {
     bodyEl.style.display = editing ? 'none' : 'block';
     editBtn.textContent = editing ? 'Preview' : 'Edit plan';
   };
-  card.querySelector('.cancel').onclick = () => card.remove();
+  card.querySelector('.cancel').onclick = () => { card.remove(); drainQueue(); };
   card.querySelector('.primary').onclick = async () => {
     const answers = card.querySelector('.plan-answers').value.trim();
     const edited = editTa.value.trim() !== (planMd || '').trim();
