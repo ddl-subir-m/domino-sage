@@ -117,6 +117,16 @@ class OpenCodeClient:
         r = httpx.post(f"{self.base_url}/api/session/{session_id}/prompt", json=body, timeout=self.timeout_s)
         r.raise_for_status()
 
+    def agent_names(self) -> list[str]:
+        """The agents OpenCode actually resolved from its config. `send_prompt(agent=...)` silently
+        falls back to the default build agent when a name is missing, so a mode's `permission`/`prompt`
+        block goes inert with no error — this is the only way to see that without a shell."""
+        r = httpx.get(f"{self.base_url}/api/agent", timeout=30)
+        r.raise_for_status()
+        payload = r.json()
+        agents = payload.get("data", payload) if isinstance(payload, dict) else payload
+        return sorted(a.get("name", "") for a in agents if isinstance(a, dict))
+
     def is_running(self, session_id: str) -> bool:
         # 30s (was 15s): OpenCode's Node server can be briefly CPU-bound (serializing a large context)
         # and slow to answer this health poll. build_stream also tolerates a poll timeout, but a more

@@ -217,6 +217,9 @@ def diag() -> JSONResponse:
         model call never got to the gateway (OpenCode stuck earlier, e.g. on a tool), not a gateway hang
       - last_gateway_error: set if a model call failed/severed
       - ports: base_port (what opencode.json tells OpenCode to dial) must equal control_port
+      - agents: the agents OpenCode actually resolved. Missing sage-ask/sage-plan/sage-implement means
+        every mode silently ran the default build agent, so their read-only permission and prompt blocks
+        never applied (null = OpenCode not started yet, or the query failed)
       - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
     """
     from .service import _opencode_base_port
@@ -232,6 +235,7 @@ def diag() -> JSONResponse:
         "gateway_mode": GATEWAY_MODE,
         "ports": {"control_port": control_port, "base_port": base_port,
                   "match": base_port == control_port},
+        "agents": orchestrator.resolved_agent_names(),
         "project": None if p is None else {
             "model_calls": p.model_calls,
             "tool_call_responses": p.tool_call_responses,

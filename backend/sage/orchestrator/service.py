@@ -410,6 +410,16 @@ class Orchestrator:
             self._oc_client = OpenCodeClient(base_url=self._oc_server.start())
         return self._oc_client
 
+    def resolved_agent_names(self) -> list[str] | None:
+        """The agents OpenCode resolved, for /api/diag. None when the server isn't up yet or the
+        query failed — deliberately does NOT start it, so diag stays safe to hit mid-build."""
+        if self._oc_client is None:
+            return None
+        try:
+            return self._oc_client.agent_names()
+        except Exception:
+            return None
+
     def _opencode_log_tail(self, lines: int = 30) -> list[str]:
         """Last few lines of OpenCode's server log — surfaced when a turn makes no model call so the
         real reason (e.g. 'connect ECONNREFUSED 127.0.0.1:8080', a provider/auth error) is visible in
@@ -621,6 +631,11 @@ class Orchestrator:
             # A gated turn is pinned to the read-only planner regardless of the user's mode; it
             # proposes a plan and never edits, so it always lands in the no-edit fork below.
             agent = "sage-plan" if gate else _agent_for_mode(project.control.snapshot().mode)
+            # Which agent this turn actually asked for, and whether the plan gate was armed. OpenCode
+            # falls back to its default build agent when a name doesn't resolve, so a turn that ignores
+            # a mode's read-only permission looks identical to one that honored it — log the intent so
+            # /api/diag's log_tail can be compared against its `agents` list.
+            log.info("turn: agent=%s gate=%s mode=%s", agent, gate, project.control.snapshot().mode.value)
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
