@@ -274,6 +274,7 @@
   .asset-row button.danger:hover { background: color-mix(in srgb, var(--lock) 8%, transparent); }
   .upload-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .upload-input { flex: 1 1 auto; min-width: 0; font-size: 12px; }
+  .upload-target { flex: 0 1 auto; max-width: 40%; min-width: 0; font-size: 12px; }
   .upload-chk { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
   .upload-btn { flex: 0 0 auto; padding: 5px 12px; border-radius: 7px; border: none; background: var(--lock); color: #fff; font-weight: 500; font-size: 12px; }
   .upload-btn:disabled { opacity: .5; cursor: default; }
@@ -434,12 +435,13 @@
         <h2>Data</h2>
         <div class="upload-row">
           <input type="file" id="upload-input" class="upload-input" />
-          <label class="upload-chk" title="Store in the project's sensitive dataset and force the sovereign model"><input type="checkbox" id="upload-sensitive" /> Sensitive</label>
+          <select id="upload-target" class="upload-target" title="Where to store this file"><option value="">Project data</option></select>
+          <label class="upload-chk" title="Mark this file sensitive to force the sovereign model"><input type="checkbox" id="upload-sensitive" /> Sensitive</label>
           <button id="upload-btn" class="upload-btn" onclick="uploadFile()">Upload</button>
         </div>
         <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets…" oninput="renderAssets()" autocomplete="off" />
         <div id="assets" class="asset-list"><div class="hint">Loading datasets…</div></div>
-        <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
+        <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Sensitive files in <b>Project data</b> go to a <code>sensitive/</code> folder; choosing another dataset tags that whole dataset sensitive. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
       </div>
 
         <div class="attach-pills" id="attach-pills"></div>
@@ -718,8 +720,22 @@ async function loadAssets() {
     const proj = await api('/api/project');
     attachedFiles = proj.body.attached || [];
   }
+  renderUploadTargets();
   renderAssets();
   updateDataCount();
+}
+
+function renderUploadTargets() {
+  const sel = document.getElementById('upload-target');
+  if (!sel) return;
+  const prev = sel.value;
+  // "Project data" (default dataset) plus each writable dataset the user can target directly.
+  const opts = ['<option value="">Project data</option>'];
+  for (const a of assetsCache.filter(a => a.writable)) {
+    opts.push(`<option value="${esc(a.id)}">${esc(a.name)}${a.sensitive ? ' (sensitive)' : ''}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  sel.value = prev;  // keep the user's selection across refreshes when still present
 }
 
 function attachedPaths() { return new Set(attachedFiles.map(e => e.path)); }
@@ -759,7 +775,7 @@ function renderAssets() {
   // detach-only. Both pinned above the dataset browser so current state is one click away.
   // A file under a dataset's uploads/ folder is Sage-managed data (deletable) even if it was
   // re-attached from the dataset browser as source='dataset' — sensitivity never changes this.
-  const isSageUpload = e => e.source === 'upload' || (e.dataset_rel_path || e.file || '').startsWith('uploads/');
+  const isSageUpload = e => { const r = e.dataset_rel_path || e.file || ''; return e.source === 'upload' || r.startsWith('uploads/') || r.startsWith('sensitive/'); };
   const uploads = attachedFiles.filter(isSageUpload);
   const attached = attachedFiles.filter(e => !isSageUpload(e));
   if (uploads.length) {
@@ -920,18 +936,27 @@ async function uploadFile() {
   const file = input.files && input.files[0];
   if (!file) { addStatus('err', '⚠️', 'Choose a file to upload'); return; }
   const sensitive = document.getElementById('upload-sensitive').checked;
+  const datasetId = document.getElementById('upload-target').value;
+  // Picking a specific, not-yet-sensitive dataset and marking the file sensitive tags the WHOLE
+  // dataset — confirm, since it's irreversible from Sage and affects every future attachment.
+  if (sensitive && datasetId) {
+    const ds = assetsCache.find(a => a.id === datasetId);
+    if (ds && !ds.sensitive && !confirm(`This marks the entire "${ds.name}" dataset as sensitive — all its data becomes sensitive and forces the sovereign model. Continue?`)) return;
+  }
   const btn = document.getElementById('upload-btn');
   btn.disabled = true; btn.textContent = 'Uploading…';
   try {
-    const r = await api(`/api/project/upload?name=${encodeURIComponent(file.name)}&sensitive=${sensitive ? 1 : 0}`, {
+    const q = `name=${encodeURIComponent(file.name)}&sensitive=${sensitive ? 1 : 0}` + (datasetId ? `&dataset=${encodeURIComponent(datasetId)}` : '');
+    const r = await api(`/api/project/upload?${q}`, {
       method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file,
     });
     if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Upload failed')); return; }
     attachedFiles = attachedFiles.filter(e => e.path !== r.body.path);
-    attachedFiles.push({ dataset_id: null, dataset: r.body.dataset, file: r.body.path.split('/').pop(),
+    attachedFiles.push({ dataset_id: r.body.dataset_id, dataset: r.body.dataset, file: r.body.path.split('/').pop(),
                          path: r.body.path, size: r.body.size, sensitive: r.body.sensitive, source: 'upload' });
     input.value = ''; document.getElementById('upload-sensitive').checked = false;
-    renderAssets(); updateDataCount(); refreshStatus();
+    document.getElementById('upload-target').value = '';
+    await loadAssets(); refreshStatus();  // reload so a newly-tagged dataset shows its chip
     if (r.body.sensitive) addStatus('err', '🔒', `Uploaded <b>${esc(file.name)}</b> — sovereign model locked`);
     else addStatus('ok', '📄', `Uploaded <b>${esc(file.name)}</b>`);
   } finally { btn.disabled = false; btn.textContent = 'Upload'; }

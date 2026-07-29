@@ -85,30 +85,42 @@ def test_create_project_surfaces_error_body():
         raise AssertionError("expected RuntimeError on 400")
 
 
-def test_provision_sensitive_dataset_tags_create_time_snapshot():
-    # A newly created dataset already carries an initial snapshot; we tag that one directly
-    # instead of POSTing an empty snapshot (which 400s: relativeFilePaths required).
+def test_tag_dataset_sensitive_fetches_snapshot_when_none_given():
+    # For an existing dataset we don't have a snapshot id, so we GET it, then tag that snapshot.
     calls = []
 
     def handler(request):
-        calls.append((request.method, request.url.path, json.loads(request.content)))
-        if request.url.path == "/api/datasetrw/v1/datasets":
-            return httpx.Response(200, json={"dataset": {"id": "ds-1", "snapshotIds": ["snap-1"]}})
+        calls.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/api/datasetrw/v1/datasets/ds-1":
+            return httpx.Response(200, json={"dataset": {"id": "ds-1", "latestSnapshotId": "snap-9"}})
         if request.url.path == "/api/datasetrw/v1/datasets/ds-1/tags":
-            return httpx.Response(200, json={"dataset": {"id": "ds-1", "tags": {"sensitive": "snap-1"}}})
-        raise AssertionError(f"unexpected call: {request.url.path}")
+            assert json.loads(request.content) == {"tagName": "sensitive", "snapshotId": "snap-9"}
+            return httpx.Response(200, json={"dataset": {"id": "ds-1"}})
+        raise AssertionError(f"unexpected call: {request.method} {request.url.path}")
 
-    ds_id = _cp(handler).provision_sensitive_dataset("proj-1", "app-sensitive")
-    assert ds_id == "ds-1"
-    paths = [p for _, p, _ in calls]
-    assert "/api/datasetrw/v1/datasets/ds-1/snapshots" not in paths  # the broken step is gone
-    assert calls[-1] == ("POST", "/api/datasetrw/v1/datasets/ds-1/tags",
-                         {"tagName": "sensitive", "snapshotId": "snap-1"})
+    assert _cp(handler).tag_dataset_sensitive("ds-1") is True
+    assert ("GET", "/api/datasetrw/v1/datasets/ds-1") in calls        # fetched the snapshot first
+    assert calls[-1] == ("POST", "/api/datasetrw/v1/datasets/ds-1/tags")
 
 
-def test_provision_sensitive_dataset_returns_none_on_failure():
-    # Best-effort: a datasetrw error must never bubble up and block "New app".
-    assert _cp(lambda req: httpx.Response(500, text="boom")).provision_sensitive_dataset("p", "x") is None
+def test_tag_dataset_sensitive_uses_supplied_snapshot_without_fetch():
+    # When the caller already has a snapshot id (from the v2 tag map), skip the GET.
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.url.path == "/api/datasetrw/v1/datasets/ds-1/tags":
+            assert json.loads(request.content) == {"tagName": "sensitive", "snapshotId": "snap-x"}
+            return httpx.Response(200, json={})
+        raise AssertionError(f"unexpected call: {request.method} {request.url.path}")
+
+    assert _cp(handler).tag_dataset_sensitive("ds-1", snapshot_id="snap-x") is True
+    assert calls == [("POST", "/api/datasetrw/v1/datasets/ds-1/tags")]   # no GET
+
+
+def test_tag_dataset_sensitive_returns_false_on_failure():
+    # Best-effort: a datasetrw error must never bubble up and block an upload.
+    assert _cp(lambda req: httpx.Response(500, text="boom")).tag_dataset_sensitive("ds-1", snapshot_id="s") is False
 
 
 def test_create_workspace_body():

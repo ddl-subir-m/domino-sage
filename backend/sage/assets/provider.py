@@ -46,6 +46,9 @@ class Asset:
     tags: list[str] = field(default_factory=list)
     project: str | None = None  # owning project name
     mount_path: str | None = None  # absolute in-container path where this dataset is mounted
+    # {tagName: snapshotId} from the datasetrw v2 map. Tagging attaches to a snapshot, so this lets
+    # us tag an already-tagged dataset without a snapshot fetch (an untagged one still needs one).
+    tag_snapshots: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -141,6 +144,18 @@ def parse_tags(raw: Any) -> list[str]:
     return out
 
 
+def parse_tag_snapshots(raw: Any) -> dict[str, str]:
+    """Extract the ``{tagName: snapshotId}`` map from the datasetrw v2 tags field.
+
+    Tagging attaches to a snapshot, so keeping this map lets us tag an already-tagged dataset
+    without a separate snapshot fetch. Only the v2 dict shape carries snapshot ids; other shapes
+    (list of strings/objects) have none, so we return an empty map for them.
+    """
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if v}
+    return {}
+
+
 class DominoAssetProvider:
     """Reads datasets via the Domino public datasetrw v2 API, then keeps only those actually
     MOUNTED in this project's container — because attaching a file symlinks its real bytes from
@@ -205,6 +220,7 @@ class DominoAssetProvider:
                         tags=parse_tags(ds.get("tags")),
                         project=str(proj) if proj else None,
                         mount_path=mount_path,
+                        tag_snapshots=parse_tag_snapshots(ds.get("tags")),
                     )
                 )
             total = (data.get("metadata") or {}).get("totalCount")

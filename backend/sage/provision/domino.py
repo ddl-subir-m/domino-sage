@@ -64,7 +64,7 @@ class PublishedApp:
 class ControlPlane(Protocol):
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
-    def provision_sensitive_dataset(self, project_id: str, dataset_name: str) -> str | None: ...
+    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
@@ -209,39 +209,35 @@ class DominoControlPlane:
             log.info("workspace-create response keys: %s", sorted(data.keys()))
         return data
 
-    def provision_sensitive_dataset(self, project_id: str, dataset_name: str) -> str | None:
-        """Create a project-owned dataset and tag it `sensitive`, so the builder can route sensitive
-        uploads to it (mounted + writable) and the sovereign lock fires on attach. Called at app
-        creation, BEFORE create_workspace, so the dataset is mounted when the builder boots.
+    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
+        """Tag an existing dataset `sensitive` so its files trip the sovereign lock on attach.
 
-        Best-effort: returns the dataset id, or None on any failure — a broken dataset must never
-        block "New app" (sensitive uploads degrade to an actionable error until it exists).
+        Best-effort: returns True on success, False on any failure — a governance tag must never
+        block an upload (the per-file sovereign lock is driven by the attachment manifest, not by
+        this tag, so a missing tag degrades gracefully).
 
-        Verified against a live cluster: a newly created dataset already carries an initial
-        snapshot (`snapshotIds` in the create response), and tags attach to a snapshot via
-        POST .../datasets/{id}/tags {tagName, snapshotId}. We tag that create-time snapshot
-        directly — an explicit POST .../snapshots with an empty body 400s (requires
-        relativeFilePaths). Auto-mount into the builder workspace is confirmed."""
+        Tags attach to a snapshot, not the dataset directly (POST .../tags requires snapshotId). The
+        caller passes `snapshot_id` when it already has one (from the datasetrw v2 tag map); when it
+        doesn't (an untagged dataset), we fetch the dataset's current snapshot.
+
+        LIVE-VERIFY: the GET shape that returns an existing dataset's current snapshot id — we read
+        `snapshotIds`/`latestSnapshotId` off GET .../datasets/{id}, falling back across both keys."""
         try:
-            created = self._post(f"{_DATASETRW_PATH}/datasets", {"name": dataset_name, "projectId": project_id})
-            ds = (created.get("dataset") or created) if isinstance(created, dict) else {}
-            ds_id = str(ds.get("id") or "")
-            if not ds_id:
-                return None
-            # Tags attach to a snapshot, not the dataset directly (POST .../tags requires snapshotId).
-            # A brand-new dataset already has an initial snapshot, so tag that one.
-            snap_ids = ds.get("snapshotIds") or []
-            snap_id = str(snap_ids[0]) if snap_ids else ""
+            snap_id = str(snapshot_id or "")
             if not snap_id:
-                log.error("provision_sensitive_dataset: dataset %s (%s) has no snapshot to tag",
-                          dataset_name, ds_id)
-                return ds_id
-            self._post(f"{_DATASETRW_PATH}/datasets/{ds_id}/tags",
+                data = self._get(f"{_DATASETRW_PATH}/datasets/{dataset_id}")
+                ds = (data.get("dataset") or data) if isinstance(data, dict) else {}
+                snap_ids = ds.get("snapshotIds") or []
+                snap_id = str(ds.get("latestSnapshotId") or (snap_ids[-1] if snap_ids else "") or "")
+            if not snap_id:
+                log.error("tag_dataset_sensitive: dataset %s has no snapshot to tag", dataset_id)
+                return False
+            self._post(f"{_DATASETRW_PATH}/datasets/{dataset_id}/tags",
                        {"tagName": _SENSITIVITY_TAG, "snapshotId": snap_id})
-            return ds_id
-        except Exception:  # noqa: BLE001 — never let dataset provisioning break app creation
-            log.exception("provision_sensitive_dataset failed for %s (project %s)", dataset_name, project_id)
-            return None
+            return True
+        except Exception:  # noqa: BLE001 — never let a governance tag break an upload
+            log.exception("tag_dataset_sensitive failed for dataset %s", dataset_id)
+            return False
 
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
         # Stop a running builder so it stops consuming a hardware tier. Path + verb confirmed against
@@ -471,7 +467,7 @@ class FakeControlPlane:
     app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id (find_project_app)
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
-    sensitive_datasets: dict[str, str] = field(default_factory=dict)  # project_id -> sensitive ds name
+    tagged_sensitive: dict[str, str] = field(default_factory=dict)  # dataset_id -> snapshot_id tagged
     _seq: int = 0
 
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
@@ -480,9 +476,9 @@ class FakeControlPlane:
         self.projects.append(ref)
         return ref
 
-    def provision_sensitive_dataset(self, project_id: str, dataset_name: str) -> str | None:
-        self.sensitive_datasets[project_id] = dataset_name
-        return f"ds-{dataset_name}"
+    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
+        self.tagged_sensitive[dataset_id] = snapshot_id or "snap"
+        return True
 
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
         ws = {

@@ -1,5 +1,5 @@
 """Asset provider + sensitivity detection (Step 6)."""
-from sage.assets.provider import Asset, FakeAssetProvider, is_sensitive, parse_tags
+from sage.assets.provider import Asset, FakeAssetProvider, is_sensitive, parse_tag_snapshots, parse_tags
 
 
 def test_is_sensitive_case_insensitive():
@@ -20,6 +20,14 @@ def test_parse_tags_handles_datasetrw_v2_tag_map():
     assert set(tags) == {"sensitive", "curated"}
     assert is_sensitive(Asset("a", "x", tags=tags))
     assert parse_tags({}) == []
+
+
+def test_parse_tag_snapshots_keeps_the_snapshot_ids():
+    # The {tagName: snapshotId} map is retained so we can tag an already-tagged dataset without a fetch.
+    m = parse_tag_snapshots({"sensitive": "62313ce67a0af0281c01a6a5"})
+    assert m == {"sensitive": "62313ce67a0af0281c01a6a5"}
+    assert parse_tag_snapshots(["sensitive"]) == {}   # list shape carries no snapshot ids
+    assert parse_tag_snapshots(None) == {}
 
 
 def test_fake_provider_has_a_sensitive_dataset():

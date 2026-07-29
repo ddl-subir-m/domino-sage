@@ -32,13 +32,6 @@ def test_create_app_provisions_repo_project_workspace(tmp_path, no_network_seed)
     assert no_network_seed and no_network_seed[0][0] == created.repo.clone_url
 
 
-def test_create_app_provisions_sensitive_dataset(tmp_path, no_network_seed):
-    cp = FakeControlPlane()
-    created = _hub(tmp_path, cp, FakeRepoProvider(), seed_calls=no_network_seed).create_app("My App")
-    # A `<project>-sensitive` dataset is provisioned so sensitive uploads have a mounted target.
-    assert cp.sensitive_datasets[created.project.id] == "My App-sensitive"
-
-
 def test_create_app_resolves_repo_name_collision(tmp_path, no_network_seed):
     repo = FakeRepoProvider()
     repo.create_repo("sage-my-app")  # occupy the base name

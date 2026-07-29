@@ -187,14 +187,6 @@ class HubService:
             self._rollback_repo(repo)
             raise
 
-        # Pre-provision a project-owned dataset tagged `sensitive` (before the workspace launches, so
-        # it's mounted at boot). Best-effort — never block "New app" if it fails; sensitive uploads
-        # degrade to an actionable error until it exists.
-        try:
-            self._cp.provision_sensitive_dataset(project.id, f"{project.name}-sensitive")
-        except Exception:  # noqa: BLE001 — dataset provisioning must not break app creation
-            log.exception("provision_sensitive_dataset failed for %s", project.name)
-
         ws = self._cp.create_workspace(project.id, branch=self._branch)
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
 

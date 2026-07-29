@@ -1,7 +1,8 @@
 """Upload / delete / manifest behavior for the builder Context panel.
 
-Uses the FakeAssetProvider's seeded datasets (writable temp mounts): sales_2026 (non-sensitive),
-customer_pii (tagged `sensitive`). Uploads write real bytes into those mounts under uploads/."""
+Uses the FakeAssetProvider's seeded datasets (writable temp mounts): sales_2026 (non-sensitive,
+the resolved default), customer_pii (tagged `sensitive`), app_logs (untagged). Non-sensitive
+uploads land under uploads/; sensitive uploads to the default dataset land under sensitive/."""
 from __future__ import annotations
 
 import json
@@ -11,6 +12,7 @@ import pytest
 
 from sage.assets.provider import FakeAssetProvider
 from sage.orchestrator.service import DataReferenced, Orchestrator, UploadUnavailable
+from sage.provision.domino import FakeControlPlane
 from sage.router.models import ModelCatalog
 
 
@@ -27,9 +29,10 @@ def _catalog() -> ModelCatalog:
                         plan="p", implement="i", ask="a")
 
 
-def _orch(tmp: Path, assets=None) -> Orchestrator:
+def _orch(tmp: Path, assets=None, control_plane=None) -> Orchestrator:
     return Orchestrator(workspace_dir=tmp / "mnt" / "code", template=_template(tmp),
-                        gateway=object(), catalog=_catalog(), project_id="Sage", assets=assets)
+                        gateway=object(), catalog=_catalog(), project_id="Sage", assets=assets,
+                        control_plane=control_plane)
 
 
 def _dataset(orch: Orchestrator, name: str) -> str:
@@ -72,15 +75,20 @@ def test_agents_block_gives_exact_served_path_and_guardrails(tmp_path: Path):
     assert "src/" in agents and "gitignored" in agents               # don't-copy-into-git guardrail
 
 
-def test_sensitive_upload_targets_sensitive_dataset_and_locks(tmp_path: Path):
+def test_sensitive_upload_to_default_dataset_uses_sensitive_subfolder_and_locks(tmp_path: Path):
     orch = _orch(tmp_path)
-    orch.project(start_preview=False)
+    ws = orch.project(start_preview=False).workspace.path
 
     res = orch.upload_file("secret.csv", b"ssn\n1\n", sensitive=True)
 
     assert res["sensitive"] is True
-    assert res["dataset"] == "customer_pii"             # the `sensitive`-tagged fake dataset
+    assert res["dataset"] == "sales_2026"               # the resolved shared default dataset
+    entry = _manifest(ws)[0]
+    assert entry["dataset_rel_path"] == "sensitive/secret.csv"   # sensitive subfolder, not uploads/
+    assert "/sensitive/" in str((ws / res["path"]).resolve())    # bytes on the mount, under sensitive/
     assert orch.project().control.locked
+    # The default dataset itself is NOT tagged sensitive — its non-sensitive data stays unmarked.
+    assert next(a["sensitive"] for a in orch.list_assets() if a["name"] == "sales_2026") is False
 
 
 def test_manifest_rehydrates_attachments_and_restores_lock(tmp_path: Path):
@@ -90,7 +98,7 @@ def test_manifest_rehydrates_attachments_and_restores_lock(tmp_path: Path):
 
     # A fresh orchestrator over the same volume rebuilds from the committed manifest.
     proj = _orch(tmp_path).project(start_preview=False)
-    assert [e["file"] for e in proj.attached] == ["uploads/secret.csv"]
+    assert [e["file"] for e in proj.attached] == ["sensitive/secret.csv"]
     assert proj.control.locked                          # sticky sovereign lock restored from manifest
 
 
@@ -123,11 +131,11 @@ def test_delete_never_removes_a_pre_existing_dataset_files_bytes(tmp_path: Path)
 
 def test_delete_removes_bytes_for_an_uploads_file_reattached_as_dataset(tmp_path: Path):
     # A Sage upload that later shows up as a dataset-browser attachment (source flips to
-    # 'dataset', e.g. rehydrated that way) still lives under uploads/, so it's Sage-managed
-    # and delete must remove its bytes — sensitivity is irrelevant to this.
+    # 'dataset', e.g. rehydrated that way) still lives under a Sage folder (sensitive/ here), so
+    # it's Sage-managed and delete must remove its bytes — sensitivity is irrelevant to this.
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
-    res = orch.upload_file("d.csv", b"x", sensitive=True)   # sensitive path -> customer_pii/uploads/
+    res = orch.upload_file("d.csv", b"x", sensitive=True)   # sensitive -> default dataset sensitive/
     src = (ws / res["path"]).resolve()
     assert src.is_file()
     for e in orch.project().attached:                        # simulate the re-attach reclassification
@@ -291,11 +299,81 @@ def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
     assert orch._resolve_mentions(proj, None) is None
 
 
-def test_sensitive_upload_without_a_sensitive_dataset_is_unavailable(tmp_path: Path):
+def test_non_sensitive_upload_to_default_dataset_does_not_lock(tmp_path: Path):
+    # Guards the on_assets_changed([sensitive]) fix: a non-sensitive upload must NOT lock.
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+
+    res = orch.upload_file("plain.csv", b"a,b\n1,2\n", sensitive=False)
+
+    assert res["sensitive"] is False
+    assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/plain.csv"
+    assert not orch.project().control.locked
+
+
+def test_sensitive_upload_without_a_sensitive_dataset_uses_default_subfolder(tmp_path: Path):
+    # No `sensitive`-tagged dataset needs to exist any more: sensitive uploads fall back to the
+    # shared default dataset's sensitive/ subfolder (manifest-driven lock), not an error.
     prov = FakeAssetProvider()
     prov.assets = [a for a in prov.assets if "sensitive" not in {t.lower() for t in a.tags}]
+    orch = _orch(tmp_path, assets=prov)
+    ws = orch.project(start_preview=False).workspace.path
+
+    res = orch.upload_file("x.csv", b"x", sensitive=True)
+
+    assert res["sensitive"] is True
+    assert _manifest(ws)[0]["dataset_rel_path"] == "sensitive/x.csv"
+    assert orch.project().control.locked
+
+
+def test_upload_is_unavailable_when_no_writable_dataset_exists(tmp_path: Path):
+    # UploadUnavailable now fires only when there's genuinely nowhere writable to store bytes.
+    prov = FakeAssetProvider()
+    prov.assets = []
     orch = _orch(tmp_path, assets=prov)
     orch.project(start_preview=False)
 
     with pytest.raises(UploadUnavailable):
         orch.upload_file("x.csv", b"x", sensitive=True)
+
+
+def test_upload_to_already_sensitive_dataset_forces_sensitive(tmp_path: Path):
+    # Picking a dataset that's already tagged sensitive marks the file sensitive even if the box is
+    # unchecked — you can't drop a non-sensitive file into a sensitive dataset.
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    pii = _dataset(orch, "customer_pii")
+
+    res = orch.upload_file("note.csv", b"x", sensitive=False, dataset_id=pii)
+
+    assert res["sensitive"] is True and res["dataset"] == "customer_pii"
+    assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/note.csv"   # picked dataset -> uploads/
+    assert orch.project().control.locked
+
+
+def test_sensitive_upload_to_untagged_picked_dataset_tags_it(tmp_path: Path):
+    # Marking a file sensitive while targeting an untagged dataset tags the WHOLE dataset.
+    cp = FakeControlPlane()
+    orch = _orch(tmp_path, control_plane=cp)
+    orch.project(start_preview=False)
+    logs = _dataset(orch, "app_logs")   # untagged fake dataset
+
+    res = orch.upload_file("audit.csv", b"x", sensitive=True, dataset_id=logs)
+
+    assert res["sensitive"] is True
+    assert logs in cp.tagged_sensitive                 # the dataset was tagged via the control plane
+    assert orch.project().control.locked
+
+
+def test_sensitive_upload_to_untagged_dataset_without_control_plane_is_best_effort(tmp_path: Path):
+    # No control plane (local/off-Domino): the tag can't be written, but the upload still succeeds
+    # and the per-file sovereign lock still fires from the manifest.
+    orch = _orch(tmp_path)   # control_plane=None
+    ws = orch.project(start_preview=False).workspace.path
+    logs = _dataset(orch, "app_logs")
+
+    res = orch.upload_file("audit.csv", b"x", sensitive=True, dataset_id=logs)
+
+    assert res["sensitive"] is True
+    assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/audit.csv"
+    assert orch.project().control.locked
