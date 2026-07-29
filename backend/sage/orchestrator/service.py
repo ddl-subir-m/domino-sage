@@ -633,10 +633,14 @@ class Orchestrator:
                                     sig = f"{tool}:{detail}"
                                     if sig != last_active:
                                         last_active = sig
+                                        # Also log it: if a tool stalls (e.g. read of a /mnt/data mount),
+                                        # /api/diag's log ring shows exactly which tool is stuck.
+                                        log.info("active tool: %s %s", tool, detail)
                                         yield {"type": "active", "tool": tool, "detail": detail}
                                 continue
                             seen.add(key)
                             last_active = None  # completed: let the next running tool re-announce
+                            log.info("tool done: %s %s", tool, _tool_detail(tool, part))
                             if tool in ("edit", "write"):
                                 made_edits = True
                             yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})

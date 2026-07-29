@@ -30,6 +30,22 @@ def test_send_prompt_embeds_attachment_paths_in_prompt_text(monkeypatch):
     assert "files" not in calls[0]["prompt"]         # no phantom file-part field
 
 
+def test_send_prompt_inlines_a_preview_and_tells_the_agent_not_to_read(monkeypatch, tmp_path):
+    # Attachments now ride as an inlined PREVIEW (schema head) with a "do NOT open with the read tool"
+    # instruction — OpenCode's read tool hangs on /mnt/data mounts outside its project root.
+    f = tmp_path / "data.csv"
+    f.write_text("col_a,col_b\n1,2\n3,4\n")
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt("s1", "use this", files=[str(f)])
+    text = calls[0]["prompt"]["text"]
+    assert str(f) in text                      # path still referenced (for the runtime URL)
+    assert "col_a,col_b" in text               # the preview content is inlined
+    assert "Do NOT open" in text               # explicit instruction not to read it
+    assert "files" not in calls[0]["prompt"]   # still no phantom file-part field
+
+
 def test_send_prompt_text_only_when_no_attachments(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",

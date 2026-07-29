@@ -38,6 +38,24 @@ def map_event(raw: dict) -> AgentEvent:
     return AgentEvent(kind=kind, payload={"type": t, **props})
 
 
+def _file_preview(path: str, max_lines: int = 30, max_bytes: int = 8000) -> str:
+    """A bounded, read-tool-free preview of an attached file so the agent learns the schema WITHOUT
+    opening it. OpenCode's (Node) read tool hangs on files outside its project root (e.g. /mnt/data
+    dataset mounts), so we read a small head here (Python reads the mount fine) and inline it. Bounded
+    by bytes AND lines so a huge or single-giant-line file can't blow up the prompt."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            data = f.read(max_bytes)
+    except OSError as e:
+        return f"  (preview unavailable: {type(e).__name__})"
+    lines = data.splitlines()
+    shown = lines[:max_lines]
+    body = "\n".join(shown)
+    more = len(data) == max_bytes or len(lines) > max_lines
+    note = f"\n  … (preview truncated; first {len(shown)} lines)" if more else ""
+    return f"{body}{note}"
+
+
 @dataclass
 class OpenCodeClient:
     base_url: str
@@ -80,9 +98,14 @@ class OpenCodeClient:
         version-independent and definitely seen — the agent's read tool follows the symlinks. This
         rides the same `{"prompt":{"text":...}}` shape the base turn already uses."""
         if files:
-            listing = "\n".join(f"- {p}" for p in files)
-            text = (f"{text}\n\nAttached files (the user @mentioned these — read them directly at "
-                    f"these local paths):\n{listing}")
+            listing = "\n\n".join(f"- {p}\n{_file_preview(p)}" for p in files)
+            text = (
+                f"{text}\n\nAttached data files (the user @mentioned these). A PREVIEW of each is "
+                f"included below. Do NOT open these with the read tool — they can be large and reading "
+                f"them is unnecessary and slow (and files on mounts outside the project root can stall "
+                f"the read tool). Use the preview to learn the schema; the built app loads the FULL file "
+                f"at runtime from its served URL (see the 'Attached data' section in AGENTS.md). The "
+                f"absolute path is shown only for reference:\n\n{listing}")
         body: dict = {"prompt": {"text": text}}
         if model:
             body["model"] = model
