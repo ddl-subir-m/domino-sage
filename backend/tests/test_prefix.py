@@ -135,3 +135,38 @@ def test_preview_through_mount_and_middleware_no_double_prefix(monkeypatch):
     client = TestClient(app, raise_server_exceptions=False)
     client.get(f"{prefix}/preview/src/main.tsx")
     assert captured["url"] == "http://vite:5173/o/p/notebookSession/r/preview/src/main.tsx"
+
+
+def _app_with_internal_routes(prefix: str) -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/ping")
+    def ping() -> dict:
+        return {"ok": True}
+
+    @app.post("/v1/chat/completions")
+    def shim() -> dict:
+        return {"ok": True}
+
+    @app.get("/healthz")
+    def healthz() -> dict:
+        return {"ok": True}
+
+    app.add_middleware(_PrefixMiddleware, prefix=prefix)
+    return app
+
+
+def test_internal_localhost_routes_do_not_spend_the_one_shot_prefix_warning(caplog):
+    """The warning fires once per process. OpenCode's model calls hit /v1 over localhost and never
+    cross Domino's proxy, so they legitimately carry no prefix — if they consumed the warning, a
+    real misconfiguration on browser traffic would then be silent forever."""
+    import logging
+
+    client = TestClient(_app_with_internal_routes("/owner/proj/notebookSession/run"))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        client.post("/v1/chat/completions")          # internal: expected to have no prefix
+        client.get("/healthz")                       # internal
+        assert "not found in request path" not in caplog.text
+
+        client.get("/ping")                          # browser traffic missing its prefix -> warn
+        assert "not found in request path" in caplog.text

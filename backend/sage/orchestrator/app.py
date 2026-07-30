@@ -165,6 +165,12 @@ class _PrefixMiddleware:
     (local dev). Domino also sends the prefix in `x-script-name`; a one-time mismatch is logged.
     """
 
+    # Routes served to callers INSIDE the container over localhost, which never cross Domino's proxy
+    # and so correctly carry no prefix: the shim's /v1 (every OpenCode model call) and /healthz.
+    # They must not trip the warning — it fires once per process, so one internal call would
+    # otherwise spend it seconds after boot and leave a REAL prefix misconfiguration silent forever.
+    _UNPROXIED = ("/v1/", "/healthz")
+
     def __init__(self, app, prefix: str) -> None:
         self._app = app
         self._prefix = prefix
@@ -176,7 +182,7 @@ class _PrefixMiddleware:
             if path == self._prefix or path.startswith(self._prefix + "/"):
                 scope = dict(scope)
                 scope["root_path"] = self._prefix
-            elif not self._warned:
+            elif not self._warned and not path.startswith(self._UNPROXIED):
                 self._warned = True
                 log.warning("prefix %r not found in request path %r", self._prefix, path)
         await self._app(scope, receive, send)
