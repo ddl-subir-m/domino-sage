@@ -307,6 +307,43 @@ def test_stop_uses_explicit_workspace_id_override(tmp_path: Path):
     assert cp.workspaces["proj-1"][0]["state"] == "Stopped"
 
 
+def test_overlapping_turn_is_refused_not_run(tmp_path: Path):
+    # A turn already streaming holds _turn_lock. A second build_stream must refuse (busy) instead of
+    # running a concurrent turn — that overlap is what clears the read-only gate mid-flight and makes
+    # a gated planner write code, then self-destruct as a "gate violation". gateway is object() and no
+    # OpenCode client is wired, so if the turn actually ran it would blow up, not yield a clean refusal.
+    orch = _orch(tmp_path)
+    assert orch._turn_lock.acquire(blocking=False)  # simulate a turn in flight
+    try:
+        events = list(orch.build_stream("build me a thing"))
+    finally:
+        orch._turn_lock.release()
+    assert [e["type"] for e in events] == ["error", "done"]
+    assert events[-1] == {"type": "done", "ok": False, "decision": "busy"}
+    assert "already running" in events[0]["message"]
+
+
+def test_approve_is_refused_while_a_turn_streams(tmp_path: Path):
+    # Same guard on the approve path: approving mid-turn would overlap two turns on one working tree.
+    orch = _orch(tmp_path)
+    assert orch._turn_lock.acquire(blocking=False)
+    try:
+        events = list(orch.approve_stream())
+    finally:
+        orch._turn_lock.release()
+    assert events[-1] == {"type": "done", "ok": False, "decision": "busy"}
+
+
+def test_turn_lock_is_released_after_a_refusal(tmp_path: Path):
+    # A refused turn must not leak the lock — the next turn can still acquire it once the holder frees it.
+    orch = _orch(tmp_path)
+    orch._turn_lock.acquire()
+    list(orch.build_stream("first"))  # refused; must not touch the lock it didn't take
+    orch._turn_lock.release()
+    assert orch._turn_lock.acquire(blocking=False)  # free again
+    orch._turn_lock.release()
+
+
 def test_record_runtime_error_stores_stamped_error(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.record_runtime_error("boom", "at App (App.tsx:3)")

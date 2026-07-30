@@ -473,3 +473,40 @@ def test_a_tabular_attachment_carries_no_image_uri(tmp_path: Path):
     orch.upload_file("q3.csv", b"a,b\n1,2\n")
 
     assert "image_uri" not in orch._resolve_mentions(project, [project.attached[0]["path"]])[0]
+
+
+def test_a_failed_upload_leaves_no_orphan_bytes_on_the_dataset_mount(tmp_path: Path, monkeypatch):
+    """The bytes land on the mount (outside git) before anything records them. Without a rollback a
+    mid-upload failure strands data on a shared mount that detach/delete can't even see."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    asset = next(a for a in orch._assets.list_datasets("Sage") if a.name == "sales_2026")
+    monkeypatch.setattr(Orchestrator, "_write_agents_data_block",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only workspace")))
+
+    with pytest.raises(OSError):
+        orch.upload_file("q3.csv", b"a,b\n1,2\n")
+
+    assert not (Path(asset.mount_path) / "uploads" / "q3.csv").exists()   # bytes undone
+    # Symlink undone and its dirs pruned back to public/data/, which detach leaves standing too.
+    assert not (project.workspace.path / "public" / "data" / "sales_2026").exists()
+    assert project.attached == []
+    assert _manifest(project.workspace.path) == []
+
+
+def test_a_failed_re_upload_does_not_delete_the_bytes_that_were_already_there(tmp_path: Path,
+                                                                              monkeypatch):
+    """Overwriting a same-named upload already destroyed the old bytes — deleting the file on
+    rollback would turn one lost version into no file at all."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    orch.project(start_preview=False)
+    orch.upload_file("q3.csv", b"original\n")
+    dest = next(a for a in orch._assets.list_datasets("Sage")
+                if a.name == "sales_2026").mount_path
+    monkeypatch.setattr(Orchestrator, "_write_agents_data_block",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+
+    with pytest.raises(OSError):
+        orch.upload_file("q3.csv", b"replacement\n")
+
+    assert (Path(dest) / "uploads" / "q3.csv").exists()   # kept, not compounded into a deletion

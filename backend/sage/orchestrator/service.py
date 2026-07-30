@@ -365,6 +365,15 @@ class Orchestrator:
         # detach) and write_instructions both splice managed regions into the same file, and a
         # concurrent write could drop the other's region. Held around each full read-modify-write.
         self._agents_lock = threading.Lock()
+        # Serializes build/approve turns: only one turn may stream at a time. A turn arms shared,
+        # per-project state (read_only_turn, mode) and mutates one working tree; a second overlapping
+        # turn would clear the first turn's read-only gate mid-flight (making the gated planner write
+        # code, which then self-destructs as a "gate violation") and interleave edits on one tree.
+        # The UI already queues composer messages behind a live turn, but uploads, an approve, or a
+        # second client can still overlap — this is the backend backstop. Non-blocking: a would-be
+        # overlap is refused with a clear event, not silently run. Stop stays lock-free (it only sets
+        # stop_requested, which the running turn polls) so it can always interrupt the held turn.
+        self._turn_lock = threading.Lock()
 
     def project(self, start_preview: bool = True) -> Project:
         """Get-or-attach the single bound project. Idempotent: on first call it seeds the volume
@@ -474,26 +483,34 @@ class Orchestrator:
     def build(self, prompt: str) -> dict:
         """Run one build to completion (non-streaming). Reuses the session, so repeated calls are
         follow-up turns with context. Requires gateway access."""
-        project = self.project()
-        client = self._ensure_opencode()
-        sid = self._ensure_session(project)
+        # Serialize with the streaming turns: only one turn may run at a time (see _turn_lock). Refuse
+        # rather than overlap another turn on the shared control + working tree.
+        if not self._turn_lock.acquire(blocking=False):
+            return {"ok": False, "error_count": 0, "decision": "busy",
+                    "message": "A build is already running. Wait for it to finish or stop it first."}
+        try:
+            project = self.project()
+            client = self._ensure_opencode()
+            sid = self._ensure_session(project)
 
-        def send_and_wait(text: str) -> None:
-            project.last_gateway_error = None
-            agent = _agent_for_mode(project.control.snapshot().mode)
-            client.send_prompt(sid, text, agent=agent)
-            client.wait_for_idle(sid)
-            if project.last_gateway_error is not None:
-                err = project.last_gateway_error
-                raise RuntimeError(f"model call failed: {err['message']}")
+            def send_and_wait(text: str) -> None:
+                project.last_gateway_error = None
+                agent = _agent_for_mode(project.control.snapshot().mode)
+                client.send_prompt(sid, text, agent=agent)
+                client.wait_for_idle(sid)
+                if project.last_gateway_error is not None:
+                    err = project.last_gateway_error
+                    raise RuntimeError(f"model call failed: {err['message']}")
 
-        report, decision = run_feedback_loop(
-            prompt,
-            send_and_wait=send_and_wait,
-            check=lambda: self._feedback.check(project.workspace.path),
-            breaker=CircuitBreaker(),
-        )
-        return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
+            report, decision = run_feedback_loop(
+                prompt,
+                send_and_wait=send_and_wait,
+                check=lambda: self._feedback.check(project.workspace.path),
+                breaker=CircuitBreaker(),
+            )
+            return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
+        finally:
+            self._turn_lock.release()
 
     def _descriptor(self, project: Project, entry: dict) -> dict:
         """Typed shape summary (kind/summary/detail/size) for one attachment, cached in the manifest.
@@ -565,9 +582,31 @@ class Orchestrator:
             return None
 
     def build_stream(self, prompt: str, mentions: list[str] | None = None):
+        """Public entry: serialize this turn behind the per-project turn lock, then stream it.
+
+        One turn at a time. If a turn is already streaming, refuse rather than run a second one
+        concurrently (see _turn_lock) — overlapping turns corrupt the shared read-only gate and
+        working tree. The refusal is a clean error + done(busy) so the UI surfaces it, not a hang."""
+        if not self._turn_lock.acquire(blocking=False):
+            yield from self._busy_refusal()
+            return
+        try:
+            yield from self._build_stream(prompt, mentions)
+        finally:
+            self._turn_lock.release()
+
+    def _busy_refusal(self):
+        """Events yielded when a turn is refused because another is already streaming."""
+        yield {"type": "error", "message": "A build is already running. Wait for it to finish or "
+               "stop it first, then resend."}
+        yield {"type": "done", "ok": False, "decision": "busy"}
+
+    def _build_stream(self, prompt: str, mentions: list[str] | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
+
+        Assumes the caller holds _turn_lock (build_stream / approve_stream acquire it).
 
         `mentions` are workspace paths of attached files the user @-referenced; they're resolved to
         real files and attached to this turn's prompt (see _resolve_mentions)."""
@@ -617,15 +656,17 @@ class Orchestrator:
 
         # Arm the read-only guarantee for a gated turn: the shim strips every write/shell tool from
         # each request, which is what actually stops the planner writing code (OpenCode's own
-        # per-agent permission block doesn't). Cleared on every exit alongside the mode.
-        project.control.set_read_only_turn(gate)
+        # per-agent permission block doesn't). Token-scoped to THIS turn — disarm only clears our own
+        # arming, so nothing can drop the guarantee out from under a gated turn (see arm_read_only).
+        ro_token = project.control.arm_read_only() if gate else None
 
         def restore_mode() -> None:
             if project.control.snapshot().mode is not original_mode:
                 project.control.set_mode(original_mode)
             if escalated_pick:
                 project.control.pick(original_pick)
-            project.control.set_read_only_turn(False)
+            if ro_token is not None:
+                project.control.disarm_read_only(ro_token)
 
         def handle_stop() -> dict:
             project.stop_requested = False
@@ -634,11 +675,22 @@ class Orchestrator:
             restore_mode()
             return {"type": "stopped"}
 
-        # Scoped to the whole build_stream call (not per turn): client.messages(sid) returns the
-        # entire session's messages on every poll, so a per-turn `seen` would let a follow-up
-        # turn's first poll re-walk the previous turn's already-completed parts and re-emit/
-        # re-persist them out of order (duplicate cards appended after the newer turn began).
+        # client.messages(sid) returns the ENTIRE session's messages on every poll, and `seen` starts
+        # empty for each user turn (this is a fresh _build_stream call). So without a baseline, this
+        # turn's first poll re-walks the PREVIOUS turn's already-completed assistant parts and re-emits
+        # them — the prior turn's summary reappearing at the top of the new turn (the "ordering" echo).
+        # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
+        # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
+        # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
         seen: set[tuple[str, int]] = set()
+        try:
+            for _m in client.messages(sid):
+                if _m.get("type") == "assistant":
+                    for _i in range(len(_m.get("content", []))):
+                        seen.add((_m["id"], _i))
+        except httpx.HTTPError as e:
+            # Non-fatal: worst case is the pre-existing echo, not a broken build. The poll loop retries.
+            log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
         # A clean typecheck of the untouched template must NOT count as a finished build: track
         # whether the agent actually edited files, and if a turn ends clean with zero edits, nudge
         # it to implement instead of declaring success. Capped so a model that refuses to write
@@ -936,20 +988,29 @@ class Orchestrator:
         turn in Implement mode — Plan mode's agent is read-only and its gate would just re-plan — and
         restore their mode afterwards. An Auto/Implement approve already has history, so it's never
         re-gated regardless."""
-        project = self.project()
-        if plan_edits is not None:
-            project.workspace.write_plan(plan_edits)
-        plan_md = project.workspace.read_plan() or ""
-        prior_mode = project.control.snapshot().mode
-        if prior_mode is Mode.PLAN:
-            project.control.set_mode(Mode.IMPLEMENT)
+        # Serialize like build_stream: approving while a turn already streams would overlap two turns
+        # on one working tree and read-only gate. We hold the lock across the whole approve (plan
+        # write + mode swap + build) and call _build_stream directly so it doesn't re-acquire.
+        if not self._turn_lock.acquire(blocking=False):
+            yield from self._busy_refusal()
+            return
         try:
-            yield from self.build_stream(_approve_prompt(plan_md, answers))
+            project = self.project()
+            if plan_edits is not None:
+                project.workspace.write_plan(plan_edits)
+            plan_md = project.workspace.read_plan() or ""
+            prior_mode = project.control.snapshot().mode
+            if prior_mode is Mode.PLAN:
+                project.control.set_mode(Mode.IMPLEMENT)
+            try:
+                yield from self._build_stream(_approve_prompt(plan_md, answers))
+            finally:
+                if project.control.snapshot().mode is not prior_mode:
+                    project.control.set_mode(prior_mode)
+                # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
+                project.workspace.archive_plan()
         finally:
-            if project.control.snapshot().mode is not prior_mode:
-                project.control.set_mode(prior_mode)
-            # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
-            project.workspace.archive_plan()
+            self._turn_lock.release()
 
     def record_runtime_error(self, message: str, stack: str = "") -> None:
         """Store a runtime error the live preview reported (via /api/preview/runtime-error), stamped
@@ -1328,23 +1389,43 @@ class Orchestrator:
             raise AttachTooLarge(self._attach_max_bytes, total, size)
         rel_in_dataset = PurePosix(subfolder, name).as_posix()
         dest_bytes = _safe_join(Path(target.mount_path), rel_in_dataset)
-        dest_bytes.parent.mkdir(parents=True, exist_ok=True)
-        dest_bytes.write_bytes(data)
         rel = _attach_dest(target.name, rel_in_dataset)
-        link = _safe_join(project.workspace.path, rel)
-        link.parent.mkdir(parents=True, exist_ok=True)
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(dest_bytes)
-        project.attached[:] = [e for e in project.attached if e["path"] != rel]
-        project.attached.append(
-            {"dataset_id": target.id, "dataset": target.name, "file": rel_in_dataset, "path": rel,
-             "size": size, "sensitive": effective_sensitive, "source": "upload",
-             "dataset_rel_path": rel_in_dataset}
-        )
-        self._ensure_data_gitignored(project.workspace)
-        self._write_agents_data_block(project)
-        project.workspace.write_attachments(project.attached)
+        link = _safe_join(project.workspace.path, rel)   # resolved BEFORE any write, so a rejected
+        dest_bytes.parent.mkdir(parents=True, exist_ok=True)  # path fails without stranding bytes
+        # The bytes land on the dataset mount, which is OUTSIDE git and outside the workspace, while
+        # everything that RECORDS them (symlink, manifest, AGENTS.md) is inside it. A failure in
+        # between therefore strands data on a shared mount with nothing pointing at it — invisible
+        # to detach/delete, and for a sensitive upload, unlocked. So the write is undone on any
+        # failure. `created` guards the one case we must not undo: overwriting a same-named
+        # re-upload already destroyed the old bytes, and deleting the file would compound that.
+        created = not dest_bytes.exists()
+        dest_bytes.write_bytes(data)
+        try:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(dest_bytes)
+            project.attached[:] = [e for e in project.attached if e["path"] != rel]
+            project.attached.append(
+                {"dataset_id": target.id, "dataset": target.name, "file": rel_in_dataset, "path": rel,
+                 "size": size, "sensitive": effective_sensitive, "source": "upload",
+                 "dataset_rel_path": rel_in_dataset}
+            )
+            self._ensure_data_gitignored(project.workspace)
+            self._write_agents_data_block(project)
+            project.workspace.write_attachments(project.attached)
+        except Exception:
+            project.attached[:] = [e for e in project.attached if e["path"] != rel]
+            for undo in (lambda: link.unlink() if link.is_symlink() or link.exists() else None,
+                         lambda: _prune_empty_dirs(link.parent,
+                                                   project.workspace.path / "public" / "data"),
+                         lambda: dest_bytes.unlink() if created else None,
+                         lambda: project.workspace.write_attachments(project.attached)):
+                try:
+                    undo()
+                except OSError:
+                    pass  # best effort — rollback must never mask the failure that caused it
+            raise
         if effective_sensitive:
             project.control.on_assets_changed([True])  # sticky sovereign lock
         return {"uploaded": name, "dataset": target.name, "dataset_id": target.id, "path": rel,

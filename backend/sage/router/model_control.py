@@ -20,7 +20,12 @@ class ModelControl:
         self._picked_model: ModelId | None = None
         self._asset_locked = False   # sticky once True: set by an attached sensitivity-tagged asset
         self._manual_locked = False  # user-toggled via the "Force sovereign" button; freely reversible
-        self._read_only_turn = False  # armed by the orchestrator for a gated plan turn; cleared after
+        # Read-only guarantee is scoped to the turn that armed it, not a shared on/off flag. arm_
+        # read_only() mints a fresh token and returns it; disarm only clears if the live token is
+        # still that same one. So a turn can never clear a *different* turn's arming (a stale disarm
+        # from a crashed/overlapping turn is a no-op), and read-only can't be silently dropped
+        # mid-flight. `read_only_turn` (the bool the shim reads) is simply "a token is live".
+        self._read_only_token: object | None = None
 
     def set_mode(self, mode: Mode) -> None:
         self._mode = mode
@@ -66,10 +71,20 @@ class ModelControl:
     def manual_locked(self) -> bool:
         return self._manual_locked
 
-    def set_read_only_turn(self, value: bool) -> None:
-        """Arm/disarm the read-only guarantee for the current turn (see SessionState.read_only_turn).
-        Per-turn, not sticky: the orchestrator clears it on every exit from the stream."""
-        self._read_only_turn = value
+    def arm_read_only(self) -> object:
+        """Arm the read-only guarantee for a gated turn and return its token. The caller keeps the
+        token and passes it back to disarm_read_only() on exit. Minting a new token supersedes any
+        prior arming, so a turn always owns the live guarantee for its own duration."""
+        token = object()
+        self._read_only_token = token
+        return token
+
+    def disarm_read_only(self, token: object) -> None:
+        """Clear the read-only guarantee, but only if `token` is still the live one. A disarm from a
+        turn that no longer owns the guarantee (superseded, or an out-of-order exit) is a no-op — so
+        one turn can never drop another turn's read-only mid-flight."""
+        if self._read_only_token is token:
+            self._read_only_token = None
 
     def snapshot(self) -> SessionState:
         return SessionState(
@@ -77,5 +92,5 @@ class ModelControl:
             mode=self._mode,
             phase=self._phase,
             picked_model=self._picked_model,
-            read_only_turn=self._read_only_turn,
+            read_only_turn=self._read_only_token is not None,
         )

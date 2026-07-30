@@ -128,7 +128,7 @@ def test_ask_mode_strips_shell_tools_too():
 def test_gated_plan_turn_strips_tools_even_outside_ask_mode():
     """The plan gate fires from Auto too, where `mode` alone can't express "this turn is read-only"."""
     control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
-    control.set_read_only_turn(True)
+    control.arm_read_only()
     gw = FakeGatewayClient()
     tools = [
         {"type": "function", "function": {"name": "bash"}},
@@ -143,13 +143,26 @@ def test_gated_plan_turn_strips_tools_even_outside_ask_mode():
 
 
 def test_read_only_turn_is_per_turn_not_sticky():
-    """The orchestrator clears this on every exit from a turn; a stuck flag would silently make
+    """The orchestrator disarms on every exit from a turn; a stuck guarantee would silently make
     every later build read-only, which looks like the agent refusing to write."""
     control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
     assert control.snapshot().read_only_turn is False
-    control.set_read_only_turn(True)
+    token = control.arm_read_only()
     assert control.snapshot().read_only_turn is True
-    control.set_read_only_turn(False)
+    control.disarm_read_only(token)
+    assert control.snapshot().read_only_turn is False
+
+
+def test_a_stale_disarm_cannot_drop_a_newer_turns_read_only():
+    """Token-scoped guarantee: an older turn's disarm must not clear a newer turn's arming. This is
+    the hardening behind the turn lock — even if two turns' arm/disarm interleave, read-only holds
+    for whichever turn armed last, so a gated planner is never silently un-gated mid-flight."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    old = control.arm_read_only()   # turn A arms
+    new = control.arm_read_only()   # turn B arms, superseding A
+    control.disarm_read_only(old)   # A exits late — must be a no-op
+    assert control.snapshot().read_only_turn is True
+    control.disarm_read_only(new)   # B exits — now it clears
     assert control.snapshot().read_only_turn is False
 
 
