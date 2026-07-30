@@ -34,13 +34,13 @@ class Reason(str, Enum):
     IMPLEMENT_OVERRIDE = "implement-override"
 
 
-# Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified
-# by sending a test image through the live Domino gateway on 2026-07-30 — sonnet/gpt-5.4/opus
-# described it, bedrock-qwen3-coder returned HTTP 400 ("This model doesn't support the image content
-# block that you provided"), qwen-2-5 returned 502. An unknown model is treated as NOT vision-capable
-# on purpose: guessing wrong costs a hard 400 that kills the whole build turn, guessing conservatively
-# only costs the agent one image.
-VISION_CAPABLE = frozenset({"sonnet", "gpt-5.4", "opus"})
+# Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified by
+# sending a test image through the live Domino gateway on 2026-07-30 — sonnet/gpt-5.4/opus/
+# etan-opus-4.6 described it, bedrock-qwen3-coder returned HTTP 400 ("This model doesn't support the
+# image content block that you provided"), qwen-2-5 returned 502. That is every model the gateway
+# lists today. An unknown model is treated as NOT vision-capable on purpose: guessing wrong costs a
+# hard 400 that kills the whole build turn, guessing conservatively only costs the agent one image.
+VISION_CAPABLE = frozenset({"sonnet", "gpt-5.4", "opus", "etan-opus-4.6"})
 
 
 def supports_vision(model: ModelId) -> bool:

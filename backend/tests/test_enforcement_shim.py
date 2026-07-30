@@ -260,6 +260,7 @@ def test_every_image_across_every_message_is_replaced():
 
 def test_vision_capability_is_a_closed_list_with_unknown_models_failing_safe():
     assert supports_vision("sonnet") and supports_vision("domino/gpt-5.4")
+    assert supports_vision("opus") and supports_vision("etan-opus-4.6")
     assert not supports_vision("bedrock-qwen3-coder")  # live 400
     assert not supports_vision("qwen-2-5")             # live 502
     assert not supports_vision("some-future-model")    # unknown -> no images
