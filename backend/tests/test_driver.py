@@ -139,3 +139,27 @@ def test_a_mixed_attachment_set_sends_media_parts_only_for_the_images(monkeypatc
 
     assert [f["name"] for f in calls[0]["prompt"]["files"]] == ["shot.png"]
     assert "q3.csv" in calls[0]["prompt"]["text"]
+
+
+def test_an_image_that_could_not_be_inlined_tells_the_agent_it_cannot_see_it(monkeypatch):
+    """Silent degradation is the trap: a descriptor with no pixels reads exactly like a normal one,
+    so the agent assumes it can see the image and guesses instead of saying it can't."""
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt("s1", "what colour is it?", attachments=[
+        {"path": "public/data/ds/uploads/big.png", "name": "big.png",
+         "summary": "PNG image — 900x900", "detail": "PNG image, 900x900.", "image_uri": None}])
+
+    text = calls[0]["prompt"]["text"]
+    assert "NOT shown to you" in text and "too large to inline" in text
+    assert "files" not in calls[0]["prompt"]      # nothing to send as media
+
+
+def test_a_normal_data_attachment_gets_no_image_note(monkeypatch):
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt("s1", "chart it", attachments=[_ATT])
+
+    assert "NOT shown to you" not in calls[0]["prompt"]["text"]

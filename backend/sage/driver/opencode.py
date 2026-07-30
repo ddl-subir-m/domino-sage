@@ -9,6 +9,7 @@ Leak rule (DESIGN): the shim/router never see OpenCode types; all OpenCode speci
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
@@ -17,6 +18,8 @@ import httpx
 from ..feedback.circuit_breaker import CircuitBreaker, Decision
 from ..feedback.runner import FeedbackReport
 from .agent_driver import AgentEvent
+
+log = logging.getLogger("sage.driver")  # "sage.*" -> surfaced by /api/diag's log tail
 
 
 def map_event(raw: dict) -> AgentEvent:
@@ -105,10 +108,20 @@ class OpenCodeClient:
         Confirmed end to end (OpenCode -> shim -> gateway -> sonnet): the model read a test image
         correctly."""
         if attachments:
-            listing = "\n\n".join(
-                f"- {a['name']} — {a['summary']}\n  path: {a['path']}"
-                + (f"\n{a['detail']}" if a.get("detail") else "")
-                for a in attachments)
+            def _entry(a: dict) -> str:
+                s = f"- {a['name']} — {a['summary']}\n  path: {a['path']}"
+                # An image whose pixels couldn't be inlined must SAY so. Otherwise its descriptor
+                # is indistinguishable from a normal one, the agent assumes it can see the image,
+                # and it guesses or goes hunting the filesystem instead of telling the user.
+                if "image_uri" in a and not a["image_uri"]:
+                    s += ("\n  NOTE: this image was NOT shown to you — it is too large to inline. "
+                          "You cannot see its contents and reading the file will not help. "
+                          "Say so plainly rather than guessing or searching for it.")
+                if a.get("detail"):
+                    s += f"\n{a['detail']}"
+                return s
+
+            listing = "\n\n".join(_entry(a) for a in attachments)
             text = (
                 f"{text}\n\nAttached data files (the user @mentioned these). Below is a DESCRIPTION "
                 f"OF SHAPE (schema/structure) for each — it is NOT the data. You MAY read a file at "
@@ -125,6 +138,9 @@ class OpenCodeClient:
                   for a in (attachments or []) if a.get("image_uri")]
         if images:
             body["prompt"]["files"] = images
+        if attachments:
+            log.info("prompt: %d attachment(s), %d media part(s), body %d bytes",
+                     len(attachments), len(images), len(json.dumps(body)))
         if model:
             body["model"] = model
         if agent:
