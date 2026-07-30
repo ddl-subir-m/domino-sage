@@ -265,6 +265,7 @@
   .asset-row .a-name .a-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .a-chip { flex: 0 0 auto; font-size: 10px; padding: 1px 6px; border-radius: 999px; color: var(--lock); border: 1px solid color-mix(in srgb, var(--lock) 40%, var(--border)); background: color-mix(in srgb, var(--lock) 8%, transparent); }
   .a-chip.unseen { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+  .a-chip.up { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); background: color-mix(in srgb, var(--primary) 8%, transparent); }
   .asset-row .a-tags { flex: 0 0 auto; color: var(--faint); font-size: 11px; }
   .ds-row { cursor: pointer; user-select: none; }
   .a-caret { flex: 0 0 auto; color: var(--faint); font-size: 10px; width: 10px; display: inline-block; }
@@ -274,12 +275,47 @@
   .asset-row button.attached { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
   .asset-row button.danger { color: var(--lock); border-color: color-mix(in srgb, var(--lock) 35%, var(--border)); }
   .asset-row button.danger:hover { background: color-mix(in srgb, var(--lock) 8%, transparent); }
-  .upload-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .upload-input { flex: 1 1 auto; min-width: 0; font-size: 12px; }
-  .upload-target { flex: 0 1 auto; max-width: 40%; min-width: 0; font-size: 12px; }
-  .upload-chk { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .upload-btn { flex: 0 0 auto; padding: 5px 12px; border-radius: 7px; border: none; background: var(--lock); color: #fff; font-weight: 500; font-size: 12px; }
+  /* mode menu (Claude Code-style list: checkmark on the selected row, number shortcut on the right) */
+  .mode-list { display: flex; flex-direction: column; margin: 2px -6px 0; }
+  .mode-list button {
+    display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; font: inherit;
+    border: 0; background: transparent; color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 14px;
+  }
+  .mode-list button:hover { background: var(--surface-2); }
+  .mode-list button .m-name { flex: 1; min-width: 0; }
+  .mode-list button .m-check { flex: 0 0 auto; font-size: 13px; width: 14px; text-align: center; visibility: hidden; }
+  .mode-list button.sel .m-check { visibility: visible; }
+  .mode-list button .m-key { flex: 0 0 auto; color: var(--faint); font-size: 12px; width: 12px; text-align: center; font-variant-numeric: tabular-nums; }
+
+  /* upload form: labelled fields stacked so nothing clips (was a single crammed row) */
+  .upload-form { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+  .upload-form .field { display: flex; flex-direction: column; gap: 5px; }
+  .upload-form .lbl { font-size: 12px; color: var(--muted); font-weight: 500; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .filepick {
+    display: flex; align-items: center; gap: 10px; border: 1px dashed var(--border-strong);
+    border-radius: 9px; padding: 10px 12px; background: var(--surface-2); cursor: pointer;
+  }
+  .filepick:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border-strong)); }
+  .filepick .fp-btn { flex: 0 0 auto; font-size: 12px; font-weight: 550; color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border)); border-radius: 7px; padding: 5px 10px; }
+  .filepick .fp-name { min-width: 0; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .filepick .fp-name.empty { color: var(--faint); }
+  .upload-target { width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; }
+  .sens-toggle {
+    display: flex; align-items: flex-start; gap: 9px; padding: 10px 11px; border: 1px solid var(--border);
+    border-radius: 9px; background: var(--surface-2); cursor: pointer;
+  }
+  .sens-toggle.on { border-color: color-mix(in srgb, var(--lock) 40%, var(--border)); background: color-mix(in srgb, var(--lock) 7%, var(--surface)); }
+  .sens-toggle input { margin-top: 2px; accent-color: var(--lock); }
+  .sens-toggle .st-title { font-size: 13px; font-weight: 550; color: var(--text); display: flex; align-items: center; gap: 6px; }
+  .sens-toggle .st-desc { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .lock-badge { font-size: 10px; font-weight: 600; color: var(--lock); border: 1px solid color-mix(in srgb, var(--lock) 40%, var(--border)); border-radius: 999px; padding: 1px 6px; }
+  .upload-btn { width: 100%; padding: 9px; border-radius: 9px; border: 0; background: var(--primary); color: #fff; font-weight: 600; font-size: 13px; }
+  .upload-btn:hover:not(:disabled) { background: var(--primary-hover); }
   .upload-btn:disabled { opacity: .5; cursor: default; }
+  /* uploaded chip: flashes once on the just-uploaded row, then fades — not a permanent label */
+  .a-chip.fresh { animation: chipfade 4s ease forwards; }
+  @keyframes chipfade { 0%,70% { opacity: 1; } 100% { opacity: 0; } }
 
   /* ---------- preview panel ---------- */
   .work { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
@@ -397,12 +433,12 @@
       <!-- mode popover (Phase A): just the mode selector + sensitivity-lock hint -->
       <div class="pop left" id="mode-pop">
         <h2>Mode</h2>
-        <select id="mode-sel" onchange="setModel()">
-          <option value="ask">Ask — read-only, no code changes</option>
-          <option value="plan">Plan — proposes a plan for your approval, then builds it</option>
-          <option value="implement">Implement — writes code, model fixed unless overridden</option>
-          <option value="auto">Auto — picks the best model per step</option>
-        </select>
+        <div class="mode-list" id="mode-list">
+          <button type="button" data-mode="auto" onclick="chooseMode('auto')"><span class="m-name">Auto</span><span class="m-check">✓</span><span class="m-key">1</span></button>
+          <button type="button" data-mode="ask" onclick="chooseMode('ask')"><span class="m-name">Ask</span><span class="m-check">✓</span><span class="m-key">2</span></button>
+          <button type="button" data-mode="plan" onclick="chooseMode('plan')"><span class="m-name">Plan</span><span class="m-check">✓</span><span class="m-key">3</span></button>
+          <button type="button" data-mode="implement" onclick="chooseMode('implement')"><span class="m-name">Implement</span><span class="m-check">✓</span><span class="m-key">4</span></button>
+        </div>
         <div class="hint" id="sensitivity-lock-hint" style="display:none">Sensitivity lock is on — only sovereign models are used, in every mode.</div>
       </div>
       <!-- model popover -->
@@ -435,15 +471,31 @@
       <!-- data / assets popover -->
       <div class="pop left" id="data-pop">
         <h2>Data</h2>
-        <div class="upload-row">
-          <input type="file" id="upload-input" class="upload-input" />
-          <select id="upload-target" class="upload-target" title="Where to store this file"><option value="">Project data</option></select>
-          <label class="upload-chk" title="Mark this file sensitive to force the sovereign model"><input type="checkbox" id="upload-sensitive" /> Sensitive</label>
-          <button id="upload-btn" class="upload-btn" onclick="uploadFile()">Upload</button>
+        <div class="upload-form">
+          <div class="field">
+            <span class="lbl">File</span>
+            <label class="filepick" for="upload-input">
+              <span class="fp-btn">Choose file</span>
+              <span class="fp-name empty" id="upload-fname">No file selected</span>
+              <input type="file" id="upload-input" class="visually-hidden" onchange="onUploadFileChange()" />
+            </label>
+          </div>
+          <div class="field">
+            <span class="lbl">Destination</span>
+            <select id="upload-target" class="upload-target" title="Which dataset to store this file in"></select>
+          </div>
+          <label class="sens-toggle" id="sens-toggle" title="Mark this file sensitive to force the sovereign model">
+            <input type="checkbox" id="upload-sensitive" onchange="onSensToggle()" />
+            <span class="st-body">
+              <span class="st-title">Mark as sensitive <span class="lock-badge">locks sovereign</span></span>
+              <span class="st-desc">Routes only to sovereign models and stores the file under a <code>sensitive/</code> folder.</span>
+            </span>
+          </label>
+          <button id="upload-btn" class="upload-btn" onclick="uploadFile()">Upload file</button>
         </div>
         <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets…" oninput="renderAssets()" autocomplete="off" />
         <div id="assets" class="asset-list"><div class="hint">Loading datasets…</div></div>
-        <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Sensitive files in <b>Project data</b> go to a <code>sensitive/</code> folder; choosing another dataset tags that whole dataset sensitive. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
+        <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Sensitive files in the default dataset go to a <code>sensitive/</code> folder; choosing another dataset tags that whole dataset sensitive. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
       </div>
 
         <div class="attach-pills" id="attach-pills"></div>
@@ -711,6 +763,8 @@ function enterProject() {
 /* ---------- assets: Domino datasets -> attach individual files ---------- */
 let assetsCache = [];        // datasets mounted in this project [{id,name,sensitive,...}]
 let attachedFiles = [];      // [{dataset_id, dataset, file, path, size}] (path = public/data/… symlink)
+let defaultDatasetId = null; // dataset uploads land in when the user doesn't pick one (labelled by its real name)
+let justUploadedDest = null; // dest path of the most recent upload — shows a one-time "uploaded" chip that fades
 const filesCache = {};       // datasetId -> [{path,size,dest,attached}]
 const expanded = new Set();  // dataset ids whose file list is expanded
 
@@ -718,6 +772,7 @@ async function loadAssets() {
   const { body } = await api('/api/assets');
   document.getElementById('sens-tag').textContent = body.sensitivity_tag || 'sensitive';
   assetsCache = body.assets || [];
+  defaultDatasetId = body.default_dataset_id || null;
   if (active) {
     const proj = await api('/api/project');
     attachedFiles = proj.body.attached || [];
@@ -731,9 +786,11 @@ function renderUploadTargets() {
   const sel = document.getElementById('upload-target');
   if (!sel) return;
   const prev = sel.value;
-  // "Project data" (default dataset) plus each writable dataset the user can target directly.
-  const opts = ['<option value="">Project data</option>'];
-  for (const a of assetsCache.filter(a => a.writable)) {
+  // The default dataset (value="" keeps Sage's default-upload semantics: sensitive → sensitive/ folder,
+  // no whole-dataset tagging) is shown by its real name, pre-selected. Other writable datasets follow.
+  const dflt = assetsCache.find(a => a.id === defaultDatasetId);
+  const opts = [`<option value="">${esc(dflt ? dflt.name : 'Project data')}</option>`];
+  for (const a of assetsCache.filter(a => a.writable && a.id !== defaultDatasetId)) {
     opts.push(`<option value="${esc(a.id)}">${esc(a.name)}${a.sensitive ? ' (sensitive)' : ''}</option>`);
   }
   sel.innerHTML = opts.join('');
@@ -747,25 +804,19 @@ function isUnseenImage(e) { return e.descriptor?.kind === 'image' && e.descripto
 const UNSEEN_IMAGE_TITLE = "The agent can't see this image — it will answer questions about it as unknown. Your app can still use the file.";
 function hintEl(html) { const d = document.createElement('div'); d.className = 'hint'; d.innerHTML = html; return d; }
 function groupHeader(text) { const h = document.createElement('div'); h.className = 'asset-group'; h.textContent = text; return h; }
-function attachedRow(e, isUpload) {
+// Quick-detach row for a dataset file attached from the browser (uploads now live in their dataset
+// below, where Delete sits on the file row — so this row is detach-only).
+function attachedRow(e) {
   const row = document.createElement('div');
   row.className = 'asset-row';
   const chip = e.sensitive ? ` <span class="a-chip" title="Sensitive — the sovereign model is locked">sensitive</span>` : '';
   const unseen = isUnseenImage(e) ? ` <span class="a-chip unseen" title="${esc(UNSEEN_IMAGE_TITLE)}">not visible to agent</span>` : '';
   row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(e.path)}">${esc(e.file)}</span><span class="a-tags">${esc(e.dataset || '')}</span>${chip}${unseen}</span>`;
-  const mkBtn = (cls, label, title, fn) => {
-    const b = document.createElement('button');
-    b.className = cls; b.textContent = label; b.title = title; b.onclick = fn;
-    return b;
-  };
-  if (isUpload) {
-    // An upload gets BOTH actions: Detach removes it from the app + agent context but keeps the
-    // uploaded bytes on the dataset mount; Delete also removes the bytes and can't be undone.
-    row.appendChild(mkBtn('attached', 'Detach', 'Remove from the app and agent context — keeps the uploaded data', () => detachFile(e.path)));
-    row.appendChild(mkBtn('danger', 'Delete', 'Delete this file and its data — can’t be undone', () => deleteFile(e.path)));
-  } else {
-    row.appendChild(mkBtn('attached', 'Detach', 'Remove from the workspace (keeps the dataset file)', () => detachFile(e.path)));
-  }
+  const b = document.createElement('button');
+  b.className = 'attached'; b.textContent = 'Detach';
+  b.title = 'Remove from the workspace (keeps the dataset file)';
+  b.onclick = () => detachFile(e.path);
+  row.appendChild(b);
   return row;
 }
 function fmtSize(n) {
@@ -778,20 +829,14 @@ function renderAssets() {
   const el = document.getElementById('assets');
   el.innerHTML = '';
 
-  // Uploaded files first ("Your data"): delete removes their bytes. Then dataset-attached files:
-  // detach-only. Both pinned above the dataset browser so current state is one click away.
-  // A file under a dataset's uploads/ folder is Sage-managed data (deletable) even if it was
-  // re-attached from the dataset browser as source='dataset' — sensitivity never changes this.
+  // Uploads no longer get a separate "Your data" group — they live inside their dataset in the
+  // browser below, where Delete sits on the file row. Only dataset files attached from the browser
+  // (source='dataset', not Sage uploads) stay pinned here for quick detach.
   const isSageUpload = e => { const r = e.dataset_rel_path || e.file || ''; return e.source === 'upload' || r.startsWith('uploads/') || r.startsWith('sensitive/'); };
-  const uploads = attachedFiles.filter(isSageUpload);
   const attached = attachedFiles.filter(e => !isSageUpload(e));
-  if (uploads.length) {
-    el.appendChild(groupHeader(`Your data · ${uploads.length}`));
-    for (const e of uploads) el.appendChild(attachedRow(e, true));
-  }
   if (attached.length) {
     el.appendChild(groupHeader(`Attached files · ${attached.length}`));
-    for (const e of attached) el.appendChild(attachedRow(e, false));
+    for (const e of attached) el.appendChild(attachedRow(e));
   }
 
   if (!assetsCache.length) {
@@ -827,13 +872,24 @@ function datasetRow(a) {
       const aset = attachedPaths();
       for (const f of files) {
         const attached = aset.has(f.dest);
+        // Sage-managed uploads (under uploads/ or sensitive/) can be deleted here — their bytes are
+        // the user's data. A just-uploaded file shows a one-time "uploaded" chip that fades.
+        const isUpload = f.path.startsWith('uploads/') || f.path.startsWith('sensitive/');
+        const fresh = (isUpload && f.dest === justUploadedDest) ? ' <span class="a-chip up fresh">uploaded</span>' : '';
         const fr = document.createElement('div');
         fr.className = 'asset-row file-row';
-        fr.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(f.path)}">${esc(f.path)}</span><span class="a-tags">${fmtSize(f.size)}</span></span>`;
+        fr.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(f.path)}">${esc(f.path)}</span>${fresh}<span class="a-tags">${fmtSize(f.size)}</span></span>`;
         const btn = document.createElement('button');
         setAssetButtonState(btn, attached);
         btn.onclick = () => attached ? detachFile(f.dest) : attachFile(a.id, f.path);
         fr.appendChild(btn);
+        if (isUpload) {
+          const del = document.createElement('button');
+          del.className = 'danger'; del.textContent = 'Delete';
+          del.title = 'Delete this file and its data — can’t be undone';
+          del.onclick = (ev) => { ev.stopPropagation(); deleteFile(f.dest); };
+          fr.appendChild(del);
+        }
         box.appendChild(fr);
       }
     }
@@ -962,12 +1018,29 @@ async function uploadFile() {
     attachedFiles.push({ dataset_id: r.body.dataset_id, dataset: r.body.dataset, file: r.body.path.split('/').pop(),
                          path: r.body.path, size: r.body.size, sensitive: r.body.sensitive, source: 'upload',
                          descriptor: r.body.descriptor });
-    input.value = ''; document.getElementById('upload-sensitive').checked = false;
+    // Reset the picker UI.
+    input.value = '';
+    const fname = document.getElementById('upload-fname');
+    fname.textContent = 'No file selected'; fname.classList.add('empty');
+    document.getElementById('upload-sensitive').checked = false;
+    document.getElementById('sens-toggle').classList.remove('on');
     document.getElementById('upload-target').value = '';
-    await loadAssets(); refreshStatus();  // reload so a newly-tagged dataset shows its chip
+    // The upload wrote a new file into its dataset. That dataset's file list is memoized in
+    // filesCache and won't reflect the new file until re-fetched — invalidate it, expand the
+    // dataset, and reload so the file appears in the browser without a page refresh.
+    const dsId = r.body.dataset_id;
+    justUploadedDest = r.body.path;
+    if (dsId) { delete filesCache[dsId]; expanded.add(dsId); }
+    await loadAssets();  // refreshes assetsCache/attachedFiles and re-renders
+    if (dsId && !filesCache[dsId]) {
+      const fr = await api(`/api/project/assets/${dsId}/files`);
+      if (fr.ok) { filesCache[dsId] = fr.body.files || []; renderAssets(); }
+    }
+    setTimeout(() => { justUploadedDest = null; renderAssets(); }, 4000);  // fade the one-time "uploaded" chip
+    refreshStatus();
     if (r.body.sensitive) addStatus('err', '🔒', `Uploaded <b>${esc(file.name)}</b> — sovereign model locked`);
     else addStatus('ok', '📄', `Uploaded <b>${esc(file.name)}</b>`);
-  } finally { btn.disabled = false; btn.textContent = 'Upload'; }
+  } finally { btn.disabled = false; btn.textContent = 'Upload file'; }
 }
 
 async function deleteFile(destPath) {
@@ -1017,8 +1090,9 @@ async function refreshStatus() {
   const { body } = await api('/api/project');
   const m = body.model || {};
   const showOverride = m.mode === 'plan' || m.mode === 'implement';
-  document.getElementById('mode-sel').value = m.mode || 'auto';
-  updateModeChip(m.mode || 'auto');
+  selectedMode = m.mode || 'auto';
+  renderModeMenu();
+  updateModeChip(selectedMode);
   document.getElementById('manual-pick').style.display = showOverride ? 'block' : 'none';
   document.getElementById('auto-models').style.display = m.mode === 'auto' ? 'block' : 'none';
   document.getElementById('catalog-editor').style.display = m.mode === 'auto' ? 'block' : 'none';
@@ -1038,9 +1112,36 @@ async function refreshStatus() {
   lastModel = m;
 }
 const MODE_LABEL = { ask: 'Ask', plan: 'Plan', implement: 'Implement', auto: 'Auto' };
+let selectedMode = 'auto';
 function updateModeChip(mode) {
   const el = document.getElementById('mode-btn-label');
   if (el) el.textContent = MODE_LABEL[mode] || mode;
+}
+function renderModeMenu() {
+  document.querySelectorAll('#mode-list button').forEach(b => b.classList.toggle('sel', b.dataset.mode === selectedMode));
+}
+function chooseMode(mode) {
+  selectedMode = mode;
+  renderModeMenu();
+  updateModeChip(mode);
+  document.getElementById('mode-pop').classList.remove('open');  // close the menu like a native picker
+  setModel();
+}
+// Number shortcuts 1–4 pick a mode while the menu is open (matches the on-row hints).
+const MODE_KEYS = ['auto', 'ask', 'plan', 'implement'];
+document.addEventListener('keydown', e => {
+  if (!document.getElementById('mode-pop').classList.contains('open')) return;
+  if (e.key >= '1' && e.key <= '4') { e.preventDefault(); chooseMode(MODE_KEYS[+e.key - 1]); }
+});
+function onUploadFileChange() {
+  const input = document.getElementById('upload-input');
+  const el = document.getElementById('upload-fname');
+  const name = input.files && input.files[0] && input.files[0].name;
+  el.textContent = name || 'No file selected';
+  el.classList.toggle('empty', !name);
+}
+function onSensToggle() {
+  document.getElementById('sens-toggle').classList.toggle('on', document.getElementById('upload-sensitive').checked);
 }
 function renderLockButton(m) {
   const btn = document.getElementById('lock-btn');
@@ -1124,7 +1225,7 @@ function renderModelChip(m) {
 async function setModel() {
   if (!active) return;
   const payload = {
-    mode: document.getElementById('mode-sel').value,
+    mode: selectedMode,
     pick: document.getElementById('pick').value.trim() || null,
   };
   await api('/api/project/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });

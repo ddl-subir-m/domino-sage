@@ -486,7 +486,11 @@ async def write_instructions(request: Request) -> JSONResponse:
 
 @control_app.get("/api/assets")
 def list_assets() -> dict:
-    return {"assets": orchestrator.list_assets(), "sensitivity_tag": orchestrator._sensitivity_tag}
+    return {
+        "assets": orchestrator.list_assets(),
+        "sensitivity_tag": orchestrator._sensitivity_tag,
+        "default_dataset_id": orchestrator.default_dataset_id(),
+    }
 
 
 @control_app.get("/api/project/assets/{dataset_id}/files")

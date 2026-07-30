@@ -1566,6 +1566,12 @@ class Orchestrator:
         subfolder = "sensitive" if sensitive else "uploads"
         return target, bool(sensitive), subfolder
 
+    def default_dataset_id(self) -> str | None:
+        """Id of the dataset uploads land in when the user doesn't pick one — lets the UI label and
+        pre-select it by its real name instead of a generic "Project data" option."""
+        target = self._default_dataset()
+        return target.id if target else None
+
     def _default_dataset(self) -> Asset | None:
         """The shared default project dataset to write uploads into: a writable, mounted dataset,
         preferring the project's own (named after / owned by the project, mounted under /mnt/data),
