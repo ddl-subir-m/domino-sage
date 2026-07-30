@@ -1287,6 +1287,10 @@ let workingLabel = '';     // current activity text
 let workingStart = 0;      // ms when the current label began (for the elapsed clock)
 let workingTimer = null;   // interval that repaints the elapsed clock
 let buildPhase = 'plan';   // last phase seen this build; drives the default label
+// An approved-plan build runs as an Implement turn on the backend regardless of the user's mode
+// (approve_stream pins Mode.IMPLEMENT), so the spinner must read "Building", not the "Planning" that
+// MODE_WORK would give while the chip still shows Plan. Set for the approve stream only.
+let approving = false;
 
 const PHASE_WORK = { plan: 'Planning', implement: 'Building' };
 // present-participle labels for a live in-progress step ("active" events from the driver)
@@ -1297,6 +1301,7 @@ const ACTIVE_VERB = { edit: 'Editing', write: 'Creating', read: 'Reading', bash:
 // just wrong (the router pins the implement model regardless of phase), so label by mode instead.
 const MODE_WORK = { ask: 'Thinking', plan: 'Planning', implement: 'Building' };
 function workLabel() {
+  if (approving) return 'Building';  // approved plan builds, whatever the chip's mode
   const mode = (lastModel && lastModel.mode) || 'auto';
   return mode === 'auto' ? (PHASE_WORK[buildPhase] || 'Working') : (MODE_WORK[mode] || 'Working');
 }
@@ -1493,7 +1498,9 @@ function addPlanCard(planMd) {
     editTa.remove();
     if (answers) card.insertAdjacentHTML('beforeend', '<div class="plan-note">' + esc(answers) + '</div>');
     const turnStart = document.getElementById('messages').children.length;
-    await runStream('/api/project/build/approve', payload, turnStart);
+    approving = true;  // spinner reads "Building" while the approved plan is implemented
+    try { await runStream('/api/project/build/approve', payload, turnStart); }
+    finally { approving = false; }
   };
   return append(card);
 }
