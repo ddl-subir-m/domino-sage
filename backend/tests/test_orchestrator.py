@@ -344,6 +344,36 @@ def test_turn_lock_is_released_after_a_refusal(tmp_path: Path):
     orch._turn_lock.release()
 
 
+class _FakeOC:
+    def __init__(self, msgs, boom=False):
+        self._msgs = msgs
+        self._boom = boom
+
+    def messages(self, sid):
+        if self._boom:
+            import httpx
+            raise httpx.ReadTimeout("boom")
+        return self._msgs
+
+
+def test_seen_baseline_marks_prior_turn_parts_so_they_dont_echo(tmp_path: Path):
+    # The prior turn's completed assistant parts must be pre-marked as seen, so a follow-up turn
+    # doesn't re-emit them (the "ordering" echo: prior summary reappearing atop the new turn).
+    orch = _orch(tmp_path)
+    session = [
+        {"type": "user", "id": "u1", "content": [{"type": "text", "text": "build it"}]},
+        {"type": "assistant", "id": "a1", "content": [{"type": "text"}, {"type": "tool"}]},
+    ]
+    seen = orch._seen_baseline(_FakeOC(session), "s1")
+    assert seen == {("a1", 0), ("a1", 1)}  # both parts of the prior assistant message, none of the user msg
+
+
+def test_seen_baseline_is_empty_on_poll_error(tmp_path: Path):
+    # Best-effort: a messages() failure must not break the build — worst case is the pre-existing echo.
+    orch = _orch(tmp_path)
+    assert orch._seen_baseline(_FakeOC([], boom=True), "s1") == set()
+
+
 def test_record_runtime_error_stores_stamped_error(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.record_runtime_error("boom", "at App (App.tsx:3)")
@@ -379,26 +409,73 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
-from sage.orchestrator.service import _approve_prompt, _should_gate  # noqa: E402
+from sage.orchestrator.service import (  # noqa: E402
+    _approve_prompt, _is_answer_only, _looks_like_question, _should_gate,
+)
 from sage.router.models import Mode  # noqa: E402
 from sage.workspace.manager import Workspace  # noqa: E402
 
 
 def test_should_gate_fires_on_first_build_only():
-    assert _should_gate(mode=Mode.IMPLEMENT, history_baseline=0, skip_planning=False) is True
-    assert _should_gate(mode=Mode.IMPLEMENT, history_baseline=3, skip_planning=False) is False
+    assert _should_gate(mode=Mode.IMPLEMENT, has_built=False, skip_planning=False) is True
+    assert _should_gate(mode=Mode.IMPLEMENT, has_built=True, skip_planning=False) is False
 
 
-def test_should_gate_plan_mode_gates_on_later_turns():
-    assert _should_gate(mode=Mode.PLAN, history_baseline=5, skip_planning=False) is True
+def test_should_gate_plan_mode_gates_even_after_building():
+    assert _should_gate(mode=Mode.PLAN, has_built=True, skip_planning=False) is True
 
 
 def test_should_gate_never_gates_ask_mode():
-    assert _should_gate(mode=Mode.ASK, history_baseline=0, skip_planning=False) is False
+    assert _should_gate(mode=Mode.ASK, has_built=False, skip_planning=False) is False
 
 
 def test_should_gate_opt_out_wins_over_everything():
-    assert _should_gate(mode=Mode.PLAN, history_baseline=0, skip_planning=True) is False
+    assert _should_gate(mode=Mode.PLAN, has_built=False, skip_planning=True) is False
+
+
+def test_gate_keys_on_first_build_not_first_turn():
+    # A question before the first build must NOT consume the gate: the project is still unbuilt, so the
+    # next real build request still gates. This is the "first build, not first turn" behavior.
+    assert _should_gate(mode=Mode.AUTO, has_built=False, skip_planning=False, is_question=True) is False
+    assert _should_gate(mode=Mode.AUTO, has_built=False, skip_planning=False, is_question=False) is True
+    # Plan mode is an explicit ask to plan — a question there still gates.
+    assert _should_gate(mode=Mode.PLAN, has_built=False, skip_planning=False, is_question=True) is True
+    # Once built, iteration turns don't gate.
+    assert _should_gate(mode=Mode.AUTO, has_built=True, skip_planning=False, is_question=False) is False
+
+
+def test_is_answer_only_covers_ask_mode_and_any_auto_question():
+    # Ask mode is always a read-only answer.
+    assert _is_answer_only(mode=Mode.ASK, is_question=False, is_approval=False) is True
+    # A question in Auto is answered read-only whether or not the app is built (has_built isn't a factor).
+    assert _is_answer_only(mode=Mode.AUTO, is_question=True, is_approval=False) is True
+    # A build request in Auto builds; Implement/Plan questions aren't answer-only; an approval never is.
+    assert _is_answer_only(mode=Mode.AUTO, is_question=False, is_approval=False) is False
+    assert _is_answer_only(mode=Mode.IMPLEMENT, is_question=True, is_approval=False) is False
+    assert _is_answer_only(mode=Mode.AUTO, is_question=True, is_approval=True) is False
+
+
+@pytest.mark.parametrize("prompt", [
+    "what colour is the bottom-right quadrant in @over-cap-3.3MB.png?",
+    "why does auto mode use a read-only mode",
+    "How does the upload flow work?",
+    "explain the auth flow",
+    "is the dataset already mounted?",
+])
+def test_looks_like_question_true_for_clear_questions(prompt):
+    assert _looks_like_question(prompt) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    "build a ui where a user uploads a file",
+    "make me a fraud review dashboard",
+    "add a login page",
+    "can you build me a dashboard?",          # build verb wins over the '?'
+    "give me the ZZ note in @q3-regions.csv",  # ambiguous lead -> conservatively a build (gates)
+    "",
+])
+def test_looks_like_question_false_for_builds_and_ambiguous(prompt):
+    assert _looks_like_question(prompt) is False
 
 
 def test_approve_prompt_includes_plan_and_answers():

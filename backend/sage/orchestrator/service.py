@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import tempfile
 import threading
 from dataclasses import dataclass, field, replace
@@ -157,13 +158,63 @@ def _agent_for_mode(mode: Mode) -> str | None:
     return _MODE_AGENT.get(mode)
 
 
-def _should_gate(*, mode: Mode, history_baseline: int, skip_planning: bool) -> bool:
+# Interrogative leads and build verbs for _looks_like_question. Kept tight on purpose: ambiguous
+# leads ("give", "show", "tell", "list", "get") stay OUT so they fall through to gating.
+_QUESTION_LEAD = frozenset({
+    "what", "whats", "why", "how", "when", "where", "who", "whom", "whose", "which",
+    "is", "are", "was", "were", "am", "do", "does", "did", "can", "could", "will",
+    "would", "should", "explain", "describe",
+})
+_BUILD_VERB = frozenset({
+    "build", "make", "create", "add", "implement", "generate", "scaffold", "design",
+    "develop", "write", "code", "refactor", "fix", "change", "update", "modify",
+    "rename", "remove", "delete", "replace", "wire", "setup",
+})
+
+
+def _looks_like_question(prompt: str) -> bool:
+    """True when a prompt asks for information ("what colour is this?") rather than asking us to build
+    something ("build a file upload UI"). Used to tell a first-turn question from a build request so
+    we answer it directly instead of proposing a build plan.
+
+    Deliberately conservative — only a CLEAR question counts; anything ambiguous returns False and
+    falls through to the plan gate, because a wrongly-skipped gate silently builds without approval
+    (the worse failure). Pure and deterministic, no model call — matches the phase classifier's style.
+    An explicit build verb anywhere wins, so "can you build me a dashboard?" is a build, not a question."""
+    text = prompt.strip().lower()
+    words = re.findall(r"[a-z']+", text)
+    if not words:
+        return False
+    if any(w in _BUILD_VERB for w in words):
+        return False
+    return words[0] in _QUESTION_LEAD or text.endswith("?")
+
+
+def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_question: bool = False) -> bool:
     """Plan gate (SPEC P6): run the read-only planner and stop for the user to approve before any
-    code is written. Fires whenever the user is in Plan mode, or automatically on the first turn of a
-    fresh project (nothing built yet) — unless the project opted out. Never gates Ask (read-only Q&A)."""
+    code is written. Fires in Plan mode, or automatically on the first BUILD of a project that hasn't
+    been built yet — unless the project opted out. Never gates Ask (read-only Q&A).
+
+    Keyed on has_built, not "first turn": a question asked before the first build (answered read-only,
+    see answer_only in build_stream) must not consume the gate — the first real build request still
+    gates. A *question* is not a build to be planned, so it skips the gate. Plan mode always gates:
+    it's an explicit ask to plan. Once built, iteration turns don't gate."""
     if skip_planning or mode is Mode.ASK:
         return False
-    return mode is Mode.PLAN or history_baseline == 0
+    if mode is Mode.PLAN:
+        return True
+    return not has_built and not is_question
+
+
+def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool) -> bool:
+    """A turn that answers read-only instead of building — no plan card, no edits, no implement-nudge.
+    Two cases: Ask mode (always read-only Q&A), and any question in Auto mode (whether or not the app
+    is built — a question about a built app should be answered, not turned into edits). An approval is
+    the user asking to build, never an answer. Build requests and Plan/Implement mode fall through to
+    the normal build path. Mutually exclusive with the plan gate (a question is never gated)."""
+    if is_approval:
+        return False
+    return mode is Mode.ASK or (mode is Mode.AUTO and is_question)
 
 
 def _approve_prompt(plan_md: str, answers: str) -> str:
@@ -601,7 +652,26 @@ class Orchestrator:
                "stop it first, then resend."}
         yield {"type": "done", "ok": False, "decision": "busy"}
 
-    def _build_stream(self, prompt: str, mentions: list[str] | None = None):
+    def _seen_baseline(self, client, sid: str) -> set[tuple[str, int]]:
+        """Keys of every assistant part already in the session, so a turn only emits its OWN parts.
+
+        client.messages(sid) returns the ENTIRE session on every poll, and the emit-tracking `seen`
+        set starts empty for each user turn. Without this baseline, a follow-up turn's first poll
+        re-walks the previous turn's completed parts and re-emits them — the prior turn's summary
+        reappearing at the top of the new turn (the "ordering" echo). Key format `(message id, part
+        index)` must match the poll loop in _build_stream. Best-effort: on a poll error we return an
+        empty baseline (worst case is the echo, not a broken build) and let the loop retry."""
+        seen: set[tuple[str, int]] = set()
+        try:
+            for m in client.messages(sid):
+                if m.get("type") == "assistant":
+                    for i in range(len(m.get("content", []))):
+                        seen.add((m["id"], i))
+        except httpx.HTTPError as e:
+            log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
+        return seen
+
+    def _build_stream(self, prompt: str, mentions: list[str] | None = None, *, is_approval: bool = False):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -620,6 +690,11 @@ class Orchestrator:
         # Attach the @-mentioned files to the user's turn only — not to the internal nudge/fix
         # follow-ups below, which carry no new user reference.
         mention_files = self._resolve_mentions(project, mentions)
+        # What the turn actually carries. An attachment that silently arrives without its pixels
+        # (image too large, wrong kind, unreadable) is indistinguishable from a normal descriptor
+        # once it reaches the agent, so record it here where /api/diag can show it.
+        log.info("turn attachments: requested=%s resolved=%s", len(mentions or []),
+                 [(a["name"], a["summary"], len(a.get("image_uri") or "")) for a in (mention_files or [])])
 
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
@@ -636,11 +711,21 @@ class Orchestrator:
 
         # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
         # read-only planner and stop for the user to approve — this turn deliberately writes no code.
-        gate = _should_gate(
-            mode=project.control.snapshot().mode,
-            history_baseline=history_baseline,
+        mode_at_start = project.control.snapshot().mode
+        is_question = _looks_like_question(prompt)
+        has_built = project.workspace.has_built()
+        # An approval is the user saying "build this plan now" — never gate it (that would re-propose a
+        # plan for an already-approved build and loop forever) and never treat it as a question.
+        gate = False if is_approval else _should_gate(
+            mode=mode_at_start,
+            has_built=has_built,
             skip_planning=bool(project.workspace.read_settings().get("skip_planning")),
+            is_question=is_question,
         )
+        # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
+        # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
+        # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
+        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question, is_approval=is_approval)
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
         project.workspace.append_history({"type": "user", "text": prompt})
@@ -654,11 +739,11 @@ class Orchestrator:
         original_pick = project.control.snapshot().picked_model
         escalated_pick = False
 
-        # Arm the read-only guarantee for a gated turn: the shim strips every write/shell tool from
-        # each request, which is what actually stops the planner writing code (OpenCode's own
-        # per-agent permission block doesn't). Token-scoped to THIS turn — disarm only clears our own
-        # arming, so nothing can drop the guarantee out from under a gated turn (see arm_read_only).
-        ro_token = project.control.arm_read_only() if gate else None
+        # Arm the read-only guarantee for a gated (plan) turn OR an answer-only turn (Ask mode / any
+        # Auto question): the shim strips every write/shell tool from each request, which stops the
+        # turn writing code (OpenCode's own per-agent permission block doesn't). Token-scoped to THIS
+        # turn — disarm only clears our own arming, so nothing drops the guarantee out from under us.
+        ro_token = project.control.arm_read_only() if (gate or answer_only) else None
 
         def restore_mode() -> None:
             if project.control.snapshot().mode is not original_mode:
@@ -682,15 +767,7 @@ class Orchestrator:
         # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
         # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
         # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
-        seen: set[tuple[str, int]] = set()
-        try:
-            for _m in client.messages(sid):
-                if _m.get("type") == "assistant":
-                    for _i in range(len(_m.get("content", []))):
-                        seen.add((_m["id"], _i))
-        except httpx.HTTPError as e:
-            # Non-fatal: worst case is the pre-existing echo, not a broken build. The poll loop retries.
-            log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
+        seen: set[tuple[str, int]] = self._seen_baseline(client, sid)
         # A clean typecheck of the untouched template must NOT count as a finished build: track
         # whether the agent actually edited files, and if a turn ends clean with zero edits, nudge
         # it to implement instead of declaring success. Capped so a model that refuses to write
@@ -751,13 +828,20 @@ class Orchestrator:
             made_edits = False
             turn_start_tree = project.snapshot.working_tree_hash()
             # A gated turn is pinned to the read-only planner regardless of the user's mode; it
-            # proposes a plan and never edits, so it always lands in the no-edit fork below.
-            agent = "sage-plan" if gate else _agent_for_mode(project.control.snapshot().mode)
+            # proposes a plan and never edits, so it always lands in the no-edit fork below. A first-
+            # turn question uses the read-only Q&A agent — it answers, it doesn't plan or build.
+            if gate:
+                agent = "sage-plan"
+            elif answer_only:
+                agent = "sage-ask"
+            else:
+                agent = _agent_for_mode(project.control.snapshot().mode)
             # Which agent this turn actually asked for, and whether the plan gate was armed. OpenCode
             # falls back to its default build agent when a name doesn't resolve, so a turn that ignores
             # a mode's read-only permission looks identical to one that honored it — log the intent so
             # /api/diag's log_tail can be compared against its `agents` list.
-            log.info("turn: agent=%s gate=%s mode=%s", agent, gate, project.control.snapshot().mode.value)
+            log.info("turn: agent=%s gate=%s answer_only=%s mode=%s", agent, gate, answer_only,
+                     project.control.snapshot().mode.value)
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
@@ -857,6 +941,16 @@ class Orchestrator:
                 yield persist({"type": "done", "ok": False, "decision": "gateway error"})
                 return
 
+            # Answer-only turn (Ask mode, or any question in Auto): it answered read-only and changed
+            # nothing, so there's nothing to typecheck, build, or nudge — finish
+            # clean regardless of the workspace's pre-existing typecheck state. If read-only was somehow
+            # bypassed and it DID edit, fall through to the normal path so those edits get reverted
+            # (the gate/answer-only violation check below), never silently kept.
+            if answer_only and not (made_edits or project.snapshot.working_tree_hash() != turn_start_tree):
+                restore_mode()
+                yield persist({"type": "done", "ok": True, "decision": "answered"})
+                return
+
             yield {"type": "typecheck-start"}
             report = self._feedback.check(project.workspace.path)
             yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
@@ -890,15 +984,18 @@ class Orchestrator:
                 # promised a plan to approve and got an unreviewed build instead. Don't fall through
                 # to the ordinary build path (that's what silently swallowed the gate before the shim
                 # enforced read-only) — revert to the pre-turn tree and say so.
-                if gate and wrote_code:
-                    log.error("gated turn wrote code — reverting; read-only enforcement was bypassed")
+                if (gate or answer_only) and wrote_code:
+                    kind = "gated" if gate else "answer-only"
+                    log.error("%s turn wrote code — reverting; read-only enforcement was bypassed", kind)
                     project.snapshot.discard_changes()
                     restore_mode()
-                    yield persist({"type": "error", "message":
-                                   "Planning was expected, but the agent edited files — nothing was "
-                                   "applied. Send the request again, or switch to Implement to build "
-                                   "directly."})
-                    yield persist({"type": "done", "ok": False, "decision": "gate violated"})
+                    msg = ("Planning was expected, but the agent edited files — nothing was applied. "
+                           "Send the request again, or switch to Implement to build directly." if gate else
+                           "That was a question, but the agent edited files — nothing was applied. Ask "
+                           "again, or switch to Implement to build directly.")
+                    yield persist({"type": "error", "message": msg})
+                    yield persist({"type": "done", "ok": False,
+                                   "decision": "gate violated" if gate else "answer only — edits discarded"})
                     return
                 if report.ok and not wrote_code:
                     if gate:
@@ -911,6 +1008,7 @@ class Orchestrator:
                         yield persist({"type": "plan-proposed", "plan": plan_md})
                         yield persist({"type": "done", "ok": True, "decision": "awaiting approval"})
                         return
+                    # answer_only turns never reach here — a no-edit Q&A already finished before typecheck.
                     if nudges < MAX_NUDGES:
                         nudges += 1
                         # The nudge is a fresh user turn, so the shim's per-step classifier resets to
@@ -974,6 +1072,9 @@ class Orchestrator:
                 restore_mode()
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok:
+                    # A clean code-writing build succeeded (a no-edit plan/answer turn returned earlier),
+                    # so this project is now "built" — future turns gate on plan, not on this being done.
+                    project.workspace.mark_built()
                     saved = self._save_to_git(project, prompt)
                     if saved is not None:
                         yield persist(saved)
@@ -1003,7 +1104,7 @@ class Orchestrator:
             if prior_mode is Mode.PLAN:
                 project.control.set_mode(Mode.IMPLEMENT)
             try:
-                yield from self._build_stream(_approve_prompt(plan_md, answers))
+                yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True)
             finally:
                 if project.control.snapshot().mode is not prior_mode:
                     project.control.set_mode(prior_mode)

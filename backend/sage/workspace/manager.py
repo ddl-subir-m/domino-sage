@@ -81,6 +81,20 @@ class Workspace:
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings_path.write_text(json.dumps(settings, indent=2))
 
+    def has_built(self) -> bool:
+        """True once a code-writing build has completed here. Drives the first-BUILD plan gate
+        (not first-turn): questions asked before the first build must not consume the gate, and the
+        gate must still fire on the first real build request no matter how many questions preceded it."""
+        return bool(self.read_settings().get("built"))
+
+    def mark_built(self) -> None:
+        """Latch has_built() on after the first successful build. Idempotent; persisted in settings
+        so it survives an orchestrator restart (a rebuilt project must not re-gate)."""
+        settings = self.read_settings()
+        if not settings.get("built"):
+            settings["built"] = True
+            self.write_settings(settings)
+
     @property
     def session_path(self) -> Path:
         """Persisted OpenCode session id, so the project re-attached after an orchestrator restart

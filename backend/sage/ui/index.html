@@ -1525,7 +1525,7 @@ function replayEvent(ev) {
   else if (ev.type === 'typecheck') addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`);
   else if (ev.type === 'data-leak') addStatus('warn', '⚠', leakMsg(ev));
   else if (ev.type === 'plan-proposed') addPlanCard(ev.plan);
-  else if (ev.type === 'done') { if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); }
+  else if (ev.type === 'done') { if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); }
   else if (ev.type === 'saved') renderSaved(ev);
 }
 
@@ -1554,7 +1554,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
   else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
   else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan); trail(); }
-  else if (ev.type === 'done') { stopWorking(); if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`); refreshPreview(); }
+  else if (ev.type === 'done') { stopWorking(); if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'saved') { renderSaved(ev); }
   else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(workLabel()); refreshStatus(); }
