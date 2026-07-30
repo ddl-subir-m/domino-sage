@@ -39,7 +39,7 @@ from ..preview.supervisor import ViteSupervisor
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
-from .describe import describe, image_mime
+from .describe import describe, fit_image
 
 log = logging.getLogger("sage.orchestrator")
 
@@ -577,6 +577,11 @@ class Orchestrator:
         try:
             real = _safe_join(project.workspace.path, entry["path"]).resolve()
             d = describe(str(real))
+            if d["kind"] == "image":
+                # Whether the agent will actually SEE this image, settled once here so the Data
+                # panel can say so. Without it the failure is invisible to the user: the agent
+                # simply answers "unknown" and nothing explains why.
+                d["shown"] = fit_image(str(real), _MAX_INLINE_IMAGE_BYTES) is not None
         except (ValueError, OSError) as e:  # describe() itself never raises; _safe_join can
             d = {"kind": "unavailable", "summary": f"not described ({type(e).__name__})",
                  "detail": "", "size": 0}
@@ -611,26 +616,24 @@ class Orchestrator:
             item = {"path": m, "name": PurePosix(m).name,
                     "summary": d["summary"], "detail": d["detail"]}
             if d["kind"] == "image":
-                item["image_uri"] = self._image_data_uri(real, d["size"])
+                item["image_uri"] = self._image_data_uri(real)
             out.append(item)
         return out or None
 
-    def _image_data_uri(self, real: Path, size: int) -> str | None:
+    def _image_data_uri(self, real: Path) -> str | None:
         """An image inlined as `data:<mime>;base64,...` for the agent's prompt, or None if it can't
         be. Images are the one type where a descriptor isn't enough — the pixels ARE the content.
 
-        Capped because base64 inflates by ~4/3 and the whole thing rides in the prompt body; an
-        oversized image degrades to its descriptor (dimensions/format) rather than failing the turn.
+        Oversized images are SHRUNK rather than refused (see describe.fit_image): a phone photo or
+        hi-DPI screenshot is exactly what users attach, vision models downsample anyway, and the
+        alternative is an agent that can't see the picture it was asked about. None only when the
+        file won't decode at all — the caller then tells the agent it cannot see it.
         """
-        if size > _MAX_INLINE_IMAGE_BYTES:
+        fitted = fit_image(str(real), _MAX_INLINE_IMAGE_BYTES)
+        if fitted is None:
             return None
-        mime = image_mime(str(real))
-        if mime is None:
-            return None
-        try:
-            return f"data:{mime};base64,{base64.b64encode(real.read_bytes()).decode()}"
-        except OSError:
-            return None
+        data, mime = fitted
+        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
     def build_stream(self, prompt: str, mentions: list[str] | None = None):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
@@ -1428,7 +1431,10 @@ class Orchestrator:
             project.workspace.write_attachments(project.attached)
         project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
         size = next((e["size"] for e in project.attached if e["path"] == rel), 0)
-        return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size, "sensitive": sensitive, "status": project.status()}
+        entry = next((e for e in project.attached if e["path"] == rel), {})
+        return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size,
+                "sensitive": sensitive, "descriptor": entry.get("descriptor"),
+                "status": project.status()}
 
     def detach_file(self, path: str) -> dict:
         """Remove an attached file's symlink (keyed by its workspace path, so rehydrated entries
@@ -1529,8 +1535,12 @@ class Orchestrator:
             raise
         if effective_sensitive:
             project.control.on_assets_changed([True])  # sticky sovereign lock
+        # descriptor rides the response so the Data panel can flag an image the agent can't see
+        # immediately, instead of only after the next page load refetches the attachment list.
+        entry = next((e for e in project.attached if e["path"] == rel), {})
         return {"uploaded": name, "dataset": target.name, "dataset_id": target.id, "path": rel,
-                "size": size, "sensitive": effective_sensitive, "status": project.status()}
+                "size": size, "sensitive": effective_sensitive,
+                "descriptor": entry.get("descriptor"), "status": project.status()}
 
     def _resolve_upload_target(self, sensitive: bool, dataset_id: str | None) -> tuple[Asset | None, bool, str]:
         """Resolve (target dataset, effective sensitivity, subfolder) for an upload.

@@ -10,7 +10,7 @@ import struct
 import zipfile
 from pathlib import Path
 
-from sage.orchestrator.describe import describe
+from sage.orchestrator.describe import describe, fit_image
 
 REPLACEMENT = "�"
 
@@ -265,3 +265,52 @@ def test_a_corrupt_file_keeps_the_type_its_magic_bytes_proved(tmp_path: Path):
     assert "could not be parsed" in d["summary"]
     assert "NOT previewed" in d["detail"]
     assert REPLACEMENT not in d["summary"] + d["detail"]
+
+
+# --- fit_image: shrink rather than refuse -------------------------------------------------------
+
+def _noisy_png(tmp: Path, name: str, n: int = 900) -> Path:
+    """A PNG too big to compress away — solid colour would shrink to nothing and prove nothing."""
+    import os as _os
+    from PIL import Image
+    img = Image.frombytes("RGB", (n, n), _os.urandom(n * n * 3))
+    p = tmp / name
+    img.save(p, "PNG")
+    return p
+
+
+def test_an_image_that_already_fits_is_returned_untouched(tmp_path: Path):
+    p = _noisy_png(tmp_path, "small.png", 40)
+    data, mime = fit_image(str(p), 3 * 1024 * 1024)
+    assert data == p.read_bytes() and mime == "image/png"   # byte-identical: no needless re-encode
+
+
+def test_an_oversized_image_is_shrunk_to_fit_rather_than_refused(tmp_path: Path):
+    """Refusing costs the agent the whole picture. Vision models downsample anyway, so shrinking
+    keeps the signal — verified live: gpt-5.4 read the correct quadrant colours off the shrunk
+    version of the same file that was previously rejected."""
+    p = _noisy_png(tmp_path, "big.png")
+    cap = 512 * 1024
+    assert p.stat().st_size > cap
+
+    data, mime = fit_image(str(p), cap)
+
+    assert len(data) <= cap
+    assert mime in ("image/png", "image/jpeg")
+    assert data != p.read_bytes()
+
+
+def test_an_undecodable_image_is_reported_as_unshowable_not_crashed(tmp_path: Path):
+    """A valid PNG header is no guarantee the pixels decode. The caller must be able to tell the
+    agent it cannot see the image, rather than the turn dying."""
+    p = tmp_path / "broken.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR"
+                  + (900).to_bytes(4, "big") * 2 + b"garbage" * 200_000)
+
+    assert fit_image(str(p), 1024) is None
+
+
+def test_a_non_image_is_never_offered_for_inlining(tmp_path: Path):
+    p = tmp_path / "data.csv"
+    p.write_text("a,b\n1,2\n")
+    assert fit_image(str(p), 3 * 1024 * 1024) is None

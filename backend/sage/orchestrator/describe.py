@@ -19,10 +19,12 @@ file's bytes (kind + size), never to a crash.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import re
 import struct
+from pathlib import Path
 
 # Enough to cover every magic number we check plus a representative CSV/text head. Read once.
 _HEAD_BYTES = 8192
@@ -421,6 +423,72 @@ def image_mime(path: str) -> str | None:
     except OSError:
         return None
     return _IMAGE_MIMES.get(_image_header(head)[0])
+
+
+# Longest edge we shrink an oversized image to. Vision models downsample anyway — Anthropic's own
+# guidance puts the useful ceiling around here — so a larger image costs prompt budget without
+# adding signal. Shrinking beats refusing: a phone photo or a hi-DPI screenshot is exactly the kind
+# of thing a user attaches, and the alternative is an agent that cannot see it at all.
+_MAX_IMAGE_EDGE = 1568
+
+
+def _decodes(data: bytes) -> bool:
+    """Whether the pixels actually decode. Without Pillow we can't tell, so assume they do rather
+    than refuse every image — the failure then surfaces at the provider instead, which is worse but
+    still honest, whereas refusing outright would break images that are perfectly fine."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return True
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im.verify()
+        return True
+    except Exception:
+        return False
+
+
+def fit_image(path: str, max_bytes: int) -> tuple[bytes, str] | None:
+    """(bytes, mime) for an image small enough to inline, shrinking it if needed. None if it can't.
+
+    Returns the file untouched when it already fits. Otherwise re-encodes: PNG first (lossless,
+    right for the screenshots and diagrams people actually attach), falling back to JPEG and then to
+    progressively smaller edges when PNG can't get under budget. None when Pillow is missing or the
+    file won't decode — callers must then tell the agent it cannot see the image rather than let it
+    guess.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    mime = _IMAGE_MIMES.get(_image_header(data[:_HEAD_BYTES])[0])
+    if mime is None:
+        return None
+    if len(data) <= max_bytes:
+        # Still verify: magic bytes prove the type, not that the pixels decode. A small corrupt
+        # image would otherwise sail through untouched and fail at the provider, while the Data
+        # panel had already told the user the agent could see it.
+        return (data, mime) if _decodes(data) else None
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        edge = _MAX_IMAGE_EDGE
+        for _ in range(4):
+            with Image.open(io.BytesIO(data)) as im:
+                im = im.convert("RGB")
+                im.thumbnail((edge, edge))
+                for fmt, out_mime, kw in (("PNG", "image/png", {"optimize": True}),
+                                          ("JPEG", "image/jpeg", {"quality": 85, "optimize": True})):
+                    buf = io.BytesIO()
+                    im.save(buf, fmt, **kw)
+                    if buf.tell() <= max_bytes:
+                        return buf.getvalue(), out_mime
+            edge //= 2
+    except Exception:  # a decodable header is no guarantee the pixels decode
+        return None
+    return None
 
 
 def _image_header(head: bytes) -> tuple[str, tuple[int, int] | None]:

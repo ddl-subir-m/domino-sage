@@ -11,6 +11,7 @@ dependencies = [
     "websockets>=12,<16",       # proxy Vite HMR WebSocket into the preview (Step 3.3)
     "openpyxl>=3.1,<4.0",       # attachment descriptors: xlsx sheet names + dims (describe.py)
     "pypdf>=5.0,<7.0",          # attachment descriptors: pdf page count + text extraction
+    "pillow>=10.0,<13.0",       # shrink oversized images to fit the prompt's inline budget
 ]
 
 [project.optional-dependencies]

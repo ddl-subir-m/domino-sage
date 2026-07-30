@@ -436,9 +436,17 @@ def test_a_binary_attachment_never_puts_decoded_bytes_in_front_of_the_agent(tmp_
     assert project.attached[0]["descriptor"]["kind"] not in ("tabular", "text")
 
 
-def _png_bytes(pad: int = 0) -> bytes:
-    return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (800).to_bytes(4, "big") \
-        + (600).to_bytes(4, "big") + b"\x08\x06\x00\x00\x00" + bytes(pad)
+def _png_bytes(px: int = 40) -> bytes:
+    """A REAL png. Stub headers no longer suffice: fit_image verifies the pixels decode, because a
+    corrupt image that sails through would fail at the provider after the UI promised the agent
+    could see it. Random pixels so the file can't compress away when we need it large."""
+    import io as _io
+    import os as _os
+
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.frombytes("RGB", (px, px), _os.urandom(px * px * 3)).save(buf, "PNG")
+    return buf.getvalue()
 
 
 def test_an_attached_image_is_inlined_as_a_data_uri_for_the_agent(tmp_path: Path):
@@ -451,20 +459,40 @@ def test_an_attached_image_is_inlined_as_a_data_uri_for_the_agent(tmp_path: Path
     out = orch._resolve_mentions(project, [project.attached[0]["path"]])[0]
 
     assert out["image_uri"].startswith("data:image/png;base64,")
-    assert out["summary"] == "PNG image — 800x600"     # descriptor still travels alongside
+    assert out["summary"] == "PNG image — 40x40"       # descriptor still travels alongside
 
 
-def test_an_oversized_image_degrades_to_its_descriptor_instead_of_bloating_the_prompt(tmp_path: Path):
+def test_an_oversized_image_is_shrunk_so_the_agent_can_still_see_it(tmp_path: Path):
+    """Refusing an oversized image costs the agent the whole picture, and a phone photo or hi-DPI
+    screenshot is exactly what users attach. Verified live: gpt-5.4 read the correct quadrants off
+    the shrunk copy of a file that the old hard cap rejected outright."""
+    import base64 as _b64
+
     from sage.orchestrator import service as svc
 
     orch = _orch(tmp_path, assets=FakeAssetProvider())
     project = orch.project(start_preview=False)
-    orch.upload_file("huge.png", _png_bytes(pad=svc._MAX_INLINE_IMAGE_BYTES + 1))
+    big = _png_bytes(1400)
+    assert len(big) > svc._MAX_INLINE_IMAGE_BYTES
+    orch.upload_file("huge.png", big)
 
     out = orch._resolve_mentions(project, [project.attached[0]["path"]])[0]
 
-    assert out["image_uri"] is None
-    assert "PNG image" in out["summary"]
+    assert out["image_uri"].startswith("data:image/")
+    inlined = _b64.b64decode(out["image_uri"].split(",", 1)[1])
+    assert len(inlined) <= svc._MAX_INLINE_IMAGE_BYTES
+    assert len(inlined) < len(big)                     # actually shrunk, not passed through
+
+
+def test_an_undecodable_image_reaches_the_agent_with_no_pixels(tmp_path: Path):
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("broken.png", b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR"
+                     + (900).to_bytes(4, "big") * 2 + b"junk" * 50)
+
+    out = orch._resolve_mentions(project, [project.attached[0]["path"]])[0]
+
+    assert out["image_uri"] is None                    # send_prompt turns this into the "NOT shown" note
 
 
 def test_a_tabular_attachment_carries_no_image_uri(tmp_path: Path):
@@ -524,3 +552,31 @@ def test_agents_block_warns_that_search_cannot_see_attached_files(tmp_path: Path
     assert "read tool on its exact disk path" in agents
     assert "Do NOT use grep/search" in agents.replace("\n", " ")
     assert "finds nothing here proves nothing" in agents
+
+
+def test_an_attached_image_records_whether_the_agent_will_see_it(tmp_path: Path):
+    """The Data panel needs this: a user who attaches an image the agent can't see currently gets
+    no signal at all — the agent just answers "unknown" and nothing explains why."""
+    from PIL import Image
+
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    ws = orch.project(start_preview=False).workspace.path
+    good = tmp_path / "ok.png"
+    Image.new("RGB", (40, 40), (230, 30, 30)).save(good, "PNG")
+
+    res = orch.upload_file("ok.png", good.read_bytes())
+
+    assert res["descriptor"]["kind"] == "image"
+    assert res["descriptor"]["shown"] is True          # returned inline, so the panel can flag now
+    assert _manifest(ws)[0]["descriptor"]["shown"] is True
+
+
+def test_an_undecodable_image_is_flagged_as_unseen_for_the_data_panel(tmp_path: Path):
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    orch.project(start_preview=False)
+    broken = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (900).to_bytes(4, "big") * 2 + b"junk" * 50
+
+    res = orch.upload_file("broken.png", broken)
+
+    assert res["descriptor"]["kind"] == "image"
+    assert res["descriptor"]["shown"] is False
