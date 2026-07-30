@@ -271,6 +271,96 @@ def test_every_image_across_every_message_is_replaced():
     assert sent[2]["content"] == [{"type": "text", "text": IMAGE_OMITTED}]
 
 
+def test_web_tools_are_stripped_by_default_when_web_is_not_armed():
+    """The planning-spiral fix: with no web arming, the agent is never offered webfetch, so it can't
+    wander off to fetch Storybook/CDN URLs mid-plan. Holds in an ordinary build turn, not just Ask."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "webfetch"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert [t["function"]["name"] for t in sent_request["tools"]] == ["read"]
+
+
+def test_web_tools_survive_when_the_turn_armed_web():
+    """When the prompt asked for the web, the orchestrator arms web_allowed and the tool passes."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
+    control.arm_web()
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "webfetch"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert [t["function"]["name"] for t in sent_request["tools"]] == ["webfetch", "read"]
+
+
+def test_web_arming_is_per_turn_not_sticky():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    assert control.snapshot().web_allowed is False
+    token = control.arm_web()
+    assert control.snapshot().web_allowed is True
+    control.disarm_web(token)
+    assert control.snapshot().web_allowed is False
+
+
+def test_a_stale_disarm_cannot_drop_a_newer_turns_web():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    old = control.arm_web()
+    new = control.arm_web()
+    control.disarm_web(old)   # late exit of the superseded turn — no-op
+    assert control.snapshot().web_allowed is True
+    control.disarm_web(new)
+    assert control.snapshot().web_allowed is False
+
+
+def test_gated_plan_turn_still_strips_web_along_with_write_and_shell():
+    """A gated plan turn is read-only AND web-denied: read survives, webfetch/write/bash do not."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.arm_read_only()
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "webfetch"}},
+        {"type": "function", "function": {"name": "write"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert [t["function"]["name"] for t in sent_request["tools"]] == ["read"]
+
+
+def test_wants_web_detects_urls_and_intent_verbs_but_not_plain_builds():
+    from sage.orchestrator.service import _wants_web
+
+    # URLs and clear intent phrases
+    assert _wants_web("fetch https://ant.design/components/upload")
+    assert _wants_web("look up the antd Upload docs online")
+    assert _wants_web("search the web for a good dropzone pattern")
+    assert _wants_web("scrape the pricing page")
+    # Widened vocabulary: standalone web words + more verb/noun pairs
+    assert _wants_web("google the recommended dropzone library")
+    assert _wants_web("curl the latest release")
+    assert _wants_web("grab the changelog from the repo")
+    assert _wants_web("pull the README from github")
+    assert _wants_web("check the antd api reference")
+    assert _wants_web("find the upload example in their wiki")
+    # Plain build/edit requests must still fall through to deny
+    assert not _wants_web("build a UI that lets users upload datasets")
+    assert not _wants_web("add a delete button to the dataset card")
+    assert not _wants_web("add an API endpoint that returns the dataset rows")
+    assert not _wants_web("")
+
+
 def test_vision_capability_is_a_closed_list_with_unknown_models_failing_safe():
     assert supports_vision("sonnet") and supports_vision("domino/gpt-5.4")
     assert supports_vision("opus") and supports_vision("etan-opus-4.6")

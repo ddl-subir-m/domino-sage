@@ -190,6 +190,34 @@ def _looks_like_question(prompt: str) -> bool:
     return words[0] in _QUESTION_LEAD or text.endswith("?")
 
 
+# Phrases that signal the user wants Sage to reach the internet this turn, in three parts: an
+# explicit URL, a standalone verb that only ever means "hit the web", or a fetch-ish verb sitting
+# before a web noun in the same sentence. Deliberately generous on vocabulary — the default is deny,
+# but a false positive here is cheap (the webfetch tool is merely PRESENT; the agent still only calls
+# it when the task needs it), so we favour catching real phrasings over minimising the word list.
+_WEB_INTENT = re.compile(
+    r"https?://"                                          # any explicit URL — the unambiguous case
+    # Standalone: these words almost never mean anything but "reach the internet".
+    r"|\b(?:web\s?fetch|web\s?search|scrape|crawl|google|duck\s?duck\s?go|stack\s?overflow|"
+    r"curl|wget)\b"
+    # A fetch-ish verb somewhere before a web noun in the same sentence (no . ? ! between them).
+    r"|\b(?:fetch|download|look\s?up|lookup|search|browse|check|read|get|pull|grab|find|visit|"
+    r"open|consult|reference|retrieve)\b[^.?!]*"
+    r"\b(?:online|web|internet|url|link|site|website|page|docs?|documentation|changelog|repo|"
+    r"repository|github|gitlab|readme|wiki|blog|article|release\s?notes|api\s?reference|api\s?docs|"
+    r"npm|pypi|cdn|registry)\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_web(prompt: str) -> bool:
+    """True when the current prompt asks Sage to reach the public internet (a URL, or an intent verb
+    like fetch/look up/search paired with a web noun like online/docs/site). Default-deny: anything
+    ambiguous returns False, so the shim keeps web tools stripped. Pure and deterministic, like the
+    phase classifier and _looks_like_question — no model call."""
+    return bool(_WEB_INTENT.search(prompt or ""))
+
+
 def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_question: bool = False) -> bool:
     """Plan gate (SPEC P6): run the read-only planner and stop for the user to approve before any
     code is written. Fires in Plan mode, or automatically on the first BUILD of a project that hasn't
@@ -748,6 +776,10 @@ class Orchestrator:
         # turn — disarm only clears our own arming, so nothing drops the guarantee out from under us.
         ro_token = project.control.arm_read_only() if (gate or answer_only) else None
 
+        # Internet access is default-denied; arm it for THIS turn only when the prompt asked for the
+        # web (a URL or an intent verb). Token-scoped like read-only, disarmed on every exit.
+        web_token = project.control.arm_web() if _wants_web(prompt) else None
+
         def restore_mode() -> None:
             if project.control.snapshot().mode is not original_mode:
                 project.control.set_mode(original_mode)
@@ -755,6 +787,8 @@ class Orchestrator:
                 project.control.pick(original_pick)
             if ro_token is not None:
                 project.control.disarm_read_only(ro_token)
+            if web_token is not None:
+                project.control.disarm_web(web_token)
 
         def handle_stop() -> dict:
             project.stop_requested = False

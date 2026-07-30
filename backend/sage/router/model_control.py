@@ -26,6 +26,9 @@ class ModelControl:
         # from a crashed/overlapping turn is a no-op), and read-only can't be silently dropped
         # mid-flight. `read_only_turn` (the bool the shim reads) is simply "a token is live".
         self._read_only_token: object | None = None
+        # Same token discipline as read-only: a per-turn arming for internet access, so an
+        # overlapping/crashed turn can never drop another turn's guarantee. See arm_web().
+        self._web_token: object | None = None
 
     def set_mode(self, mode: Mode) -> None:
         self._mode = mode
@@ -86,11 +89,26 @@ class ModelControl:
         if self._read_only_token is token:
             self._read_only_token = None
 
+    def arm_web(self) -> object:
+        """Arm internet access for THIS turn and return a token, mirroring arm_read_only(). The caller
+        keeps the token and passes it to disarm_web() on exit. Minting a new token supersedes any prior
+        arming, so a turn always owns the live guarantee for its own duration."""
+        token = object()
+        self._web_token = token
+        return token
+
+    def disarm_web(self, token: object) -> None:
+        """Clear internet access, but only if `token` is still the live one — a disarm from a turn that
+        no longer owns the guarantee (superseded, or an out-of-order exit) is a no-op."""
+        if self._web_token is token:
+            self._web_token = None
+
     def snapshot(self) -> SessionState:
         return SessionState(
             sensitivity_locked=self.locked,
             mode=self._mode,
             phase=self._phase,
             picked_model=self._picked_model,
+            web_allowed=self._web_token is not None,
             read_only_turn=self._read_only_token is not None,
         )

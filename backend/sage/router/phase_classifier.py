@@ -45,6 +45,11 @@ SHELL_TOOLS = frozenset({"bash", "shell", "sh", "run", "run_command", "execute",
 # the agent resolves, but only `"ask"` diverts a tool to the approval handler, so `"deny"` is
 # preapproved and runs. Verified 2026-07-29: sage-ask wrote a file via bash.
 READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS
+# Tools that reach the public internet. Default-denied on every turn and stripped from the request
+# unless the CURRENT prompt asked for the web (see _wants_web / web_allowed) — the agent otherwise
+# wanders off to fetch Storybook/CDN URLs mid-plan and burns turns. Names cover OpenCode plus common
+# aliases from other harnesses, same as the sets above, so the guard survives a driver swap.
+WEB_TOOLS = frozenset({"webfetch", "web_fetch", "fetch", "websearch", "web_search"})
 _TURN_BOUNDARY_ROLES = frozenset({"user", "human"})
 
 

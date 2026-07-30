@@ -19,7 +19,7 @@ from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import ModelCatalog, Mode, supports_vision
-from ..router.phase_classifier import READ_ONLY_DENIED, classify
+from ..router.phase_classifier import READ_ONLY_DENIED, WEB_TOOLS, classify
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
 # attached — a silently dropped part reads as "the user sent nothing", and the agent then invents
@@ -127,10 +127,17 @@ class EnforcementShim:
         # `permission: {edit: deny, bash: deny}` does nothing on the headless server path (see
         # READ_ONLY_DENIED), so if a tool survives this filter, it runs. Shell matters most — that's
         # the hole that let Ask mode write files with `printf > file` for as long as it existed.
-        if (state.mode is Mode.ASK or state.read_only_turn) and "tools" in request:
+        # Web tools are default-denied on EVERY turn and only survive when the orchestrator armed
+        # web_allowed for this turn (the current prompt asked for the web). Same enforcement reason as
+        # read-only: OpenCode's per-agent permission is inert on the headless path, so stripping the
+        # tool from the request is the only thing that stops the agent wandering off to fetch URLs.
+        denied = set(READ_ONLY_DENIED) if (state.mode is Mode.ASK or state.read_only_turn) else set()
+        if not state.web_allowed:
+            denied |= WEB_TOOLS
+        if denied and "tools" in request:
             tools = [
                 t for t in request["tools"]
-                if (t.get("function") or {}).get("name", "").lower() not in READ_ONLY_DENIED
+                if (t.get("function") or {}).get("name", "").lower() not in denied
             ]
             request = {**request, "tools": tools}
 
