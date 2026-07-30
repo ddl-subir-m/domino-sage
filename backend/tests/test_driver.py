@@ -16,34 +16,51 @@ class _Resp:
             raise httpx.HTTPStatusError("boom", request=None, response=None)
 
 
-def test_send_prompt_embeds_attachment_paths_in_prompt_text(monkeypatch):
-    # 1.18.4's /prompt carries no file-part field, so @mentioned attachments are named as real
-    # local paths in the prompt TEXT (the agent's read tool follows the symlinks).
+_ATT = {"path": "public/data/sales-2026/uploads/q3.csv", "name": "q3.csv",
+        "summary": "CSV — 12 columns, 48,231 rows", "detail": "columns: region, amount"}
+
+
+def test_send_prompt_embeds_the_workspace_relative_path_not_the_mount_path(monkeypatch):
+    # Descriptors ride the prompt TEXT (prompt.files is reserved for images, which need real media
+    # parts). The path must be the in-root symlink path: the read tool hangs on /mnt/data mounts.
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
                         lambda url, json, timeout: calls.append(json) or _Resp(200))
-    OpenCodeClient("http://x").send_prompt("s1", "use this", files=["/mnt/data/foo/bar.csv"])
+    OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[_ATT])
     assert len(calls) == 1
     text = calls[0]["prompt"]["text"]
     assert text.startswith("use this")
-    assert "/mnt/data/foo/bar.csv" in text          # the real path the agent reads
-    assert "files" not in calls[0]["prompt"]         # no phantom file-part field
+    assert "public/data/sales-2026/uploads/q3.csv" in text
+    assert "/mnt/" not in text                       # never the absolute mount path
+    assert "files" not in calls[0]["prompt"]         # no images here -> no media parts
 
 
-def test_send_prompt_inlines_a_preview_and_tells_the_agent_not_to_read(monkeypatch, tmp_path):
-    # Attachments now ride as an inlined PREVIEW (schema head) with a "do NOT open with the read tool"
-    # instruction — OpenCode's read tool hangs on /mnt/data mounts outside its project root.
-    f = tmp_path / "data.csv"
-    f.write_text("col_a,col_b\n1,2\n3,4\n")
+def test_send_prompt_renders_the_summary_and_detail_of_each_attachment(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
                         lambda url, json, timeout: calls.append(json) or _Resp(200))
-    OpenCodeClient("http://x").send_prompt("s1", "use this", files=[str(f)])
+    OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[_ATT])
     text = calls[0]["prompt"]["text"]
-    assert str(f) in text                      # path still referenced (for the runtime URL)
-    assert "col_a,col_b" in text               # the preview content is inlined
-    assert "Do NOT open" in text               # explicit instruction not to read it
-    assert "files" not in calls[0]["prompt"]   # still no phantom file-part field
+    assert "q3.csv" in text
+    assert "CSV — 12 columns, 48,231 rows" in text
+    assert "columns: region, amount" in text
+
+
+def test_send_prompt_reads_no_files_and_renders_from_the_dicts_alone(monkeypatch):
+    # The descriptor is computed upstream and cached; send_prompt must never touch the filesystem
+    # (a PDF/PNG read here would inline mojibake, and a huge file would stall the turn).
+    def _boom(*a, **k):
+        raise AssertionError("send_prompt must not open files")
+    monkeypatch.setattr("builtins.open", _boom)
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    ghost = {"path": "public/data/x/uploads/nope.csv", "name": "nope.csv",
+             "summary": "CSV — 3 columns, 9 rows", "detail": ""}
+    OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[ghost])
+    text = calls[0]["prompt"]["text"]
+    assert "public/data/x/uploads/nope.csv" in text   # path that does not exist on disk
+    assert "CSV — 3 columns, 9 rows" in text
 
 
 def test_send_prompt_text_only_when_no_attachments(monkeypatch):
@@ -94,3 +111,31 @@ def test_loop_stops_on_no_progress():
         breaker=CircuitBreaker(no_progress_limit=3),
     )
     assert not report.ok and "no progress" in decision.reason
+
+
+def test_an_image_attachment_rides_prompt_files_as_a_data_uri(monkeypatch):
+    """`PromptInput.files` exists on 1.18.4 and takes {uri, name}. The uri must be a data: URI —
+    every file-path form makes OpenCode emit malformed media ("must contain valid base64")."""
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt("s1", "match this design", attachments=[
+        {"path": "public/data/ds/uploads/shot.png", "name": "shot.png",
+         "summary": "PNG image — 800x600", "detail": "PNG image, 800x600.",
+         "image_uri": "data:image/png;base64,AAAA"}])
+
+    assert calls[0]["prompt"]["files"] == [{"uri": "data:image/png;base64,AAAA", "name": "shot.png"}]
+    assert "shot.png" in calls[0]["prompt"]["text"]   # descriptor still rendered alongside
+
+
+def test_a_mixed_attachment_set_sends_media_parts_only_for_the_images(monkeypatch):
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt("s1", "build it", attachments=[
+        _ATT,
+        {"path": "public/data/ds/uploads/shot.png", "name": "shot.png", "summary": "PNG image",
+         "detail": "", "image_uri": "data:image/png;base64,BBBB"}])
+
+    assert [f["name"] for f in calls[0]["prompt"]["files"]] == ["shot.png"]
+    assert "q3.csv" in calls[0]["prompt"]["text"]

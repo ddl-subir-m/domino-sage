@@ -292,9 +292,8 @@ def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
     res = orch.upload_file("d.csv", b"x", sensitive=False)
-    real = str((proj.workspace.path / res["path"]).resolve())   # resolves the symlink to the mount
 
-    assert orch._resolve_mentions(proj, [res["path"]]) == [real]
+    assert [m["path"] for m in orch._resolve_mentions(proj, [res["path"]])] == [res["path"]]
     assert orch._resolve_mentions(proj, ["public/data/not-attached.csv"]) is None  # unknown -> ignored
     assert orch._resolve_mentions(proj, None) is None
 
@@ -377,3 +376,100 @@ def test_sensitive_upload_to_untagged_dataset_without_control_plane_is_best_effo
     assert res["sensitive"] is True
     assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/audit.csv"
     assert orch.project().control.locked
+
+
+# --- typed descriptors: the agent gets each file's SHAPE, never its bytes ------------------------
+
+def test_mentions_hand_the_agent_the_workspace_path_not_the_mount_path(tmp_path: Path):
+    """The regression that matters: OpenCode's read tool hangs forever on absolute /mnt/data paths
+    (outside its project root), while the in-root public/data/ symlink reads fine."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("q3.csv", b"region,revenue\nwest,10\neast,20\n")
+    path = project.attached[0]["path"]
+
+    out = orch._resolve_mentions(project, [path])
+
+    assert len(out) == 1
+    assert out[0]["path"] == path == "public/data/sales_2026/uploads/q3.csv"
+    assert out[0]["name"] == "q3.csv"
+    assert not any("/mnt/" in str(v) for v in out[0].values())
+
+
+def test_descriptor_is_cached_in_the_manifest_so_the_mount_is_read_once(tmp_path: Path):
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    ws = orch.project(start_preview=False).workspace.path
+    orch.upload_file("q3.csv", b"region,revenue\nwest,10\neast,20\n")
+
+    d = _manifest(ws)[0]["descriptor"]
+    assert d["kind"] == "tabular"
+    assert "region" in d["detail"] and "revenue" in d["detail"]
+
+    # Second use must not re-read the mount — the cached descriptor is returned verbatim.
+    project = orch.project()
+    project.attached[0]["descriptor"]["summary"] = "sentinel"
+    assert orch._resolve_mentions(project, [project.attached[0]["path"]])[0]["summary"] == "sentinel"
+
+
+def test_agents_md_lists_each_attachment_with_a_one_line_shape(tmp_path: Path):
+    """The AGENTS.md block is re-read every turn, so it carries the one-line summary only — the full
+    descriptor is inlined by send_prompt for @mentioned files alone."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    ws = orch.project(start_preview=False).workspace.path
+    orch.upload_file("q3.csv", b"region,revenue\nwest,10\neast,20\n")
+
+    block = (ws / "AGENTS.md").read_text()
+    line = next(ln for ln in block.splitlines() if "q3.csv" in ln and ln.startswith("- disk"))
+    assert "CSV" in line
+    assert "fetch `data/sales_2026/uploads/q3.csv`" in line
+
+
+def test_a_binary_attachment_never_puts_decoded_bytes_in_front_of_the_agent(tmp_path: Path):
+    """A PDF used to be utf-8-decoded into the prompt as a 'SCHEMA SAMPLE' of mojibake."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("report.pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n")
+
+    out = orch._resolve_mentions(project, [project.attached[0]["path"]])[0]
+
+    assert "�" not in out["detail"] and "�" not in out["summary"]
+    assert project.attached[0]["descriptor"]["kind"] not in ("tabular", "text")
+
+
+def _png_bytes(pad: int = 0) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (800).to_bytes(4, "big") \
+        + (600).to_bytes(4, "big") + b"\x08\x06\x00\x00\x00" + bytes(pad)
+
+
+def test_an_attached_image_is_inlined_as_a_data_uri_for_the_agent(tmp_path: Path):
+    """Images are the one type where the pixels ARE the shape, so the descriptor isn't enough.
+    A data: URI is required — OpenCode emits malformed media for every file-path form."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("shot.png", _png_bytes())
+
+    out = orch._resolve_mentions(project, [project.attached[0]["path"]])[0]
+
+    assert out["image_uri"].startswith("data:image/png;base64,")
+    assert out["summary"] == "PNG image — 800x600"     # descriptor still travels alongside
+
+
+def test_an_oversized_image_degrades_to_its_descriptor_instead_of_bloating_the_prompt(tmp_path: Path):
+    from sage.orchestrator import service as svc
+
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("huge.png", _png_bytes(pad=svc._MAX_INLINE_IMAGE_BYTES + 1))
+
+    out = orch._resolve_mentions(project, [project.attached[0]["path"]])[0]
+
+    assert out["image_uri"] is None
+    assert "PNG image" in out["summary"]
+
+
+def test_a_tabular_attachment_carries_no_image_uri(tmp_path: Path):
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("q3.csv", b"a,b\n1,2\n")
+
+    assert "image_uri" not in orch._resolve_mentions(project, [project.attached[0]["path"]])[0]

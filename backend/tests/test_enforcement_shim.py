@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from sage.gateway.client import FakeGatewayClient
 from sage.router.model_control import ModelControl
-from sage.router.models import Mode, ModelCatalog, Phase
-from sage.shim.enforcement import EnforcementShim
+from dataclasses import replace as _replace
+
+from sage.router.models import Mode, ModelCatalog, Phase, supports_vision
+from sage.shim.enforcement import IMAGE_OMITTED, EnforcementShim
 
 CATALOG = ModelCatalog(
     sovereign_plan="sovereign-8b",
@@ -173,6 +175,94 @@ def test_ask_mode_with_no_tools_key_is_untouched():
 
     sent_request, _ = gw.seen[-1]
     assert "tools" not in sent_request
+
+
+def _image_messages():
+    return [
+        {"role": "user", "content": [
+            {"type": "text", "text": "make it look like this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]},
+        {"role": "assistant", "content": "sure"},
+    ]
+
+
+def _vision_shim(control, gw):
+    """Same catalog, but the implement model is one verified vision-capable on the live gateway."""
+    return EnforcementShim(control, _replace(CATALOG, implement="sonnet"), gw)
+
+
+def test_images_are_stripped_when_the_resolved_model_cannot_see_them():
+    # catalog.implement here is "cheap-vendor" — unknown, therefore treated as non-vision. Without
+    # this, bedrock-qwen3-coder (the real default) hard-400s and the whole build turn dies.
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+
+    list(_shim(control, gw).handle({"messages": _image_messages()}, project="p"))
+
+    parts = gw.seen[-1][0]["messages"][0]["content"]
+    assert not any(p.get("type") == "image_url" for p in parts)
+    assert parts[0] == {"type": "text", "text": "make it look like this"}  # rest of the turn intact
+    assert parts[1] == {"type": "text", "text": IMAGE_OMITTED}  # agent is told, never left guessing
+
+
+def test_images_pass_through_untouched_to_a_vision_capable_model():
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    messages = _image_messages()
+
+    list(_vision_shim(control, gw).handle({"messages": messages}, project="p"))
+
+    assert gw.seen[-1][0]["model"] == "sonnet"
+    assert gw.seen[-1][0]["messages"] == _image_messages()  # byte-for-byte, no marker injected
+
+
+def test_plain_string_content_is_never_rewritten():
+    for shim_factory in (_shim, _vision_shim):
+        control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+        gw = FakeGatewayClient()
+        messages = [{"role": "user", "content": "just text"}]
+
+        list(shim_factory(control, gw).handle({"messages": messages}, project="p"))
+
+        assert gw.seen[-1][0]["messages"] == [{"role": "user", "content": "just text"}]
+
+
+def test_stripping_images_does_not_mutate_the_callers_request():
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    request = {"messages": _image_messages()}
+
+    list(_shim(control, gw).handle(request, project="p"))
+
+    assert request == {"messages": _image_messages()}
+
+
+def test_every_image_across_every_message_is_replaced():
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "d1"}},
+            {"type": "image_url", "image_url": {"url": "d2"}},
+        ]},
+        {"role": "user", "content": [{"type": "text", "text": "and this"}]},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "d3"}}]},
+    ]
+
+    list(_shim(control, gw).handle({"messages": messages}, project="p"))
+
+    sent = gw.seen[-1][0]["messages"]
+    assert [p["text"] for p in sent[0]["content"]] == [IMAGE_OMITTED, IMAGE_OMITTED]
+    assert sent[1] == {"role": "user", "content": [{"type": "text", "text": "and this"}]}
+    assert sent[2]["content"] == [{"type": "text", "text": IMAGE_OMITTED}]
+
+
+def test_vision_capability_is_a_closed_list_with_unknown_models_failing_safe():
+    assert supports_vision("sonnet") and supports_vision("domino/gpt-5.4")
+    assert not supports_vision("bedrock-qwen3-coder")  # live 400
+    assert not supports_vision("qwen-2-5")             # live 502
+    assert not supports_vision("some-future-model")    # unknown -> no images
 
 
 def test_ask_mode_respects_locked_sovereign_ask():

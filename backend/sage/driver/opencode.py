@@ -38,24 +38,6 @@ def map_event(raw: dict) -> AgentEvent:
     return AgentEvent(kind=kind, payload={"type": t, **props})
 
 
-def _file_preview(path: str, max_lines: int = 30, max_bytes: int = 8000) -> str:
-    """A bounded, read-tool-free preview of an attached file so the agent learns the schema WITHOUT
-    opening it. OpenCode's (Node) read tool hangs on files outside its project root (e.g. /mnt/data
-    dataset mounts), so we read a small head here (Python reads the mount fine) and inline it. Bounded
-    by bytes AND lines so a huge or single-giant-line file can't blow up the prompt."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            data = f.read(max_bytes)
-    except OSError as e:
-        return f"  (preview unavailable: {type(e).__name__})"
-    lines = data.splitlines()
-    shown = lines[:max_lines]
-    body = "\n".join(shown)
-    more = len(data) == max_bytes or len(lines) > max_lines
-    note = f"\n  … (preview truncated; first {len(shown)} lines)" if more else ""
-    return f"{body}{note}"
-
-
 @dataclass
 class OpenCodeClient:
     base_url: str
@@ -81,7 +63,7 @@ class OpenCodeClient:
         return ms[-1]["id"] if ms else None
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None, agent: str | None = None,
-                    files: list[str] | None = None) -> None:
+                    attachments: list[dict] | None = None) -> None:
         """Send a prompt. `/prompt` returns before the turn completes (async), so callers must
         wait_for_completion() to know the edits landed.
 
@@ -93,25 +75,56 @@ class OpenCodeClient:
         `"deny"` is treated as preapproved and executes. The read-only guarantee lives entirely in
         the shim, which strips READ_ONLY_DENIED from the request so the tool is never offered.
 
-        `files` are absolute paths of user-@mentioned attachments. We surface them by appending an
-        explicit "Attached files" section to the prompt TEXT (not as OpenCode file parts): 1.18.4's
-        `/prompt` body carries no `files`/attachment field, so a `files` key is silently dropped and
-        the reference never reaches the agent. Naming the real local paths in the text is
-        version-independent and definitely seen — the agent's read tool follows the symlinks. This
-        rides the same `{"prompt":{"text":...}}` shape the base turn already uses."""
-        if files:
-            listing = "\n\n".join(f"- {p}\n{_file_preview(p)}" for p in files)
+        `attachments` are user-@mentioned files, already described and bounded by the caller
+        (orchestrator/describe.py) — each is {"path", "name", "summary", "detail"} plus an optional
+        "image_uri" (a `data:<mime>;base64,...` string). This method only RENDERS them; it never
+        touches the filesystem, so a PDF/PNG can't get mojibake-inlined and a huge file can't stall
+        the request.
+
+        `path` MUST be workspace-relative (public/data/<slug>/uploads/<f>), not the /mnt/data
+        absolute path: that mount lives outside OpenCode's project root and its (Node) read tool
+        HANGS indefinitely on paths there — a confirmed production failure. The same bytes are
+        reachable in-root through the public/data symlink, and reading THAT is confirmed working,
+        which is why the old blanket "do NOT use the read tool" ban is lifted here: the ban only
+        ever existed to dodge the hang, and the descriptor is now the reason not to read, not a
+        prohibition.
+
+        Descriptors ride the prompt TEXT — version-independent and definitely seen.
+
+        IMAGES additionally ride `prompt.files`, which DOES exist on 1.18.4 (`PromptInput.files`,
+        items `{uri, name}`) — an earlier note here claimed the field did not exist and that a
+        `files` key was silently dropped; that was wrong, verified 2026-07-30 against the pinned
+        binary's own OpenAPI spec and live. Two constraints found the same way:
+          - `uri` MUST be a `data:<mime>;base64,...` URI. Every file-path form (file:///abs, bare
+            /abs, and workspace-relative) makes OpenCode emit malformed media — the turn dies with
+            "media must contain valid base64". Inlining also sidesteps the /mnt/data hang entirely,
+            since no path leaves Sage.
+          - The model must be vision-capable or the provider rejects the turn (bedrock-qwen3-coder
+            returns HTTP 400). The shim strips image parts before they reach a model that can't take
+            them, so this method attaches unconditionally and lets that policy live in one place.
+        Confirmed end to end (OpenCode -> shim -> gateway -> sonnet): the model read a test image
+        correctly."""
+        if attachments:
+            listing = "\n\n".join(
+                f"- {a['name']} — {a['summary']}\n  path: {a['path']}"
+                + (f"\n{a['detail']}" if a.get("detail") else "")
+                for a in attachments)
             text = (
-                f"{text}\n\nAttached data files (the user @mentioned these). A truncated SCHEMA SAMPLE "
-                f"of each is included below — only the first few rows, NOT the full dataset. Do NOT open "
-                f"these with the read tool — they can be large and reading them is unnecessary and slow "
-                f"(and files on mounts outside the project root can stall the read tool). Use the sample "
-                f"ONLY to learn the schema (column names and types). "
-                f"Do NOT hardcode, paste, or copy these sample rows into the app as its data — they are "
-                f"an incomplete preview and the real file has many more rows. The built app MUST load the "
+                f"{text}\n\nAttached data files (the user @mentioned these). Below is a DESCRIPTION "
+                f"OF SHAPE (schema/structure) for each — it is NOT the data. You MAY read a file at "
+                f"the workspace-relative path shown if you genuinely need more than the descriptor, "
+                f"but do not do so routinely, and do NOT read a large file: it bloats the context and "
+                f"has previously wedged the OpenCode server. Judge from the size/shape given. "
+                f"Do NOT hardcode, paste, or copy any sample values into the app as its data — the "
+                f"descriptor is a summary and the real file has far more. The built app MUST load the "
                 f"FULL file at runtime by fetching its served URL (see the 'Attached data' section in "
-                f"AGENTS.md); the absolute path is shown only for reference:\n\n{listing}")
+                f"AGENTS.md). Never copy a file into src/ — that leaks possibly-sensitive data into "
+                f"git; public/data/ is gitignored on purpose:\n\n{listing}")
         body: dict = {"prompt": {"text": text}}
+        images = [{"uri": a["image_uri"], "name": a["name"]}
+                  for a in (attachments or []) if a.get("image_uri")]
+        if images:
+            body["prompt"]["files"] = images
         if model:
             body["model"] = model
         if agent:

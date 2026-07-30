@@ -18,8 +18,36 @@ from typing import Any
 from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import ModelCatalog, Mode
+from ..router.models import ModelCatalog, Mode, supports_vision
 from ..router.phase_classifier import READ_ONLY_DENIED, classify
+
+# What the agent sees in place of an image its model can't accept. It must know an image WAS
+# attached — a silently dropped part reads as "the user sent nothing", and the agent then invents
+# what it thinks the screenshot showed instead of asking.
+IMAGE_OMITTED = "[image omitted: the active model cannot process images]"
+
+
+def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
+    """Replace image parts with a text marker. Rebuilds only the messages that actually carry an
+    image (plain-string content and image-free part lists are passed through by identity), so the
+    common text-only request is untouched and the caller's dicts are never mutated."""
+    out: list[Any] = []
+    dropped = 0
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(content, list) or not any(
+            isinstance(p, dict) and p.get("type") == "image_url" for p in content
+        ):
+            out.append(m)
+            continue
+        parts = [
+            {"type": "text", "text": IMAGE_OMITTED}
+            if isinstance(p, dict) and p.get("type") == "image_url" else p
+            for p in content
+        ]
+        dropped += sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
+        out.append({**m, "content": parts})
+    return out, dropped
 
 
 def _resolve_sage_version() -> str | None:
@@ -113,10 +141,27 @@ class EnforcementShim:
         if decision.locked or self._force_model or "model" not in request:
             request = {**request, "model": decision.model}
 
-        logging.getLogger("sage.shim").info(
+        # Attached images against a non-vision model: strip them here rather than switch models or
+        # let it fly. The resolved model is only known at this point (per request), and switching to
+        # a vision model would defeat the sovereignty lock — sending sovereign data to a vendor to
+        # read a screenshot is worse than not reading it. Passing it through is worse still:
+        # bedrock-qwen3-coder (the default implement model) hard-400s, killing the turn.
+        dropped = 0
+        if not supports_vision(request["model"]) and isinstance(request.get("messages"), list):
+            messages, dropped = _strip_images(request["messages"])
+            if dropped:
+                request = {**request, "messages": messages}
+
+        log = logging.getLogger("sage.shim")
+        log.info(
             "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s)",
             requested, request["model"], decision.reason.value, state.phase.value, decision.locked,
         )
+        if dropped:
+            log.info(
+                "model policy: dropped %d image part(s) — %s cannot process images",
+                dropped, request["model"],
+            )
 
         # Cost-attribution tags (sent as X-LLM-Tag-sage-*, queryable in the gateway usage dashboard).
         # sovereign = an asset lock forced the model, the dimension worth isolating spend on.

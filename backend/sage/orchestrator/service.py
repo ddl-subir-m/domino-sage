@@ -9,6 +9,7 @@ Deep module, narrow interface: project / build / build_stream / shutdown.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import tempfile
@@ -37,12 +38,18 @@ from ..preview.supervisor import ViteSupervisor
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
+from .describe import describe, image_mime
 
 log = logging.getLogger("sage.orchestrator")
 
 # Consecutive OpenCode poll (is_running/messages) failures tolerated before halting a build. Each poll
 # can block up to its httpx timeout, so this is ~a minute of sustained unresponsiveness, not a blip.
 _MAX_POLL_FAILURES = 4
+
+# Largest image inlined into a prompt as a data: URI. Base64 inflates by ~4/3, and the result rides
+# in the request body through OpenCode -> shim -> gateway -> provider; anything larger degrades to
+# its descriptor instead. Provider limits sit around 5 MB per image, so this stays well under.
+_MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
 
 # Each explicit mode routes to a named opencode.json agent. Ask/Plan are read-only — their
 # `permission` block is enforced natively by OpenCode (edit/bash denied), not just hidden from the
@@ -488,24 +495,74 @@ class Orchestrator:
         )
         return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
 
-    def _resolve_mentions(self, project: Project, mentions: list[str] | None) -> list[str] | None:
-        """Map @-mentioned workspace paths to absolute files to attach to a prompt. Only paths that
-        are actually in this project's attachment list are honored (never an arbitrary caller path),
-        and each must resolve (through its symlink) to a real file. None when nothing to attach."""
+    def _descriptor(self, project: Project, entry: dict) -> dict:
+        """Typed shape summary (kind/summary/detail/size) for one attachment, cached in the manifest.
+
+        The agent needs each file's SHAPE, never its content — the built app fetches the full file at
+        runtime, so the raw bytes have no business in a prompt. Computing it here is deliberate:
+        Python reads the /mnt/data mounts fine (the agent is the one that can't), and caching it in
+        the committed manifest means each mount file is described once, not once per turn. Entries
+        written before descriptors existed are backfilled on first use."""
+        cached = entry.get("descriptor")
+        if cached:
+            return cached
+        try:
+            real = _safe_join(project.workspace.path, entry["path"]).resolve()
+            d = describe(str(real))
+        except (ValueError, OSError) as e:  # describe() itself never raises; _safe_join can
+            d = {"kind": "unavailable", "summary": f"not described ({type(e).__name__})",
+                 "detail": "", "size": 0}
+        entry["descriptor"] = d
+        project.workspace.write_attachments(project.attached)
+        return d
+
+    def _resolve_mentions(self, project: Project, mentions: list[str] | None) -> list[dict] | None:
+        """Map @-mentioned workspace paths to the attachment dicts send_prompt renders. Only paths
+        actually in this project's attachment list are honored (never an arbitrary caller path).
+
+        The agent is handed the WORKSPACE-RELATIVE path, never the resolved mount path: OpenCode's
+        read tool hangs forever on absolute paths outside its project root (/mnt/data dataset
+        mounts), while the in-root symlink at public/data/... reaches the same bytes and reads fine.
+        We still resolve here — but only to confirm the symlink points at a real file and to describe
+        it. None when nothing to attach."""
         if not mentions:
             return None
-        known = {e["path"] for e in project.attached}
-        out: list[str] = []
+        known = {e["path"]: e for e in project.attached}
+        out: list[dict] = []
         for m in mentions:
-            if m not in known:
+            entry = known.get(m)
+            if entry is None:
                 continue
             try:
                 real = _safe_join(project.workspace.path, m).resolve()
             except (ValueError, OSError):
                 continue
-            if real.is_file():
-                out.append(str(real))
+            if not real.is_file():
+                continue
+            d = self._descriptor(project, entry)
+            item = {"path": m, "name": PurePosix(m).name,
+                    "summary": d["summary"], "detail": d["detail"]}
+            if d["kind"] == "image":
+                item["image_uri"] = self._image_data_uri(real, d["size"])
+            out.append(item)
         return out or None
+
+    def _image_data_uri(self, real: Path, size: int) -> str | None:
+        """An image inlined as `data:<mime>;base64,...` for the agent's prompt, or None if it can't
+        be. Images are the one type where a descriptor isn't enough — the pixels ARE the content.
+
+        Capped because base64 inflates by ~4/3 and the whole thing rides in the prompt body; an
+        oversized image degrades to its descriptor (dimensions/format) rather than failing the turn.
+        """
+        if size > _MAX_INLINE_IMAGE_BYTES:
+            return None
+        mime = image_mime(str(real))
+        if mime is None:
+            return None
+        try:
+            return f"data:{mime};base64,{base64.b64encode(real.read_bytes()).decode()}"
+        except OSError:
+            return None
 
     def build_stream(self, prompt: str, mentions: list[str] | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
@@ -652,7 +709,7 @@ class Orchestrator:
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
-            client.send_prompt(sid, current, agent=agent, files=mention_files)
+            client.send_prompt(sid, current, agent=agent, attachments=mention_files)
             mention_files = None  # attach only on the first (user) turn, not the nudge/fix follow-ups
             appeared = False
             start = time.monotonic()
@@ -1508,7 +1565,11 @@ class Orchestrator:
             for e in project.attached:
                 path = e["path"]
                 served = path[len("public/"):] if path.startswith("public/") else path
-                lines.append(f"- disk `{path}` — fetch `{served}` (relative to base) — from dataset **{e['dataset']}**")
+                # One-line shape only. This block is re-read every turn, so the full descriptor stays
+                # out of it — that one is inlined by send_prompt for @mentioned files alone.
+                shape = self._descriptor(project, e)["summary"]
+                lines.append(f"- disk `{path}` — {shape} — fetch `{served}` (relative to base) "
+                             f"— from dataset **{e['dataset']}**")
             block = f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}"
         else:
             block = ""
