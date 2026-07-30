@@ -1743,6 +1743,13 @@ class Orchestrator:
                 "Do NOT fetch a leading-slash path like `/data/...` — it breaks under the app's base "
                 "prefix. Do NOT copy these files into `src/`: `public/data/` is gitignored on purpose, "
                 "so copying leaks the data into the app's git repo. @mention a file by its disk path.", "",
+                # grep/ripgrep skips ignored paths AND does not follow symlinks; every attachment is
+                # both. So a search over one silently returns nothing and the agent concludes the
+                # value isn't there — a wrong answer, not an error. Reading the exact path works.
+                "To look INSIDE one of these files, use the read tool on its exact disk path. Do NOT "
+                "use grep/search: `public/data/` is gitignored and each file is a symlink, so search "
+                "skips them and returns no matches even when the value IS present. A search that "
+                "finds nothing here proves nothing — read the file instead.", "",
             ]
             for e in project.attached:
                 path = e["path"]

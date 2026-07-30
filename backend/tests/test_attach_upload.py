@@ -510,3 +510,17 @@ def test_a_failed_re_upload_does_not_delete_the_bytes_that_were_already_there(tm
         orch.upload_file("q3.csv", b"replacement\n")
 
     assert (Path(dest) / "uploads" / "q3.csv").exists()   # kept, not compounded into a deletion
+
+
+def test_agents_block_warns_that_search_cannot_see_attached_files(tmp_path: Path):
+    """Live failure: the agent grepped an attached CSV for a value on line 619, got no matches, and
+    answered "not found". ripgrep skips gitignored paths and won't follow symlinks — attachments are
+    both — so search silently returns nothing. That's a wrong answer, not an error."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    ws = orch.project(start_preview=False).workspace.path
+    orch.upload_file("q3.csv", b"region,note\nZZ,ORION-7734\n")
+
+    agents = (ws / "AGENTS.md").read_text()
+    assert "read tool on its exact disk path" in agents
+    assert "Do NOT use grep/search" in agents.replace("\n", " ")
+    assert "finds nothing here proves nothing" in agents
