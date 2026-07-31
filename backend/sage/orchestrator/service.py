@@ -992,9 +992,11 @@ class Orchestrator:
         # Auto question): the shim strips every write/shell tool from each request, which stops the
         # turn writing code (OpenCode's own per-agent permission block doesn't). Token-scoped to THIS
         # turn — disarm only clears our own arming, so nothing drops the guarantee out from under us.
-        ro_token = project.control.arm_read_only() if (gate or answer_only) else None
-
+        # The reason rides with the arming: both kinds withhold write and shell tools, but only an
+        # answering turn also loses the task-list tool (see TODO_TOOLS). Also reported in the turn
+        # summary, so a turn that wrote nothing can say which rule stopped it.
         read_only = _read_only_reason(mode=original_mode, answer_only=answer_only, gate=gate)
+        ro_token = project.control.arm_read_only(read_only) if (gate or answer_only) else None
 
         # Internet access is default-denied; arm it for THIS turn only when the prompt asked for the
         # web (a URL or an intent verb). Token-scoped like read-only, disarmed on every exit.

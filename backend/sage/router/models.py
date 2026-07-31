@@ -72,6 +72,12 @@ class SessionState:
     # while `mode` is still auto/plan — the gate is a per-turn decision the mode can't express, so
     # the orchestrator sets it explicitly and the shim strips write/shell tools on that basis.
     read_only_turn: bool = False
+    # Why this turn is read-only, when it was armed as one: "ask" / "question" (it answers and stops)
+    # or "plan" (it proposes a plan). Both withhold write and shell tools, but only an answering turn
+    # also withholds the task-list tool — a task list on a turn that answers and returns is a build
+    # the user is left waiting for. "" when nothing armed it (including Ask, which is read-only by
+    # mode alone); read_only_turn stays the flag to test for the write/shell guarantee.
+    read_only_reason: str = ""
     # This turn may reach the public internet (webfetch/websearch). Default-deny: the orchestrator
     # arms it only when the current prompt actually asked for the web (a URL or an intent verb), and
     # the shim strips web tools from every request otherwise. Per-turn, like read_only_turn.

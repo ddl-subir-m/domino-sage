@@ -142,6 +142,62 @@ def test_gated_plan_turn_strips_tools_even_outside_ask_mode():
     assert [t["function"]["name"] for t in sent_request["tools"]] == ["read"]
 
 
+def test_an_answering_turn_loses_the_task_list_tool_but_a_plan_turn_keeps_it():
+    """An answering turn returns without building, so a task list on it is a build the user waits for
+    that never comes. A gated plan turn is the opposite — tracking the steps is its job."""
+    tools = [
+        {"type": "function", "function": {"name": "todowrite"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    def names_after(reason: str, mode: Mode = Mode.AUTO) -> list[str]:
+        control = ModelControl(mode=mode, phase=Phase.PLAN)
+        control.arm_read_only(reason)
+        gw = FakeGatewayClient()
+        list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+        return [t["function"]["name"] for t in gw.seen[-1][0]["tools"]]
+
+    assert names_after("question") == ["read"]     # a question in Auto
+    assert names_after("ask", Mode.ASK) == ["read"]
+    assert names_after("plan") == ["todowrite", "read"]   # the gate keeps it
+
+
+def test_ask_mode_loses_the_task_list_tool_even_with_nothing_armed():
+    """Ask is read-only by mode, with no arming — the guarantee can't rest on the reason alone."""
+    control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
+    gw = FakeGatewayClient()
+    tools = [{"type": "function", "function": {"name": "todowrite"}},
+             {"type": "function", "function": {"name": "read"}}]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    assert [t["function"]["name"] for t in gw.seen[-1][0]["tools"]] == ["read"]
+
+
+def test_an_ordinary_build_turn_keeps_the_task_list_tool():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    tools = [{"type": "function", "function": {"name": "todowrite"}}]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    assert [t["function"]["name"] for t in gw.seen[-1][0]["tools"]] == ["todowrite"]
+
+
+def test_the_read_only_reason_clears_with_the_arming_it_describes():
+    """A reason left behind after disarm would strip the task list from later ordinary builds."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    token = control.arm_read_only("question")
+    assert control.snapshot().read_only_reason == "question"
+    control.disarm_read_only(token)
+    assert control.snapshot().read_only_reason == ""
+    # A stale disarm must not strand a newer turn's reason either.
+    old = control.arm_read_only("question")
+    control.arm_read_only("plan")
+    control.disarm_read_only(old)
+    assert control.snapshot().read_only_reason == "plan"
+
+
 def test_read_only_turn_is_per_turn_not_sticky():
     """The orchestrator disarms on every exit from a turn; a stuck guarantee would silently make
     every later build read-only, which looks like the agent refusing to write."""

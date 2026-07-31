@@ -26,6 +26,9 @@ class ModelControl:
         # from a crashed/overlapping turn is a no-op), and read-only can't be silently dropped
         # mid-flight. `read_only_turn` (the bool the shim reads) is simply "a token is live".
         self._read_only_token: object | None = None
+        # Why the live arming is read-only ("ask"/"question"/"plan"); see SessionState.read_only_reason.
+        # Set and cleared with the token, so it can never outlive the arming it describes.
+        self._read_only_reason = ""
         # Same token discipline as read-only: a per-turn arming for internet access, so an
         # overlapping/crashed turn can never drop another turn's guarantee. See arm_web().
         self._web_token: object | None = None
@@ -74,12 +77,16 @@ class ModelControl:
     def manual_locked(self) -> bool:
         return self._manual_locked
 
-    def arm_read_only(self) -> object:
+    def arm_read_only(self, reason: str = "") -> object:
         """Arm the read-only guarantee for a gated turn and return its token. The caller keeps the
         token and passes it back to disarm_read_only() on exit. Minting a new token supersedes any
-        prior arming, so a turn always owns the live guarantee for its own duration."""
+        prior arming, so a turn always owns the live guarantee for its own duration.
+
+        `reason` says which kind of read-only turn this is (see SessionState.read_only_reason); it
+        rides with the token so a superseding arming replaces it and a stale disarm can't strand it."""
         token = object()
         self._read_only_token = token
+        self._read_only_reason = reason
         return token
 
     def disarm_read_only(self, token: object) -> None:
@@ -88,6 +95,7 @@ class ModelControl:
         one turn can never drop another turn's read-only mid-flight."""
         if self._read_only_token is token:
             self._read_only_token = None
+            self._read_only_reason = ""
 
     def arm_web(self) -> object:
         """Arm internet access for THIS turn and return a token, mirroring arm_read_only(). The caller
@@ -111,4 +119,5 @@ class ModelControl:
             picked_model=self._picked_model,
             web_allowed=self._web_token is not None,
             read_only_turn=self._read_only_token is not None,
+            read_only_reason=self._read_only_reason,
         )
