@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, _part_key
 from sage.router.models import ModelCatalog
 
 
@@ -382,6 +382,19 @@ def test_seen_baseline_marks_prior_turn_parts_so_they_dont_echo(tmp_path: Path):
     ]
     seen = orch._seen_baseline(_FakeOC(session), "s1")
     assert seen == {("a1", 0), ("a1", 1)}  # both parts of the prior assistant message, none of the user msg
+
+
+def test_seen_baseline_keys_on_part_id_when_one_is_present(tmp_path: Path):
+    # A part's index shifts when an earlier part is dropped or merged between polls, so the same text
+    # comes back under a new key and gets emitted twice. Key on the part's own id where OpenCode gives
+    # one, so the baseline still recognises it after a reindex.
+    orch = _orch(tmp_path)
+    session = [{"type": "assistant", "id": "a1",
+                "content": [{"type": "tool", "id": "prt_1"}, {"type": "text", "id": "prt_2"}]}]
+    assert orch._seen_baseline(_FakeOC(session), "s1") == {("a1", "prt_1"), ("a1", "prt_2")}
+    # ...and the text part is still recognised once the pending tool part ahead of it disappears.
+    reindexed = {"type": "assistant", "id": "a1", "content": [{"type": "text", "id": "prt_2"}]}
+    assert _part_key(reindexed, 0, reindexed["content"][0]) in orch._seen_baseline(_FakeOC(session), "s1")
 
 
 def test_seen_baseline_is_empty_on_poll_error(tmp_path: Path):

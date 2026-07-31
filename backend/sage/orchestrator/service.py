@@ -266,6 +266,17 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
     return not has_built and not is_question
 
 
+def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
+    """Identity of one assistant message part, for the emit-once `seen` set.
+
+    Prefer the part's own id: the position of a part is NOT stable across polls. Parts stream in, and
+    a part that is pending on one poll can be absent, merged, or reordered on the next, which shifts
+    every later part's index — the same text then arrives under a fresh key and is emitted a second
+    time. Falls back to the index when a part carries no id, which is the old behaviour and no worse
+    than it was."""
+    return (m["id"], part.get("id") or i)
+
+
 def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool) -> str:
     """Why the shim is withholding edit tools this turn — "" when it isn't. Reported in the turn
     summary so a turn that wrote nothing can say which rule stopped it instead of blaming OpenCode for
@@ -823,21 +834,21 @@ class Orchestrator:
                           "then resend."}
         yield {"type": "done", "ok": False, "decision": "busy"}
 
-    def _seen_baseline(self, client, sid: str) -> set[tuple[str, int]]:
+    def _seen_baseline(self, client, sid: str) -> set[tuple[str, object]]:
         """Keys of every assistant part already in the session, so a turn only emits its OWN parts.
 
         client.messages(sid) returns the ENTIRE session on every poll, and the emit-tracking `seen`
         set starts empty for each user turn. Without this baseline, a follow-up turn's first poll
         re-walks the previous turn's completed parts and re-emits them — the prior turn's summary
-        reappearing at the top of the new turn (the "ordering" echo). Key format `(message id, part
-        index)` must match the poll loop in _build_stream. Best-effort: on a poll error we return an
-        empty baseline (worst case is the echo, not a broken build) and let the loop retry."""
-        seen: set[tuple[str, int]] = set()
+        reappearing at the top of the new turn (the "ordering" echo). Keys come from _part_key and
+        must match the poll loop in _build_stream. Best-effort: on a poll error we return an empty
+        baseline (worst case is the echo, not a broken build) and let the loop retry."""
+        seen: set[tuple[str, object]] = set()
         try:
             for m in client.messages(sid):
                 if m.get("type") == "assistant":
-                    for i in range(len(m.get("content", []))):
-                        seen.add((m["id"], i))
+                    for i, part in enumerate(m.get("content", [])):
+                        seen.add(_part_key(m, i, part))
         except httpx.HTTPError as e:
             log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
         return seen
@@ -1006,7 +1017,10 @@ class Orchestrator:
         # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
         # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
         # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
-        seen: set[tuple[str, int]] = self._seen_baseline(client, sid)
+        seen: set[tuple[str, object]] = self._seen_baseline(client, sid)
+        # Text already shown this turn, so a repeat is dropped rather than printed twice. Scoped to the
+        # turn (not the session): a later turn restating something is usually answering a new question.
+        emitted_text: set[str] = set()
         # A clean typecheck of the untouched template must NOT count as a finished build: track
         # whether the agent actually edited files, and if a turn ends clean with zero edits, nudge
         # it to implement instead of declaring success. Capped so a model that refuses to write
@@ -1126,7 +1140,7 @@ class Orchestrator:
                     if m.get("type") != "assistant":
                         continue
                     for i, part in enumerate(m.get("content", [])):
-                        key = (m["id"], i)
+                        key = _part_key(m, i, part)
                         if key in seen:
                             continue
                         pt = part.get("type", "")
@@ -1160,6 +1174,13 @@ class Orchestrator:
                             yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
+                            # Second line of defence behind _part_key: parts with no id still key on a
+                            # shifting index, and a model that restates itself verbatim produces a
+                            # genuinely distinct part. Either way the same paragraph twice in the
+                            # transcript is never what the user should read, so drop the repeat.
+                            if part["text"].strip() in emitted_text:
+                                continue
+                            emitted_text.add(part["text"].strip())
                             if gate:
                                 # Gate turns render this text once, in the plan card below — don't also
                                 # stream it live, or the user sees the same prose twice (loose text + card).
