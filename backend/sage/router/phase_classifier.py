@@ -56,7 +56,15 @@ WEB_TOOLS = frozenset({"webfetch", "web_fetch", "fetch", "websearch", "web_searc
 # agent opened a two-step list and said "Next I'm replacing the starter screen…", then stopped. The
 # turn preamble already tells it not to; this is what makes that hold, on the same reasoning as
 # READ_ONLY_DENIED — the agent's own prompt is guidance, a stripped tool is a guarantee.
-TODO_TOOLS = frozenset({"todowrite", "todo_write", "todoread", "todo_read"})
+#
+# WRITE side only. Verified 2026-07-31 against the pinned 1.18.4 linux-x64 binary: "todowrite" is a
+# tool-name literal, and there is no read counterpart — todos persist in the session db (todo_pk,
+# todo_session_idx) and come back as context, not via a tool call. Reading an earlier build's list is
+# also something an answering turn SHOULD be able to do: "what's left to do?" is a fair question, and
+# the problem was only ever the agent opening a list of its own while claiming to build. `todo_write`
+# is a defensive alias for a driver swap, same as WEB_TOOLS; no read name is listed, so a future
+# driver that has one won't be blocked from answering with it.
+TODO_TOOLS = frozenset({"todowrite", "todo_write"})
 _TURN_BOUNDARY_ROLES = frozenset({"user", "human"})
 
 

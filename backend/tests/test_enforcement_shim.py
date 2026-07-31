@@ -162,6 +162,19 @@ def test_an_answering_turn_loses_the_task_list_tool_but_a_plan_turn_keeps_it():
     assert names_after("plan") == ["todowrite", "read"]   # the gate keeps it
 
 
+def test_an_answering_turn_can_still_read_an_earlier_builds_task_list():
+    """Only the write side is stripped. "What's left to do?" is a fair question for an answering turn,
+    so a read-side todo tool (1.18.4 has none; a future driver might) must survive."""
+    control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
+    control.arm_read_only("ask")
+    gw = FakeGatewayClient()
+    tools = [{"type": "function", "function": {"name": "todoread"}}]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    assert [t["function"]["name"] for t in gw.seen[-1][0]["tools"]] == ["todoread"]
+
+
 def test_ask_mode_loses_the_task_list_tool_even_with_nothing_armed():
     """Ask is read-only by mode, with no arming — the guarantee can't rest on the reason alone."""
     control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
