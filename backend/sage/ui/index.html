@@ -1755,6 +1755,12 @@ function addPlanCard(planMd) {
     if (answers) card.insertAdjacentHTML('beforeend', '<div class="plan-note">' + esc(answers) + '</div>');
     const turnStart = document.getElementById('messages').children.length;
     approving = true;  // spinner reads "Building" while the approved plan is implemented
+    // Start the spinner before the request, exactly as startTurn() does for a typed message. The
+    // approve turn's first SSE event only lands once the agent has actually done something — tens
+    // of seconds of session setup and model latency — so without this the card just sits there
+    // looking like the click was swallowed.
+    buildPhase = 'implement';
+    trail();
     try { await runStream('/api/project/build/approve', payload, turnStart); }
     finally { approving = false; }
   };

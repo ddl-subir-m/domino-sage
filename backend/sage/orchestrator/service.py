@@ -771,14 +771,24 @@ class Orchestrator:
         # without ever producing plan text. Iteration (Plan mode on an already-built app): the plan
         # must fit the current code, so have it briefly read what the change touches first. The
         # preamble rides on `current` (what's sent to the agent), never on the persisted user bubble.
+        #
+        # Both branches also pin the plan's VOICE. Every write and shell tool is stripped from a
+        # gated turn (see EnforcementShim), so the model can only describe — but left to itself it
+        # narrates in the past tense ("I built a dataset explorer with…") and then hunts for a write
+        # tool it doesn't have. The user reads that card as a finished build, which is the opposite
+        # of what the approval gate is for: they approve without reading, or think the gate leaked.
+        _PLAN_VOICE = ("Write the plan as a proposal for work not yet done: future tense, no claim "
+                       "that anything has been built, changed, or verified. You have no write, edit, "
+                       "or shell tools on this turn by design — don't look for them.")
         if gate:
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
-                           "would touch so the plan fits the current code, then write the plan.\n\n"
-                           + current)
+                           "would touch so the plan fits the current code, then write the plan. "
+                           + _PLAN_VOICE + "\n\n" + current)
             else:
                 current = ("This is a brand-new app from a blank template — there are no existing "
-                           "files worth reading, so plan straight from the request.\n\n" + current)
+                           "files worth reading, so plan straight from the request. "
+                           + _PLAN_VOICE + "\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -1017,6 +1027,46 @@ class Orchestrator:
                 yield persist({"type": "done", "ok": True, "decision": "answered"})
                 return
 
+            # Gated (plan) turn that wrote nothing — the designed outcome. Resolve the gate HERE,
+            # ahead of the typecheck, for three reasons. Running tsc over a tree the turn never
+            # touched is pure dead time (10-30s of the user staring at a spinner for a plan). Its
+            # "Typecheck passed" line lands under the plan and reads as though Sage already built
+            # and verified the app. And the old placement nested this inside the circuit breaker's
+            # `stop` branch, so a workspace carrying pre-existing type errors sent a plan turn into
+            # the fix-it nudge loop instead of proposing its plan. A gated turn that DID write falls
+            # through to the violation check below and is reverted.
+            if gate and not (made_edits or project.snapshot.working_tree_hash() != turn_start_tree):
+                plan_md = "\n".join(plan_text_parts).strip()
+                restore_mode()
+                # A weak planner (notably the small sovereign models a sensitivity lock forces) can
+                # finish this read-only turn without emitting any plan text — leaving nothing to
+                # approve. Don't persist a blank plan or present an approve card that would build
+                # from an empty plan; report it as a failed planning turn, with the same diagnostics
+                # a stalled build gets, since "no plan text" is usually "no inference reached us".
+                if not plan_md:
+                    log.warning("plan gate produced no plan text (model_calls=%d) — reporting empty plan",
+                                project.model_calls)
+                    yield {"type": "turn-summary", "model_calls": project.model_calls,
+                           "tool_call_responses": project.tool_call_responses, "wrote_code": False,
+                           "shim_bypassed": (project.model_calls == 0 and base_port is not None
+                                             and base_port != control_port),
+                           "base_port": base_port, "control_port": control_port,
+                           "vendor_keys": vendor_keys, "gate": True}
+                    if project.model_calls == 0:
+                        tail = self._opencode_log_tail()
+                        if tail:
+                            yield {"type": "opencode-log", "lines": tail}
+                    yield persist({"type": "error", "message": (
+                        "Planning didn't produce a plan this time. Send the request again — adding "
+                        "a bit more detail about what you want can help — or switch to Implement to "
+                        "build it directly.")})
+                    yield persist({"type": "done", "ok": False, "decision": "empty plan"})
+                    return
+                project.workspace.write_plan(plan_md)
+                yield persist({"type": "plan-proposed", "plan": plan_md})
+                yield persist({"type": "done", "ok": True, "decision": "awaiting approval"})
+                return
+
             yield {"type": "typecheck-start"}
             report = self._feedback.check(project.workspace.path)
             yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
@@ -1064,30 +1114,8 @@ class Orchestrator:
                                    "decision": "gate violated" if gate else "answer only — edits discarded"})
                     return
                 if report.ok and not wrote_code:
-                    if gate:
-                        # First-build gate (SPEC P6): the planner proposed a plan and wrote no code —
-                        # that's success here, not a stall, so short-circuit the nudge loop. Persist
-                        # the plan as the handoff artifact and stop for the user to approve.
-                        plan_md = "\n".join(plan_text_parts).strip()
-                        restore_mode()
-                        # A weak planner (notably the small sovereign models a sensitivity lock forces)
-                        # can finish this read-only turn without emitting any plan text — leaving nothing
-                        # to approve. Don't persist a blank plan or present an approve card that would
-                        # build from an empty plan; report it as a failed planning turn instead.
-                        if not plan_md:
-                            log.warning("plan gate produced no plan text (model_calls=%d) — reporting empty plan",
-                                        project.model_calls)
-                            yield persist({"type": "error", "message": (
-                                "Planning didn't produce a plan this time. Send the request again — adding "
-                                "a bit more detail about what you want can help — or switch to Implement to "
-                                "build it directly.")})
-                            yield persist({"type": "done", "ok": False, "decision": "empty plan"})
-                            return
-                        project.workspace.write_plan(plan_md)
-                        yield persist({"type": "plan-proposed", "plan": plan_md})
-                        yield persist({"type": "done", "ok": True, "decision": "awaiting approval"})
-                        return
-                    # answer_only turns never reach here — a no-edit Q&A already finished before typecheck.
+                    # Neither gated nor answer-only turns reach here — a no-edit plan turn resolved
+                    # its gate, and a no-edit Q&A finished, before the typecheck ran.
                     if nudges < MAX_NUDGES:
                         nudges += 1
                         # The nudge is a fresh user turn, so the shim's per-step classifier resets to
