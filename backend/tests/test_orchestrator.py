@@ -321,6 +321,22 @@ def test_overlapping_turn_is_refused_not_run(tmp_path: Path):
     assert [e["type"] for e in events] == ["error", "done"]
     assert events[-1] == {"type": "done", "ok": False, "decision": "busy"}
     assert "already running" in events[0]["message"]
+    # Machine-readable marker: the UI requeues a refused turn instead of showing the user an error
+    # they can't act on, so it must not have to string-match the message to recognise a refusal.
+    assert events[0]["busy"] is True
+
+
+def test_turn_busy_tracks_the_turn_lock(tmp_path: Path):
+    # The UI polls turn_busy() after its event stream drops, to tell "connection broke, turn still
+    # running" from "turn finished". A stale False there is what makes the composer go idle mid-build.
+    orch = _orch(tmp_path)
+    assert orch.turn_busy() is False
+    assert orch._turn_lock.acquire(blocking=False)
+    try:
+        assert orch.turn_busy() is True
+    finally:
+        orch._turn_lock.release()
+    assert orch.turn_busy() is False
 
 
 def test_approve_is_refused_while_a_turn_streams(tmp_path: Path):

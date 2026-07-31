@@ -1528,12 +1528,78 @@ function clearQueue() {
   queue = [];
 }
 
+// Is a turn running on the backend right now? true/false, or null when we couldn't ask (the probe
+// itself failed). Used to tell a dropped connection from a finished turn.
+async function buildRunning() {
+  try {
+    const { ok, body } = await api('/api/project/build/state');
+    return ok ? !!body.running : null;
+  } catch (e) { return null; }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Poll until no turn is running. Returns false if the backend stays unreachable for ~20s — we stop
+// waiting rather than leave the composer stuck behind a Stop button nothing can clear.
+async function pollUntilIdle() {
+  let unreachable = 0;
+  for (;;) {
+    await sleep(2000);
+    const running = await buildRunning();
+    if (running === false) return true;
+    if (running === null && ++unreachable >= 10) return false;
+    if (running !== null) unreachable = 0;
+  }
+}
+
+// Wait out a turn we can no longer see. Called when the SSE stream dies mid-build: the composer
+// stays in Stop state (Stop still works — it only sets a flag the running turn polls) and we poll
+// until the turn actually ends. The events emitted while we were disconnected are gone for good,
+// so we say the transcript is incomplete rather than implying it's the whole story.
+async function awaitTurnEnd(errText, turnStart) {
+  stopWorking();
+  let running = await buildRunning();
+  if (running === false) {  // the turn died with the connection — this really is an error
+    renderEvent({ type: 'error', message: errText }, turnStart);
+    return;
+  }
+  const line = addStatus('spin', '◐',
+    "Lost the connection to this build — it's still running. Waiting for it to finish…");
+  const idle = await pollUntilIdle();
+  line.remove();
+  if (!idle) {
+    addStatus('err', '⚠', `Lost contact with Sage — ${esc(errText)}. Reload the page to reconnect.`);
+    return;
+  }
+  addStatus('', 'ℹ', 'That build finished while the connection was down, so the steps above are '
+    + 'incomplete. The preview and the file tree show the result.');
+  loadFileTree();
+}
+
+// The backend refused this turn because another one holds the turn lock (our `building` flag was
+// stale — a dropped stream, a second tab, an approve racing a build). Don't burn the user's
+// message on an error they can't act on: pull the half-rendered turn back out of the chat, requeue
+// it, and wait for the live turn to end so drainQueue can fire it.
+async function requeueRefusedTurn(payload, turnStart) {
+  const msgBox = document.getElementById('messages');
+  while (typeof turnStart === 'number' && msgBox.children.length > turnStart) msgBox.removeChild(msgBox.lastChild);
+  if (payload.prompt) {
+    enqueueMessage(payload.prompt, payload.mentions || []);
+    addStatus('', '⏳', 'Another build is still running — your message is queued and will send when it finishes.');
+  } else {
+    addStatus('err', '⚠', 'Another build is still running. Approve the plan again once it finishes.');
+  }
+  await pollUntilIdle();
+}
+
 // Shared build/approve turn: POST, read the SSE frames, render each event, then tear down the
 // working spinner and send button. Used by both a normal build and an approved-plan build.
 async function runStream(url, payload, turnStart) {
   const btn = document.getElementById('build-btn');
   building = true;
   btn.textContent = '■'; btn.title = 'Stop';
+  let ended = false;   // a done/stopped frame arrived — the turn really is over
+  let refused = false; // the backend refused this turn: another one holds the turn lock
   try {
     const resp = await fetch(BASE + url, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
@@ -1548,12 +1614,22 @@ async function runStream(url, payload, turnStart) {
       const frames = buf.split('\n\n'); buf = frames.pop();
       for (const f of frames) {
         const line = f.replace(/^data: /, '').trim();
-        if (line) renderEvent(JSON.parse(line), turnStart);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        // Busy refusal (both its frames): handled below as a queue, not shown as an error the user
+        // can't act on. `refused` also means the turn never started — nothing to tear down.
+        if (ev.busy || (ev.type === 'done' && ev.decision === 'busy')) { refused = true; continue; }
+        if (ev.type === 'done' || ev.type === 'stopped') ended = true;
+        renderEvent(ev, turnStart);
       }
     }
   } catch (e) {
-    renderEvent({ type: 'error', message: String(e) }, turnStart);
+    // The stream broke — which is NOT the same as the turn ending. The backend runs the turn in a
+    // thread that keeps going and keeps holding the turn lock, so going idle here is what lit the
+    // send button back up and made the next message bounce off "A build is already running".
+    if (!ended) await awaitTurnEnd(String(e), turnStart);
   }
+  if (refused) await requeueRefusedTurn(payload, turnStart);
   stopWorking();
   btn.textContent = '↑'; btn.title = 'Send (Enter)';
   refreshPreview();

@@ -454,6 +454,12 @@ class Orchestrator:
         # stop_requested, which the running turn polls) so it can always interrupt the held turn.
         self._turn_lock = threading.Lock()
 
+    def turn_busy(self) -> bool:
+        """True while a build/approve turn holds the turn lock. The UI polls this to tell a dropped
+        SSE connection (turn still running, keep showing Stop) from a finished turn — without it, a
+        network blip makes the composer look idle and the next send hits _busy_refusal."""
+        return self._turn_lock.locked()
+
     def project(self, start_preview: bool = True) -> Project:
         """Get-or-attach the single bound project. Idempotent: on first call it seeds the volume
         if empty, wires control/shim/supervisor, starts the preview, and rehydrates session/history/
@@ -679,8 +685,9 @@ class Orchestrator:
 
     def _busy_refusal(self):
         """Events yielded when a turn is refused because another is already streaming."""
-        yield {"type": "error", "message": "A build is already running. Wait for it to finish or "
-               "stop it first, then resend."}
+        yield {"type": "error", "busy": True,
+               "message": "A build is already running. Wait for it to finish or stop it first, "
+                          "then resend."}
         yield {"type": "done", "ok": False, "decision": "busy"}
 
     def _seen_baseline(self, client, sid: str) -> set[tuple[str, int]]:

@@ -650,6 +650,14 @@ def stop_build() -> JSONResponse:
     return JSONResponse(content={"stopped": True})
 
 
+@control_app.get("/api/project/build/state")
+def build_state() -> JSONResponse:
+    """Whether a turn is running right now. Cheap enough to poll: it reads the turn lock and does
+    not attach the project. The UI calls this after its SSE stream drops, to tell "the connection
+    broke but the build is still going" from "the turn is over"."""
+    return JSONResponse(content={"running": orchestrator.turn_busy()})
+
+
 @control_app.post("/api/project/build")
 async def build_project(request: Request) -> JSONResponse:
     """Run one agent build with the closed feedback loop (needs gateway access)."""
