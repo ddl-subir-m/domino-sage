@@ -949,6 +949,20 @@ class Orchestrator:
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
         answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question, is_approval=is_approval)
+        # Pin the ANSWER's voice, for the same reason the gated turn pins the plan's (see _PLAN_VOICE):
+        # the sage-ask agent prompt alone hasn't held. Asked "what tech stack will be used", the agent
+        # answered and then announced the build it was about to start — "Next I'm replacing the starter
+        # screen with the dataset explorer itself" — and opened a task list, on a turn that has no write
+        # tools and returns without building. The user reads that as a build in progress and waits for
+        # an app that is never coming. The agent prompt covers voice and forbids restating an earlier
+        # plan, but says nothing about announcing future work; this preamble does, and it rides every
+        # answer-only turn whichever agent or model got picked.
+        if answer_only:
+            current = ("Answer this question and stop. You are not building or changing the app on "
+                       "this turn: don't announce work you're about to start ('Next I'll…'), don't "
+                       "open a task list, and don't present the answer as a step towards a build. If "
+                       "the answer implies a change, say what the change would be in plain terms and "
+                       "leave it there — the user will ask for it if they want it.\n\n" + current)
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
         # Tell the UI whether a plan card still waiting for approval survives this turn. It doesn't
