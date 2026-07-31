@@ -2321,7 +2321,23 @@ async function saveInstructions() {
   if (ok) flashSaved('Saved ✓', false);
   else flashSaved((body && body.error) || 'Save failed', true);
 }
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeInstr(); });
+/* ---------- Escape ----------
+   One ordered handler, topmost surface first, closing exactly one thing per keypress. Separate
+   per-surface listeners would close a popover AND the instructions panel on a single Escape. */
+document.addEventListener('keydown', (e) => {
+  // composerKey() calls preventDefault when the @mention menu claims Escape — don't double-dismiss.
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
+  const pops = document.querySelectorAll('.pop.open');
+  if (pops.length) { pops.forEach(p => p.classList.remove('open')); return; }
+  if (document.getElementById('instr-panel').classList.contains('open')) { closeInstr(); return; }
+  // An open plan editor goes back to preview. Never Cancel — that deletes plan.md server-side, and
+  // Escape must not be a destructive key. Reuse the button so the toggle stays in one place.
+  const editing = Array.from(document.querySelectorAll('.plan-card')).find(c => {
+    const ta = c.querySelector('.plan-edit');
+    return ta && ta.style.display === 'block';
+  });
+  if (editing) editing.querySelector('.edit').click();
+});
 
 /* ---------- init ---------- */
 function renderVerticals() {
