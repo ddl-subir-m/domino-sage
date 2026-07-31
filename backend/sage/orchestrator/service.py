@@ -250,13 +250,31 @@ def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool) -> bool
     return mode is Mode.ASK or (mode is Mode.AUTO and is_question)
 
 
+# A step that opens "I will …" — right after the list marker, or after the label's em dash. Weak
+# planners latch onto one opener and repeat it for every step, and seven identical openers is the
+# thing that makes a plan card read as filler. The opener carries no information the label and
+# sentence don't already carry, so dropping it loses nothing.
+_I_WILL_OPENER = re.compile(
+    r"(?P<prefix>(?:^[ \t]*(?:[-*]|\d+[.)])[ \t]+(?:\*\*[^*\n]+\*\*[ \t]*[—:-][ \t]*)?)|(?:—[ \t]+))"
+    r"(?:I|We)(?:[ \t]+(?:will|shall|am going to|are going to)|['’]ll)[ \t]+"
+    r"(?P<verb>[a-z])",
+    re.MULTILINE,
+)
+
+
+def _drop_i_will_openers(plan_md: str) -> str:
+    """Rewrite 'I will define the schema' into 'Define the schema' at the start of plan steps."""
+    return _I_WILL_OPENER.sub(lambda m: m["prefix"] + m["verb"].upper(), plan_md)
+
+
 def _tidy_plan(plan_md: str) -> str:
-    """Drop verbatim repeated blocks from a plan before it's persisted or shown.
+    """Drop verbatim repeated blocks and repeated "I will" step openers before a plan is shown.
 
     Planners — weak sovereign models especially — sometimes restate a whole paragraph word for word,
     which reads in the plan card as though Sage said the same thing twice. Only long blocks (>=120
     chars) are deduped, so short repeats that are legitimately identical (a bullet, "None — ready to
-    build.") survive. Everything else, including order, is left exactly as written."""
+    build.") survive. Step openers are then de-padded by _drop_i_will_openers. Everything else,
+    including order, is left exactly as written."""
     out: list[str] = []
     seen: set[str] = set()
     for block in re.split(r"\n\s*\n", plan_md.strip()):
@@ -266,7 +284,7 @@ def _tidy_plan(plan_md: str) -> str:
                 continue
             seen.add(key)
         out.append(block.strip())
-    return "\n\n".join(out)
+    return _drop_i_will_openers("\n\n".join(out))
 
 
 def _approve_prompt(plan_md: str, answers: str) -> str:
@@ -816,7 +834,10 @@ class Orchestrator:
         # of what the approval gate is for: they approve without reading, or think the gate leaked.
         _PLAN_VOICE = ("Write the plan as a proposal for work not yet done: future tense, no claim "
                        "that anything has been built, changed, or verified. You have no write, edit, "
-                       "or shell tools on this turn by design — don't look for them.")
+                       "or shell tools on this turn by design — don't look for them. Write each step "
+                       "as the work itself, starting with a verb ('Define the sample data…', 'Add a "
+                       "preview table…'). Never open a step with 'I will' or 'I'll' — the same "
+                       "opener repeated down the list is what makes a plan unreadable.")
         # And its SHAPE. The plan lands in an approval card the user has to skim in a few seconds;
         # left to itself the planner writes one unbroken wall of prose (and sometimes restates it),
         # which is unreadable at any length. Long is fine — shapeless is not, so the structure is

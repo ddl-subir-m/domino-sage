@@ -556,3 +556,22 @@ def test_tidy_plan_drops_a_verbatim_repeated_paragraph():
 def test_tidy_plan_keeps_short_repeats_and_order():
     plan = "## Plan\n1. **A** — one.\n\n- None\n\n## Open questions\n- None"
     assert _tidy_plan(plan) == plan
+
+
+def test_tidy_plan_drops_i_will_openers_from_steps():
+    plan = ("## Plan\n"
+            "1. **Shape the data** — I will define a realistic synthetic dataset.\n"
+            "2. **Design the layout** — I'll create a clear two-panel view.\n"
+            "3. **Build the table** — We are going to add a truncation-safe preview.\n"
+            "- I will render compact per-column charts.\n")
+    tidied = _tidy_plan(plan)
+    assert "I will" not in tidied and "I'll" not in tidied and "We are going to" not in tidied
+    assert "**Shape the data** — Define a realistic synthetic dataset." in tidied
+    assert "**Design the layout** — Create a clear two-panel view." in tidied
+    assert "**Build the table** — Add a truncation-safe preview." in tidied
+    assert "- Render compact per-column charts." in tidied
+
+
+def test_tidy_plan_leaves_mid_sentence_first_person_alone():
+    plan = "## Plan\n1. **Ask first** — the app asks what I will explore before loading."
+    assert _tidy_plan(plan) == plan
