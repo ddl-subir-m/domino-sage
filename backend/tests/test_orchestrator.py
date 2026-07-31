@@ -426,10 +426,21 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import (  # noqa: E402
-    _approve_prompt, _is_answer_only, _looks_like_question, _should_gate,
+    _approve_prompt, _is_answer_only, _looks_like_approval, _looks_like_question, _should_gate,
 )
 from sage.router.models import Mode  # noqa: E402
 from sage.workspace.manager import Workspace  # noqa: E402
+
+
+def test_looks_like_approval_accepts_a_bare_yes():
+    for prompt in ("ok build", "ok", "yes", "go ahead", "build it", "approve", "looks good", "ship it"):
+        assert _looks_like_approval(prompt), prompt
+
+
+def test_looks_like_approval_rejects_anything_carrying_a_request():
+    # "ok build a dashboard" is a new build, not approval of the plan on screen.
+    for prompt in ("ok build a dashboard", "build a dashboard", "make the table compact", "no", ""):
+        assert not _looks_like_approval(prompt), prompt
 
 
 def test_should_gate_fires_on_first_build_only():
@@ -554,7 +565,19 @@ def test_tidy_plan_drops_a_verbatim_repeated_paragraph():
 
 
 def test_tidy_plan_keeps_short_repeats_and_order():
-    plan = "## Plan\n1. **A** — one.\n\n- None\n\n## Open questions\n- None"
+    plan = "## Plan\n1. **A** — one.\n\n- None\n\n## Open questions\n- Which columns?"
+    assert _tidy_plan(plan) == plan
+
+
+def test_tidy_plan_drops_an_open_questions_section_that_asks_nothing():
+    plan = "An explorer.\n\n## Plan\n1. **A** — one.\n\n## Open questions\nNone — ready to build."
+    tidied = _tidy_plan(plan)
+    assert "Open questions" not in tidied and "None" not in tidied
+    assert tidied.endswith("1. **A** — one.")
+
+
+def test_tidy_plan_keeps_real_open_questions():
+    plan = "An explorer.\n\n## Plan\n1. **A** — one.\n\n## Open questions\n- Which columns matter?"
     assert _tidy_plan(plan) == plan
 
 

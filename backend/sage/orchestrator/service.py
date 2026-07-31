@@ -190,6 +190,33 @@ def _looks_like_question(prompt: str) -> bool:
     return words[0] in _QUESTION_LEAD or text.endswith("?")
 
 
+# A whole prompt that says nothing but "yes, go" — used only while a proposed plan is waiting for
+# approval (see _looks_like_approval). Anchored end to end on purpose: "ok build" approves the
+# pending plan, "ok build me a dashboard" is a new request and must not.
+_APPROVAL_ONLY = re.compile(
+    r"^(?:ok(?:ay)?|yes|yep|yeah|sure|great|perfect|cool|sounds good|looks good|lgtm)?[\s,.!]*"
+    r"(?:(?:please|now|then|lets|let's)\s+)*"
+    r"(?:approve[d]?|proceed|continue|go(?:\s+ahead)?|ship it|do it|make it|"
+    r"build(?:\s+(?:it|this|that|the plan))?|"
+    r"(?:go\s+)?build(?:\s+(?:it|this|that))?)?[\s,.!]*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_approval(prompt: str) -> bool:
+    """True when the whole prompt is the user saying "yes, build the plan you just showed me".
+
+    Only consulted while a plan is actually pending. Typing approval in the composer is the same
+    intent as clicking Approve, so it must run the approved plan — otherwise the gate fires again and
+    the user gets a second plan for a request that was already planned. Conservative by construction:
+    anything carrying content beyond the approval itself fails the anchored match and builds
+    normally."""
+    text = prompt.strip()
+    if not text or len(text) > 40:
+        return False
+    return bool(_APPROVAL_ONLY.match(text)) and bool(re.search(r"[a-z]", text, re.IGNORECASE))
+
+
 # Phrases that signal the user wants Sage to reach the internet this turn, in three parts: an
 # explicit URL, a standalone verb that only ever means "hit the web", or a fetch-ish verb sitting
 # before a web noun in the same sentence. Deliberately generous on vocabulary — the default is deny,
@@ -267,14 +294,38 @@ def _drop_i_will_openers(plan_md: str) -> str:
     return _I_WILL_OPENER.sub(lambda m: m["prefix"] + m["verb"].upper(), plan_md)
 
 
+_OPEN_Q_HEADING = re.compile(r"^#{1,6}[ \t]*open questions\b[ \t]*:?[ \t]*$", re.IGNORECASE)
+
+
+def _drop_empty_questions(plan_md: str) -> str:
+    """Remove an "## Open questions" section whose only content is "None".
+
+    The planner is told to write the section, so a plan with nothing to ask still ends in a heading
+    followed by "None — ready to build.". That heading is scaffolding: it shows the user a slot that
+    exists for the model's benefit, and reads as a prompt to answer questions that were never asked.
+    A section with real questions is left alone."""
+    lines = plan_md.splitlines()
+    for i, line in enumerate(lines):
+        if not _OPEN_Q_HEADING.match(line.strip()):
+            continue
+        end = i + 1
+        while end < len(lines) and not lines[end].lstrip().startswith("#"):
+            end += 1
+        body = " ".join(lines[i + 1:end]).strip().strip("-*•_ ").strip()
+        if re.match(r"none\b", body, re.IGNORECASE):
+            return "\n".join(lines[:i] + lines[end:]).rstrip()
+    return plan_md
+
+
 def _tidy_plan(plan_md: str) -> str:
     """Drop verbatim repeated blocks and repeated "I will" step openers before a plan is shown.
 
     Planners — weak sovereign models especially — sometimes restate a whole paragraph word for word,
     which reads in the plan card as though Sage said the same thing twice. Only long blocks (>=120
     chars) are deduped, so short repeats that are legitimately identical (a bullet, "None — ready to
-    build.") survive. Step openers are then de-padded by _drop_i_will_openers. Everything else,
-    including order, is left exactly as written."""
+    build.") survive. Step openers are then de-padded by _drop_i_will_openers, and an empty
+    "Open questions" section by _drop_empty_questions. Everything else, including order, is left
+    exactly as written."""
     out: list[str] = []
     seen: set[str] = set()
     for block in re.split(r"\n\s*\n", plan_md.strip()):
@@ -284,7 +335,7 @@ def _tidy_plan(plan_md: str) -> str:
                 continue
             seen.add(key)
         out.append(block.strip())
-    return _drop_i_will_openers("\n\n".join(out))
+    return _drop_empty_questions(_drop_i_will_openers("\n\n".join(out)))
 
 
 def _approve_prompt(plan_md: str, answers: str) -> str:
@@ -725,11 +776,18 @@ class Orchestrator:
 
         One turn at a time. If a turn is already streaming, refuse rather than run a second one
         concurrently (see _turn_lock) — overlapping turns corrupt the shared read-only gate and
-        working tree. The refusal is a clean error + done(busy) so the UI surfaces it, not a hang."""
+        working tree. The refusal is a clean error + done(busy) so the UI surfaces it, not a hang.
+
+        A bare approval typed while a plan is waiting ("ok build") means the same thing as clicking
+        Approve, so it runs THAT plan instead of falling into the gate and proposing a second one."""
         if not self._turn_lock.acquire(blocking=False):
             yield from self._busy_refusal()
             return
         try:
+            if _looks_like_approval(prompt) and (self.project().workspace.read_plan() or "").strip():
+                yield {"type": "plan-stale", "note": "Approved in chat — building this plan."}
+                yield from self._approve_locked(user_text=prompt)
+                return
             yield from self._build_stream(prompt, mentions)
         finally:
             self._clear_turn_baseline()
@@ -769,7 +827,8 @@ class Orchestrator:
             log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
         return seen
 
-    def _build_stream(self, prompt: str, mentions: list[str] | None = None, *, is_approval: bool = False):
+    def _build_stream(self, prompt: str, mentions: list[str] | None = None, *, is_approval: bool = False,
+                      user_text: str | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -847,8 +906,9 @@ class Orchestrator:
                        "- Then a '## Plan' heading and a numbered list. Each step is a single line: "
                        "a bolded 2-4 word label, then ' — ', then one sentence. No paragraph steps, "
                        "no sub-lists, no code.\n"
-                       "- Then an '## Open questions' heading and short bullets, or 'None — ready to "
-                       "build.'\n"
+                       "- Then, ONLY if something genuinely needs the user to decide, an '## Open "
+                       "questions' heading and short bullets. Nothing to ask: leave the heading out "
+                       "entirely rather than writing 'None'.\n"
                        "Never repeat a sentence or restate a step you've already written.")
         if gate:
             if has_built:
@@ -865,7 +925,19 @@ class Orchestrator:
         answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question, is_approval=is_approval)
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
-        project.workspace.append_history({"type": "user", "text": prompt})
+        # Tell the UI whether a plan card still waiting for approval survives this turn. It doesn't
+        # once we're about to overwrite plan.md (a gated turn) or change the app under it; it does
+        # across an answer-only turn, which touches neither — asking a question shouldn't cost the
+        # user the plan they were reading.
+        if not answer_only and not is_approval:
+            yield {"type": "plan-stale",
+                   "note": "Superseded by a newer plan below." if gate
+                           else "No longer current — the app changed after this plan."}
+
+        # `user_text` is what the person actually typed, when that differs from the prompt we send the
+        # agent (a typed approval is expanded into the full approve prompt) — the transcript should
+        # replay their words, not ours.
+        project.workspace.append_history({"type": "user", "text": user_text if user_text is not None else prompt})
 
         # Auto may be escalated to Implement mid-stream to force a stalled build to actually write
         # code (see the nudge branch below). Restore the user's mode on every exit from the stream.
@@ -1282,23 +1354,29 @@ class Orchestrator:
             yield from self._busy_refusal()
             return
         try:
-            project = self.project()
-            if plan_edits is not None:
-                project.workspace.write_plan(plan_edits)
-            plan_md = project.workspace.read_plan() or ""
-            prior_mode = project.control.snapshot().mode
-            if prior_mode is Mode.PLAN:
-                project.control.set_mode(Mode.IMPLEMENT)
-            try:
-                yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True)
-            finally:
-                if project.control.snapshot().mode is not prior_mode:
-                    project.control.set_mode(prior_mode)
-                # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
-                project.workspace.archive_plan()
+            yield from self._approve_locked(answers, plan_edits)
         finally:
             self._clear_turn_baseline()
             self._turn_lock.release()
+
+    def _approve_locked(self, answers: str = "", plan_edits: str | None = None, user_text: str | None = None):
+        """The approve turn itself. Assumes the caller holds _turn_lock — approval reaches here both
+        from the card's Approve button and from a bare approval typed in the composer (build_stream)."""
+        project = self.project()
+        if plan_edits is not None:
+            project.workspace.write_plan(plan_edits)
+        plan_md = project.workspace.read_plan() or ""
+        prior_mode = project.control.snapshot().mode
+        if prior_mode is Mode.PLAN:
+            project.control.set_mode(Mode.IMPLEMENT)
+        try:
+            yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True,
+                                          user_text=user_text)
+        finally:
+            if project.control.snapshot().mode is not prior_mode:
+                project.control.set_mode(prior_mode)
+            # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
+            project.workspace.archive_plan()
 
     def record_runtime_error(self, message: str, stack: str = "") -> None:
         """Store a runtime error the live preview reported (via /api/preview/runtime-error), stamped

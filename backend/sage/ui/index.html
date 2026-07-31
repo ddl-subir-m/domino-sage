@@ -1533,10 +1533,11 @@ async function build() {
   await startTurn(prompt, mentions);
 }
 
-// Lock any still-open plan card to a read-only record before a new turn begins. Once the next turn
-// runs it overwrites plan.md, so an old card's Approve (which builds from plan.md) would build the
-// NEWER plan, not the one shown. Only the latest card should stay approvable.
-function supersedePlanCards() {
+// Lock any still-open plan card to a read-only record. An old card's Approve builds from plan.md, so
+// it stops being trustworthy the moment plan.md is overwritten or the app moves on — the backend says
+// when that happens with a 'plan-stale' event and supplies the note. A read-only turn (a question in
+// Ask or Auto) sends no such event, so a plan stays approvable while the user asks about it.
+function supersedePlanCards(note) {
   document.querySelectorAll('.plan-card').forEach(card => {
     const actions = card.querySelector('.plan-actions');
     if (!actions) return; // already resolved (approved, cancelled, or superseded)
@@ -1546,14 +1547,13 @@ function supersedePlanCards() {
     card.querySelector('.plan-lbl')?.remove();
     card.querySelector('.plan-answers')?.remove();
     card.querySelector('.plan-edit')?.remove();
-    card.insertAdjacentHTML('beforeend', '<div class="plan-note">Superseded by a newer plan below.</div>');
+    card.insertAdjacentHTML('beforeend', '<div class="plan-note">' + esc(note || 'Superseded by a newer plan below.') + '</div>');
   });
 }
 
 // Render one user turn and stream its build. Assumes no turn is currently in flight.
 async function startTurn(prompt, mentions) {
   if (!active) enterProject();
-  supersedePlanCards();
   const msgBox = document.getElementById('messages');
   const turnStart = msgBox.children.length; // first DOM node belonging to this turn
   addUser(prompt);
@@ -1712,14 +1712,19 @@ async function runStream(url, payload, turnStart) {
 // The approval card for a proposed plan (SPEC P6). Renders the plan, an optional answers box and
 // plan editor, and Approve/Edit/Cancel — Approve streams the resulting build from .sage/plan.md.
 function addPlanCard(planMd) {
+  supersedePlanCards();  // only the newest plan is approvable (covers a transcript replay too)
+  // The plan only has an "Open questions" section when the planner actually needs a decision (the
+  // backend strips an empty one). With no questions on screen, prompting the user to answer them
+  // exposes machinery rather than asking for anything, so the box just takes notes.
+  const asks = /^#{1,6}\s*open questions\b/mi.test(planMd || '');
   const card = document.createElement('div');
   card.className = 'msg agent plan-card';
   card.innerHTML =
     '<div class="plan-head">Review the plan before building</div>' +
     '<div class="plan-body md"></div>' +
     '<textarea class="plan-edit" style="display:none"></textarea>' +
-    '<label class="plan-lbl">Answer the open questions or add notes (optional)</label>' +
-    '<textarea class="plan-answers" rows="2" placeholder="e.g. columns: id, amount, status · Approve = mark resolved"></textarea>' +
+    '<label class="plan-lbl">' + (asks ? 'Answer the open questions or add notes (optional)' : 'Add a note for the build (optional)') + '</label>' +
+    '<textarea class="plan-answers" rows="2" placeholder="' + (asks ? 'e.g. columns: id, amount, status · Approve = mark resolved' : 'e.g. keep the table compact and use muted colours') + '"></textarea>' +
     '<div class="plan-actions">' +
       '<button class="plan-btn primary">Approve &amp; build</button>' +
       '<button class="plan-btn ghost edit">Edit plan</button>' +
@@ -1817,6 +1822,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'turn-summary') { stopWorking(); if (ev.shim_bypassed) addStatus('err', '⚠', `Inference bypassed Sage — OpenCode dialed :${ev.base_port} but the shim serves :${ev.control_port}. This turn ran 0 model calls through Sage; model routing and the sovereignty lock did not apply.` + ((ev.vendor_keys && ev.vendor_keys.length) ? ` A direct vendor key (${esc(ev.vendor_keys.join(', '))}) is in the workspace — that's how a model was reached, entirely outside Sage.` : ` No direct vendor key is set, so a model shouldn't have been reachable this way — check what OpenCode connected to.`) + ` Fix the opencode.json baseURL port.`); if (!ev.gate) addStatus(ev.wrote_code ? 'ok' : '', ev.wrote_code ? '✎' : 'ℹ', turnSummaryMsg(ev)); trail(); }
   else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
   else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
+  else if (ev.type === 'plan-stale') { supersedePlanCards(ev.note); }
   else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan); trail(); }
   else if (ev.type === 'done') { stopWorking(); if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
