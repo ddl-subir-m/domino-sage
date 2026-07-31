@@ -1427,8 +1427,14 @@ function turnSummaryMsg(ev) {
   const pl = n => n === 1 ? '' : 's';
   if (ev.wrote_code) return `Applied edits — ${calls} model call${pl(calls)}, ${tc} with tool calls`;
   if (calls === 0) return 'Wrote nothing: the model was never called this turn — OpenCode didn\'t reach the gateway (agent/config/connectivity)';
+  // A read-only turn wrote nothing because Sage withheld the edit tools, which is the turn working as
+  // asked — not a stalled build. Say which rule applied and how to build, rather than reporting it as
+  // a failure and blaming OpenCode for dropping edits it was never offered.
+  if (ev.read_only === 'ask') return 'Answered without editing — Ask mode answers questions and never changes files. Switch to Auto or Implement to build.';
+  if (ev.read_only === 'question') return 'Answered without editing — that read as a question, so it was answered instead of built. Rephrase it as a change to build it.';
+  if (ev.read_only) return 'Wrote nothing: this turn ran read-only, so no edit tools were offered.';
   if (tc === 0) return `Wrote nothing: ${calls} model call${pl(calls)} but the model returned no tool calls — it only produced text`;
-  return `Wrote nothing: model returned tool calls (${tc}/${calls} responses) but none landed on disk — OpenCode didn\'t apply them (permission/execution)`;
+  return `Wrote nothing: model returned tool calls (${tc}/${calls} responses) but none landed on disk — OpenCode didn\'t apply them`;
 }
 function addStatus(cls, ico, html) {
   const d = document.createElement('div'); d.className = 'status-line ' + (cls || '');

@@ -266,6 +266,21 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
     return not has_built and not is_question
 
 
+def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool) -> str:
+    """Why the shim is withholding edit tools this turn — "" when it isn't. Reported in the turn
+    summary so a turn that wrote nothing can say which rule stopped it instead of blaming OpenCode for
+    dropping edits it was never offered (the shim strips them from the request; see enforcement.handle).
+
+    Ask is read-only by *mode*, with nothing armed, so this can't be read off the read-only token: that
+    was the case that made an Ask-mode build look like a mysterious failure. Ask is checked first
+    because an Ask turn is also answer-only, and the mode is the more useful thing to tell the user."""
+    if mode is Mode.ASK:
+        return "ask"
+    if answer_only:
+        return "question"
+    return "plan" if gate else ""
+
+
 def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool) -> bool:
     """A turn that answers read-only instead of building — no plan card, no edits, no implement-nudge.
     Two cases: Ask mode (always read-only Q&A), and any question in Auto mode (whether or not the app
@@ -954,6 +969,8 @@ class Orchestrator:
         # turn — disarm only clears our own arming, so nothing drops the guarantee out from under us.
         ro_token = project.control.arm_read_only() if (gate or answer_only) else None
 
+        read_only = _read_only_reason(mode=original_mode, answer_only=answer_only, gate=gate)
+
         # Internet access is default-denied; arm it for THIS turn only when the prompt asked for the
         # web (a URL or an intent verb). Token-scoped like read-only, disarmed on every exit.
         web_token = project.control.arm_web() if _wants_web(prompt) else None
@@ -1202,7 +1219,7 @@ class Orchestrator:
                            "shim_bypassed": (project.model_calls == 0 and base_port is not None
                                              and base_port != control_port),
                            "base_port": base_port, "control_port": control_port,
-                           "vendor_keys": vendor_keys, "gate": True}
+                           "vendor_keys": vendor_keys, "gate": True, "read_only": read_only}
                     if project.model_calls == 0:
                         tail = self._opencode_log_tail()
                         if tail:
@@ -1240,7 +1257,7 @@ class Orchestrator:
                 yield {"type": "turn-summary", "model_calls": project.model_calls,
                        "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code,
                        "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port,
-                       "vendor_keys": vendor_keys, "gate": gate}
+                       "vendor_keys": vendor_keys, "gate": gate, "read_only": read_only}
                 # No inference reached the shim this turn: surface OpenCode's own log tail so its actual
                 # error (which port it dialed, provider/model/auth failure) is visible without a shell.
                 if project.model_calls == 0:
@@ -1343,10 +1360,11 @@ class Orchestrator:
     def approve_stream(self, answers: str = "", plan_edits: str | None = None):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
-        turn to misread. Approval means "build it now", so if the user is in Plan mode we run this
-        turn in Implement mode — Plan mode's agent is read-only and its gate would just re-plan — and
-        restore their mode afterwards. An Auto/Implement approve already has history, so it's never
-        re-gated regardless."""
+        turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
+        this turn in Implement mode and restore their mode afterwards. Both are read-only: Plan's gate
+        would just re-plan, and Ask has every write and shell tool stripped from the request by the
+        shim, so the agent would emit edits that never land on disk. An Auto/Implement approve already
+        has history, so it's never re-gated regardless."""
         # Serialize like build_stream: approving while a turn already streams would overlap two turns
         # on one working tree and read-only gate. We hold the lock across the whole approve (plan
         # write + mode swap + build) and call _build_stream directly so it doesn't re-acquire.
@@ -1367,7 +1385,7 @@ class Orchestrator:
             project.workspace.write_plan(plan_edits)
         plan_md = project.workspace.read_plan() or ""
         prior_mode = project.control.snapshot().mode
-        if prior_mode is Mode.PLAN:
+        if prior_mode in (Mode.PLAN, Mode.ASK):
             project.control.set_mode(Mode.IMPLEMENT)
         try:
             yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True,

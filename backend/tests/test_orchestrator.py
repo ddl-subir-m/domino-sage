@@ -426,7 +426,8 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import (  # noqa: E402
-    _approve_prompt, _is_answer_only, _looks_like_approval, _looks_like_question, _should_gate,
+    _approve_prompt, _is_answer_only, _looks_like_approval, _looks_like_question,
+    _read_only_reason, _should_gate,
 )
 from sage.router.models import Mode  # noqa: E402
 from sage.workspace.manager import Workspace  # noqa: E402
@@ -441,6 +442,18 @@ def test_looks_like_approval_rejects_anything_carrying_a_request():
     # "ok build a dashboard" is a new build, not approval of the plan on screen.
     for prompt in ("ok build a dashboard", "build a dashboard", "make the table compact", "no", ""):
         assert not _looks_like_approval(prompt), prompt
+
+
+def test_read_only_reason_names_the_rule_that_withheld_the_edit_tools():
+    # Ask is read-only by mode with no token armed, so it must be reported even though nothing on the
+    # turn looks armed — that's the case that made an Ask-mode build read as an unexplained failure.
+    assert _read_only_reason(mode=Mode.ASK, answer_only=True, gate=False) == "ask"
+    # An Ask turn is also answer-only; the mode is the more useful thing to tell the user.
+    assert _read_only_reason(mode=Mode.ASK, answer_only=False, gate=False) == "ask"
+    assert _read_only_reason(mode=Mode.AUTO, answer_only=True, gate=False) == "question"
+    assert _read_only_reason(mode=Mode.PLAN, answer_only=False, gate=True) == "plan"
+    # A turn that may actually write reports no reason, so the summary keeps its real diagnostics.
+    assert _read_only_reason(mode=Mode.IMPLEMENT, answer_only=False, gate=False) == ""
 
 
 def test_should_gate_fires_on_first_build_only():
@@ -598,3 +611,19 @@ def test_tidy_plan_drops_i_will_openers_from_steps():
 def test_tidy_plan_leaves_mid_sentence_first_person_alone():
     plan = "## Plan\n1. **Ask first** — the app asks what I will explore before loading."
     assert _tidy_plan(plan) == plan
+
+
+@pytest.mark.parametrize("prior", [Mode.ASK, Mode.PLAN])
+def test_approve_builds_in_implement_mode_from_a_read_only_mode(tmp_path: Path, prior: Mode):
+    # Approving means "build it now". Ask and Plan are both read-only — in Ask the shim strips every
+    # write and shell tool from the request, so the approved build emitted edits that never landed on
+    # disk ("wrote nothing") and then looped until it gave up. The approve turn must run as Implement,
+    # and must hand the user's mode back afterwards.
+    orch = _orch(tmp_path)
+    control = orch.project(start_preview=False).control
+    control.set_mode(prior)
+    seen = []
+    orch._build_stream = lambda *a, **k: (seen.append(control.snapshot().mode), iter([]))[1]  # type: ignore[method-assign]
+    list(orch.approve_stream())
+    assert seen == [Mode.IMPLEMENT]
+    assert control.snapshot().mode is prior  # restored
