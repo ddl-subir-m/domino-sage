@@ -367,6 +367,15 @@ class Project:
     # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
     model_calls: int = 0
     tool_call_responses: int = 0
+    # Working-tree hash the running turn compares against to tell whether anything on disk changed
+    # (the ground-truth half of "did the agent write", alongside its edit-tool calls). Lives on the
+    # project rather than inside build_stream because attach/upload/detach also write into the tree
+    # — AGENTS.md, .gitignore, the public/data/ symlink — and they run on their own endpoints, not
+    # under the turn lock. A user uploading a file mid-turn would otherwise look exactly like the
+    # agent writing code, which on a read-only turn means a false "gate violated" AND a revert that
+    # deletes the upload they just made. Those paths re-baseline it instead (see _rebaseline_turn).
+    # Empty when no turn is running.
+    turn_tree_baseline: str = ""
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -686,7 +695,16 @@ class Orchestrator:
         try:
             yield from self._build_stream(prompt, mentions)
         finally:
+            self._clear_turn_baseline()
             self._turn_lock.release()
+
+    def _clear_turn_baseline(self) -> None:
+        """Mark "no turn running" so _rebaseline_turn stops touching the baseline once the turn that
+        owns it is over. Best-effort — a project we can't resolve has no baseline to clear."""
+        try:
+            self.project().turn_tree_baseline = ""
+        except Exception:
+            pass
 
     def _busy_refusal(self):
         """Events yielded when a turn is refused because another is already streaming."""
@@ -816,6 +834,13 @@ class Orchestrator:
         # web (a URL or an intent verb). Token-scoped like read-only, disarmed on every exit.
         web_token = project.control.arm_web() if _wants_web(prompt) else None
 
+        def agent_wrote() -> bool:
+            """Did the AGENT change the app this turn? Its own edit-tool calls, plus the working
+            tree as ground truth for writes no tool reported (the `printf > file` shell hole). The
+            tree baseline moves when a concurrent attach/upload writes into the workspace, so a user
+            uploading data mid-turn is not mistaken for the agent (see Project.turn_tree_baseline)."""
+            return made_edits or project.snapshot.working_tree_hash() != project.turn_tree_baseline
+
         def restore_mode() -> None:
             if project.control.snapshot().mode is not original_mode:
                 project.control.set_mode(original_mode)
@@ -899,7 +924,9 @@ class Orchestrator:
             # flag and fingerprint the working tree now; compare after the turn. Without this, once any
             # turn writes a file every later (possibly no-op) turn reads as "wrote code".
             made_edits = False
-            turn_start_tree = project.snapshot.working_tree_hash()
+            # Published on the project so a concurrent attach/upload/detach can move it forward as it
+            # writes AGENTS.md / .gitignore / public/data/ — see Project.turn_tree_baseline.
+            project.turn_tree_baseline = project.snapshot.working_tree_hash()
             # A gated turn is pinned to the read-only planner regardless of the user's mode; it
             # proposes a plan and never edits, so it always lands in the no-edit fork below. A first-
             # turn question uses the read-only Q&A agent — it answers, it doesn't plan or build.
@@ -1022,7 +1049,7 @@ class Orchestrator:
             # clean regardless of the workspace's pre-existing typecheck state. If read-only was somehow
             # bypassed and it DID edit, fall through to the normal path so those edits get reverted
             # (the gate/answer-only violation check below), never silently kept.
-            if answer_only and not (made_edits or project.snapshot.working_tree_hash() != turn_start_tree):
+            if answer_only and not agent_wrote():
                 restore_mode()
                 yield persist({"type": "done", "ok": True, "decision": "answered"})
                 return
@@ -1035,7 +1062,7 @@ class Orchestrator:
             # `stop` branch, so a workspace carrying pre-existing type errors sent a plan turn into
             # the fix-it nudge loop instead of proposing its plan. A gated turn that DID write falls
             # through to the violation check below and is reverted.
-            if gate and not (made_edits or project.snapshot.working_tree_hash() != turn_start_tree):
+            if gate and not agent_wrote():
                 plan_md = "\n".join(plan_text_parts).strip()
                 restore_mode()
                 # A weak planner (notably the small sovereign models a sensitivity lock forces) can
@@ -1082,7 +1109,7 @@ class Orchestrator:
                 # via another (patch/str_replace/create). Confirm against the snapshot's ground truth
                 # so a real edit is never misread as "planned but wrote no code". Compare the tree hash
                 # to this turn's start (not the build-start baseline) so only edits made THIS turn count.
-                wrote_code = made_edits or project.snapshot.working_tree_hash() != turn_start_tree
+                wrote_code = agent_wrote()
                 # Surface why a turn landed where it did — especially a no-edit turn. Reads apart the
                 # three failure modes (see Project.model_calls); rendered as a status line in the UI.
                 shim_bypassed = (project.model_calls == 0 and base_port is not None and base_port != control_port)
@@ -1218,6 +1245,7 @@ class Orchestrator:
                 # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
                 project.workspace.archive_plan()
         finally:
+            self._clear_turn_baseline()
             self._turn_lock.release()
 
     def record_runtime_error(self, message: str, stack: str = "") -> None:
@@ -1890,6 +1918,22 @@ class Orchestrator:
             elif block:
                 existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
             agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+        self._rebaseline_turn(project)
+
+    def _rebaseline_turn(self, project: Project) -> None:
+        """Move a running turn's working-tree baseline forward over writes WE just made on the
+        user's behalf (attach / upload / detach / delete: AGENTS.md, .gitignore, the public/data/
+        symlink). Those endpoints don't take the turn lock — uploading data mid-build is a normal
+        thing to do — so without this the turn's end-of-run tree comparison sees changed files and
+        blames the agent. On a read-only turn that means a bogus "gate violated" and a
+        discard_changes() that deletes the file the user just uploaded. No-op when no turn is
+        running. Best-effort: if the hash can't be taken we leave the old baseline, which fails the
+        safe way (a false write report, never a missed one)."""
+        if not project.turn_tree_baseline:
+            return
+        new = project.snapshot.working_tree_hash()
+        if new:
+            project.turn_tree_baseline = new
 
     _INSTR_BEGIN = "<!-- sage:instructions:begin -->"
     _INSTR_END = "<!-- sage:instructions:end -->"

@@ -580,3 +580,34 @@ def test_an_undecodable_image_is_flagged_as_unseen_for_the_data_panel(tmp_path: 
 
     assert res["descriptor"]["kind"] == "image"
     assert res["descriptor"]["shown"] is False
+
+
+def test_upload_during_a_turn_is_not_mistaken_for_the_agent_writing(tmp_path: Path):
+    """Uploading a file mid-turn writes AGENTS.md, .gitignore and a public/data/ symlink — all
+    inside the snapshotted working tree, none of them the agent's doing. Before the fix, the turn's
+    end-of-run tree comparison read those as "the agent wrote code", which on a gated (Plan) turn
+    meant a false `gate violated` AND a discard_changes() that deleted the fresh upload. The upload
+    path must move the running turn's baseline forward instead."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+
+    # Stand in for a turn in flight: the baseline build_stream would have taken at its start.
+    project.turn_tree_baseline = project.snapshot.working_tree_hash()
+    before = project.turn_tree_baseline
+
+    orch.upload_file("mid_turn.csv", b"a,b\n1,2\n", sensitive=False)
+
+    assert project.snapshot.working_tree_hash() != before      # the upload really did change the tree
+    assert project.turn_tree_baseline == project.snapshot.working_tree_hash()  # ...and was absorbed
+
+
+def test_upload_outside_a_turn_leaves_the_baseline_alone(tmp_path: Path):
+    """No turn running means no baseline to move — the rebaseline hook must stay a no-op rather
+    than seed one, or the next turn would start by comparing against a stale hash."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    assert project.turn_tree_baseline == ""
+
+    orch.upload_file("idle.csv", b"a,b\n1,2\n", sensitive=False)
+
+    assert project.turn_tree_baseline == ""
