@@ -445,8 +445,14 @@ def test_should_gate_never_gates_ask_mode():
     assert _should_gate(mode=Mode.ASK, has_built=False, skip_planning=False) is False
 
 
-def test_should_gate_opt_out_wins_over_everything():
-    assert _should_gate(mode=Mode.PLAN, has_built=False, skip_planning=True) is False
+def test_should_gate_skip_planning_only_suppresses_the_automatic_gate():
+    # skip_planning opts out of the *automatic* first-build gate for Auto/Implement...
+    assert _should_gate(mode=Mode.IMPLEMENT, has_built=False, skip_planning=True) is False
+    assert _should_gate(mode=Mode.AUTO, has_built=False, skip_planning=True) is False
+    # ...but it must NOT override an explicit Plan-mode selection. Plan mode routes to a read-only
+    # agent, so if skip_planning suppressed its gate the turn could neither plan nor build — dead-end.
+    assert _should_gate(mode=Mode.PLAN, has_built=False, skip_planning=True) is True
+    assert _should_gate(mode=Mode.PLAN, has_built=True, skip_planning=True) is True
 
 
 def test_gate_keys_on_first_build_not_first_turn():

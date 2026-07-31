@@ -227,10 +227,15 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
     see answer_only in build_stream) must not consume the gate — the first real build request still
     gates. A *question* is not a build to be planned, so it skips the gate. Plan mode always gates:
     it's an explicit ask to plan. Once built, iteration turns don't gate."""
-    if skip_planning or mode is Mode.ASK:
+    if mode is Mode.ASK:
         return False
+    # Plan mode is an explicit ask to plan — it always gates, even with skip_planning set. That flag
+    # opts out of the *automatic* first-build gate (below); it must not override an explicit Plan
+    # selection, or Plan mode would neither plan (no gate) nor build (its agent is read-only) and dead-end.
     if mode is Mode.PLAN:
         return True
+    if skip_planning:
+        return False
     return not has_built and not is_question
 
 
@@ -964,8 +969,11 @@ class Orchestrator:
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
                             if gate:
+                                # Gate turns render this text once, in the plan card below — don't also
+                                # stream it live, or the user sees the same prose twice (loose text + card).
                                 plan_text_parts.append(part["text"])
-                            yield persist({"type": "agent", "kind": "text", "text": part["text"]})
+                            else:
+                                yield persist({"type": "agent", "kind": "text", "text": part["text"]})
                 cur_phase = project.control.snapshot().phase.value
                 if cur_phase != last_phase:
                     last_phase = cur_phase
@@ -1017,7 +1025,7 @@ class Orchestrator:
                 yield {"type": "turn-summary", "model_calls": project.model_calls,
                        "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code,
                        "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port,
-                       "vendor_keys": vendor_keys}
+                       "vendor_keys": vendor_keys, "gate": gate}
                 # No inference reached the shim this turn: surface OpenCode's own log tail so its actual
                 # error (which port it dialed, provider/model/auth failure) is visible without a shell.
                 if project.model_calls == 0:

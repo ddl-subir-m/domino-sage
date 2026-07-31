@@ -196,7 +196,6 @@
   .plan-card .plan-lbl { font-size: 12.5px; color: var(--muted); }
   .plan-card textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; resize: vertical; }
   .plan-card .plan-edit { min-height: 160px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
-  .plan-card .plan-skip { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
   .plan-card .plan-actions { display: flex; gap: 8px; margin-top: 2px; }
   .plan-btn { font: inherit; font-size: 13px; font-weight: 500; border-radius: 8px; padding: 7px 14px; cursor: pointer; border: 1px solid transparent; }
   .plan-btn.primary { background: var(--primary); color: #fff; }
@@ -1310,8 +1309,10 @@ function md(src) {
     if (h) { closeList(); const n = h[1].length; html += `<h${n}>${inline(h[2])}</h${n}>`; i++; continue; }
     const ul = ln.match(/^\s*[-*]\s+(.*)$/);
     if (ul) { if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; } html += `<li>${inline(ul[1])}</li>`; i++; continue; }
-    const ol = ln.match(/^\s*\d+\.\s+(.*)$/);
-    if (ol) { if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; } html += `<li>${inline(ol[1])}</li>`; i++; continue; }
+    const ol = ln.match(/^\s*(\d+)\.\s+(.*)$/);
+    // start=N keeps numbering correct even when a blank line or a description paragraph splits the
+    // list into separate <ol> blocks — without it every block restarts at 1 (all items show "1.").
+    if (ol) { if (list !== 'ol') { closeList(); html += `<ol start="${ol[1]}">`; list = 'ol'; } html += `<li>${inline(ol[2])}</li>`; i++; continue; }
     const sep = lines[i + 1] && lines[i + 1].match(/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/);
     if (/\|/.test(ln) && sep) {
       closeList();
@@ -1326,7 +1327,15 @@ function md(src) {
       html += '</tbody></table>';
       continue;
     }
-    if (ln.trim() === '') { closeList(); i++; continue; }
+    if (ln.trim() === '') {
+      // A blank line inside a list (a "loose" list) shouldn't split it — keep the list open if the
+      // next non-blank line continues the same list, so numbering doesn't restart at 1.
+      let j = i + 1; while (j < lines.length && lines[j].trim() === '') j++;
+      const next = j < lines.length ? lines[j] : '';
+      const continues = list === 'ol' ? /^\s*\d+\.\s+/.test(next) : list === 'ul' ? /^\s*[-*]\s+/.test(next) : false;
+      if (!continues) closeList();
+      i++; continue;
+    }
     closeList();
     let para = ln; i++;
     while (i < lines.length && lines[i].trim() !== '' && !/^(#{1,3}\s|```|\s*[-*]\s|\s*\d+\.\s)/.test(lines[i])) { para += ' ' + lines[i]; i++; }
@@ -1649,7 +1658,6 @@ function addPlanCard(planMd) {
     '<textarea class="plan-edit" style="display:none"></textarea>' +
     '<label class="plan-lbl">Answer the open questions or add notes (optional)</label>' +
     '<textarea class="plan-answers" rows="2" placeholder="e.g. columns: id, amount, status · Approve = mark resolved"></textarea>' +
-    '<label class="plan-skip"><input type="checkbox" class="plan-skip-cb"> Skip planning for future builds in this project</label>' +
     '<div class="plan-actions">' +
       '<button class="plan-btn primary">Approve &amp; build</button>' +
       '<button class="plan-btn ghost edit">Edit plan</button>' +
@@ -1666,21 +1674,23 @@ function addPlanCard(planMd) {
     bodyEl.style.display = editing ? 'none' : 'block';
     editBtn.textContent = editing ? 'Preview' : 'Edit plan';
   };
-  card.querySelector('.cancel').onclick = () => { card.remove(); drainQueue(); };
+  card.querySelector('.cancel').onclick = () => {
+    // Dismiss the card AND clear the un-approved plan.md the gate turn wrote — otherwise a stray
+    // plan lingers on disk reading like live intent. Fire-and-forget; the card goes away either way.
+    api('/api/project/plan/cancel', { method: 'POST' });
+    card.remove();
+    drainQueue();
+  };
   card.querySelector('.primary').onclick = async () => {
     const answers = card.querySelector('.plan-answers').value.trim();
     const edited = editTa.value.trim() !== (planMd || '').trim();
     const payload = { answers };
     if (edited) payload.plan_edits = editTa.value;
-    if (card.querySelector('.plan-skip-cb').checked) {
-      api('/api/project/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ skip_planning: true }) });
-    }
     // Lock the card to its approved state, keep the plan visible as a record.
     editTa.style.display = 'none'; bodyEl.style.display = 'block';
     card.querySelector('.plan-actions').remove();
     card.querySelector('.plan-lbl').remove();
     card.querySelector('.plan-answers').remove();
-    card.querySelector('.plan-skip').remove();
     editTa.remove();
     if (answers) card.insertAdjacentHTML('beforeend', '<div class="plan-note">' + esc(answers) + '</div>');
     const turnStart = document.getElementById('messages').children.length;
@@ -1736,7 +1746,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'agent' && ev.kind === 'text') { addAgent(ev.text); trail(); }
   else if (ev.type === 'typecheck-start') { setWorking('Typechecking'); }
   else if (ev.type === 'typecheck') { stopWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); trail(); }
-  else if (ev.type === 'turn-summary') { stopWorking(); if (ev.shim_bypassed) addStatus('err', '⚠', `Inference bypassed Sage — OpenCode dialed :${ev.base_port} but the shim serves :${ev.control_port}. This turn ran 0 model calls through Sage; model routing and the sovereignty lock did not apply.` + ((ev.vendor_keys && ev.vendor_keys.length) ? ` A direct vendor key (${esc(ev.vendor_keys.join(', '))}) is in the workspace — that's how a model was reached, entirely outside Sage.` : ` No direct vendor key is set, so a model shouldn't have been reachable this way — check what OpenCode connected to.`) + ` Fix the opencode.json baseURL port.`); addStatus(ev.wrote_code ? 'ok' : '', ev.wrote_code ? '✎' : 'ℹ', turnSummaryMsg(ev)); trail(); }
+  else if (ev.type === 'turn-summary') { stopWorking(); if (ev.shim_bypassed) addStatus('err', '⚠', `Inference bypassed Sage — OpenCode dialed :${ev.base_port} but the shim serves :${ev.control_port}. This turn ran 0 model calls through Sage; model routing and the sovereignty lock did not apply.` + ((ev.vendor_keys && ev.vendor_keys.length) ? ` A direct vendor key (${esc(ev.vendor_keys.join(', '))}) is in the workspace — that's how a model was reached, entirely outside Sage.` : ` No direct vendor key is set, so a model shouldn't have been reachable this way — check what OpenCode connected to.`) + ` Fix the opencode.json baseURL port.`); if (!ev.gate) addStatus(ev.wrote_code ? 'ok' : '', ev.wrote_code ? '✎' : 'ℹ', turnSummaryMsg(ev)); trail(); }
   else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
   else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
   else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan); trail(); }
