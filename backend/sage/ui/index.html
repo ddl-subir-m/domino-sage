@@ -305,8 +305,10 @@
     border-radius: 9px; background: var(--surface-2); cursor: pointer;
   }
   .sens-toggle.on { border-color: color-mix(in srgb, var(--lock) 40%, var(--border)); background: color-mix(in srgb, var(--lock) 7%, var(--surface)); }
-  .sens-toggle input { margin-top: 2px; accent-color: var(--lock); }
-  .sens-toggle .st-title { font-size: 13px; font-weight: 550; color: var(--text); display: flex; align-items: center; gap: 6px; }
+  .sens-toggle input { flex: none; width: 14px; height: 14px; margin: 0; margin-top: 2px; accent-color: var(--lock); }
+  .sens-toggle .st-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .sens-toggle .st-title { font-size: 13px; line-height: 18px; font-weight: 550; color: var(--text); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+  .sens-toggle .st-title b { font-weight: inherit; }
   .sens-toggle .st-desc { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
   .lock-badge { font-size: 10px; font-weight: 600; color: var(--lock); border: 1px solid color-mix(in srgb, var(--lock) 40%, var(--border)); border-radius: 999px; padding: 1px 6px; }
   .upload-btn { width: 100%; padding: 9px; border-radius: 9px; border: 0; background: var(--primary); color: #fff; font-weight: 600; font-size: 13px; }
@@ -486,7 +488,7 @@
           <label class="sens-toggle" id="sens-toggle" title="Mark this file sensitive to force the sovereign model">
             <input type="checkbox" id="upload-sensitive" onchange="onSensToggle()" />
             <span class="st-body">
-              <span class="st-title">Mark as sensitive <span class="lock-badge">locks sovereign</span></span>
+              <span class="st-title"><span>Mark as <b id="sens-tag">sensitive</b></span> <span class="lock-badge">locks sovereign</span></span>
               <span class="st-desc">Routes only to sovereign models and stores the file under a <code>sensitive/</code> folder.</span>
             </span>
           </label>
@@ -494,7 +496,7 @@
         </div>
         <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets & files…" oninput="onAssetSearch()" autocomplete="off" />
         <div id="assets" class="asset-list"><div class="hint">Loading datasets…</div></div>
-        <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Sensitive files in the default dataset go to a <code>sensitive/</code> folder; choosing another dataset tags that whole dataset sensitive. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
+        <div class="hint">Files are saved to your project and given to the agent at <code>public/data/…</code>. Deleting an upload removes its data; detaching a dataset file doesn't.</div>
       </div>
 
         <div class="attach-pills" id="attach-pills"></div>
