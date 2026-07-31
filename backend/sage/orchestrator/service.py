@@ -765,6 +765,20 @@ class Orchestrator:
             skip_planning=bool(project.workspace.read_settings().get("skip_planning")),
             is_question=is_question,
         )
+        # A gated turn's prompt carries a planning-context preamble scoped to whether the app exists
+        # yet. First build (fresh template): tell the planner it needn't read anything and can plan
+        # straight from the request — this is what keeps a weak sovereign planner from read-looping
+        # without ever producing plan text. Iteration (Plan mode on an already-built app): the plan
+        # must fit the current code, so have it briefly read what the change touches first. The
+        # preamble rides on `current` (what's sent to the agent), never on the persisted user bubble.
+        if gate:
+            if has_built:
+                current = ("Plan a change to this existing app. Briefly read the files your change "
+                           "would touch so the plan fits the current code, then write the plan.\n\n"
+                           + current)
+            else:
+                current = ("This is a brand-new app from a blank template — there are no existing "
+                           "files worth reading, so plan straight from the request.\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -1055,8 +1069,21 @@ class Orchestrator:
                         # that's success here, not a stall, so short-circuit the nudge loop. Persist
                         # the plan as the handoff artifact and stop for the user to approve.
                         plan_md = "\n".join(plan_text_parts).strip()
-                        project.workspace.write_plan(plan_md)
                         restore_mode()
+                        # A weak planner (notably the small sovereign models a sensitivity lock forces)
+                        # can finish this read-only turn without emitting any plan text — leaving nothing
+                        # to approve. Don't persist a blank plan or present an approve card that would
+                        # build from an empty plan; report it as a failed planning turn instead.
+                        if not plan_md:
+                            log.warning("plan gate produced no plan text (model_calls=%d) — reporting empty plan",
+                                        project.model_calls)
+                            yield persist({"type": "error", "message": (
+                                "Planning didn't produce a plan this time. Send the request again — adding "
+                                "a bit more detail about what you want can help — or switch to Implement to "
+                                "build it directly.")})
+                            yield persist({"type": "done", "ok": False, "decision": "empty plan"})
+                            return
+                        project.workspace.write_plan(plan_md)
                         yield persist({"type": "plan-proposed", "plan": plan_md})
                         yield persist({"type": "done", "ok": True, "decision": "awaiting approval"})
                         return
