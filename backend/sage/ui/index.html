@@ -492,7 +492,7 @@
           </label>
           <button id="upload-btn" class="upload-btn" onclick="uploadFile()">Upload file</button>
         </div>
-        <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets…" oninput="renderAssets()" autocomplete="off" />
+        <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets & files…" oninput="onAssetSearch()" autocomplete="off" />
         <div id="assets" class="asset-list"><div class="hint">Loading datasets…</div></div>
         <div class="hint">Uploaded and attached files are saved to your project and given to the agent at <code>public/data/…</code>. A file marked <b id="sens-tag">sensitive</b> forces the sovereign model. Sensitive files in the default dataset go to a <code>sensitive/</code> folder; choosing another dataset tags that whole dataset sensitive. Deleting an uploaded file removes its data; detaching a dataset file leaves the original untouched.</div>
       </div>
@@ -845,31 +845,73 @@ function renderAssets() {
     return;
   }
   const q = (document.getElementById('asset-search').value || '').trim().toLowerCase();
-  const matches = q ? assetsCache.filter(a => a.name.toLowerCase().includes(q)) : assetsCache;
+  const matches = q
+    ? assetsCache.filter(a => a.name.toLowerCase().includes(q) || fileHits(a, q).length)
+    : assetsCache;
   el.appendChild(groupHeader('Datasets'));
-  if (!matches.length) { el.appendChild(hintEl(`No datasets match “${esc(q)}”.`)); return; }
-  for (const a of matches) el.appendChild(datasetRow(a));
+  if (!matches.length) {
+    // File lists load lazily; while a query's outstanding fetches are in flight, say so rather
+    // than claim there's no match (a dataset whose files match may just not be loaded yet).
+    el.appendChild(hintEl(assetFilesLoading ? 'Searching files…' : `No datasets match “${esc(q)}”.`));
+    return;
+  }
+  for (const a of matches) el.appendChild(datasetRow(a, q));
 }
 
-function datasetRow(a) {
+// Files inside a dataset that match the query (empty when the dataset's file list isn't loaded yet).
+function fileHits(a, q) {
+  const files = filesCache[a.id];
+  return (q && files) ? files.filter(f => f.path.toLowerCase().includes(q)) : [];
+}
+
+function onAssetSearch() {
+  renderAssets();
+  const q = (document.getElementById('asset-search').value || '').trim();
+  if (q) ensureAllFilesLoaded();  // pull every dataset's file list so file-name matches can surface
+}
+
+// Searching file names needs the lists in memory, but they normally load only on expand. On the
+// first query, fetch the missing ones in parallel, cache them, then re-render with results.
+let assetFilesLoading = false;
+async function ensureAllFilesLoaded() {
+  if (assetFilesLoading) return;
+  const missing = assetsCache.filter(a => !filesCache[a.id]);
+  if (!missing.length) return;
+  assetFilesLoading = true;
+  renderAssets();
+  await Promise.all(missing.map(async a => {
+    try { const { body } = await api(`/api/project/assets/${a.id}/files`); filesCache[a.id] = body.files || []; }
+    catch { filesCache[a.id] = filesCache[a.id] || []; }  // don't wedge the search on one failed dataset
+  }));
+  assetFilesLoading = false;
+  renderAssets();
+}
+
+function datasetRow(a, q) {
   const wrap = document.createElement('div');
   const row = document.createElement('div');
   row.className = 'asset-row ds-row';
   const chip = a.sensitive ? `<span class="a-chip" title="Tagged sensitive — attaching a file forces the sovereign model">Sensitive</span>` : '';
-  const caret = expanded.has(a.id) ? '▾' : '▸';
+  // A dataset surfaced by matching file names (not its own name) auto-expands to reveal just those
+  // files; a name match stays collapsed until clicked, as before.
+  const nameHit = q && a.name.toLowerCase().includes(q);
+  const hits = (q && !nameHit) ? fileHits(a, q) : [];
+  const open = expanded.has(a.id) || hits.length > 0;
+  const caret = open ? '▾' : '▸';
   row.innerHTML = `<span class="a-name"><span class="a-caret">${caret}</span><span class="a-label">${esc(a.name)}</span>${chip}</span>`;
   row.onclick = () => toggleDataset(a.id);
   wrap.appendChild(row);
 
-  if (expanded.has(a.id)) {
+  if (open) {
     const box = document.createElement('div');
     box.className = 'file-list';
     const files = filesCache[a.id];
+    const list = hits.length > 0 ? hits : files;  // file-name match shows only the matching files
     if (!files) box.appendChild(hintEl('Loading files…'));
-    else if (!files.length) box.appendChild(hintEl('No files in this dataset.'));
+    else if (!list.length) box.appendChild(hintEl('No files in this dataset.'));
     else {
       const aset = attachedPaths();
-      for (const f of files) {
+      for (const f of list) {
         const attached = aset.has(f.dest);
         // Sage-managed uploads (under uploads/ or sensitive/) can be deleted here — their bytes are
         // the user's data. A just-uploaded file shows a one-time "uploaded" chip that fades.
