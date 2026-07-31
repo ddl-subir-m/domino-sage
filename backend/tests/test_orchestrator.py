@@ -539,3 +539,20 @@ def test_settings_roundtrip_and_default_empty(tmp_path: Path):
     assert ws.read_settings() == {}
     ws.write_settings({"skip_planning": True})
     assert ws.read_settings()["skip_planning"] is True
+
+
+from sage.orchestrator.service import _tidy_plan
+
+
+def test_tidy_plan_drops_a_verbatim_repeated_paragraph():
+    para = ("The app will let you pick a table, preview rows, and inspect each column with a profile "
+            "showing its type, missing-value percentage, and a small distribution chart.")
+    plan = f"{para}\n\n## Plan\n1. **Table picker** — one dropdown.\n\n{para}"
+    tidied = _tidy_plan(plan)
+    assert tidied.count(para) == 1
+    assert "## Plan" in tidied and "**Table picker**" in tidied
+
+
+def test_tidy_plan_keeps_short_repeats_and_order():
+    plan = "## Plan\n1. **A** — one.\n\n- None\n\n## Open questions\n- None"
+    assert _tidy_plan(plan) == plan

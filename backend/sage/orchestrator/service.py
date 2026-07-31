@@ -250,6 +250,25 @@ def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool) -> bool
     return mode is Mode.ASK or (mode is Mode.AUTO and is_question)
 
 
+def _tidy_plan(plan_md: str) -> str:
+    """Drop verbatim repeated blocks from a plan before it's persisted or shown.
+
+    Planners — weak sovereign models especially — sometimes restate a whole paragraph word for word,
+    which reads in the plan card as though Sage said the same thing twice. Only long blocks (>=120
+    chars) are deduped, so short repeats that are legitimately identical (a bullet, "None — ready to
+    build.") survive. Everything else, including order, is left exactly as written."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for block in re.split(r"\n\s*\n", plan_md.strip()):
+        key = " ".join(block.split())
+        if len(key) >= 120:
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(block.strip())
+    return "\n\n".join(out)
+
+
 def _approve_prompt(plan_md: str, answers: str) -> str:
     """The Implement-turn prompt built from an approved plan (SPEC P6): the plan is fed in as
     context so the build turn constructs exactly what the user signed off on."""
@@ -798,15 +817,27 @@ class Orchestrator:
         _PLAN_VOICE = ("Write the plan as a proposal for work not yet done: future tense, no claim "
                        "that anything has been built, changed, or verified. You have no write, edit, "
                        "or shell tools on this turn by design — don't look for them.")
+        # And its SHAPE. The plan lands in an approval card the user has to skim in a few seconds;
+        # left to itself the planner writes one unbroken wall of prose (and sometimes restates it),
+        # which is unreadable at any length. Long is fine — shapeless is not, so the structure is
+        # spelled out here rather than left to the agent prompt alone.
+        _PLAN_SHAPE = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
+                       "- One short sentence saying what the app is.\n"
+                       "- Then a '## Plan' heading and a numbered list. Each step is a single line: "
+                       "a bolded 2-4 word label, then ' — ', then one sentence. No paragraph steps, "
+                       "no sub-lists, no code.\n"
+                       "- Then an '## Open questions' heading and short bullets, or 'None — ready to "
+                       "build.'\n"
+                       "Never repeat a sentence or restate a step you've already written.")
         if gate:
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
-                           + _PLAN_VOICE + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + _PLAN_SHAPE + "\n\n" + current)
             else:
                 current = ("This is a brand-new app from a blank template — there are no existing "
                            "files worth reading, so plan straight from the request. "
-                           + _PLAN_VOICE + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + _PLAN_SHAPE + "\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -1063,7 +1094,7 @@ class Orchestrator:
             # the fix-it nudge loop instead of proposing its plan. A gated turn that DID write falls
             # through to the violation check below and is reverted.
             if gate and not agent_wrote():
-                plan_md = "\n".join(plan_text_parts).strip()
+                plan_md = _tidy_plan("\n".join(plan_text_parts))
                 restore_mode()
                 # A weak planner (notably the small sovereign models a sensitivity lock forces) can
                 # finish this read-only turn without emitting any plan text — leaving nothing to
