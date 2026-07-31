@@ -1489,9 +1489,27 @@ async function build() {
   await startTurn(prompt, mentions);
 }
 
+// Lock any still-open plan card to a read-only record before a new turn begins. Once the next turn
+// runs it overwrites plan.md, so an old card's Approve (which builds from plan.md) would build the
+// NEWER plan, not the one shown. Only the latest card should stay approvable.
+function supersedePlanCards() {
+  document.querySelectorAll('.plan-card').forEach(card => {
+    const actions = card.querySelector('.plan-actions');
+    if (!actions) return; // already resolved (approved, cancelled, or superseded)
+    const body = card.querySelector('.plan-body');
+    if (body) body.style.display = 'block';
+    actions.remove();
+    card.querySelector('.plan-lbl')?.remove();
+    card.querySelector('.plan-answers')?.remove();
+    card.querySelector('.plan-edit')?.remove();
+    card.insertAdjacentHTML('beforeend', '<div class="plan-note">Superseded by a newer plan below.</div>');
+  });
+}
+
 // Render one user turn and stream its build. Assumes no turn is currently in flight.
 async function startTurn(prompt, mentions) {
   if (!active) enterProject();
+  supersedePlanCards();
   const msgBox = document.getElementById('messages');
   const turnStart = msgBox.children.length; // first DOM node belonging to this turn
   addUser(prompt);
