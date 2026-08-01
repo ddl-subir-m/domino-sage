@@ -32,12 +32,25 @@ class ModelControl:
         # Same token discipline as read-only: a per-turn arming for internet access, so an
         # overlapping/crashed turn can never drop another turn's guarantee. See arm_web().
         self._web_token: object | None = None
+        # And again for the mode a running turn is pinned to. The shim reads snapshot() per REQUEST,
+        # so without a pin the picker lands mid-turn: the later inferences of a build lose their edit
+        # tools and swap to another model while the earlier tool calls are still in their context.
+        # `_mode` stays the user's standing choice — changing it while a turn streams is recorded and
+        # takes effect on the next turn, rather than half-applying to this one. See arm_turn_mode().
+        self._turn_mode: Mode | None = None
+        self._turn_mode_token: object | None = None
 
     def set_mode(self, mode: Mode) -> None:
+        """The user's standing mode choice — what the next turn runs as. While a turn is pinned
+        (arm_turn_mode) this only records the choice; it does not change what that turn routes to."""
         self._mode = mode
-        # Keep the phase indicator honest for pinned modes so the UI spinner matches what routes
-        # (the router ignores phase in these modes; only the displayed phase changes). Auto is left
-        # alone — the shim's per-step classifier drives its phase.
+        if self._turn_mode_token is None:
+            self._sync_phase(mode)
+
+    def _sync_phase(self, mode: Mode) -> None:
+        """Keep the phase indicator honest for pinned modes so the UI spinner matches what routes
+        (the router ignores phase in these modes; only the displayed phase changes). Auto is left
+        alone — the shim's per-step classifier drives its phase."""
         if mode is Mode.IMPLEMENT:
             self._phase = Phase.IMPLEMENT
         elif mode is Mode.PLAN:
@@ -111,10 +124,43 @@ class ModelControl:
         if self._web_token is token:
             self._web_token = None
 
+    def arm_turn_mode(self, mode: Mode) -> object:
+        """Pin `mode` for THIS turn and return its token, mirroring arm_read_only(). Every request the
+        turn makes then resolves against one mode, whatever the user does to the picker while it
+        streams. The caller passes the token back to disarm_turn_mode() on exit."""
+        token = object()
+        self._turn_mode = mode
+        self._turn_mode_token = token
+        self._sync_phase(mode)
+        return token
+
+    def set_turn_mode(self, mode: Mode) -> None:
+        """Re-pin the running turn — Sage escalating a stalled Auto build to Implement, not the user
+        picking a mode. Deliberately does NOT touch the user's standing choice: the old
+        set_mode-then-restore-on-exit dance moved the picker somewhere the user never put it, and
+        then reverted whatever they had changed it to while the turn streamed. A no-op with no pin."""
+        if self._turn_mode_token is not None:
+            self._turn_mode = mode
+            self._sync_phase(mode)
+
+    def disarm_turn_mode(self, token: object) -> None:
+        """Drop the pin, but only if `token` is still the live one — a superseded or out-of-order exit
+        is a no-op, so one turn can never unpin another. The standing choice takes over again."""
+        if self._turn_mode_token is token:
+            self._turn_mode_token = None
+            self._turn_mode = None
+            self._sync_phase(self._mode)
+
+    @property
+    def selected_mode(self) -> Mode:
+        """The user's standing choice from the picker — what the NEXT turn runs as. Differs from
+        snapshot().mode only while a turn is pinned to something else."""
+        return self._mode
+
     def snapshot(self) -> SessionState:
         return SessionState(
             sensitivity_locked=self.locked,
-            mode=self._mode,
+            mode=self._turn_mode if self._turn_mode_token is not None else self._mode,
             phase=self._phase,
             picked_model=self._picked_model,
             web_allowed=self._web_token is not None,

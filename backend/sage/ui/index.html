@@ -442,6 +442,9 @@
           <button type="button" data-mode="plan" onclick="chooseMode('plan')"><span class="m-name">Plan</span><span class="m-check">✓</span><span class="m-key">3</span></button>
           <button type="button" data-mode="implement" onclick="chooseMode('implement')"><span class="m-name">Implement</span><span class="m-check">✓</span><span class="m-key">4</span></button>
         </div>
+        <!-- Shown while a turn is running under a different mode: the turn is pinned to the mode it
+             started in (see arm_turn_mode), so a pick made now is queued, not ignored. -->
+        <div class="hint" id="mode-pending-hint" style="display:none">This turn is still running as <b id="mode-pending-running">—</b>. Your pick applies to your next message.</div>
         <div class="hint" id="sensitivity-lock-hint" style="display:none">Sensitivity lock is on — only sovereign models are used, in every mode.</div>
       </div>
       <!-- model popover -->
@@ -1134,19 +1137,28 @@ async function refreshStatus() {
   if (!active) return;
   const { body } = await api('/api/project');
   const m = body.model || {};
-  const showOverride = m.mode === 'plan' || m.mode === 'implement';
-  selectedMode = m.mode || 'auto';
+  // The picker shows where the user's own choice sits (selected_mode), NOT what's routing right
+  // now (m.mode): a running turn is pinned to the mode it started in, so during a build those two
+  // differ, and rendering the pinned one here would snap the chip back and read as a dropped click.
+  const uiMode = m.selected_mode || m.mode || 'auto';
+  const showOverride = uiMode === 'plan' || uiMode === 'implement';
+  selectedMode = uiMode;
   renderModeMenu();
   updateModeChip(selectedMode);
+  const pending = m.mode && m.selected_mode && m.mode !== m.selected_mode;
+  document.getElementById('mode-pending-hint').style.display = pending ? 'block' : 'none';
+  if (pending) document.getElementById('mode-pending-running').textContent = MODE_LABEL[m.mode] || m.mode;
   document.getElementById('manual-pick').style.display = showOverride ? 'block' : 'none';
-  document.getElementById('auto-models').style.display = m.mode === 'auto' ? 'block' : 'none';
-  document.getElementById('catalog-editor').style.display = m.mode === 'auto' ? 'block' : 'none';
-  document.getElementById('ask-model').style.display = m.mode === 'ask' ? 'block' : 'none';
-  if (m.mode === 'ask' && m.catalog) {
+  document.getElementById('auto-models').style.display = uiMode === 'auto' ? 'block' : 'none';
+  document.getElementById('catalog-editor').style.display = uiMode === 'auto' ? 'block' : 'none';
+  document.getElementById('ask-model').style.display = uiMode === 'ask' ? 'block' : 'none';
+  if (uiMode === 'ask' && m.catalog) {
     document.getElementById('ask-model-name').textContent = m.sensitivity_locked ? m.catalog.sovereign_ask : m.catalog.ask;
   }
-  if (showOverride && m.catalog) renderCatalog(m.catalog, m.picked_model, m.sensitivity_locked, m.mode);
-  if (m.mode === 'auto' && m.catalog) renderAutoModels(m.catalog, m.phase, m.sensitivity_locked);
+  // These are settings for the mode the picker is on, so they follow uiMode. renderModelChip below
+  // is the opposite case — it names the model answering right now, so it reads the pinned m.mode.
+  if (showOverride && m.catalog) renderCatalog(m.catalog, m.picked_model, m.sensitivity_locked, uiMode);
+  if (uiMode === 'auto' && m.catalog) renderAutoModels(m.catalog, m.phase, m.sensitivity_locked);
   renderModelChip(m);
   renderLockButton(m);
   document.getElementById('sensitivity-lock-hint').style.display = m.sensitivity_locked ? 'block' : 'none';

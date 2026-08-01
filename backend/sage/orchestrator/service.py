@@ -513,7 +513,12 @@ class Project:
             "preview_upstream": upstream,
             "attached": list(self.attached),
             "model": {
+                # `mode` is what routes right now — the pin, while a turn is running (see
+                # arm_turn_mode). `selected_mode` is where the user's picker actually sits, which is
+                # what the picker must render: otherwise a mode changed mid-turn snaps back to the
+                # pinned one on the next poll and looks like the click was dropped.
                 "mode": s.mode.value,
+                "selected_mode": self.control.selected_mode.value,
                 "phase": s.phase.value,
                 "picked_model": s.picked_model,
                 "sensitivity_locked": s.sensitivity_locked,
@@ -888,7 +893,7 @@ class Orchestrator:
         return seen
 
     def _build_stream(self, prompt: str, mentions: list[str] | None = None, *, is_approval: bool = False,
-                      user_text: str | None = None):
+                      user_text: str | None = None, mode: Mode | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -928,6 +933,14 @@ class Orchestrator:
 
         # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
         # read-only planner and stop for the user to approve — this turn deliberately writes no code.
+        # Pin the mode for the whole turn before anything reads it (token-scoped, exactly like the
+        # read-only guarantee armed further down). The shim consults control.snapshot() on every
+        # request, so unpinned, a mid-turn pick from the picker split one turn in half: its first
+        # inferences ran as Implement with edit tools and the coder model, its later ones as Ask with
+        # both stripped, the abandoned tool calls still sitting in context. The pick is not lost —
+        # it's the user's standing choice now and runs their next turn. `mode` overrides the pick for
+        # a turn Sage runs on the user's behalf (approving a plan from a read-only mode).
+        mode_token = project.control.arm_turn_mode(mode or project.control.snapshot().mode)
         mode_at_start = project.control.snapshot().mode
         is_question = _looks_like_question(prompt)
         has_built = project.workspace.has_built()
@@ -1020,9 +1033,6 @@ class Orchestrator:
         # replay their words, not ours.
         project.workspace.append_history({"type": "user", "text": user_text if user_text is not None else prompt})
 
-        # Auto may be escalated to Implement mid-stream to force a stalled build to actually write
-        # code (see the nudge branch below). Restore the user's mode on every exit from the stream.
-        original_mode = project.control.snapshot().mode
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never
         # leave the user's own pick clobbered.
@@ -1036,7 +1046,7 @@ class Orchestrator:
         # The reason rides with the arming: both kinds withhold write and shell tools, but only an
         # answering turn also loses the task-list tool (see TODO_TOOLS). Also reported in the turn
         # summary, so a turn that wrote nothing can say which rule stopped it.
-        read_only = _read_only_reason(mode=original_mode, answer_only=answer_only, gate=gate)
+        read_only = _read_only_reason(mode=mode_at_start, answer_only=answer_only, gate=gate)
         ro_token = project.control.arm_read_only(read_only) if (gate or answer_only) else None
 
         # Internet access is default-denied; arm it for THIS turn only when the prompt asked for the
@@ -1051,8 +1061,10 @@ class Orchestrator:
             return made_edits or project.snapshot.working_tree_hash() != project.turn_tree_baseline
 
         def restore_mode() -> None:
-            if project.control.snapshot().mode is not original_mode:
-                project.control.set_mode(original_mode)
+            # Dropping the pin is the whole restore: a mid-turn escalation moved the PINNED mode, so
+            # the user's standing choice was never touched and there is nothing to put back. Whatever
+            # they picked while this turn streamed is what runs next.
+            project.control.disarm_turn_mode(mode_token)
             if escalated_pick:
                 project.control.pick(original_pick)
             if ro_token is not None:
@@ -1370,7 +1382,7 @@ class Orchestrator:
                         # Implement mode" advice, applied automatically instead of shown as a dead end.
                         mode_now = project.control.snapshot().mode
                         if mode_now is Mode.AUTO:
-                            project.control.set_mode(Mode.IMPLEMENT)
+                            project.control.set_turn_mode(Mode.IMPLEMENT)
                             reason = "planned but wrote no code — switching to Implement"
                         else:
                             reason = "wrote no code — retrying"
@@ -1391,7 +1403,7 @@ class Orchestrator:
                     # Plan). In explicit Implement mode the model simply replied without editing — say
                     # that instead, so the message doesn't contradict the mode the user picked.
                     stop_msg = ("the model replied but didn't change any files — try rephrasing or a smaller step"
-                                if original_mode is Mode.IMPLEMENT
+                                if mode_at_start is Mode.IMPLEMENT
                                 else "couldn't get past planning — try rephrasing or a smaller step")
                     yield persist({"type": "done", "ok": False, "decision": stop_msg})
                     return
@@ -1439,7 +1451,7 @@ class Orchestrator:
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
-        this turn in Implement mode and restore their mode afterwards. Both are read-only: Plan's gate
+        this turn pinned to Implement, leaving their own mode alone. Both are read-only: Plan's gate
         would just re-plan, and Ask has every write and shell tool stripped from the request by the
         shim, so the agent would emit edits that never land on disk. An Auto/Implement approve already
         has history, so it's never re-gated regardless."""
@@ -1463,11 +1475,14 @@ class Orchestrator:
             project.workspace.write_plan(plan_edits)
         plan_md = project.workspace.read_plan() or ""
         prior_mode = project.control.snapshot().mode
-        if prior_mode in (Mode.PLAN, Mode.ASK):
-            project.control.set_mode(Mode.IMPLEMENT)
+        # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
+        # pinned to this turn only (see arm_turn_mode), never written to the user's picker. The
+        # earlier set_mode-then-restore did move their picker, which meant a mode they changed while
+        # the build streamed was reverted underneath them when it finished.
+        run_as = Mode.IMPLEMENT if prior_mode in (Mode.PLAN, Mode.ASK) else None
         try:
             yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True,
-                                          user_text=user_text)
+                                          user_text=user_text, mode=run_as)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -1480,8 +1495,6 @@ class Orchestrator:
                 project.workspace.append_history(ev)
                 yield ev
         finally:
-            if project.control.snapshot().mode is not prior_mode:
-                project.control.set_mode(prior_mode)
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
             project.workspace.archive_plan()
 

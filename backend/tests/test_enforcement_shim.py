@@ -446,3 +446,81 @@ def test_ask_mode_respects_locked_sovereign_ask():
     list(_shim(control, gw).handle({"model": "ask-vendor", "messages": []}, project="p"))
 
     assert gw.seen[-1][0]["model"] == "sovereign-8b"
+
+
+# --- the turn-mode pin -------------------------------------------------------------------------
+# The shim reads control.snapshot() per REQUEST, and the mode picker is live while a turn streams.
+# Unpinned, changing it mid-build split one turn in half: the first inferences ran as Implement with
+# edit tools and the coder model, the later ones as Ask with both stripped — and the tool calls the
+# agent could no longer make were still sitting in its context. See ModelControl.arm_turn_mode.
+
+def _tools_sent(gw) -> list[str]:
+    return [t["function"]["name"] for t in gw.seen[-1][0]["tools"]]
+
+
+_MIXED_TOOLS = [{"type": "function", "function": {"name": n}} for n in ("read", "edit", "bash")]
+
+
+def _req() -> dict:
+    return {"messages": [], "tools": list(_MIXED_TOOLS)}
+
+
+def test_a_pinned_turn_ignores_a_mode_change_made_while_it_runs():
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    shim = _shim(control, gw)
+    token = control.arm_turn_mode(control.snapshot().mode)
+
+    list(shim.handle(_req(), project="p"))
+    first_model = gw.seen[-1][0]["model"]
+    control.set_mode(Mode.ASK)  # the user picks Ask while this turn is still streaming
+    list(shim.handle(_req(), project="p"))
+
+    assert "edit" in _tools_sent(gw) and "bash" in _tools_sent(gw)  # same turn, same tools
+    assert gw.seen[-1][0]["model"] == first_model                   # and the same model
+    control.disarm_turn_mode(token)
+
+
+def test_the_mode_picked_mid_turn_is_what_runs_once_the_pin_drops():
+    """The pick isn't discarded, just deferred — the whole point of pinning over ignoring."""
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    token = control.arm_turn_mode(control.snapshot().mode)
+    control.set_mode(Mode.ASK)
+    assert control.snapshot().mode is Mode.IMPLEMENT   # this turn
+    assert control.selected_mode is Mode.ASK           # the next one
+
+    control.disarm_turn_mode(token)
+    assert control.snapshot().mode is Mode.ASK
+    list(_shim(control, gw).handle(_req(), project="p"))
+    assert "edit" not in _tools_sent(gw)
+
+
+def test_an_escalation_repins_the_turn_without_moving_the_users_choice():
+    """The stalled-Auto nudge switches to Implement. It used to do that with set_mode + restore, which
+    moved the user's own picker and then reverted anything they had changed it to meanwhile."""
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    token = control.arm_turn_mode(Mode.AUTO)
+    control.set_turn_mode(Mode.IMPLEMENT)
+
+    assert control.snapshot().mode is Mode.IMPLEMENT
+    assert control.snapshot().phase is Phase.IMPLEMENT  # the spinner follows what routes
+    assert control.selected_mode is Mode.AUTO
+
+    control.disarm_turn_mode(token)
+    assert control.snapshot().mode is Mode.AUTO  # dropping the pin is the whole restore
+
+
+def test_a_stale_disarm_cannot_unpin_another_turn():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    stale = control.arm_turn_mode(Mode.AUTO)
+    live = control.arm_turn_mode(Mode.ASK)   # the next turn supersedes it
+    control.disarm_turn_mode(stale)          # a crashed/out-of-order exit
+    assert control.snapshot().mode is Mode.ASK
+    control.disarm_turn_mode(live)
+
+
+def test_set_turn_mode_is_a_no_op_with_no_turn_running():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.set_turn_mode(Mode.IMPLEMENT)
+    assert control.snapshot().mode is Mode.AUTO

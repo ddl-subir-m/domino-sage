@@ -630,16 +630,16 @@ def test_tidy_plan_leaves_mid_sentence_first_person_alone():
 def test_approve_builds_in_implement_mode_from_a_read_only_mode(tmp_path: Path, prior: Mode):
     # Approving means "build it now". Ask and Plan are both read-only — in Ask the shim strips every
     # write and shell tool from the request, so the approved build emitted edits that never landed on
-    # disk ("wrote nothing") and then looped until it gave up. The approve turn must run as Implement,
-    # and must hand the user's mode back afterwards.
+    # disk ("wrote nothing") and then looped until it gave up. The approve turn must RUN as Implement
+    # — pinned for that turn only (mode=), never by moving the user's own picker.
     orch = _orch(tmp_path)
     control = orch.project(start_preview=False).control
     control.set_mode(prior)
     seen = []
-    orch._build_stream = lambda *a, **k: (seen.append(control.snapshot().mode), iter([]))[1]  # type: ignore[method-assign]
+    orch._build_stream = lambda *a, **k: (seen.append(k.get("mode")), iter([]))[1]  # type: ignore[method-assign]
     list(orch.approve_stream())
     assert seen == [Mode.IMPLEMENT]
-    assert control.snapshot().mode is prior  # restored
+    assert control.snapshot().mode is prior  # the user's mode was never touched to get there
 
 
 def test_approve_from_ask_warns_the_mode_is_still_read_only(tmp_path: Path):
@@ -716,3 +716,19 @@ def test_a_change_request_outside_ask_mode_builds_normally(tmp_path: Path):
     orch._build_stream = lambda *a, **k: (ran.append(a), iter([]))[1]  # type: ignore[method-assign]
     assert not [e for e in orch.build_stream("remove the dataset from the UI") if e["type"] == "ask-blocked"]
     assert ran
+
+
+def test_status_reports_the_pinned_mode_and_the_users_own_choice_separately(tmp_path: Path):
+    """`mode` is what routes right now, `selected_mode` is where the picker sits. The UI needs both:
+    rendering the picker from the pinned mode snaps a mid-turn pick back and reads as a dropped click."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    token = project.control.arm_turn_mode(Mode.IMPLEMENT)
+    project.control.set_mode(Mode.ASK)
+
+    m = project.status()["model"]
+    assert m["mode"] == "implement" and m["selected_mode"] == "ask"
+
+    project.control.disarm_turn_mode(token)
+    m = project.status()["model"]
+    assert m["mode"] == "ask" and m["selected_mode"] == "ask"
