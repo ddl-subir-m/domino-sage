@@ -199,7 +199,8 @@ def test_classifying_without_a_root_still_works(tmp_path):
 # --- when it runs at all -----------------------------------------------------------------------
 
 def test_the_classifier_runs_only_where_it_can_change_the_outcome():
-    applies = dict(mode=Mode.AUTO, has_built=True, gate=False, answer_only=False, skip_planning=False)
+    applies = {"mode": Mode.AUTO, "has_built": True, "gate": False, "answer_only": False,
+               "skip_planning": False}
     assert _scope_gate_applies(**applies) is True
     # Already gating, so there is nothing to ask.
     assert _scope_gate_applies(**{**applies, "gate": True}) is False

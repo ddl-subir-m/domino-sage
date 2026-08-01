@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator.service import Orchestrator
 from sage.feedback.runner import FeedbackReport
+from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -129,7 +129,7 @@ def test_a_question_is_answered_without_building(tmp_path: Path):
 # --- the plan gate -------------------------------------------------------------------------------
 
 def test_a_first_build_gates_and_proposes_a_plan(tmp_path: Path):
-    orch, oc, _ = _build(tmp_path, [Turn(text="1. Add a table\n2. Wire up the data")])
+    orch, _oc, _ = _build(tmp_path, [Turn(text="1. Add a table\n2. Wire up the data")])
     events = _run(orch, "build me a dashboard")
 
     assert _done(events)["decision"] == "awaiting approval"
@@ -141,7 +141,7 @@ def test_a_first_build_gates_and_proposes_a_plan(tmp_path: Path):
 
 
 def test_the_scope_classifier_gates_a_substantial_change_on_a_built_app(tmp_path: Path):
-    orch, oc, gateway = _build(tmp_path, [
+    orch, _oc, gateway = _build(tmp_path, [
         Turn(text="1. A table\n2. A chart"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="1. Add an auth provider\n2. Add an orgs page"),
@@ -155,7 +155,7 @@ def test_the_scope_classifier_gates_a_substantial_change_on_a_built_app(tmp_path
 
 
 def test_a_small_change_on_a_built_app_just_builds(tmp_path: Path):
-    orch, oc, gateway = _build(tmp_path, [
+    orch, _oc, gateway = _build(tmp_path, [
         Turn(text="1. A table\n2. A chart"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
@@ -174,7 +174,7 @@ def test_a_small_change_on_a_built_app_just_builds(tmp_path: Path):
 def test_a_failed_turn_makes_the_next_one_plan_first(tmp_path: Path):
     # The failure here is a gated turn that produced no plan text — a real, reachable failure ("no
     # plan text" is usually "no inference reached us") rather than an exception injected to force one.
-    orch, oc, gateway = _build(tmp_path, [
+    orch, _oc, _gateway = _build(tmp_path, [
         Turn(text="1. A table\n2. A chart"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text=""),                       # fails: gated, wrote nothing, said nothing
@@ -195,7 +195,7 @@ def test_a_failed_turn_makes_the_next_one_plan_first(tmp_path: Path):
 
 
 def test_a_question_after_a_failure_does_not_spend_the_gate(tmp_path: Path):
-    orch, oc, gateway = _build(tmp_path, [
+    orch, _oc, _gateway = _build(tmp_path, [
         Turn(text="1. A table\n2. A chart"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text=""),                       # fails

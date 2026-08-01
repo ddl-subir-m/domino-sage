@@ -14,8 +14,8 @@ from sage.workspace.manager import Workspace
 
 
 def _applies(**kw) -> bool:
-    base = dict(mode=Mode.AUTO, is_approval=False, is_question=False,
-                skip_planning=False, prev_turn_failed=True)
+    base = {"mode": Mode.AUTO, "is_approval": False, "is_question": False,
+            "skip_planning": False, "prev_turn_failed": True}
     base.update(kw)
     return _failure_gate_applies(**base)
 
