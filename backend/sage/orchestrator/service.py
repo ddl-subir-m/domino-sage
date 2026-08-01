@@ -38,6 +38,7 @@ from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
+from . import scope
 from ..workspace.snapshot import TurnSnapshot
 from .describe import describe, fit_image
 
@@ -428,6 +429,25 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
     if skip_planning:
         return False
     return not has_built and not is_question
+
+
+def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only: bool,
+                        skip_planning: bool) -> bool:
+    """Whether to spend a model call asking scope.wants_a_plan about this turn.
+
+    Every deterministic signal gets to decide first and for free — this only runs when none of them
+    did. The conditions are all "the classifier could change the outcome":
+
+      * `gate` already True — the turn plans regardless, so there is nothing to ask.
+      * `answer_only` — the turn answers and stops. It covers approvals and questions too, both of
+        which are already excluded from gating upstream.
+      * not `has_built` — the first-build gate has this turn; the hole opens only after it.
+      * `skip_planning` — the project opted out of the automatic gate, and this IS the automatic
+        gate, one turn later. Honouring the flag here is the same promise.
+      * Auto only. Plan gates every turn already; Implement is the user saying "just build it", and
+        Ask never builds. Auto is the mode that carries no explicit instruction, which is the whole
+        reason it needs one inferred."""
+    return (mode is Mode.AUTO and has_built and not gate and not answer_only and not skip_planning)
 
 
 def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
@@ -1125,13 +1145,37 @@ class Orchestrator:
         # typed instead of clicked, so it gates in every mode too. Ranked below arch: a prompt naming
         # both artifacts wants the heavier one, and that keeps the existing precedence untouched.
         wants_plan = not is_approval and not arch and _wants_plan(prompt)
+        skip_planning = bool(project.workspace.read_settings().get("skip_planning"))
         gate = False if is_approval else arch or _should_gate(
             mode=mode_at_start,
             has_built=has_built,
-            skip_planning=bool(project.workspace.read_settings().get("skip_planning")),
+            skip_planning=skip_planning,
             is_question=is_question,
             wants_plan=wants_plan,
         )
+        # Nothing above gated this turn, and on a built project in Auto nothing ever will again: the
+        # automatic gate is keyed on has_built, so from turn two on, "make the table sortable" and
+        # "add auth, orgs and a billing page" take the same ungated path to code. Scope is the one
+        # thing here a string can't answer, so this is the single decision in the turn path that asks
+        # a model (see scope.wants_a_plan — biased to build, fails open, hard-bounded).
+        #
+        # Auto only. Implement is the user saying "just build it" and Plan already gates every turn;
+        # overriding either would be second-guessing an explicit choice, and this exists precisely
+        # because Auto is the mode with no explicit choice in it.
+        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
+                                      is_approval=is_approval, arch=arch, wants_plan=wants_plan)
+        if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
+                               answer_only=answer_only, skip_planning=skip_planning):
+            gate = scope.wants_a_plan(
+                prompt,
+                gateway=project.shim.gateway,
+                catalog=project.shim.catalog,
+                locked=project.control.snapshot().sensitivity_locked,
+                session=project.session_id,
+                version=project.shim.version,
+            )
+            if gate:
+                log.info("scope: planning a substantial request on a built project")
         # A gated turn's prompt carries a planning-context preamble scoped to whether the app exists
         # yet. First build (fresh template): tell the planner it needn't read anything and can plan
         # straight from the request — this is what keeps a weak sovereign planner from read-looping
@@ -1201,8 +1245,6 @@ class Orchestrator:
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
-        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
-                                      is_approval=is_approval, arch=arch, wants_plan=wants_plan)
         # Pin the ANSWER's voice, for the same reason the gated turn pins the plan's (see _PLAN_VOICE):
         # the sage-ask agent prompt alone hasn't held. Asked "what tech stack will be used", the agent
         # answered and then announced the build it was about to start — "Next I'm replacing the starter

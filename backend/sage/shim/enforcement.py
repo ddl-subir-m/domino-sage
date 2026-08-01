@@ -97,6 +97,23 @@ class EnforcementShim:
     def catalog(self) -> ModelCatalog:
         return self._catalog
 
+    @property
+    def gateway(self) -> GatewayClient:
+        """The upstream client, for the orchestrator's own one-off calls (see orchestrator/scope.py).
+
+        Exposed rather than given a wrapper method here on purpose: a caller that wants to ask the
+        gateway a question of its own supplies its own model and labels, and routing that through the
+        shim would put product decisions inside the enforcement seam. What the shim owns is the
+        guarantee that a LOCKED project only ever reaches a sovereign model — callers of this must
+        honour it themselves, which is why `locked` is a required argument over there."""
+        return self._gateway
+
+    @property
+    def version(self) -> str | None:
+        """Sage git rev for the `sage-version` cost tag, so a caller tagging its own request can
+        attribute it to the same deploy the shim's own traffic is attributed to."""
+        return _SAGE_VERSION
+
     def set_catalog(self, catalog: ModelCatalog) -> None:
         """Swap the catalog this shim's requests resolve against (e.g. a per-project override of
         which model Auto uses for plan/implement). Takes effect on the next request."""
