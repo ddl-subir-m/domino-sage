@@ -110,6 +110,31 @@ class Workspace:
             settings["built"] = True
             self.write_settings(settings)
 
+    def read_last_turn_failed(self) -> bool:
+        """True when the previous build attempt on this project ended badly (see the failure-replan
+        block in orchestrator.service). Drives the cross-turn failure gate: the turn after a failure
+        is exactly when stopping to plan is worth the interruption.
+
+        Lives in settings.json next to `built` rather than being derived from history.jsonl: the
+        transcript is append-only and replayable, so it can't record that a signal has been CONSUMED,
+        and consumption is what keeps this one-shot instead of a permanent approval wall. Fails open
+        through read_settings() — missing or corrupt state reads as "didn't fail", i.e. build."""
+        return bool(self.read_settings().get("last_turn_failed"))
+
+    def set_last_turn_failed(self, failed: bool) -> None:
+        """Record (or clear) the previous-turn failure signal. Best-effort by design: this runs on the
+        terminal path of every turn, and a workspace we can't write to must not turn a finished build
+        into a raised exception mid-stream. A lost write just means no gate next turn — the same
+        behaviour as before this feature existed."""
+        try:
+            settings = self.read_settings()
+            if bool(settings.get("last_turn_failed")) == failed:
+                return
+            settings["last_turn_failed"] = failed
+            self.write_settings(settings)
+        except OSError:
+            pass
+
     @property
     def session_path(self) -> Path:
         """Persisted OpenCode session id, so the project re-attached after an orchestrator restart

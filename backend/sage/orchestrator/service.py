@@ -450,6 +450,33 @@ def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only:
     return (mode is Mode.AUTO and has_built and not gate and not answer_only and not skip_planning)
 
 
+def _failure_gate_applies(*, mode: Mode, is_approval: bool, is_question: bool, skip_planning: bool,
+                          prev_turn_failed: bool) -> bool:
+    """Widen the plan gate for the turn that follows a FAILED turn. Today a failure changes nothing
+    about how the next turn is dispatched, so the user's next message goes straight into another blind
+    build — the retry loop. Right after something broke is the one moment a plan card is worth the
+    interruption, because the thing most likely to be wrong is the approach, not the typing.
+
+    Auto only, mirroring _scope_gate_applies/_should_gate: an explicit Plan/Implement/Ask pick is the
+    user telling us how this turn should run and is never second-guessed. Implement in particular is
+    where someone retries a failure deliberately, and gating it would fight them.
+
+    Never gates an approval or a question. An approval is the user saying "build the plan we already
+    agreed" — re-proposing a plan there is the loop this feature exists to break. A question is
+    answered read-only and isn't a build at all. Both still CONSUME the signal (see the caller), so a
+    failure can't strand anyone behind a permanent gate.
+
+    Honours skip_planning for the same reason the first-build gate does: it's an explicit "don't stop
+    to plan for me", and a project that opted out of automatic gating shouldn't get one back through
+    the side door. Fails open everywhere else — prev_turn_failed is False whenever the state is
+    missing or unreadable, which is exactly today's behaviour."""
+    if not prev_turn_failed or mode is not Mode.AUTO:
+        return False
+    if is_approval or is_question:
+        return False
+    return not skip_planning
+
+
 def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     """Identity of one assistant message part, for the emit-once `seen` set.
 
@@ -1109,6 +1136,22 @@ class Orchestrator:
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
         def persist(ev: dict) -> dict:
+            # Failure-triggered replan, recording half (the reading half is the delimited block below).
+            # Every terminal `done` of a turn passes through persist(), which is why the record lives
+            # here rather than at the seven separate yield sites that can end a turn.
+            #
+            # What counts as a failure: `ok=False` on a turn that was an attempt to BUILD. That covers
+            # the gateway/OpenCode errors, the typecheck breaker giving up, "couldn't get past
+            # planning", and a gate violation whose edits were discarded. It deliberately does NOT
+            # cover a user pressing stop (that yields `stopped`, never a `done`), a busy refusal (never
+            # reaches this stream), or the two kinds of turn excluded below.
+            #
+            # `answer_only` and `arch` are assigned further down and read late — persist() only runs
+            # once the stream is under way. Neither kind is a build attempt: a question answered in
+            # prose and an architecture document say nothing about whether the app builds, so they
+            # leave the recorded outcome exactly as they found it rather than clearing a real failure.
+            if ev["type"] == "done" and not answer_only and not arch:
+                project.workspace.set_last_turn_failed(not ev.get("ok"))
             if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved", "data-leak", "plan-proposed"):
                 project.workspace.append_history(ev)
             return ev
@@ -1153,6 +1196,31 @@ class Orchestrator:
             is_question=is_question,
             wants_plan=wants_plan,
         )
+        # --- failure-triggered replan (case 3), reading half -------------------------------------
+        # Read-and-consume, before the request goes out — the gate can only be applied here, because
+        # read-only is enforced by stripping write/shell tools from the OUTGOING request (see
+        # shim.enforcement) and cannot be applied retroactively.
+        #
+        # Consumed on any turn that isn't a question, whether or not it goes on to gate: that's what
+        # makes this one-shot. Fail → plan → approve → fail again gives one gate per failure, never a
+        # standing approval wall. A question is the deliberate exception, mirroring _should_gate's
+        # is_question rule — asking "why did that break?" between the failure and the retry must not
+        # spend the gate the failure earned.
+        #
+        # Ordered ahead of the scope classifier below on purpose: a failure has already decided this
+        # turn should be planned, so there is nothing left for a model call to change and
+        # _scope_gate_applies declines it on `gate`. The cheap deterministic signal shadows the paid one.
+        prev_turn_failed = project.workspace.read_last_turn_failed()
+        if not is_question:
+            project.workspace.set_last_turn_failed(False)
+        gate = gate or _failure_gate_applies(
+            mode=mode_at_start,
+            is_approval=is_approval,
+            is_question=is_question,
+            skip_planning=skip_planning,
+            prev_turn_failed=prev_turn_failed,
+        )
+        # --- end failure-triggered replan --------------------------------------------------------
         # Nothing above gated this turn, and on a built project in Auto nothing ever will again: the
         # automatic gate is keyed on has_built, so from turn two on, "make the table sortable" and
         # "add auth, orgs and a billing page" take the same ungated path to code. Scope is the one
