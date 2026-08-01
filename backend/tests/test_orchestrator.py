@@ -440,7 +440,7 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import (  # noqa: E402
     _approve_prompt, _asks_about_a_change, _is_answer_only, _looks_like_approval,
-    _looks_like_change_request, _wants_architecture, _wants_diagram,
+    _looks_like_change_request, _wants_architecture,
     _looks_like_question, _read_only_reason, _should_gate,
 )
 from sage.router.models import Mode  # noqa: E402
@@ -734,7 +734,6 @@ def test_an_ambiguous_lead_needs_an_information_noun(prompt):
 ])
 def test_wants_architecture_needs_a_named_artifact_and_unbuilt_work(prompt):
     assert _wants_architecture(prompt) is True
-    assert _wants_diagram(prompt) is False  # the two never both claim a prompt
 
 
 @pytest.mark.parametrize("prompt", [
@@ -746,38 +745,18 @@ def test_wants_architecture_false_without_both_halves(prompt):
     assert _wants_architecture(prompt) is False
 
 
-# The split: a question about how something ALREADY works gets a diagram in the answer, never the
-# card. Offering to "Build this" in reply to "what states does a job go through" is nonsense, and
-# before the split naming the noun was enough to get exactly that.
+# A question about how something ALREADY works must not reach the heavy deliverable — offering to
+# "Build this" in reply to "how does the upload flow work" is nonsense. These get an ordinary
+# answer-only turn, which may draw a diagram; that judgement is the model's, not a keyword's.
 @pytest.mark.parametrize("prompt", [
     "explain the architecture of the upload pipeline",
-    "what states does a job go through",
-    "how does data get through the upload flow",
     "what's the architecture for a live upload queue",  # names no work to do -> the lighter shape
+    "how does data get from the upload to the table?",
     "walk me through the request lifecycle",
 ])
-def test_wants_diagram_for_questions_about_what_already_works(prompt):
-    assert _wants_diagram(prompt) is True
+def test_a_question_about_existing_code_gets_no_architecture_card(prompt):
     assert _wants_architecture(prompt) is False
-    # Explanatory in every mode — Plan must answer it, not propose steps for it.
-    for mode in (Mode.ASK, Mode.AUTO, Mode.PLAN, Mode.IMPLEMENT):
-        assert _is_answer_only(mode=mode, is_question=True, is_approval=False, diagram=True) is True
-
-
-@pytest.mark.parametrize("prompt", [
-    "make the table compact",          # not a question at all
-    "what tech stack will you use?",   # a question, but nothing shaped about it
-    "",
-])
-def test_wants_diagram_false_for_everything_else(prompt):
-    assert _wants_diagram(prompt) is False
-
-
-def test_a_diagram_answer_never_becomes_a_card_or_a_build():
-    # It's answer-only, so it never gates and never writes a file — the whole point of the split.
-    assert _is_answer_only(mode=Mode.PLAN, is_question=True, is_approval=False, diagram=True) is True
-    # An approval still builds; a diagram question is not a standing invitation to re-explain.
-    assert _is_answer_only(mode=Mode.PLAN, is_question=True, is_approval=True, diagram=True) is False
+    assert _is_answer_only(mode=Mode.ASK, is_question=True, is_approval=False) is True
 
 
 ARCH_PROMPT = "give me an architecture to add a real time queue that shows data upload progress"
