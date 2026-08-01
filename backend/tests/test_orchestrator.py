@@ -439,8 +439,8 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import (  # noqa: E402
-    _approve_prompt, _is_answer_only, _looks_like_approval, _looks_like_question,
-    _read_only_reason, _should_gate,
+    _approve_prompt, _is_answer_only, _looks_like_approval, _looks_like_change_request,
+    _looks_like_question, _read_only_reason, _should_gate,
 )
 from sage.router.models import Mode  # noqa: E402
 from sage.workspace.manager import Workspace  # noqa: E402
@@ -640,3 +640,79 @@ def test_approve_builds_in_implement_mode_from_a_read_only_mode(tmp_path: Path, 
     list(orch.approve_stream())
     assert seen == [Mode.IMPLEMENT]
     assert control.snapshot().mode is prior  # restored
+
+
+def test_approve_from_ask_warns_the_mode_is_still_read_only(tmp_path: Path):
+    # Approving from Ask builds, then hands back a read-only composer. The user has just watched Ask
+    # write an app, so the next change they type looks like it will build too — say otherwise.
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.control.set_mode(Mode.ASK)
+    orch._build_stream = lambda *a, **k: iter([])  # type: ignore[method-assign]
+    kinds = [e["type"] for e in orch.approve_stream()]
+    assert "ask-active" in kinds
+    assert any(e["type"] == "ask-active" for e in project.workspace.read_history())  # survives reload
+
+
+def test_approve_from_a_building_mode_says_nothing_about_ask(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False).control.set_mode(Mode.PLAN)
+    orch._build_stream = lambda *a, **k: iter([])  # type: ignore[method-assign]
+    assert not any(e["type"] == "ask-active" for e in orch.approve_stream())
+
+
+@pytest.mark.parametrize("prompt", [
+    "remove @synthetic_adverse_events.csv from the UI",
+    "make the table compact",
+    "add a filter for severity",
+    "can you remove the dataset?",  # a build verb wins over the '?', as in _looks_like_question
+])
+def test_looks_like_change_request_true_for_asked_for_changes(prompt):
+    assert _looks_like_change_request(prompt) is True
+    assert _looks_like_question(prompt) is False  # the two never both claim a prompt
+
+
+@pytest.mark.parametrize("prompt", [
+    "what tech stack will you use?",
+    "how does the upload flow work",
+    "",
+])
+def test_looks_like_change_request_false_for_questions(prompt):
+    assert _looks_like_change_request(prompt) is False
+
+
+def test_ask_mode_refuses_a_change_request_before_running_the_turn(tmp_path: Path):
+    # The bug: Ask strips every write tool, so a change request typed in Ask spent minutes reading and
+    # grepping for an edit it could never make, and only reported "wrote nothing" at the end. Refuse
+    # up front — no session, no inference — and hand back the prompt so the UI can offer to build it.
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.control.set_mode(Mode.ASK)
+    ran = []
+    orch._build_stream = lambda *a, **k: (ran.append(a), iter([]))[1]  # type: ignore[method-assign]
+    events = list(orch.build_stream("remove @synthetic_adverse_events.csv from the UI"))
+    assert ran == []  # the turn never started
+    blocked = next(e for e in events if e["type"] == "ask-blocked")
+    assert blocked["prompt"] == "remove @synthetic_adverse_events.csv from the UI"
+    assert events[-1] == {"type": "done", "ok": False, "decision": "ask mode (read-only)"}
+    # The transcript must replay as a real turn: the user's words, then why nothing happened.
+    kinds = [e["type"] for e in project.workspace.read_history()]
+    assert kinds[-3:] == ["user", "ask-blocked", "done"]
+
+
+def test_ask_mode_still_answers_a_question(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False).control.set_mode(Mode.ASK)
+    ran = []
+    orch._build_stream = lambda *a, **k: (ran.append(a), iter([]))[1]  # type: ignore[method-assign]
+    events = list(orch.build_stream("what tech stack will you use?"))
+    assert ran and not [e for e in events if e["type"] == "ask-blocked"]
+
+
+def test_a_change_request_outside_ask_mode_builds_normally(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False).control.set_mode(Mode.AUTO)
+    ran = []
+    orch._build_stream = lambda *a, **k: (ran.append(a), iter([]))[1]  # type: ignore[method-assign]
+    assert not [e for e in orch.build_stream("remove the dataset from the UI") if e["type"] == "ask-blocked"]
+    assert ran

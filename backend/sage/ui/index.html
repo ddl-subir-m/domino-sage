@@ -188,6 +188,8 @@
   }
   .chip:hover { border-color: var(--border-strong); color: var(--text); }
   .chip.locked { color: var(--lock); border-color: color-mix(in srgb, var(--lock) 40%, var(--border)); }
+  .chip.ask { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--surface-2)); }
+  .chip.ask:hover { color: var(--warn); border-color: var(--warn); }
   /* Plan-gate approval card (SPEC P6) */
   .plan-card { border: 1px solid var(--primary); border-radius: var(--radius); background: color-mix(in srgb, var(--primary) 5%, var(--surface)); padding: 14px 16px; gap: 10px; }
   .plan-card .plan-head { font-weight: 600; color: var(--text); }
@@ -1158,7 +1160,16 @@ const MODE_LABEL = { ask: 'Ask', plan: 'Plan', implement: 'Implement', auto: 'Au
 let selectedMode = 'auto';
 function updateModeChip(mode) {
   const el = document.getElementById('mode-btn-label');
-  if (el) el.textContent = MODE_LABEL[mode] || mode;
+  if (el) el.textContent = mode === 'ask' ? 'Ask · read-only' : (MODE_LABEL[mode] || mode);
+  // Ask is the one mode that silently can't do what the composer invites you to type, and it's
+  // sticky — approving a plan from Ask builds an app and then hands you back a read-only composer.
+  // So it gets a warning-coloured chip and a spelled-out label, not the same grey as every mode
+  // that does build.
+  const btn = document.getElementById('mode-btn');
+  if (btn) {
+    btn.classList.toggle('ask', mode === 'ask');
+    btn.title = mode === 'ask' ? 'Ask mode answers questions and never changes files' : '';
+  }
 }
 function renderModeMenu() {
   document.querySelectorAll('#mode-list button').forEach(b => b.classList.toggle('sel', b.dataset.mode === selectedMode));
@@ -1253,8 +1264,10 @@ function renderModelChip(m) {
     popText.textContent = 'sovereign (locked)';
   } else {
     chip.classList.remove('locked'); popBadge.classList.remove('locked');
+    // "read-only" now rides on the mode button itself (updateModeChip), so this chip goes back to its
+    // own job — naming the model that answers — instead of repeating the label sitting next to it.
     const chipLabel = m.mode === 'auto' ? `Auto · ${PHASE_LABEL[m.phase] || m.phase}`
-      : m.mode === 'ask' ? 'Ask · read-only'
+      : m.mode === 'ask' ? `Ask · ${(m.catalog && m.catalog.ask) || 'default'}`
       : m.mode === 'plan' ? `Plan · ${m.picked_model || 'default'}`
       : `Implement · ${m.picked_model || 'default'}`;
     const activeModel = m.catalog && m.catalog[m.phase];
@@ -1799,9 +1812,26 @@ function replayEvent(ev) {
   else if (ev.type === 'agent' && ev.kind === 'text') addAgent(ev.text);
   else if (ev.type === 'typecheck') addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`);
   else if (ev.type === 'data-leak') addStatus('warn', '⚠', leakMsg(ev));
+  // Replay renders the refusal without its Build-in-Auto button: the button starts a real build, and
+  // an old message shouldn't be able to do that on a reload the user didn't connect it to.
+  else if (ev.type === 'ask-blocked' || ev.type === 'ask-active') addStatus('warn', '⚠', esc(ev.message));
   else if (ev.type === 'plan-proposed') addPlanCard(ev.plan);
   else if (ev.type === 'done') { if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); }
   else if (ev.type === 'saved') renderSaved(ev);
+}
+
+// A change request typed in Ask mode, refused by the backend before it ran (see _ask_mode_refusal).
+// The refusal is only half the fix — the other half is running the thing the user actually asked for,
+// so the button switches to Auto and resends their exact words as a normal build turn.
+function askBlocked(ev) {
+  const s = addStatus('warn', '⚠', `${esc(ev.message)} <button class="link-btn">Build it in Auto</button>`);
+  const b = s && s.querySelector('.link-btn');
+  if (b) b.onclick = async () => {
+    b.disabled = true;
+    selectedMode = 'auto'; renderModeMenu(); updateModeChip('auto');
+    await setModel();  // the mode must land BEFORE the turn starts, or the backend refuses it again
+    runPrompt(ev.prompt);
+  };
 }
 
 function leakMsg(ev) {
@@ -1832,6 +1862,8 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan); trail(); }
   else if (ev.type === 'done') { stopWorking(); if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
+  else if (ev.type === 'ask-blocked') { stopWorking(); askBlocked(ev); trail(); }
+  else if (ev.type === 'ask-active') { addStatus('warn', '⚠', esc(ev.message)); trail(); }
   else if (ev.type === 'saved') { renderSaved(ev); }
   else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(workLabel()); refreshStatus(); }
   else if (ev.type === 'error') {

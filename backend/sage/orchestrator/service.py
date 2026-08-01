@@ -190,6 +190,16 @@ def _looks_like_question(prompt: str) -> bool:
     return words[0] in _QUESTION_LEAD or text.endswith("?")
 
 
+def _looks_like_change_request(prompt: str) -> bool:
+    """True when a prompt asks for the app to CHANGE ("remove the dataset from the UI") rather than
+    for information. Used only in Ask mode, to refuse the turn before it runs (see _ask_mode_refusal).
+
+    An explicit build verb anywhere wins, exactly as it does in _looks_like_question — the two agree
+    on every prompt, so a prompt is never both a question and a change request."""
+    words = re.findall(r"[a-z']+", prompt.lower())
+    return any(w in _BUILD_VERB for w in words)
+
+
 # A whole prompt that says nothing but "yes, go" — used only while a proposed plan is waiting for
 # approval (see _looks_like_approval). Anchored end to end on purpose: "ok build" approves the
 # pending plan, "ok build me a dashboard" is a new request and must not.
@@ -814,6 +824,10 @@ class Orchestrator:
                 yield {"type": "plan-stale", "note": "Approved in chat — building this plan."}
                 yield from self._approve_locked(user_text=prompt)
                 return
+            if (self.project().control.snapshot().mode is Mode.ASK
+                    and _looks_like_change_request(prompt)):
+                yield from self._ask_mode_refusal(prompt)
+                return
             yield from self._build_stream(prompt, mentions)
         finally:
             self._clear_turn_baseline()
@@ -826,6 +840,26 @@ class Orchestrator:
             self.project().turn_tree_baseline = ""
         except Exception:
             pass
+
+    def _ask_mode_refusal(self, prompt: str):
+        """Events for a change request typed in Ask mode — refused up front, before any inference.
+
+        Ask strips every write and shell tool out of each request (see shim.enforcement.handle), so an
+        agent handed "remove the dataset from the UI" holds only read and grep. It doesn't stop; it
+        scopes the edit it can't make — a live turn spent 153s and ~158 consecutive greps hunting the
+        call sites it would have changed, and only said it had written nothing at the very end. There
+        is nothing to learn from running that turn, so don't: name the rule and hand back the
+        one-click way to actually run it (the UI turns `prompt` into a Build-in-Auto button)."""
+        project = self.project()
+        message = ("Ask mode answers questions and never changes files, so this turn was stopped "
+                   "before it ran — nothing was searched, built, or spent. Build it in Auto, or "
+                   "switch modes and send it again.")
+        for ev in ({"type": "user", "text": prompt},
+                   {"type": "ask-blocked", "prompt": prompt, "message": message},
+                   {"type": "done", "ok": False, "decision": "ask mode (read-only)"}):
+            project.workspace.append_history(ev)
+            if ev["type"] != "user":  # the composer already rendered the user's own bubble
+                yield ev
 
     def _busy_refusal(self):
         """Events yielded when a turn is refused because another is already streaming."""
@@ -957,12 +991,19 @@ class Orchestrator:
         # an app that is never coming. The agent prompt covers voice and forbids restating an earlier
         # plan, but says nothing about announcing future work; this preamble does, and it rides every
         # answer-only turn whichever agent or model got picked.
+        # The no-edit-tools sentence is load-bearing, not a restatement of the first one: told only
+        # that it isn't building, the agent still SCOPED the change call site by call site — reading
+        # and grepping for three minutes for an edit it was never offered the tools to make. It has to
+        # know the tools are absent, and that a couple of sentences is the whole job.
         if answer_only:
             current = ("Answer this question and stop. You are not building or changing the app on "
                        "this turn: don't announce work you're about to start ('Next I'll…'), don't "
-                       "open a task list, and don't present the answer as a step towards a build. If "
-                       "the answer implies a change, say what the change would be in plain terms and "
-                       "leave it there — the user will ask for it if they want it.\n\n" + current)
+                       "open a task list, and don't present the answer as a step towards a build. You "
+                       "have NO edit, write, or shell tools this turn — they are withheld, so no "
+                       "amount of searching will let you make a change. If the answer implies a "
+                       "change, describe it in a sentence or two from what you already know; do not "
+                       "go and find every call site you would have edited. The user will ask for it "
+                       "if they want it.\n\n" + current)
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
         # Tell the UI whether a plan card still waiting for approval survives this turn. It doesn't
@@ -1427,6 +1468,17 @@ class Orchestrator:
         try:
             yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True,
                                           user_text=user_text)
+            # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
+            # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
+            # the next change they type reasonably looks like it will build too, and instead runs
+            # read-only and writes nothing. Say so here, where it lands right under the build.
+            if prior_mode is Mode.ASK:
+                ev = {"type": "ask-active",
+                      "message": "Approving built this plan, but the mode is still Ask — it answers "
+                                 "questions and never changes files. Switch to Auto or Implement "
+                                 "before asking for your next change."}
+                project.workspace.append_history(ev)
+                yield ev
         finally:
             if project.control.snapshot().mode is not prior_mode:
                 project.control.set_mode(prior_mode)
