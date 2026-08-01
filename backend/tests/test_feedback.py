@@ -1,6 +1,6 @@
 """Feedback runner parsing + circuit breaker logic (Step 5)."""
-from sage.feedback.runner import FeedbackReport, FeedbackError, parse_tsc
 from sage.feedback.circuit_breaker import CircuitBreaker
+from sage.feedback.runner import FeedbackError, FeedbackReport, parse_tsc
 
 
 def test_parse_tsc_extracts_errors():

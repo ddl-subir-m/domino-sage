@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from urllib.parse import quote
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -235,7 +235,7 @@ class DominoControlPlane:
             self._post(f"{_DATASETRW_PATH}/datasets/{dataset_id}/tags",
                        {"tagName": _SENSITIVITY_TAG, "snapshotId": snap_id})
             return True
-        except Exception:  # noqa: BLE001 — never let a governance tag break an upload
+        except Exception:
             log.exception("tag_dataset_sensitive failed for dataset %s", dataset_id)
             return False
 

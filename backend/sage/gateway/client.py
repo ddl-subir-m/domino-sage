@@ -35,9 +35,9 @@ def sidecar_token(url: str = DEFAULT_SIDECAR_URL) -> Callable[[], str]:
     import urllib.request
 
     def _fetch() -> str:
-        with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 - fixed localhost URL
+        with urllib.request.urlopen(url, timeout=5) as resp:
             tok = resp.read().decode().strip()
-        return tok[len("Bearer ") :] if tok.startswith("Bearer ") else tok  # avoid double-Bearer
+        return tok.removeprefix("Bearer ")  # avoid double-Bearer
 
     return _fetch
 
@@ -168,14 +168,16 @@ class OpenAICompatibleClient:
         # thinking gaps yet still surfaces a dead stream as a clean error (the shim wraps it into a
         # readable message). connect/write/pool stay bounded via _timeout_s.
         timeout = httpx.Timeout(self._timeout_s, read=self._read_timeout_s)
-        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-            with client.stream("POST", url, json=request, headers=headers) as resp:
-                # Surface upstream errors BEFORE streaming so the caller gets a clean message
-                # instead of a mid-stream reset. A 3xx here means auth bounced to a login page.
-                if resp.status_code >= 400 or resp.is_redirect:
-                    body = resp.read().decode(errors="replace")[:800]
-                    raise GatewayUpstreamError(resp.status_code, url, body)
-                yield from resp.iter_bytes()
+        with (
+            httpx.Client(timeout=timeout, follow_redirects=False) as client,
+            client.stream("POST", url, json=request, headers=headers) as resp,
+        ):
+            # Surface upstream errors BEFORE streaming so the caller gets a clean message
+            # instead of a mid-stream reset. A 3xx here means auth bounced to a login page.
+            if resp.status_code >= 400 or resp.is_redirect:
+                body = resp.read().decode(errors="replace")[:800]
+                raise GatewayUpstreamError(resp.status_code, url, body)
+            yield from resp.iter_bytes()
 
 
 class MultiProviderOpenAIClient:
@@ -206,12 +208,14 @@ class MultiProviderOpenAIClient:
         headers = {"Authorization": f"Bearer {key}"}
         url = f"{model.base_url.rstrip('/')}/chat/completions"
         timeout = httpx.Timeout(self._timeout_s, read=self._read_timeout_s)  # large FINITE inter-chunk read (see route above)
-        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-            with client.stream("POST", url, json=request, headers=headers) as resp:
-                if resp.status_code >= 400 or resp.is_redirect:
-                    body = resp.read().decode(errors="replace")[:800]
-                    raise GatewayUpstreamError(resp.status_code, url, body)
-                yield from resp.iter_bytes()
+        with (
+            httpx.Client(timeout=timeout, follow_redirects=False) as client,
+            client.stream("POST", url, json=request, headers=headers) as resp,
+        ):
+            if resp.status_code >= 400 or resp.is_redirect:
+                body = resp.read().decode(errors="replace")[:800]
+                raise GatewayUpstreamError(resp.status_code, url, body)
+            yield from resp.iter_bytes()
 
     def costs(self, window: str) -> list[CostRecord]:
         raise NotImplementedError("openai mode has no unified cost API across providers")

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -132,7 +132,7 @@ def parse_tags(raw: Any) -> list[str]:
     accepted so callers and tests don't have to care which endpoint produced the data.
     """
     if isinstance(raw, dict):
-        return [str(k) for k in raw.keys()]
+        return [str(k) for k in raw]
     out: list[str] = []
     for t in raw or []:
         if isinstance(t, str):

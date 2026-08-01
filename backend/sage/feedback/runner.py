@@ -80,6 +80,7 @@ class FeedbackRunner:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_s,
+                check=False,  # tsc exits nonzero ON type errors — that's the result being read, not a failure
             )
         except subprocess.TimeoutExpired as e:
             return FeedbackReport(ok=False, raw=f"typecheck timed out after {self._timeout_s}s: {e}")

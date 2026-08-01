@@ -29,10 +29,10 @@ from starlette.concurrency import run_in_threadpool
 _UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG, DominoAssetProvider, FakeAssetProvider
+from ..feedback.runner import FeedbackRunner
 from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_token, static_token
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
-from ..feedback.runner import FeedbackRunner
 from ..preview.prefix import domino_base_prefix
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO)
 # In-memory tail of recent sage.* logs so /api/diag can surface what happened during a build (which
 # port OpenCode dialed, "model call -> streaming (first byte Xs)", "gateway stream broke ...") without
 # shell access in the deployed builder. Bounded; captures INFO+ from the whole sage.* hierarchy.
-_LOG_RING: "collections.deque[str]" = collections.deque(maxlen=400)
+_LOG_RING: collections.deque[str] = collections.deque(maxlen=400)
 
 
 class _RingHandler(logging.Handler):
@@ -72,7 +72,7 @@ def _sage_rev() -> str | None:
     home = os.environ.get("SAGE_APP_HOME", "/opt/sage")
     try:
         out = subprocess.run(["git", "-C", home, "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=3)
+                             capture_output=True, text=True, timeout=3, check=False)
         return out.stdout.strip() or None
     except Exception:
         return None
@@ -301,7 +301,7 @@ async def sync_project() -> JSONResponse:
     (which needs the event loop free to serve the /v1 calls that turn makes)."""
     try:
         result = await run_in_threadpool(orchestrator.sync)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.exception("sync failed")
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
     return JSONResponse(content=result)
@@ -315,7 +315,7 @@ async def publish() -> JSONResponse:
         result = await run_in_threadpool(orchestrator.publish)
     except RuntimeError as e:  # not-on-Domino / missing app.sh — human-readable, expected failures
         return JSONResponse(status_code=400, content={"error": str(e)})
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.exception("publish failed")
         return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
     return JSONResponse(content=result)
@@ -328,7 +328,7 @@ async def publish_status(app_id: str) -> JSONResponse:
         result = await run_in_threadpool(orchestrator.publish_status, app_id)
     except RuntimeError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.exception("publish-status failed")
         return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
     return JSONResponse(content=result)
@@ -340,7 +340,7 @@ async def stop() -> JSONResponse:
     drives a git push and a control-plane call."""
     try:
         result = await run_in_threadpool(orchestrator.stop)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.exception("stop failed")
         return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
     return JSONResponse(content=result)
@@ -353,7 +353,7 @@ async def preview_runtime_error(request: Request) -> Response:
     that tsc can't see. Fire-and-forget: always 204, never blocks the preview."""
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001 — a malformed report must not error the preview
+    except Exception:
         return Response(status_code=204)
     orchestrator.record_runtime_error(str(body.get("message") or ""), str(body.get("stack") or ""))
     return Response(status_code=204)
@@ -598,7 +598,7 @@ def build_stream(body: dict) -> StreamingResponse:
         try:
             for evt in orchestrator.build_stream(prompt, mentions):
                 yield f"data: {_json.dumps(evt)}\n\n"
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception("build_stream failed")
             yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
 
@@ -617,7 +617,7 @@ def build_approve(body: dict) -> StreamingResponse:
         try:
             for evt in orchestrator.approve_stream(answers, plan_edits):
                 yield f"data: {_json.dumps(evt)}\n\n"
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception("approve_stream failed")
             yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
 
@@ -700,7 +700,7 @@ async def chat_completions(request: Request):
     # keepalives during silent gaps. Without this, we'd have to withhold the whole HTTP response until
     # the model's first token — minutes for a gpt-5.4 plan turn — and OpenCode's fetch (undici) aborts
     # the silent request as "TypeError: network error". See sage.shim.keepalive.
-    q: "queue.Queue" = queue.Queue()
+    q: queue.Queue = queue.Queue()
     started = time.monotonic()
     threading.Thread(target=ka.pump, args=(gen, q), daemon=True).start()
 

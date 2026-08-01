@@ -18,7 +18,7 @@ from typing import Any
 from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import ModelCatalog, Mode, supports_vision
+from ..router.models import Mode, ModelCatalog, supports_vision
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, classify
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
@@ -63,7 +63,7 @@ def _resolve_sage_version() -> str | None:
         home = os.environ.get("SAGE_APP_HOME", "/opt/sage")
         out = subprocess.run(
             ["git", "-C", home, "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, check=False,
         )
         return out.stdout.strip() or None
     except Exception:

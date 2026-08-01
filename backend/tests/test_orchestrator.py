@@ -438,13 +438,20 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
-from sage.orchestrator.service import (  # noqa: E402
-    _approve_prompt, _asks_about_a_change, _is_answer_only, _looks_like_approval,
-    _looks_like_change_request, _wants_architecture, _wants_plan,
-    _looks_like_question, _read_only_reason, _should_gate,
+from sage.orchestrator.service import (
+    _approve_prompt,
+    _asks_about_a_change,
+    _is_answer_only,
+    _looks_like_approval,
+    _looks_like_change_request,
+    _looks_like_question,
+    _read_only_reason,
+    _should_gate,
+    _wants_architecture,
+    _wants_plan,
 )
-from sage.router.models import Mode  # noqa: E402
-from sage.workspace.manager import Workspace  # noqa: E402
+from sage.router.models import Mode
+from sage.workspace.manager import Workspace
 
 
 def test_looks_like_approval_accepts_a_bare_yes():

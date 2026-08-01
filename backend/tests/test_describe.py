@@ -272,6 +272,7 @@ def test_a_corrupt_file_keeps_the_type_its_magic_bytes_proved(tmp_path: Path):
 def _noisy_png(tmp: Path, name: str, n: int = 900) -> Path:
     """A PNG too big to compress away — solid colour would shrink to nothing and prove nothing."""
     import os as _os
+
     from PIL import Image
     img = Image.frombytes("RGB", (n, n), _os.urandom(n * n * 3))
     p = tmp / name

@@ -25,21 +25,20 @@ import httpx
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
-from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, is_sensitive
-from ..assets.provider import DEFAULT_SENSITIVITY_TAG
+from ..assets.provider import DEFAULT_SENSITIVITY_TAG, Asset, AssetProvider, FakeAssetProvider, is_sensitive
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
-from ..router.model_control import ModelControl
-from ..router.models import Mode, ModelCatalog, Phase
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
+from ..router.model_control import ModelControl
+from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
-from . import scope
 from ..workspace.snapshot import TurnSnapshot
+from . import scope
 from .describe import describe, fit_image
 
 log = logging.getLogger("sage.orchestrator")
@@ -1907,7 +1906,7 @@ class Orchestrator:
             if leaked:
                 detail += f" — kept {len(leaked)} copied data file(s) out of git; fetch attached data from data/ instead"
             return {"type": "saved", "ok": True, "pushed": result.pushed, "detail": detail}
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception("git save failed")
             return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}
 
@@ -1975,7 +1974,7 @@ class Orchestrator:
             pushed = git.push(path)
             return {"status": result.status, "conflicts": result.conflicts,
                     "pushed": pushed.pushed, "detail": result.detail}
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception("sync failed")
             return {"status": "error", "conflicts": [], "pushed": False, "detail": f"{type(e).__name__}: {e}"}
 
@@ -2001,7 +2000,7 @@ class Orchestrator:
         # remote, offline) must not block a publish of whatever is already committed.
         try:
             self._save_to_git(project, "save before publish")
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("publish: pre-publish save failed; publishing the last committed code")
 
         cp = self._control_plane
@@ -2058,7 +2057,7 @@ class Orchestrator:
             return None
         try:
             workspaces = self._control_plane.list_workspaces(self._domino_project_id)
-        except Exception:  # noqa: BLE001 — best-effort discovery; a failure just means "unknown"
+        except Exception:
             log.exception("stop: couldn't list workspaces to resolve this workspace's id")
             return None
         for ws in workspaces:
@@ -2482,33 +2481,33 @@ class Orchestrator:
             # src/ — which leaks the data into git (public/data/ is gitignored on purpose).
             lines = [
                 "## Attached data", "",
-                "The user attached the files below. Each lives on disk at the path shown (read or "
-                "edit it there) and the running app serves it at the URL shown. Load one in app code "
-                "by fetching it RELATIVE TO THE APP BASE, so it resolves in both the dev preview and "
-                "the published app:", "",
+                ("The user attached the files below. Each lives on disk at the path shown (read or "
+                 "edit it there) and the running app serves it at the URL shown. Load one in app code "
+                 "by fetching it RELATIVE TO THE APP BASE, so it resolves in both the dev preview and "
+                 "the published app:"), "",
                 "```js",
                 "// import.meta.env.BASE_URL always ends in '/', so this string is a valid relative",
                 "// URL in both the dev preview and the published app.",
                 'const url = import.meta.env.BASE_URL + "data/<slug>/<name>";',
                 "const text = await fetch(url).then((r) => r.text());",
                 "```", "",
-                "Do NOT wrap it in `new URL(path, import.meta.env.BASE_URL)` — BASE_URL is a path "
-                "(e.g. `/`), not an absolute URL, so `new URL()` throws `Invalid base URL` and crashes "
-                "the app on load. Just concatenate as shown. "
-                "Do NOT fetch a leading-slash path like `/data/...` — it breaks under the app's base "
-                "prefix. Do NOT copy these files into `src/`: `public/data/` is gitignored on purpose, "
-                "so copying leaks the data into the app's git repo. @mention a file by its disk path.", "",
+                ("Do NOT wrap it in `new URL(path, import.meta.env.BASE_URL)` — BASE_URL is a path "
+                 "(e.g. `/`), not an absolute URL, so `new URL()` throws `Invalid base URL` and crashes "
+                 "the app on load. Just concatenate as shown. "
+                 "Do NOT fetch a leading-slash path like `/data/...` — it breaks under the app's base "
+                 "prefix. Do NOT copy these files into `src/`: `public/data/` is gitignored on purpose, "
+                 "so copying leaks the data into the app's git repo. @mention a file by its disk path."), "",
                 # grep/ripgrep skips ignored paths AND does not follow symlinks; every attachment is
                 # both. So a search over one silently returns nothing and the agent concludes the
                 # value isn't there — a wrong answer, not an error. Reading the exact path works.
-                "To look INSIDE one of these files, use the read tool on its exact disk path. Do NOT "
-                "use grep/search: `public/data/` is gitignored and each file is a symlink, so search "
-                "skips them and returns no matches even when the value IS present. A search that "
-                "finds nothing here proves nothing — read the file instead.", "",
+                ("To look INSIDE one of these files, use the read tool on its exact disk path. Do NOT "
+                 "use grep/search: `public/data/` is gitignored and each file is a symlink, so search "
+                 "skips them and returns no matches even when the value IS present. A search that "
+                 "finds nothing here proves nothing — read the file instead."), "",
             ]
             for e in project.attached:
                 path = e["path"]
-                served = path[len("public/"):] if path.startswith("public/") else path
+                served = path.removeprefix("public/")
                 # One-line shape only. This block is re-read every turn, so the full descriptor stays
                 # out of it — that one is inlined by send_prompt for @mentioned files alone.
                 shape = self._descriptor(project, e)["summary"]
@@ -2561,8 +2560,7 @@ class Orchestrator:
         inner = existing[b + len(self._INSTR_BEGIN):e]
         # Strip the managed heading line and the frame paragraph, leaving only the user's body.
         prefix = f"\n{self._INSTR_HEAD}\n\n{self._INSTR_FRAME}\n\n"
-        if inner.startswith(prefix):
-            inner = inner[len(prefix):]
+        inner = inner.removeprefix(prefix)
         return inner.strip("\n")
 
     def write_instructions(self, project: Project, content: str) -> None:

@@ -34,7 +34,7 @@ from starlette.concurrency import run_in_threadpool
 from ..gateway.client import GatewayUpstreamError
 from ..gateway.factory import build_gateway
 from ..router.model_control import ModelControl
-from ..router.models import ModelCatalog, Mode, Phase
+from ..router.models import Mode, ModelCatalog, Phase
 from . import keepalive as ka
 from .enforcement import EnforcementShim
 
@@ -83,7 +83,7 @@ async def chat_completions(
     requested = body.get("model")
     gen = _shim.handle(body, project=x_sage_project, session=x_sage_session)
 
-    q: "queue.Queue" = queue.Queue()
+    q: queue.Queue = queue.Queue()
     started = time.monotonic()
     threading.Thread(target=ka.pump, args=(gen, q), daemon=True).start()
 

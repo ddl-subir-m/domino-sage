@@ -117,7 +117,7 @@ def _decode_head(head: bytes) -> str | None:
     Strict is the point: `errors="replace"` is exactly the bug this module exists to fix, since it
     turns any binary file into plausible-looking text full of U+FFFD.
     """
-    for trim in range(0, 4):
+    for trim in range(4):
         try:
             return head[:len(head) - trim].decode("utf-8")
         except UnicodeDecodeError:
@@ -211,8 +211,8 @@ def _describe_json(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     """
     if size > _JSON_PARSE_LIMIT:
         return (f"JSON — {_human(size)}, too large to parse for a schema",
-                "Schema not inferred: the document exceeds the in-memory parse limit. "
-                "The app should stream it at runtime from its served URL.")
+                ("Schema not inferred: the document exceeds the in-memory parse limit. "
+                 "The app should stream it at runtime from its served URL."))
     with open(path, encoding="utf-8", errors="strict") as f:
         text = f.read()
 
@@ -302,8 +302,8 @@ def _describe_excel(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
         from openpyxl import load_workbook
     except ImportError:
         return (f"Excel workbook — {_human(size)}, sheet details unavailable",
-                "openpyxl is not installed, so sheet names and dimensions could not be read. "
-                "The file is a valid .xlsx workbook.")
+                ("openpyxl is not installed, so sheet names and dimensions could not be read. "
+                 "The file is a valid .xlsx workbook."))
 
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
@@ -325,8 +325,8 @@ def _describe_parquet(path: str, head: bytes, hint, size: int) -> tuple[str, str
         import pyarrow.parquet as pq
     except ImportError:
         return (f"Parquet file — {_human(size)}, schema unavailable",
-                "pyarrow is not installed, so the column schema could not be read from the footer. "
-                "The file is a valid Parquet file.")
+                ("pyarrow is not installed, so the column schema could not be read from the footer. "
+                 "The file is a valid Parquet file."))
 
     pf = pq.ParquetFile(path)
     schema = pf.schema_arrow
@@ -346,8 +346,8 @@ def _describe_pdf(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
         from pypdf import PdfReader
     except ImportError:
         return (f"PDF document — {_human(size)}, page details unavailable",
-                "pypdf is not installed, so page count and text extraction were skipped. "
-                "The file is a valid PDF.")
+                ("pypdf is not installed, so page count and text extraction were skipped. "
+                 "The file is a valid PDF."))
 
     reader = PdfReader(path)
     pages = reader.pages
@@ -544,9 +544,9 @@ def _describe_text(path: str, head: bytes, text: str, size: int) -> tuple[str, s
 def _describe_binary(path: str, head: bytes, hint: str | None, size: int) -> tuple[str, str]:
     what = hint or "unrecognized binary format"
     return (f"Binary — {_human(size)}, {what}",
-            f"{os.path.basename(path)}: {_human(size)}, {what}.\n"
-            "Content was NOT previewed — the bytes are not text and decoding them would produce "
-            "garbage. Treat this file as an opaque blob served by URL.")
+            (f"{os.path.basename(path)}: {_human(size)}, {what}.\n"
+             "Content was NOT previewed — the bytes are not text and decoding them would produce "
+             "garbage. Treat this file as an opaque blob served by URL."))
 
 
 _HANDLERS = {

@@ -55,7 +55,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "") -> 
 
         try:
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
-        except Exception:  # noqa: BLE001 — any not-ready state: close cleanly, HMR reconnects
+        except Exception:
             # Nothing to proxy yet; close cleanly — the Vite HMR client reconnects on its own.
             await client_ws.close()
             return
@@ -78,7 +78,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "") -> 
     async def http_proxy(request: Request, path: str) -> Response:
         try:
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
-        except Exception as e:  # noqa: BLE001 — degrade to transient 502, never a 500 preview crash
+        except Exception as e:
             return _starting(f"{type(e).__name__}: {e}")
         url = f"{upstream}{vite_base}/{path}"
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
@@ -133,7 +133,7 @@ async def _pump(client_ws: WebSocket, upstream) -> None:
             else:
                 await client_ws.send_text(msg)
 
-    done, pending = await asyncio.wait(
+    _done, pending = await asyncio.wait(
         {asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())},
         return_when=asyncio.FIRST_COMPLETED,
     )

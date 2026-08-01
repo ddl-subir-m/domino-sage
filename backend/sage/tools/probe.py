@@ -40,7 +40,7 @@ def main() -> int:
     except GatewayUpstreamError as e:
         print(f"UPSTREAM {e.status}: {e.body[:400]}")
         return 1
-    except Exception as e:  # noqa: BLE001 - surface any failure for diagnosis
+    except Exception as e:
         print(f"ERROR {type(e).__name__}: {e}")
         return 1
 

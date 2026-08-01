@@ -180,7 +180,7 @@ class HubService:
             # (e.g. a duplicate project name).
             try:
                 project = self._cp.create_project(display_name, git_url=repo.clone_url, branch=self._branch)
-            except Exception:  # noqa: BLE001 — v4 create-error shape unconfirmed; retry with a unique name
+            except Exception:
                 fallback = repo.full_name.split("/", 1)[-1]
                 project = self._cp.create_project(fallback, git_url=repo.clone_url, branch=self._branch)
         except Exception:
@@ -264,7 +264,7 @@ class HubService:
             return  # can't address the builder (missing owner/session) — nothing to call
         try:
             self._cp.save_workspace_work(open_path)
-        except Exception:  # noqa: BLE001 — best-effort; the stop proceeds regardless
+        except Exception:
             log.warning("pre-stop save failed for workspace %s; stopping anyway", ws.get("id"), exc_info=True)
 
     def stop_app(self, project_id: str, workspace_id: str | None = None) -> dict[str, Any]:
@@ -349,7 +349,7 @@ class HubService:
         for pub in self._cp.list_project_apps(project_id):
             try:
                 self._cp.delete_app_deployment(pub.id)
-            except Exception as e:  # noqa: BLE001 — collect, so one bad App reports clearly
+            except Exception as e:
                 app_failures.append(f"{pub.id}: {e}")
         if app_failures:
             raise RuntimeError("couldn't delete published App(s) before archiving — " + " | ".join(app_failures))
@@ -365,7 +365,7 @@ class HubService:
             wid = str(ws["id"])
             try:
                 self._remove_workspace(project_id, ws, name)
-            except Exception as e:  # noqa: BLE001 — collect, so one bad workspace reports clearly
+            except Exception as e:
                 failures.append(f"{wid}: {e}")
         if failures:
             raise RuntimeError("couldn't remove workspace(s) before archiving — " + " | ".join(failures))
@@ -382,7 +382,7 @@ class HubService:
             self._save_before_stop(ws, name)  # push in-progress work before it's gone (no-op if not running)
             try:
                 self._cp.stop_workspace(project_id, wid)
-            except Exception:  # noqa: BLE001 — best-effort; it may already be stopping
+            except Exception:
                 pass
             self._wait_until_removable(project_id, wid)
         # The delete is async and can 500 transiently ("delete wasn't completed, please try again");
@@ -392,7 +392,7 @@ class HubService:
             try:
                 self._cp.delete_workspace(project_id, wid)
                 return
-            except Exception as e:  # noqa: BLE001 — retry the flaky delete
+            except Exception as e:
                 last = e
                 if self._workspace_gone(project_id, wid):
                     return

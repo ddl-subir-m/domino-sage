@@ -128,7 +128,8 @@ class ViteSupervisor:
             # matches client sockets (e.g. our own proxy's outgoing connections to Vite), which
             # let this kill the orchestrator's own process group when its pid was among them.
             pids = subprocess.run(
-                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5,
+                check=False,  # lsof exits 1 when nothing is listening — the empty stdout is the answer
             ).stdout.split()
         except (OSError, subprocess.TimeoutExpired):
             return

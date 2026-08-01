@@ -268,9 +268,15 @@ def test_delete_app_saves_stops_waits_then_deletes_running_workspace(tmp_path):
     cp.workspaces[ref.id] = [_running_ws()]  # Started -> stop flips it to Stopped in the fake
 
     order = []
+
+    def _recording(name, fn):
+        def wrapper(*a):
+            order.append(name)
+            return fn(*a)
+        return wrapper
+
     for m in ("save_workspace_work", "stop_workspace", "delete_workspace"):
-        orig = getattr(cp, m)
-        setattr(cp, m, (lambda name, fn: (lambda *a: order.append(name) or fn(*a)))(m, orig))
+        setattr(cp, m, _recording(m, getattr(cp, m)))
 
     assert _hub(tmp_path, cp).delete_app(ref.id) == {"deleted": True}
     # Push work, stop the session, THEN delete once stopped so the project can be archived.

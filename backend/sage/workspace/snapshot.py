@@ -25,6 +25,7 @@ class TurnSnapshot:
             ["git", f"--git-dir={self._git_dir}", f"--work-tree={self._root}", *args],
             capture_output=True,
             text=True,
+            check=False,  # callers inspect returncode themselves; a failed git call is data here
         )
 
     def _ensure_repo(self) -> None:

@@ -30,3 +30,14 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110
+
+[tool.ruff.lint]
+# Sage fails open on purpose: a broken descriptor, an unreadable settings file or a git call that
+# didn't land must degrade the feature, never take down the turn that was using it. Those handlers
+# are the design, not oversights, and each one already carries a comment saying what it protects.
+# Stated once here rather than as ~20 per-site `noqa`s — the scattered version was already drifting
+# out of date (ruff found 17 stale BLE001 directives on handlers where the rule no longer fires).
+ignore = [
+    "BLE001",  # blind `except Exception` — the fail-open handlers described above
+    "S110",    # `try/except/pass` — same handlers, where there is genuinely nothing to log
+]

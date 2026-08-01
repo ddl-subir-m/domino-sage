@@ -144,7 +144,7 @@ def _builder_tool_hint() -> str:
     tool = os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder")
     try:
         ids = [t.get("id") for t in cp.available_tools()]
-    except Exception as e:  # noqa: BLE001 — best-effort hint, never mask the original error
+    except Exception as e:
         return f" (couldn't check available tools: {e})"
     if tool not in ids:
         return (f" — the '{tool}' tool isn't defined in this Environment (available: {ids}). "
@@ -175,7 +175,7 @@ async def diag() -> JSONResponse:
             ids = [t.get("id") for t in tools]
             info["available_tool_ids"] = ids
             info["builder_tool_available"] = info["config"]["builder_tool"] in ids
-        except Exception as e:  # noqa: BLE001 — diag must report the failure, not raise it
+        except Exception as e:
             info["available_tools_error"] = str(e)
     return JSONResponse(info)
 
@@ -231,7 +231,7 @@ async def stop_app(project_id: str, request: Request) -> JSONResponse:
     """Stop an app's running builder so it stops consuming a hardware tier."""
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001 — empty/invalid body is fine; fall back to newest running
+    except Exception:
         body = {}
     workspace_id = (body or {}).get("workspace_id")
     try:
@@ -280,7 +280,7 @@ def _run_delete(project_id: str) -> None:
         hub.delete_app(project_id)
         with _delete_lock:
             _delete_state.pop(project_id, None)
-    except Exception as e:  # noqa: BLE001 — record so delete-status can surface the real reason
+    except Exception as e:
         log.exception("delete_app failed")
         with _delete_lock:
             _delete_state[project_id] = {"phase": "failed", "error": str(e)}

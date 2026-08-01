@@ -241,7 +241,7 @@ def wants_a_plan(
         # holds one thread until the gateway gives up, which is the price of not hanging the turn.
         log.warning("scope: classify timed out after %.1fs — building without a plan", timeout_s)
         return False
-    except Exception as e:  # noqa: BLE001 - any upstream failure must fall back to today's behaviour
+    except Exception as e:
         log.warning("scope: classify failed (%s: %s) — building without a plan", type(e).__name__, e)
         return False
     finally:

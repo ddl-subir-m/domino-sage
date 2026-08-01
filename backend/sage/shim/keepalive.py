@@ -28,7 +28,7 @@ DONE = object()   # producer sentinel: the gateway generator was exhausted clean
 EMPTY = object()  # get() timed out with no item (a silent gap)
 
 
-def pump(gen: Iterator[bytes], q: "queue.Queue") -> None:
+def pump(gen: Iterator[bytes], q: queue.Queue) -> None:
     """Drain the (blocking) gateway generator into a queue on a worker thread so the response side can
     interleave keepalives during silent gaps. Puts raw chunk bytes, then DONE, or ('error', exc) if the
     upstream stream breaks. Note: not cancelled on client disconnect — runs until the gateway
@@ -41,7 +41,7 @@ def pump(gen: Iterator[bytes], q: "queue.Queue") -> None:
         q.put(("error", e))
 
 
-def get(q: "queue.Queue", timeout: float):
+def get(q: queue.Queue, timeout: float):
     try:
         return q.get(timeout=timeout)
     except queue.Empty:

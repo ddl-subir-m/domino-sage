@@ -5,10 +5,10 @@ tagging. The containment half (egress allowlist) is an infra test, not here (Ste
 """
 from __future__ import annotations
 
-from sage.gateway.client import FakeGatewayClient
-from sage.router.model_control import ModelControl
 from dataclasses import replace as _replace
 
+from sage.gateway.client import FakeGatewayClient
+from sage.router.model_control import ModelControl
 from sage.router.models import Mode, ModelCatalog, Phase, supports_vision
 from sage.shim.enforcement import IMAGE_OMITTED, EnforcementShim
 
