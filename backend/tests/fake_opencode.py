@@ -1,0 +1,108 @@
+"""A scripted stand-in for OpenCodeClient, so the turn path in `_build_stream` can be tested.
+
+Everything in `_build_stream` past the dispatch decision — the plan gate, the answer-only short
+circuit, the read-only violation check, the failure recording — was previously verified by reading,
+because reaching it needed a live OpenCode server. Three commits of gate logic accumulated behind
+that gap. This closes it.
+
+The fake is scripted, not simulated: you hand it a list of `Turn`s and the Nth `send_prompt` performs
+the Nth turn. It does the two things the orchestrator actually observes about an agent — it produces
+assistant message parts, and it writes files into the workspace — and nothing else. It is not a model
+and makes no decisions; a test that wants "the agent wrote nothing" says so in the script.
+
+File writes are REAL writes into the workspace, not recorded intentions. `agent_wrote()` in the
+orchestrator asks the git snapshot what changed on disk, not what tools claimed to run, so a fake
+that only emitted `write` tool parts would pass the tool-name check and fail the ground-truth one —
+which is the exact discrepancy the gate-violation code exists to catch. Faking the tool parts without
+the writes would make that code untestable in the one direction that matters.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class Turn:
+    """What the agent does for one prompt.
+
+    `text` becomes assistant text parts — streamed to the user on a build turn, collected into the
+    plan card on a gated one. `writes` maps workspace-relative paths to contents and produces both
+    the real file write and the matching `write` tool part, because the orchestrator cross-checks
+    those two against each other. `tools` is for calls with no file effect (read, grep, bash)."""
+
+    text: str = ""
+    writes: dict[str, str] = field(default_factory=dict)
+    tools: list[str] = field(default_factory=list)
+
+
+class FakeOpenCode:
+    """Implements the slice of OpenCodeClient that `_build_stream` and `_ensure_session` call.
+
+    Polling: `is_running` reports True exactly once per prompt, then False. The orchestrator's loop
+    needs to SEE a turn start before it will believe it finished (`appeared and not running`), and a
+    fake that was never running would sit in the 12-second not-appeared timeout instead — turning
+    every test into a 12-second test. One True is the shortest script that exercises the real exit."""
+
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None) -> None:
+        self.workspace = Path(workspace)
+        self.turns = list(turns or [])
+        # Recorded for assertions: which agent each prompt asked for is how a test checks that a
+        # gated turn ran as sage-plan rather than the build agent.
+        self.prompts: list[dict] = []
+        self.interrupted = 0
+        self._messages: list[dict] = []
+        self._running = False
+        self._next = 0
+
+    # --- session ---------------------------------------------------------------------------------
+
+    def create_session(self, directory: str, model: dict | None = None) -> str:
+        return "fake-session"
+
+    def messages(self, session_id: str) -> list[dict]:
+        # A copy: the orchestrator iterates this while its own emit-once bookkeeping mutates, and a
+        # shared list would let a test's assertions and the loop's state drift apart.
+        return list(self._messages)
+
+    def last_message_id(self, session_id: str) -> str | None:
+        return self._messages[-1]["id"] if self._messages else None
+
+    def agent_summaries(self) -> list[dict]:
+        return []
+
+    # --- the turn --------------------------------------------------------------------------------
+
+    def send_prompt(self, session_id: str, text: str, model: dict | None = None,
+                    agent: str | None = None, attachments: list[dict] | None = None) -> None:
+        self.prompts.append({"text": text, "agent": agent, "attachments": attachments})
+        turn = self.turns[self._next] if self._next < len(self.turns) else Turn()
+        self._next += 1
+        self._running = True
+
+        parts: list[dict] = []
+        n = len(self._messages)
+        for j, tool in enumerate(turn.tools):
+            parts.append({"id": f"m{n}-t{j}", "type": "tool", "tool": tool,
+                          "state": {"status": "completed"}})
+        for j, (rel, body) in enumerate(turn.writes.items()):
+            path = self.workspace / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+            parts.append({"id": f"m{n}-w{j}", "type": "tool", "tool": "write",
+                          "state": {"status": "completed", "input": {"filePath": rel}}})
+        if turn.text:
+            parts.append({"id": f"m{n}-x", "type": "text", "text": turn.text})
+        self._messages.append({"id": f"m{n}", "type": "assistant", "content": parts})
+
+    def is_running(self, session_id: str) -> bool:
+        was, self._running = self._running, False
+        return was
+
+    def wait_for_idle(self, session_id: str, timeout_s: float = 300, poll_s: float = 1.0,
+                      appear_grace_s: float = 10.0) -> None:
+        self._running = False
+
+    def interrupt(self, session_id: str) -> None:
+        self.interrupted += 1
+        self._running = False

@@ -769,6 +769,7 @@ class Orchestrator:
         domino_project_name: str | None = None,
         workspace_id: str | None = None,
         domino_run_id: str | None = None,
+        opencode_client: OpenCodeClient | None = None,
     ) -> None:
         self._wm = WorkspaceManager(workspace_dir, template)
         self._project_id = project_id
@@ -796,7 +797,10 @@ class Orchestrator:
         # use (seeding the volume + rehydrating .sage/ from disk), memoized thereafter.
         self._project: Project | None = None
         self._oc_server: OpenCodeServer | None = None
-        self._oc_client: OpenCodeClient | None = None
+        # Pre-supplied client (tests): _ensure_opencode already returns a non-None client untouched,
+        # so injecting here means no server is ever started and the seam costs the production path
+        # nothing. Same shape as the gateway/feedback/assets fakes above it.
+        self._oc_client: OpenCodeClient | None = opencode_client
         self._oc_log_path: str | None = None  # OpenCode server stdout log, tailed into the stream on a no-call turn
         # Serializes read-modify-write of the workspace AGENTS.md: _write_agents_data_block (attach/
         # detach) and write_instructions both splice managed regions into the same file, and a
