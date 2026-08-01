@@ -200,6 +200,16 @@
   .plan-card .plan-edit { min-height: 160px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
   .plan-card .plan-actions { display: flex; gap: 8px; margin-top: 2px; }
   .plan-btn { font: inherit; font-size: 13px; font-weight: 500; border-radius: 8px; padding: 7px 14px; cursor: pointer; border: 1px solid transparent; }
+  /* An architecture is a document to read, so its card leads with the diagram and keeps the border
+     neutral — the plan card's accent border is a call to approve, which this one isn't. */
+  .plan-card.arch-card { border-color: var(--border); background: var(--surface); }
+  .mermaid-fig { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius);
+                 background: var(--surface-2); overflow-x: auto; text-align: center; }
+  .mermaid-fig svg { max-width: 100%; height: auto; }
+  /* Mermaid the model mis-wrote: keep the source readable instead of dropping the design on the floor. */
+  .mermaid-src.mermaid-failed { display: block; white-space: pre-wrap; font-family: var(--mono, monospace);
+                                font-size: 12px; padding: 10px; border: 1px solid var(--border);
+                                border-radius: var(--radius); background: var(--surface-2); overflow-x: auto; }
   .plan-btn.primary { background: var(--primary); color: #fff; }
   .plan-btn.primary:hover { background: var(--primary-hover); }
   .plan-btn.ghost { background: transparent; border-color: var(--border); color: var(--muted); }
@@ -589,6 +599,10 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<!-- Renders the one mermaid block in an architecture document (see drawMermaid). Loaded the same way
+     Monaco is, and equally optional: if the CDN is unreachable the diagram stays a fenced code block
+     and the rest of the document still reads fine. -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
 <script>
 // Domino serves this page under a proxy path prefix (rewrite:false preserves it); locally it's "".
 // Capture it ONCE from the load path — this is a single static page, so location.pathname doesn't
@@ -1369,10 +1383,17 @@ function md(src) {
   const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
   while (i < lines.length) {
     const ln = lines[i];
-    if (/^```/.test(ln)) {
+    const fence = ln.match(/^```\s*([A-Za-z0-9_-]*)/);
+    if (fence) {
       closeList(); i++; let code = '';
       while (i < lines.length && !/^```/.test(lines[i])) { code += lines[i] + '\n'; i++; }
-      i++; html += `<pre><code>${esc(code)}</code></pre>`; continue;
+      i++;
+      // A mermaid block is kept as source in a marked <pre> for drawMermaid to swap for the drawn
+      // diagram after the node is in the document. Escaped either way, and if mermaid never loads or
+      // the diagram won't parse this is exactly the code block it used to be.
+      if (fence[1].toLowerCase() === 'mermaid') html += `<pre class="mermaid-src">${esc(code)}</pre>`;
+      else html += `<pre><code>${esc(code)}</code></pre>`;
+      continue;
     }
     const h = ln.match(/^(#{1,3})\s+(.*)$/);
     if (h) { closeList(); const n = h[1].length; html += `<h${n}>${inline(h[2])}</h${n}>`; i++; continue; }
@@ -1416,7 +1437,11 @@ function md(src) {
 function addAgent(text) {
   const d = document.createElement('div'); d.className = 'msg agent';
   d.innerHTML = `<div class="body md">${md(text)}</div>`;
-  return append(d);
+  const el = append(d);
+  // An explanatory answer may carry one diagram (see the `diagram` branch in _build_stream). Nothing
+  // to do for the other 99% of answers — drawMermaid returns immediately when there's no block.
+  drawMermaid(el);
+  return el;
 }
 const TOOL_META = {
   edit: ['✏️', 'Edited'], write: ['📄', 'Created'], read: ['📖', 'Read'], bash: ['▸', 'Ran'],
@@ -1742,35 +1767,76 @@ async function runStream(url, payload, turnStart) {
 
 // The approval card for a proposed plan (SPEC P6). Renders the plan, an optional answers box and
 // plan editor, and Approve/Edit/Cancel — Approve streams the resulting build from .sage/plan.md.
-function addPlanCard(planMd) {
+// Swap every mermaid source block inside `root` for the drawn diagram. Deliberately quiet: mermaid is
+// a CDN script and the model writes the source freehand, so both "never loaded" and "won't parse" are
+// expected — in either case the block stays readable as text rather than the card failing to render.
+// Turn decisions whose outcome is a card on screen, not a build — the card says everything a
+// "Done — build is clean" divider would, and that divider under an architecture reads as though Sage
+// went and built it.
+const GATE_DECISIONS = new Set(['awaiting approval', 'architecture ready']);
+
+let mermaidSeq = 0;
+async function drawMermaid(root) {
+  const blocks = root.querySelectorAll('pre.mermaid-src');
+  if (!blocks.length || typeof mermaid === 'undefined') return;
+  if (!drawMermaid.ready) {
+    // Match the app's own theme rather than mermaid's default, and never let it write to the DOM on
+    // load — we render each block by hand below.
+    const dark = getComputedStyle(document.body).getPropertyValue('--surface').trim();
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict',
+                         theme: dark && /^#(0|1|2)/.test(dark) ? 'dark' : 'default',
+                         flowchart: { useMaxWidth: true } });
+    drawMermaid.ready = true;
+  }
+  for (const pre of blocks) {
+    try {
+      const { svg } = await mermaid.render(`mmd-${++mermaidSeq}`, pre.textContent);
+      const box = document.createElement('div');
+      box.className = 'mermaid-fig';
+      box.innerHTML = svg;
+      pre.replaceWith(box);
+    } catch (e) {
+      // Leave the source visible — a diagram the model mis-wrote is still the design, in text.
+      pre.classList.add('mermaid-failed');
+    }
+  }
+}
+
+function addPlanCard(planMd, kind) {
   supersedePlanCards();  // only the newest plan is approvable (covers a transcript replay too)
   // The plan only has an "Open questions" section when the planner actually needs a decision (the
   // backend strips an empty one). With no questions on screen, prompting the user to answer them
   // exposes machinery rather than asking for anything, so the box just takes notes.
   const asks = /^#{1,6}\s*open questions\b/mi.test(planMd || '');
+  // An architecture was asked for as a document, not as a step on the way to a build — so the card
+  // presents it as the finished thing. Building from it is still one click, but it's a ghost button:
+  // making it the primary action is what turned "give me an architecture" into a ten-step plan and
+  // then an implementation nobody asked for.
+  const arch = kind === 'architecture';
   const card = document.createElement('div');
-  card.className = 'msg agent plan-card';
+  card.className = 'msg agent plan-card' + (arch ? ' arch-card' : '');
   card.innerHTML =
-    '<div class="plan-head">Review the plan before building</div>' +
+    '<div class="plan-head">' + (arch ? 'Architecture' : 'Review the plan before building') + '</div>' +
     '<div class="plan-body md"></div>' +
     '<textarea class="plan-edit" style="display:none"></textarea>' +
-    '<label class="plan-lbl">' + (asks ? 'Answer the open questions or add notes (optional)' : 'Add a note for the build (optional)') + '</label>' +
-    '<textarea class="plan-answers" rows="2" placeholder="' + (asks ? 'e.g. columns: id, amount, status · Approve = mark resolved' : 'e.g. keep the table compact and use muted colours') + '"></textarea>' +
+    '<label class="plan-lbl">' + (arch ? 'Add a note if you want it built (optional)' : (asks ? 'Answer the open questions or add notes (optional)' : 'Add a note for the build (optional)')) + '</label>' +
+    '<textarea class="plan-answers" rows="2" placeholder="' + (arch ? 'e.g. start with the queue store only' : (asks ? 'e.g. columns: id, amount, status · Approve = mark resolved' : 'e.g. keep the table compact and use muted colours')) + '"></textarea>' +
     '<div class="plan-actions">' +
-      '<button class="plan-btn primary">Approve &amp; build</button>' +
-      '<button class="plan-btn ghost edit">Edit plan</button>' +
-      '<button class="plan-btn ghost cancel">Cancel</button>' +
+      '<button class="plan-btn approve ' + (arch ? 'ghost' : 'primary') + '">' + (arch ? 'Build this' : 'Approve &amp; build') + '</button>' +
+      '<button class="plan-btn ghost edit">Edit ' + (arch ? 'design' : 'plan') + '</button>' +
+      '<button class="plan-btn ghost cancel">' + (arch ? 'Dismiss' : 'Cancel') + '</button>' +
     '</div>';
   const bodyEl = card.querySelector('.plan-body');
   const editTa = card.querySelector('.plan-edit');
-  bodyEl.innerHTML = md(planMd || '_No plan text was produced._');
+  bodyEl.innerHTML = md(planMd || (arch ? '_No design was produced._' : '_No plan text was produced._'));
+  drawMermaid(bodyEl);  // the architecture's diagram; a no-op on a plan, which has no mermaid block
   editTa.value = planMd || '';
   const editBtn = card.querySelector('.edit');
   editBtn.onclick = () => {
     const editing = editTa.style.display === 'none';
     editTa.style.display = editing ? 'block' : 'none';
     bodyEl.style.display = editing ? 'none' : 'block';
-    editBtn.textContent = editing ? 'Preview' : 'Edit plan';
+    editBtn.textContent = editing ? 'Preview' : (arch ? 'Edit design' : 'Edit plan');
   };
   card.querySelector('.cancel').onclick = () => {
     // Dismiss the card AND clear the un-approved plan.md the gate turn wrote — otherwise a stray
@@ -1779,7 +1845,7 @@ function addPlanCard(planMd) {
     card.remove();
     drainQueue();
   };
-  card.querySelector('.primary').onclick = async () => {
+  card.querySelector('.approve').onclick = async () => {
     const answers = card.querySelector('.plan-answers').value.trim();
     const edited = editTa.value.trim() !== (planMd || '').trim();
     const payload = { answers };
@@ -1827,8 +1893,8 @@ function replayEvent(ev) {
   // Replay renders the refusal without its Build-in-Auto button: the button starts a real build, and
   // an old message shouldn't be able to do that on a reload the user didn't connect it to.
   else if (ev.type === 'ask-blocked' || ev.type === 'ask-active') addStatus('warn', '⚠', esc(ev.message));
-  else if (ev.type === 'plan-proposed') addPlanCard(ev.plan);
-  else if (ev.type === 'done') { if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); }
+  else if (ev.type === 'plan-proposed') addPlanCard(ev.plan, ev.kind);
+  else if (ev.type === 'done') { if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); }
   else if (ev.type === 'saved') renderSaved(ev);
 }
 
@@ -1871,8 +1937,8 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
   else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
   else if (ev.type === 'plan-stale') { supersedePlanCards(ev.note); }
-  else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan); trail(); }
-  else if (ev.type === 'done') { stopWorking(); if (ev.decision !== 'awaiting approval') addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
+  else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan, ev.kind); trail(); }
+  else if (ev.type === 'done') { stopWorking(); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'ask-blocked') { stopWorking(); askBlocked(ev); trail(); }
   else if (ev.type === 'ask-active') { addStatus('warn', '⚠', esc(ev.message)); trail(); }

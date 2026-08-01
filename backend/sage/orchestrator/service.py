@@ -172,6 +172,116 @@ _BUILD_VERB = frozenset({
 })
 
 
+# Leads that ask for information ABOUT a change rather than for the change ("how would you add a
+# queue?"). These, and only these, survive the build-verb veto below, because after one of them the
+# build verb sits in a subordinate clause describing the hypothetical work — "an architecture to ADD
+# a queue" is a request for the architecture, not for the queue.
+#
+# A strict subset of _QUESTION_LEAD, and the omissions are the point: "can", "could", "would", "is",
+# "do" stay out, so "can you remove the dataset?" is still a change request. A modal asking whether
+# we'll do something is a polite imperative; "how"/"what"/"why" name the information wanted.
+_INFO_LEAD = frozenset({
+    "how", "what", "whats", "why", "when", "where", "which", "explain", "describe", "compare",
+})
+# The other informational opening: a deliverable made of words. "give"/"show"/"tell" are too
+# ambiguous alone to be question leads ("show me a dashboard" is a build) — it's the noun that
+# settles it, so this pattern requires one.
+_INFO_ASK = re.compile(
+    r"^(?:(?:please|can|could|would|will)\s+(?:you\s+)?)*"
+    r"(?:give|show|tell|walk|talk|draft|sketch|outline|propose|suggest|recommend)\s+"
+    r"(?:me|us)\s*(?:through\s+)?(?:an?|the|some|your)?\s*(?:high[\s-]level\s+)?"
+    r"(?:architecture|design|plan|approach|strategy|outline|spec(?:ification)?|proposal|"
+    r"option|options|recommendation|recommendations|idea|ideas|overview|breakdown|"
+    r"tradeoffs?|trade[\s-]offs?)\b",
+)
+
+
+def _asks_about_a_change(prompt: str) -> bool:
+    """True when a prompt asks us to DESCRIBE work rather than do it — "give me an architecture to add
+    a real time queue", "how would you fix the race?". Consulted by both classifiers below, ahead of
+    their build-verb scan.
+
+    Without this, a build verb anywhere in the sentence wins, so Ask mode refused the single most
+    natural thing to type into it: a design question that happens to name the change it's about."""
+    text = prompt.strip().lower()
+    words = re.findall(r"[a-z']+", text)
+    # Apostrophes stripped so "what's the best way to add caching" leads with "whats", like "what".
+    return bool(words) and (words[0].replace("'", "") in _INFO_LEAD
+                            or _INFO_ASK.match(text) is not None)
+
+
+# The design artifact a prompt can ask for by name. Paired with _asks_about_a_change below, this is
+# what separates "give me an architecture to add a queue" (wants a document) from "how would you add
+# a queue" (wants an answer) — both are questions, but only the first names a deliverable.
+_ARCH_NOUN = re.compile(
+    r"\b(?:architecture|architectural|design\s+doc(?:ument)?|diagram|data[\s-]?flow|"
+    r"system\s+design|component\s+(?:map|diagram|breakdown)|blueprint|schematic)\b",
+    re.IGNORECASE,
+)
+
+
+# Shape words that make a question worth answering with a picture even though the user never asked for
+# one. Diagram side only — these never produce the architecture card, so a false positive costs a
+# mermaid block in an answer, not a document and a Build button.
+_SHAPE_NOUN = re.compile(
+    r"\b(?:flows?|lifecycles?|life\s?cycles?|states?|state\s+machine|sequence|pipeline|"
+    r"moving\s+parts|relationships?|wiring|topology|end\s+to\s+end)\b",
+    re.IGNORECASE,
+)
+
+
+# "Walk me through the request lifecycle" — explanatory, but it leads with none of the interrogatives
+# _asks_about_a_change looks for. Accepted on the diagram side only, where the shape noun is doing the
+# real work and a false positive costs one picture.
+_EXPLAIN_FRAME = re.compile(
+    r"^(?:(?:please|can|could|would|will)\s+(?:you\s+)?)*"
+    r"(?:(?:walk|talk|take)\s+(?:me|us)\s+through|show\s+(?:me|us)\s+how|break\s+down)\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_diagram(prompt: str) -> bool:
+    """True when a question about how something ALREADY WORKS would read better as a picture — "explain
+    the architecture of the upload pipeline", "what states does a job go through". Answered as normal
+    read-only prose that may carry one mermaid block (see the diagram preamble in _build_stream).
+
+    The counterpart to _wants_architecture, and mutually exclusive with it. The split is the point:
+    a design for work not yet done is a document you might then build, so it earns a card, a file and a
+    Build button; an explanation of code that already exists earns none of those — offering to build
+    the answer to "what states does a job go through" is nonsense. Before the split, naming the noun
+    was enough, so an explanatory question got the whole card-and-build treatment."""
+    if _wants_architecture(prompt):
+        return False
+    text = (prompt or "").strip()
+    asks = _asks_about_a_change(prompt) or _EXPLAIN_FRAME.match(text) is not None
+    return asks and bool(_ARCH_NOUN.search(text) or _SHAPE_NOUN.search(text))
+
+
+def _wants_architecture(prompt: str) -> bool:
+    """True when the prompt asks for an ARCHITECTURE — a description of components, data flow and
+    boundaries — rather than for the work or for a build plan. Routes the turn to the architecture
+    deliverable in every mode but Ask (see the `arch` branch in _build_stream).
+
+    Sage's only deliverable used to be app source code, so this request had nowhere to land: Plan mode
+    turned "give me an architecture to add a real time queue" into a ten-step build plan, Implement
+    built the feature, and the model — having no artifact channel of its own — offered to add an
+    architecture *screen* to the user's app. Narrow on purpose: the prompt must both ask about a
+    change and name the artifact, so "how would you add a queue" still plans or answers as it did.
+
+    Three things must hold: the prompt asks about a change, names the artifact, AND names work not yet
+    done (a build verb — "an architecture to ADD a queue"). The last is what separates this from
+    _wants_diagram: without it, "explain the architecture of the upload pipeline" — a question about
+    code that already exists — got a document and a Build button offering to build what it describes.
+
+    The build verb is a proxy for "doesn't exist yet" and an imperfect one: "what's the architecture
+    for a live upload queue" names no verb and is answered with a diagram instead of a card. That
+    errs toward the lighter deliverable, which is the right way to be wrong."""
+    words = re.findall(r"[a-z']+", (prompt or "").lower())
+    return (_asks_about_a_change(prompt)
+            and _ARCH_NOUN.search(prompt or "") is not None
+            and any(w in _BUILD_VERB for w in words))
+
+
 def _looks_like_question(prompt: str) -> bool:
     """True when a prompt asks for information ("what colour is this?") rather than asking us to build
     something ("build a file upload UI"). Used to tell a first-turn question from a build request so
@@ -180,11 +290,14 @@ def _looks_like_question(prompt: str) -> bool:
     Deliberately conservative — only a CLEAR question counts; anything ambiguous returns False and
     falls through to the plan gate, because a wrongly-skipped gate silently builds without approval
     (the worse failure). Pure and deterministic, no model call — matches the phase classifier's style.
-    An explicit build verb anywhere wins, so "can you build me a dashboard?" is a build, not a question."""
+    An explicit build verb anywhere wins, so "can you build me a dashboard?" is a build, not a question
+    — unless the prompt opened by asking about the change (see _asks_about_a_change)."""
     text = prompt.strip().lower()
     words = re.findall(r"[a-z']+", text)
     if not words:
         return False
+    if _asks_about_a_change(prompt):
+        return True
     if any(w in _BUILD_VERB for w in words):
         return False
     return words[0] in _QUESTION_LEAD or text.endswith("?")
@@ -194,8 +307,10 @@ def _looks_like_change_request(prompt: str) -> bool:
     """True when a prompt asks for the app to CHANGE ("remove the dataset from the UI") rather than
     for information. Used only in Ask mode, to refuse the turn before it runs (see _ask_mode_refusal).
 
-    An explicit build verb anywhere wins, exactly as it does in _looks_like_question — the two agree
-    on every prompt, so a prompt is never both a question and a change request."""
+    An explicit build verb anywhere wins, exactly as it does in _looks_like_question, and both defer
+    to _asks_about_a_change first — so the two agree on every prompt and one is never both."""
+    if _asks_about_a_change(prompt):
+        return False
     words = re.findall(r"[a-z']+", prompt.lower())
     return any(w in _BUILD_VERB for w in words)
 
@@ -287,7 +402,7 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     return (m["id"], part.get("id") or i)
 
 
-def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool) -> str:
+def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool, arch: bool = False) -> str:
     """Why the shim is withholding edit tools this turn — "" when it isn't. Reported in the turn
     summary so a turn that wrote nothing can say which rule stopped it instead of blaming OpenCode for
     dropping edits it was never offered (the shim strips them from the request; see enforcement.handle).
@@ -295,6 +410,10 @@ def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool) -> str:
     Ask is read-only by *mode*, with nothing armed, so this can't be read off the read-only token: that
     was the case that made an Ask-mode build look like a mysterious failure. Ask is checked first
     because an Ask turn is also answer-only, and the mode is the more useful thing to tell the user."""
+    # Architecture first, ahead of even Ask: on that turn the artifact is what the user is waiting for
+    # and the more useful thing to name, and an architecture request now gates in Ask mode too.
+    if arch:
+        return "architecture"
     if mode is Mode.ASK:
         return "ask"
     if answer_only:
@@ -302,15 +421,27 @@ def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool) -> str:
     return "plan" if gate else ""
 
 
-def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool) -> bool:
+def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool, arch: bool = False,
+                    diagram: bool = False) -> bool:
     """A turn that answers read-only instead of building — no plan card, no edits, no implement-nudge.
-    Two cases: Ask mode (always read-only Q&A), and any question in Auto mode (whether or not the app
-    is built — a question about a built app should be answered, not turned into edits). An approval is
-    the user asking to build, never an answer. Build requests and Plan/Implement mode fall through to
-    the normal build path. Mutually exclusive with the plan gate (a question is never gated)."""
-    if is_approval:
+    Ask mode is always read-only Q&A; a question in Auto or Implement is answered rather than built
+    (whether or not the app is built — a question about a built app should be answered, not turned
+    into edits). An approval is the user asking to build, never an answer.
+
+    Implement is included because its agent is told "a turn in which you touched no files is a failed
+    turn": asked a question there, it either built something nobody asked for or answered in prose and
+    got reported as `Wrote nothing`. The mode says how to do work, not that every prompt is work.
+
+    Plan still falls through — a build request there is what the gate is for — except for a diagram
+    question, which is explanatory in every mode: asked how the pipeline already works, Plan should
+    say so, not propose implementation steps for it. An architecture request produces its own artifact
+    and is never answer-only, which keeps this mutually exclusive with the gate (a question is never
+    gated)."""
+    if is_approval or arch:
         return False
-    return mode is Mode.ASK or (mode is Mode.AUTO and is_question)
+    if diagram:
+        return True
+    return mode is Mode.ASK or (mode in (Mode.AUTO, Mode.IMPLEMENT) and is_question)
 
 
 # A step that opens "I will …" — right after the list marker, or after the label's em dash. Weak
@@ -946,7 +1077,17 @@ class Orchestrator:
         has_built = project.workspace.has_built()
         # An approval is the user saying "build this plan now" — never gate it (that would re-propose a
         # plan for an already-approved build and loop forever) and never treat it as a question.
-        gate = False if is_approval else _should_gate(
+        # An explicit request for an architecture (see _wants_architecture) produces a document, not a
+        # build and not a build plan — so it overrides the mode in EVERY mode, including Ask. Without
+        # this, Plan turned the request into a ten-step build plan and Implement just built it; Ask
+        # answered in prose, which is right for a question and wrong for a request for a document.
+        # Ask is where a design question is most naturally typed, so it gets the artifact too — the
+        # turn is read-only either way, so nothing about Ask's contract changes.
+        arch = not is_approval and _wants_architecture(prompt)
+        # Its lighter counterpart: a question about how something already works, answered as prose that
+        # may carry one diagram. No card, no file, no Build button — there is nothing here to build.
+        diagram = not is_approval and _wants_diagram(prompt)
+        gate = False if is_approval else arch or _should_gate(
             mode=mode_at_start,
             has_built=has_built,
             skip_planning=bool(project.workspace.read_settings().get("skip_planning")),
@@ -983,7 +1124,33 @@ class Orchestrator:
                        "questions' heading and short bullets. Nothing to ask: leave the heading out "
                        "entirely rather than writing 'None'.\n"
                        "Never repeat a sentence or restate a step you've already written.")
-        if gate:
+        # The architecture deliverable — the same gated, read-only turn, but the artifact is a design
+        # rather than a task list. The distinction is the whole point of the branch: a build plan
+        # answers "what will you do", an architecture answers "what are the parts and how do they
+        # talk". Asked for the latter, the planner produced the former ("Define queue model", "Add
+        # queue panel"), which is a fine plan and not what was asked for.
+        _ARCH_SHAPE = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
+                       "- One short sentence saying what the design is for.\n"
+                       "- Then a '## Diagram' heading and ONE ```mermaid code block — a `flowchart "
+                       "TD` or `LR` of the components and the data flowing between them. Keep node "
+                       "labels to a few words. This is the only code block you may write.\n"
+                       "- Then a '## Components' heading and a bullet per part: a bolded name, "
+                       "then ' — ', then one sentence on what it owns.\n"
+                       "- Then a '## Data flow' heading and a short numbered list tracing one trip "
+                       "through the system end to end.\n"
+                       "- Then a '## Tradeoffs' heading and short bullets on the calls this design "
+                       "makes and what it gives up.\n"
+                       "Describe structure, not implementation steps: no file names, no function or "
+                       "component signatures, no source code beyond the one mermaid block. Never "
+                       "repeat a sentence you've already written.")
+        if arch:
+            current = ("Describe the ARCHITECTURE for the request below. This turn produces a design "
+                       "document, not a build and not a build plan — do not write a numbered list of "
+                       "implementation steps, and do not describe the work as something you are about "
+                       "to start. If reading a file or two helps the design fit the app, keep it "
+                       "brief, then write the document.\n\n" + _ARCH_SHAPE
+                       + "\n\nThe request:\n" + current)
+        elif gate:
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
@@ -995,7 +1162,8 @@ class Orchestrator:
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
-        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question, is_approval=is_approval)
+        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
+                                      is_approval=is_approval, arch=arch, diagram=diagram)
         # Pin the ANSWER's voice, for the same reason the gated turn pins the plan's (see _PLAN_VOICE):
         # the sage-ask agent prompt alone hasn't held. Asked "what tech stack will be used", the agent
         # answered and then announced the build it was about to start — "Next I'm replacing the starter
@@ -1017,6 +1185,17 @@ class Orchestrator:
                        "change, describe it in a sentence or two from what you already know; do not "
                        "go and find every call site you would have edited. The user will ask for it "
                        "if they want it.\n\n" + current)
+            # This particular question is about the SHAPE of something (a flow, a set of states, how
+            # parts connect), which reads far better as a picture than as a paragraph. One block, and
+            # only if it genuinely helps — a diagram of a two-step answer is noise, and a model told
+            # it may draw will draw every time unless told when not to.
+            if diagram:
+                current = ("Your answer may include ONE ```mermaid flowchart if the answer is really "
+                           "about how parts connect or how something moves through the app; skip it "
+                           "and just answer in words if a diagram wouldn't add anything. Keep node "
+                           "labels to a few plain words, with no parentheses, quotes, commas or "
+                           "colons inside a label — those break the diagram. Write no other code "
+                           "blocks.\n\n" + current)
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
         # Tell the UI whether a plan card still waiting for approval survives this turn. It doesn't
@@ -1025,7 +1204,8 @@ class Orchestrator:
         # user the plan they were reading.
         if not answer_only and not is_approval:
             yield {"type": "plan-stale",
-                   "note": "Superseded by a newer plan below." if gate
+                   "note": "Superseded by the architecture below." if arch
+                           else "Superseded by a newer plan below." if gate
                            else "No longer current — the app changed after this plan."}
 
         # `user_text` is what the person actually typed, when that differs from the prompt we send the
@@ -1046,7 +1226,7 @@ class Orchestrator:
         # The reason rides with the arming: both kinds withhold write and shell tools, but only an
         # answering turn also loses the task-list tool (see TODO_TOOLS). Also reported in the turn
         # summary, so a turn that wrote nothing can say which rule stopped it.
-        read_only = _read_only_reason(mode=mode_at_start, answer_only=answer_only, gate=gate)
+        read_only = _read_only_reason(mode=mode_at_start, answer_only=answer_only, gate=gate, arch=arch)
         ro_token = project.control.arm_read_only(read_only) if (gate or answer_only) else None
 
         # Internet access is default-denied; arm it for THIS turn only when the prompt asked for the
@@ -1154,7 +1334,12 @@ class Orchestrator:
             # A gated turn is pinned to the read-only planner regardless of the user's mode; it
             # proposes a plan and never edits, so it always lands in the no-edit fork below. A first-
             # turn question uses the read-only Q&A agent — it answers, it doesn't plan or build.
-            if gate:
+            # An architecture request gates too, but not onto sage-plan: that agent's prompt hardcodes
+            # a build plan and bans every code block, which would strip the one mermaid diagram the
+            # document is built around.
+            if arch:
+                agent = "sage-architect"
+            elif gate:
                 agent = "sage-plan"
             elif answer_only:
                 agent = "sage-ask"
@@ -1164,8 +1349,8 @@ class Orchestrator:
             # falls back to its default build agent when a name doesn't resolve, so a turn that ignores
             # a mode's read-only permission looks identical to one that honored it — log the intent so
             # /api/diag's log_tail can be compared against its `agents` list.
-            log.info("turn: agent=%s gate=%s answer_only=%s mode=%s", agent, gate, answer_only,
-                     project.control.snapshot().mode.value)
+            log.info("turn: agent=%s gate=%s answer_only=%s arch=%s diagram=%s mode=%s", agent, gate,
+                     answer_only, arch, diagram, project.control.snapshot().mode.value)
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
@@ -1302,8 +1487,8 @@ class Orchestrator:
                 # from an empty plan; report it as a failed planning turn, with the same diagnostics
                 # a stalled build gets, since "no plan text" is usually "no inference reached us".
                 if not plan_md:
-                    log.warning("plan gate produced no plan text (model_calls=%d) — reporting empty plan",
-                                project.model_calls)
+                    log.warning("%s gate produced no text (model_calls=%d) — reporting empty plan",
+                                "architecture" if arch else "plan", project.model_calls)
                     yield {"type": "turn-summary", "model_calls": project.model_calls,
                            "tool_call_responses": project.tool_call_responses, "wrote_code": False,
                            "shim_bypassed": (project.model_calls == 0 and base_port is not None
@@ -1315,14 +1500,26 @@ class Orchestrator:
                         if tail:
                             yield {"type": "opencode-log", "lines": tail}
                     yield persist({"type": "error", "message": (
+                        "Describing the architecture didn't produce anything this time. Send the "
+                        "request again — naming the parts you care about can help."
+                        if arch else
                         "Planning didn't produce a plan this time. Send the request again — adding "
                         "a bit more detail about what you want can help — or switch to Implement to "
                         "build it directly.")})
                     yield persist({"type": "done", "ok": False, "decision": "empty plan"})
                     return
-                project.workspace.write_plan(plan_md)
-                yield persist({"type": "plan-proposed", "plan": plan_md})
-                yield persist({"type": "done", "ok": True, "decision": "awaiting approval"})
+                # An architecture is a reference document, not the one-shot plan→implement handoff, so
+                # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
+                # (see archive_plan), and a design the user wants to keep reading must not vanish
+                # because they later approved a build from it.
+                if arch:
+                    project.workspace.write_architecture(plan_md)
+                else:
+                    project.workspace.write_plan(plan_md)
+                yield persist({"type": "plan-proposed", "plan": plan_md,
+                               "kind": "architecture" if arch else "plan"})
+                yield persist({"type": "done", "ok": True,
+                               "decision": "architecture ready" if arch else "awaiting approval"})
                 return
 
             yield {"type": "typecheck-start"}
@@ -1473,7 +1670,10 @@ class Orchestrator:
         project = self.project()
         if plan_edits is not None:
             project.workspace.write_plan(plan_edits)
-        plan_md = project.workspace.read_plan() or ""
+        # Fall back to the architecture when no plan is live: an architecture turn writes only
+        # .sage/architecture.md (it isn't a one-shot handoff and must survive the build), so its card's
+        # Build button would otherwise approve an empty plan and build nothing.
+        plan_md = project.workspace.read_plan() or project.workspace.read_architecture() or ""
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
         # pinned to this turn only (see arm_turn_mode), never written to the user's picker. The

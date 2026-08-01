@@ -44,6 +44,21 @@ class Workspace:
     def read_plan(self) -> str | None:
         return self.plan_path.read_text() if self.plan_path.exists() else None
 
+    @property
+    def architecture_path(self) -> Path:
+        """A design document the user asked for ("give me an architecture for…"). Deliberately NOT
+        plan.md: a plan is a one-shot handoff that archive_plan() moves aside as soon as a build
+        consumes it, and an architecture is a reference the user keeps coming back to."""
+        return self.path / ".sage" / "architecture.md"
+
+    def write_architecture(self, text: str) -> None:
+        self.architecture_path.parent.mkdir(parents=True, exist_ok=True)
+        self.architecture_path.write_text(text)
+
+    def read_architecture(self) -> str | None:
+        p = self.architecture_path
+        return p.read_text() if p.exists() else None
+
     def archive_plan(self) -> Path | None:
         """Move the consumed plan out of the agent's live view (SPEC P6). The plan artifact is a
         one-shot handoff, not a living spec: once the Implement turn has built from it, a leftover

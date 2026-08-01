@@ -439,7 +439,8 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import (  # noqa: E402
-    _approve_prompt, _is_answer_only, _looks_like_approval, _looks_like_change_request,
+    _approve_prompt, _asks_about_a_change, _is_answer_only, _looks_like_approval,
+    _looks_like_change_request, _wants_architecture, _wants_diagram,
     _looks_like_question, _read_only_reason, _should_gate,
 )
 from sage.router.models import Mode  # noqa: E402
@@ -508,10 +509,16 @@ def test_is_answer_only_covers_ask_mode_and_any_auto_question():
     assert _is_answer_only(mode=Mode.ASK, is_question=False, is_approval=False) is True
     # A question in Auto is answered read-only whether or not the app is built (has_built isn't a factor).
     assert _is_answer_only(mode=Mode.AUTO, is_question=True, is_approval=False) is True
-    # A build request in Auto builds; Implement/Plan questions aren't answer-only; an approval never is.
+    # A build request in Auto builds; an approval is never an answer.
     assert _is_answer_only(mode=Mode.AUTO, is_question=False, is_approval=False) is False
-    assert _is_answer_only(mode=Mode.IMPLEMENT, is_question=True, is_approval=False) is False
     assert _is_answer_only(mode=Mode.AUTO, is_question=True, is_approval=True) is False
+    # A question in Implement is answered too. It used to fall through to the build path, where the
+    # implement agent is told "a turn in which you touched no files is a failed turn" — so a question
+    # either got built or got reported as `Wrote nothing`. The mode says HOW to do work, not that
+    # every prompt is work. Plan still falls through: a build request there is what the gate is for.
+    assert _is_answer_only(mode=Mode.IMPLEMENT, is_question=True, is_approval=False) is True
+    assert _is_answer_only(mode=Mode.IMPLEMENT, is_question=False, is_approval=False) is False
+    assert _is_answer_only(mode=Mode.PLAN, is_question=True, is_approval=False) is False
 
 
 @pytest.mark.parametrize("prompt", [
@@ -679,6 +686,169 @@ def test_looks_like_change_request_true_for_asked_for_changes(prompt):
 ])
 def test_looks_like_change_request_false_for_questions(prompt):
     assert _looks_like_change_request(prompt) is False
+
+
+# A design question names the change it is about, so "a build verb anywhere wins" refused it: Ask
+# mode turned away "give me an architecture to add a real time queue" — the single most natural
+# thing to type into a read-only mode. After an informational lead the build verb is in a
+# subordinate clause describing hypothetical work, not an instruction to do it.
+@pytest.mark.parametrize("prompt", [
+    "give me an architecture to add a real time queue that shows data upload progress",
+    "how would you add a real time upload queue?",
+    "what's the best way to add caching here",
+    "how do I fix the race in the preview loop",
+    "explain how to remove the dataset from the UI",
+    "why would we build it that way",
+    "walk me through the approach for adding a severity filter",
+    "compare the options for implementing pagination",
+])
+def test_a_design_question_is_answered_not_refused(prompt):
+    assert _looks_like_change_request(prompt) is False
+    assert _looks_like_question(prompt) is True  # still complementary
+
+
+@pytest.mark.parametrize("prompt", [
+    "can you remove the dataset?",  # a modal is a polite imperative, not a request for information
+    "would you add a filter for severity",
+    "please update the header copy",
+])
+def test_a_politely_worded_change_is_still_a_change(prompt):
+    assert _looks_like_change_request(prompt) is True
+    assert _looks_like_question(prompt) is False
+
+
+@pytest.mark.parametrize("prompt", [
+    "give me a dashboard for adverse events",  # ambiguous lead, and the noun is a thing to build
+    "show me a fraud review UI",
+])
+def test_an_ambiguous_lead_needs_an_information_noun(prompt):
+    # "give"/"show" open both a question and a build, so _INFO_ASK only fires on what follows.
+    # These two stay outside it and keep falling through to the plan gate, as they did before.
+    assert _asks_about_a_change(prompt) is False
+
+
+@pytest.mark.parametrize("prompt", [
+    "give me an architecture to add a real time queue that shows data upload progress",
+    "how would you design the data flow for uploads?",
+    "what's the architecture for the export feature we want to build",
+])
+def test_wants_architecture_needs_a_named_artifact_and_unbuilt_work(prompt):
+    assert _wants_architecture(prompt) is True
+    assert _wants_diagram(prompt) is False  # the two never both claim a prompt
+
+
+@pytest.mark.parametrize("prompt", [
+    "how would you add a real time upload queue?",  # a design question, but no artifact named
+    "add an architecture diagram screen to the app",  # imperative: build it, don't describe it
+    "",
+])
+def test_wants_architecture_false_without_both_halves(prompt):
+    assert _wants_architecture(prompt) is False
+
+
+# The split: a question about how something ALREADY works gets a diagram in the answer, never the
+# card. Offering to "Build this" in reply to "what states does a job go through" is nonsense, and
+# before the split naming the noun was enough to get exactly that.
+@pytest.mark.parametrize("prompt", [
+    "explain the architecture of the upload pipeline",
+    "what states does a job go through",
+    "how does data get through the upload flow",
+    "what's the architecture for a live upload queue",  # names no work to do -> the lighter shape
+    "walk me through the request lifecycle",
+])
+def test_wants_diagram_for_questions_about_what_already_works(prompt):
+    assert _wants_diagram(prompt) is True
+    assert _wants_architecture(prompt) is False
+    # Explanatory in every mode — Plan must answer it, not propose steps for it.
+    for mode in (Mode.ASK, Mode.AUTO, Mode.PLAN, Mode.IMPLEMENT):
+        assert _is_answer_only(mode=mode, is_question=True, is_approval=False, diagram=True) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    "make the table compact",          # not a question at all
+    "what tech stack will you use?",   # a question, but nothing shaped about it
+    "",
+])
+def test_wants_diagram_false_for_everything_else(prompt):
+    assert _wants_diagram(prompt) is False
+
+
+def test_a_diagram_answer_never_becomes_a_card_or_a_build():
+    # It's answer-only, so it never gates and never writes a file — the whole point of the split.
+    assert _is_answer_only(mode=Mode.PLAN, is_question=True, is_approval=False, diagram=True) is True
+    # An approval still builds; a diagram question is not a standing invitation to re-explain.
+    assert _is_answer_only(mode=Mode.PLAN, is_question=True, is_approval=True, diagram=True) is False
+
+
+ARCH_PROMPT = "give me an architecture to add a real time queue that shows data upload progress"
+
+
+@pytest.mark.parametrize("mode", [Mode.PLAN, Mode.IMPLEMENT, Mode.AUTO, Mode.ASK])
+def test_an_architecture_request_is_neither_built_nor_planned(mode: Mode):
+    # The reported bug: asked for an architecture in Plan mode the user got a ten-step build plan,
+    # and switching to Implement built the feature. This is the routing _build_stream applies —
+    # `arch` overrides the mode, forces the gate, and suppresses answer-only. Ask is included: it's
+    # where a design question is most naturally typed, and prose is the wrong shape for a document.
+    arch = _wants_architecture(ARCH_PROMPT)
+    assert arch is True
+    gate = arch or _should_gate(mode=mode, has_built=True, skip_planning=False,
+                                is_question=_looks_like_question(ARCH_PROMPT))
+    assert gate is True   # never reaches the build path, in any mode
+    assert _is_answer_only(mode=mode, is_question=True, is_approval=False, arch=arch) is False
+    assert _read_only_reason(mode=mode, answer_only=False, gate=gate, arch=arch) == "architecture"
+
+
+def test_ask_mode_still_answers_an_ordinary_question_in_prose():
+    # Only a named artifact gets the card; Ask's contract is otherwise unchanged.
+    assert _wants_architecture("how does the upload flow work") is False
+    assert _is_answer_only(mode=Mode.ASK, is_question=True, is_approval=False) is True
+    assert _should_gate(mode=Mode.ASK, has_built=True, skip_planning=False, is_question=True) is False
+
+
+def test_an_approval_is_never_rerouted_to_an_architecture():
+    # "yes, build it" after an architecture card must build, not re-describe the design forever.
+    assert _is_answer_only(mode=Mode.PLAN, is_question=True, is_approval=True, arch=True) is False
+
+
+def test_the_architecture_artifact_survives_a_build(tmp_path: Path):
+    # plan.md is a one-shot handoff that archive_plan() moves aside the moment a build consumes it.
+    # A design the user asked to keep reading must not disappear the same way.
+    ws = _orch(tmp_path).project(start_preview=False).workspace
+    ws.write_architecture("## Components\n- **Queue** — holds jobs.")
+    ws.write_plan("## Plan\n1. **Do it** — now.")
+    ws.archive_plan()
+    assert ws.read_plan() is None
+    assert "Queue" in (ws.read_architecture() or "")
+
+
+def test_approve_falls_back_to_the_architecture_when_no_plan_is_live(tmp_path: Path):
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.workspace.write_architecture("## Components\n- **Queue** — holds jobs.")
+    seen = []
+    orch._build_stream = lambda p, *a, **k: (seen.append(p), iter([]))[1]  # type: ignore[method-assign]
+    list(orch.approve_stream())
+    assert seen and "Queue" in seen[0]  # the design reached the build, not an empty plan
+
+
+def test_a_question_in_implement_mode_answers_instead_of_building(tmp_path: Path):
+    # sage-implement is told "a turn in which you touched no files is a failed turn", so a question
+    # asked there either built something nobody wanted or was reported as `Wrote nothing`.
+    assert _is_answer_only(mode=Mode.IMPLEMENT, is_question=True, is_approval=False) is True
+    assert _is_answer_only(mode=Mode.IMPLEMENT, is_question=False, is_approval=False) is False
+    # An architecture request is never answer-only — it has its own artifact, and the gate needs it.
+    assert _is_answer_only(mode=Mode.IMPLEMENT, is_question=True, is_approval=False, arch=True) is False
+
+
+def test_ask_mode_answers_a_design_question(tmp_path: Path):
+    # An architecture request in Ask must reach the turn, not the change-request refusal — the turn
+    # is read-only either way, and it's the mode this question is most naturally typed into.
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False).control.set_mode(Mode.ASK)
+    ran = []
+    orch._build_stream = lambda *a, **k: (ran.append(a), iter([]))[1]  # type: ignore[method-assign]
+    events = list(orch.build_stream("give me an architecture to add a real time upload queue"))
+    assert ran and not [e for e in events if e["type"] == "ask-blocked"]
 
 
 def test_ask_mode_refuses_a_change_request_before_running_the_turn(tmp_path: Path):
