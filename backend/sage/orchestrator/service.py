@@ -1171,6 +1171,7 @@ class Orchestrator:
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
                 locked=project.control.snapshot().sensitivity_locked,
+                root=project.workspace.path,
                 session=project.session_id,
                 version=project.shim.version,
             )

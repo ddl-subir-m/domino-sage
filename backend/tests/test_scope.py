@@ -125,6 +125,77 @@ def test_a_long_prompt_is_truncated_not_refused():
     assert len(gw.seen[0][0]["messages"][-1]["content"]) == scope.MAX_PROMPT_CHARS
 
 
+# --- the app listing ---------------------------------------------------------------------------
+
+def _app(tmp_path, files: dict[str, str]):
+    for rel, body in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+    return tmp_path
+
+
+def test_the_listing_names_source_files_with_their_size(tmp_path):
+    root = _app(tmp_path, {"src/App.tsx": "a\nb\nc\n", "src/components/Table.tsx": "x\n"})
+    ctx = scope.app_context(root)
+    assert "src/App.tsx (3 lines)" in ctx
+    assert "src/components/Table.tsx (1 lines)" in ctx
+
+
+def test_scaffolding_is_left_out_of_the_listing(tmp_path):
+    # Every project carries an identical template — package.json, the tsconfigs, dist/, public/. It
+    # costs tokens and says nothing about THIS app's size, which is the only thing being judged.
+    root = _app(tmp_path, {
+        "src/App.tsx": "x\n", "package.json": "{}", "dist/index.html": "<html>",
+        "public/favicon.svg": "<svg/>", "tsconfig.json": "{}",
+    })
+    ctx = scope.app_context(root)
+    assert "src/App.tsx" in ctx
+    for noise in ("package.json", "dist/", "public/", "tsconfig"):
+        assert noise not in ctx
+
+
+def test_a_long_listing_says_how_much_it_left_out(tmp_path):
+    # A silently truncated listing would make a large app read as a medium one — the exact
+    # misjudgement the context exists to correct.
+    root = _app(tmp_path, {f"src/c{i}.tsx": "x\n" for i in range(scope.MAX_FILES + 5)})
+    ctx = scope.app_context(root)
+    assert ctx.count("\n  src/") == scope.MAX_FILES
+    assert "and 5 more files" in ctx
+
+
+def test_a_missing_or_empty_app_yields_no_context(tmp_path):
+    # No context is strictly better than partial context, and the caller can't act on the difference.
+    assert scope.app_context(None) == ""
+    assert scope.app_context(tmp_path) == ""
+    assert scope.app_context(tmp_path / "does-not-exist") == ""
+
+
+def test_an_unreadable_file_is_still_listed_without_a_count(tmp_path):
+    # Its existence is scope signal even when its size isn't; dropping the row would undercount the app.
+    root = _app(tmp_path, {"src/big.bin": "x" * (scope.MAX_FILE_BYTES + 1)})
+    ctx = scope.app_context(root)
+    assert "src/big.bin" in ctx and "lines" not in ctx.split("src/big.bin")[1]
+
+
+def test_the_listing_rides_the_system_prompt_not_the_users_message(tmp_path):
+    # Background the model judges against. Pasted in front of the request it would read as part of
+    # what the user typed — and it would break the truncation contract on the user message.
+    gw = StubGateway("BUILD")
+    root = _app(tmp_path, {"src/App.tsx": "x\n"})
+    _ask(gw, prompt="add a settings page", root=root)
+    system, user = gw.seen[0][0]["messages"]
+    assert "src/App.tsx" in system["content"]
+    assert user["content"] == "add a settings page"
+
+
+def test_classifying_without_a_root_still_works(tmp_path):
+    # The listing is an improvement to the judgement, never a precondition for making one.
+    gw = StubGateway("PLAN")
+    assert _ask(gw, root=None) is True
+    assert gw.seen[0][0]["messages"][0]["content"] == scope._SYSTEM
+
+
 # --- when it runs at all -----------------------------------------------------------------------
 
 def test_the_classifier_runs_only_where_it_can_change_the_outcome():

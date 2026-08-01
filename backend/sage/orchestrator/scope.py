@@ -23,15 +23,24 @@ Three properties the caller depends on:
     client sets no read timeout on streams by design (a mid-build stall was traced to one) and a hung
     classify would otherwise hang the whole turn before it started.
 
-Text-only on purpose: no repo access, no tools. It judges the REQUEST, not the codebase. That is the
-known limit — "make it look more professional" is caught because the phrasing is unbounded, not
-because anything measured the app.
+It gets a static listing of the app's source — paths and line counts, nothing read — because the two
+judgements it is worst at both need it. "Add a settings page" is a new feature or a small edit
+depending entirely on whether Settings.tsx already exists, and "make it look more professional" is an
+afternoon or a week depending on whether the app is four files or forty. Neither is visible in the
+prompt string.
+
+No tools, though, and nothing read. Letting this explore the repo would mean an agent loop inside a
+pre-pass that runs before every Auto turn on a built project — build-sized latency and cost paid up
+front to answer one word, duplicating what the gated plan turn already does with better tools and a
+real budget. The listing is the cheap majority of the signal: one call, one word out. Judging actual
+coupling by reading the code is the part deliberately left to the plan turn.
 """
 from __future__ import annotations
 
 import concurrent.futures
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from ..gateway.client import CostLabels, GatewayClient
@@ -46,6 +55,18 @@ TIMEOUT_S = 12.0
 # Long prompts are truncated rather than refused: the decision lives in the first sentence or two,
 # and paying for a 5k-token paste to answer one word is the kind of cost nobody would sign off on.
 MAX_PROMPT_CHARS = 2000
+
+# The app's own source. Everything beside it in the workspace — package.json, the tsconfigs, dist/,
+# public/, node_modules — is template scaffolding identical across every project, so listing it would
+# cost tokens to say nothing about this app's size or shape.
+SOURCE_DIR = "src"
+
+# A listing long enough to be worth reading, short enough that it can't dominate the call. Past this
+# the count itself is the signal ("this app is large"), not which files made the cut.
+MAX_FILES = 60
+
+# Above this a file is an asset, not source, and counting its newlines is pointless I/O.
+MAX_FILE_BYTES = 200_000
 
 _SYSTEM = """\
 You decide whether a change request to an existing web app is big enough to deserve a written plan \
@@ -62,6 +83,15 @@ a user would expect to simply happen.
 Default to BUILD. Interrupting a small change with an approval step is worse than building a \
 medium-sized one directly. Answer PLAN only if you would be uncomfortable writing the code without \
 checking first."""
+
+# Appended to the system prompt, not the user message: this is background the model judges against,
+# and a listing pasted in front of the request reads like part of what the user typed.
+_CONTEXT_HEADER = """\
+
+The app's existing source files, with line counts, so you can judge the request against what is \
+already built. A request naming something already in this list is usually an edit, not a new \
+feature; an open-ended request against a large app is a bigger job than the same words against a \
+small one. This is a listing only — you have not seen inside these files."""
 
 
 def _content_from(chunk: dict[str, Any]) -> str:
@@ -101,6 +131,55 @@ def _extract(raw: bytes) -> str:
     return "".join(out).strip()
 
 
+def _lines(p: Path) -> int | None:
+    """Newline count, or None for anything too big, binary, or unreadable to bother with.
+
+    Binaries are skipped rather than counted because "hero.png (53 lines)" is not a small
+    inaccuracy — it is a number the model will reason about as if it meant something."""
+    try:
+        if p.stat().st_size > MAX_FILE_BYTES:
+            return None
+        with p.open("rb") as fh:
+            head = fh.read(4096)
+            if b"\0" in head:
+                return None
+            return head.count(b"\n") + sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 16), b""))
+    except OSError:
+        return None
+
+
+def app_context(root: Path | None) -> str:
+    """A listing of the app's source files with line counts, or "" when there is nothing to say.
+
+    Returns "" on every failure path — a missing workspace, an unreadable directory, an app with no
+    src/ — because the classifier is strictly better off with no context than with a wrong or partial
+    one, and the caller has no way to act on the difference anyway."""
+    if root is None:
+        return ""
+    src = Path(root) / SOURCE_DIR
+    try:
+        files = sorted(
+            p for p in src.rglob("*")
+            if p.is_file() and not any(part.startswith(".") for part in p.relative_to(src).parts)
+        )
+    except OSError:
+        return ""
+    if not files:
+        return ""
+
+    shown = files[:MAX_FILES]
+    lines = []
+    for p in shown:
+        n = _lines(p)
+        rel = p.relative_to(root).as_posix()
+        lines.append(f"  {rel} ({n} lines)" if n is not None else f"  {rel}")
+    if len(files) > len(shown):
+        # Said out loud rather than silently cut: a truncated listing that looks complete would make
+        # a large app read as a medium one, which is the exact misjudgement this context exists to fix.
+        lines.append(f"  ... and {len(files) - len(shown)} more files")
+    return _CONTEXT_HEADER + "\n\n" + "\n".join(lines)
+
+
 def _model_for(catalog: ModelCatalog, locked: bool) -> str:
     """The read-only ask model, or its sovereign counterpart under a sensitivity lock.
 
@@ -116,6 +195,7 @@ def wants_a_plan(
     gateway: GatewayClient,
     catalog: ModelCatalog,
     locked: bool,
+    root: Path | None = None,
     session: str | None = None,
     version: str | None = None,
     timeout_s: float = TIMEOUT_S,
@@ -127,10 +207,14 @@ def wants_a_plan(
     if not text:
         return False
 
+    # File paths are app structure, not user data — but they are still workspace content leaving the
+    # box, so this rides the same routing as the prompt and a locked project sends it sovereign. The
+    # lock being incidental here is the point: there is no path where it can be skipped as an
+    # optimisation.
     request = {
         "model": _model_for(catalog, locked),
         "messages": [
-            {"role": "system", "content": _SYSTEM},
+            {"role": "system", "content": _SYSTEM + app_context(root)},
             {"role": "user", "content": text[:MAX_PROMPT_CHARS]},
         ],
         # One word is the whole contract; the ceiling is slack for a model that opens with a space
