@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0,<9.0"]
+dev = ["pytest>=8.0,<9.0", "ruff==0.16.1"]  # ruff pinned exactly — see [tool.ruff] required-version
 
 [build-system]
 requires = ["hatchling"]
@@ -30,6 +30,22 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110
+
+# The rule set is pinned by pinning the tool. There is no `select` here, so the enabled rules are
+# ruff's defaults — 413 of them under 0.16.1, and NOT a set of whole families: the defaults cherry-
+# pick (2 of ~60 flake8-bandit rules, 1 of the flake8-implicit-str-concat rules, and so on). That
+# makes `select = ["S", "ISC", ...]` a poor way to freeze this, because prefix selection is strictly
+# WIDER than the default it is meant to reproduce — measured at +278 findings for the closest tuned
+# set, and +2487 with the families listed as-is. Almost all of that delta is things this codebase
+# does deliberately: function-local imports (PLC0415), shelling out to git/npx/lsof (S603/S607), the
+# mid-file test imports (E402). Adopting them is a decision to make on purpose, not a side effect of
+# wanting reproducibility.
+#
+# required-version gets the reproducibility without the decision: ruff REFUSES TO RUN against any
+# other version, so an upgrade is a deliberate edit here rather than a silent change in what "clean"
+# means. Bump it and the pin in [project.optional-dependencies].dev together, and expect to triage a
+# diff in findings when you do.
+required-version = "==0.16.1"
 
 [tool.ruff.lint]
 # Sage fails open on purpose: a broken descriptor, an unreadable settings file or a git call that
