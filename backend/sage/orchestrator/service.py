@@ -183,13 +183,35 @@ _BUILD_VERB = frozenset({
 _INFO_LEAD = frozenset({
     "how", "what", "whats", "why", "when", "where", "which", "explain", "describe", "compare",
 })
+# Adjectives that may sit between the article and the artifact noun in _INFO_ASK — "give me a
+# step-by-step plan", "show me a high-level architecture", "draft a rough technical design".
+#
+# Curated rather than a generic `[a-z]+` wildcard, in the style of _QUESTION_LEAD and _BUILD_VERB. A
+# wildcard would let an arbitrary noun phrase reach the artifact nouns ("show me the dataset upload
+# design"), and every consumer of _asks_about_a_change reads a match as "this prompt wants words, not
+# work" — so an over-wide match here quietly stops Ask mode refusing real change requests. Two is the
+# cap because "a rough high-level plan" is the realistic ceiling for stacked modifiers.
+_ARTIFACT_MODIFIER = (
+    r"(?:(?:high|low)[\s-]level|step[\s-]by[\s-]step|end[\s-]to[\s-]end|"
+    r"detailed|rough|quick|brief|short|simple|basic|initial|draft|"
+    r"technical|implementation|overall|general|concise|full|complete)"
+)
+
 # The other informational opening: a deliverable made of words. "give"/"show"/"tell" are too
 # ambiguous alone to be question leads ("show me a dashboard" is a build) — it's the noun that
 # settles it, so this pattern requires one.
+#
+# The indirect object is optional: "give me a plan" and "draft a plan" are the same request, and the
+# verbs that read most clearly as informational are exactly the ones that never take it — nobody
+# writes "propose me an approach" or "sketch me the architecture". Requiring "me"/"us" meant `draft`,
+# `sketch`, `propose`, `suggest` and `recommend` sat in the verb list unreachable in natural phrasing.
+# Dropping it is safe because the artifact noun is still mandatory, and that noun is what separates
+# "show me a plan" from "show me a dashboard".
 _INFO_ASK = re.compile(
     r"^(?:(?:please|can|could|would|will)\s+(?:you\s+)?)*"
     r"(?:give|show|tell|walk|talk|draft|sketch|outline|propose|suggest|recommend)\s+"
-    r"(?:me|us)\s*(?:through\s+)?(?:an?|the|some|your)?\s*(?:high[\s-]level\s+)?"
+    r"(?:(?:me|us)\s+)?(?:through\s+)?(?:an?|the|some|your)?\s*"
+    rf"(?:{_ARTIFACT_MODIFIER}\s+){{0,2}}"
     r"(?:architecture|design|plan|approach|strategy|outline|spec(?:ification)?|proposal|"
     r"option|options|recommendation|recommendations|idea|ideas|overview|breakdown|"
     r"tradeoffs?|trade[\s-]offs?)\b",
@@ -244,6 +266,49 @@ def _wants_architecture(prompt: str) -> bool:
     words = re.findall(r"[a-z']+", (prompt or "").lower())
     return (_asks_about_a_change(prompt)
             and _ARCH_NOUN.search(prompt or "") is not None
+            and any(w in _BUILD_VERB for w in words))
+
+
+# The plan artifact a prompt can ask for by name. Tighter than _ARCH_NOUN's list on purpose: the
+# nouns _INFO_ASK also accepts ("approach", "strategy", "outline", "proposal") stay OUT, because a
+# request for an approach is answered well in prose, while a plan has a card and an Approve button
+# waiting for it. Only the words that name THAT artifact earn it.
+_PLAN_NOUN = re.compile(r"\b(?:plan|roadmap|step[\s-]by[\s-]step)\b", re.IGNORECASE)
+
+# The imperative form: "plan this first", "just plan it out", "plan the auth flow". Anchored at the
+# start, because a leading "plan" IS the request — mid-sentence it is usually a noun about something
+# else ("the plan we discussed"). `\bplan\b` keeps "planning to use postgres" out: no word boundary
+# after "plan" in "planning".
+_PLAN_FIRST = re.compile(
+    r"^(?:(?:please|can|could|would|will)\s+(?:you\s+)?)*(?:just\s+|first\s+)*\bplan\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_plan(prompt: str) -> bool:
+    """True when the prompt explicitly asks for a PLAN before any building — "plan this first", "show
+    me a plan to add auth". Forces the gate in every mode (see the `wants_plan` branch in _should_gate).
+
+    Same bug as _wants_architecture, one artifact over: the plan card and its Approve button already
+    exist, and a request for them had no way to reach them. "Show me a plan to add auth" matches
+    _INFO_ASK, so it was classed a question and answered in prose — the user asked for the thing the
+    gate produces and got an essay. "Plan this first" was worse: "plan" is neither a build verb nor a
+    question lead, so on a built project it fell through to _should_gate's `has_built` check and
+    silently built the feature it was asked to plan.
+
+    Two accepted shapes. The imperative (_PLAN_FIRST) stands alone — asking for a plan IS the request,
+    so it needs no other signal. The informational ask ("show me a plan to add auth") mirrors
+    _wants_architecture exactly: asks about a change, names the artifact, and names work not yet done.
+
+    That build-verb proxy carries the same imperfection it does there — "what's the plan for the upload
+    flow" names no verb and is answered as prose rather than re-planning a feature that already exists.
+    Erring toward the lighter deliverable is the right way to be wrong, and it is what stops a question
+    about existing code from turning into a plan card nobody asked for."""
+    if _PLAN_FIRST.match((prompt or "").strip()):
+        return True
+    words = re.findall(r"[a-z']+", (prompt or "").lower())
+    return (_asks_about_a_change(prompt)
+            and _PLAN_NOUN.search(prompt or "") is not None
             and any(w in _BUILD_VERB for w in words))
 
 
@@ -335,15 +400,24 @@ def _wants_web(prompt: str) -> bool:
     return bool(_WEB_INTENT.search(prompt or ""))
 
 
-def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_question: bool = False) -> bool:
+def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_question: bool = False,
+                 wants_plan: bool = False) -> bool:
     """Plan gate (SPEC P6): run the read-only planner and stop for the user to approve before any
-    code is written. Fires in Plan mode, or automatically on the first BUILD of a project that hasn't
-    been built yet — unless the project opted out. Never gates Ask (read-only Q&A).
+    code is written. Fires in Plan mode, when the prompt asks for a plan outright, or automatically on
+    the first BUILD of a project that hasn't been built yet — unless the project opted out. Never
+    gates Ask (read-only Q&A) otherwise.
 
     Keyed on has_built, not "first turn": a question asked before the first build (answered read-only,
     see answer_only in build_stream) must not consume the gate — the first real build request still
     gates. A *question* is not a build to be planned, so it skips the gate. Plan mode always gates:
     it's an explicit ask to plan. Once built, iteration turns don't gate."""
+    # Asking for a plan in words is the same instruction as picking Plan mode, so it outranks
+    # everything below — including Ask and skip_planning, exactly as an explicit Plan selection does.
+    # Ask is safe to override for the same reason an architecture request is: the gated turn is
+    # read-only, so nothing about Ask's contract changes, and _wants_plan needs work that doesn't
+    # exist yet, which keeps "what's the plan for the upload flow" out.
+    if wants_plan:
+        return True
     if mode is Mode.ASK:
         return False
     # Plan mode is an explicit ask to plan — it always gates, even with skip_planning set. That flag
@@ -386,7 +460,8 @@ def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool, arch: bool =
     return "plan" if gate else ""
 
 
-def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool, arch: bool = False) -> bool:
+def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool, arch: bool = False,
+                    wants_plan: bool = False) -> bool:
     """A turn that answers read-only instead of building — no plan card, no edits, no implement-nudge.
     Ask mode is always read-only Q&A; a question in Auto or Implement is answered rather than built
     (whether or not the app is built — a question about a built app should be answered, not turned
@@ -398,8 +473,10 @@ def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool, arch: b
 
     Plan still falls through — a build request there is what the gate is for. An architecture request
     produces its own artifact and is never answer-only, which keeps this mutually exclusive with the
-    gate (a question is never gated)."""
-    if is_approval or arch:
+    gate (a question is never gated). A request for a plan is excluded for the same reason and matters
+    more: "show me a plan to add auth" reads as a question to _looks_like_question, and answering it in
+    prose is precisely the failure — the plan card it asked for is what the gate already produces."""
+    if is_approval or arch or wants_plan:
         return False
     return mode is Mode.ASK or (mode in (Mode.AUTO, Mode.IMPLEMENT) and is_question)
 
@@ -1044,11 +1121,16 @@ class Orchestrator:
         # Ask is where a design question is most naturally typed, so it gets the artifact too — the
         # turn is read-only either way, so nothing about Ask's contract changes.
         arch = not is_approval and _wants_architecture(prompt)
+        # An explicit ask for a plan (see _wants_plan) is the same instruction as picking Plan mode,
+        # typed instead of clicked, so it gates in every mode too. Ranked below arch: a prompt naming
+        # both artifacts wants the heavier one, and that keeps the existing precedence untouched.
+        wants_plan = not is_approval and not arch and _wants_plan(prompt)
         gate = False if is_approval else arch or _should_gate(
             mode=mode_at_start,
             has_built=has_built,
             skip_planning=bool(project.workspace.read_settings().get("skip_planning")),
             is_question=is_question,
+            wants_plan=wants_plan,
         )
         # A gated turn's prompt carries a planning-context preamble scoped to whether the app exists
         # yet. First build (fresh template): tell the planner it needn't read anything and can plan
@@ -1120,7 +1202,7 @@ class Orchestrator:
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
         answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
-                                      is_approval=is_approval, arch=arch)
+                                      is_approval=is_approval, arch=arch, wants_plan=wants_plan)
         # Pin the ANSWER's voice, for the same reason the gated turn pins the plan's (see _PLAN_VOICE):
         # the sage-ask agent prompt alone hasn't held. Asked "what tech stack will be used", the agent
         # answered and then announced the build it was about to start — "Next I'm replacing the starter

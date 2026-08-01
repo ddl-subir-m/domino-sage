@@ -440,7 +440,7 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import (  # noqa: E402
     _approve_prompt, _asks_about_a_change, _is_answer_only, _looks_like_approval,
-    _looks_like_change_request, _wants_architecture,
+    _looks_like_change_request, _wants_architecture, _wants_plan,
     _looks_like_question, _read_only_reason, _should_gate,
 )
 from sage.router.models import Mode  # noqa: E402
@@ -757,6 +757,98 @@ def test_wants_architecture_false_without_both_halves(prompt):
 def test_a_question_about_existing_code_gets_no_architecture_card(prompt):
     assert _wants_architecture(prompt) is False
     assert _is_answer_only(mode=Mode.ASK, is_question=True, is_approval=False) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    "plan this first",
+    "plan it out before you build anything",
+    "just plan the auth flow",
+    "please plan how we'd add multi tenant orgs",
+    "Plan the migration",                                   # leading capital
+    "show me a plan to add a training pipeline",             # informational shape
+    "give me a plan to add scheduled retraining",
+    "give me a step-by-step plan to add scheduled retraining",   # modifier before the noun
+    "give me a rough high-level plan to add multi tenant orgs",  # two stacked modifiers
+    "draft a plan to add scheduled retraining",                  # no indirect object
+    "outline a step-by-step plan to add auth",
+])
+def test_wants_plan_accepts_the_imperative_and_the_informational_ask(prompt):
+    assert _wants_plan(prompt) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    "planning to use postgres for this",   # "plan" only as a prefix — no word boundary
+    "the plan we discussed is fine",       # mid-sentence noun, not a request
+    "what's the plan for the upload flow", # names no work to do -> answered, not re-planned
+    "give me an approach for caching",     # _INFO_ASK noun, but not the plan artifact
+    "add a roadmap page to the app",       # imperative build, not a request to plan
+    "",
+])
+def test_wants_plan_stays_out_of_the_ambiguous_middle(prompt):
+    assert _wants_plan(prompt) is False
+
+
+def test_artifact_modifiers_stay_curated_so_a_noun_phrase_cant_reach_the_artifact_noun():
+    # The modifier slot in _INFO_ASK is a fixed adjective list, not `[a-z]+`. A wildcard would let any
+    # noun phrase land on an artifact noun, and _asks_about_a_change is what stops Ask mode refusing a
+    # change request — so an over-wide match here turns a real build request into a prose answer.
+    assert _asks_about_a_change("give me a high-level plan to add auth") is True
+    assert _asks_about_a_change("show me the dataset upload design") is False
+    assert _asks_about_a_change("show me the settings page design") is False
+    # Three stacked modifiers exceed the cap and fall through, which is the safe direction.
+    assert _asks_about_a_change("give me a quick rough high-level plan to add auth") is False
+
+
+def test_an_informational_ask_needs_no_indirect_object():
+    # "propose me an approach" is not something anyone types, so requiring "me"/"us" left half the
+    # verb list unreachable. The artifact noun still carries the decision.
+    assert _asks_about_a_change("propose an approach for caching") is True
+    assert _asks_about_a_change("sketch the architecture") is True
+    assert _asks_about_a_change("walk through the design") is True
+    assert _asks_about_a_change("recommend a strategy") is True
+    # Still a build: the verb alone never decides, and "dashboard" is not a deliverable made of words.
+    assert _asks_about_a_change("show a dashboard of upload failures") is False
+    assert _asks_about_a_change("give the app a settings page") is False
+
+
+PLAN_PROMPT = "show me a plan to add a training pipeline"
+
+
+@pytest.mark.parametrize("mode", [Mode.PLAN, Mode.IMPLEMENT, Mode.AUTO, Mode.ASK])
+def test_an_explicit_plan_request_gates_in_every_mode(mode: Mode):
+    # Typing "show me a plan" is the same instruction as picking Plan mode, so it must reach the plan
+    # card in every mode — including on a built project, where _should_gate otherwise never fires
+    # again. This is the routing _build_stream applies.
+    wants_plan = _wants_plan(PLAN_PROMPT)
+    assert wants_plan is True
+    gate = _should_gate(mode=mode, has_built=True, skip_planning=False,
+                        is_question=_looks_like_question(PLAN_PROMPT), wants_plan=wants_plan)
+    assert gate is True
+    assert _read_only_reason(mode=mode, answer_only=False, gate=gate) == (
+        "ask" if mode is Mode.ASK else "plan")
+
+
+def test_an_explicit_plan_request_is_not_answered_in_prose():
+    # The bug: "show me a plan to add auth" matches _INFO_ASK, so _looks_like_question calls it a
+    # question and the turn answered in prose — the plan card the user asked for is exactly what the
+    # gate already produces, and it never reached it.
+    assert _looks_like_question(PLAN_PROMPT) is True
+    assert _is_answer_only(mode=Mode.AUTO, is_question=True, is_approval=False,
+                           wants_plan=True) is False
+
+
+def test_an_explicit_plan_request_outranks_skip_planning():
+    # skip_planning opts out of the *automatic* first-build gate. Asking for a plan outright is not
+    # automatic, so it must survive the opt-out for the same reason Plan mode does.
+    assert _should_gate(mode=Mode.AUTO, has_built=True, skip_planning=True, wants_plan=True) is True
+
+
+def test_approval_still_wins_over_a_plan_request():
+    # "ok build" while a plan is pending must run the approved plan, never re-propose one. _build_stream
+    # zeroes wants_plan on an approval; the vocabularies don't overlap either, which is the backstop.
+    for prompt in ("ok build", "go ahead", "approve"):
+        assert _looks_like_approval(prompt) is True
+        assert _wants_plan(prompt) is False
 
 
 ARCH_PROMPT = "give me an architecture to add a real time queue that shows data upload progress"
