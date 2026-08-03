@@ -598,11 +598,14 @@
   </section>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 <!-- Renders the one mermaid block in an architecture document (see drawMermaid). Loaded the same way
      Monaco is, and equally optional: if the CDN is unreachable the diagram stays a fenced code block
-     and the rest of the document still reads fine. -->
+     and the rest of the document still reads fine.
+     MUST stay above Monaco's loader: mermaid ships a UMD bundle that prefers AMD, so with an AMD
+     `define` already on the page it registers with Monaco's loader instead of setting window.mermaid,
+     and drawMermaid finds nothing to draw with. -->
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 <script>
 // Domino serves this page under a proxy path prefix (rewrite:false preserves it); locally it's "".
 // Capture it ONCE from the load path — this is a single static page, so location.pathname doesn't
