@@ -32,6 +32,48 @@ def test_discard_changes_reverts_edits_and_removes_new_files(tmp_path: Path):
     assert not (ws.path / "src" / "New.tsx").exists()
 
 
+def test_discard_to_reverts_past_intermediate_checkpoints(tmp_path: Path):
+    """What a phased build's Stop needs: undo every phase, not just the one in flight.
+
+    Each phase takes its own checkpoint (which is what gives a gate violation its correct, narrow
+    scope), so by phase three HEAD is the start of phase three — discard_changes() would leave the
+    first two phases on disk while the user believes they cancelled the build.
+    """
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
+    snap = TurnSnapshot(ws.path)
+
+    base = snap.commit_before_turn()
+    (ws.path / "src" / "One.tsx").write_text("phase one")
+    snap.commit_before_turn()
+    (ws.path / "src" / "Two.tsx").write_text("phase two")
+    snap.commit_before_turn()
+    (ws.path / "src" / "App.tsx").write_text("edited in phase three")
+
+    snap.discard_to(base)
+
+    assert not (ws.path / "src" / "One.tsx").exists()
+    assert not (ws.path / "src" / "Two.tsx").exists()
+    assert (ws.path / "src" / "App.tsx").read_text() == "placeholder"
+
+
+def test_discard_changes_after_checkpoints_reverts_only_the_last(tmp_path: Path):
+    # The other half of the pair: narrow scope is deliberate, not an accident discard_to papers over.
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
+    snap = TurnSnapshot(ws.path)
+
+    snap.commit_before_turn()
+    (ws.path / "src" / "One.tsx").write_text("phase one")
+    snap.commit_before_turn()
+    (ws.path / "src" / "Two.tsx").write_text("phase two")
+
+    snap.discard_changes()
+
+    assert (ws.path / "src" / "One.tsx").exists()
+    assert not (ws.path / "src" / "Two.tsx").exists()
+
+
 def test_discard_changes_does_not_touch_excluded_dirs(tmp_path: Path):
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
     ws = mgr.ensure("p")

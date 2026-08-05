@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from sage.orchestrator.app import _PrefixMiddleware
-from sage.preview.prefix import domino_base_prefix
+from sage.preview.prefix import domino_base_prefix, domino_project_label
 from sage.preview.proxy import make_preview_app
 
 
@@ -61,6 +61,26 @@ def test_domino_base_prefix_empty_locally(monkeypatch):
     for k in ("DOMINO_PROJECT_OWNER", "DOMINO_PROJECT_NAME", "DOMINO_RUN_ID", "SAGE_BASE_PREFIX"):
         monkeypatch.delenv(k, raising=False)
     assert domino_base_prefix() == ""
+
+
+def test_domino_project_label_includes_owner(monkeypatch):
+    # The gateway's admin usage view shows every user's traffic, so two people whose project is
+    # called "Sage" must not collapse into one row and report one build's cost as two.
+    monkeypatch.setenv("DOMINO_PROJECT_OWNER", "sub_user")
+    monkeypatch.setenv("DOMINO_PROJECT_NAME", "Sage")
+    assert domino_project_label(fallback="app") == "sub_user/Sage"
+
+
+def test_domino_project_label_falls_back_readably(monkeypatch):
+    # Every step of the chain has to stay recognisable in a Group By dropdown — an id hash there is
+    # useless, which is the whole reason this isn't DOMINO_PROJECT_ID.
+    monkeypatch.delenv("DOMINO_PROJECT_OWNER", raising=False)
+    monkeypatch.setenv("DOMINO_PROJECT_NAME", "Sage")
+    assert domino_project_label(fallback="app") == "Sage"
+
+    monkeypatch.delenv("DOMINO_PROJECT_NAME", raising=False)
+    monkeypatch.setenv("DOMINO_PROJECT_ID", "6620f1a9c3e14b0001d2f8aa")
+    assert domino_project_label(fallback="app") == "app"
 
 
 @pytest.mark.parametrize(

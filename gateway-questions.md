@@ -3,11 +3,16 @@
 Reading the gateway source answered nearly all of these. See MODELS.md for the full cheatsheet.
 
 ## Answered from the repo
-- **Cost via API (Q1):** yes — `/api/usage/mine` (per caller) + audit download; dashboards group
-  by tag/model/user/provider.
-- **Per-request tags (Q2/Q3):** yes — `X-LLM-Tag-<name>: <value>` headers land in the usage
-  `tags` JSON. We'll send `X-LLM-Tag-phase|project|model`. Project also derives from
-  `DOMINO_PROJECT_NAME`; untagged → "unknown" bucket.
+- **Cost (Q1): settled — we don't read it via API.** Sage tags its calls and links to the gateway's
+  own `#usage` dashboard instead. Three reasons, all from the source: only the gateway can price a
+  call (per-alias custom rates live in its DB); `/api/usage/mine/*` resolves callers with
+  `resolve_visitor`, which has no `dgw_` branch, so a gateway-PAT deployment gets a 401; and the
+  Anthropic/Bedrock adapters don't return usage in-band at all, so a stream-parsing meter would read
+  zero for `bedrock-qwen3-coder` — Sage's default implement model.
+- **Per-request tags (Q2/Q3):** yes — `X-LLM-Tag-<name>: <value>` headers land in the usage `tags`
+  JSON. We send seven, all `sage-`-namespaced (see MODELS.md). **`project`/`model`/`user`/`org` and
+  friends are in `RESERVED_TAG_KEYS` and are silently dropped**, which is why the namespace isn't
+  optional. Untagged → "unknown" bucket.
 - **Guardrails (Q4/Q5/Q6):** preventive input/output egress control (regex or LLM rules,
   admin-configured per alias). Input guardrails block/redact BEFORE the provider; blocked →
   `guardrail_blocked`. Not merely detective.

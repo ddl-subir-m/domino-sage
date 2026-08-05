@@ -51,22 +51,33 @@ class FakeOpenCode:
         # gated turn ran as sage-plan rather than the build agent.
         self.prompts: list[dict] = []
         self.interrupted = 0
-        self._messages: list[dict] = []
-        self._running = False
+        # Per-session message stores. A phased build runs each phase in its own session, and the
+        # whole point is that a phase CANNOT see the others' context — a single shared list would
+        # hand every phase the previous ones' transcript and quietly test the opposite of the
+        # feature. Keyed by session id; `sessions` records the create calls for assertions.
+        self.sessions: list[dict] = []
+        self._by_session: dict[str, list[dict]] = {"fake-session": []}
+        self._running: dict[str, bool] = {}
         self._next = 0
 
     # --- session ---------------------------------------------------------------------------------
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
-        return "fake-session"
+        # The first session keeps the historic id so every pre-existing test is untouched; phases
+        # get distinct ones.
+        sid = "fake-session" if not self.sessions else f"fake-session-{len(self.sessions) + 1}"
+        self.sessions.append({"id": sid, "directory": directory})
+        self._by_session.setdefault(sid, [])
+        return sid
 
     def messages(self, session_id: str) -> list[dict]:
         # A copy: the orchestrator iterates this while its own emit-once bookkeeping mutates, and a
         # shared list would let a test's assertions and the loop's state drift apart.
-        return list(self._messages)
+        return list(self._by_session.get(session_id, []))
 
     def last_message_id(self, session_id: str) -> str | None:
-        return self._messages[-1]["id"] if self._messages else None
+        msgs = self._by_session.get(session_id, [])
+        return msgs[-1]["id"] if msgs else None
 
     def agent_summaries(self) -> list[dict]:
         return []
@@ -75,13 +86,19 @@ class FakeOpenCode:
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None,
                     agent: str | None = None, attachments: list[dict] | None = None) -> None:
-        self.prompts.append({"text": text, "agent": agent, "attachments": attachments})
+        # `session` recorded too: a phased build's assertions are mostly about WHICH session saw
+        # which prompt.
+        self.prompts.append({"text": text, "agent": agent, "attachments": attachments,
+                             "session": session_id})
+        # One flat script consumed in order, regardless of session — the Nth send_prompt across the
+        # whole run performs the Nth scripted turn, so tests read top-to-bottom.
         turn = self.turns[self._next] if self._next < len(self.turns) else Turn()
         self._next += 1
-        self._running = True
+        self._running[session_id] = True
 
+        msgs = self._by_session.setdefault(session_id, [])
         parts: list[dict] = []
-        n = len(self._messages)
+        n = self._next
         for j, tool in enumerate(turn.tools):
             parts.append({"id": f"m{n}-t{j}", "type": "tool", "tool": tool,
                           "state": {"status": "completed"}})
@@ -93,16 +110,17 @@ class FakeOpenCode:
                           "state": {"status": "completed", "input": {"filePath": rel}}})
         if turn.text:
             parts.append({"id": f"m{n}-x", "type": "text", "text": turn.text})
-        self._messages.append({"id": f"m{n}", "type": "assistant", "content": parts})
+        msgs.append({"id": f"m{n}", "type": "assistant", "content": parts})
 
     def is_running(self, session_id: str) -> bool:
-        was, self._running = self._running, False
+        was = self._running.get(session_id, False)
+        self._running[session_id] = False
         return was
 
     def wait_for_idle(self, session_id: str, timeout_s: float = 300, poll_s: float = 1.0,
                       appear_grace_s: float = 10.0) -> None:
-        self._running = False
+        self._running[session_id] = False
 
     def interrupt(self, session_id: str) -> None:
         self.interrupted += 1
-        self._running = False
+        self._running[session_id] = False

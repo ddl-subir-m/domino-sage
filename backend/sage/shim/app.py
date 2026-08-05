@@ -33,6 +33,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..gateway.client import GatewayUpstreamError
 from ..gateway.factory import build_gateway
+from ..preview.prefix import domino_project_label
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from . import keepalive as ka
@@ -59,7 +60,8 @@ _control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
 # sovereign override live — any request, whatever model OpenCode asks for, routes to sovereign.
 if os.environ.get("SAGE_FORCE_SENSITIVITY_LOCK") in {"1", "true", "yes"}:
     _control.on_assets_changed([True])
-_shim = EnforcementShim(_control, _catalog, _gateway, force_model=(GATEWAY_MODE == "openai"))
+_shim = EnforcementShim(_control, _catalog, _gateway, force_model=(GATEWAY_MODE == "openai"),
+                        project_name=domino_project_label(fallback="unknown"))
 
 app = FastAPI(title="sage enforcement shim")
 

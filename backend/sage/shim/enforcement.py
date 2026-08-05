@@ -81,6 +81,7 @@ class EnforcementShim:
         gateway: GatewayClient,
         force_model: bool = False,
         component: str = "builder",
+        project_name: str | None = None,
     ) -> None:
         self._control = control
         self._catalog = catalog
@@ -92,6 +93,10 @@ class EnforcementShim:
         # component: the `sage-component` cost tag — which Sage process this shim serves. Lets cost
         # analysis separate real build inference (builder) from orchestration overhead (probe).
         self._component = component
+        # project_name: the `sage-project` cost tag — which Sage deployment spent this, as
+        # "<owner>/<project>" (see preview/prefix.py domino_project_label). It's what makes a build
+        # findable in the gateway's usage dashboard; without it every Sage install shares one bucket.
+        self._project_name = project_name
 
     @property
     def catalog(self) -> ModelCatalog:
@@ -199,5 +204,6 @@ class EnforcementShim:
             component=self._component,
             session=session,
             version=_SAGE_VERSION,
+            project_name=self._project_name,
         )
         return self._gateway.route(request, labels)

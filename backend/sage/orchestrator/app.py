@@ -33,7 +33,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_token, static_token
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
-from ..preview.prefix import domino_base_prefix
+from ..preview.prefix import domino_base_prefix, domino_project_label
 from ..preview.proxy import make_preview_app
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
@@ -131,6 +131,24 @@ _gateway, GATEWAY_MODE = build_gateway()
 # One builder is bound to one project volume. On Domino (git-based) that's the mounted repo at
 # /mnt/code; locally it defaults to a scratch dir. The display id is the Domino project name.
 _WORKSPACE_DIR = Path(os.environ.get("SAGE_WORKSPACE_DIR", _REPO / "backend" / "workspaces" / "app"))
+
+
+def _gateway_ui_url() -> str | None:
+    """Browser URL of the gateway's Usage & Cost dashboard, or None when there's nothing to link to.
+
+    Sage doesn't meter spend itself — it tags calls (`sage-project`) and sends you here, because only
+    the gateway can price a call correctly (per-alias custom rates live in its DB). The inference
+    base URL is the same public Domino apps URL a browser can reach, minus the trailing /v1; the
+    override exists for deployments where those differ.
+
+    None in fake/openai mode: that traffic never reaches the Domino gateway, so the dashboard would
+    have nothing to show and the link would read as broken rather than empty.
+    """
+    explicit = os.environ.get("SAGE_GATEWAY_UI_URL", "").strip()
+    base = explicit or (os.environ.get("GATEWAY_BASE_URL", "").strip() if GATEWAY_MODE == "domino" else "")
+    if not base:
+        return None
+    return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/#usage"
 orchestrator = Orchestrator(
     workspace_dir=_WORKSPACE_DIR,
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
@@ -146,6 +164,8 @@ orchestrator = Orchestrator(
     control_plane=_build_control_plane(),
     domino_project_name=os.environ.get("DOMINO_PROJECT_NAME"),
     domino_run_id=os.environ.get("DOMINO_RUN_ID"),
+    cost_project_label=domino_project_label(fallback=_WORKSPACE_DIR.name),
+    gateway_ui_url=_gateway_ui_url(),
 )
 
 control_app = FastAPI(title="sage orchestrator")
@@ -632,12 +652,14 @@ def get_settings() -> JSONResponse:
 
 @control_app.post("/api/project/settings")
 async def set_settings(request: Request) -> JSONResponse:
-    """Update per-project settings. Currently just skip_planning (SPEC P6 opt-out)."""
+    """Update per-project settings: skip_planning (SPEC P6 opt-out) and phased_build."""
     body = await request.json()
     workspace = orchestrator.project().workspace
     settings = workspace.read_settings()
     if "skip_planning" in body:
         settings["skip_planning"] = bool(body["skip_planning"])
+    if "phased_build" in body:
+        settings["phased_build"] = bool(body["phased_build"])
     workspace.write_settings(settings)
     return JSONResponse(content=settings)
 
@@ -694,7 +716,11 @@ async def chat_completions(request: Request):
     # (below) flag whether the model's response carried a tool call. build_stream reads these to explain
     # a no-edit turn. See Project.model_calls.
     project.model_calls += 1
-    gen = project.shim.handle(body, project=project.id, session=project.session_id)
+    # The live session, so a phased build tags each phase with its OWN session id — that's what makes
+    # per-phase spend separable in the gateway dashboard (group by tag:sage-session). Falling back to
+    # the project session keeps normal turns tagged exactly as before.
+    gen = project.shim.handle(body, project=project.id,
+                              session=project.active_session_id or project.session_id)
 
     # Drain the (blocking) gateway generator on a worker thread so the response side can interleave SSE
     # keepalives during silent gaps. Without this, we'd have to withhold the whole HTTP response until

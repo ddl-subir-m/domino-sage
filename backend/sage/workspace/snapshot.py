@@ -52,6 +52,16 @@ class TurnSnapshot:
         self._run("reset", "-q", "--hard", "HEAD")
         self._run("clean", "-fd", "-q")
 
+    def discard_to(self, ref: str) -> None:
+        """Undo everything since `ref` (a sha an earlier commit_before_turn() returned).
+
+        A phased build takes a checkpoint per phase, so HEAD is the start of the CURRENT phase and
+        discard_changes() would only undo that one. Stop means the user rejected the whole build, so
+        it needs to reach back past every intermediate checkpoint — which reset-to-HEAD can't express.
+        """
+        self._run("reset", "-q", "--hard", ref)
+        self._run("clean", "-fd", "-q")
+
     def changed_since_pre_turn(self) -> bool:
         """True if any workspace file changed vs the last commit_before_turn() snapshot
         (excluding node_modules/dist/.sage). Ground-truth 'did the agent write anything',

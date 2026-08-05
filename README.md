@@ -81,6 +81,7 @@ Environment (unset → uses an in-process fake so curl works with no creds):
 |-----|---------|
 | `GATEWAY_BASE_URL` | Domino AI Gateway base URL → switches to the real client |
 | `GATEWAY_API_KEY`  | gateway auth (scheme pending gateway-questions Q7) |
+| `SAGE_GATEWAY_UI_URL` | override for the "Usage & cost" link; defaults to `GATEWAY_BASE_URL` minus `/v1`. Set it when the browser-facing gateway URL differs from the inference one |
 | `SAGE_MODEL_SOVEREIGN` / `_PLAN` / `_IMPLEMENT` / `_DEFAULT` | model ids per tier |
 
 ## Run in a Domino workspace (live spike)

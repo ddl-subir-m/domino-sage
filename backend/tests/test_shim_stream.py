@@ -35,7 +35,7 @@ def _post(client):
 def _fake_project(gen_factory):
     shim = types.SimpleNamespace(handle=lambda body, project, session=None: gen_factory())
     return types.SimpleNamespace(
-        id="p", session_id="s", shim=shim,
+        id="p", session_id="s", active_session_id=None, shim=shim,
         model_calls=0, tool_call_responses=0, last_gateway_error=None,
     )
 

@@ -1,8 +1,13 @@
 """GatewayClient — the upstream adapter at the enforcement seam (DESIGN.md Seam 2).
 
 The Domino AI Gateway already exists and is OpenAI-compatible, so route() is a thin OpenAI
-client pointed at the gateway URL. costs()/guardrail_events() are the unconfirmed surface
-(gateway-questions.md Q1/Q4) and stay behind this adapter so the fake covers them until Step 2.3.
+client pointed at the gateway URL. guardrail_events() is the one still-unconfirmed surface
+(gateway-questions.md Q4) and stays behind this adapter so the fake covers it until Step 2.3.
+
+There is deliberately no cost API here (Q1 is settled): Sage tags its calls (CostLabels) and links
+out to the gateway's own Usage & Cost dashboard rather than re-deriving spend. Only the gateway can
+price a call correctly — it honours per-alias custom rates from its own DB (routes/gateway.py
+_compute_cost) that no client can see.
 
 Two adapters make the seam real:
   - FakeGatewayClient   — deterministic, for tests (no network)
@@ -47,11 +52,17 @@ class CostLabels:
     """Sage's cost-attribution tags, sent to the Domino gateway as X-LLM-Tag-sage-* headers and
     stored on each UsageLog row (queryable via group_by=tag:sage-*).
 
-    Only Sage-specific dimensions live here. The gateway already captures project, model, user and
-    org as first-class columns from the caller's Domino context, so tagging those is both redundant
-    AND silently dropped — they're in the gateway's RESERVED_TAG_KEYS (services/tags.py). Everything
-    below is namespaced `sage-` so all Sage traffic is one filter (tag:sage-source=domino-sage) on
-    the shared gateway, and so no key collides with that reserved set.
+    Everything below is namespaced `sage-` for two reasons. It makes all Sage traffic one filter
+    (tag:sage-source=domino-sage) on a shared gateway, and it dodges the gateway's RESERVED_TAG_KEYS
+    (services/tags.py), which silently DROPS bare `project`/`project-id`/`project-name`/`model`/
+    `user`/`org` at ingest — no error, just a tag that never arrives.
+
+    `project_name` is tagged even though the gateway has first-class project columns, because those
+    columns are populated only from the X-Domino-Project-Id / X-Domino-Project request headers
+    (routes/gateway.py `_resolve_caller`) and Sage doesn't send them — they're blank for all Sage
+    traffic. The dashboard also has no "By Project" grouping (static/js/views/usage.js
+    GROUP_BY_OPTIONS_BASE), whereas tag keys are discovered and appended to that dropdown
+    automatically, so `sage-project` shows up as "By Tag: sage-project" with no gateway change.
     """
 
     phase: str                  # plan | implement | ask   — build phase
@@ -59,16 +70,7 @@ class CostLabels:
     component: str = "builder"  # builder | probe          — which Sage process made the call
     session: str | None = None  # OpenCode session id      — per-build cost rollup
     version: str | None = None  # Sage git rev             — cost/quality across Sage releases
-
-
-@dataclass
-class CostRecord:
-    model: str
-    user: str | None
-    tokens: int
-    cost_usd: float
-    latency_ms: int
-    status: int
+    project_name: str | None = None  # "<owner>/<project>"  — which Sage deployment spent this
 
 
 @dataclass
@@ -84,10 +86,6 @@ class GatewayClient(Protocol):
         """Forward an OpenAI-compatible request to the gateway; stream the response back."""
         ...
 
-    def costs(self, window: str) -> list[CostRecord]:
-        """Per-request cost/usage. Surface TBD (Q1) — may be API or UI-only."""
-        ...
-
     def guardrail_events(self) -> Iterator[GuardrailEvent]:
         """Guardrail/leak events. Surface TBD (Q4) — may not be exposed to callers."""
         ...
@@ -97,7 +95,6 @@ class GatewayClient(Protocol):
 class FakeGatewayClient:
     """Deterministic double for integration/E2E tests. No network."""
 
-    scripted_costs: list[CostRecord] = field(default_factory=list)
     scripted_events: list[GuardrailEvent] = field(default_factory=list)
     seen: list[tuple[dict[str, Any], CostLabels]] = field(default_factory=list)
 
@@ -105,9 +102,6 @@ class FakeGatewayClient:
         self.seen.append((request, labels))
         # Echo the (possibly overridden) model so tests can assert the shim set it.
         yield f'{{"model": "{request.get("model")}", "phase": "{labels.phase}"}}'.encode()
-
-    def costs(self, window: str) -> list[CostRecord]:
-        return list(self.scripted_costs)
 
     def guardrail_events(self) -> Iterator[GuardrailEvent]:
         yield from self.scripted_events
@@ -159,6 +153,8 @@ class OpenAICompatibleClient:
                 headers["X-LLM-Tag-sage-session"] = labels.session
             if labels.version:
                 headers["X-LLM-Tag-sage-version"] = labels.version
+            if labels.project_name:
+                headers["X-LLM-Tag-sage-project"] = labels.project_name
         url = f"{self._base_url}/chat/completions"  # base already ends in /v1
         # read_timeout_s (default 300s) is the inter-chunk read timeout: httpx applies the read
         # timeout to the GAP between streamed chunks. The original scalar 60s was too SHORT — LLM
@@ -178,6 +174,9 @@ class OpenAICompatibleClient:
                 body = resp.read().decode(errors="replace")[:800]
                 raise GatewayUpstreamError(resp.status_code, url, body)
             yield from resp.iter_bytes()
+
+    def guardrail_events(self) -> Iterator[GuardrailEvent]:
+        raise NotImplementedError("Step 2.3: depends on guardrail event exposure (Q4)")
 
 
 class MultiProviderOpenAIClient:
@@ -217,9 +216,6 @@ class MultiProviderOpenAIClient:
                 raise GatewayUpstreamError(resp.status_code, url, body)
             yield from resp.iter_bytes()
 
-    def costs(self, window: str) -> list[CostRecord]:
-        raise NotImplementedError("openai mode has no unified cost API across providers")
-
     def guardrail_events(self) -> Iterator[GuardrailEvent]:
         raise NotImplementedError("openai mode has no guardrail surface")
 
@@ -230,9 +226,3 @@ class GatewayUpstreamError(RuntimeError):
         self.url = url
         self.body = body
         super().__init__(f"gateway returned {status} for {url}: {body}")
-
-    def costs(self, window: str) -> list[CostRecord]:
-        raise NotImplementedError("Step 2.3: depends on whether cost is API-exposed (Q1)")
-
-    def guardrail_events(self) -> Iterator[GuardrailEvent]:
-        raise NotImplementedError("Step 2.3: depends on guardrail event exposure (Q4)")

@@ -41,11 +41,27 @@ working React on the small tier.
 - **Auth:** `Authorization: Bearer <token>` where token is a gateway token (`dgw_…`), a Domino
   PAT, or a workspace sidecar JWT from `http://localhost:8899/access-token`. (OpenAI SDK:
   `api_key="dgw_…"`. Anthropic SDK: use `auth_token=`, NOT `api_key=`.)
-- **Per-request tags:** `X-LLM-Tag-<name>: <value>` → stored in the usage `tags` JSON. We send
-  `X-LLM-Tag-phase`, `X-LLM-Tag-project`, `X-LLM-Tag-model`. Project also derives from
-  `DOMINO_PROJECT_NAME`; untagged calls land in the "unknown" bucket.
-- **Cost/usage API:** `/api/usage/mine` (per caller) + audit download `/aigateway/audit/download`.
-  Dashboards group by tag/model/user/provider.
+- **Per-request tags:** `X-LLM-Tag-<name>: <value>` → stored in the usage `tags` JSON. Keys are
+  lowercased with `_`→`-`; max 20 tags, 64-char keys, 256-char values (over-long is truncated, not
+  rejected). We send `sage-source`, `sage-phase`, `sage-mode`, `sage-component`, `sage-session`,
+  `sage-version`, `sage-project` — all `sage-`-namespaced (see `gateway/client.py` CostLabels).
+  **The bare keys `project`, `project-id`, `project-name`, `model`, `user`, `org`, `cost`, `tokens`
+  are in the gateway's `RESERVED_TAG_KEYS` and are silently dropped at ingest** — no error, the tag
+  just never arrives. Untagged calls land in the "unknown" bucket.
+- **The gateway's own project columns are blank for Sage.** They're populated only from
+  `X-Domino-Project-Id` / `X-Domino-Project` request headers (`routes/gateway.py` `_resolve_caller`),
+  which Sage doesn't send. The dashboard also has no "By Project" grouping — hence the
+  `sage-project` tag, which the Group By dropdown discovers automatically.
+- **Cost/usage:** read it in the gateway's own dashboard (`<base minus /v1>/#usage`), which Sage
+  links to. Sage does **not** compute cost: only the gateway can price a call correctly, because
+  `_compute_cost` honours per-alias custom rates from its DB that no client can see, and its
+  `MODEL_COST_TABLE` has no Qwen/Nova rows (they fall through to a $1/$2 default). The admin usage
+  view supports `tag_filter` and `group_by=tag:<key>`; the non-admin `/mine` routes support neither.
+- **Streaming usage is NOT uniformly available in-band.** `OpenAIAdapter` forces
+  `stream_options:{include_usage:true}` upstream and relays the usage chunk through, but the
+  Anthropic and Bedrock adapters translate to OpenAI-shape chunks and keep tokens to themselves
+  (`last_stream_usage`, for their own logging). So `sonnet`/`opus`/`bedrock-qwen3-coder`/`nova`
+  return no usage to the caller — a client-side meter would silently read zero for them.
 - **Guardrails (preventive):** input guardrails run on the prompt *before* it reaches the
   provider (the data-egress control), output guardrails on the response before the caller reads
   it — regex or LLM rules, admin-configured per alias. A blocked request is recorded as

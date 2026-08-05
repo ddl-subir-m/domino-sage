@@ -266,6 +266,26 @@
   .hint { font-size: 11px; color: var(--faint); margin-top: 8px; line-height: 1.4; }
   .hint.err { color: var(--lock); }
 
+  /* A settings row inside a popover: checkbox, bold label, explanation under it. The label wraps the
+     input so clicking the text toggles too. */
+  .opt-row {
+    display: flex; gap: 8px; align-items: flex-start; cursor: pointer;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+    font-size: 12.5px; color: var(--text);
+  }
+  .opt-row input { margin: 2px 0 0; flex: 0 0 auto; cursor: pointer; }
+  .opt-row .hint { margin-top: 2px; display: block; }
+
+  /* The phased-build step checklist, drawn from build-plan / step-start / step-done. */
+  .steps { margin: 4px 0 2px; padding: 0; list-style: none; font-size: 12.5px; }
+  .steps li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; color: var(--muted); }
+  .steps li .s-mark { flex: 0 0 auto; width: 14px; text-align: center; color: var(--faint); }
+  .steps li.running { color: var(--text); font-weight: 500; }
+  .steps li.running .s-mark { color: var(--primary); }
+  .steps li.ok .s-mark { color: var(--ok); }
+  .steps li.bad { color: var(--lock); } .steps li.bad .s-mark { color: var(--lock); }
+  .steps li .s-files { color: var(--faint); font-size: 11px; }
+
   .asset-search { width: 100%; box-sizing: border-box; margin: 6px 0 8px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
   .asset-list { max-height: 320px; overflow-y: auto; }
   .asset-group { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); margin: 10px 0 2px; }
@@ -422,6 +442,7 @@
   <div class="brand"><span class="glyph">S</span> sage</div>
   <div class="spacer"></div>
   <button class="hbtn" id="instr-btn" onclick="toggleInstr()" aria-haspopup="dialog" aria-expanded="false" title="Guidance the agent follows in every chat in this project"><span aria-hidden="true">◧</span> Instructions</button>
+  <a class="hbtn" id="cost-btn" href="#" target="_blank" rel="noopener" style="display:none"><span aria-hidden="true">◷</span> Usage &amp; cost</a>
   <div class="mode-chip" id="mode-chip" title=""><span class="dot"></span><span id="mode-text">…</span></div>
 </header>
 
@@ -456,6 +477,20 @@
              started in (see arm_turn_mode), so a pick made now is queued, not ignored. -->
         <div class="hint" id="mode-pending-hint" style="display:none">This turn is still running as <b id="mode-pending-running">—</b>. Your pick applies to your next message.</div>
         <div class="hint" id="sensitivity-lock-hint" style="display:none">Sensitivity lock is on — only sovereign models are used, in every mode.</div>
+        <!-- Auto only: Plan and Implement are explicit user modes, and silently changing what they
+             produce would be a surprise rather than a feature.
+             The copy says what this does NOT do on purpose. Phasing and the model that executes are
+             separate levers, and a toggle that quietly changed which model builds your app is the
+             thing we chose against when this became a checkbox instead of its own mode. It also
+             keeps the two independently variable, which is what makes a cost comparison
+             attributable — bundle them and you can't tell which one produced the saving. -->
+        <label class="opt-row" id="phased-row" style="display:none">
+          <input type="checkbox" id="phased-toggle" onchange="setPhasedBuild(this.checked)">
+          <span>
+            <b>Build in phases</b>
+            <span class="hint">Plans become numbered steps, each built in its own fresh context — slower to start, and much cheaper on large builds. This doesn't change which model builds: set that under Model → Model assignments → Implement.</span>
+          </span>
+        </label>
       </div>
       <!-- model popover -->
       <div class="pop right" id="model-pop">
@@ -771,6 +806,7 @@ function enterProject() {
   showPreview();
   refreshPreview();
   refreshStatus();
+  loadPhasedBuild();
   loadAssets();
   openFilePath = null;
   for (const buf of fileBuffers.values()) buf.model.dispose();
@@ -1168,6 +1204,7 @@ async function refreshStatus() {
   document.getElementById('manual-pick').style.display = showOverride ? 'block' : 'none';
   document.getElementById('auto-models').style.display = uiMode === 'auto' ? 'block' : 'none';
   document.getElementById('catalog-editor').style.display = uiMode === 'auto' ? 'block' : 'none';
+  document.getElementById('phased-row').style.display = uiMode === 'auto' ? 'flex' : 'none';
   document.getElementById('ask-model').style.display = uiMode === 'ask' ? 'block' : 'none';
   if (uiMode === 'ask' && m.catalog) {
     document.getElementById('ask-model-name').textContent = m.sensitivity_locked ? m.catalog.sovereign_ask : m.catalog.ask;
@@ -1177,6 +1214,7 @@ async function refreshStatus() {
   if (showOverride && m.catalog) renderCatalog(m.catalog, m.picked_model, m.sensitivity_locked, uiMode);
   if (uiMode === 'auto' && m.catalog) renderAutoModels(m.catalog, m.phase, m.sensitivity_locked);
   renderModelChip(m);
+  renderCostLink(body.cost);
   renderLockButton(m);
   document.getElementById('sensitivity-lock-hint').style.display = m.sensitivity_locked ? 'block' : 'none';
   // Non-blocking caution: sensitive data is attached but sovereign routing is NOT locked (the user
@@ -1282,6 +1320,24 @@ function renderCatalog(catalog, pickedModel, locked, mode) {
   document.getElementById('cat-ask').value = catalog.ask;
 }
 const PHASE_LABEL = { plan: 'planning', implement: 'building' };
+// Sage doesn't tally spend itself — the gateway already prices every call and Sage tags each one
+// with `sage-project`, so this just points at the dashboard where those numbers live. Hidden unless
+// the backend resolved a URL (fake/openai gateway mode never reaches that dashboard, so a link
+// would land on a page with no Sage data and read as broken).
+//
+// The dashboard opens unfiltered — its router carries no filter state in the URL — so the tag value
+// goes in the tooltip to be copied into the Group By / filter controls on arrival.
+function renderCostLink(cost) {
+  const link = document.getElementById('cost-btn');
+  if (!link) return;
+  if (!cost || !cost.url) { link.style.display = 'none'; return; }
+  link.href = cost.url;
+  link.style.display = '';
+  link.title = cost.project
+    ? `Usage and cost for this project, in the LLM Gateway. Filter by tag sage-project = ${cost.project} (requires gateway admin).`
+    : 'Usage and cost, in the LLM Gateway (requires gateway admin).';
+}
+
 function renderModelChip(m) {
   const chip = document.getElementById('model-chip');
   const chipText = document.getElementById('chip-text');
@@ -1315,6 +1371,21 @@ async function setModel() {
   };
   await api('/api/project/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
   refreshStatus();
+}
+// Persisted per project (.sage/settings.json), not per session: the next plan has to be WRITTEN in
+// the phased shape for the build after it to run in phases, so a setting that reset on reload would
+// silently produce plans that can't be phased.
+async function setPhasedBuild(on) {
+  await api('/api/project/settings', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ phased_build: !!on }),
+  });
+}
+async function loadPhasedBuild() {
+  try {
+    const res = await api('/api/project/settings');
+    document.getElementById('phased-toggle').checked = !!(res.ok && res.body && res.body.phased_build);
+  } catch (e) { /* the toggle just reads unchecked; the server remains the source of truth */ }
 }
 async function lockSovereign() {
   if (!active) return;
@@ -1805,7 +1876,10 @@ async function drawMermaid(root) {
   }
 }
 
-function addPlanCard(planMd, kind) {
+// `steps` (0 when not phased) both labels the button and — more usefully — is the user's chance to
+// see BEFORE approving that a phased plan actually parsed into steps. A plan the parser couldn't
+// read still builds, just in one context, and the unchanged label is the only signal of that.
+function addPlanCard(planMd, kind, steps) {
   supersedePlanCards();  // only the newest plan is approvable (covers a transcript replay too)
   // The plan only has an "Open questions" section when the planner actually needs a decision (the
   // backend strips an empty one). With no questions on screen, prompting the user to answer them
@@ -1825,7 +1899,7 @@ function addPlanCard(planMd, kind) {
     '<label class="plan-lbl">' + (arch ? 'Add a note if you want it built (optional)' : (asks ? 'Answer the open questions or add notes (optional)' : 'Add a note for the build (optional)')) + '</label>' +
     '<textarea class="plan-answers" rows="2" placeholder="' + (arch ? 'e.g. start with the queue store only' : (asks ? 'e.g. columns: id, amount, status · Approve = mark resolved' : 'e.g. keep the table compact and use muted colours')) + '"></textarea>' +
     '<div class="plan-actions">' +
-      '<button class="plan-btn approve ' + (arch ? 'ghost' : 'primary') + '">' + (arch ? 'Build this' : 'Approve &amp; build') + '</button>' +
+      '<button class="plan-btn approve ' + (arch ? 'ghost' : 'primary') + '">' + (arch ? 'Build this' : ('Approve &amp; build' + (steps ? ` (${steps} phases)` : ''))) + '</button>' +
       '<button class="plan-btn ghost edit">Edit ' + (arch ? 'design' : 'plan') + '</button>' +
       '<button class="plan-btn ghost cancel">' + (arch ? 'Dismiss' : 'Cancel') + '</button>' +
     '</div>';
@@ -1896,7 +1970,10 @@ function replayEvent(ev) {
   // Replay renders the refusal without its Build-in-Auto button: the button starts a real build, and
   // an old message shouldn't be able to do that on a reload the user didn't connect it to.
   else if (ev.type === 'ask-blocked' || ev.type === 'ask-active') addStatus('warn', '⚠', esc(ev.message));
-  else if (ev.type === 'plan-proposed') addPlanCard(ev.plan, ev.kind);
+  else if (ev.type === 'plan-proposed') addPlanCard(ev.plan, ev.kind, ev.steps);
+  // Replayed in their final state: a reload isn't watching the build, it's reading what happened.
+  else if (ev.type === 'build-plan') addStepList(ev);
+  else if (ev.type === 'step-done') markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕');
   else if (ev.type === 'done') { if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); }
   else if (ev.type === 'saved') renderSaved(ev);
 }
@@ -1913,6 +1990,40 @@ function askBlocked(ev) {
     await setModel();  // the mode must land BEFORE the turn starts, or the backend refuses it again
     runPrompt(ev.prompt);
   };
+}
+
+// The phased-build checklist. `build-plan` draws the whole thing up front — seeing the six steps
+// before any of them runs is the main thing a phased build offers over a single opaque turn — and
+// step-start/step-done then mark them off in place.
+let stepsEl = null;
+
+function addStepList(ev) {
+  const box = document.createElement('div');
+  box.className = 'msg status';
+  const ol = document.createElement('ol');
+  ol.className = 'steps';
+  for (const s of (ev.steps || [])) {
+    const li = document.createElement('li');
+    li.dataset.n = s.n;
+    li.innerHTML = `<span class="s-mark">○</span><span>${esc(s.label)}`
+      + ((s.files && s.files.length) ? ` <span class="s-files">${esc(s.files.join(', '))}</span>` : '')
+      + '</span>';
+    ol.appendChild(li);
+  }
+  box.appendChild(ol);
+  append(box);
+  stepsEl = ol;
+  return ol;
+}
+
+function markStep(n, state, mark) {
+  if (!stepsEl) return;
+  const li = stepsEl.querySelector(`li[data-n="${n}"]`);
+  if (!li) return;
+  li.classList.remove('running', 'ok', 'bad');
+  if (state) li.classList.add(state);
+  const m = li.querySelector('.s-mark');
+  if (m) m.textContent = mark;
 }
 
 function leakMsg(ev) {
@@ -1940,7 +2051,10 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
   else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
   else if (ev.type === 'plan-stale') { supersedePlanCards(ev.note); }
-  else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan, ev.kind); trail(); }
+  else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan, ev.kind, ev.steps); trail(); }
+  else if (ev.type === 'build-plan') { stopWorking(); addStepList(ev); trail(); }
+  else if (ev.type === 'step-start') { markStep(ev.n, 'running', '▸'); setWorking(`Phase ${ev.n} of ${ev.total} — ${esc(ev.label)}`); }
+  else if (ev.type === 'step-done') { markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); }
   else if (ev.type === 'done') { stopWorking(); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'ask-blocked') { stopWorking(); askBlocked(ev); trail(); }

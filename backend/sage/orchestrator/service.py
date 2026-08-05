@@ -40,6 +40,7 @@ from ..workspace.manager import Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
 from . import scope
 from .describe import describe, fit_image
+from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
 
 log = logging.getLogger("sage.orchestrator")
 
@@ -59,6 +60,14 @@ _MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
 # Auto stays on OpenCode's default agent: a single Auto turn may be a question, a plan, or an edit,
 # so it can't be pinned to any one persona.
 _MODE_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan", Mode.IMPLEMENT: "sage-implement"}
+
+# Event types written to .sage/history.jsonl, i.e. what a page reload replays. The phased trio is
+# here so a reload redraws the step checklist — a build that shows six phases live and nothing after
+# F5 reads as lost work.
+_PERSISTED_EVENTS = frozenset({
+    "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
+    "build-plan", "step-start", "step-done",
+})
 
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
 # tree, so publish pre-checks it exists locally before deploying (a missing one fails opaquely).
@@ -598,6 +607,31 @@ def _approve_prompt(plan_md: str, answers: str) -> str:
     return "\n".join(parts)
 
 
+def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
+                  retry_errors: str = "") -> str:
+    """The prompt for ONE phase of a phased build, sent into a brand-new session.
+
+    Deliberately NOT the whole plan: carrying it would re-pay the context a fresh session just
+    bought us, which is the entire economics of building in phases. What goes in instead is the
+    step's own brief plus a one-line-per-step index — about fifteen tokens a step, and the cheapest
+    defence against a cold model reinventing something an earlier phase already built.
+    """
+    parts = [
+        (f"You are executing step {step.n} of {len(steps)} of a plan the user already approved. "
+         "Do THIS step and nothing else. The earlier steps are already done and their code is in the "
+         "workspace — read it if you need it, but do not redo it. Later steps are someone else's job; "
+         "do not start them."),
+        "", "## The other steps, for context only", step_index(steps, step.n),
+        "", "## Your step", step.raw,
+    ]
+    if answers.strip():
+        parts += ["", "## Answers to the open questions", answers.strip()]
+    if retry_errors.strip():
+        parts += ["", "## Your previous attempt at this step failed", retry_errors.strip()]
+    parts += ["", "Write the code now. Do not re-plan and do not describe what you would do."]
+    return "\n".join(parts)
+
+
 def _opencode_base_port(opencode_cwd: Path) -> int | None:
     """The port from opencode.json's sage-gateway baseURL — the port OpenCode dials for every
     inference. Compared against SAGE_CONTROL_PORT (the port the shim's /v1 endpoint actually serves) to
@@ -682,6 +716,13 @@ class Project:
     shim: EnforcementShim
     snapshot: TurnSnapshot
     session_id: str | None = None
+    # The session a turn is CURRENTLY streaming into. Normally session_id, but a phased build runs
+    # each phase in its own throwaway session, and two things must follow the live one rather than
+    # the project's: Stop (interrupting the idle project session would leave the phase generating),
+    # and the `sage-session` cost tag (tagging every phase with the project session collapses their
+    # spend into one bucket — which is exactly the per-phase breakdown a phased build exists to be
+    # judged on). None between turns.
+    active_session_id: str | None = None
     # Attached dataset FILES: [{dataset_id, dataset, file, path, size}]. `path` is the
     # workspace-relative symlink under public/data/ (what OpenCode @mentions and the app fetches).
     attached: list[dict] = field(default_factory=list)
@@ -714,6 +755,11 @@ class Project:
     # deletes the upload they just made. Those paths re-baseline it instead (see _rebaseline_turn).
     # Empty when no turn is running.
     turn_tree_baseline: str = ""
+    # Where the UI sends a user to read what this project has cost, and the tag value to filter by
+    # once they land. Both None off-Domino (or in fake/openai gateway mode), which hides the link —
+    # a dead link to a dashboard that has no Sage data reads as a bug.
+    cost_url: str | None = None
+    cost_project: str | None = None
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -747,6 +793,7 @@ class Project:
                     "ask": self.shim.catalog.ask,
                 },
             },
+            "cost": {"url": self.cost_url, "project": self.cost_project},
         }
 
 
@@ -768,6 +815,8 @@ class Orchestrator:
         domino_project_name: str | None = None,
         workspace_id: str | None = None,
         domino_run_id: str | None = None,
+        cost_project_label: str | None = None,
+        gateway_ui_url: str | None = None,
         opencode_client: OpenCodeClient | None = None,
     ) -> None:
         self._wm = WorkspaceManager(workspace_dir, template)
@@ -790,6 +839,11 @@ class Orchestrator:
         # workspaces (mostRecentSession.executionId). `workspace_id` is a direct override (tests).
         self._workspace_id = workspace_id
         self._domino_run_id = domino_run_id
+        # Cost attribution: the `sage-project` gateway tag, and the dashboard link the UI offers so
+        # spend is read where it's authoritative rather than re-derived here. Both fall back to
+        # nothing off-Domino, which hides the link instead of pointing it somewhere dead.
+        self._cost_project_label = cost_project_label or project_id
+        self._gateway_ui_url = gateway_ui_url
         self._opencode_cwd = Path(opencode_cwd) if opencode_cwd else Path.cwd()
         self._feedback = feedback or FeedbackRunner()
         # One container hosts one project (D9): a single bound project, attached lazily on first
@@ -830,11 +884,14 @@ class Orchestrator:
             return self._project
         workspace = self._wm.ensure(self._project_id)
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
-        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway, force_model=self._force_model)
+        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway,
+                               force_model=self._force_model, project_name=self._cost_project_label)
         supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
         if start_preview:
             supervisor.start()
-        self._project = Project(self._project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path))
+        self._project = Project(self._project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path),
+                                cost_url=self._gateway_ui_url,
+                                cost_project=self._cost_project_label if self._gateway_ui_url else None)
         self._rehydrate_attached(self._project)
         return self._project
 
@@ -1058,9 +1115,14 @@ class Orchestrator:
 
     def _clear_turn_baseline(self) -> None:
         """Mark "no turn running" so _rebaseline_turn stops touching the baseline once the turn that
-        owns it is over. Best-effort — a project we can't resolve has no baseline to clear."""
+        owns it is over. Best-effort — a project we can't resolve has no baseline to clear.
+
+        Also drops active_session_id. It's cleared here, at the one place that already means "the
+        turn is over", rather than at each of _build_stream's many exits — a phased build reassigns
+        it per phase, and the turn lock means no other turn can observe it mid-flight anyway."""
         try:
             self.project().turn_tree_baseline = ""
+            self.project().active_session_id = None
         except Exception:
             pass
 
@@ -1111,12 +1173,21 @@ class Orchestrator:
         return seen
 
     def _build_stream(self, prompt: str, mentions: list[str] | None = None, *, is_approval: bool = False,
-                      user_text: str | None = None, mode: Mode | None = None):
+                      user_text: str | None = None, mode: Mode | None = None,
+                      session_id: str | None = None, brief: PlanStep | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
 
         Assumes the caller holds _turn_lock (build_stream / approve_stream acquire it).
+
+        `session_id` + `brief` run this as ONE PHASE of a phased build (see _phased_approve) rather
+        than a whole turn: a fresh session, and a step whose scope is the brief. Passing `brief`
+        sets owns_turn False, which hands five turn-level responsibilities back to the caller — the
+        user's chat bubble, the Stop revert, the failure flag, the git commit, and the single `done`.
+        Everything else here (typecheck, circuit breaker, the implement-nudge and its model
+        escalation, runtime-error and data-leak fixups) is exactly what one phase needs, which is why
+        a phase reuses this loop instead of forking a second copy of it.
 
         `mentions` are workspace paths of attached files the user @-referenced; they're resolved to
         real files and attached to this turn's prompt (see _resolve_mentions)."""
@@ -1124,7 +1195,10 @@ class Orchestrator:
 
         project = self.project()
         client = self._ensure_opencode()
-        sid = self._ensure_session(project)
+        # A phase runs in the throwaway session its caller made; everything else reuses the project's.
+        owns_turn = brief is None
+        sid = session_id or self._ensure_session(project)
+        project.active_session_id = sid
         breaker = CircuitBreaker()
         current = prompt
         # Attach the @-mentioned files to the user's turn only — not to the internal nudge/fix
@@ -1153,9 +1227,15 @@ class Orchestrator:
             # once the stream is under way. Neither kind is a build attempt: a question answered in
             # prose and an architecture document say nothing about whether the app builds, so they
             # leave the recorded outcome exactly as they found it rather than clearing a real failure.
-            if ev["type"] == "done" and not answer_only and not arch:
+            #
+            # A phase doesn't own the outcome: six phases would write the flag six times, and a build
+            # that failed at phase 4 would be recorded as a success by phases 1-3. _phased_approve
+            # sets it once for the whole build.
+            if owns_turn and ev["type"] == "done" and not answer_only and not arch:
                 project.workspace.set_last_turn_failed(not ev.get("ok"))
-            if ev["type"] == "agent" or ev["type"] in ("typecheck", "done", "saved", "data-leak", "plan-proposed"):
+            # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
+            # must not reach history either, or a reload would replay six "build is clean" dividers.
+            if ev["type"] in _PERSISTED_EVENTS and (owns_turn or ev["type"] != "done"):
                 project.workspace.append_history(ev)
             return ev
 
@@ -1191,7 +1271,12 @@ class Orchestrator:
         # typed instead of clicked, so it gates in every mode too. Ranked below arch: a prompt naming
         # both artifacts wants the heavier one, and that keeps the existing precedence untouched.
         wants_plan = not is_approval and not arch and _wants_plan(prompt)
-        skip_planning = bool(project.workspace.read_settings().get("skip_planning"))
+        settings = project.workspace.read_settings()
+        skip_planning = bool(settings.get("skip_planning"))
+        # Only affects the SHAPE of a plan this turn writes; the phased execution itself happens on
+        # the approve turn (_phased_approve). A plan written before the toggle was on simply won't
+        # parse into steps, and falls back to a normal build.
+        phased_build = bool(settings.get("phased_build"))
         gate = False if is_approval else arch or _should_gate(
             mode=mode_at_start,
             has_built=has_built,
@@ -1279,6 +1364,35 @@ class Orchestrator:
                        "questions' heading and short bullets. Nothing to ask: leave the heading out "
                        "entirely rather than writing 'None'.\n"
                        "Never repeat a sentence or restate a step you've already written.")
+        # The phased variant. Same plan, but each step becomes a self-contained handoff brief,
+        # because in a phased build the model that executes step 4 is a BRAND-NEW session: it never
+        # read this plan, never saw steps 1-3, and can't ask. Every field below exists because a cold
+        # executor fails without it — `Files` so its first act isn't a whole-tree grep that refills
+        # the context the fresh session just bought us, `Done when` so verification travels with the
+        # work instead of being inferred, `Don't touch` so a later step doesn't rewrite an earlier
+        # one's output it has never seen. Kept separate from _PLAN_SHAPE rather than replacing it:
+        # the single-context shape is what every non-phased build still uses.
+        _PLAN_SHAPE_PHASED = (
+            "Format it exactly like this, in Markdown, and write nothing outside it:\n"
+            "- One short sentence saying what the app is.\n"
+            "- Then a '## Plan' heading.\n"
+            "- Then, for each step, a '### N. Label' heading (N is 1, 2, 3…; the label is 2-4 "
+            "words), followed by exactly these bullets:\n"
+            "  - Files — the workspace-relative files this step creates or edits, comma-separated. "
+            "Name them even if you are guessing; a wrong guess is cheaper than no guess.\n"
+            "  - Do — one or two sentences of the work itself, starting with a verb.\n"
+            "  - Done when — one sentence naming the observable result that proves this step is "
+            "finished (a file exports something, the preview renders something, the app compiles).\n"
+            "  - Don't touch — files an earlier step already finished that this step must leave "
+            "alone. Omit this bullet entirely when there are none; never write 'None'.\n"
+            "Each step must be executable by someone who can see the code but has NOT read the "
+            "other steps: no 'as above', no 'the same table', no pronouns pointing at another step. "
+            "Aim for 3-7 steps; a step should be one coherent change, not a whole feature and not a "
+            "one-line edit.\n"
+            "- Then, ONLY if something genuinely needs the user to decide, an '## Open questions' "
+            "heading and short bullets. Nothing to ask: leave the heading out entirely rather than "
+            "writing 'None'.\n"
+            "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
         # The architecture deliverable — the same gated, read-only turn, but the artifact is a design
         # rather than a task list. The distinction is the whole point of the branch: a build plan
         # answers "what will you do", an architecture answers "what are the parts and how do they
@@ -1306,14 +1420,18 @@ class Orchestrator:
                        "brief, then write the document.\n\n" + _ARCH_SHAPE
                        + "\n\nThe request:\n" + current)
         elif gate:
+            # Phased builds need the heavier per-step shape; everything else keeps today's prose plan.
+            # Only in Auto: Plan/Implement are explicit user modes, and a phased build silently
+            # changing what "Plan" produces there would be a surprise, not a feature.
+            shape = _PLAN_SHAPE_PHASED if (phased_build and mode_at_start is Mode.AUTO) else _PLAN_SHAPE
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
-                           + _PLAN_VOICE + "\n\n" + _PLAN_SHAPE + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + shape + "\n\n" + current)
             else:
                 current = ("This is a brand-new app from a blank template — there are no existing "
                            "files worth reading, so plan straight from the request. "
-                           + _PLAN_VOICE + "\n\n" + _PLAN_SHAPE + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + shape + "\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -1366,8 +1484,10 @@ class Orchestrator:
 
         # `user_text` is what the person actually typed, when that differs from the prompt we send the
         # agent (a typed approval is expanded into the full approve prompt) — the transcript should
-        # replay their words, not ours.
-        project.workspace.append_history({"type": "user", "text": user_text if user_text is not None else prompt})
+        # replay their words, not ours. A phase writes none: the user approved once, so a phased
+        # build is one bubble in the transcript, not six copies of their approval.
+        if owns_turn:
+            project.workspace.append_history({"type": "user", "text": user_text if user_text is not None else prompt})
 
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never
@@ -1410,8 +1530,14 @@ class Orchestrator:
 
         def handle_stop() -> dict:
             project.stop_requested = False
-            project.snapshot.discard_changes()
-            project.workspace.truncate_history(history_baseline)
+            # A phase reverts nothing: discard_changes() resets to HEAD, which after per-phase
+            # checkpoints is only the CURRENT phase — it would leave phases 1..n-1 on disk while
+            # erasing the transcript that explains them. _phased_approve reverts the whole build to
+            # its own base instead (snapshot.discard_to), which is what the user asked for by
+            # stopping. The bare "stopped" still flows out so the caller knows to do it.
+            if owns_turn:
+                project.snapshot.discard_changes()
+                project.workspace.truncate_history(history_baseline)
             restore_mode()
             return {"type": "stopped"}
 
@@ -1672,8 +1798,13 @@ class Orchestrator:
                     project.workspace.write_architecture(plan_md)
                 else:
                     project.workspace.write_plan(plan_md)
+                # `steps` is how the card says "Approve & build (6 phases)" — and, more usefully,
+                # it's the user's chance to see BEFORE approving that a phased plan actually parsed.
+                # A plan the parser can't read still builds, just in one context.
+                steps = len(parse_steps(plan_md)) if (phased_build and not arch) else 0
                 yield persist({"type": "plan-proposed", "plan": plan_md,
-                               "kind": "architecture" if arch else "plan"})
+                               "kind": "architecture" if arch else "plan",
+                               "steps": steps if steps >= MIN_STEPS else 0})
                 yield persist({"type": "done", "ok": True,
                                "decision": "architecture ready" if arch else "awaiting approval"})
                 return
@@ -1789,9 +1920,12 @@ class Orchestrator:
                         continue
                 restore_mode()
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
-                if report.ok:
+                if report.ok and owns_turn:
                     # A clean code-writing build succeeded (a no-edit plan/answer turn returned earlier),
                     # so this project is now "built" — future turns gate on plan, not on this being done.
+                    #
+                    # A phase does neither: one approved plan is one commit, not six, and a build that
+                    # dies at phase 4 must not have been marked "built" by phase 1.
                     project.workspace.mark_built()
                     saved = self._save_to_git(project, prompt)
                     if saved is not None:
@@ -1836,9 +1970,16 @@ class Orchestrator:
         # earlier set_mode-then-restore did move their picker, which meant a mode they changed while
         # the build streamed was reverted underneath them when it finished.
         run_as = Mode.IMPLEMENT if prior_mode in (Mode.PLAN, Mode.ASK) else None
+        # Phased only when the toggle is on AND the plan actually parsed into briefs. A plan written
+        # before the toggle (or by a planner that ignored the format) builds the ordinary way rather
+        # than half-phasing, which would be worse than not phasing at all.
+        phased = bool(project.workspace.read_settings().get("phased_build")) and is_phasable(plan_md)
         try:
-            yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True,
-                                          user_text=user_text, mode=run_as)
+            if phased:
+                yield from self._phased_approve(project, plan_md, answers, user_text)
+            else:
+                yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True,
+                                              user_text=user_text, mode=run_as)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -1853,6 +1994,134 @@ class Orchestrator:
         finally:
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
             project.workspace.archive_plan()
+
+    def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None):
+        """Build an approved plan one step at a time, each in a FRESH OpenCode session.
+
+        The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
+        apart at 100k, so every phase starts from nothing but its own brief. That costs a session
+        bootstrap per phase (OpenCode re-reads AGENTS.md and project context), which is exactly what
+        the `sage-session` cost tag makes measurable — the tax is the thing this feature has to earn.
+
+        Owns everything a turn owns and a phase doesn't: the user's chat bubble, the whole-build
+        revert point, the failure flag, the git commit, and the single terminal `done`.
+        """
+        import time
+
+        client = self._ensure_opencode()
+        steps = parse_steps(plan_md)
+
+        def persist(ev: dict) -> dict:
+            if ev["type"] in _PERSISTED_EVENTS:
+                project.workspace.append_history(ev)
+            return ev
+
+        project.workspace.append_history(
+            {"type": "user", "text": user_text if user_text is not None else "Approved the plan."})
+        # ONE revert point for the whole build. _build_stream still checkpoints per phase (which is
+        # what gives a gate violation its correct, narrow scope), so undoing everything needs a ref
+        # that reaches back past all of them — hence discard_to rather than discard_changes.
+        base = project.snapshot.commit_before_turn()
+        history_baseline = project.workspace.history_len()
+        # Per-phase circuit breakers bound each phase, not the build: 6 × (15 iterations, 600s) is an
+        # hour of wall clock that nobody asked for.
+        deadline = time.monotonic() + _env_int("SAGE_PHASED_MAX_SECONDS", 1800)
+
+        yield persist({"type": "build-plan",
+                       "steps": [{"n": s.n, "label": s.label, "files": s.files} for s in steps]})
+
+        failed: tuple[PlanStep, str] | None = None
+        for step in steps:
+            yield persist({"type": "step-start", "n": step.n, "total": len(steps),
+                           "label": step.label, "files": step.files})
+            outcome = yield from self._run_step(project, client, step, steps, answers)
+            if outcome == "stopped":
+                # The user rejected the whole build, so leaving three of six phases on disk would
+                # leave a state they never asked for and can't describe. Same semantics as Stop on a
+                # normal turn: the turn vanishes, files and transcript both.
+                project.snapshot.discard_to(base)
+                project.workspace.truncate_history(history_baseline)
+                yield {"type": "stopped"}
+                return
+            if outcome is not True:
+                failed = (step, str(outcome))
+                yield persist({"type": "step-done", "n": step.n, "total": len(steps),
+                               "ok": False, "decision": str(outcome)})
+                break
+            yield persist({"type": "step-done", "n": step.n, "total": len(steps), "ok": True})
+            if time.monotonic() > deadline:
+                failed = (step, "the build ran out of time")
+                break
+
+        if failed is not None:
+            step, why = failed
+            # Deliberately NOT reverted. A failure is Sage's problem to recover from, and the
+            # finished phases are real progress the user can see and build on — throwing away forty
+            # minutes of good work because step 4 of 6 broke is the worst available behaviour. What
+            # we do instead is skip the commit (the durable record stays clean) and flag the failure,
+            # which makes the next turn plan first via the existing failure-replan gate.
+            project.workspace.set_last_turn_failed(True)
+            yield persist({"type": "done", "ok": False,
+                           "decision": f"phase {step.n} of {len(steps)} failed — {why}"})
+            return
+
+        project.workspace.set_last_turn_failed(False)
+        project.workspace.mark_built()
+        yield persist({"type": "done", "ok": True, "decision": "typecheck clean"})
+        saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
+        if saved is not None:
+            yield persist(saved)
+
+    def _run_step(self, project: Project, client: OpenCodeClient, step: PlanStep,
+                  steps: list[PlanStep], answers: str):
+        """Run one phase, retrying once in another fresh session if it fails. Returns True, the
+        string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
+        emits exactly one."""
+        strong_retry = os.environ.get("SAGE_PHASE_RETRY_STRONG", "1").strip().lower() not in ("0", "false", "no")
+        original_pick = project.control.snapshot().picked_model
+        escalated = False
+        errors = ""
+        reason = "the step did not complete"
+
+        try:
+            for attempt in (1, 2):
+                if attempt == 2 and strong_retry:
+                    # The cheap coder just demonstrated it can't do this step. Paying for one strong
+                    # attempt beats failing the whole build, and the pick is restored below so the
+                    # escalation lasts exactly one phase.
+                    project.control.pick(project.shim.catalog.plan)
+                    escalated = True
+                    yield {"type": "active", "tool": "retry",
+                           "detail": f"phase {step.n} failed — retrying on {project.shim.catalog.plan}"}
+                # A brand-new session even on the retry: the first attempt's failure is now sitting in
+                # that session's context, and it's the most misleading thing a retry could read.
+                sid = client.create_session(directory=str(project.workspace.path))
+                # Every phase is pinned to Implement, never the user's mode. A phase begins with a
+                # fresh user message, so the per-inference classifier would read PLAN and route the
+                # expensive plan-tier model on every phase — N times the cost this feature exists to
+                # avoid, and N chances to stall having written nothing.
+                outcome: dict | None = None
+                for ev in self._build_stream(_phase_prompt(step, steps, answers, errors),
+                                             is_approval=True, mode=Mode.IMPLEMENT,
+                                             session_id=sid, brief=step):
+                    if ev["type"] == "stopped":
+                        return "stopped"
+                    if ev["type"] == "done":
+                        outcome = ev  # swallowed: one `done` per build, not one per phase
+                        continue
+                    if ev["type"] == "typecheck" and not ev.get("ok"):
+                        # Carried into the retry's brief so the next attempt starts from the actual
+                        # errors rather than rediscovering them.
+                        errors = str(ev.get("message") or "")[:4000]
+                    yield ev
+                if outcome is not None and outcome.get("ok"):
+                    return True
+                if outcome is not None:
+                    reason = str(outcome.get("decision") or reason)
+        finally:
+            if escalated:
+                project.control.pick(original_pick)
+        return reason
 
     def record_runtime_error(self, message: str, stack: str = "") -> None:
         """Store a runtime error the live preview reported (via /api/preview/runtime-error), stamped
@@ -2074,9 +2343,13 @@ class Orchestrator:
         """Interrupt the in-flight build_stream() turn; it reverts files/history and stops."""
         project = self.project()
         project.stop_requested = True
-        if project.session_id and self._oc_client is not None:
+        # The LIVE session, not the project's: during a phased build the project session is idle and
+        # interrupting it would leave the running phase generating for another poll cycle or more,
+        # which reads as a Stop button that doesn't work.
+        sid = project.active_session_id or project.session_id
+        if sid and self._oc_client is not None:
             try:
-                self._oc_client.interrupt(project.session_id)
+                self._oc_client.interrupt(sid)
             except httpx.HTTPError:
                 pass
 

@@ -92,7 +92,7 @@ def test_domino_mode_emits_namespaced_sage_tag_headers(monkeypatch):
 
     client = OpenAICompatibleClient("https://gw.example/v1", static_token("t"), domino_tags=True)
     labels = CostLabels(phase="implement", mode="sovereign", component="builder",
-                        session="ses_1", version="abc123")
+                        session="ses_1", version="abc123", project_name="sub_user/Sage")
     list(client.route({"model": "m", "messages": []}, labels))
 
     assert captured["X-LLM-Tag-sage-source"] == "domino-sage"
@@ -101,5 +101,8 @@ def test_domino_mode_emits_namespaced_sage_tag_headers(monkeypatch):
     assert captured["X-LLM-Tag-sage-component"] == "builder"
     assert captured["X-LLM-Tag-sage-session"] == "ses_1"
     assert captured["X-LLM-Tag-sage-version"] == "abc123"
+    # What makes one deployment's spend findable in the gateway dashboard. Namespaced, because the
+    # bare key is reserved: sent as `project` it would be dropped at ingest with no error.
+    assert captured["X-LLM-Tag-sage-project"] == "sub_user/Sage"
     # The bare reserved keys must never be sent — they'd be silently dropped, hiding Sage's cost.
     assert not any(k.lower() in ("x-llm-tag-project", "x-llm-tag-model") for k in captured)
