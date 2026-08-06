@@ -156,8 +156,6 @@ orchestrator = Orchestrator(
     catalog=_build_catalog(),
     project_id=os.environ.get("DOMINO_PROJECT_NAME", _WORKSPACE_DIR.name),
     opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
-    # Single-provider hosts (openai mode) don't serve OpenCode's other aliases -> force the model.
-    force_model=(GATEWAY_MODE == "openai"),
     assets=_build_assets(),
     sensitivity_tag=os.environ.get("SAGE_SENSITIVITY_TAG", DEFAULT_SENSITIVITY_TAG),
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),

@@ -60,7 +60,7 @@ _control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
 # sovereign override live — any request, whatever model OpenCode asks for, routes to sovereign.
 if os.environ.get("SAGE_FORCE_SENSITIVITY_LOCK") in {"1", "true", "yes"}:
     _control.on_assets_changed([True])
-_shim = EnforcementShim(_control, _catalog, _gateway, force_model=(GATEWAY_MODE == "openai"),
+_shim = EnforcementShim(_control, _catalog, _gateway,
                         project_name=domino_project_label(fallback="unknown"))
 
 app = FastAPI(title="sage enforcement shim")

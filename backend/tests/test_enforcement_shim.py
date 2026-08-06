@@ -39,6 +39,24 @@ def test_override_forces_sovereign_when_locked():
     assert labels.mode == "sovereign"  # asset lock is surfaced as the sovereign cost dimension
 
 
+def test_router_overrides_the_caller_model_when_unlocked():
+    """The shape of every real request: nothing locked, and OpenCode sending its configured model.
+
+    This is the case that used to slip through. The override was conditional on `decision.locked or
+    force_model or "model" not in request`, and in domino mode all three are false — so the router
+    ran, logged its decision, and the caller's model went upstream untouched. Both older tests
+    happened to dodge it: one is the locked case, the other omits `model` entirely. Sending a model
+    the router disagrees with is what pins the guarantee.
+    """
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+
+    list(_shim(control, gw).handle({"model": "strong-vendor", "messages": []}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert sent_request["model"] == "cheap-vendor"  # catalog.implement, not what the caller asked
+
+
 def test_every_request_is_tagged_with_phase_and_component():
     # Implement mode: phase comes straight from the control (no per-step classification), so this
     # deterministically exercises tag propagation. Auto-mode classification has its own test.

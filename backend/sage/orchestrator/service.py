@@ -807,7 +807,6 @@ class Orchestrator:
         project_id: str = "app",
         opencode_cwd: Path | None = None,
         feedback: FeedbackRunner | None = None,
-        force_model: bool = False,
         assets: AssetProvider | None = None,
         sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG,
         domino_project_id: str | None = None,
@@ -823,7 +822,6 @@ class Orchestrator:
         self._project_id = project_id
         self._gateway = gateway
         self._catalog = catalog
-        self._force_model = force_model
         self._assets = assets or FakeAssetProvider()
         self._sensitivity_tag = sensitivity_tag
         # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
@@ -885,7 +883,7 @@ class Orchestrator:
         workspace = self._wm.ensure(self._project_id)
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway,
-                               force_model=self._force_model, project_name=self._cost_project_label)
+                               project_name=self._cost_project_label)
         supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
         if start_preview:
             supervisor.start()
@@ -963,8 +961,8 @@ class Orchestrator:
         if project.session_id is None:
             project.session_id = self._recover_session(project.workspace, client)
         if project.session_id is None:
-            # No session-level model: use opencode.json's default; the shim's force_model + router
-            # enforce the real model per request. (An explicit ModelRef at creation stalled turns.)
+            # No session-level model: use opencode.json's default; the shim's router enforces the
+            # real model per request. (An explicit ModelRef at creation stalled turns.)
             project.session_id = client.create_session(directory=str(project.workspace.path))
             project.workspace.write_session_id(project.session_id)
         return project.session_id

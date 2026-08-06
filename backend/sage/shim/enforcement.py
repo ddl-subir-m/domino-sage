@@ -79,17 +79,12 @@ class EnforcementShim:
         control: ModelControl,
         catalog: ModelCatalog,
         gateway: GatewayClient,
-        force_model: bool = False,
         component: str = "builder",
         project_name: str | None = None,
     ) -> None:
         self._control = control
         self._catalog = catalog
         self._gateway = gateway
-        # force_model: always route to the router's resolved model, ignoring what the caller
-        # asked. Needed for a single-provider host (e.g. DeepSeek) where OpenCode's other model
-        # aliases don't exist upstream. Off for the real multi-model Domino gateway.
-        self._force_model = force_model
         # component: the `sage-component` cost tag — which Sage process this shim serves. Lets cost
         # analysis separate real build inference (builder) from orchestration overhead (probe).
         self._component = component
@@ -169,10 +164,14 @@ class EnforcementShim:
 
         decision = llm_router.resolve(state, self._catalog)
 
-        # Override the model when locked (sovereignty), when force_model is on (single-provider
-        # host), or when the caller sent none. Otherwise honor the caller's choice.
-        if decision.locked or self._force_model or "model" not in request:
-            request = {**request, "model": decision.model}
+        # The router's decision is the model, unconditionally. It used to apply only when locked,
+        # when force_model was set, or when the caller sent no model — which meant that in domino
+        # mode (nothing locked, force_model off, OpenCode always sending its configured model) the
+        # decision was computed, logged and discarded on every request. Model assignments, Auto's
+        # per-phase switching, the per-turn pick and the strong-model escalation were all inert;
+        # everything ran on whatever opencode.json named. See _ensure_session, which has always
+        # documented this as the contract: no session-level model, the shim decides per request.
+        request = {**request, "model": decision.model}
 
         # Attached images against a non-vision model: strip them here rather than switch models or
         # let it fly. The resolved model is only known at this point (per request), and switching to
