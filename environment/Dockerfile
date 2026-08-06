@@ -55,6 +55,11 @@ ENV GATEWAY_BASE_URL=${GATEWAY_BASE_URL}
 # Optional: only needed to force a non-auto mode (e.g. openai). Non-secret; safe to bake.
 ARG SAGE_GATEWAY_MODE=
 ENV SAGE_GATEWAY_MODE=${SAGE_GATEWAY_MODE}
+# Optional: 1 logs raw gateway SSE chunks to /api/diag (see README). Declared here, not left to a
+# project variable, because child builders inherit the Environment's ENV and not the hub project's —
+# a project-scoped value would never reach the process that actually streams. Leave blank normally.
+ARG SAGE_DEBUG_STREAM=
+ENV SAGE_DEBUG_STREAM=${SAGE_DEBUG_STREAM}
 
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.
