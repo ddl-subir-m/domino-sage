@@ -266,9 +266,20 @@ def diag() -> JSONResponse:
             "last_gateway_error": p.last_gateway_error,
             "session_id": p.session_id,
         },
+        "debug_stream": ka.debug_stream_enabled(),
         "log_tail": list(_LOG_RING)[-60:],
         "opencode_log_tail": orchestrator._opencode_log_tail(30),
     })
+
+
+@control_app.post("/api/diag/debug-stream")
+async def set_debug_stream(request: Request) -> JSONResponse:
+    """Turn raw gateway SSE chunk logging on/off without a restart: {"on": true}.
+
+    The chunks land in log_tail as `sage.shim.stream`. Runtime rather than env-only because on Domino
+    SAGE_DEBUG_STREAM is baked into the image, so toggling it there costs an Environment rebuild."""
+    body = await request.json()
+    return JSONResponse(content={"debug_stream": ka.set_debug_stream(bool(body.get("on")))})
 
 
 @control_app.get("/api/project")

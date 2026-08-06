@@ -25,15 +25,29 @@ FIRST_BYTE_BUDGET_S = 8.0
 # reasonable client timeout.
 KEEPALIVE_INTERVAL_S = 15.0
 
-# SAGE_DEBUG_STREAM=1 logs the raw SSE chunks coming back from the gateway, which is the only way to
-# see what a provider actually emitted: this process is the last hop before OpenCode, and OpenCode
-# reports a bad event as an opaque "Invalid sage-gateway/openai-compatible-chat stream event" with no
-# payload. Off by default — it's verbose and the chunks contain prompt/completion text.
-DEBUG_STREAM = os.environ.get("SAGE_DEBUG_STREAM", "").strip().lower() in ("1", "true", "yes")
+# Log the raw SSE chunks coming back from the gateway. This process is the last hop before OpenCode,
+# which reports a bad event as an opaque "Invalid sage-gateway/openai-compatible-chat stream event"
+# with no payload — so these bytes are the only way to see what a provider actually emitted.
+#
+# Runtime-togglable (POST /api/diag/debug-stream) rather than env-only: on Domino the env var is baked
+# into the image at build time, so an env-only switch costs an Environment rebuild per toggle, which
+# is far too slow for chasing an intermittent stream defect. SAGE_DEBUG_STREAM still sets the initial
+# state. Off by default — verbose, and the chunks carry prompt and completion text.
+_debug_stream = os.environ.get("SAGE_DEBUG_STREAM", "").strip().lower() in ("1", "true", "yes")
 # Per-stream cap so one long turn can't push everything else out of /api/diag's 400-line ring. A
 # stream that OpenCode rejects dies within a second or two, so the interesting chunks are the first.
 DEBUG_STREAM_MAX_CHUNKS = 40
 DEBUG_STREAM_MAX_BYTES = 400
+
+
+def debug_stream_enabled() -> bool:
+    return _debug_stream
+
+
+def set_debug_stream(on: bool) -> bool:
+    global _debug_stream
+    _debug_stream = bool(on)
+    return _debug_stream
 
 KEEPALIVE = b": keepalive\n\n"
 DONE = object()   # producer sentinel: the gateway generator was exhausted cleanly
@@ -49,11 +63,11 @@ def pump(gen: Iterator[bytes], q: queue.Queue) -> None:
     seen = 0
     try:
         for chunk in gen:
-            if DEBUG_STREAM and seen < DEBUG_STREAM_MAX_CHUNKS:
+            if _debug_stream and seen < DEBUG_STREAM_MAX_CHUNKS:
                 seen += 1
                 log.info("stream chunk %d: %r", seen, chunk[:DEBUG_STREAM_MAX_BYTES])
             q.put(chunk)
-        if DEBUG_STREAM:
+        if _debug_stream:
             log.info("stream done after %d chunk(s)", seen)
         q.put(DONE)
     except BaseException as e:  # GatewayUpstreamError, httpx ReadError/RemoteProtocolError, etc.

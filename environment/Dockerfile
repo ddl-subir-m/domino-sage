@@ -55,9 +55,9 @@ ENV GATEWAY_BASE_URL=${GATEWAY_BASE_URL}
 # Optional: only needed to force a non-auto mode (e.g. openai). Non-secret; safe to bake.
 ARG SAGE_GATEWAY_MODE=
 ENV SAGE_GATEWAY_MODE=${SAGE_GATEWAY_MODE}
-# Optional: 1 logs raw gateway SSE chunks to /api/diag (see README). Declared here, not left to a
-# project variable, because child builders inherit the Environment's ENV and not the hub project's —
-# a project-scoped value would never reach the process that actually streams. Leave blank normally.
+# Optional: 1 logs raw gateway SSE chunks to /api/diag (see README). Sets the INITIAL state only —
+# this value is baked at build time, so changing it here costs a rebuild. To toggle a running builder,
+# POST /api/diag/debug-stream {"on": true} instead. Leave blank normally.
 ARG SAGE_DEBUG_STREAM=
 ENV SAGE_DEBUG_STREAM=${SAGE_DEBUG_STREAM}
 
@@ -67,7 +67,7 @@ ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if 
 ARG SAGE_REV=main
 # `--branch` takes a ref (branch/tag), not a bare SHA — so to force a fresh clone of the SAME branch
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
-ARG SAGE_CACHE_BUST=2026-08-06-debug-stream-flag
+ARG SAGE_CACHE_BUST=2026-08-06-debug-stream-runtime-toggle
 # NOTE: if the repo is PRIVATE, this clone needs a build-time credential — pass a token via a
 # secret build-arg and use it in the URL, or make a deploy mirror public. Public clone shown here.
 RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage
