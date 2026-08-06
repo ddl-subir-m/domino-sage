@@ -85,6 +85,35 @@ def is_error(item: object) -> bool:
     return isinstance(item, tuple) and len(item) == 2 and item[0] == "error"
 
 
+def upstream_error(chunk: bytes) -> str | None:
+    """The provider's error message, when a chunk is an error payload rather than a completion chunk.
+
+    The gateway can answer a request the provider rejected with HTTP 200 and a single
+    `data: {"error": {...}}` frame, then close — no `[DONE]`, no exception anywhere. The stream looks
+    healthy right up until the client parses it, and OpenCode reports only "Invalid ...
+    openai-compatible-chat stream event" with no payload, which is unactionable. Recognising the shape
+    here is what turns it into a message a person can read (see error_sse).
+
+    Observed live: a Bedrock ValidationException relayed this way. Returns None for an ordinary chunk.
+    """
+    for line in chunk.split(b"\n"):
+        payload = line.strip()
+        if not payload.startswith(b"data:"):
+            continue
+        payload = payload[len(b"data:"):].strip()
+        if not payload.startswith(b"{"):  # skips [DONE] and SSE comments
+            continue
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            continue
+        err = obj.get("error") if isinstance(obj, dict) else None
+        if err is None:
+            continue
+        return str(err.get("message") or err) if isinstance(err, dict) else str(err)
+    return None
+
+
 def error_sse(message: str) -> Iterator[bytes]:
     """End an already-committed stream (200 headers sent) READABLY: emit `message` as an assistant
     content delta, a stop finish, then [DONE]. OpenCode renders it as text and closes the turn cleanly

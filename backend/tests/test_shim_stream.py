@@ -112,3 +112,30 @@ def test_shim_app_mid_stream_break_is_readable(monkeypatch):
     assert resp.status_code == 200
     assert "closed the stream mid-response" in resp.text
     assert "data: [DONE]" in resp.text
+
+
+def test_control_app_surfaces_a_provider_error_returned_as_a_200_stream(monkeypatch):
+    """The Bedrock failure, verified live 2026-08-06: a rejected request comes back as HTTP 200 with a
+    single `data: {"error": …}` frame and no [DONE]. Nothing raises, so before this the frame was
+    forwarded verbatim and OpenCode died on "Invalid ... stream event" with no payload — the turn just
+    stopped, `last_gateway_error` stayed None, and it took raw chunk logging to find out why."""
+    err = (b'data: {"error": {"message": "Expected toolResult blocks at messages.6.content", '
+           b'"aws_error_type": "ValidationException"}}\n\n')
+
+    def gen():
+        yield err
+
+    client, proj = _control_client(monkeypatch, gen)
+    resp = _post(client)
+
+    assert resp.status_code == 200                          # already committed to the stream
+    assert "Expected toolResult blocks" in resp.text        # the provider's reason reaches the user
+    assert "data: [DONE]" in resp.text                      # ...and the turn closes cleanly
+    assert '"error"' not in resp.text                       # the unparseable frame is NOT forwarded
+    assert proj.last_gateway_error is not None              # telemetry recorded it
+
+
+def test_upstream_error_ignores_ordinary_chunks():
+    assert ka.upstream_error(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n') is None
+    assert ka.upstream_error(b"data: [DONE]\n\n") is None
+    assert ka.upstream_error(b": keepalive\n\n") is None

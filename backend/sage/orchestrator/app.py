@@ -773,6 +773,14 @@ async def chat_completions(request: Request):
         if first is ka.DONE:
             return
         if first is not ka.EMPTY:
+            # A provider error relayed as a 200 + one `data: {"error": …}` frame. Nothing raised, so
+            # without this it forwards as-is and OpenCode dies on an unparseable event with no payload.
+            upstream_msg = ka.upstream_error(first)
+            if upstream_msg:
+                log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
+                project.last_gateway_error = {"message": upstream_msg}
+                yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
+                return
             sniff(first)
             yield first  # the first real chunk the eager pull already consumed
         while True:

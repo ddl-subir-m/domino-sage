@@ -30,3 +30,24 @@ Reading the gateway source answered nearly all of these. See MODELS.md for the f
    cost view reads it correctly.
 4. Which **guardrail rules** are configured on the aliases we'll use (so we know what block/redact
    behavior to expect in the demo), and whether we can scope a rule set to the builder.
+
+## Bugs to report (found live, 2026-08-06)
+
+1. **Bedrock: parallel tool calls are rejected.** Any OpenAI client that batches tool calls cannot
+   hold a conversation with a Bedrock-served alias (`bedrock-qwen3-coder`, `nova`). Bedrock's Converse
+   API requires the `toolResult` blocks answering an assistant turn's N `toolUse` blocks to be grouped
+   into the ONE following user message, but `services/provider_adapter.py` (`role == "tool"` branch,
+   ~:1782) appends a separate `{"role": "user", "content": [{"toolResult": …}]}` per tool message. With
+   N>1 the first is short the other ids:
+
+       ValidationException: Expected toolResult blocks at messages.6.content for the following Ids: …
+
+   Fix: accumulate consecutive `role == "tool"` messages and emit one user message carrying all their
+   `toolResult` blocks. Sage works around it for now by serialising parallel calls before they go
+   upstream (`shim/enforcement.py` `split_parallel_tool_calls`) — delete that once this lands.
+
+2. **Provider errors are returned as HTTP 200 with a single SSE frame.** The failure above came back
+   as `200` + `data: {"error": {...}}` and no `[DONE]`, so nothing on the client raises. OpenCode
+   reports only "Invalid …openai-compatible-chat stream event" with no payload, and it took raw chunk
+   logging to find the cause. A non-200 with the error body — or at minimum a documented error frame —
+   would make this diagnosable. Sage now detects the shape and renders it (`keepalive.upstream_error`).

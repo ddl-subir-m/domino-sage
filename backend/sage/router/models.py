@@ -48,6 +48,17 @@ def supports_vision(model: ModelId) -> bool:
     return model.rsplit("/", 1)[-1] in VISION_CAPABLE
 
 
+# Gateway aliases served by AWS Bedrock (MODELS.md). These need the parallel-tool-call workaround in
+# the shim — see split_parallel_tool_calls. Listed rather than prefix-matched because `nova` carries
+# no `bedrock-` prefix, and a wrong guess here silently reshapes history for a model that didn't need
+# it. TEMPORARY: delete this and its use once the gateway's Bedrock adapter groups tool results.
+BEDROCK_SERVED = frozenset({"bedrock-qwen3-coder", "nova"})
+
+
+def is_bedrock(model: ModelId) -> bool:
+    return model.rsplit("/", 1)[-1] in BEDROCK_SERVED
+
+
 @dataclass(frozen=True)
 class ModelCatalog:
     """The model ids the router chooses between. Confirmed by gateway-questions Q8."""

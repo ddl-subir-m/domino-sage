@@ -18,7 +18,7 @@ from typing import Any
 from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import Mode, ModelCatalog, supports_vision
+from ..router.models import Mode, ModelCatalog, is_bedrock, supports_vision
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, classify
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
@@ -48,6 +48,55 @@ def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
         dropped += sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
         out.append({**m, "content": parts})
     return out, dropped
+
+
+def split_parallel_tool_calls(messages: list[Any]) -> list[Any]:
+    """Rewrite one assistant message holding N tool calls into N single-tool-call exchanges.
+
+    WORKAROUND for a Domino gateway bug, not something OpenAI-compatible clients should need. Bedrock's
+    Converse API wants every `toolUse` in an assistant turn answered by `toolResult` blocks grouped
+    into the ONE following user message, but the gateway's adapter (services/provider_adapter.py, the
+    `role == "tool"` branch) emits a separate user message per tool result. With N>1 parallel calls the
+    first is short the other ids and Bedrock rejects the whole request:
+
+        ValidationException: Expected toolResult blocks at messages.6.content for the following Ids: …
+
+    which the gateway then relays as a 200 with one error frame, so the turn dies inside OpenCode with
+    no usable message. Serialising the calls sidesteps it: same calls, same order, same results, and
+    each assistant toolUse is immediately followed by its own toolResult — the 1:1 shape the adapter
+    does map correctly.
+
+    Left alone when any result is missing (the in-flight turn, where the model is being asked to
+    continue): splitting there would emit a toolUse with no toolResult, which is the very thing Bedrock
+    rejects. Delete this once the gateway groups tool results.
+    """
+    out: list[Any] = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        calls = m.get("tool_calls") if isinstance(m, dict) and m.get("role") == "assistant" else None
+        if not calls or len(calls) < 2:
+            out.append(m)
+            i += 1
+            continue
+        # The tool results for these calls are the messages immediately following.
+        j = i + 1
+        results: dict[Any, Any] = {}
+        while j < len(messages) and isinstance(messages[j], dict) and messages[j].get("role") == "tool":
+            results[messages[j].get("tool_call_id")] = messages[j]
+            j += 1
+        if any(c.get("id") not in results for c in calls):
+            out.extend(messages[i:j])
+            i = j
+            continue
+        for n, call in enumerate(calls):
+            fragment = {**m, "tool_calls": [call]}
+            if n:
+                fragment["content"] = None  # the assistant's prose belongs to the first fragment only
+            out.append(fragment)
+            out.append(results[call.get("id")])
+        i = j
+    return out
 
 
 def _resolve_sage_version() -> str | None:
@@ -183,6 +232,12 @@ class EnforcementShim:
             messages, dropped = _strip_images(request["messages"])
             if dropped:
                 request = {**request, "messages": messages}
+
+        # Bedrock-served models only: serialise parallel tool calls the gateway's adapter can't group.
+        # Same reasoning as the image strip above — the resolved model is the earliest point this is
+        # decidable, and it must run after the override or a request routed TO Bedrock would slip past.
+        if is_bedrock(request["model"]) and isinstance(request.get("messages"), list):
+            request = {**request, "messages": split_parallel_tool_calls(request["messages"])}
 
         log = logging.getLogger("sage.shim")
         log.info(
