@@ -83,6 +83,7 @@ Environment (unset → uses an in-process fake so curl works with no creds):
 | `GATEWAY_API_KEY`  | gateway auth (scheme pending gateway-questions Q7) |
 | `SAGE_GATEWAY_UI_URL` | override for the "Usage & cost" link; defaults to `GATEWAY_BASE_URL` minus `/v1`. Set it when the browser-facing gateway URL differs from the inference one |
 | `SAGE_MODEL_SOVEREIGN` / `_PLAN` / `_IMPLEMENT` / `_DEFAULT` | model ids per tier |
+| `SAGE_DEBUG_STREAM` | `1` logs raw SSE chunks from the gateway to `/api/diag` (first 40 per stream). For diagnosing an "Invalid … stream event" from OpenCode, which reports no payload. Verbose, and the chunks contain prompt text — leave off normally |
 
 ## Run in a Domino workspace (live spike)
 

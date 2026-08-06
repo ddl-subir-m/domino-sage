@@ -11,6 +11,8 @@ app so both behave identically.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import queue
 from collections.abc import Iterator
 
@@ -23,6 +25,16 @@ FIRST_BYTE_BUDGET_S = 8.0
 # reasonable client timeout.
 KEEPALIVE_INTERVAL_S = 15.0
 
+# SAGE_DEBUG_STREAM=1 logs the raw SSE chunks coming back from the gateway, which is the only way to
+# see what a provider actually emitted: this process is the last hop before OpenCode, and OpenCode
+# reports a bad event as an opaque "Invalid sage-gateway/openai-compatible-chat stream event" with no
+# payload. Off by default — it's verbose and the chunks contain prompt/completion text.
+DEBUG_STREAM = os.environ.get("SAGE_DEBUG_STREAM", "").strip().lower() in ("1", "true", "yes")
+# Per-stream cap so one long turn can't push everything else out of /api/diag's 400-line ring. A
+# stream that OpenCode rejects dies within a second or two, so the interesting chunks are the first.
+DEBUG_STREAM_MAX_CHUNKS = 40
+DEBUG_STREAM_MAX_BYTES = 400
+
 KEEPALIVE = b": keepalive\n\n"
 DONE = object()   # producer sentinel: the gateway generator was exhausted cleanly
 EMPTY = object()  # get() timed out with no item (a silent gap)
@@ -33,9 +45,16 @@ def pump(gen: Iterator[bytes], q: queue.Queue) -> None:
     interleave keepalives during silent gaps. Puts raw chunk bytes, then DONE, or ('error', exc) if the
     upstream stream breaks. Note: not cancelled on client disconnect — runs until the gateway
     completes/errors (the same read=None exposure the direct stream already had)."""
+    log = logging.getLogger("sage.shim.stream")
+    seen = 0
     try:
         for chunk in gen:
+            if DEBUG_STREAM and seen < DEBUG_STREAM_MAX_CHUNKS:
+                seen += 1
+                log.info("stream chunk %d: %r", seen, chunk[:DEBUG_STREAM_MAX_BYTES])
             q.put(chunk)
+        if DEBUG_STREAM:
+            log.info("stream done after %d chunk(s)", seen)
         q.put(DONE)
     except BaseException as e:  # GatewayUpstreamError, httpx ReadError/RemoteProtocolError, etc.
         q.put(("error", e))
