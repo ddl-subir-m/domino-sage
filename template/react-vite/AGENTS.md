@@ -45,6 +45,12 @@ app, who may not be technical. Keep it plain and friendly:
   the task genuinely needs it.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse
   them — do **not** invent new colors, fonts, shadows, or radii.
+- **A component carries its own styles** — colocated inline styles or its own `.css` next to it, as
+  `src/examples/StatCard.tsx` does. Keep component rules OUT of `src/index.css`, which holds the
+  tokens, resets and global scaffolding that everything else depends on. Adding to it means reading a
+  file that grows with every component just to find somewhere safe to insert, and two components can
+  quietly claim the same class name. Editing a token, a font or the reset there is still fine — that
+  is what it's for.
 
 ## Design system — build a polished product, not a prototype
 
