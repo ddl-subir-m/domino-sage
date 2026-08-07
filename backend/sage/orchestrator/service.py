@@ -616,10 +616,21 @@ def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
     step's own brief plus a one-line-per-step index — about fifteen tokens a step, and the cheapest
     defence against a cold model reinventing something an earlier phase already built.
     """
+    # Step 1 must NOT be told earlier work exists. It doesn't: the workspace is still the starter
+    # template, so an agent sent looking for it finds a placeholder App.tsx and files later steps
+    # haven't created yet, and burns the turn trying to reconcile that with its brief instead of
+    # building. Observed live on 2026-08-06 ("App.tsx seems to be unreadable or may not exist in the
+    # expected format... let me also look at the types file").
+    prior = (
+        "The workspace is the untouched starter template — nothing from this plan has been built yet, "
+        "so treat the placeholder App.tsx as yours to replace."
+        if step.n == 1 else
+        "The earlier steps are already done and their code is in the workspace — read it if you need "
+        "it, but do not redo it."
+    )
     parts = [
         (f"You are executing step {step.n} of {len(steps)} of a plan the user already approved. "
-         "Do THIS step and nothing else. The earlier steps are already done and their code is in the "
-         "workspace — read it if you need it, but do not redo it. Later steps are someone else's job; "
+         f"Do THIS step and nothing else. {prior} Later steps are someone else's job; "
          "do not start them."),
         "", "## The other steps, for context only", step_index(steps, step.n),
         "", "## Your step", step.raw,

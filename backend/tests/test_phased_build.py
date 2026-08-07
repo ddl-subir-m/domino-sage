@@ -289,3 +289,18 @@ def test_the_toggle_off_leaves_the_approve_path_untouched(tmp_path: Path):
     assert _of(events, "done")[0]["ok"] is True
     # One session for the whole project, as before.
     assert [s["id"] for s in oc.sessions] == ["fake-session"]
+
+
+def test_the_first_phase_is_not_told_earlier_work_exists(tmp_path: Path):
+    """Step 1 opens on the untouched starter template. Telling it "the earlier steps are already done
+    and their code is in the workspace" sent the agent hunting for files no phase had created yet —
+    live on 2026-08-06 it reported App.tsx "may not exist in the expected format" and went looking for
+    a types file, burning the phase on reconciliation instead of building."""
+    orch, oc, _project, _ = _plan_then_phases(tmp_path)
+    list(orch.approve_stream())
+
+    first, second = [p["text"] for p in oc.prompts if "You are executing step" in p["text"]][:2]
+
+    assert "already done" not in first
+    assert "starter template" in first
+    assert "already done" in second      # ...and from step 2 on it IS true, so it must still be said
