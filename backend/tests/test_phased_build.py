@@ -319,3 +319,39 @@ def test_a_phase_is_told_files_outranks_dont_touch(tmp_path: Path):
         assert "Files is your allowlist" in prompt
         assert "Files wins" in prompt
         assert "Never abandon the step" in prompt
+
+
+def test_each_phase_hands_its_summary_to_the_ones_after_it(tmp_path: Path):
+    """The filesystem carries earlier phases' code but not what's IN it, so a cold phase rediscovers
+    the codebase by reading. Live on 2026-08-06 a drawer step read types.ts, App.tsx and
+    ReviewTable.tsx purely to learn what existed — and still got the props wrong. The summaries the
+    agents already write cost nothing extra, so they ride along."""
+    turns = [
+        Turn(text=PHASED_PLAN),
+        Turn(writes={"src/data.ts": "export const rows = [];\n"},
+             text="Created src/data.ts exporting `rows: Trade[]`."),
+        Turn(writes={"src/Table.tsx": "export const Table = () => null;\n"},
+             text="Created src/Table.tsx exporting `Table`, which takes a `rows` prop."),
+        Turn(writes={"src/Filter.tsx": "export const Filter = () => null;\n"}, text="Added the filter."),
+    ]
+    orch, oc, _project = _build(tmp_path, turns)
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+
+    first, second, third = [p["text"] for p in oc.prompts if "You are executing step" in p["text"]]
+
+    assert "What earlier steps built" not in first          # nothing has been built yet
+    assert "exporting `rows: Trade[]`" in second            # phase 2 is told what phase 1 left it
+    assert "1. Data module —" in second
+    assert "takes a `rows` prop" in third                   # ...and phase 3 gets both
+    assert "exporting `rows: Trade[]`" in third
+
+
+def test_phases_are_told_not_to_run_the_build_themselves(tmp_path: Path):
+    # Sage typechecks after every phase and feeds the errors back, but the agent can't know that:
+    # live, phases shelled out to `npm run build` AND `npx tsc --noEmit`, compiling the project twice.
+    orch, oc, _project, _ = _plan_then_phases(tmp_path)
+    list(orch.approve_stream())
+
+    prompt = next(p["text"] for p in oc.prompts if "You are executing step" in p["text"])
+    assert "Don't run the build or the typechecker yourself" in prompt

@@ -607,8 +607,13 @@ def _approve_prompt(plan_md: str, answers: str) -> str:
     return "\n".join(parts)
 
 
+def _phase_note(text: str, limit: int = 400) -> str:
+    """One phase's closing summary, squeezed down to a handoff note for the phases after it."""
+    return " ".join(str(text).split())[:limit]
+
+
 def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
-                  retry_errors: str = "") -> str:
+                  notes: list[str] | None = None, retry_errors: str = "") -> str:
     """The prompt for ONE phase of a phased build, sent into a brand-new session.
 
     Deliberately NOT the whole plan: carrying it would re-pay the context a fresh session just
@@ -633,6 +638,16 @@ def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
          f"Do THIS step and nothing else. {prior} Later steps are someone else's job; "
          "do not start them."),
         "", "## The other steps, for context only", step_index(steps, step.n),
+    ]
+    if notes:
+        # What the finished phases said they built. The filesystem already carries their code, but not
+        # what's IN it — so without this a cold phase rediscovers the codebase by reading, which is
+        # both the bootstrap tax and the amnesia risk. Observed live 2026-08-06: a drawer step read
+        # types.ts, App.tsx and ReviewTable.tsx purely to learn what existed, and still got the props
+        # wrong. These are the agents' own closing summaries, so they cost nothing extra to produce —
+        # a few hundred tokens against the file reads they save.
+        parts += ["", "## What earlier steps built, in their own words", *notes]
+    parts += [
         "", "## Your step", step.raw,
         "",
         # Precedence, spelled out, because a plan can contradict itself and the agent then stops
@@ -650,7 +665,17 @@ def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
         parts += ["", "## Answers to the open questions", answers.strip()]
     if retry_errors.strip():
         parts += ["", "## Your previous attempt at this step failed", retry_errors.strip()]
-    parts += ["", "Write the code now. Do not re-plan and do not describe what you would do."]
+    parts += [
+        "",
+        # Every phase was shelling out to `npm run build` / `npx tsc --noEmit` to check itself, while
+        # Sage typechecks after each phase anyway and feeds the errors back — so the project was
+        # compiled twice per phase, the slower time on the model's clock. It can't know that unless
+        # it's told. Ending your own summary here is what produces the handoff note above.
+        ("Write the code now. Do not re-plan and do not describe what you would do. Don't run the "
+         "build or the typechecker yourself — that happens automatically when your step ends, and "
+         "any errors come back to you. Finish with one or two sentences naming what you built and "
+         "what it exposes to the steps after you (component names, exported types, props)."),
+    ]
     return "\n".join(parts)
 
 
@@ -1402,6 +1427,9 @@ class Orchestrator:
             "This is the step's allowlist, so it MUST include any earlier file the step has to edit "
             "to connect its work up — the table that needs a row-click handler, the parent that "
             "renders the new component. A step that cannot reach the file it needs cannot finish. "
+            "But list the FEWEST files that does it: a step licensed to edit the main screen will "
+            "rebuild the main screen, and a later step then throws that work away. A data or types "
+            "step should not name the app's main component at all. "
             "Name them even if you are guessing; a wrong guess is cheaper than no guess.\n"
             "  - Do — one or two sentences of the work itself, starting with a verb.\n"
             "  - Done when — one sentence naming the observable result that proves this step is "
@@ -2056,10 +2084,11 @@ class Orchestrator:
                        "steps": [{"n": s.n, "label": s.label, "files": s.files} for s in steps]})
 
         failed: tuple[PlanStep, str] | None = None
+        notes: list[str] = []  # each finished phase's closing summary, handed to the ones after it
         for step in steps:
             yield persist({"type": "step-start", "n": step.n, "total": len(steps),
                            "label": step.label, "files": step.files})
-            outcome = yield from self._run_step(project, client, step, steps, answers)
+            outcome = yield from self._run_step(project, client, step, steps, answers, notes)
             if outcome == "stopped":
                 # The user rejected the whole build, so leaving three of six phases on disk would
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
@@ -2098,7 +2127,7 @@ class Orchestrator:
             yield persist(saved)
 
     def _run_step(self, project: Project, client: OpenCodeClient, step: PlanStep,
-                  steps: list[PlanStep], answers: str):
+                  steps: list[PlanStep], answers: str, notes: list[str] | None = None):
         """Run one phase, retrying once in another fresh session if it fails. Returns True, the
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
@@ -2126,7 +2155,8 @@ class Orchestrator:
                 # expensive plan-tier model on every phase — N times the cost this feature exists to
                 # avoid, and N chances to stall having written nothing.
                 outcome: dict | None = None
-                for ev in self._build_stream(_phase_prompt(step, steps, answers, errors),
+                summary = ""
+                for ev in self._build_stream(_phase_prompt(step, steps, answers, notes, errors),
                                              is_approval=True, mode=Mode.IMPLEMENT,
                                              session_id=sid, brief=step):
                     if ev["type"] == "stopped":
@@ -2134,12 +2164,16 @@ class Orchestrator:
                     if ev["type"] == "done":
                         outcome = ev  # swallowed: one `done` per build, not one per phase
                         continue
+                    if ev["type"] == "agent" and ev.get("kind") == "text" and ev.get("text"):
+                        summary = str(ev["text"])  # last one wins: the agent's closing summary
                     if ev["type"] == "typecheck" and not ev.get("ok"):
                         # Carried into the retry's brief so the next attempt starts from the actual
                         # errors rather than rediscovering them.
                         errors = str(ev.get("message") or "")[:4000]
                     yield ev
                 if outcome is not None and outcome.get("ok"):
+                    if notes is not None and summary:
+                        notes.append(f"{step.n}. {step.label} — {_phase_note(summary)}")
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
