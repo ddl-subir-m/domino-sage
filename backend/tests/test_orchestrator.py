@@ -339,6 +339,24 @@ def test_turn_busy_tracks_the_turn_lock(tmp_path: Path):
     assert orch.turn_busy() is False
 
 
+def test_history_is_readable_mid_turn(tmp_path: Path):
+    # A page reloaded mid-build can't rejoin the SSE stream — it belongs to the request that started
+    # it — so the UI polls the transcript and draws whatever has landed (index.html
+    # resumeRunningTurn / replayHistoryTail). That only works while events are flushed one at a
+    # time: batch them until the turn ends and a reattached page sits on a spinner showing nothing
+    # until the build is over. Read through a SECOND orchestrator so this proves they're on disk.
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace
+    assert orch._turn_lock.acquire(blocking=False)  # a turn is now running
+    try:
+        ws.append_history({"type": "user", "text": "build me a dashboard"})
+        ws.append_history({"type": "agent", "kind": "tool", "tool": "write", "detail": "App.tsx"})
+        assert orch.turn_busy() is True
+        assert [e["type"] for e in _orch(tmp_path).history()] == ["user", "agent"]
+    finally:
+        orch._turn_lock.release()
+
+
 def test_approve_is_refused_while_a_turn_streams(tmp_path: Path):
     # Same guard on the approve path: approving mid-turn would overlap two turns on one working tree.
     orch = _orch(tmp_path)

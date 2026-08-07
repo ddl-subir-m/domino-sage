@@ -793,6 +793,7 @@ async function bootProject() {
   enterProject();                       // the one project always exists → panels live immediately
   await loadHistory();                  // replay transcript; starters stay if the chat is empty
   syncStarters();
+  await resumeRunningTurn();            // a turn may have outlived the page that started it
 }
 
 // Show the starter prompts iff the chat has no messages yet (the empty-chat state). The project
@@ -1745,7 +1746,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Poll until no turn is running. Returns false if the backend stays unreachable for ~20s — we stop
 // waiting rather than leave the composer stuck behind a Stop button nothing can clear.
-async function pollUntilIdle() {
+async function pollUntilIdle(onTick) {
   let unreachable = 0;
   for (;;) {
     await sleep(2000);
@@ -1753,7 +1754,37 @@ async function pollUntilIdle() {
     if (running === false) return true;
     if (running === null && ++unreachable >= 10) return false;
     if (running !== null) unreachable = 0;
+    if (running === true && onTick) await onTick();
   }
+}
+
+// A turn was still running when this page loaded — a reload mid-build, or a second tab. Its stream
+// belongs to the request that started it and there's no server-side replay, but every event is
+// persisted as it happens, so we poll the transcript instead and the page fills in as the turn
+// works. Without this the composer comes back up as Send with `building` false: the next message
+// hits a backend whose turn lock is still held, gets refused, and lands in the queue behind an
+// "Another build is still running" the user had no way to see coming.
+async function resumeRunningTurn() {
+  if (building || (await buildRunning()) !== true) return;
+  building = true;
+  const btn = document.getElementById('build-btn');
+  btn.textContent = '■';
+  btn.title = 'Stop';
+  setWorking('Working');   // the phase this turn is in died with the stream; don't guess at it
+  const idle = await pollUntilIdle(replayHistoryTail);
+  await replayHistoryTail();  // the turn's closing events land after the last tick
+  stopWorking();
+  building = false;
+  btn.textContent = '↑';
+  btn.title = 'Send (Enter)';
+  if (!idle) {
+    addStatus('err', '⚠', 'Lost contact with Sage. Reload the page to reconnect.');
+    return;
+  }
+  refreshPreview();
+  refreshStatus();
+  loadFileTree();
+  drainQueue();
 }
 
 // Wait out a turn we can no longer see. Called when the SSE stream dies mid-build: the composer
@@ -1951,13 +1982,43 @@ function addPlanCard(planMd, kind, steps) {
   return append(card);
 }
 
+// How many persisted history entries are already drawn in #messages. A turn appends to history as
+// it streams, so this is also the read cursor resumeRunningTurn tails from.
+let renderedHistory = 0;
+
 // Replays the project's persisted chat transcript (see Workspace.append_history) so a reload or
 // restart shows the prior conversation instead of a blank slate. Returns whether any existed.
 async function loadHistory() {
   const { body } = await api('/api/project/history');
   const history = body.history || [];
   for (const ev of history) replayEvent(ev);
+  renderedHistory = history.length;
   return history.length > 0;
+}
+
+// Draw whatever has been appended to history since we last looked, keeping the spinner trailing the
+// newest card. This is how a page that missed a turn's stream still fills in as the turn works.
+async function replayHistoryTail() {
+  const { ok, body } = await api('/api/project/history');
+  if (!ok) return;
+  const history = body.history || [];
+  // Stop reverts the turn and truncates history behind our cursor. The live path slices the pane
+  // back to the turn's first card, but a page that never saw this turn start has no such mark —
+  // so redraw from disk, or the reverted cards sit there while the cursor points past the end and
+  // silently swallows every later event.
+  if (history.length < renderedHistory) {
+    stopWorking();
+    document.getElementById('messages').innerHTML = '';
+    for (const ev of history) replayEvent(ev);
+    renderedHistory = history.length;
+    syncStarters();
+    return;
+  }
+  if (history.length === renderedHistory) return;
+  for (const ev of history.slice(renderedHistory)) replayEvent(ev);
+  renderedHistory = history.length;
+  if (working) document.getElementById('messages').appendChild(working);
+  scrollDown();
 }
 function renderSaved(ev) {
   if (ev.ok && ev.pushed) addStatus('ok', '⬆', 'Saved &amp; pushed to the repo');
