@@ -32,11 +32,11 @@ bar to judge them against. D is the least informative — run it last or not at 
 1. **The gateway must be up.** `GATEWAY_BASE_URL` is
    `https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1`. An nginx 404 (HTML, not JSON) means
    the app is stopped — nothing in Sage can be measured until it's back.
-2. **Confirm cost attribution works, once.** Run any one turn, then open the dashboard
-   (`<gateway>/#usage`, the "Usage & cost" button in Sage's header) and check that **`sage-project`
-   appears in the Group By dropdown** as "By Tag: sage-project", with your `<owner>/<project>` row
-   carrying non-zero Requests / Total Tokens / Cost. If the tag isn't there, every number below is
-   unobtainable — stop and fix that first. Requires gateway admin.
+2. **Confirm cost attribution works, once.** Run any one turn, then hit the "Usage & cost" button in
+   Sage's header — it deep-links to `<gateway>/#mine` already filtered to `sage-project =
+   <owner>/<project>` over the last 30 days. Check that the filter resolves to non-zero Requests /
+   Total Tokens / Cost. An empty dashboard means the tag never landed, and every number below is
+   unobtainable — stop and fix that first.
 3. **Sensitivity lock off.** It forces sovereign models regardless of the Implement assignment and
    would silently void the model arm of every run.
 

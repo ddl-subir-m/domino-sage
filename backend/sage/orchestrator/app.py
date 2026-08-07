@@ -17,6 +17,7 @@ import queue
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -133,13 +134,22 @@ _gateway, GATEWAY_MODE = build_gateway()
 _WORKSPACE_DIR = Path(os.environ.get("SAGE_WORKSPACE_DIR", _REPO / "backend" / "workspaces" / "app"))
 
 
-def _gateway_ui_url() -> str | None:
+def _gateway_ui_url(project_label: str | None) -> str | None:
     """Browser URL of the gateway's Usage & Cost dashboard, or None when there's nothing to link to.
 
     Sage doesn't meter spend itself — it tags calls (`sage-project`) and sends you here, because only
     the gateway can price a call correctly (per-alias custom rates live in its DB). The inference
     base URL is the same public Domino apps URL a browser can reach, minus the trailing /v1; the
     override exists for deployments where those differ.
+
+    The dashboard deep-links, so the link arrives already filtered to this deployment rather than
+    dropping you on an unfiltered page with instructions to go find yourself in it:
+
+        /#mine?range=30d&breakdown=alias&tag=sage-project%3D<owner>%2F<project>
+
+    `#mine` (not `#usage`) scopes it to the caller's own traffic — Sage's calls carry the user's
+    workspace JWT, so their builds are all there, and it drops the admin requirement `#usage` has.
+    Without a project label we can't filter, so the link falls back to the unfiltered view.
 
     None in fake/openai mode: that traffic never reaches the Domino gateway, so the dashboard would
     have nothing to show and the link would read as broken rather than empty.
@@ -148,7 +158,16 @@ def _gateway_ui_url() -> str | None:
     base = explicit or (os.environ.get("GATEWAY_BASE_URL", "").strip() if GATEWAY_MODE == "domino" else "")
     if not base:
         return None
-    return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/#usage"
+    root = base.rstrip("/").removesuffix("/v1").rstrip("/")
+    if not project_label:
+        return root + "/#mine"
+    # quote(safe="") so the "=" joining key to value and the "/" in "<owner>/<project>" both survive
+    # as data — unescaped they'd read as a query separator and a path segment.
+    tag = quote(f"sage-project={project_label}", safe="")
+    return f"{root}/#mine?range=30d&breakdown=alias&tag={tag}"
+
+
+_COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 orchestrator = Orchestrator(
     workspace_dir=_WORKSPACE_DIR,
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
@@ -162,8 +181,8 @@ orchestrator = Orchestrator(
     control_plane=_build_control_plane(),
     domino_project_name=os.environ.get("DOMINO_PROJECT_NAME"),
     domino_run_id=os.environ.get("DOMINO_RUN_ID"),
-    cost_project_label=domino_project_label(fallback=_WORKSPACE_DIR.name),
-    gateway_ui_url=_gateway_ui_url(),
+    cost_project_label=_COST_PROJECT_LABEL,
+    gateway_ui_url=_gateway_ui_url(_COST_PROJECT_LABEL),
 )
 
 control_app = FastAPI(title="sage orchestrator")

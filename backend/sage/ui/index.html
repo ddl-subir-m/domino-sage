@@ -1325,8 +1325,8 @@ const PHASE_LABEL = { plan: 'planning', implement: 'building' };
 // the backend resolved a URL (fake/openai gateway mode never reaches that dashboard, so a link
 // would land on a page with no Sage data and read as broken).
 //
-// The dashboard opens unfiltered — its router carries no filter state in the URL — so the tag value
-// goes in the tooltip to be copied into the Group By / filter controls on arrival.
+// The backend deep-links the dashboard's own filter state, so the link lands already scoped to this
+// project's traffic — the tooltip says what you'll see rather than telling you to go filter for it.
 function renderCostLink(cost) {
   const link = document.getElementById('cost-btn');
   if (!link) return;
@@ -1334,8 +1334,8 @@ function renderCostLink(cost) {
   link.href = cost.url;
   link.style.display = '';
   link.title = cost.project
-    ? `Usage and cost for this project, in the LLM Gateway. Filter by tag sage-project = ${cost.project} (requires gateway admin).`
-    : 'Usage and cost, in the LLM Gateway (requires gateway admin).';
+    ? `Usage and cost in the LLM Gateway, filtered to this project (sage-project = ${cost.project}), last 30 days.`
+    : 'Your usage and cost, in the LLM Gateway.';
 }
 
 function renderModelChip(m) {

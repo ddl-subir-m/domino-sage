@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from sage.orchestrator.app import _PrefixMiddleware
+from sage.orchestrator.app import _gateway_ui_url, _PrefixMiddleware
 from sage.preview.prefix import domino_base_prefix, domino_project_label
 from sage.preview.proxy import make_preview_app
 
@@ -81,6 +81,33 @@ def test_domino_project_label_falls_back_readably(monkeypatch):
     monkeypatch.delenv("DOMINO_PROJECT_NAME", raising=False)
     monkeypatch.setenv("DOMINO_PROJECT_ID", "6620f1a9c3e14b0001d2f8aa")
     assert domino_project_label(fallback="app") == "app"
+
+
+def test_gateway_ui_url_deep_links_filtered_to_this_project(monkeypatch):
+    # The dashboard deep-links, so the link must arrive already scoped to this deployment. Both the
+    # "=" joining tag key to value and the "/" in "<owner>/<project>" have to survive as data —
+    # unescaped they'd read as a query separator and a path segment, and the filter would miss.
+    monkeypatch.setenv("SAGE_GATEWAY_UI_URL", "https://apps.dogfood.domino.tech/apps/llm_gateway/v1")
+    assert _gateway_ui_url("sub_user/Sage") == (
+        "https://apps.dogfood.domino.tech/apps/llm_gateway"
+        "/#mine?range=30d&breakdown=alias&tag=sage-project%3Dsub_user%2FSage"
+    )
+
+
+def test_gateway_ui_url_unfiltered_without_a_project_label(monkeypatch):
+    # No label means no filter to apply; the link still opens the caller's own usage rather than
+    # carrying a "sage-project=" that matches nothing and shows an empty dashboard.
+    monkeypatch.setenv("SAGE_GATEWAY_UI_URL", "https://apps.dogfood.domino.tech/apps/llm_gateway/")
+    assert _gateway_ui_url("") == "https://apps.dogfood.domino.tech/apps/llm_gateway/#mine"
+
+
+def test_gateway_ui_url_absent_off_the_domino_gateway(monkeypatch):
+    # fake/openai traffic never reaches the Domino gateway, so a link there would land on a page with
+    # no Sage data and read as broken. The UI hides the button on None.
+    monkeypatch.delenv("SAGE_GATEWAY_UI_URL", raising=False)
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setattr("sage.orchestrator.app.GATEWAY_MODE", "openai")
+    assert _gateway_ui_url("sub_user/Sage") is None
 
 
 @pytest.mark.parametrize(
