@@ -253,6 +253,11 @@
   .pop h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); font-weight: 600; }
   .pop label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   .pop select, .pop input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+  /* ...but not checkboxes. A checkbox drops the padding and border and keeps only the width, so the
+     box stretches the full row and shoves its label off the panel (both .opt-row and .sens-toggle
+     sit inside a .pop). Reset here rather than in each row, or the next checkbox added to a popover
+     inherits the same trap. */
+  .pop input[type="checkbox"] { width: auto; padding: 0; border: 0; background: none; }
   .pop input.invalid { border-color: var(--lock); }
   .pop .row { display: flex; gap: 8px; } .pop .row > * { flex: 1; }
   .pop details { margin-top: 12px; }
@@ -266,15 +271,15 @@
   .hint { font-size: 11px; color: var(--faint); margin-top: 8px; line-height: 1.4; }
   .hint.err { color: var(--lock); }
 
-  /* A settings row inside a popover: checkbox, bold label, explanation under it. The label wraps the
-     input so clicking the text toggles too. */
-  .opt-row {
-    display: flex; gap: 8px; align-items: flex-start; cursor: pointer;
+  /* A settings row inside a popover: checkbox and label on one line. The label wraps the input so
+     clicking the text toggles too. `label.` (not a bare `.opt-row`) so it outranks `.pop label`,
+     which would otherwise impose the 12px muted type meant for the field captions below. */
+  label.opt-row {
+    display: flex; gap: 8px; align-items: center; cursor: pointer;
     margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
     font-size: 12.5px; color: var(--text);
   }
-  .opt-row input { margin: 2px 0 0; flex: 0 0 auto; cursor: pointer; }
-  .opt-row .hint { margin-top: 2px; display: block; }
+  .opt-row input { flex: none; width: 14px; height: 14px; margin: 0; cursor: pointer; accent-color: var(--primary); }
 
   /* The phased-build step checklist, drawn from build-plan / step-start / step-done. */
   .steps { margin: 4px 0 2px; padding: 0; list-style: none; font-size: 12.5px; }
@@ -479,17 +484,15 @@
         <div class="hint" id="sensitivity-lock-hint" style="display:none">Sensitivity lock is on — only sovereign models are used, in every mode.</div>
         <!-- Auto only: Plan and Implement are explicit user modes, and silently changing what they
              produce would be a surprise rather than a feature.
-             The copy says what this does NOT do on purpose. Phasing and the model that executes are
-             separate levers, and a toggle that quietly changed which model builds your app is the
-             thing we chose against when this became a checkbox instead of its own mode. It also
+             The tooltip says what this does NOT do on purpose. Phasing and the model that executes
+             are separate levers, and a toggle that quietly changed which model builds your app is
+             the thing we chose against when this became a checkbox instead of its own mode. It also
              keeps the two independently variable, which is what makes a cost comparison
              attributable — bundle them and you can't tell which one produced the saving. -->
-        <label class="opt-row" id="phased-row" style="display:none">
+        <label class="opt-row" id="phased-row" style="display:none"
+               title="Plans become numbered steps, each built in its own fresh context — slower to start, and much cheaper on large builds. This doesn't change which model builds: set that under Model → Model assignments → Implement.">
           <input type="checkbox" id="phased-toggle" onchange="setPhasedBuild(this.checked)">
-          <span>
-            <b>Build in phases</b>
-            <span class="hint">Plans become numbered steps, each built in its own fresh context — slower to start, and much cheaper on large builds. This doesn't change which model builds: set that under Model → Model assignments → Implement.</span>
-          </span>
+          <span>Build in phases</span>
         </label>
       </div>
       <!-- model popover -->
