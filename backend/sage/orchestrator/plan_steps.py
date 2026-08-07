@@ -84,13 +84,18 @@ def _build(n: int, label: str, body: list[str]) -> PlanStep | None:
         # No acceptance criterion (or no work) means a cold executor has nothing to aim at and no
         # way to know it's finished. Half a brief is what produces a phase that "succeeds" empty.
         return None
+    files = _split_list(fields.get("files", ""))
+    # A file in both lists is a contradiction — "create src/types.ts" and "don't touch src/types.ts"
+    # in one brief — and an agent that takes it literally cannot finish the step. Files wins: it says
+    # what the step is FOR, while Don't touch only fences it off from other steps' work.
+    dont_touch = [p for p in _split_list(fields.get("dont_touch", "")) if p not in files]
     return PlanStep(
         n=n,
         label=label.strip(" .:"),
-        files=_split_list(fields.get("files", "")),
+        files=files,
         do=do,
         done_when=done_when,
-        dont_touch=_split_list(fields.get("dont_touch", "")),
+        dont_touch=dont_touch,
         raw="\n".join([f"### {n}. {label}", *body]).strip(),
     )
 

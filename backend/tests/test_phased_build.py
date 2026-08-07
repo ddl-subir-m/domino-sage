@@ -304,3 +304,18 @@ def test_the_first_phase_is_not_told_earlier_work_exists(tmp_path: Path):
     assert "already done" not in first
     assert "starter template" in first
     assert "already done" in second      # ...and from step 2 on it IS true, so it must still be said
+
+
+def test_a_phase_is_told_files_outranks_dont_touch(tmp_path: Path):
+    """A step often has to edit an earlier file to wire itself in — a table needing a row-click
+    handler for this step's drawer. Live on 2026-08-06 that file sat under "Don't touch", and the
+    agent spent the phase deliberating ("we're not supposed to modify existing components... let me
+    think differently") and shipped a drawer nothing could open. Precedence has to be explicit,
+    because the plan is written by a model and can contradict itself."""
+    orch, oc, _project, _ = _plan_then_phases(tmp_path)
+    list(orch.approve_stream())
+
+    for prompt in [p["text"] for p in oc.prompts if "You are executing step" in p["text"]]:
+        assert "Files is your allowlist" in prompt
+        assert "Files wins" in prompt
+        assert "Never abandon the step" in prompt

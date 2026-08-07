@@ -634,6 +634,17 @@ def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
          "do not start them."),
         "", "## The other steps, for context only", step_index(steps, step.n),
         "", "## Your step", step.raw,
+        "",
+        # Precedence, spelled out, because a plan can contradict itself and the agent then stops
+        # rather than builds. Observed live 2026-08-06: a drawer step had ReviewTable.tsx under
+        # "Don't touch" but needed a row-click handler in it, and the phase was spent deliberating
+        # ("we're not supposed to modify existing components... let me think differently") before
+        # shipping a drawer nothing could open. Also rescues plans written by an older Sage.
+        ("Files is your allowlist: create or edit anything in it, including files an earlier step "
+         "wrote — wiring your work into what already exists is part of your step, not a violation. "
+         "Don't touch covers everything else, and if a file somehow appears in both, Files wins. "
+         "Never abandon the step because a file looked off limits: make the edit, keep it as small "
+         "as the wiring requires, and say what you touched in your summary."),
     ]
     if answers.strip():
         parts += ["", "## Answers to the open questions", answers.strip()]
@@ -1388,12 +1399,17 @@ class Orchestrator:
             "- Then, for each step, a '### N. Label' heading (N is 1, 2, 3…; the label is 2-4 "
             "words), followed by exactly these bullets:\n"
             "  - Files — the workspace-relative files this step creates or edits, comma-separated. "
+            "This is the step's allowlist, so it MUST include any earlier file the step has to edit "
+            "to connect its work up — the table that needs a row-click handler, the parent that "
+            "renders the new component. A step that cannot reach the file it needs cannot finish. "
             "Name them even if you are guessing; a wrong guess is cheaper than no guess.\n"
             "  - Do — one or two sentences of the work itself, starting with a verb.\n"
             "  - Done when — one sentence naming the observable result that proves this step is "
             "finished (a file exports something, the preview renders something, the app compiles).\n"
-            "  - Don't touch — files an earlier step already finished that this step must leave "
-            "alone. Omit this bullet entirely when there are none; never write 'None'.\n"
+            "  - Don't touch — earlier files this step has no business editing at all, so it can't "
+            "rewrite finished work it cannot see. Never list a file that also appears in this step's "
+            "Files; that contradiction stops the step dead. Omit this bullet entirely when there are "
+            "none; never write 'None'.\n"
             "Each step must be executable by someone who can see the code but has NOT read the "
             "other steps: no 'as above', no 'the same table', no pronouns pointing at another step. "
             "Aim for 3-7 steps; a step should be one coherent change, not a whole feature and not a "

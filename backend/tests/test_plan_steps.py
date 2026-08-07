@@ -148,3 +148,37 @@ def test_step_index_places_the_current_step():
 def test_empty_plan_is_safe():
     assert parse_steps("") == []
     assert not is_phasable("")
+
+
+def test_a_file_in_both_files_and_dont_touch_is_not_fenced_off():
+    """Seen live 2026-08-06: the planner wrote "Files — src/App.tsx, src/types.ts" and
+    "Don't touch — src/types.ts" in the SAME step, i.e. create this file and also leave it alone. An
+    agent that honours the fence cannot finish the step it was given, so Files wins."""
+    plan = """
+## Plan
+
+### 1. Define review data
+- Files — src/App.tsx, src/types.ts
+- Do — Declare the transaction record type and export sample rows.
+- Done when — src/types.ts exports Transaction and the app compiles.
+- Don't touch — src/types.ts
+"""
+    step = parse_steps(plan)[0]
+
+    assert step.files == ["src/App.tsx", "src/types.ts"]
+    assert step.dont_touch == []          # the contradiction is dropped, not obeyed
+
+
+def test_dont_touch_still_fences_files_the_step_does_not_own():
+    plan = """
+## Plan
+
+### 4. Create row drawer
+- Files — src/App.tsx, src/components/Drawer.tsx
+- Do — Add a detail drawer opened from the queue.
+- Done when — Selecting a row opens the drawer.
+- Don't touch — src/types.ts, src/components/FilterBar.tsx
+"""
+    step = parse_steps(plan)[0]
+
+    assert step.dont_touch == ["src/types.ts", "src/components/FilterBar.tsx"]
