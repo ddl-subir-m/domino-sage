@@ -60,6 +60,24 @@ ENV SAGE_GATEWAY_MODE=${SAGE_GATEWAY_MODE}
 # POST /api/diag/debug-stream {"on": true} instead. Leave blank normally.
 ARG SAGE_DEBUG_STREAM=
 ENV SAGE_DEBUG_STREAM=${SAGE_DEBUG_STREAM}
+# Optional: remap the six catalog slots onto whatever aliases YOUR gateway actually serves. The
+# defaults in _build_catalog() (bedrock-qwen3-coder / sonnet / qwen-2-5) are the dogfood gateway's
+# names; on any other gateway the missing ones 404 — and not at boot, but on the first turn that
+# doesn't carry an explicit model pick, because llm_router falls through to catalog.implement only
+# when picked_model is None. A UI-level pick masks it on most turns, so leaving these blank looks
+# like it works right up until a build dies mid-phase. Leave blank to keep the defaults.
+ARG SAGE_MODEL_PLAN=
+ENV SAGE_MODEL_PLAN=${SAGE_MODEL_PLAN}
+ARG SAGE_MODEL_IMPLEMENT=
+ENV SAGE_MODEL_IMPLEMENT=${SAGE_MODEL_IMPLEMENT}
+ARG SAGE_MODEL_ASK=
+ENV SAGE_MODEL_ASK=${SAGE_MODEL_ASK}
+ARG SAGE_MODEL_SOVEREIGN_PLAN=
+ENV SAGE_MODEL_SOVEREIGN_PLAN=${SAGE_MODEL_SOVEREIGN_PLAN}
+ARG SAGE_MODEL_SOVEREIGN_IMPLEMENT=
+ENV SAGE_MODEL_SOVEREIGN_IMPLEMENT=${SAGE_MODEL_SOVEREIGN_IMPLEMENT}
+ARG SAGE_MODEL_SOVEREIGN_ASK=
+ENV SAGE_MODEL_SOVEREIGN_ASK=${SAGE_MODEL_SOVEREIGN_ASK}
 
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.
@@ -67,7 +85,7 @@ ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if 
 ARG SAGE_REV=main
 # `--branch` takes a ref (branch/tag), not a bare SHA — so to force a fresh clone of the SAME branch
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
-ARG SAGE_CACHE_BUST=2026-08-06-gateway-cost-deep-link
+ARG SAGE_CACHE_BUST=2026-08-07-model-slot-env-vars
 # NOTE: if the repo is PRIVATE, this clone needs a build-time credential — pass a token via a
 # secret build-arg and use it in the URL, or make a deploy mirror public. Public clone shown here.
 RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage

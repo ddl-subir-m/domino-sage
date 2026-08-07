@@ -84,14 +84,24 @@ _SAGE_REV = _sage_rev()
 _REPO = Path(__file__).resolve().parents[3]
 
 
+def _slot(var: str, default: str) -> str:
+    """A catalog slot from the environment, treating blank as unset.
+
+    `.get(var, default)` isn't enough: environment/Dockerfile promotes each of these to `ENV` so a
+    Domino Environment Variable can reach the container, and an ARG nobody filled in lands as the
+    empty STRING, not as absent. That would send "" to the gateway as a model name.
+    """
+    return os.environ.get(var, "").strip() or default
+
+
 def _build_catalog() -> ModelCatalog:
     return ModelCatalog(
-        sovereign_plan=os.environ.get("SAGE_MODEL_SOVEREIGN_PLAN", "qwen-2-5"),
-        sovereign_implement=os.environ.get("SAGE_MODEL_SOVEREIGN_IMPLEMENT", "qwen-2-5"),
-        sovereign_ask=os.environ.get("SAGE_MODEL_SOVEREIGN_ASK", "qwen-2-5"),
-        plan=os.environ.get("SAGE_MODEL_PLAN", "gpt-5.4"),
-        implement=os.environ.get("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder"),
-        ask=os.environ.get("SAGE_MODEL_ASK", "sonnet"),
+        sovereign_plan=_slot("SAGE_MODEL_SOVEREIGN_PLAN", "qwen-2-5"),
+        sovereign_implement=_slot("SAGE_MODEL_SOVEREIGN_IMPLEMENT", "qwen-2-5"),
+        sovereign_ask=_slot("SAGE_MODEL_SOVEREIGN_ASK", "qwen-2-5"),
+        plan=_slot("SAGE_MODEL_PLAN", "gpt-5.4"),
+        implement=_slot("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder"),
+        ask=_slot("SAGE_MODEL_ASK", "sonnet"),
     )
 
 

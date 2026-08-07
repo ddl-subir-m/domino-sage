@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from sage.orchestrator.app import _gateway_ui_url, _PrefixMiddleware
+from sage.orchestrator.app import _gateway_ui_url, _PrefixMiddleware, _slot
 from sage.preview.prefix import domino_base_prefix, domino_project_label
 from sage.preview.proxy import make_preview_app
 
@@ -81,6 +81,20 @@ def test_domino_project_label_falls_back_readably(monkeypatch):
     monkeypatch.delenv("DOMINO_PROJECT_NAME", raising=False)
     monkeypatch.setenv("DOMINO_PROJECT_ID", "6620f1a9c3e14b0001d2f8aa")
     assert domino_project_label(fallback="app") == "app"
+
+
+def test_catalog_slot_treats_blank_as_unset(monkeypatch):
+    # environment/Dockerfile promotes each SAGE_MODEL_* to ENV so a Domino Environment Variable can
+    # reach the container, which means an ARG nobody filled in arrives as "" rather than absent.
+    # `.get(var, default)` would hand that empty string to the gateway as a model name.
+    monkeypatch.setenv("SAGE_MODEL_IMPLEMENT", "")
+    assert _slot("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder") == "bedrock-qwen3-coder"
+
+    monkeypatch.setenv("SAGE_MODEL_IMPLEMENT", "  GLM-5.2  ")
+    assert _slot("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder") == "GLM-5.2"
+
+    monkeypatch.delenv("SAGE_MODEL_IMPLEMENT", raising=False)
+    assert _slot("SAGE_MODEL_IMPLEMENT", "bedrock-qwen3-coder") == "bedrock-qwen3-coder"
 
 
 def test_gateway_ui_url_deep_links_filtered_to_this_project(monkeypatch):
