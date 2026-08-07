@@ -1334,7 +1334,7 @@ function renderCostLink(cost) {
   link.href = cost.url;
   link.style.display = '';
   link.title = cost.project
-    ? `Usage and cost in the LLM Gateway, filtered to this project (sage-project = ${cost.project}), last 30 days.`
+    ? `Usage and cost in the LLM Gateway, filtered to this project (sage-project = ${cost.project}), last 30 days, split by build phase.`
     : 'Your usage and cost, in the LLM Gateway.';
 }
 

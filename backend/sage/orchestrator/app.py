@@ -145,11 +145,15 @@ def _gateway_ui_url(project_label: str | None) -> str | None:
     The dashboard deep-links, so the link arrives already filtered to this deployment rather than
     dropping you on an unfiltered page with instructions to go find yourself in it:
 
-        /#mine?range=30d&breakdown=alias&tag=sage-project%3D<owner>%2F<project>
+        /#mine?range=30d&breakdown=tag:sage-phase&tag=sage-project%3D<owner>%2F<project>
 
     `#mine` (not `#usage`) scopes it to the caller's own traffic — Sage's calls carry the user's
     workspace JWT, so their builds are all there, and it drops the admin requirement `#usage` has.
-    Without a project label we can't filter, so the link falls back to the unfiltered view.
+    Breaking down by `sage-phase` answers the question people actually arrive with — how much of
+    this went to planning vs implementing — rather than which model served it; the panel validates
+    `tag:`-prefixed breakdowns structurally, so it holds even though no request has yet taught the
+    dashboard that the key exists. Without a project label we can't filter, so the link falls back
+    to the unfiltered view.
 
     None in fake/openai mode: that traffic never reaches the Domino gateway, so the dashboard would
     have nothing to show and the link would read as broken rather than empty.
@@ -164,7 +168,7 @@ def _gateway_ui_url(project_label: str | None) -> str | None:
     # quote(safe="") so the "=" joining key to value and the "/" in "<owner>/<project>" both survive
     # as data — unescaped they'd read as a query separator and a path segment.
     tag = quote(f"sage-project={project_label}", safe="")
-    return f"{root}/#mine?range=30d&breakdown=alias&tag={tag}"
+    return f"{root}/#mine?range=30d&breakdown=tag:sage-phase&tag={tag}"
 
 
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)

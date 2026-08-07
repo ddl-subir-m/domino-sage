@@ -87,10 +87,13 @@ def test_gateway_ui_url_deep_links_filtered_to_this_project(monkeypatch):
     # The dashboard deep-links, so the link must arrive already scoped to this deployment. Both the
     # "=" joining tag key to value and the "/" in "<owner>/<project>" have to survive as data —
     # unescaped they'd read as a query separator and a path segment, and the filter would miss.
+    # The ":" in "tag:sage-phase" is left bare on purpose: it's the dashboard's own breakdown
+    # grammar, not data, and this exact string round-trips through its parser (LLM_gateway PR #30,
+    # static/js/urlstate.js + analytics_panel.js buildSpec).
     monkeypatch.setenv("SAGE_GATEWAY_UI_URL", "https://apps.dogfood.domino.tech/apps/llm_gateway/v1")
     assert _gateway_ui_url("sub_user/Sage") == (
         "https://apps.dogfood.domino.tech/apps/llm_gateway"
-        "/#mine?range=30d&breakdown=alias&tag=sage-project%3Dsub_user%2FSage"
+        "/#mine?range=30d&breakdown=tag:sage-phase&tag=sage-project%3Dsub_user%2FSage"
     )
 
 
