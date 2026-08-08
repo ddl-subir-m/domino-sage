@@ -276,6 +276,19 @@ def test_republish_app_posts_new_version_and_keeps_app_id():
         "environmentRevisionId": "rev-1",
     }
     assert app.id == "app-9"  # keeps the caller's app id, not the version id
+    # A version response carries no URL, so the viewer URL is derived from the app id.
+    assert app.url == "/modelproducts/app-9?scope=project"
+
+
+def test_publish_app_rewrites_the_apps_internal_url_that_404s():
+    # Live on cloud-dogfood 2026-08-07: create returned an /apps-internal/{id} URL that 404s in the
+    # browser; Domino's own "Copy URL" for the same app is /modelproducts/{id}?scope=project.
+    handler = lambda req: httpx.Response(  # noqa: E731
+        200, json={"id": "6a76", "url": "https://apps.cloud-dogfood.domino.tech/apps-internal/6a76"}
+    )
+    app = _cp(handler).publish_app("proj-42", name="My App")
+    # Host-relative: /modelproducts lives on the main host, so the UI resolves it browser-side.
+    assert app.url == "/modelproducts/6a76?scope=project"
 
 
 def test_find_project_app_matches_on_nested_project_id():

@@ -21,6 +21,7 @@ The sidecar token is short-lived, so we re-acquire it per call (token_provider()
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -46,6 +47,26 @@ BUILDER_WORKSPACE_NAME = "sage"
 # A pre-stop save drives the builder's commit → pull → agent-resolve → push, which can run a model
 # turn to resolve conflicts, so it needs a far longer ceiling than a plain control-plane REST call.
 _SAVE_TIMEOUT_S = 180.0
+# The apps API hands back an /apps-internal/{id} URL that 404s in a browser (verified on
+# cloud-dogfood 2026-08-07). Domino's own "Copy URL" for that same app is the /modelproducts one.
+_APPS_INTERNAL_RE = re.compile(r"/apps-internal/([^/?#]+)")
+
+
+def _viewer_url(raw: str, app_id: str) -> str:
+    """The user-facing URL of a published App, from whatever the apps API returned.
+
+    Two rewrites, both driven by what Domino actually serves:
+      - `/apps-internal/{id}` 404s; the working page is `/modelproducts/{id}?scope=project` (same id).
+      - a republish returns no URL at all, so fall back to that route built from the app id.
+    Host-RELATIVE on purpose: /modelproducts lives on the main host, while DOMINO_API_HOST is the
+    internal cluster address and the app may be served under `apps.<host>`. The UI resolves it
+    against the browser's origin (builderUrl/mainHostUrl). Any other absolute URL passes through."""
+    m = _APPS_INTERNAL_RE.search(raw)
+    if m:
+        return f"/modelproducts/{m.group(1)}?scope=project"
+    if raw:
+        return raw
+    return f"/modelproducts/{app_id}?scope=project" if app_id else ""
 
 
 @dataclass(frozen=True)
@@ -353,7 +374,8 @@ class DominoControlPlane:
         }
         d = self._post(_APPS_PATH, body)
         d = d if isinstance(d, dict) else {}
-        return PublishedApp(id=str(d.get("id") or ""), url=str(d.get("url") or ""))
+        app_id = str(d.get("id") or "")
+        return PublishedApp(id=app_id, url=_viewer_url(str(d.get("url") or ""), app_id))
 
     def republish_app(
         self,
@@ -367,7 +389,7 @@ class DominoControlPlane:
         so we keep the caller's app_id."""
         d = self._post(f"{_APPS_PATH}/{app_id}/versions", self._app_version(git_ref_type, git_ref_value))
         d = d if isinstance(d, dict) else {}
-        return PublishedApp(id=app_id, url=str(d.get("url") or ""))
+        return PublishedApp(id=app_id, url=_viewer_url(str(d.get("url") or ""), app_id))
 
     def list_project_apps(self, project_id: str) -> list[PublishedApp]:
         """Every published Domino App belonging to this project.
@@ -384,7 +406,7 @@ class DominoControlPlane:
                 continue
             if (a.get("project") or {}).get("id") != project_id:
                 continue
-            out.append(PublishedApp(id=str(a["id"]), url=str(a.get("url") or "")))
+            out.append(PublishedApp(id=str(a["id"]), url=_viewer_url(str(a.get("url") or ""), str(a["id"]))))
         return out
 
     def find_project_app(self, project_id: str) -> PublishedApp | None:

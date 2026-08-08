@@ -8,12 +8,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Domino's App launcher prepends conda's node (v20.18) to PATH, shadowing the nodesource Node 22 the
-# Environment baked at /usr/bin. vite@8/rolldown require Node >=20.19, and npm SILENTLY skips their
-# platform-native optional binding (@rolldown/binding-linux-x64-gnu) when the running node fails that
-# engine check — then `vite build` dies with "Cannot find native binding". Force the baked Node 22
-# ahead of conda's, the same PATH override the Environment Dockerfile bakes.
-export PATH=/usr/bin:/usr/local/bin:$PATH
+# Our node (official tarball at /usr/local/bin, v22) must beat BOTH conda's node and the base image's
+# stale /usr/bin/node (Debian bookworm ships v18.19.1). /usr/local FIRST — the same order the
+# Environment Dockerfile and environment/app.sh use. Getting this backwards is not a soft failure:
+# node 18 lacks node:util's styleText, so `vite build` dies with "The requested module 'node:util'
+# does not provide an export named 'styleText'" and the published App crash-loops. (Node <20.19 also
+# fails vite@8/rolldown's engine check, which makes npm SILENTLY skip their platform-native optional
+# binding @rolldown/binding-linux-x64-gnu — the other way this shows up.)
+export PATH=/usr/local/bin:/usr/bin:$PATH
 
 # The agent may have added dependencies during the build session, so install from the lockfile.
 npm ci
