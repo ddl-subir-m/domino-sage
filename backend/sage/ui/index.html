@@ -1384,12 +1384,40 @@ async function setPhasedBuild(on) {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ phased_build: !!on }),
   });
+  syncPlanPhasing();
 }
 async function loadPhasedBuild() {
   try {
     const res = await api('/api/project/settings');
     document.getElementById('phased-toggle').checked = !!(res.ok && res.body && res.body.phased_build);
+    syncPlanPhasing();  // a replayed plan card may pre-date this answer arriving
   } catch (e) { /* the toggle just reads unchecked; the server remains the source of truth */ }
+}
+
+// The toggle is read on two different turns: the PLAN turn shapes the plan into steps a phased
+// build can parse (service.py:1324), and the APPROVE turn decides whether to run them
+// (service.py:2029, `phased_build and is_phasable`). So flipping it with a plan already on screen
+// changes what Approve will do without changing anything the user can see — in both directions. A
+// plan written with phases off has no steps to split and quietly builds in one pass; a plan written
+// with them on still says "(6 phases)" on a button that will now build in one. Say which it is on
+// the card, since that's where the decision gets made.
+function syncPlanPhasing() {
+  const on = !!document.getElementById('phased-toggle')?.checked;
+  document.querySelectorAll('.plan-card').forEach(card => {
+    const actions = card.querySelector('.plan-actions');
+    // No actions means the card is resolved (approved, cancelled, superseded) and nothing is riding
+    // on the toggle any more. An architecture is never phased, so the toggle doesn't speak to it.
+    if (!actions || card.dataset.arch === '1') return;
+    const steps = +card.dataset.steps || 0;
+    const willPhase = on && steps > 0;
+    const btn = actions.querySelector('.approve');
+    if (btn) btn.innerHTML = 'Approve &amp; build' + (willPhase ? ` (${steps} phases)` : '');
+    card.querySelector('.plan-phase-note')?.remove();
+    let msg = '';
+    if (on && !steps) msg = 'This plan was written with phases off, so approving builds it in one pass. Ask for a new plan to split it into phases.';
+    else if (!on && steps) msg = `Phases are off, so approving builds this in one pass. Turn them back on to build it in ${steps} phases.`;
+    if (msg) actions.insertAdjacentHTML('beforebegin', '<div class="plan-note plan-phase-note">' + esc(msg) + '</div>');
+  });
 }
 async function lockSovereign() {
   if (!active) return;
@@ -1681,6 +1709,7 @@ function supersedePlanCards(note) {
     card.querySelector('.plan-lbl')?.remove();
     card.querySelector('.plan-answers')?.remove();
     card.querySelector('.plan-edit')?.remove();
+    card.querySelector('.plan-phase-note')?.remove();
     card.insertAdjacentHTML('beforeend', '<div class="plan-note">' + esc(note || 'Superseded by a newer plan below.') + '</div>');
   });
 }
@@ -1926,6 +1955,10 @@ function addPlanCard(planMd, kind, steps) {
   const arch = kind === 'architecture';
   const card = document.createElement('div');
   card.className = 'msg agent plan-card' + (arch ? ' arch-card' : '');
+  // What this plan was written to support, so syncPlanPhasing can tell later whether the toggle
+  // still matches it. Read back off the card because a replayed card has no other memory of it.
+  card.dataset.steps = String(steps || 0);
+  card.dataset.arch = arch ? '1' : '';
   card.innerHTML =
     '<div class="plan-head">' + (arch ? 'Architecture' : 'Review the plan before building') + '</div>' +
     '<div class="plan-body md"></div>' +
@@ -1966,6 +1999,7 @@ function addPlanCard(planMd, kind, steps) {
     card.querySelector('.plan-actions').remove();
     card.querySelector('.plan-lbl').remove();
     card.querySelector('.plan-answers').remove();
+    card.querySelector('.plan-phase-note')?.remove();  // advice about a choice now made
     editTa.remove();
     if (answers) card.insertAdjacentHTML('beforeend', '<div class="plan-note">' + esc(answers) + '</div>');
     const turnStart = document.getElementById('messages').children.length;
@@ -1979,7 +2013,9 @@ function addPlanCard(planMd, kind, steps) {
     try { await runStream('/api/project/build/approve', payload, turnStart); }
     finally { approving = false; }
   };
-  return append(card);
+  const el = append(card);
+  syncPlanPhasing();  // the toggle may not match what this plan was written for
+  return el;
 }
 
 // How many persisted history entries are already drawn in #messages. A turn appends to history as
