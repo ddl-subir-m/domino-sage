@@ -24,7 +24,10 @@ export SAGE_CONTROL_PORT="${SAGE_CONTROL_PORT:-8888}"
 # injects DOMINO_API_HOST / DOMINO_ENVIRONMENT_ID / DOMINO_HARDWARE_TIER_ID). No gateway needed here
 # — the hub only calls the v4 control plane + the git provider API, not a model.
 
-export PATH="/usr/bin:/usr/local/bin:${PATH}"
+# /usr/local first, so our Node 22 tarball beats conda's node and the base image's stale
+# /usr/bin/node (v18.19.1) — same order as environment/app.sh and the Dockerfile. The hub itself
+# only needs git + uv, but the `node -v` line below should report what a child would actually get.
+export PATH="/usr/local/bin:/usr/bin:${PATH}"
 hash -r 2>/dev/null || true
 echo "[hub] node=$(command -v node) $(node -v)  git_cwd=$SAGE_HUB_GIT_CWD port=$SAGE_CONTROL_PORT"
 
