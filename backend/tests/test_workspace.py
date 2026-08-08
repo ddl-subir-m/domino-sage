@@ -88,3 +88,31 @@ def test_plan_artifact_roundtrip(tmp_path: Path):
     ws.write_plan("# plan\nstep 1")
     assert ws.read_plan() == "# plan\nstep 1"
     assert ws.plan_path.parent.name == ".sage"
+
+
+def test_refresh_entry_script_replaces_a_stale_committed_copy(tmp_path: Path):
+    # app.sh is committed to the app's repo at seed time, so an app created from an older image
+    # keeps its original copy. Publish refreshes it, or template fixes never reach existing apps.
+    tmpl = _fake_template(tmp_path)
+    (tmpl / "app.sh").write_text("#!/usr/bin/env bash\nexport PATH=/usr/local/bin:/usr/bin:$PATH\n")
+    (tmpl / "app.sh").chmod(0o755)
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("proj1")
+    (ws.path / "app.sh").write_text("#!/usr/bin/env bash\nexport PATH=/usr/bin:/usr/local/bin:$PATH\n")
+
+    assert mgr.refresh_entry_script() is True
+    assert "PATH=/usr/local/bin:/usr/bin" in (ws.path / "app.sh").read_text()
+    assert (ws.path / "app.sh").stat().st_mode & 0o111  # still executable for Domino
+    assert mgr.refresh_entry_script() is False  # already current — nothing to commit
+
+
+def test_refresh_entry_script_restores_a_missing_one(tmp_path: Path):
+    # Apps seeded before app.sh existed have no entry script at all; Domino fails those opaquely.
+    tmpl = _fake_template(tmp_path)
+    (tmpl / "app.sh").write_text("echo hi\n")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("proj1")
+    (ws.path / "app.sh").unlink()
+
+    assert mgr.refresh_entry_script() is True
+    assert (ws.path / "app.sh").read_text() == "echo hi\n"

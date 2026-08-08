@@ -147,6 +147,12 @@ class DominoControlPlane:
         # raise_for_status() drops. No secrets in a v4 error body.
         if r.status_code >= 400:
             raise RuntimeError(f"{verb} {path} -> {r.status_code}: {r.text.strip()[:500]}")
+        # A successful DELETE answers 204 with no body, and r.json() on that raises the useless
+        # "Expecting value: line 1 column 1 (char 0)" — which then surfaced to the user as a FAILED
+        # delete even though the App was gone (hub archive, 2026-08-07). No body is not an error;
+        # callers already treat a non-dict result as "succeeded, nothing to read".
+        if r.status_code == 204 or not r.content.strip():
+            return None
         return r.json()
 
     def _get(self, path: str, **kw: Any) -> Any:

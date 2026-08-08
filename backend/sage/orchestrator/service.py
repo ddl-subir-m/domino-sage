@@ -2318,6 +2318,15 @@ class Orchestrator:
                 "or DOMINO_PROJECT_ID)."
             )
         project = self.project()
+        # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
+        # app created from an older image would otherwise redeploy its original copy forever — and
+        # keep hitting bugs fixed since (the Node-18 PATH order that crash-looped every build).
+        # Best-effort: a refresh failure must not block publishing the committed copy.
+        try:
+            if self._wm.refresh_entry_script():
+                log.info("publish: refreshed %s from the template", _ENTRY_POINT)
+        except Exception:
+            log.exception("publish: couldn't refresh %s; publishing the committed copy", _ENTRY_POINT)
         # The builder holds the working tree, so a fast local check beats the hub's GitHub-API probe.
         if not (project.workspace.path / _ENTRY_POINT).exists():
             raise RuntimeError(

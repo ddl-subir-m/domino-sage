@@ -20,6 +20,8 @@ from pathlib import Path
 _IGNORE = shutil.ignore_patterns("node_modules", "dist", ".git", ".DS_Store")
 # Top-level template entries skipped when seeding (linked or repo-owned, not template content).
 _SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store"}
+# The script Domino runs to serve a published App. Sage-owned — see refresh_entry_script.
+_ENTRY_SCRIPT = "app.sh"
 
 
 @dataclass(frozen=True)
@@ -259,3 +261,22 @@ class WorkspaceManager:
             os.symlink(tmpl_modules, node_modules)
 
         return Workspace(project_id, self._dir)
+
+    def refresh_entry_script(self) -> bool:
+        """Bring the workspace's deploy entry script back in line with the template. True if changed.
+
+        app.sh is Sage infrastructure, not app content: it encodes how a published App installs,
+        builds and serves itself, and the agent has no reason to touch it. But it's COMMITTED to the
+        app's repo when the project is seeded, so an app keeps whatever app.sh it was born with —
+        which meant a fix to the template only ever reached NEW apps, while every existing app went
+        on crash-looping on the bug we'd already fixed (the Node-18 PATH order, 2026-08-07). Callers
+        refresh at publish time so the fix travels to every app that deploys.
+        """
+        src = self._template / _ENTRY_SCRIPT
+        if not src.is_file():
+            return False
+        dst = self._dir / _ENTRY_SCRIPT
+        if dst.is_file() and dst.read_bytes() == src.read_bytes():
+            return False
+        shutil.copy2(src, dst)  # copy2 keeps the +x bit Domino needs to run it
+        return True

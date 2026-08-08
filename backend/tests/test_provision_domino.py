@@ -338,6 +338,14 @@ def test_delete_app_deployment_deletes_via_beta_apps_api():
     assert out == {"deleted": True}
 
 
+def test_delete_app_deployment_accepts_an_empty_204_body():
+    # The live API answers a successful DELETE with 204/no body; r.json() on that used to raise
+    # "Expecting value: line 1 column 1 (char 0)", which surfaced in the hub as a FAILED delete
+    # even though the App was gone, and aborted the archive that followed it.
+    handler = lambda req: httpx.Response(204)  # noqa: E731
+    assert _cp(handler).delete_app_deployment("app-9") == {"deleted": True}
+
+
 def test_app_manage_url_builds_settings_deep_link():
     def handler(request):
         if request.url.path == "/api/apps/beta/apps/app-9":
