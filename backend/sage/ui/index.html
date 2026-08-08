@@ -290,6 +290,16 @@
   .steps li.ok .s-mark { color: var(--ok); }
   .steps li.bad { color: var(--lock); } .steps li.bad .s-mark { color: var(--lock); }
   .steps li .s-files { color: var(--faint); font-size: 11px; }
+  /* One per phase, inline where that phase's work starts. The checklist above is the map, drawn
+     before anything runs; this is the you-are-here, so a phase's status reads next to its own tool
+     cards instead of only in a card that scrolled off ten minutes ago. */
+  .phase-bar { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-weight: 550;
+               color: var(--muted); margin: 10px 0 2px; padding-top: 9px; border-top: 1px solid var(--border); }
+  .phase-bar .p-mark { flex: 0 0 auto; width: 14px; text-align: center; color: var(--faint); }
+  .phase-bar .p-n { flex: 0 0 auto; font-weight: 400; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .phase-bar.running { color: var(--text); } .phase-bar.running .p-mark { color: var(--primary); }
+  .phase-bar.ok .p-mark { color: var(--ok); }
+  .phase-bar.bad { color: var(--lock); } .phase-bar.bad .p-mark { color: var(--lock); }
 
   .asset-search { width: 100%; box-sizing: border-box; margin: 6px 0 8px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
   .asset-list { max-height: 320px; overflow-y: auto; }
@@ -2072,9 +2082,12 @@ function replayEvent(ev) {
   else if (ev.type === 'ask-blocked' || ev.type === 'ask-active') addStatus('warn', '⚠', esc(ev.message));
   else if (ev.type === 'plan-proposed') addPlanCard(ev.plan, ev.kind, ev.steps);
   // Replayed in their final state: a reload isn't watching the build, it's reading what happened.
+  // The phase bars still get drawn, though — they're what tells you which tool cards below them
+  // belonged to which phase, and that's as true reading the transcript as watching it live.
   else if (ev.type === 'build-plan') addStepList(ev);
-  else if (ev.type === 'step-done') markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕');
-  else if (ev.type === 'done') { if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); }
+  else if (ev.type === 'step-start') addPhaseBar(ev);
+  else if (ev.type === 'step-done') { markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); markPhase(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); }
+  else if (ev.type === 'done') { settlePhases(ev.ok); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); }
   else if (ev.type === 'saved') renderSaved(ev);
 }
 
@@ -2113,6 +2126,7 @@ function addStepList(ev) {
   box.appendChild(ol);
   append(box);
   stepsEl = ol;
+  phaseBars.clear();  // a new build's bars; the previous build's are now just transcript
   return ol;
 }
 
@@ -2124,6 +2138,40 @@ function markStep(n, state, mark) {
   if (state) li.classList.add(state);
   const m = li.querySelector('.s-mark');
   if (m) m.textContent = mark;
+}
+
+// The inline half of the same checklist: one bar per phase, appended where that phase's work
+// begins so its status sits with its own output. Keyed by step number, since step-done arrives
+// long after the bar was drawn.
+const phaseBars = new Map();
+
+function addPhaseBar(ev) {
+  const d = document.createElement('div');
+  d.className = 'phase-bar running';
+  d.dataset.n = ev.n;
+  d.innerHTML = '<span class="p-mark">▸</span>'
+    + `<span class="p-n">Phase ${ev.n} of ${ev.total}</span>`
+    + `<span>${esc(ev.label)}</span>`;
+  phaseBars.set(String(ev.n), d);
+  return append(d);
+}
+function markPhase(n, state, mark) {
+  const bar = phaseBars.get(String(n));
+  if (!bar) return;
+  bar.classList.remove('running', 'ok', 'bad');
+  if (state) bar.classList.add(state);
+  const m = bar.querySelector('.p-mark');
+  if (m) m.textContent = mark;
+}
+// A phased build that finished clean ran every phase and every phase passed — that's what the
+// terminal `done` means. So settle both views to it rather than leaving a phase looking unfinished
+// because its step-done went missing between the backend (which does emit one per step) and here:
+// a dropped stream, a reload that rebuilt the list from history, a frame lost in transport. A
+// failed build is left exactly as it was — the phases after the failure genuinely never ran.
+function settlePhases(ok) {
+  if (!ok || !phaseBars.size) return;   // no bars means this turn wasn't phased; leave any older list alone
+  stepsEl?.querySelectorAll('li:not(.ok):not(.bad)').forEach(li => markStep(li.dataset.n, 'ok', '✓'));
+  phaseBars.forEach((bar, n) => { if (bar.classList.contains('running')) markPhase(n, 'ok', '✓'); });
 }
 
 function leakMsg(ev) {
@@ -2153,9 +2201,9 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'plan-stale') { supersedePlanCards(ev.note); }
   else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan, ev.kind, ev.steps); trail(); }
   else if (ev.type === 'build-plan') { stopWorking(); addStepList(ev); trail(); }
-  else if (ev.type === 'step-start') { markStep(ev.n, 'running', '▸'); setWorking(`Phase ${ev.n} of ${ev.total} — ${esc(ev.label)}`); }
-  else if (ev.type === 'step-done') { markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); }
-  else if (ev.type === 'done') { stopWorking(); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
+  else if (ev.type === 'step-start') { markStep(ev.n, 'running', '▸'); addPhaseBar(ev); setWorking(`Phase ${ev.n} of ${ev.total} — ${esc(ev.label)}`); trail(); }
+  else if (ev.type === 'step-done') { markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); markPhase(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); }
+  else if (ev.type === 'done') { stopWorking(); settlePhases(ev.ok); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'ask-blocked') { stopWorking(); askBlocked(ev); trail(); }
   else if (ev.type === 'ask-active') { addStatus('warn', '⚠', esc(ev.message)); trail(); }
