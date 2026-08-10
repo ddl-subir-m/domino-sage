@@ -1,6 +1,6 @@
 ---
 prd_title: Sage 1.0 — "Real Apps" milestone
-prd_status: draft v2 (decisions D1/D3/D4/D6 resolved with Subir, 2026-08-10)
+prd_status: draft v3 (all decisions D1–D6 resolved with Subir, 2026-08-10)
 prd_type: buildable milestone spec
 prd_author: PM (drafted with Claude)
 prd_date: 2026-08-10
@@ -18,7 +18,7 @@ one_liner: >
 > **How to read this.** This is a *buildable* PRD: it assumes the vision in `SPEC.md` and picks the
 > next shippable increment. §2–§6 are the framing you asked for (state of play, who asks what, what
 > they build). §7–§8 are the milestone and its acceptance criteria. §9 is the eval program. §12 is
-> the decisions log — D1/D3/D4/D6 are now resolved; D2/D5 still need your call.
+> the decisions log — all milestone decisions (D1–D6) are now resolved.
 
 ---
 
@@ -36,9 +36,10 @@ From the product gate (2026-08-10):
 | D3 | Publish | **In scope** — generated-app publish (DEPLOY-PLAN Phase 5) is small & proven; pull it in | Publish becomes the third pillar (E3). §8-E3. |
 | D4 | AI-in-the-app | **Next milestone** | Runtime governed model calls are spec'd here (§8, "Next milestone") but not built now. |
 | D6 | Sovereign bar model | **The deepseek / GLM models we have on the gateway today** | With the truth-in-labeling caveat in §9.0. |
+| D2 | Persistence / write-back | **Out — its own milestone later** | Apps stay read-only over data this milestone; write-back (A4) is sequenced after AI-in-the-app. §12-D2. |
+| D5 | Sovereign-bar coverage (M-AC7) | **All 4 in-scope archetypes — A1/A2/A6 + A3** | The sovereign tier must build the data explorer (A3) too — the hardest combo and the core of the claim. §8-E5, §12-D5. |
 
-Still **open** (need your call — see §12): D2 (persistence / write-back), D5 (how many archetypes
-must clear the sovereign bar).
+All milestone decisions are now resolved; see the decisions log (§12) for rationale.
 
 ---
 
@@ -202,7 +203,7 @@ investment. Ordered by how well Sage handles them **today**.
 | A1 | **Record table / review queue** | Fraud queue, ticket triage, approvals | **Strong** — dedicated `data-table` skill | Multi-view (row → full detail page), live data, publish |
 | A2 | **Dashboard / KPI view** | Sales KPIs, cohort metrics, ops monitor | **OK** (StatCard example) | Real charts, live refresh, drill-down page, publish |
 | A3 | **Data explorer** | Filter/search/pivot over a dataset | **Snapshot-only** | Live query over large/governed data (§8-E2), publish |
-| A4 | **Form / data-entry tool** | Intake form, labeling UI, config editor | **Weak** (no persistence) | Write-back path (§12-D2 — likely next milestone) |
+| A4 | **Form / data-entry tool** | Intake form, labeling UI, config editor | **Weak** (no persistence) | **Deferred** — write-back is its own milestone after AI-in-the-app (D2) |
 | A5 | **AI-assisted tool** | Summarizer, classifier, doc Q&A/chat | **Unsupported** | **Next milestone** (AI-in-the-app) |
 | A6 | **Multi-step / wizard** | Onboarding flow, guided analysis | **Cramped on one screen** | Routing + shared state (§8-E1), publish |
 | A7 | **Content/report generator** | Styled report/brief from data | **Partial** | Benefits from A5 (next) + export |
@@ -327,8 +328,9 @@ disabling the model override) turns the enforcement lane red.
 - **R5.2** Run the `EXPERIMENTS.md` A-vs-C phased-build experiment to a **recorded result** so we know
   whether phasing is what makes the cheap/sovereign tier viable, and default the toggle accordingly.
 
-**M-AC7** ≥N of the in-scope archetypes build to a running preview on the sovereign tier in the eval
-suite (N set in §12-D5); the phased-build experiment has a recorded verdict.
+**M-AC7** **All 4** in-scope archetypes — A1 (record table), A2 (dashboard), A6 (multi-step), and A3
+(data explorer) — build to a running preview on the sovereign tier in the eval suite; any archetype
+added to the suite later is stretch, not gating. The phased-build experiment has a recorded verdict.
 
 ### E6 — Table-stakes dependencies (pull in only as archetypes require)
 v1 gaps that real apps trip over; scoped to what E1–E3 need, not a full v1 sweep.
@@ -466,7 +468,7 @@ Supporting KPIs, with this-milestone targets (baselines TBD from first eval run)
 | Metric | Definition | Target |
 |---|---|---|
 | Build-success rate | fixtures that boot + pass deterministic checks | ≥85% vendor, **≥70% sovereign (deepseek/GLM)** |
-| Sovereign-path coverage (M-AC7) | in-scope archetypes that build on the sovereign tier | ≥N of them (§12-D5) |
+| Sovereign-path coverage (M-AC7) | in-scope archetypes that build on the sovereign tier | 4 of 4 (A1/A2/A6/A3) |
 | Quality delta | mean rubric, vendor − sovereign | ≤1.0 point |
 | Time-to-first-preview (TTHW) | prompt → placeholder/preview visible | <90s (SPEC target, held) |
 | Publish success rate | publish fixtures reaching a live Domino App URL | ≥90% |
@@ -510,13 +512,19 @@ multi-view ~1 wk; publish ~0.5–1 wk (mechanism proven); table-stakes ~1 wk int
   (§9.0): on the current gateway these aren't customer-GPU-hosted, so the bar measures the enforcement
   mechanism and the capability floor, not the full data-never-leaves guarantee. Re-run against a gateway
   hosting the real sovereign model before making the end-to-end sovereign claim externally.
+- **D2 — Persistence / write-back (A4 forms): out, its own milestone later.** Read-only over data this
+  milestone. Write-back is where the governance surface gets genuinely hard — who can write, is it
+  attributable, does it mutate a governed dataset — and it opens storage + write-auth + schema
+  migration + its own governance evals. Doing it right after AI-in-the-app beats bolting a cheap
+  version on now. A4 stays "deferred" in §6; browser-local-only was rejected as off-wedge (ungoverned,
+  non-attributable, doesn't survive across users).
+- **D5 — Sovereign-bar coverage: all 4 in-scope archetypes (A1/A2/A6 + A3).** The sovereign lane exists
+  to prove a governed/cheap model builds *real* apps, and A3 (data explorer) is the one that actually
+  exercises the live governed-data path — the small-model + runtime-data combo that is the heart of the
+  claim. Dropping it would soften the differentiator exactly where it matters. The risk that small
+  models flake on data wiring is *what the eval is meant to surface*, not something to design around.
 
-**Still open — need your call:**
-- **D2 — Persistence / write-back (A4 forms)?** Real forms need to save, which opens storage, auth, and
-  migration. **Recommendation:** out of this milestone; its own milestone after AI-in-the-app.
-- **D5 — Set N for M-AC7 / sovereign coverage.** How many of the in-scope archetypes must build on the
-  sovereign tier to call the milestone done? **Recommendation:** all of A1/A2/A6 (UI-shaped) + A3
-  (data), i.e. 4.
+**Still open:** none — all milestone decisions resolved.
 
 ---
 
