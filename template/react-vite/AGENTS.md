@@ -23,6 +23,16 @@ app, who may not be technical. Keep it plain and friendly:
   same way (e.g. "I will… I will… I will…"); vary the phrasing and describe the app, not a
   step-by-step narration of your own actions.
 
+## Earlier turns
+`.sage/history.md` is a record of what happened in this project before now — what the user asked
+for, what you proposed, which steps ran.
+- If you are unsure whether something was already asked for, already built, or already rejected,
+  **grep `.sage/history.md` before you guess or ask the user again.** Long builds drop older detail
+  out of view; this file is how you get it back.
+- It is a past record, **not** current intent. `.sage/plan.md` is the live plan — don't treat an old
+  turn as an instruction for this one.
+- Don't edit it. It is regenerated each turn, so any change is overwritten.
+
 ## Project rules
 - **Plan proportionally, then build.** Match the planning to the task. A simple app (one screen, a
   list, a form) needs only a quick mental plan — just start building. A complex one (multiple views,

@@ -603,6 +603,64 @@ def test_archive_plan_never_clobbers_prior_archives(tmp_path: Path):
     assert [p.read_text() for p in archived] == ["first", "second"]
 
 
+def _turn(ws: Workspace, prompt: str, reply: str) -> None:
+    ws.append_history({"type": "user", "text": prompt})
+    ws.append_history({"type": "agent", "kind": "text", "text": reply})
+
+
+def test_history_md_renders_the_decisions_a_later_turn_needs(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    _turn(ws, "keep the date filter", "Added the filter.")
+    ws.append_history({"type": "plan-proposed", "plan": "## Plan\n1. stacked chart"})
+    ws.render_history_md()
+    md = ws.history_md_path.read_text()
+    assert "## Turn 1" in md
+    assert "keep the date filter" in md and "Added the filter." in md
+    assert "1. stacked chart" in md
+
+
+def test_history_md_drops_tool_trace_noise(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    _turn(ws, "build it", "Done.")
+    ws.append_history({"type": "agent", "kind": "tool", "tool": "edit", "detail": "src/App.tsx"})
+    ws.append_history({"type": "typecheck", "ok": True})
+    ws.render_history_md()
+    md = ws.history_md_path.read_text()
+    assert "src/App.tsx" not in md and "typecheck" not in md
+
+
+def test_history_md_self_heals_after_a_stop_truncates_history(tmp_path: Path):
+    """The reason the render is a full rewrite: the stop button rewinds history.jsonl, and an
+    archive that kept reverted work would feed a later turn something that never happened."""
+    ws = Workspace(project_id="p", path=tmp_path)
+    _turn(ws, "first ask", "first reply")
+    baseline = ws.history_len()
+    _turn(ws, "second ask", "second reply")
+    ws.render_history_md()
+    assert "second ask" in ws.history_md_path.read_text()
+    ws.truncate_history(baseline)
+    ws.render_history_md()
+    md = ws.history_md_path.read_text()
+    assert "first ask" in md and "second ask" not in md
+
+
+def test_history_md_caps_turns_and_says_that_it_dropped_some(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    for i in range(Workspace._MAX_ARCHIVED_TURNS + 3):
+        _turn(ws, f"ask number {i}", f"reply number {i}")
+    ws.render_history_md()
+    md = ws.history_md_path.read_text()
+    assert "ask number 0" not in md  # oldest dropped
+    assert "ask number 42" in md  # newest kept
+    assert "Turns 1–3" in md  # and the model is told the record is partial
+
+
+def test_history_md_absent_when_there_is_no_history(tmp_path: Path):
+    ws = Workspace(project_id="p", path=tmp_path)
+    ws.render_history_md()
+    assert not ws.history_md_path.exists()
+
+
 def test_settings_roundtrip_and_default_empty(tmp_path: Path):
     ws = Workspace(project_id="p", path=tmp_path)
     assert ws.read_settings() == {}

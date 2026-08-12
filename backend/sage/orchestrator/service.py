@@ -1284,6 +1284,10 @@ class Orchestrator:
                 project.workspace.append_history(ev)
             return ev
 
+        # Refresh the agent-facing archive of earlier turns BEFORE the baseline below, so this write
+        # is part of the pre-turn state. Written after it, the read-only gate would see a changed
+        # working tree and fail an Ask/Plan turn that wrote nothing.
+        project.workspace.render_history_md()
         # Snapshot before touching history/files so a stop mid-turn can restore exactly this
         # state, and remember how many history entries pre-date this turn so a stop can drop
         # everything appended since (the turn disappears from the transcript entirely).
@@ -2069,6 +2073,8 @@ class Orchestrator:
                 project.workspace.append_history(ev)
             return ev
 
+        # Same ordering rule as _build_stream: refresh the archive before the revert point below.
+        project.workspace.render_history_md()
         project.workspace.append_history(
             {"type": "user", "text": user_text if user_text is not None else "Approved the plan."})
         # ONE revert point for the whole build. _build_stream still checkpoints per phase (which is
