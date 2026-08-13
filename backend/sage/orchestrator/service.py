@@ -163,6 +163,41 @@ def _prune_empty_dirs(start: Path, stop: Path) -> None:
         cur = cur.parent
 
 
+# Shell operators that end an install command's argument list. Split on these FIRST: without it,
+# `npm install foo | tail -20` reads `tail` as a second package, since it's a valid package name.
+_SHELL_SEGMENT = re.compile(r"&&|\|\||;|\||\n")
+# `pkg`, `@scope/pkg`, `pkg@^1.2.3`. Excludes redirections like `2>&1` — the `>` can't match.
+_PACKAGE_NAME = re.compile(r"^@?[a-z0-9][\w.-]*(/[\w.-]+)?(@[\w.^~*-]+)?$", re.IGNORECASE)
+_INSTALL_VERBS = frozenset({("npm", "install"), ("npm", "i"), ("npm", "add"), ("yarn", "add"),
+                            ("pnpm", "add"), ("pnpm", "install"), ("bun", "add")})
+
+
+def _install_attempt(command: str) -> list[str]:
+    """Packages a shell command is trying to add. Empty when it isn't adding any.
+
+    Two jobs. It's the evidence behind "curated stack, revisit after real usage" — a running list of
+    what agents reach for and don't find baked in. And it flags a turn that is about to lose its
+    node_modules: npm won't install into a symlinked one, so it deletes the link during reify before
+    it knows the install resolves (see WorkspaceManager.link_warm_deps).
+
+    A bare `npm install` returns nothing — it's a reinstall, not a request for something new.
+    """
+    for segment in _SHELL_SEGMENT.split(command):
+        tokens = segment.split()
+        for i in range(len(tokens) - 1):
+            if (tokens[i], tokens[i + 1]) not in _INSTALL_VERBS:
+                continue
+            packages = []
+            for arg in tokens[i + 2:]:
+                if arg.startswith("-"):
+                    continue                       # a flag, not a package
+                if not _PACKAGE_NAME.match(arg):
+                    break                          # a redirect or trailing shell noise
+                packages.append(arg)
+            return packages
+    return []
+
+
 def _agent_for_mode(mode: Mode) -> str | None:
     return _MODE_AGENT.get(mode)
 
@@ -1762,6 +1797,13 @@ class Orchestrator:
                                         # Also log it: if a tool stalls (e.g. read of a /mnt/data mount),
                                         # /api/diag's log ring shows exactly which tool is stuck.
                                         log.info("active tool: %s %s", tool, detail)
+                                        if tool == "bash" and (pkgs := _install_attempt(detail)):
+                                            # The data behind "curated stack, revisit after real
+                                            # usage": what agents reach for and can't find baked in.
+                                            # Also the warning that this turn may be about to lose
+                                            # its node_modules (see link_warm_deps).
+                                            log.warning("dependency wanted: %s — via `%s`",
+                                                        ", ".join(pkgs), detail)
                                         yield {"type": "active", "tool": tool, "detail": detail}
                                 continue
                             seen.add(key)

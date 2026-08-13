@@ -46,13 +46,18 @@ for, what you proposed, which steps ran.
   other files) in that same turn** — never stop to wait for confirmation before writing code. If you
   find yourself planning a second time without having written anything, stop planning and start
   editing now.
-- **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html` unless the
-  user truly needs a new dependency. The config is known-good; regenerating it wastes turns and
-  breaks the preview.
+- **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html`. The config
+  is known-good; regenerating it wastes turns and breaks the preview.
+- **Never run `npm install` / `yarn add` / `pnpm add`.** It does not just fail — it breaks the
+  workspace. `node_modules` here is a symlink to a warm, pre-installed copy, and npm refuses to
+  write into a symlinked one: it deletes the link *before* it knows whether the install resolves.
+  A package that doesn't exist leaves you with no dependencies at all, and the preview then can't
+  start. Build with what is already installed (listed under "What exists"); if a task truly can't
+  be done without a new package, say so plainly instead of trying to install it.
 - Put the app UI in `src/App.tsx` (replace the placeholder). Split into `src/components/` as it grows.
 - **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, history, settings) as the current app spec or state — the code in `src/` is the source of truth.
-- TypeScript everywhere. Small, typed components. Prefer plain React + CSS; add a library only if
-  the task genuinely needs it.
+- TypeScript everywhere. Small, typed components. Plain React + CSS is the default, and the
+  installed packages are the whole toolbox — there is no adding to it mid-build.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse
   them — do **not** invent new colors, fonts, shadows, or radii.
 - **A component carries its own styles** — colocated inline styles or its own `.css` next to it, as
