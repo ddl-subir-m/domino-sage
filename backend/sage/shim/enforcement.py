@@ -19,7 +19,7 @@ from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, is_bedrock, supports_vision
-from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, classify
+from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
 # attached — a silently dropped part reads as "the user sent nothing", and the agent then invents
@@ -182,10 +182,15 @@ class EnforcementShim:
         # interleaved turns route correctly step by step — not from a laggy background poll. The
         # lock still wins in resolve(), so skip classifying when locked. Reflect the phase back to
         # the control so the UI's live indicator matches what actually routed.
+        signals = None
         if state.mode is Mode.AUTO and not state.sensitivity_locked:
-            phase = classify(request.get("messages"))
-            state = replace(state, phase=phase)
-            self._control.set_phase(phase)
+            # OBSERVE ONLY. assess() also scores a rescue back to PLAN when the turn starts failing
+            # (see phase_classifier), but routing stays on base_phase — the write-flip rule, exactly
+            # as before. Its markers are guesses until a live failure shows what OpenCode actually
+            # writes into a failed tool result, so this step only logs what it WOULD have done.
+            signals = assess(request.get("messages"))
+            state = replace(state, phase=signals.base_phase)
+            self._control.set_phase(signals.base_phase)
 
         # Read-only turns (Ask mode, or a plan turn held at the approval gate) get every write AND
         # shell tool stripped from the request, so the model is never offered one. This is the whole
@@ -248,6 +253,15 @@ class EnforcementShim:
             log.info(
                 "model policy: dropped %d image part(s) — %s cannot process images",
                 dropped, request["model"],
+            )
+        # The observe-only half. Only fires when the rescue disagrees with what just routed, so a
+        # clean build logs nothing. The echoed samples are first-line-only and capped in the
+        # classifier; this can't run at all under a sensitivity lock, since assess() is skipped there.
+        if signals is not None and signals.phase is not signals.base_phase:
+            log.info(
+                "model policy: rescue WOULD escalate to %s (%s, errors=%d, episodes=%d) — samples: %s",
+                self._catalog.plan, signals.reason, signals.errors_since_write, signals.rescues,
+                " | ".join(signals.error_samples) or "(none)",
             )
 
         # Cost-attribution tags (sent as X-LLM-Tag-sage-*, queryable in the gateway usage dashboard).

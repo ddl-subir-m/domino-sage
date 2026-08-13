@@ -23,6 +23,7 @@ Design notes:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from .models import Phase
@@ -67,15 +68,153 @@ WEB_TOOLS = frozenset({"webfetch", "web_fetch", "fetch", "websearch", "web_searc
 TODO_TOOLS = frozenset({"todowrite", "todo_write"})
 _TURN_BOUNDARY_ROLES = frozenset({"user", "human"})
 
+# --- Rescue signals (see assess) ------------------------------------------------------------
+# An unambiguous abort: one of these alone escalates, no corroboration needed. Modelled on
+# Switchyard's stage_router, where a critical-error severity is a hard override that bypasses the
+# score. Kept deliberately short — every entry here is a phrase that has no benign reading in the
+# output of a shell or an edit.
+#
+# UNVERIFIED. Nothing in this repo has ever captured what OpenCode writes into a failed tool
+# result, so these are informed guesses. That is exactly why assess() is wired observe-only first:
+# the shim echoes the text of anything matched, so the next live failure replaces the guess.
+CRITICAL_MARKERS = frozenset(
+    {"traceback (most recent call last)", "modulenotfounderror", "cannot find module",
+     "failed to compile", "segmentation fault", "syntaxerror:"}
+)
+# Phrases that usually mean failure but also show up in healthy output (a build log line, a lint
+# summary, a test name). One is noise; two in the same window is a signal. This is the corroboration
+# rule — a single one of these must never reroute a turn.
+SOFT_ERROR_MARKERS = frozenset(
+    {"error:", "err!", "error ts", "exception", "failed:", "exit code 1"}
+)
+# Two errors since the last write, or one critical, escalates. Not ported from Switchyard's 0.5
+# confidence bar — that number is calibrated against their unpublished per-signal weights on
+# SWE-Bench Pro Python-75, so it means nothing here. What ports is the shape: one signal is not
+# enough, a critical one is.
+ERROR_CORROBORATION = 2
+# Escalating twice in one turn means the cheap model is not converging. Stop flip-flopping and stay
+# on the strong one for the rest of the turn — Switchyard's escalation router latches for the rest
+# of the session; a turn is the right scope here, because a fresh turn already starts in PLAN.
+RESCUE_LATCH = 2
+# What the shim may echo of a matched tool result: first line only, hard-capped, few samples. Enough
+# to tune the markers above, bounded so a log line can't carry a file's worth of a user's source.
+_SAMPLE_CHARS = 200
+_MAX_SAMPLES = 4
 
-def _tool_names(message: dict[str, Any]) -> list[str]:
-    """Tool-call names on an assistant message, lowercased. Empty when it made none."""
-    names: list[str] = []
-    for call in message.get("tool_calls") or []:
-        name = (call.get("function") or {}).get("name") or call.get("name") or ""
-        if name:
-            names.append(name.lower())
-    return names
+
+def _text(content: Any) -> str:
+    """A tool result's text, whether it arrived as a string or as OpenAI content parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [p["text"] if isinstance(p, dict) and isinstance(p.get("text"), str)
+                 else p if isinstance(p, str) else "" for p in content]
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
+def _first_line(text: str) -> str:
+    """First non-empty line, capped. What the shim is allowed to echo of a matched result."""
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()[:_SAMPLE_CHARS]
+    return ""
+
+
+def _current_turn(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The messages since the last user prompt — the same window classify() has always used."""
+    start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") in _TURN_BOUNDARY_ROLES:
+            start = i + 1
+            break
+    return list(messages[start:])
+
+
+@dataclass(frozen=True)
+class StepSignals:
+    """What this step's tool-result history says. Pure data, like ModelDecision."""
+
+    phase: Phase              # what routing SHOULD be, rescue included
+    base_phase: Phase         # what the write-flip rule alone says — what actually routes today
+    reason: str               # no-write | write-flip | rescue-errors | rescue-critical | rescue-latched
+    errors_since_write: int
+    rescues: int              # rescue episodes so far this turn
+    error_samples: tuple[str, ...] = ()   # capped echo of the matched results, for tuning the markers
+
+
+def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
+    """Score the current turn: the write-flip rule, plus a rescue back to PLAN when it goes wrong.
+
+    `base_phase` is the long-standing rule verbatim. `phase` adds Switchyard stage_router's missing
+    half — the signals that push *toward* the capable model — because today a single write pins the
+    rest of the turn to the cheap coder even while it thrashes on the same error.
+
+    A write and an error are opposing signals, so a write clears the error window. That yields
+    de-escalation for free: the strong model lands a fix, the counter resets, and the next step
+    goes back to the cheap model. Without that the rescue would be a one-way trip to the expensive
+    tier and this would be a cost regression rather than a save.
+
+    Only shell and write results are read for failure. A grep hit or a source file containing the
+    word "error" is not a failure, and mapping tool_call_id back to the call that produced it is
+    what keeps those out — cheaper and far more precise than tuning the marker strings.
+    """
+    turn = _current_turn(messages or [])
+    origin: dict[str, str] = {}     # tool_call_id -> the tool that produced it
+    has_write = False
+    errors = 0
+    rescues = 0
+    rescue_kind = ""                # non-empty while inside a rescue episode; cleared by a write
+    latched = False
+    samples: list[str] = []
+
+    for message in turn:
+        role = message.get("role")
+
+        if role == "assistant":
+            wrote = False
+            for call in message.get("tool_calls") or []:
+                name = ((call.get("function") or {}).get("name") or call.get("name") or "").lower()
+                if not name:
+                    continue
+                if call.get("id"):
+                    origin[call["id"]] = name
+                wrote = wrote or name in WRITE_TOOLS
+            if wrote:
+                # Progress. Opposes the error window and ends the current rescue episode; the latch
+                # (two failed episodes) deliberately survives it.
+                has_write, errors, rescue_kind = True, 0, ""
+            continue
+
+        if role != "tool":
+            continue
+        if origin.get(message.get("tool_call_id") or "", "") not in (WRITE_TOOLS | SHELL_TOOLS):
+            continue  # unknown or read-only origin: never counted, so a stray word can't escalate
+
+        raw = _text(message.get("content"))
+        lowered = raw.lower()
+        critical = any(m in lowered for m in CRITICAL_MARKERS)
+        if not critical and not any(m in lowered for m in SOFT_ERROR_MARKERS):
+            continue
+
+        errors += 1
+        if len(samples) < _MAX_SAMPLES:
+            samples.append(_first_line(raw))
+        if critical or errors >= ERROR_CORROBORATION:
+            if not rescue_kind:                       # entering a new episode, not deepening one
+                rescues += 1
+                latched = latched or rescues >= RESCUE_LATCH
+            rescue_kind = "rescue-critical" if critical else "rescue-errors"
+
+    base_phase = Phase.IMPLEMENT if has_write else Phase.PLAN
+    if latched:
+        phase, reason = Phase.PLAN, "rescue-latched"
+    elif rescue_kind:
+        phase, reason = Phase.PLAN, rescue_kind
+    else:
+        phase, reason = base_phase, ("write-flip" if has_write else "no-write")
+    return StepSignals(phase=phase, base_phase=base_phase, reason=reason,
+                       errors_since_write=errors, rescues=rescues, error_samples=tuple(samples))
 
 
 def classify(messages: Sequence[dict[str, Any]] | None) -> Phase:
@@ -84,10 +223,4 @@ def classify(messages: Sequence[dict[str, Any]] | None) -> Phase:
     IMPLEMENT if the agent has already written a file since the last user message; otherwise PLAN.
     Scanning stops at the turn boundary so prior turns' writes don't leak forward.
     """
-    for message in reversed(messages or []):
-        role = message.get("role")
-        if role in _TURN_BOUNDARY_ROLES:
-            break  # reached the start of this turn with no write -> still planning
-        if role == "assistant" and any(n in WRITE_TOOLS for n in _tool_names(message)):
-            return Phase.IMPLEMENT
-    return Phase.PLAN
+    return assess(messages).base_phase
