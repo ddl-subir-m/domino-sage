@@ -14,6 +14,14 @@
   --ok: #28a464;
   --warn: #ccb718;
   --danger: #c20a29;
+  /* Categorical series colors for charts, in order. Domino's palette. Separate from the status
+     tokens above on purpose: a green bar must mean "this series", not "this is good". */
+  --chart-1: #543fde;
+  --chart-2: #0070cc;
+  --chart-3: #28a464;
+  --chart-4: #ccb718;
+  --chart-5: #ff6543;
+  --chart-6: #e835a7;
   --radius: 8px;
   --social-bg: rgba(244, 243, 236, 0.5);
   --shadow:
@@ -54,6 +62,14 @@
     --ok: #3ecb83;
     --warn: #d9c04a;
     --danger: #ef6d7f;
+    /* Same hues, lifted for a dark background. 1/3/4 are the dark --accent/--ok/--warn values
+       above verbatim; 2/5/6 are lifted the same way, since they have no status counterpart. */
+    --chart-1: #8b7bff;
+    --chart-2: #5aa9f0;
+    --chart-3: #3ecb83;
+    --chart-4: #d9c04a;
+    --chart-5: #ff8a70;
+    --chart-6: #f072c0;
     --social-bg: rgba(47, 48, 58, 0.5);
     --shadow:
       rgba(0, 0, 0, 0.35) 0 8px 24px, rgba(0, 0, 0, 0.3) 0 1px 2px;

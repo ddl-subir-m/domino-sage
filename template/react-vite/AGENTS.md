@@ -94,6 +94,16 @@ Every app must look intentional and consistent. These rules are what separate a 
 - Cap main content width (~64–72rem) and center it on large screens, but let it fill smaller ones.
   Comfortable line length is 50–75 characters.
 
+### Charts
+- **Series color:** `var(--chart-1)` … `var(--chart-6)`, in order. Never `--ok` / `--warn` /
+  `--danger` for a data series — those mean status, so a green bar reads as "this is good" rather
+  than "this is revenue".
+- **Every series needs an explicit `name`.** Without it recharts renders `name="undefined"` into the
+  DOM and the tooltip and legend both say "undefined".
+- **Label it:** axis labels with units, and a title unless the surrounding card already says it.
+  Bar-chart y-axes start at zero. Tooltips show the exact value.
+- An empty or still-loading chart gets the same treatment as any other collection — see below.
+
 ### States — do not skip these (this is the #1 polish signal)
 Scope these to the screens/collections the current request actually touches — don't add them to
 components outside what was asked.
