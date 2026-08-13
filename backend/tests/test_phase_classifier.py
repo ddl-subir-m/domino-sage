@@ -172,11 +172,46 @@ def test_a_new_turn_clears_the_latch():
     assert s.rescues == 0 and s.errors_since_write == 0
 
 
-def test_results_are_sampled_first_line_only_and_tagged():
+def test_results_are_sampled_head_and_tail_and_tagged():
     # What the shim echoes to tune the markers: enough to read, never a file's worth of source.
     # The write's own "ok" result is examined too — a failed edit is a signal, so edit output counts.
     msgs = _building() + [_call("bash", "c2"), _result("c2", "error: boom\nstack line 1\nline 2")]
-    assert assess(msgs).samples == ("none ok", "soft error: boom")
+    assert assess(msgs).samples == ("none ok", "soft error: boom ... line 2")
+
+
+def test_sampling_keeps_the_last_results_not_the_first():
+    # Live 2026-08-13: a 10-result turn kept the first 6, so every failure at the end of the turn —
+    # the only part worth reading — was dropped. The recent window is what the scorer acts on.
+    msgs = _building()
+    for i in range(9):
+        msgs += [_call("bash", f"b{i}"), _result(f"b{i}", f"line {i}")]
+    s = assess(msgs)
+    assert s.examined == 10
+    assert len(s.samples) == 6
+    assert s.samples[-1] == "none line 8"        # newest kept
+    assert "none ok" not in s.samples            # oldest dropped
+
+
+def test_the_markers_this_image_actually_prints():
+    # Every string here was copied out of a real failing build on the Sage image (2026-08-13), not
+    # guessed. npm on this image prints lowercase `npm error`, never the `npm ERR!` of older npm.
+    for text in ("npm error code E404",
+                 "ls: cannot access 'node_modules/.bin/': No such file or directory",
+                 "error during build:"):
+        msgs = _building() + [_call("bash", "c2"), _result("c2", text),
+                              _call("bash", "c3"), _result("c3", text)]
+        assert assess(msgs).phase is Phase.PLAN, text
+
+
+def test_a_benign_npm_warning_is_not_an_error():
+    # From the same run, and the reason "not found" is deliberately not a marker: this line is npm
+    # telling you it is about to do something normal.
+    warn = "npm warn exec The following package was not found and will be installed: tsc@2.0.4"
+    msgs = _building() + [_call("bash", "c2"), _result("c2", warn),
+                          _call("bash", "c3"), _result("c3", warn)]
+    s = assess(msgs)
+    assert s.errors_since_write == 0
+    assert s.phase is Phase.IMPLEMENT
 
 
 def test_unmatched_results_are_sampled_too():

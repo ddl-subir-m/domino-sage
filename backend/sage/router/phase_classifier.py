@@ -79,13 +79,25 @@ _TURN_BOUNDARY_ROLES = frozenset({"user", "human"})
 # the shim echoes the text of anything matched, so the next live failure replaces the guess.
 CRITICAL_MARKERS = frozenset(
     {"traceback (most recent call last)", "modulenotfounderror", "cannot find module",
-     "failed to compile", "segmentation fault", "syntaxerror:"}
+     "failed to compile", "segmentation fault", "syntaxerror:",
+     # Live 2026-08-13: vite/rollup's phrasing when an import can't be resolved, which is the
+     # single most common way an agent-written React file fails to build.
+     "failed to resolve import", "rollup failed to resolve"}
 )
 # Phrases that usually mean failure but also show up in healthy output (a build log line, a lint
 # summary, a test name). One is noise; two in the same window is a signal. This is the corroboration
 # rule — a single one of these must never reroute a turn.
 SOFT_ERROR_MARKERS = frozenset(
-    {"error:", "err!", "error ts", "exception", "failed:", "exit code 1"}
+    {"error:", "err!", "error ts", "exception", "failed:", "exit code 1",
+     # Live 2026-08-13, from a real failing build on the Sage image. npm on this image prints
+     # lowercase `npm error` / `npm warn` — the `npm ERR!` of older npm never appears, so `err!`
+     # alone matched nothing. Kept anyway for older npm; `npm error` is what actually fires.
+     "npm error",
+     # Same run: `ls: cannot access 'node_modules/.bin/': No such file or directory`, which the
+     # agent hit repeatedly while flailing. Deliberately NOT matching the bare phrase "not found":
+     # that same run also logged the benign `npm warn exec The following package was not found and
+     # will be installed: tsc@2.0.4`, which must not count.
+     "no such file or directory", "cannot access", "error during build"}
 )
 # Two errors since the last write, or one critical, escalates. Not ported from Switchyard's 0.5
 # confidence bar — that number is calibrated against their unpublished per-signal weights on
@@ -101,6 +113,11 @@ RESCUE_LATCH = 2
 # matches alone, "the build was clean" and "the markers missed the failure" produce identical
 # silence, which is exactly the ambiguity the first live run hit. First line only, hard-capped, so a
 # log line can never carry a file's worth of a user's source.
+#
+# The LAST few results, not the first. Live 2026-08-13: a 10-result turn kept the first 6, so every
+# sample was setup noise ("Wrote file successfully", "> react-vite@0.0.0 build") and the failures at
+# the end of the turn — the entire reason for looking — were never echoed. First AND last line of
+# each, because npm and vite both print a benign banner first and the actual error last.
 _SAMPLE_CHARS = 200
 _MAX_SAMPLES = 6
 
@@ -116,12 +133,12 @@ def _text(content: Any) -> str:
     return ""
 
 
-def _first_line(text: str) -> str:
-    """First non-empty line, capped. What the shim is allowed to echo of a matched result."""
-    for line in text.splitlines():
-        if line.strip():
-            return line.strip()[:_SAMPLE_CHARS]
-    return ""
+def _sample(text: str) -> str:
+    """First and last non-empty line, capped. What the shim is allowed to echo of a result."""
+    lines = [ln.strip()[:_SAMPLE_CHARS] for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return lines[0] if len(lines) == 1 else f"{lines[0]} ... {lines[-1]}"
 
 
 def _current_turn(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -201,9 +218,7 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         critical = any(m in lowered for m in CRITICAL_MARKERS)
         soft = any(m in lowered for m in SOFT_ERROR_MARKERS)
         examined += 1
-        if len(samples) < _MAX_SAMPLES:
-            tag = "critical" if critical else "soft" if soft else "none"
-            samples.append(f"{tag} {_first_line(raw)}")
+        samples.append(f"{'critical' if critical else 'soft' if soft else 'none'} {_sample(raw)}")
         if not critical and not soft:
             continue
 
@@ -223,7 +238,7 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         phase, reason = base_phase, ("write-flip" if has_write else "no-write")
     return StepSignals(phase=phase, base_phase=base_phase, reason=reason,
                        errors_since_write=errors, rescues=rescues, examined=examined,
-                       samples=tuple(samples))
+                       samples=tuple(samples[-_MAX_SAMPLES:]))
 
 
 def classify(messages: Sequence[dict[str, Any]] | None) -> Phase:
