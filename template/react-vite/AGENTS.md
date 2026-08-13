@@ -118,3 +118,19 @@ components outside what was asked.
 - `src/App.tsx` — entry component (currently a placeholder to replace).
 - `src/components/` — put reusable components here.
 - `src/examples/StatCard.tsx` — a golden example: a small, typed, token-styled component. Copy its shape.
+
+### Installed packages — this is the whole toolbox
+Import these directly. They are already installed; nothing else is, and nothing else can be added.
+
+| Package | Use it for |
+|---------|-----------|
+| `react`, `react-dom` | Everything. Plain React + CSS is still the default. |
+| `recharts` | Charts. Line, area, bar, pie. Feed it the design tokens for colors — don't take its defaults. |
+| `react-router-dom` | More than one view. A single-screen app does not need it. |
+| `date-fns` | Formatting, parsing and date ranges. Import per function (`import { format } from 'date-fns'`). |
+| `lucide-react` | Icons. Size them in `em` so they scale with their text. |
+
+There is no UI component kit — no Ant Design, no MUI, no Tailwind. Build components yourself from
+the design tokens in `src/index.css`, the way `src/examples/StatCard.tsx` does. If a request seems
+to need a package that isn't on this list, build the nearest thing you can from what is here and
+tell the user what you left out — do not try to install it.
