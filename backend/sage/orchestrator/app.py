@@ -24,7 +24,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.concurrency import run_in_threadpool
 
 _UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
@@ -303,6 +309,22 @@ def diag() -> JSONResponse:
         "log_tail": list(_LOG_RING)[-60:],
         "opencode_log_tail": orchestrator._opencode_log_tail(30),
     })
+
+
+@control_app.get("/api/diag/log")
+def diag_log(q: str = "", n: int = 400) -> PlainTextResponse:
+    """The log ring as plain text, one line each — for reading in a browser.
+
+    /api/diag is JSON, so a browser with no JSON viewer renders log_tail as one unreadable line, and
+    it only carries the newest 60 entries. During a build the shim logs on every inference, so the
+    line you were waiting for scrolls out of that window in under a minute. This serves the whole
+    400-line ring, newest last, and `?q=` filters it: /api/diag/log?q=rescue
+
+    `q` is a plain case-insensitive substring, not a regex — there is no shell in the workspace to
+    pipe through, and a regex typo in a URL bar is a worse failure than a literal match.
+    """
+    lines = [ln for ln in _LOG_RING if not q or q.lower() in ln.lower()]
+    return PlainTextResponse("\n".join(lines[-max(1, n):]) or f"(no lines match {q!r})")
 
 
 @control_app.post("/api/diag/debug-stream")
