@@ -172,10 +172,29 @@ def test_a_new_turn_clears_the_latch():
     assert s.rescues == 0 and s.errors_since_write == 0
 
 
-def test_matched_results_are_sampled_first_line_only():
+def test_results_are_sampled_first_line_only_and_tagged():
     # What the shim echoes to tune the markers: enough to read, never a file's worth of source.
+    # The write's own "ok" result is examined too — a failed edit is a signal, so edit output counts.
     msgs = _building() + [_call("bash", "c2"), _result("c2", "error: boom\nstack line 1\nline 2")]
-    assert assess(msgs).error_samples == ("error: boom",)
+    assert assess(msgs).samples == ("none ok", "soft error: boom")
+
+
+def test_unmatched_results_are_sampled_too():
+    # The fix for the first live run: with matched-only samples, a clean build and a build whose
+    # failure the markers missed both logged nothing at all. `examined` is what tells them apart.
+    msgs = _building() + [_call("bash", "c2"), _result("c2", "added 1 package in 2s")]
+    s = assess(msgs)
+    assert s.examined == 2 and s.errors_since_write == 0
+    assert s.samples == ("none ok", "none added 1 package in 2s")
+    assert s.phase is Phase.IMPLEMENT      # a clean result still changes nothing
+
+
+def test_read_results_are_not_even_examined():
+    # Only shell and write output is read, so the echo can't leak a file the agent happened to open.
+    msgs = _building() + [_call("read", "c2"), _result("c2", "some source line")]
+    s = assess(msgs)
+    assert s.examined == 1                 # the write's own result, and nothing from the read
+    assert s.samples == ("none ok",)
 
 
 def test_classify_is_unchanged_by_any_of_this():

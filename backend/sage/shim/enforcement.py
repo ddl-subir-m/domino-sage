@@ -254,14 +254,17 @@ class EnforcementShim:
                 "model policy: dropped %d image part(s) — %s cannot process images",
                 dropped, request["model"],
             )
-        # The observe-only half. Only fires when the rescue disagrees with what just routed, so a
-        # clean build logs nothing. The echoed samples are first-line-only and capped in the
-        # classifier; this can't run at all under a sensitivity lock, since assess() is skipped there.
-        if signals is not None and signals.phase is not signals.base_phase:
+        # The observe-only half. Logs whenever the scorer read a shell/write result at all, not just
+        # when it would escalate: a clean build and a build whose failure the markers missed have to
+        # be told apart, and only-on-rescue made them both silent. `would=` says what it would have
+        # done. Samples are first-line-only and capped in the classifier; none of this can run under
+        # a sensitivity lock, since assess() is skipped there.
+        if signals is not None and signals.examined:
             log.info(
-                "model policy: rescue WOULD escalate to %s (%s, errors=%d, episodes=%d) — samples: %s",
-                self._catalog.plan, signals.reason, signals.errors_since_write, signals.rescues,
-                " | ".join(signals.error_samples) or "(none)",
+                "model policy: rescue examined=%d errors=%d episodes=%d would=%s (%s) — %s",
+                signals.examined, signals.errors_since_write, signals.rescues,
+                self._catalog.plan if signals.phase is not signals.base_phase else "no change",
+                signals.reason, " | ".join(signals.samples),
             )
 
         # Cost-attribution tags (sent as X-LLM-Tag-sage-*, queryable in the gateway usage dashboard).

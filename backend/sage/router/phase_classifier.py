@@ -96,10 +96,13 @@ ERROR_CORROBORATION = 2
 # on the strong one for the rest of the turn — Switchyard's escalation router latches for the rest
 # of the session; a turn is the right scope here, because a fresh turn already starts in PLAN.
 RESCUE_LATCH = 2
-# What the shim may echo of a matched tool result: first line only, hard-capped, few samples. Enough
-# to tune the markers above, bounded so a log line can't carry a file's worth of a user's source.
+# What the shim may echo, for as long as this runs observe-only: the first line of EVERY shell/write
+# result the scorer looked at, tagged with whether it matched. Unmatched ones are the point — with
+# matches alone, "the build was clean" and "the markers missed the failure" produce identical
+# silence, which is exactly the ambiguity the first live run hit. First line only, hard-capped, so a
+# log line can never carry a file's worth of a user's source.
 _SAMPLE_CHARS = 200
-_MAX_SAMPLES = 4
+_MAX_SAMPLES = 6
 
 
 def _text(content: Any) -> str:
@@ -140,7 +143,8 @@ class StepSignals:
     reason: str               # no-write | write-flip | rescue-errors | rescue-critical | rescue-latched
     errors_since_write: int
     rescues: int              # rescue episodes so far this turn
-    error_samples: tuple[str, ...] = ()   # capped echo of the matched results, for tuning the markers
+    examined: int = 0         # shell/write results the scorer read this turn (matched or not)
+    samples: tuple[str, ...] = ()   # capped "<critical|soft|none> <first line>" echo, for tuning
 
 
 def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
@@ -164,6 +168,7 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
     has_write = False
     errors = 0
     rescues = 0
+    examined = 0
     rescue_kind = ""                # non-empty while inside a rescue episode; cleared by a write
     latched = False
     samples: list[str] = []
@@ -194,12 +199,15 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         raw = _text(message.get("content"))
         lowered = raw.lower()
         critical = any(m in lowered for m in CRITICAL_MARKERS)
-        if not critical and not any(m in lowered for m in SOFT_ERROR_MARKERS):
+        soft = any(m in lowered for m in SOFT_ERROR_MARKERS)
+        examined += 1
+        if len(samples) < _MAX_SAMPLES:
+            tag = "critical" if critical else "soft" if soft else "none"
+            samples.append(f"{tag} {_first_line(raw)}")
+        if not critical and not soft:
             continue
 
         errors += 1
-        if len(samples) < _MAX_SAMPLES:
-            samples.append(_first_line(raw))
         if critical or errors >= ERROR_CORROBORATION:
             if not rescue_kind:                       # entering a new episode, not deepening one
                 rescues += 1
@@ -214,7 +222,8 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
     else:
         phase, reason = base_phase, ("write-flip" if has_write else "no-write")
     return StepSignals(phase=phase, base_phase=base_phase, reason=reason,
-                       errors_since_write=errors, rescues=rescues, error_samples=tuple(samples))
+                       errors_since_write=errors, rescues=rescues, examined=examined,
+                       samples=tuple(samples))
 
 
 def classify(messages: Sequence[dict[str, Any]] | None) -> Phase:
