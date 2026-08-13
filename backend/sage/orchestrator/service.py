@@ -1239,6 +1239,11 @@ class Orchestrator:
         import time
 
         project = self.project()
+        # Repair the warm node_modules before the turn, not only at attach — attach happens once per
+        # process, and an agent-run `npm install` can destroy the symlink mid-session and leave the
+        # workspace unable to build or preview (see WorkspaceManager.link_warm_deps).
+        if self._wm.link_warm_deps():
+            log.warning("workspace: restored the warm node_modules — an npm install had removed it")
         client = self._ensure_opencode()
         # A phase runs in the throwaway session its caller made; everything else reuses the project's.
         owns_turn = brief is None

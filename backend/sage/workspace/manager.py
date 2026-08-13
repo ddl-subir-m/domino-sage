@@ -20,6 +20,8 @@ from pathlib import Path
 _IGNORE = shutil.ignore_patterns("node_modules", "dist", ".git", ".DS_Store")
 # Top-level template entries skipped when seeding (linked or repo-owned, not template content).
 _SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store"}
+# Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
+_DEPS_SENTINEL = Path(".bin") / "vite"
 # The script Domino runs to serve a published App. Sage-owned — see refresh_entry_script.
 _ENTRY_SCRIPT = "app.sh"
 
@@ -317,13 +319,48 @@ class WorkspaceManager:
                 else:
                     shutil.copy2(item, dest)
 
-        # Warm deps: symlink the template's node_modules unless the volume brought its own.
-        node_modules = self._dir / "node_modules"
-        tmpl_modules = self._template / "node_modules"
-        if not node_modules.exists() and tmpl_modules.exists():
-            os.symlink(tmpl_modules, node_modules)
-
+        self.link_warm_deps()
         return Workspace(project_id, self._dir)
+
+    def link_warm_deps(self) -> bool:
+        """Point node_modules at the baked template copy, repairing a wrecked one. True if changed.
+
+        Repair, not just create. An agent-run `npm install` refuses to write into a symlinked
+        node_modules: it deletes the link ("npm warn reify Removing non-directory …") and puts a
+        real directory there — and it does that during reify, BEFORE it knows whether the install
+        resolves. Install a package that 404s and npm aborts having already destroyed the link, so
+        the volume is left with no deps at all: every later build fails, and the preview can't start
+        because `npm run dev` has no node_modules/.bin/vite. Verified live 2026-08-13.
+
+        The sentinel is that vite binary — it's what both `npm run dev` and `npm run build` invoke.
+        Present means the deps are usable and we keep our hands off, whether they're ours or an
+        agent's successful install. Absent means wreckage, and the warm copy is strictly better than
+        what's there. A template without the sentinel isn't one we can lend from, so we do nothing.
+        """
+        tmpl = self._template / "node_modules"
+        if not tmpl.exists():
+            return False
+        node_modules = self._dir / "node_modules"
+
+        # Nothing usable there: never linked, or a link left dangling. exists() follows the link and
+        # reports False while the link itself is still present, which is why the unlink comes first.
+        if not node_modules.exists():
+            if node_modules.is_symlink():
+                node_modules.unlink()
+            os.symlink(tmpl, node_modules)
+            return True
+
+        # Something IS there, so only replace it where we can prove it's wreckage — which needs a
+        # template carrying the sentinel to compare against. Without one we leave the volume alone
+        # rather than guess, and this stays exactly the create-if-absent link it has always been.
+        if (tmpl / _DEPS_SENTINEL).exists() and not (node_modules / _DEPS_SENTINEL).exists():
+            if node_modules.is_symlink() or node_modules.is_file():
+                node_modules.unlink()
+            else:
+                shutil.rmtree(node_modules, ignore_errors=True)
+            os.symlink(tmpl, node_modules)
+            return True
+        return False
 
     def refresh_entry_script(self) -> bool:
         """Bring the workspace's deploy entry script back in line with the template. True if changed.

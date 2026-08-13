@@ -13,6 +13,8 @@ def _fake_template(tmp: Path) -> Path:
     (t / "package.json").write_text("{}")
     (t / "node_modules").mkdir()
     (t / "node_modules" / "dep").write_text("x")
+    (t / "node_modules" / ".bin").mkdir()
+    (t / "node_modules" / ".bin" / "vite").write_text("#!/bin/sh")  # the usable-deps sentinel
     return t
 
 
@@ -56,6 +58,53 @@ def test_ensure_seeds_into_preexisting_empty_dir(tmp_path: Path):
     ws = mgr.ensure("proj1")
 
     assert ws.app_entry.read_text() == "placeholder"
+
+
+def test_link_warm_deps_repairs_what_a_failed_npm_install_leaves(tmp_path: Path):
+    # The live failure (2026-08-13): `npm install <404 package>` deletes the symlink during reify,
+    # then aborts, leaving a real directory with no vite in it. Every later build and the preview
+    # fail until this is put back.
+    tmpl = _fake_template(tmp_path)
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("p")
+    nm = ws.path / "node_modules"
+    nm.unlink()
+    nm.mkdir()
+    (nm / ".package-lock.json").write_text("{}")   # npm's leftovers, no .bin/vite
+
+    assert mgr.link_warm_deps() is True
+    assert nm.is_symlink() and (nm / "dep").read_text() == "x"
+    assert mgr.link_warm_deps() is False           # healthy now — repeat calls are no-ops
+
+
+def test_link_warm_deps_leaves_a_successful_agent_install_alone(tmp_path: Path):
+    # npm CAN rebuild the whole tree from package.json when the install resolves. That directory is
+    # real, complete, and may hold a package the agent legitimately added — never clobber it.
+    tmpl = _fake_template(tmp_path)
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("p")
+    nm = ws.path / "node_modules"
+    nm.unlink()
+    (nm / ".bin").mkdir(parents=True)
+    (nm / ".bin" / "vite").write_text("#!/bin/sh")
+    (nm / "date-fns").mkdir()
+
+    assert mgr.link_warm_deps() is False
+    assert not nm.is_symlink() and (nm / "date-fns").is_dir()
+
+
+def test_link_warm_deps_relinks_a_dangling_symlink(tmp_path: Path):
+    # os.symlink onto an existing-but-dangling link raises FileExistsError: exists() follows the
+    # link and reports False while the link itself is still there.
+    tmpl = _fake_template(tmp_path)
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("p")
+    nm = ws.path / "node_modules"
+    nm.unlink()
+    nm.symlink_to(tmp_path / "gone")
+
+    assert mgr.link_warm_deps() is True
+    assert (nm / "dep").read_text() == "x"
 
 
 def test_has_built_latches_on_and_persists(tmp_path: Path):
