@@ -283,7 +283,7 @@ def test_republish_app_posts_new_version_and_keeps_app_id():
 def test_publish_app_rewrites_the_apps_internal_url_that_404s():
     # Live on cloud-dogfood 2026-08-07: create returned an /apps-internal/{id} URL that 404s in the
     # browser; Domino's own "Copy URL" for the same app is /modelproducts/{id}?scope=project.
-    handler = lambda req: httpx.Response(  # noqa: E731
+    handler = lambda req: httpx.Response(
         200, json={"id": "6a76", "url": "https://apps.cloud-dogfood.domino.tech/apps-internal/6a76"}
     )
     app = _cp(handler).publish_app("proj-42", name="My App")
@@ -342,7 +342,7 @@ def test_delete_app_deployment_accepts_an_empty_204_body():
     # The live API answers a successful DELETE with 204/no body; r.json() on that used to raise
     # "Expecting value: line 1 column 1 (char 0)", which surfaced in the hub as a FAILED delete
     # even though the App was gone, and aborted the archive that followed it.
-    handler = lambda req: httpx.Response(204)  # noqa: E731
+    handler = lambda req: httpx.Response(204)
     assert _cp(handler).delete_app_deployment("app-9") == {"deleted": True}
 
 
