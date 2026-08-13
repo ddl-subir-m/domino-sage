@@ -203,6 +203,29 @@ def test_the_markers_this_image_actually_prints():
         assert assess(msgs).phase is Phase.PLAN, text
 
 
+def test_opencodes_failed_tool_envelope():
+    # Verbatim from a live build (2026-08-13). OpenCode wraps a failed tool call in its own JSON
+    # rather than printing prose, so this one marker covers every tool. Note `error":` — the quote
+    # is why the plain `error:` marker missed it.
+    failed = ('{"error":{"type":"unknown","message":"No changes to apply: oldString and newString '
+              'are identical."},"content":[],"structured":{}}')
+    one = _building() + [_call("edit", "c2"), _result("c2", failed)]
+    assert assess(one).phase is Phase.IMPLEMENT      # one failed edit is ordinary
+    assert assess(one).errors_since_write == 1
+
+    two = one + [_call("edit", "c3"), _result("c3", failed)]
+    assert assess(two).phase is Phase.PLAN           # two without progress is thrash
+    assert assess(two).reason == "rescue-errors"
+
+
+def test_a_successful_edit_envelope_is_not_an_error():
+    # The other half of the same live run — what OpenCode prints when the tool worked.
+    for ok in ("Wrote file successfully: src/App.tsx", "Edited file successfully: src/App.css"):
+        msgs = _building() + [_call("edit", "c2"), _result("c2", ok),
+                              _call("edit", "c3"), _result("c3", ok)]
+        assert assess(msgs).phase is Phase.IMPLEMENT, ok
+
+
 def test_a_benign_npm_warning_is_not_an_error():
     # From the same run, and the reason "not found" is deliberately not a marker: this line is npm
     # telling you it is about to do something normal.

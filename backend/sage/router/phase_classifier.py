@@ -93,6 +93,15 @@ SOFT_ERROR_MARKERS = frozenset(
      # lowercase `npm error` / `npm warn` — the `npm ERR!` of older npm never appears, so `err!`
      # alone matched nothing. Kept anyway for older npm; `npm error` is what actually fires.
      "npm error",
+     # THE reliable one, live 2026-08-13. OpenCode reports a failed tool call as its own JSON
+     # envelope rather than as prose:
+     #   {"error":{"type":"unknown","message":"No changes to apply: oldString and newString are
+     #    identical."},"content":[],"structured":{}}
+     # so this matches any failing tool, whatever printed it — no per-command phrasing to guess at.
+     # Note the quote: the text is `error":`, so the `error:` marker below misses it by one char.
+     # Soft, not critical: one failed edit is ordinary (an oldString that already matched), two
+     # since the last write is the thrash this exists to catch.
+     '"error":',
      # Same run: `ls: cannot access 'node_modules/.bin/': No such file or directory`, which the
      # agent hit repeatedly while flailing. Deliberately NOT matching the bare phrase "not found":
      # that same run also logged the benign `npm warn exec The following package was not found and
@@ -203,9 +212,11 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
                     origin[call["id"]] = name
                 wrote = wrote or name in WRITE_TOOLS
             if wrote:
-                # Progress. Opposes the error window and ends the current rescue episode; the latch
-                # (two failed episodes) deliberately survives it.
-                has_write, errors, rescue_kind = True, 0, ""
+                # Drives base_phase only — the long-standing write-flip rule, unchanged. The error
+                # window is NOT reset here: an attempted edit is not progress. Two edits that both
+                # fail is exactly the thrash worth escalating, and resetting on the call would hide
+                # it. The reset happens when a write RESULT comes back clean, below.
+                has_write = True
             continue
 
         if role != "tool":
@@ -220,6 +231,12 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         examined += 1
         samples.append(f"{'critical' if critical else 'soft' if soft else 'none'} {_sample(raw)}")
         if not critical and not soft:
+            # A write that came back clean is the progress signal — an edit that actually landed.
+            # It opposes the error window and ends the current rescue episode; the latch (two failed
+            # episodes) deliberately survives it. A clean shell result is not progress: `ls` working
+            # says nothing about whether the app builds.
+            if origin.get(message.get("tool_call_id") or "", "") in WRITE_TOOLS:
+                errors, rescue_kind = 0, ""
             continue
 
         errors += 1
