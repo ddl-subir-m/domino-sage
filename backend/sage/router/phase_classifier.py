@@ -142,6 +142,32 @@ def _text(content: Any) -> str:
     return ""
 
 
+# OpenCode appends its own footer to every shell result: "Command exited with code 0." on success,
+# non-zero on failure (live 2026-08-13). That is the exit status itself rather than a guess at how
+# some tool phrases an error, so it catches shell failures no marker string would — the run that
+# proved this matched `npm error Missing script` and `No such file or directory` only because both
+# happened to be phrasings already listed.
+#
+# Soft, never critical, and deliberately so: in shell idiom a non-zero exit is not always a failure.
+# `grep` with no match exits 1, as do `test` and `diff`. Corroboration is what makes that safe — one
+# empty grep cannot escalate anything.
+_EXIT_FOOTER = "command exited with code "
+
+
+def _nonzero_exit(lowered: str) -> bool:
+    """True when OpenCode's shell footer reports a non-zero exit. Reads the LAST footer, so a
+    command whose own output quotes the phrase can't shadow the real status."""
+    i = lowered.rfind(_EXIT_FOOTER)
+    if i < 0:
+        return False
+    digits = ""
+    for ch in lowered[i + len(_EXIT_FOOTER):]:
+        if not ch.isdigit():
+            break
+        digits += ch
+    return bool(digits) and digits != "0"
+
+
 def _sample(text: str) -> str:
     """First and last non-empty line, capped. What the shim is allowed to echo of a result."""
     lines = [ln.strip()[:_SAMPLE_CHARS] for ln in text.splitlines() if ln.strip()]
@@ -227,7 +253,7 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         raw = _text(message.get("content"))
         lowered = raw.lower()
         critical = any(m in lowered for m in CRITICAL_MARKERS)
-        soft = any(m in lowered for m in SOFT_ERROR_MARKERS)
+        soft = any(m in lowered for m in SOFT_ERROR_MARKERS) or _nonzero_exit(lowered)
         examined += 1
         samples.append(f"{'critical' if critical else 'soft' if soft else 'none'} {_sample(raw)}")
         if not critical and not soft:

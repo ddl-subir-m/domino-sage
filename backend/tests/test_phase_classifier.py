@@ -226,6 +226,34 @@ def test_a_successful_edit_envelope_is_not_an_error():
         assert assess(msgs).phase is Phase.IMPLEMENT, ok
 
 
+def test_opencodes_shell_exit_footer():
+    # Live 2026-08-13: OpenCode appends this to every shell result. The exit status itself, so it
+    # catches failures no marker string would.
+    fail = "some output\nCommand exited with code 1."
+    msgs = _building() + [_call("bash", "c2"), _result("c2", fail),
+                          _call("bash", "c3"), _result("c3", "other\nCommand exited with code 127.")]
+    s = assess(msgs)
+    assert s.errors_since_write == 2
+    assert s.phase is Phase.PLAN and s.reason == "rescue-errors"
+
+
+def test_a_zero_exit_is_not_an_error():
+    # The success footer from the same run. Must never count, or every shell call is an error.
+    ok = 'true true true\nCommand exited with code 0.'
+    msgs = _building() + [_call("bash", "c2"), _result("c2", ok),
+                          _call("bash", "c3"), _result("c3", ok)]
+    assert assess(msgs).errors_since_write == 0
+
+
+def test_a_quoted_exit_footer_does_not_shadow_the_real_status():
+    # A command that prints the phrase itself (grepping logs, echoing a docstring) must not be able
+    # to mask its own exit status — the LAST footer is the real one.
+    text = 'log said "Command exited with code 1." earlier\nCommand exited with code 0.'
+    msgs = _building() + [_call("bash", "c2"), _result("c2", text),
+                          _call("bash", "c3"), _result("c3", text)]
+    assert assess(msgs).errors_since_write == 0
+
+
 def test_a_benign_npm_warning_is_not_an_error():
     # From the same run, and the reason "not found" is deliberately not a marker: this line is npm
     # telling you it is about to do something normal.
