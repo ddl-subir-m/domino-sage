@@ -70,6 +70,11 @@ class CostLabels:
     component: str = "builder"  # builder | probe          — which Sage process made the call
     session: str | None = None  # OpenCode session id      — per-build cost rollup
     version: str | None = None  # Sage git rev             — cost/quality across Sage releases
+    # Why this step routed where it did, when the per-step scorer overrode the write-flip rule:
+    # "rescue-errors" | "rescue-critical" | "rescue-latched". Absent on ordinary steps, so the
+    # gateway dashboard can price the rescue on its own — "what did escalating cost us" is the
+    # question that decides whether it stays.
+    route_reason: str | None = None
     project_name: str | None = None  # "<owner>/<project>"  — which Sage deployment spent this
 
 
@@ -155,6 +160,8 @@ class OpenAICompatibleClient:
                 headers["X-LLM-Tag-sage-version"] = labels.version
             if labels.project_name:
                 headers["X-LLM-Tag-sage-project"] = labels.project_name
+            if labels.route_reason:
+                headers["X-LLM-Tag-sage-route-reason"] = labels.route_reason
         url = f"{self._base_url}/chat/completions"  # base already ends in /v1
         # read_timeout_s (default 300s) is the inter-chunk read timeout: httpx applies the read
         # timeout to the GAP between streamed chunks. The original scalar 60s was too SHORT — LLM

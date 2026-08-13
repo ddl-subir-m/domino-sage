@@ -184,13 +184,17 @@ class EnforcementShim:
         # the control so the UI's live indicator matches what actually routed.
         signals = None
         if state.mode is Mode.AUTO and not state.sensitivity_locked:
-            # OBSERVE ONLY. assess() also scores a rescue back to PLAN when the turn starts failing
-            # (see phase_classifier), but routing stays on base_phase — the write-flip rule, exactly
-            # as before. Its markers are guesses until a live failure shows what OpenCode actually
-            # writes into a failed tool result, so this step only logs what it WOULD have done.
+            # assess() scores BOTH directions: the write-flip down to the cheap model, and a rescue
+            # back up to PLAN when the turn starts failing (see phase_classifier). `signals.phase`
+            # is the resolved answer; `base_phase` is the write-flip rule alone, kept for the log.
+            #
+            # This shipped observe-only first and was flipped on 2026-08-13 once live builds showed
+            # the signal fires on real failures (a vite build exiting 2) and stays silent across
+            # five healthy turns. Under a sensitivity lock we never get here — and resolve() would
+            # map PLAN to catalog.sovereign_plan anyway, so a rescue can never reach a vendor model.
             signals = assess(request.get("messages"))
-            state = replace(state, phase=signals.base_phase)
-            self._control.set_phase(signals.base_phase)
+            state = replace(state, phase=signals.phase)
+            self._control.set_phase(signals.phase)
 
         # Read-only turns (Ask mode, or a plan turn held at the approval gate) get every write AND
         # shell tool stripped from the request, so the model is never offered one. This is the whole
@@ -227,6 +231,24 @@ class EnforcementShim:
         # documented this as the contract: no session-level model, the shim decides per request.
         request = {**request, "model": decision.model}
 
+        # Handoff note. A rescued step lands on a different model mid-turn with the transcript but
+        # no account of why it was called in — so it re-attempts the edit that just failed. Appended
+        # as `system`, NOT `user`: _current_turn() treats a user message as a turn boundary, so
+        # injecting one would reset the very error window that triggered the rescue and flap
+        # straight back to the cheap model. Not persisted anywhere — OpenCode owns the history and
+        # we only rewrite the outgoing request, so the note appears while rescued and is gone once
+        # a write lands. Deliberately says "a different model", not "a stronger vendor model": under
+        # a lock the rescue target is catalog.sovereign_plan.
+        if (signals is not None and signals.phase is not signals.base_phase
+                and isinstance(request.get("messages"), list)):
+            request = {**request, "messages": [*request["messages"], {
+                "role": "system",
+                "content": ("[sage] Routing note: earlier tool calls in this turn failed, so this "
+                            "step is running on a different model. Work out why before editing "
+                            "again — re-read the file you are changing and fix the cause, rather "
+                            "than repeating the change that just failed."),
+            }]}
+
         # Attached images against a non-vision model: strip them here rather than switch models or
         # let it fly. The resolved model is only known at this point (per request), and switching to
         # a vision model would defeat the sovereignty lock — sending sovereign data to a vendor to
@@ -254,16 +276,16 @@ class EnforcementShim:
                 "model policy: dropped %d image part(s) — %s cannot process images",
                 dropped, request["model"],
             )
-        # The observe-only half. Logs whenever the scorer read a shell/write result at all, not just
-        # when it would escalate: a clean build and a build whose failure the markers missed have to
-        # be told apart, and only-on-rescue made them both silent. `would=` says what it would have
-        # done. Samples are first-line-only and capped in the classifier; none of this can run under
-        # a sensitivity lock, since assess() is skipped there.
+        # Logs whenever the scorer read a shell/write result at all, not just when it escalates: a
+        # clean build and a build whose failure the markers missed have to be told apart, and
+        # only-on-rescue made them both silent. `rescued=no` is the ordinary case. Samples are
+        # head-and-tail only and capped in the classifier; none of this can run under a sensitivity
+        # lock, since assess() is skipped there.
         if signals is not None and signals.examined:
             log.info(
-                "model policy: rescue examined=%d errors=%d episodes=%d would=%s (%s) — %s",
+                "model policy: rescue examined=%d errors=%d episodes=%d rescued=%s (%s) — %s",
                 signals.examined, signals.errors_since_write, signals.rescues,
-                self._catalog.plan if signals.phase is not signals.base_phase else "no change",
+                decision.model if signals.phase is not signals.base_phase else "no",
                 signals.reason, " | ".join(signals.samples),
             )
 
@@ -272,6 +294,9 @@ class EnforcementShim:
         labels = CostLabels(
             phase=state.phase.value,
             mode="sovereign" if decision.locked else state.mode.value,
+            route_reason=(signals.reason
+                          if signals is not None and signals.phase is not signals.base_phase
+                          else None),
             component=self._component,
             session=session,
             version=_SAGE_VERSION,

@@ -542,3 +542,65 @@ def test_set_turn_mode_is_a_no_op_with_no_turn_running():
     control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
     control.set_turn_mode(Mode.IMPLEMENT)
     assert control.snapshot().mode is Mode.AUTO
+
+
+# --- Mid-turn rescue routing (flipped from observe-only 2026-08-13) --------------------------
+# One landed write, then two failing shell results with no write between: the scorer's rescue
+# condition. Exit footers are OpenCode's own, verbatim from a live build.
+_RESCUE_MESSAGES = [
+    {"role": "user", "content": "build it"},
+    {"role": "assistant", "tool_calls": [{"id": "w1", "function": {"name": "write"}}]},
+    {"role": "tool", "tool_call_id": "w1", "content": "Wrote file successfully: src/App.tsx"},
+    {"role": "assistant", "tool_calls": [{"id": "b1", "function": {"name": "bash"}}]},
+    {"role": "tool", "tool_call_id": "b1", "content": "boom\nCommand exited with code 1."},
+    {"role": "assistant", "tool_calls": [{"id": "b2", "function": {"name": "bash"}}]},
+    {"role": "tool", "tool_call_id": "b2", "content": "boom\nCommand exited with code 2."},
+]
+
+
+def _handled(control: ModelControl, messages: list) -> tuple[dict, object]:
+    gw = FakeGatewayClient()
+    list(_shim(control, gw).handle({"model": "cheap-vendor", "messages": messages}, project="p1"))
+    return gw.seen[-1]
+
+
+def test_a_failing_turn_is_rescued_onto_the_plan_model():
+    # The whole feature. A write already landed, so the write-flip rule alone would pin this step
+    # to the cheap coder for the rest of the turn — which is what it did before the flip.
+    sent, labels = _handled(ModelControl(mode=Mode.AUTO), _RESCUE_MESSAGES)
+    assert sent["model"] == "strong-vendor"
+    assert labels.phase == "plan"
+    assert labels.route_reason == "rescue-errors"  # priced separately in the gateway dashboard
+
+
+def test_the_rescued_step_is_told_why_it_was_called_in():
+    # Without this the strong model inherits the transcript but no account of the failure, and
+    # re-attempts the edit that just failed. `system`, never `user` — a user message is a turn
+    # boundary to the scorer and would reset the error window that triggered the rescue.
+    sent, _ = _handled(ModelControl(mode=Mode.AUTO), _RESCUE_MESSAGES)
+    note = sent["messages"][-1]
+    assert note["role"] == "system"
+    assert "[sage]" in note["content"]
+    assert not any(m.get("role") == "user" for m in sent["messages"][len(_RESCUE_MESSAGES):])
+
+
+def test_a_rescue_can_never_reach_a_vendor_model_under_lock():
+    # THE guarantee. Same failing history, but sensitivity-locked: the shim skips the scorer, and
+    # resolve() would map PLAN to a sovereign model even if it hadn't. Either way the vendor plan
+    # model must be unreachable — a rescue is a cost/quality feature and must never widen egress.
+    control = ModelControl(mode=Mode.AUTO)
+    control.on_assets_changed([True])  # sensitivity-tagged asset attached -> locked
+    sent, labels = _handled(control, _RESCUE_MESSAGES)
+    assert sent["model"] == "sovereign-8b"
+    assert sent["model"] != CATALOG.plan
+    assert labels.mode == "sovereign"
+    assert labels.route_reason is None  # nothing was rescued, so nothing to price
+
+
+def test_a_clean_turn_still_routes_on_the_write_flip():
+    # No regression: the long-standing rule is untouched when nothing is failing.
+    clean = _RESCUE_MESSAGES[:3]
+    sent, labels = _handled(ModelControl(mode=Mode.AUTO), clean)
+    assert sent["model"] == "cheap-vendor"
+    assert labels.route_reason is None
+    assert all(m.get("role") != "system" for m in sent["messages"])
