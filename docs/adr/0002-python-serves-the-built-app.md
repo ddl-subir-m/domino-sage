@@ -47,3 +47,25 @@ injects the real secret server-side.
   invalidated this decision after work began, since without it the Flight query path has no
   credential. `spikes/domino-probes/viewer_identity_app/` remains available to re-check it
   against a future Domino version.
+
+## Cold start
+
+A publish makes the viewer wait through `npm ci`, the rehydrate step, `vite build`, and the server
+binding its port — a separate cold start from the in-session preview. The swap does not touch the
+install or build stages; the last stage went from booting Vite's preview server to binding a socket.
+
+`app.sh` exports `SAGE_APP_T0` and logs each stage as it finishes; `serve.py` logs the total as one
+greppable line once it holds the port, so a regression is visible in any App's log:
+
+    [sage] dependencies installed (+38s)
+    [sage] data rehydrated (+38s)
+    [sage] build complete (+52s)
+    [sage] serving /mnt/code/dist on 0.0.0.0:8888
+    [sage] cold start: 52s to serving /mnt/code/dist
+
+| Date | Serving process | Total | Notes |
+|------|-----------------|-------|-------|
+
+No baseline is recorded yet. Take the total from the App log of the first publish after this change
+and add a row, then compare later publishes against it — the per-stage lines say which stage owns
+any increase.

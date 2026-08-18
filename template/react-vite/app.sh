@@ -5,8 +5,17 @@
 # tier, bound to 0.0.0.0:8888 behind Domino's app proxy. This is a SEPARATE deployment from the live
 # in-session preview (its own cold start): install deps, produce a production build (Vite `base` is
 # relative for the build, so assets resolve under Domino's app mount path), then static-serve it.
+#
+# Node builds; PYTHON serves (serve.py, ADR-0002). Both scripts are Sage-owned infrastructure and
+# travel together — publish refreshes them from the template, serve.py first.
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# Every viewer of a first publish waits out this whole script, so each stage says how far in it is
+# and serve.py prints the total once it holds the socket. Grep the App log for "[sage] cold start:"
+# to compare a deploy against the recorded baseline (see docs/adr/0002-python-serves-the-built-app.md).
+export SAGE_APP_T0="$(date +%s)"
+stage() { echo "[sage] $1 (+$(( $(date +%s) - SAGE_APP_T0 ))s)"; }
 
 # Our node (official tarball at /usr/local/bin, v22) must beat BOTH conda's node and the base image's
 # stale /usr/bin/node (Debian bookworm ships v18.19.1). /usr/local FIRST — the same order the
@@ -19,17 +28,26 @@ export PATH=/usr/local/bin:/usr/bin:$PATH
 
 # The agent may have added dependencies during the build session, so install from the lockfile.
 npm ci
+stage "dependencies installed"
 
 # Rebuild public/data/ from the project's dataset mounts (attached/uploaded data is gitignored, so
 # it isn't in this checkout — the committed .sage/attachments.json manifest maps it back). Must run
 # BEFORE the build so Vite copies the linked files into dist/. No-op when nothing was attached.
 node scripts/rehydrate-data.mjs
+stage "data rehydrated"
 
 # Production build -> dist/ (base "./" via vite.config, so it works under any app mount prefix).
 npm run build
+stage "build complete"
 
-# Static-serve the build on the port + host Domino's app proxy expects. `--base /` overrides the
-# dev-preview base: `vite preview` otherwise re-reads vite.config as a "serve" command and would mount
-# under the preview prefix, 404-ing the relative-base build. Domino strips the app's mount prefix, so
-# the built app's relative "./assets" URLs resolve correctly against this root-served build.
-exec npx vite preview --base / --host 0.0.0.0 --port 8888 --strictPort
+# Serve the build from dist/ on the port + host Domino's app proxy expects. Domino strips the app's
+# mount prefix, so the built app's relative "./assets" URLs resolve against this root-served build —
+# which is what the replaced `vite preview --base /` was for. Stdlib-only Python, so `python3` is
+# whatever the image ships (same as the viewer-identity probe's app.sh); nothing to install.
+#
+# CAREFUL when the query API lands on top of this (#13/#14): the PATH line above, which exists to
+# beat conda's node, also puts /usr/bin/python3 ahead of the conda interpreter that carries
+# domino_data + pyarrow. Stdlib-only is why that costs nothing today. Importing the Domino SDK will
+# need the interpreter chosen deliberately rather than left to PATH — verify which one has it in the
+# Sage Environment first, since the probe that confirmed the sidecar ran on a stock Domino image.
+exec python3 serve.py --dir dist --host 0.0.0.0 --port 8888

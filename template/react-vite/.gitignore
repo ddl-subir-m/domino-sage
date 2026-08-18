@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python (serve.py serves the published build)
+__pycache__/
+*.py[cod]

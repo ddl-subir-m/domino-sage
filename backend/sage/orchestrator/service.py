@@ -72,6 +72,9 @@ _PERSISTED_EVENTS = frozenset({
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
 # tree, so publish pre-checks it exists locally before deploying (a missing one fails opaquely).
 _ENTRY_POINT = "app.sh"
+# The Python server that entry script execs to serve the build (ADR-0002). Pre-checked too, but only
+# when this app's app.sh actually calls it — an app still serving with Node doesn't need it.
+_SERVER_SCRIPT = "serve.py"
 # Published-app deploy status -> terminal phase (mirrors HubService.publish_status). Matched
 # case-insensitively; anything else means the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -2377,14 +2380,25 @@ class Orchestrator:
         # Best-effort: a refresh failure must not block publishing the committed copy.
         try:
             if self._wm.refresh_entry_script():
-                log.info("publish: refreshed %s from the template", _ENTRY_POINT)
+                log.info("publish: refreshed the deploy files from the template")
         except Exception:
-            log.exception("publish: couldn't refresh %s; publishing the committed copy", _ENTRY_POINT)
+            log.exception("publish: couldn't refresh the deploy files; publishing the committed copies")
         # The builder holds the working tree, so a fast local check beats the hub's GitHub-API probe.
-        if not (project.workspace.path / _ENTRY_POINT).exists():
+        entry = project.workspace.path / _ENTRY_POINT
+        if not entry.exists():
             raise RuntimeError(
                 f"'{_ENTRY_POINT}' is missing from the workspace, so Domino has no entry script to "
                 f"run. Add {_ENTRY_POINT} to the project root and rebuild, then publish again."
+            )
+        # The refresh above is best-effort, so app.sh can be the current one while the server it execs
+        # is absent — a deploy that reports success and then crash-loops on "can't open file
+        # 'serve.py'". Ask what THIS app.sh needs rather than demanding serve.py of an older app whose
+        # entry script still serves the build with Node.
+        if _SERVER_SCRIPT in entry.read_text() and not (project.workspace.path / _SERVER_SCRIPT).exists():
+            raise RuntimeError(
+                f"'{_SERVER_SCRIPT}' is missing from the workspace, but {_ENTRY_POINT} runs it to serve "
+                f"the app, so the deploy would start and immediately fail. Restore {_SERVER_SCRIPT} to "
+                "the project root and publish again."
             )
         # Deploy the newest code: commit + push before publishing. Best-effort — a save failure (no
         # remote, offline) must not block a publish of whatever is already committed.

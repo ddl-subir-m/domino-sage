@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from sage.workspace import manager
 from sage.workspace.manager import WorkspaceManager
 
 
@@ -165,3 +168,47 @@ def test_refresh_entry_script_restores_a_missing_one(tmp_path: Path):
 
     assert mgr.refresh_entry_script() is True
     assert (ws.path / "app.sh").read_text() == "echo hi\n"
+
+
+def test_refresh_ships_the_python_server_app_sh_execs(tmp_path: Path):
+    # app.sh now execs serve.py (ADR-0002), so refreshing one without the other publishes an app
+    # whose entry script calls a file that isn't in the repo.
+    tmpl = _fake_template(tmp_path)
+    (tmpl / "app.sh").write_text("exec python3 serve.py\n")
+    (tmpl / "serve.py").write_text("# v2\n")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("proj1")
+    (ws.path / "app.sh").write_text("exec npx vite preview\n")  # an app born before the swap
+    (ws.path / "serve.py").unlink()
+
+    assert mgr.refresh_entry_script() is True
+    assert (ws.path / "app.sh").read_text() == "exec python3 serve.py\n"
+    assert (ws.path / "serve.py").read_text() == "# v2\n"
+    assert mgr.refresh_entry_script() is False  # both current — nothing to commit
+
+
+def test_refresh_never_leaves_a_new_app_sh_without_its_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The failure this ordering prevents: a refreshed app.sh execs serve.py, so if only app.sh
+    # landed the published app would crash-loop. serve.py goes first, so a partial refresh keeps
+    # the old (working) app.sh instead.
+    tmpl = _fake_template(tmp_path)
+    (tmpl / "app.sh").write_text("exec python3 serve.py\n")
+    (tmpl / "serve.py").write_text("# v2\n")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("proj1")
+    (ws.path / "app.sh").write_text("exec npx vite preview\n")  # stale, so the refresh tries it
+    (ws.path / "serve.py").unlink()
+    real_copy2 = manager.shutil.copy2
+
+    def copy2_failing_on_the_script(src, dst, **kw):
+        if str(src).endswith("app.sh"):
+            raise OSError("disk full")
+        return real_copy2(src, dst, **kw)
+
+    monkeypatch.setattr(manager.shutil, "copy2", copy2_failing_on_the_script)
+
+    with pytest.raises(OSError):
+        mgr.refresh_entry_script()
+    assert (ws.path / "serve.py").read_text() == "# v2\n"

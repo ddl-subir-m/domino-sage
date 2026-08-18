@@ -260,6 +260,29 @@ def test_publish_fails_fast_when_app_sh_missing(tmp_path: Path):
     assert not cp.published  # never reached the control plane
 
 
+def test_publish_fails_fast_when_the_server_app_sh_execs_is_missing(tmp_path: Path):
+    # app.sh serves the build by exec'ing serve.py (ADR-0002). Deploying without it starts an app
+    # that dies on "can't open file 'serve.py'", and Domino reports only that the app failed.
+    cp = FakeControlPlane()
+    t = _template(tmp_path)
+    (t / "app.sh").write_text("#!/bin/bash\nexec python3 serve.py\n")  # …but no serve.py beside it
+    orch = _domino_orch(tmp_path, cp, template=t)
+
+    with pytest.raises(RuntimeError, match="serve.py"):
+        orch.publish()
+    assert not cp.published  # never reached the control plane
+
+
+def test_publish_allows_an_app_whose_entry_script_does_not_use_the_python_server(tmp_path: Path):
+    # An app seeded before the swap still serves with Node. It has no serve.py and does not need one.
+    cp = FakeControlPlane()
+    t = _template(tmp_path)
+    (t / "app.sh").write_text("#!/bin/bash\nexec npx vite preview\n")
+    orch = _domino_orch(tmp_path, cp, template=t)
+
+    assert orch.publish()["published"] is True
+
+
 def test_publish_requires_domino(tmp_path: Path):
     orch = _orch(tmp_path)  # no control plane
     with pytest.raises(RuntimeError, match="only available when this builder runs on Domino"):

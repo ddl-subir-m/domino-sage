@@ -16,14 +16,18 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-# Source dirs never copied into a workspace (heavy / regenerated / linked separately).
-_IGNORE = shutil.ignore_patterns("node_modules", "dist", ".git", ".DS_Store")
+# Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
+# appears in a dev checkout of the template as soon as anything imports serve.py, and a workspace
+# that receives it commits it to the user's app repo.
+_IGNORE = shutil.ignore_patterns("node_modules", "dist", ".git", ".DS_Store", "__pycache__")
 # Top-level template entries skipped when seeding (linked or repo-owned, not template content).
-_SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store"}
+_SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store", "__pycache__"}
 # Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
 _DEPS_SENTINEL = Path(".bin") / "vite"
-# The script Domino runs to serve a published App. Sage-owned — see refresh_entry_script.
-_ENTRY_SCRIPT = "app.sh"
+# What Domino runs to serve a published App: the entry script, and the Python server it execs
+# (ADR-0002). Both Sage-owned — see refresh_entry_script. serve.py comes FIRST: a refreshed app.sh
+# without it is an app that crash-loops, whereas a stale app.sh with a spare serve.py still serves.
+_DEPLOY_FILES = ("serve.py", "app.sh")
 
 
 @dataclass(frozen=True)
@@ -363,20 +367,27 @@ class WorkspaceManager:
         return False
 
     def refresh_entry_script(self) -> bool:
-        """Bring the workspace's deploy entry script back in line with the template. True if changed.
+        """Bring the workspace's deploy files back in line with the template. True if any changed.
 
-        app.sh is Sage infrastructure, not app content: it encodes how a published App installs,
-        builds and serves itself, and the agent has no reason to touch it. But it's COMMITTED to the
-        app's repo when the project is seeded, so an app keeps whatever app.sh it was born with —
-        which meant a fix to the template only ever reached NEW apps, while every existing app went
-        on crash-looping on the bug we'd already fixed (the Node-18 PATH order, 2026-08-07). Callers
-        refresh at publish time so the fix travels to every app that deploys.
+        app.sh and the serve.py it execs are Sage infrastructure, not app content: they encode how a
+        published App installs, builds and serves itself, and the agent has no reason to touch them.
+        But they're COMMITTED to the app's repo when the project is seeded, so an app keeps whatever
+        copies it was born with — which meant a fix to the template only ever reached NEW apps, while
+        every existing app went on crash-looping on the bug we'd already fixed (the Node-18 PATH
+        order, 2026-08-07). Callers refresh at publish time so the fix travels to every app that
+        deploys.
+
+        Order is load-bearing (_DEPLOY_FILES): the server lands before the script that execs it, so a
+        refresh that fails partway leaves an app that still serves rather than one that can't boot.
         """
-        src = self._template / _ENTRY_SCRIPT
-        if not src.is_file():
-            return False
-        dst = self._dir / _ENTRY_SCRIPT
-        if dst.is_file() and dst.read_bytes() == src.read_bytes():
-            return False
-        shutil.copy2(src, dst)  # copy2 keeps the +x bit Domino needs to run it
-        return True
+        changed = False
+        for name in _DEPLOY_FILES:
+            src = self._template / name
+            if not src.is_file():
+                continue
+            dst = self._dir / name
+            if dst.is_file() and dst.read_bytes() == src.read_bytes():
+                continue
+            shutil.copy2(src, dst)  # copy2 keeps the +x bit Domino needs to run app.sh
+            changed = True
+        return changed
