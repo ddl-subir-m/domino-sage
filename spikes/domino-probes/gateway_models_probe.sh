@@ -80,9 +80,31 @@ done
 
 echo
 echo "########## 4. control -- proves the token works at all"
-get "GET {root}/api/usage/mine" "$ROOT/api/usage/mine" >/dev/null 2>&1 \
-  && echo "  usage/mine reachable -> token is good, so 404s above are real absences" \
-  || echo "  usage/mine NOT reachable -> a 401/403 here means auth failed, and the 404s prove nothing"
+# /api/usage/mine is NOT a route (openapi.json lists /api/usage/mine/scope, /stats, ...).
+# The first version probed the bare path, 404'd, and printed a false auth warning.
+get "GET {root}/api/usage/mine/scope" "$ROOT/api/usage/mine/scope" >/dev/null 2>&1 \
+  && echo "  reachable -> token is good, so the 404s above are real absences" \
+  || echo "  NOT reachable -> check auth before trusting the 404s above"
+
+echo
+echo "########## 5. the panel's contract -- what do the registry routes actually return?"
+for p in /api/aliases/accessible /api/aliases /api/providers /v1/whoami; do
+  echo
+  echo "  ### GET $p"
+  if get "$p" "$ROOT$p" >/dev/null 2>&1; then
+    if have jq; then
+      # Print the KEYS of the first record plus a compact listing, so the panel's field
+      # contract is visible without dumping provider secrets.
+      jq -r '(if type=="array" then .[0] elif .items then .items[0] elif .data then .data[0] else . end)
+             | "      fields: " + ([keys[]?]|join(", "))' /tmp/_gw_last.json 2>/dev/null
+      jq -r '(if type=="array" then . elif .items then .items elif .data then .data else [.] end)
+             | "      count: \(length)",
+               (.[]? | "      - " + ((.name // .alias // .id // .provider_name // "?")|tostring)
+                     + "  " + ((.provider_type // .provider // .model // .type // "")|tostring)
+                     + "  " + ((.enabled // .is_enabled // "")|tostring))' /tmp/_gw_last.json 2>/dev/null | head -30
+    fi
+  fi
+done
 
 rm -f /tmp/_gw_last.json
 cat <<'HINT'

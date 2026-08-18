@@ -16,7 +16,7 @@ Composable means **a built app can call it at runtime**.
 |-----------|----------|-------------|---------|
 | Data sources | `/api/datasource/v1/datasources` | Yes — query works | Build this first |
 | Hosted GenAI endpoints | `/api/gen-ai/beta/endpoints` | Callable, but **not the call path** | Discovery only — see below |
-| **LLM Gateway registrations** | the gateway App's own API | **OPEN — see below** | The real model primitive |
+| **LLM Gateway registrations** | `GET /api/aliases/accessible` | **Yes — full control plane** | The real model primitive |
 | Model APIs | `/api/modelServing/v1/modelApis` | n/a — none exist in this project | Accessible, nothing to test |
 | Model Deployments | `/api/modelServing/v1/modelDeployments` | No | Reachable, untested |
 | Registered models | `/api/registeredmodels/v1` | n/a — discovery only | Done |
@@ -52,12 +52,49 @@ hosted GenAI endpoints sit *upstream* of it. Sage already routes every model cal
 the gateway, which means the calling path is built — what is missing is the ability to
 **enumerate** what the gateway has registered.
 
-### OPEN, and now the decisive question
+### ANSWERED — the gateway has a full control plane API
 
-**Does the LLM Gateway expose a list of its registrations?** That list is exactly what a
-"which LLMs are available" panel needs. If it exists, the panel is live data. If not, Sage
-cannot enumerate registrations and this is a feature request for the gateway's owner rather
-than work Sage can do alone.
+Verified live 2026-08-18. `GET {root}/openapi.json` returns 200 unauthenticated-shape JSON:
+**"Domino LLM Gateway — Next-generation LLM Gateway control plane and proxy API", v2.0.11,
+OpenAPI 3.1.0.** So the panel is live data, not a feature request.
+
+The routes that matter for a resource browser:
+
+| Route | Use |
+|-------|-----|
+| `GET /api/aliases/accessible` | **The panel feed.** Permission-keyed — the same pattern that made the data-source picker work. |
+| `GET /api/aliases` | Full registration list |
+| `GET /api/providers` | Provider config: the base URLs and modes a registration carries |
+| `GET /api/alias-groups` | Grouping |
+| `GET /v1/models` | OpenAI-convention listing. Simplest feed, least metadata. |
+| `GET /v1/whoami` | Resolves the caller — the gateway's identity primitive |
+
+It is a much larger surface than expected. Also present: `/v1/embeddings`, `/v1/responses`,
+`/anthropic/v1/messages` (+ `count_tokens`), a files API, sync and batch APIs
+(`/v1/batches`, `/anthropic/v1/messages/batches`), a guardrails and guardrail-evaluator
+admin API, and a full usage API matching `gateway-questions.md`.
+
+**Embeddings and batches are unclaimed capability.** Neither appears in Sage's current
+design, and both are directly useful to a built app — embeddings for search over attached
+data, batches for bulk work that would time out inline.
+
+### CHECK THIS — 3 of Sage's 4 configured aliases were not in the accessible list
+
+`GET /v1/models` with the workspace sidecar token returned **4** models, all
+`owned_by: domino-gateway`:
+
+```
+gpt-5.4    GLM-5.2    deepseek-v4-flash-0731    mimo-v2.5
+```
+
+`.env.example` configures `SAGE_MODEL_SOVEREIGN=qwen-2-5`,
+`SAGE_MODEL_PLAN=gpt-5.4`, `SAGE_MODEL_IMPLEMENT=bedrock-qwen3-coder`,
+`SAGE_MODEL_DEFAULT=sonnet`. **Only `gpt-5.4` overlaps.**
+
+That is either a grant difference (Sage's gateway PAT may see aliases the sidecar token
+does not) or Sage's model config has drifted from what this deployment registers. Worth
+resolving before a demo, because three of four tiers would fail. Compare
+`/api/aliases/accessible` under Sage's own gateway token against `SAGE_MODEL_*`.
 
 Note what `open_models.py` actually is, since it is easy to over-read: its
 `OPEN_WEIGHT_MODELS` is the catalog for **openai mode** (DeepSeek, Qwen, Moonshot, called
