@@ -111,32 +111,43 @@ provider. Provider records also carry **`health_status`** and **`last_health_che
 a readiness signal, the gateway's analogue of a data source's `status` or an endpoint's
 `Running`. A picker should surface it.
 
-### VERIFY — this gateway has only 4 aliases, and 3 of Sage's tiers are not among them
+### VERIFY — two gateway URLs are in play, and one lacks 3 of Sage's 4 aliases
 
-`/api/aliases` and `/v1/models` agree: **4 aliases**, all `provider_type: openai` —
-`gpt-5.4`, `GLM-5.2`, `deepseek-v4-flash-0731`, `mimo-v2.5`. Since `/api/aliases` is the
-detail listing rather than a permission-filtered view, this is not a grants artefact: the
-other names are absent.
+`/api/aliases` and `/v1/models` agree on the probed gateway: **4 aliases**, all
+`provider_type: openai` — `gpt-5.4`, `GLM-5.2`, `deepseek-v4-flash-0731`, `mimo-v2.5`.
+`/api/aliases` is the detail listing rather than a permission-filtered view, so on that
+deployment the other names are genuinely absent.
 
-`.env.example` sets `SAGE_MODEL_SOVEREIGN=qwen-2-5`,
-`SAGE_MODEL_IMPLEMENT=bedrock-qwen3-coder`, `SAGE_MODEL_DEFAULT=sonnet`. **None exist here.**
-Only `SAGE_MODEL_PLAN=gpt-5.4` does.
+Sage's model slots come from code defaults, not `.env.example`
+(`backend/sage/shim/app.py:51-56`, mirrored in `orchestrator/app.py:105-108`):
 
-Before concluding it is broken, note the URLs differ: `.env.example` points at
-`/apps/llm_gateway/v1`, while the live workspace `GATEWAY_BASE_URL` was
-`/apps/bda1c28f-b516-4df0-a00f-97176c9ff46c/v1`. So there may be more than one gateway
-deployment, and Sage's real target may carry the full alias set. **Check which gateway
-`backend/.env` points at, and run `/api/aliases` against that one.** If it is the same
-deployment, three of four model tiers reference aliases that do not exist.
+| slot | default alias | on the probed gateway? |
+|------|---------------|------------------------|
+| `sovereign_plan` / `sovereign_implement` / `sovereign_ask` | `qwen-2-5` | **no** |
+| `plan` | `gpt-5.4` | yes |
+| `implement` | `bedrock-qwen3-coder` | **no** |
+| `ask` | `sonnet` | **no** |
 
-It is a much larger surface than expected. Also present: `/v1/embeddings`, `/v1/responses`,
-`/anthropic/v1/messages` (+ `count_tokens`), a files API, sync and batch APIs
-(`/v1/batches`, `/anthropic/v1/messages/batches`), a guardrails and guardrail-evaluator
-admin API, and a full usage API matching `gateway-questions.md`.
+But two different gateways are configured, and the probe hit the second one:
 
-**Embeddings and batches are unclaimed capability.** Neither appears in Sage's current
-design, and both are directly useful to a built app — embeddings for search over attached
-data, batches for bulk work that would time out inline.
+| where | `GATEWAY_BASE_URL` |
+|-------|--------------------|
+| `backend/.env` (local dev, `SAGE_GATEWAY_MODE=domino`, no `SAGE_MODEL_*` overrides) | `/apps/llm_gateway/v1` |
+| live workspace env | `/apps/bda1c28f-b516-4df0-a00f-97176c9ff46c/v1` |
+
+So this is unresolved rather than broken: the missing aliases may all exist on
+`/apps/llm_gateway/v1`. **One command settles it** — the probe reads the variable, so
+override it:
+
+```bash
+GATEWAY_BASE_URL=https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1 \
+  bash spikes/domino-probes/gateway_models_probe.sh
+```
+
+If `qwen-2-5`, `bedrock-qwen3-coder` and `sonnet` appear there, nothing is wrong and the
+two deployments simply differ. If they do not, then whichever gateway a given Sage instance
+points at determines whether three of four model tiers resolve — and a workspace whose env
+points at the 4-alias gateway would fail on the sovereign, implement, and ask slots.
 
 ### What direct calls established anyway — still useful at REGISTRATION time
 
