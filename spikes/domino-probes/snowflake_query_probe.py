@@ -66,7 +66,19 @@ step("1. import domino_data", lambda: __import__("domino_data").__file__, fatal=
 
 from domino_data.data_sources import DataSourceClient  # noqa: E402
 
-client = step("2. construct DataSourceClient()", DataSourceClient, fatal=True)
+def _client():
+    # NEVER return the client itself: DataSourceClient.__repr__ includes api_key in
+    # plaintext, and step() prints whatever it gets. Report a masked summary instead.
+    c = DataSourceClient()
+    globals()["_c"] = c
+    key = getattr(c, "api_key", None) or ""
+    return {"api_key": f"<set, {len(key)} chars>" if key else "<unset>",
+            "token_url": getattr(c, "token_url", None),
+            "token_file": getattr(c, "token_file", None)}
+
+
+step("2. construct DataSourceClient() (masked)", _client, fatal=True)
+client = _c  # noqa: F821
 ds = step(f"3. resolve data source by name ({NAME})",
           lambda: client.get_datasource(NAME), fatal=True)
 
@@ -97,6 +109,20 @@ step("8. can the agent discover tables?",
          "FROM information_schema.tables "
          "WHERE table_schema NOT IN ('INFORMATION_SCHEMA') "
          "ORDER BY table_schema, table_name LIMIT 20").to_pandas().to_string(index=False))
+
+# Step 8 fails with "This session does not have a current database. Call 'USE DATABASE',
+# or use a qualified name." That is a session-context gap, NOT missing introspection --
+# so retry fully qualified. If this passes, the picker can cascade source -> db -> schema
+# -> tables with no typing by the user.
+step("8b. introspect with a QUALIFIED name (DWH.INFORMATION_SCHEMA)",
+     lambda: ds.query(
+         "SELECT table_catalog, table_schema, table_name "
+         "FROM DWH.INFORMATION_SCHEMA.TABLES "
+         "WHERE table_schema <> 'INFORMATION_SCHEMA' "
+         "ORDER BY table_schema, table_name LIMIT 20").to_pandas().to_string(index=False))
+
+step("8c. can we enumerate schemas for a cascading picker?",
+     lambda: ds.query("SHOW SCHEMAS IN DATABASE DWH").to_pandas().head(15).to_string(index=False))
 
 step("9. what else is reachable? (only useful if 7 showed no database)",
      lambda: ds.query("SHOW DATABASES").to_pandas().head(10).to_string(index=False))
