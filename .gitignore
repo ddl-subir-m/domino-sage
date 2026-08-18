@@ -42,3 +42,7 @@ workspaces/
 # Scratch / spike scratch files (never commit)
 **/_spike*.py
 **/_scratch*.py
+
+# Vendored Domino API spec pulled from an authenticated dogfood endpoint.
+# Kept local only — this repo is public and the spec is Domino-internal.
+spikes/domino-probes/dogfood-swagger.json
