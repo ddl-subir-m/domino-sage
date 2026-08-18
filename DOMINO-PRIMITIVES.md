@@ -15,7 +15,8 @@ Composable means **a built app can call it at runtime**.
 | Primitive | Endpoint | Use proven? | Verdict |
 |-----------|----------|-------------|---------|
 | Data sources | `/api/datasource/v1/datasources` | Yes — query works | Build this first |
-| **Hosted GenAI endpoints** | `/api/gen-ai/beta/endpoints` | **Yes — callable, OpenAI-compatible** | Best second |
+| Hosted GenAI endpoints | `/api/gen-ai/beta/endpoints` | Callable, but **not the call path** | Discovery only — see below |
+| **LLM Gateway registrations** | the gateway App's own API | **OPEN — see below** | The real model primitive |
 | Model APIs | `/api/modelServing/v1/modelApis` | n/a — none exist in this project | Accessible, nothing to test |
 | Model Deployments | `/api/modelServing/v1/modelDeployments` | No | Reachable, untested |
 | Registered models | `/api/registeredmodels/v1` | n/a — discovery only | Done |
@@ -30,42 +31,66 @@ not to apps).
 **Excluded by decision.** Domino's built-in **AI Gateway** (`/api/aigateway/v1`) is an
 MLflow-based feature Sage does not plan to use. It is NOT the gateway Sage routes through —
 that is a separately deployed **LLM Gateway** App (`GATEWAY_BASE_URL` -> `/apps/<id>/v1`),
-which owns Sage's model aliases. So "which LLMs are available" reads Sage's own config
-(`MODELS.md`), not a Domino discovery endpoint, and `gateway/open_models.py` being
-hardcoded is correct rather than a gap.
+which owns Sage's model aliases. Users register both Domino-hosted and external models in the **LLM Gateway** and call
+that; they do not call the AI Gateway directly. So "which LLMs are available" is a question
+for the LLM Gateway's registry, not for any `/api/aigateway/v1` endpoint.
 
-## Hosted GenAI endpoints — the integration rules
+## The call path is the LLM Gateway, not the endpoint
 
-Self-hosted vLLM models, each with a public URL of the form
-`https://apps.<host>/endpoints/<vanityUrl>/`.
+**Corrected 2026-08-18 by the user.** Earlier revisions of this file treated hosted GenAI
+endpoints as a direct call target. That is not how Domino is used:
 
-**1. The served model id is NOT Domino's model name.** This is the trap.
+1. A user **deploys** a GenAI model in Domino -> `/api/gen-ai/beta/endpoints`, a vLLM
+   endpoint with a public URL.
+2. That endpoint is then **registered in the LLM Gateway** along with external models —
+   base URL, which modes are supported, and so on.
+3. Apps and agents **call the LLM Gateway**, which routes to the Domino-hosted endpoint or
+   to an external provider. **They do not call the endpoint, or the AI Gateway, directly.**
 
-vLLM served `id: "."` (it was started from a local path) while Domino reported
+So the composable primitive for Sage is **what is registered in the LLM Gateway**, and
+hosted GenAI endpoints sit *upstream* of it. Sage already routes every model call through
+the gateway, which means the calling path is built — what is missing is the ability to
+**enumerate** what the gateway has registered.
+
+### OPEN, and now the decisive question
+
+**Does the LLM Gateway expose a list of its registrations?** That list is exactly what a
+"which LLMs are available" panel needs. If it exists, the panel is live data. If not, Sage
+cannot enumerate registrations and this is a feature request for the gateway's owner rather
+than work Sage can do alone.
+
+Note what `open_models.py` actually is, since it is easy to over-read: its
+`OPEN_WEIGHT_MODELS` is the catalog for **openai mode** (DeepSeek, Qwen, Moonshot, called
+direct with per-model base URLs and keys). In **Domino gateway mode** there is no such
+catalog — the docstring says "the gateway owns model routing", and Sage sends an alias from
+`SAGE_MODEL_*` env. So the hardcoded list is not a stand-in for the gateway's registry.
+
+Probe: `spikes/domino-probes/gateway_models_probe.sh`.
+
+### What direct calls established anyway — still useful at REGISTRATION time
+
+These facts do not change; they just apply to whoever registers an endpoint in the gateway,
+not to an app calling it.
+
+**The served model id is NOT Domino's model name.** vLLM served `id: "."` (started from a
+local path) while Domino reported
 `modelSource.registeredModel.modelName: "qwen-2-5-14b"`. Calling with Domino's name returns
-`404 {"message":"The model qwen-2-5-14b does not exist"}`.
+`404 "The model qwen-2-5-14b does not exist"`. So a gateway registration must carry the id
+from `GET <url>/v1/models`, not the Domino metadata name. If Sage ever helps a user
+register an endpoint, this is the field that will bite.
 
-**Always resolve the id from `GET <url>/v1/models` first** — in the picker, and in any code
-the build agent generates. Anything else 404s.
+**Auth is required, and an unauthenticated call looks like success.** The sidecar bearer
+token works (`/v1/models` 200 in 0.28s). Without it the request still returns **200 — with
+a Keycloak login page in HTML**. Clients must inspect the body, not just the status.
 
-**2. Auth is required, and an unauthenticated call looks like success.** The sidecar bearer
-token (`$DOMINO_API_PROXY/access-token`) works: `/v1/models` returned 200 in 0.28s. Without
-it the request also returns **200 — but the body is a Keycloak login page in HTML**, not
-JSON. Any client must check the body, not just the status.
+**Status is the gating field.** Of 18 endpoints, exactly **1** was `Running` — 12 `Stopped`,
+4 `Failed`, 1 `BuildFailed`. Relevant to a "what could I register?" view.
 
-**3. Status is the gating field.** Of 18 endpoints, **exactly 1 was `Running`**. The rest
-were `Stopped` (12), `Failed` (4), or `BuildFailed` (1). A picker that ignores
-`currentVersion.status` mostly offers dead endpoints.
+**Cross-project access works.** The target was `generalAccess: Consumer` in another user's
+project and it answered, so Consumer grants call rights, not just visibility.
 
-**4. Cross-project access works.** The target was `generalAccess: Consumer` in a project
-owned by someone else, and it answered. **Consumer grants call rights, not just
-visibility.**
-
-**5. OPEN — can `generalAccess: Viewer` be called, or only seen?** Untested: the only
-`Running` endpoint was `Consumer`. This matters, because **13 of 18 endpoints are `Viewer`**.
-If Viewer is view-only, the usable pool is 5 endpoints, not 18, and the picker must filter
-on access as well as status. Settle this from the docs or by asking an endpoint owner — it
-does not need a probe.
+**OPEN — can `generalAccess: Viewer` be called, or only seen?** 13 of 18 are `Viewer`, so
+this sizes the pool at 5 or 18. Lower priority now that direct calling is not the path.
 
 ## Model APIs — the 403 was a probe bug, not a permission wall
 
