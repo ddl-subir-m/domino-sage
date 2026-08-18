@@ -16,7 +16,7 @@ Composable means **a built app can call it at runtime**.
 |-----------|----------|-------------|---------|
 | Data sources | `/api/datasource/v1/datasources` | Yes — query works | Build this first |
 | Hosted GenAI endpoints | `/api/gen-ai/beta/endpoints` | Callable, but **not the call path** | Discovery only — see below |
-| **LLM Gateway registrations** | `GET /api/aliases/accessible` | **Yes — full control plane** | The real model primitive |
+| **LLM Gateway registrations** | `GET /api/aliases` + `/accessible` | **Yes — full control plane** | The real model primitive |
 | Model APIs | `/api/modelServing/v1/modelApis` | n/a — none exist in this project | Accessible, nothing to test |
 | Model Deployments | `/api/modelServing/v1/modelDeployments` | No | Reachable, untested |
 | Registered models | `/api/registeredmodels/v1` | n/a — discovery only | Done |
@@ -60,14 +60,74 @@ OpenAPI 3.1.0.** So the panel is live data, not a feature request.
 
 The routes that matter for a resource browser:
 
-| Route | Use |
-|-------|-----|
-| `GET /api/aliases/accessible` | **The panel feed.** Permission-keyed — the same pattern that made the data-source picker work. |
-| `GET /api/aliases` | Full registration list |
-| `GET /api/providers` | Provider config: the base URLs and modes a registration carries |
-| `GET /api/alias-groups` | Grouping |
-| `GET /v1/models` | OpenAI-convention listing. Simplest feed, least metadata. |
-| `GET /v1/whoami` | Resolves the caller — the gateway's identity primitive |
+| Route | Returns | Use |
+|-------|---------|-----|
+| `GET /api/aliases` | 4 records, full detail | **The panel feed** |
+| `GET /api/aliases/accessible` | `{accessible_ids, byot_alias_ids}` | **The permission filter** — id sets only, NOT a listing |
+| `GET /api/providers` | 2 records | Provider config + health |
+| `GET /api/alias-groups` | — | Grouping |
+| `GET /v1/models` | 4 ids | OpenAI-convention listing. Simplest feed, least metadata. |
+| `GET /v1/whoami` | `{resolved_identity}` | Resolves the caller |
+
+**The panel needs two calls, not one.** `/api/aliases` for detail, `/api/aliases/accessible`
+for which of them this user may use — then intersect. This is the same
+permission-keyed shape as data sources, just split across two endpoints.
+`byot_alias_ids` marks a distinct class: bring-your-own-token aliases.
+
+### The alias field contract (from a live `GET /api/aliases`)
+
+```
+identity     id, name, display_name, description, status
+provider     provider_id, provider_name, provider_type, provider_model, endpoint_url
+capability   capabilities, api_version, auth_mode, inference_params
+cost         cost_mode, effective_costs, custom_{input,output,cache_read,cache_write}_cost
+budget       budget_limit, budget_period
+cache        cache_enabled, cache_per_user, cache_ttl_seconds
+resilience   fallback_chain, fallback_timeout_ms, fallback_triggers, retry_config
+grouping     groups
+secrets      extra_headers_has_value, extra_headers_masked   (already masked)
+```
+
+Three of these are panel-grade and were not anticipated:
+
+- **`capabilities`** — which modes an alias supports. This is the field that lets a picker
+  say "this one does embeddings" rather than offering every alias for every job.
+- **`effective_costs`** — resolved per-alias cost. A picker can show cost *before* the user
+  chooses, which connects to the existing gateway cost-tag work.
+- **`display_name`** — a real human label. Note the contrast with hosted GenAI endpoints,
+  where `displayName` was the connector *type*, not a name.
+
+### Providers — how Domino-hosted models get in
+
+`GET /api/providers` returned 2, and the first confirms the registration flow:
+
+| name | provider_type |
+|------|---------------|
+| **Domino Platform** | `domino_platform` |
+| OpenRouter | `openai` |
+
+So a Domino-hosted GenAI endpoint reaches the gateway through the `domino_platform`
+provider. Provider records also carry **`health_status`** and **`last_health_check`** —
+a readiness signal, the gateway's analogue of a data source's `status` or an endpoint's
+`Running`. A picker should surface it.
+
+### VERIFY — this gateway has only 4 aliases, and 3 of Sage's tiers are not among them
+
+`/api/aliases` and `/v1/models` agree: **4 aliases**, all `provider_type: openai` —
+`gpt-5.4`, `GLM-5.2`, `deepseek-v4-flash-0731`, `mimo-v2.5`. Since `/api/aliases` is the
+detail listing rather than a permission-filtered view, this is not a grants artefact: the
+other names are absent.
+
+`.env.example` sets `SAGE_MODEL_SOVEREIGN=qwen-2-5`,
+`SAGE_MODEL_IMPLEMENT=bedrock-qwen3-coder`, `SAGE_MODEL_DEFAULT=sonnet`. **None exist here.**
+Only `SAGE_MODEL_PLAN=gpt-5.4` does.
+
+Before concluding it is broken, note the URLs differ: `.env.example` points at
+`/apps/llm_gateway/v1`, while the live workspace `GATEWAY_BASE_URL` was
+`/apps/bda1c28f-b516-4df0-a00f-97176c9ff46c/v1`. So there may be more than one gateway
+deployment, and Sage's real target may carry the full alias set. **Check which gateway
+`backend/.env` points at, and run `/api/aliases` against that one.** If it is the same
+deployment, three of four model tiers reference aliases that do not exist.
 
 It is a much larger surface than expected. Also present: `/v1/embeddings`, `/v1/responses`,
 `/anthropic/v1/messages` (+ `count_tokens`), a files API, sync and batch APIs
@@ -77,32 +137,6 @@ admin API, and a full usage API matching `gateway-questions.md`.
 **Embeddings and batches are unclaimed capability.** Neither appears in Sage's current
 design, and both are directly useful to a built app — embeddings for search over attached
 data, batches for bulk work that would time out inline.
-
-### CHECK THIS — 3 of Sage's 4 configured aliases were not in the accessible list
-
-`GET /v1/models` with the workspace sidecar token returned **4** models, all
-`owned_by: domino-gateway`:
-
-```
-gpt-5.4    GLM-5.2    deepseek-v4-flash-0731    mimo-v2.5
-```
-
-`.env.example` configures `SAGE_MODEL_SOVEREIGN=qwen-2-5`,
-`SAGE_MODEL_PLAN=gpt-5.4`, `SAGE_MODEL_IMPLEMENT=bedrock-qwen3-coder`,
-`SAGE_MODEL_DEFAULT=sonnet`. **Only `gpt-5.4` overlaps.**
-
-That is either a grant difference (Sage's gateway PAT may see aliases the sidecar token
-does not) or Sage's model config has drifted from what this deployment registers. Worth
-resolving before a demo, because three of four tiers would fail. Compare
-`/api/aliases/accessible` under Sage's own gateway token against `SAGE_MODEL_*`.
-
-Note what `open_models.py` actually is, since it is easy to over-read: its
-`OPEN_WEIGHT_MODELS` is the catalog for **openai mode** (DeepSeek, Qwen, Moonshot, called
-direct with per-model base URLs and keys). In **Domino gateway mode** there is no such
-catalog — the docstring says "the gateway owns model routing", and Sage sends an alias from
-`SAGE_MODEL_*` env. So the hardcoded list is not a stand-in for the gateway's registry.
-
-Probe: `spikes/domino-probes/gateway_models_probe.sh`.
 
 ### What direct calls established anyway — still useful at REGISTRATION time
 
