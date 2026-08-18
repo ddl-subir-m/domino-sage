@@ -41,23 +41,30 @@ probe() {
   rm -f "$body"
 }
 
-probe "Gateway LLMs (aigateway)" "/api/aigateway/v1/endpoints?limit=50" \
+probe "Gateway LLMs (Domino AI Gateway)" "/api/aigateway/v1/endpoints?limit=50" \
   '"  count: \(.endpoints|length)", (.endpoints[]? | "  - \(.endpointName)  [\(.modelProvider)/\(.modelName)]  type=\(.endpointType)")'
 
-probe "Domino-hosted GenAI endpoints" "/api/gen-ai/beta/endpoints" \
-  'if type=="array" then "  count: \(length)", (.[]? | "  - \(.name // .endpointName // .id)") else . end'
+# NOTE: this is Domino's BUILT-IN AI Gateway, which is NOT the gateway Sage routes through.
+# Sage uses a separately-deployed gateway App (GATEWAY_BASE_URL -> /apps/<id>/v1). Two
+# different products, confusingly similar names. Verified 2026-08-18: this endpoint returned
+# 2 user-created gemini endpoints and none of Sage's aliases.
 
-probe "Model APIs (modelServing)" "/api/modelServing/v1/modelApis?limit=50" \
-  'if .modelApis then "  count: \(.modelApis|length)", (.modelApis[]? | "  - \(.name)  id=\(.id)") 
-   elif type=="array" then "  count: \(length)", (.[]? | "  - \(.name)") else . end'
+probe "Domino-hosted GenAI endpoints" "/api/gen-ai/beta/endpoints" \
+  '(.items // .) as $i | "  count: \($i|length)",
+   "  running: \([$i[]?|select(.currentVersion.status=="Running")]|length)",
+   ($i[]? | "  - \(.name)  status=\(.currentVersion.status)  access=\(.generalAccess)  model=\(.currentVersion.modelSource.registeredModel.modelName)  \(.url)")'
+
+# modelApis 403s without a project scope ("not authorized to view access configuration"),
+# so scope it to this project rather than asking for a deployment-wide list.
+probe "Model APIs (project-scoped)" "/api/modelServing/v1/modelApis?limit=50&projectId=${DOMINO_PROJECT_ID:-}" \
+  '(.modelApis // .items // .) as $i | if ($i|type)=="array" then "  count: \($i|length)", ($i[]? | "  - \(.name)  id=\(.id)") else . end'
 
 probe "Model Deployments" "/api/modelServing/v1/modelDeployments?limit=50" \
-  'if .modelDeployments then "  count: \(.modelDeployments|length)", (.modelDeployments[]? | "  - \(.name)  id=\(.id)")
-   elif type=="array" then "  count: \(length)", (.[]? | "  - \(.name)") else . end'
+  '(.items // .) as $i | "  count: \($i|length)",
+   ($i[]? | "  - \(.name)  state=\(.status.state)  target=\(.deploymentTargetInfo.typeName)  ops=\([.status.sharedOperations[]?.type]|join(","))")'
 
 probe "Registered models" "/api/registeredmodels/v1?limit=50" \
-  'if .items then "  count: \(.items|length)", (.items[]? | "  - \(.name)")
-   elif type=="array" then "  count: \(length)", (.[]? | "  - \(.name)") else . end'
+  '(.items // .) as $i | if ($i|type)=="array" then "  count: \($i|length)", ($i[]? | "  - \(.name)") else . end'
 
 echo
 echo "###### done. Paste this back into the Sage chat."
