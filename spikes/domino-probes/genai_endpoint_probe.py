@@ -52,6 +52,11 @@ def call(url, auth_label, tok, payload=None, timeout=60):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read()[:600].decode("utf8", "replace")
+        # Domino's SSO answers 200 with an HTML login page. Treat that as NOT authenticated,
+        # or an unauthenticated 200 looks like an open endpoint when it is a redirect.
+        if body.lstrip()[:9].lower() in ("<!doctype", "<html"):
+            return (auth_label, "200-HTML", round(time.time() - t0, 2),
+                    "LOGIN PAGE -- auth required, this is not a real 200")
         return (auth_label, r.status, round(time.time() - t0, 2), body)
     except urllib.error.HTTPError as e:
         return (auth_label, e.code, round(time.time() - t0, 2),
@@ -116,8 +121,27 @@ for label, tok in (("sidecar bearer", TOK), ("no auth", None)):
     lbl, st, dt, body = call(f"{base}/v1/models", label, tok, timeout=30)
     print(f"   {lbl:<16} HTTP {st:<5} {dt:>6.2f}s  {body[:220]}")
 
+# The served model id is NOT Domino's registeredModel.modelName. A live run found vLLM
+# serving id "." (started from a local path) while Domino reported "qwen-2-5-14b", and the
+# completion 404'd with "The model does not exist". Always resolve the id from /v1/models.
+served_id = None
+try:
+    req = urllib.request.Request(f"{base}/v1/models",
+                                 headers={"Authorization": "Bearer " + (TOK or ""),
+                                          "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        served_id = (json.loads(r.read()).get("data") or [{}])[0].get("id")
+except Exception as e:
+    print(f"   could not resolve served model id: {type(e).__name__}: {e}")
+
+print(f"\n-- served model id from /v1/models: {served_id!r}"
+      f"   (Domino reported {target['model']!r})")
+if served_id and served_id != target["model"]:
+    print("   ^^ THEY DIFFER. The picker must resolve the id from /v1/models, and any")
+    print("      generated app code must do the same or every call 404s.")
+
 print("\n-- /v1/chat/completions (COSTS GPU: 1 tiny prompt, max_tokens=8)")
-payload = {"model": target["model"], "max_tokens": 8,
+payload = {"model": served_id or target["model"], "max_tokens": 8,
            "messages": [{"role": "user", "content": "Reply with the single word: ok"}]}
 for label, tok in (("sidecar bearer", TOK), ("no auth", None)):
     lbl, st, dt, body = call(f"{base}/v1/chat/completions", label, tok, payload, timeout=120)
@@ -125,19 +149,26 @@ for label, tok in (("sidecar bearer", TOK), ("no auth", None)):
 
 print("""
 ======================================================================
-HOW TO READ THIS
+WHAT A LIVE RUN ESTABLISHED (cloud-dogfood, 2026-08-18)
 
-  /v1/models 200                -> OpenAI-compatible and the mount path is right. A built
-                                   app can call it with any OpenAI client.
-  chat/completions 200          -> the composable is REAL. This is the green light for
-                                   surfacing GenAI endpoints in the picker.
-  200 with "no auth" too        -> the endpoint is open to anyone who has the URL. That is
-                                   a finding, not a convenience -- it changes what Sage may
-                                   safely bake into a published app.
-  401/403 on both               -> needs a credential we have not identified. Check whether
-                                   generalAccess=Consumer grants call rights or only view.
-  404 on /v1/*                  -> not mounted at that path. Try the bare base url, and
-                                   check the endpoint's own docs page in the Domino UI.
-  ERR / timeout                 -> the apps host may be unreachable from inside a workspace.
-                                   Retry from a browser to separate network from auth.
+  Hosted GenAI endpoints ARE callable, and they are OpenAI-compatible vLLM:
+  /v1/models returned 200 in 0.28s with the sidecar bearer token.
+
+  AUTH IS REQUIRED. The unauthenticated call also answers 200 -- but with a Keycloak
+  LOGIN PAGE in HTML, not JSON. This probe now labels that 200-HTML so it cannot be
+  misread as an open endpoint.
+
+  CROSS-PROJECT ACCESS WORKS. The target was generalAccess=Consumer in a project we do
+  not own, and it answered. Consumer grants call rights, not just visibility.
+
+  THE MODEL ID IS NOT DOMINO'S MODEL NAME. vLLM served id "." while Domino reported
+  "qwen-2-5-14b"; using Domino's name 404s with "The model does not exist". Resolve the
+  id from /v1/models -- in the picker AND in any code the agent generates.
+
+  STATUS IS THE GATING FIELD. 1 of 18 endpoints was Running. The rest were Stopped,
+  Failed, or BuildFailed, so a picker that ignores status mostly offers dead endpoints.
+
+  STILL UNTESTED: whether generalAccess=Viewer can be CALLED or only seen. The only
+  Running endpoint was Consumer. If Viewer is view-only, the picker must filter on it
+  too -- verify when a Viewer endpoint is running.
 ======================================================================""")
