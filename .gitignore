@@ -43,6 +43,9 @@ workspaces/
 **/_spike*.py
 **/_scratch*.py
 
-# Vendored Domino API spec pulled from an authenticated dogfood endpoint.
-# Kept local only — this repo is public and the spec is Domino-internal.
+# Domino API specs. ~1-2 MB each and they move with every Domino release, so fetch
+# them on demand with spikes/domino-probes/fetch_api_specs.sh rather than vendoring.
+# Both are served unauthenticated from any deployment's /assets/.
+spikes/domino-probes/public-api.json
+spikes/domino-probes/swagger.json
 spikes/domino-probes/dogfood-swagger.json
