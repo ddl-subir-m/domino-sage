@@ -41,13 +41,14 @@ probe() {
   rm -f "$body"
 }
 
-probe "Gateway LLMs (Domino AI Gateway)" "/api/aigateway/v1/endpoints?limit=50" \
-  '"  count: \(.endpoints|length)", (.endpoints[]? | "  - \(.endpointName)  [\(.modelProvider)/\(.modelName)]  type=\(.endpointType)")'
-
-# NOTE: this is Domino's BUILT-IN AI Gateway, which is NOT the gateway Sage routes through.
-# Sage uses a separately-deployed gateway App (GATEWAY_BASE_URL -> /apps/<id>/v1). Two
-# different products, confusingly similar names. Verified 2026-08-18: this endpoint returned
-# 2 user-created gemini endpoints and none of Sage's aliases.
+# Domino has TWO gateways. Do not probe the wrong one:
+#   LLM Gateway -- a separately deployed Domino App (GATEWAY_BASE_URL -> /apps/<id>/v1). This is
+#     the one Sage routes every model call through, and it owns the model aliases. Its list is
+#     Sage's own config (MODELS.md, gateway/open_models.py), NOT a Domino discovery endpoint.
+#   AI Gateway  -- a built-in MLflow-based feature at /api/aigateway/v1/endpoints (same family as
+#     the DOMINO_MLFLOW_DEPLOYMENTS :8767 sidecar). SAGE DOES NOT USE IT, so it is not probed here.
+#     A live run returned 2 unrelated gemini endpoints and none of Sage's aliases.
+# The real Domino-side model primitive is the gen-ai one below.
 
 probe "Domino-hosted GenAI endpoints" "/api/gen-ai/beta/endpoints" \
   '(.items // .) as $i | "  count: \($i|length)",
