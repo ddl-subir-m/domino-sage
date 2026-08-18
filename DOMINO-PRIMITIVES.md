@@ -167,20 +167,52 @@ the second provider's name — `qwen-2-5-14b` — is exactly the
 `modelSource.registeredModel.modelName` of the one **`Running`** hosted GenAI endpoint found
 earlier. The registration flow is not theoretical here; it is in use.
 
-### FLAG — Sage's sovereign tier appears to ride a hosted endpoint
+### CONFIRMED — Sage's sovereign tier rides an endpoint Sage does not own
 
-The aliases `qwen-2-5` and `local-domino-llm` both carry `provider_type: domino_platform`,
-and `qwen-2-5` is Sage's alias for **all three sovereign slots**. Combined with the `vllm`
-provider named `qwen-2-5-14b`, this points to Sage's sovereign guarantee being served by an
-in-cluster vLLM endpoint rather than an external provider — which is the sovereign story
-made concrete (see `SPIKE-REPORT.md`).
+`GET /api/aliases` on Sage's gateway, for the `qwen-2-5` alias:
 
-Worth confirming, because of the operational consequence: of 18 hosted GenAI endpoints,
-**exactly 1 was `Running`**, and it lives in a project Sage does not own
-(`IT-Triage-NVIDIA-Agents`). If Sage's sovereign tier depends on that endpoint staying up,
-someone else stopping it breaks the sovereign path. Confirm by reading the `config` and
-`endpoint_url` of the `qwen-2-5` alias and the `qwen-2-5-14b` provider
-(`GET /api/aliases/{alias_id}`), then decide whether Sage needs its own endpoint.
+```json
+{
+  "id": "50840d140ec646b69cdf6ff6b0fc2ac0",
+  "provider_name": "Domino Platform",
+  "provider_type": "domino_platform",
+  "provider_model": "qwen-2-5",
+  "endpoint_url": "https://apps.cloud-dogfood.domino.tech/endpoints/308f788c-be6e-45a3-8731-21b32cb40cee/v1",
+  "status": "active",
+  "capabilities": ["chat", "tools"]
+}
+```
+
+That vanity id is **exactly** the one hosted GenAI endpoint found `Running` — `qwen-2-5`,
+registered model `qwen-2-5-14b`, `generalAccess: Consumer`, in project
+**`IT-Triage-NVIDIA-Agents` owned by `andrea_lowe`**.
+
+`qwen-2-5` is Sage's alias for **all three sovereign slots**
+(`shim/app.py:51-53`). So the sovereign guarantee — Sage's zero-vendor story, see
+`SPIKE-REPORT.md` — currently depends on another team's vLLM endpoint staying up. Sage can
+call it (`Consumer` grants call rights) but has no control over its lifecycle, and **17 of
+18 hosted endpoints were `Stopped` or `Failed`** when surveyed, because they cost GPU.
+
+Good news in the same record: `capabilities: ["chat", "tools"]` confirms the sovereign model
+supports tool calling, which OpenCode needs — and it confirms `capabilities` is a real,
+populated field a picker can rely on.
+
+**Two gaps this exposes.**
+
+1. **Alias `status` does not reflect endpoint health.** `status: "active"` is alias
+   configuration. Nothing suggests it flips when the endpoint behind it stops — that is what
+   the provider record's `health_status` and `last_health_check` are for. So a picker showing
+   alias `status` would label a dead model "active". Use the provider's health field.
+   (Unverified in the stopped case; it would need the endpoint stopped to prove.)
+2. **Sage has no model-availability preflight.** There are `/healthz` endpoints
+   (`shim/app.py:69`, `hub/app.py:133`) but no check that the configured aliases resolve. So
+   a stopped sovereign endpoint surfaces as an opaque mid-build failure rather than a clear
+   startup error — the same shape as the mid-build network errors already seen.
+
+**Recommendation:** deploy Sage's own sovereign endpoint in the Sage project so it owns the
+lifecycle, and add a preflight that resolves every configured `SAGE_MODEL_*` alias against
+`/v1/models` at startup. The preflight is small and would convert a confusing mid-build
+failure into a legible one.
 
 ### What direct calls established anyway — still useful at REGISTRATION time
 
