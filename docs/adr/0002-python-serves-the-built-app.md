@@ -42,6 +42,8 @@ injects the real secret server-side.
   uses `X-Domino-Jwt`. Three surfaces, three conventions.
 - The cascade's database and schema selection passes as `configOverwrites`
   (`database`, `schema`, `warehouse`, `role`), so generated SQL stays unqualified.
-- Unverified prerequisite: everything above was measured in a workspace. The App container
-  must also expose the token sidecar at `$DOMINO_API_PROXY/access-token`, which
-  `spikes/domino-probes/viewer_identity_app/` is written to confirm.
+- The App container does expose the token sidecar at `$DOMINO_API_PROXY/access-token`
+  (confirmed by the user, 2026-08-18). This was the one prerequisite that could have
+  invalidated this decision after work began, since without it the Flight query path has no
+  credential. `spikes/domino-probes/viewer_identity_app/` remains available to re-check it
+  against a future Domino version.
