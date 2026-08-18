@@ -129,13 +129,22 @@ step("9. what else is reachable? (only useful if 7 showed no database)",
 
 summary()
 print("""
-HOW TO READ THIS
+WHAT THIS ESTABLISHED (live, cloud-dogfood, 2026-08-18 -- all steps PASS except 8)
 
-  Steps 1-6 PASS                -> the build-time slice is viable. This is the green light.
-  Step 5 slow (>10s)            -> query in the background, not inline in the chat turn.
-  Step 7 warehouse/db is NULL   -> THE PICKER NEEDS INPUT FIELDS. "Pick a source" becomes
-                                   pick + configure, which changes the panel design.
-  Step 8 FAIL but 5 PASS        -> can query but cannot introspect; the agent would need the
-                                   user to name tables, so the panel needs a schema hint field.
-  Step 3 FAIL                   -> name mismatch or no permission from this container.
+  Querying works from a Sage container. domino_data is preinstalled (conda 3.12), the
+  source resolves with NO project attachment, and queries run in 1-4s with no cold-Flight
+  penalty -- so querying can be inline in a chat turn.
+
+  The source is NOT fully specified: warehouse is set (DOMINO_WH) but database and schema
+  are NULL. Step 8 fails for that reason alone. It is NOT missing introspection --
+  qualified names work (8b), and both levels enumerate (9 -> databases, 8c -> schemas).
+
+  So the picker CASCADES and needs no free-text input:
+      source -> SHOW DATABASES -> SHOW SCHEMAS IN DATABASE <db>
+             -> <db>.INFORMATION_SCHEMA.TABLES
+  Each level costs 2-4s, so load lazily on expand rather than prefetching the tree.
+
+  Snowflake identity is a SHARED service account: USR=DOMINO, ROLE=APP_ROLE_DOMINO. Every
+  Domino user reads through the same principal, which is why creator-access inheritance in
+  a published app adds no privilege -- WITHIN Domino. It does not make a PUBLIC app safe.
 """)

@@ -836,3 +836,63 @@ account, so it is the safe demo source. `test` is `Basic` / `Individual`, and `A
 
 `status` is absent from the public response: `getAccessibleAndActiveDataSources` is
 pre-filtered to active, so the private spec's `Pending|Active|Deleted` does not surface here.
+
+---
+
+## Addendum 2 — querying verified live
+
+`spikes/domino-probes/snowflake_query_probe.py` against `Snowflake-Data-Warehouse`,
+cloud-dogfood, 2026-08-18. Closes the last LIVE-VERIFY item in the v1 path.
+
+### The build-time slice is viable — VERIFIED
+
+`domino_data` is **preinstalled** (`/opt/conda/lib/python3.12/site-packages/domino_data/`),
+the source resolves by name with **no project attachment**, and `SELECT 1` returns in
+1.6s. A second query took the same time, so there is **no cold Arrow Flight penalty** and
+querying can happen inline in a chat turn rather than backgrounded.
+
+### The connector is not fully specified, but the picker can cascade — VERIFIED
+
+Session context: `USR=DOMINO  ROLE=APP_ROLE_DOMINO  WAREHOUSE=DOMINO_WH  DB=None
+SCHEMA=None`.
+
+An unqualified `information_schema` query fails: *"This session does not have a current
+database."* That is a session-context gap, **not** missing introspection. Qualified names
+work, and every level enumerates:
+
+| Level | Call | Cost |
+|-------|------|------|
+| databases | `SHOW DATABASES` | 2.3s |
+| schemas | `SHOW SCHEMAS IN DATABASE <db>` | 3.5s |
+| tables | `SELECT ... FROM <db>.INFORMATION_SCHEMA.TABLES` | 2.9s |
+
+**So the picker cascades — source, database, schema, table — with nothing typed by the
+user.** Load each level lazily on expand; a prefetched tree would cost ~9s. This replaces
+the free-text warehouse/database fields the NULL values first implied.
+
+### Snowflake identity is one shared service account — VERIFIED
+
+Every Domino user reads as `DOMINO` / `APP_ROLE_DOMINO`. This confirms
+`credentialType: Shared` end to end, and it is why letting a published app use its
+creator's access adds no privilege **within Domino** — the credential was never personal.
+
+### But the blast radius is the whole company warehouse — NEW, and it sets the guard
+
+`DWH` is Domino's production warehouse. Visible schemas include `MARTS`, `REPORTING`,
+`INTERMEDIATE`, `STAGING`, `LEGACY`, plus per-source schemas (`AMAZON`, `NEWRELIC`, `ORCA`,
+`ROCKETLANE`, `ABACUM`, `FLEETCOMMAND`, `CORTEX`). Tables include Gong call transcripts and
+CRM context, Jira issue history, Anthropic and Cursor usage and cost reports, and AWS cost
+and usage.
+
+The `DOMINO` service account reads across all of it. So two guards are requirements, not
+polish:
+
+1. **Runtime querying only when `credentialType == Shared`.** An `Individual` source would
+   re-export one person's private access to every viewer.
+2. **Never allow a data-source-querying app to be published `PUBLIC`.** Authenticated at
+   minimum. A `PUBLIC` app on `INTERMEDIATE.INT_GONG__TRANSCRIPT_SPEAKERS` would put
+   customer call transcripts on the open internet. Sage sets app visibility at publish
+   time, so it can enforce this.
+
+For the demo itself, prefer the curated layers (`MARTS`, `REPORTING`) over `INTERMEDIATE`
+or `STAGING`.
