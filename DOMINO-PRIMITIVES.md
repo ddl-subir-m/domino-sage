@@ -111,43 +111,76 @@ provider. Provider records also carry **`health_status`** and **`last_health_che
 a readiness signal, the gateway's analogue of a data source's `status` or an endpoint's
 `Running`. A picker should surface it.
 
-### VERIFY — two gateway URLs are in play, and one lacks 3 of Sage's 4 aliases
+### RESOLVED — Sage's gateway is fine; the scare was the wrong deployment
 
-`/api/aliases` and `/v1/models` agree on the probed gateway: **4 aliases**, all
-`provider_type: openai` — `gpt-5.4`, `GLM-5.2`, `deepseek-v4-flash-0731`, `mimo-v2.5`.
-`/api/aliases` is the detail listing rather than a permission-filtered view, so on that
-deployment the other names are genuinely absent.
+Two gateway deployments exist on cloud-dogfood, both reporting v2.0.11:
 
-Sage's model slots come from code defaults, not `.env.example`
-(`backend/sage/shim/app.py:51-56`, mirrored in `orchestrator/app.py:105-108`):
+| where | `GATEWAY_BASE_URL` | aliases | Sage's 4 defaults present? |
+|-------|--------------------|---------|----------------------------|
+| `backend/.env` | `/apps/llm_gateway/v1` | 12 registered, 6 accessible | **yes, all 4** |
+| live workspace env | `/apps/bda1c28f-.../v1` | 4 | only `gpt-5.4` |
 
-| slot | default alias | on the probed gateway? |
-|------|---------------|------------------------|
-| `sovereign_plan` / `sovereign_implement` / `sovereign_ask` | `qwen-2-5` | **no** |
-| `plan` | `gpt-5.4` | yes |
-| `implement` | `bedrock-qwen3-coder` | **no** |
-| `ask` | `sonnet` | **no** |
+On Sage's own gateway, `/v1/models` returns `gpt-5.4`, `bedrock-qwen3-coder`, `opus`,
+`sonnet`, `qwen-2-5`, `etan-opus-4.6`. The code defaults
+(`shim/app.py:51-56`: `qwen-2-5` for the three sovereign slots, `gpt-5.4` for plan,
+`bedrock-qwen3-coder` for implement, `sonnet` for ask) all resolve. **No drift.**
 
-But two different gateways are configured, and the probe hit the second one:
+The workspace env pointing at a different, sparser gateway is worth knowing, but it is a
+project-env fact, not a Sage bug.
 
-| where | `GATEWAY_BASE_URL` |
-|-------|--------------------|
-| `backend/.env` (local dev, `SAGE_GATEWAY_MODE=domino`, no `SAGE_MODEL_*` overrides) | `/apps/llm_gateway/v1` |
-| live workspace env | `/apps/bda1c28f-b516-4df0-a00f-97176c9ff46c/v1` |
+### 12 registered vs 6 accessible — the panel MUST filter
 
-So this is unresolved rather than broken: the missing aliases may all exist on
-`/apps/llm_gateway/v1`. **One command settles it** — the probe reads the variable, so
-override it:
+`/api/aliases` returned **12**; `/v1/models` returned **6**. Registered but not accessible
+to this caller: `etan-opus-4.8`, `etan-take2-opus-4-8`, `gpt-5.4-nano`, `haiku`,
+`local-domino-llm`, `nova`.
 
-```bash
-GATEWAY_BASE_URL=https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1 \
-  bash spikes/domino-probes/gateway_models_probe.sh
+A panel fed from `/api/aliases` alone would offer **twice** the models that actually work.
+This is the data-source permission lesson again, now with a 2:1 ratio.
+
+**The clean recipe — and it is simpler than intersecting id sets:**
+
+```
+GET /v1/models    -> the accessible set (already filtered for this caller)
+GET /api/aliases  -> enrich each by name: capabilities, effective_costs,
+                     display_name, provider_type, status
+join on id/name
 ```
 
-If `qwen-2-5`, `bedrock-qwen3-coder` and `sonnet` appear there, nothing is wrong and the
-two deployments simply differ. If they do not, then whichever gateway a given Sage instance
-points at determines whether three of four model tiers resolve — and a workspace whose env
-points at the 4-alias gateway would fail on the sovereign, implement, and ask slots.
+`/api/aliases/accessible` (`{accessible_ids, byot_alias_ids}`) is then only needed if you
+want the BYOT distinction, since `/v1/models` already encodes accessibility.
+
+### Providers — the hosted-endpoint path is visible, and it has two shapes
+
+`GET /api/providers` returned **6**:
+
+| name | provider_type |
+|------|---------------|
+| `ANTHROPIC_API_KEY` | `anthropic` |
+| `anthropic-etan` | `anthropic` |
+| `bedrock` | `bedrock` |
+| `openai_rnd` | `openai` |
+| **`Domino Platform`** | **`domino_platform`** |
+| **`qwen-2-5-14b`** | **`vllm`** |
+
+So a Domino-hosted model enters the gateway as a `domino_platform` or `vllm` provider. Note
+the second provider's name — `qwen-2-5-14b` — is exactly the
+`modelSource.registeredModel.modelName` of the one **`Running`** hosted GenAI endpoint found
+earlier. The registration flow is not theoretical here; it is in use.
+
+### FLAG — Sage's sovereign tier appears to ride a hosted endpoint
+
+The aliases `qwen-2-5` and `local-domino-llm` both carry `provider_type: domino_platform`,
+and `qwen-2-5` is Sage's alias for **all three sovereign slots**. Combined with the `vllm`
+provider named `qwen-2-5-14b`, this points to Sage's sovereign guarantee being served by an
+in-cluster vLLM endpoint rather than an external provider — which is the sovereign story
+made concrete (see `SPIKE-REPORT.md`).
+
+Worth confirming, because of the operational consequence: of 18 hosted GenAI endpoints,
+**exactly 1 was `Running`**, and it lives in a project Sage does not own
+(`IT-Triage-NVIDIA-Agents`). If Sage's sovereign tier depends on that endpoint staying up,
+someone else stopping it breaks the sovereign path. Confirm by reading the `config` and
+`endpoint_url` of the `qwen-2-5` alias and the `qwen-2-5-14b` provider
+(`GET /api/aliases/{alias_id}`), then decide whether Sage needs its own endpoint.
 
 ### What direct calls established anyway — still useful at REGISTRATION time
 
