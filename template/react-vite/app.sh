@@ -40,10 +40,16 @@ stage "data rehydrated"
 npm run build
 stage "build complete"
 
-# Serve the build from dist/ on the port + host Domino's app proxy expects. Domino strips the app's
-# mount prefix, so the built app's relative "./assets" URLs resolve against this root-served build —
-# which is what the replaced `vite preview --base /` was for. Stdlib-only Python, so `python3` is
-# whatever the image ships (same as the viewer-identity probe's app.sh); nothing to install.
+# Serve the build from dist/ on the port + host Domino's app proxy expects. The proxy strips the app's
+# mount prefix BEFORE the request reaches this container, so the server serves at root — that is what
+# the replaced `vite preview --base /` was for, and why serve.py needs no prefix of its own.
+#
+# The BROWSER still sees the prefix: a published app is framed at
+# apps.<domain>/apps-internal/<app-id>/ (measured 2026-08-19). That is why the build base stays
+# relative and must NOT become "/": an absolute base would ask the apps host for /assets/... with no
+# app id in the path, breaking every route including the root page. Relative still fails at two or
+# more route segments — see #18. Stdlib-only Python, so `python3` is whatever the image ships (same as
+# the viewer-identity probe's app.sh); nothing to install.
 #
 # CAREFUL when the query API lands on top of this (#13/#14): the PATH line above, which exists to
 # beat conda's node, also puts /usr/bin/python3 ahead of the conda interpreter that carries
