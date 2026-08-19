@@ -46,7 +46,10 @@ injects the real secret server-side.
   (confirmed by the user, 2026-08-18). This was the one prerequisite that could have
   invalidated this decision after work began, since without it the Flight query path has no
   credential. `spikes/domino-probes/viewer_identity_app/` remains available to re-check it
-  against a future Domino version.
+  against a future Domino version. Re-confirmed from inside a Sage-published Built App on
+  2026-08-19, by `serve.py`'s startup probe rather than by a separate spike: `[sage] token
+  sidecar: reachable at http://localhost:8899/access-token (1830 chars)`. The probe reports only
+  the length, never the token — an App's log is readable by anyone who can see the deployment.
 
 ## Cold start
 
@@ -57,15 +60,17 @@ install or build stages; the last stage went from booting Vite's preview server 
 `app.sh` exports `SAGE_APP_T0` and logs each stage as it finishes; `serve.py` logs the total as one
 greppable line once it holds the port, so a regression is visible in any App's log:
 
-    [sage] dependencies installed (+38s)
-    [sage] data rehydrated (+38s)
-    [sage] build complete (+52s)
+    [sage] dependencies installed (+8s)
+    [sage] data rehydrated (+8s)
+    [sage] build complete (+12s)
     [sage] serving /mnt/code/dist on 0.0.0.0:8888
-    [sage] cold start: 52s to serving /mnt/code/dist
+    [sage] cold start: 13s to serving /mnt/code/dist
+    [sage] token sidecar: reachable at http://localhost:8899/access-token (1830 chars)
 
 | Date | Serving process | Total | Notes |
 |------|-----------------|-------|-------|
+| 2026-08-19 | `serve.py` (stdlib) | 13s | First publish after the swap. Warm template deps: `npm ci` finished at +8s. `vite build` 195ms of the +4s build stage; the rest is `tsc -b`. |
 
-No baseline is recorded yet. Take the total from the App log of the first publish after this change
+Take the total from the App log of the first publish after this change
 and add a row, then compare later publishes against it — the per-stage lines say which stage owns
 any increase.
