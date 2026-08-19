@@ -47,9 +47,10 @@ stage "build complete"
 # The BROWSER still sees the prefix: a published app is framed at
 # apps.<domain>/apps-internal/<app-id>/ (measured 2026-08-19). That is why the build base stays
 # relative and must NOT become "/": an absolute base would ask the apps host for /assets/... with no
-# app id in the path, breaking every route including the root page. Relative still fails at two or
-# more route segments — see #18. Stdlib-only Python, so `python3` is whatever the image ships (same as
-# the viewer-identity probe's app.sh); nothing to install.
+# app id in the path, breaking every route including the root page. Relative alone was not enough
+# either — it broke any route two or more segments deep (#18) — so serve.py recovers the prefix at
+# request time and stamps a <base href> into the page it serves. Stdlib-only Python, so `python3` is
+# whatever the image ships (same as the viewer-identity probe's app.sh); nothing to install.
 #
 # CAREFUL when the query API lands on top of this (#13/#14): the PATH line above, which exists to
 # beat conda's node, also puts /usr/bin/python3 ahead of the conda interpreter that carries

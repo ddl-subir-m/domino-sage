@@ -15,8 +15,10 @@ python3 is whichever one the image ships, so a dependency here is one we cannot 
 from __future__ import annotations
 
 import argparse
+import json
 import mimetypes
 import os
+import re
 import threading
 import time
 import urllib.request
@@ -24,6 +26,7 @@ from collections.abc import Iterable
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -132,6 +135,52 @@ def _claim_dump() -> bool:
         return True
 
 
+# --- mount-prefix shim (#18) --------------------------------------------------------------------
+# The proxy strips the app's mount prefix before the request arrives, so the build is served at root
+# while the viewer's URL still carries the prefix. That is why the build base is relative — and why a
+# route two or more segments deep asks for its assets one directory too deep and gets nothing.
+#
+# No header is needed to fix it, because the two halves of the answer sit on opposite sides of the
+# proxy: this server knows the path it RECEIVED, the browser knows the path it IS ON, and the
+# difference is the prefix. Stamp the received path into the page and let a shim subtract:
+#
+#     received /reports/2026    on /apps/uuid/reports/2026    ->  prefix /apps/uuid
+#
+# The shim then writes <base href="/apps/uuid/"> before any module script is parsed, which fixes every
+# relative asset URL at any depth, and publishes the prefix as window.__SAGE_BASE__ for the router's
+# basename — routing is the other half of the same bug: without it, react-router matches the viewer's
+# full path against routes that were written without the prefix.
+#
+# Deployment-agnostic on purpose: the prefix is not one shape per deployment. `/apps/{uuid}/`,
+# `/apps-internal/{id}/` and `/u/{owner}/{project}/app/` all reach the same app, so it is a property of
+# the link the viewer clicked and nothing decided at build time can be right for all of them.
+#
+# When the subtraction does not hold — no prefix at all, or the received path is not a suffix of the
+# browser's — the shim writes no base and leaves today's relative behaviour untouched.
+_BASE_SHIM = (
+    "<script>/* sage: recover the mount prefix the app proxy stripped */(function(){"
+    "var s={served};var h=location.pathname;var p=h.slice(0,h.length-s.length);"
+    'if(h.slice(p.length)!==s){window.__SAGE_BASE__="";return}'
+    "window.__SAGE_BASE__=p;"
+    "document.write('<base href=\"'+p+'/\">')"
+    "})();</script>"
+)
+_HEAD_OPEN = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
+
+
+def inject_base_shim(html: str, received_path: str) -> str:
+    """`html` with the shim as the first thing in <head>, carrying the path this server received.
+
+    First in <head> because `document.write` inserts at the parser's position: the <base> has to land
+    before the <script src> and <link href> tags whose URLs it governs.
+    """
+    shim = _BASE_SHIM.replace("{served}", json.dumps(received_path))
+    m = _HEAD_OPEN.search(html)
+    if m:
+        return html[: m.end()] + shim + html[m.end() :]
+    return shim + html  # no <head> to aim at, but still ahead of every tag that resolves a URL
+
+
 class _Handler(SimpleHTTPRequestHandler):
     """Static handler for a Vite build: SPA fallback, pinned content types, no directory listings.
 
@@ -158,8 +207,41 @@ class _Handler(SimpleHTTPRequestHandler):
 
     def send_head(self):
         self._maybe_dump_headers()
+        # Before the SPA rewrite, so this is the path that ARRIVED — and still percent-encoded,
+        # because the shim subtracts it from location.pathname, which is encoded too.
+        received = urlsplit(self.path).path
         self._resolve_spa_route()
+        index = self._index_html_target()
+        if index is not None:
+            return self._send_patched_index(index, received)
         return super().send_head()
+
+    def _index_html_target(self) -> Path | None:
+        """The index.html that will answer this request, or None if a plain file will.
+
+        Two paths lead to it and both need the shim: the SPA rewrite points a route at /index.html,
+        and a directory URL — "/" above all — is answered with that directory's index by
+        SimpleHTTPRequestHandler without any rewrite of ours.
+        """
+        target = Path(self.translate_path(urlsplit(self.path).path))
+        if target.is_dir():
+            target = target / "index.html"
+        return target if target.name == "index.html" and target.is_file() else None
+
+    def _send_patched_index(self, index: Path, received: str):
+        """index.html with the mount-prefix shim. Built in memory rather than streamed from disk, so
+        the Content-Length counts the shim."""
+        try:
+            html = index.read_text(encoding="utf-8")
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return None
+        body = inject_base_shim(html, received).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return BytesIO(body)
 
     def send_response_only(self, code, message=None):
         self._status = int(code)  # end_headers needs it; the base class keeps no record

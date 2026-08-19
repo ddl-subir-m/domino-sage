@@ -136,9 +136,23 @@ Import these directly. They are already installed; nothing else is, and nothing 
 |---------|-----------|
 | `react`, `react-dom` | Everything. Plain React + CSS is still the default. |
 | `recharts` | Charts. Line, area, bar, pie. Feed it the design tokens for colors — don't take its defaults. |
-| `react-router-dom` | More than one view. A single-screen app does not need it. |
+| `react-router-dom` | More than one view. A single-screen app does not need it. **Give the router a basename** — see below. |
 | `date-fns` | Formatting, parsing and date ranges. Import per function (`import { format } from 'date-fns'`). |
 | `lucide-react` | Icons. Size them in `em` so they scale with their text. |
+
+### Routing: the basename is not optional
+A published app is served under a path that its own code cannot know at build time. `src/sageBase.ts`
+works it out at runtime, so pass it to the router:
+
+```tsx
+import { BrowserRouter } from "react-router-dom";
+import { sageBase } from "./sageBase";
+
+<BrowserRouter basename={sageBase}>
+```
+
+Leave it out and the app works in the preview and shows a blank page once published, because the
+router matches the viewer's full path against routes you wrote without the prefix.
 
 There is no UI component kit — no Ant Design, no MUI, no Tailwind. Build components yourself from
 the design tokens in `src/index.css`, the way `src/examples/StatCard.tsx` does. If a request seems

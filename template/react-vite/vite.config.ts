@@ -8,8 +8,12 @@ import { defineConfig } from "vite";
 //     the browser uses so Vite bakes correct asset/HMR URLs; with a prefix, HMR dials back through
 //     Domino's TLS termination (wss on 443 at that same path).
 //   build (published Domino App, Phase 5) — behind Domino's APP proxy at a prefix NOT known at
-//     build time. Domino Apps are expected to use relative URLs, so use a relative `base` and let
-//     the browser resolve assets under whatever path the App is mounted at.
+//     build time, and not even fixed per deployment: the same app answers under /apps/<uuid>/,
+//     /apps-internal/<id>/ and /u/<owner>/<project>/app/, so it depends on the link the viewer
+//     clicked. Hence a relative `base`. Relative resolves against the page's DIRECTORY, so on a route
+//     two segments deep it asked one directory too deep (#18); `serve.py` fixes that at request time
+//     by stamping a <base href> into index.html — see the mount-prefix shim there, and `sageBase.ts`
+//     for the router half of the same problem.
 //
 //   - host true         -> reachable from the proxy inside the container
 //   - allowedHosts true -> accept the proxy's Host header

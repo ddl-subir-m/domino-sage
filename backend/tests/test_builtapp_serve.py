@@ -39,7 +39,12 @@ def dist(tmp_path: Path) -> Path:
     d = tmp_path / "dist"
     (d / "assets").mkdir(parents=True)
     (d / "data").mkdir()
-    (d / "index.html").write_text('<!doctype html><div id="root">APP</div>')
+    (d / "index.html").write_text(
+        '<!doctype html><html><head><meta charset="utf-8"><title>app</title></head>'
+        '<body><div id="root">APP</div>'
+        '<script type="module" crossorigin src="./assets/index-abc123.js"></script>'
+        "</body></html>"
+    )
     (d / "assets" / "index-abc123.js").write_text("export const x = 1;\n")
     (d / "assets" / "index-abc123.css").write_text(":root{--accent:#543FDE}")
     (d / "favicon.svg").write_text("<svg/>")
@@ -105,18 +110,59 @@ def test_client_side_route_falls_back_to_index(dist: Path):
     assert 'id="root"' in r.text
 
 
-def test_a_route_deeper_than_one_segment_still_cannot_load_its_assets(dist: Path):
-    # NOT a property of this server — of the relative build base (vite.config.ts `base: "./"`). The
-    # index.html it hands back says src="./assets/…", which the browser resolves against /reports/,
-    # so the asset request arrives one directory too deep and misses. `vite preview` answered that
-    # same request with index.html at 200, which the browser then parsed as a JS module: both serve a
-    # blank page, and a 404 at least names the file. Pinned here so the limitation is visible to
-    # whoever fixes it (it needs a <base href> or an absolute build base, not a fallback tweak).
+def test_a_deep_route_gets_a_base_href_so_its_assets_resolve(dist: Path):
+    # The bug this fixes (#18): the build base is relative (`vite.config.ts` `base: "./"`), so
+    # `src="./assets/…"` on a page at /apps/uuid/reports/2026 resolved against /apps/uuid/reports/
+    # and asked one directory too deep. The shim gives the page a <base href> instead, so the browser
+    # asks for the same URL it asks for at the root.
     with running(dist) as base:
         page = httpx.get(base + "/reports/2026")
-        asset = httpx.get(base + "/reports/assets/index-abc123.js")
-    assert page.status_code == 200  # the route itself resolves
-    assert asset.status_code == 404  # but its assets do not
+        asset = httpx.get(base + "/assets/index-abc123.js")
+    assert page.status_code == 200
+    assert '"/reports/2026"' in page.text  # the path this server received, for the shim to subtract
+    assert asset.status_code == 200
+
+
+def test_the_shim_is_the_first_thing_in_head(dist: Path):
+    # `document.write` inserts at the parser's position, so the <base> only governs the asset URLs
+    # if the shim runs before the tags that carry them.
+    with running(dist) as base:
+        body = httpx.get(base + "/").text
+    assert body.index("__SAGE_BASE__") < body.index("index-abc123.js")
+    assert body.index("<head") < body.index("__SAGE_BASE__")
+
+
+def test_the_shim_records_the_path_before_the_spa_rewrite(dist: Path):
+    # /reports/2026 is answered WITH index.html, so by the time the file is read `self.path` says
+    # /index.html. Stamping that would make every prefix subtract to the wrong thing.
+    with running(dist) as base:
+        deep = httpx.get(base + "/a/b/c").text
+        query = httpx.get(base + "/reports?year=2026").text
+    assert '"/a/b/c"' in deep
+    assert '"/reports"' in query  # the query string is not part of the path being subtracted
+
+
+def test_the_shim_quotes_a_path_that_could_break_out_of_its_string():
+    # The received path reaches the page as a JS string literal. A quote or a backslash in it must
+    # not end that literal early, or the shim becomes a place to inject script.
+    out = serve.inject_base_shim("<head></head>", '/a"b\\c')
+    assert 'var s="/a\\"b\\\\c"' in out
+    assert out.count("<script>") == 1
+
+
+def test_the_shim_still_precedes_every_url_when_there_is_no_head():
+    out = serve.inject_base_shim('<div id="root"></div><script src="./x.js"></script>', "/")
+    assert out.index("__SAGE_BASE__") < out.index("./x.js")
+
+
+def test_head_and_get_agree_on_the_length_of_the_patched_page(dist: Path):
+    # index.html is built in memory now, so a Content-Length copied from the file on disk would be
+    # short by the length of the shim and the browser would truncate the page.
+    with running(dist) as base:
+        got = httpx.get(base + "/")
+        head = httpx.head(base + "/")
+    assert head.headers["content-length"] == str(len(got.content))
+    assert head.content == b""
 
 
 def test_missing_asset_is_a_404_not_the_index_page(dist: Path):
