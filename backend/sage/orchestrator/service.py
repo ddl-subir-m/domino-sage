@@ -33,6 +33,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
+from ..resources.provider import FakeResourceProvider, ResourceProvider
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
@@ -893,6 +894,7 @@ class Orchestrator:
         opencode_cwd: Path | None = None,
         feedback: FeedbackRunner | None = None,
         assets: AssetProvider | None = None,
+        resources: ResourceProvider | None = None,
         sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG,
         domino_project_id: str | None = None,
         control_plane: ControlPlane | None = None,
@@ -908,6 +910,7 @@ class Orchestrator:
         self._gateway = gateway
         self._catalog = catalog
         self._assets = assets or FakeAssetProvider()
+        self._resources = resources or FakeResourceProvider()
         self._sensitivity_tag = sensitivity_tag
         # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
         # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
@@ -2524,6 +2527,24 @@ class Orchestrator:
                 "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
             }
             for a in self._assets.list_datasets(self._domino_project_id)
+        ]
+
+    def list_llm_aliases(self) -> list[dict]:
+        """LLM Aliases this caller can actually call, shaped for the Resource Browser (#5).
+
+        The provider has already intersected the accessible model ids with the registered aliases,
+        so everything returned here is pickable — a row never needs a "you may not use this" state.
+        """
+        return [
+            {
+                "id": a.id,
+                "name": a.name,
+                "display_name": a.display_name,
+                "description": a.description,
+                "capabilities": a.capabilities,
+                "costs": a.costs,
+            }
+            for a in self._resources.list_llm_aliases()
         ]
 
     def _find_asset(self, dataset_id: str) -> Asset:

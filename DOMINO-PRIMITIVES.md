@@ -97,6 +97,31 @@ Three of these are panel-grade and were not anticipated:
 - **`display_name`** — a real human label. Note the contrast with hosted GenAI endpoints,
   where `displayName` was the connector *type*, not a name.
 
+### VERIFIED — what `capabilities` and `effective_costs` actually contain
+
+Both fields were named above but never opened. Probed on Sage's own gateway (2026-08-19, all 12
+registrations), building the Resource Browser's LLM Alias rows (#5):
+
+**`effective_costs` is a flat `{"input": float, "output": float}` map** — not nested, not
+per-token-class. No unit is reported anywhere in the record.
+
+**The unit is evidenced, not documented.** `sonnet` reads `3 / 15`, `opus` `5 / 25`, `gpt-5.4`
+`2.5 / 15` — the vendors' published **USD per 1M tokens**. That is strong enough to read the
+numbers by, and too weak to print a currency next to.
+
+**`{"input": 1.0, "output": 2.0}` is the gateway falling back, not a price.** Six unrelated
+aliases report exactly that (`bedrock-qwen3-coder`, `qwen-2-5`, `gpt-5.4-nano`, `haiku`,
+`local-domino-llm`, `nova`). `cost_mode` is `"default"` on **all 12**, so it cannot tell a set
+rate from an unset one, and value-matching `{1, 2}` would guess. Sage shows the numbers verbatim
+and points the tooltip at the gateway's Usage & cost dashboard, which prices real calls.
+
+**`capabilities` is less discriminating than it looks.** `streaming` and `responses` appear on
+**12 of 12**, so they separate nothing; `chat` and `tools` on almost all; only `vision` (1) and
+`embeddings` actually pick a model out. A capability chip is worth showing, but it is not a filter.
+
+Two smaller shapes a row has to survive: `display_name` often equals `name` (`bedrock-qwen3-coder`),
+and `description` is often `""` — or a copy of the name (`gpt-5.4`).
+
 ### Providers — how Domino-hosted models get in
 
 `GET /api/providers` returned 2, and the first confirms the registration flow:

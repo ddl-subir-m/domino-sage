@@ -42,6 +42,7 @@ from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..preview.prefix import domino_base_prefix, domino_project_label
 from ..preview.proxy import make_preview_app
+from ..resources.provider import DominoResourceProvider, FakeResourceProvider, ResourceUnavailable
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from .service import AttachTooLarge, DataReferenced, Orchestrator, UploadUnavailable
@@ -187,6 +188,20 @@ def _gateway_ui_url(project_label: str | None) -> str | None:
     return f"{root}/#mine?range=30d&breakdown=tag:sage-phase&tag={tag}"
 
 
+def _build_resources():
+    """LLM Aliases from the Domino LLM Gateway when Sage is pointed at one, else an in-memory fake.
+
+    Keyed on the gateway MODE, not on the URL alone: `openai` mode has no Domino gateway at all
+    (each model routes to its own vendor), so asking a control plane there would 404.
+    """
+    base = os.environ.get("GATEWAY_BASE_URL", "").strip()
+    if GATEWAY_MODE != "domino" or not base:
+        return FakeResourceProvider()
+    key = os.environ.get("GATEWAY_API_KEY", "")
+    token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    return DominoResourceProvider(base, token)
+
+
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 orchestrator = Orchestrator(
     workspace_dir=_WORKSPACE_DIR,
@@ -196,6 +211,7 @@ orchestrator = Orchestrator(
     project_id=os.environ.get("DOMINO_PROJECT_NAME", _WORKSPACE_DIR.name),
     opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
     assets=_build_assets(),
+    resources=_build_resources(),
     sensitivity_tag=os.environ.get("SAGE_SENSITIVITY_TAG", DEFAULT_SENSITIVITY_TAG),
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
     control_plane=_build_control_plane(),
@@ -575,6 +591,19 @@ def list_assets() -> dict:
         "sensitivity_tag": orchestrator._sensitivity_tag,
         "default_dataset_id": orchestrator.default_dataset_id(),
     }
+
+
+@control_app.get("/api/resources")
+def list_resources() -> JSONResponse:
+    """Domino Resources this caller can pick. LLM Aliases first (#5); other kinds join this payload.
+
+    A gateway that won't answer is a 502 with a readable reason rather than an empty list, so the
+    rail can say "the gateway is not answering" instead of "you have no models".
+    """
+    try:
+        return JSONResponse(content={"llm_aliases": orchestrator.list_llm_aliases()})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @control_app.get("/api/project/assets/{dataset_id}/files")
