@@ -20,6 +20,7 @@ import os
 import threading
 import time
 import urllib.request
+from collections.abc import Iterable
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -79,6 +80,58 @@ def probe_token_sidecar(url: str, timeout: float = 5.0) -> str:
     return f"reachable at {url} ({length} chars)"
 
 
+# --- mount-prefix probe (#18) -------------------------------------------------------------------
+# Domino's app proxy strips the app's mount prefix before the request reaches this container, so the
+# build it serves knows nothing about the URL the viewer is on. That is why the build base is relative,
+# and why a route two or more segments deep cannot resolve its assets. Worse, the prefix is not even
+# one shape per deployment — the same app answers under several (`/apps/{uuid}/`,
+# `/apps-internal/{id}/`, `/u/{owner}/{project}/app/`), so no build-time base can be right for every
+# link a viewer might follow.
+#
+# A forwarded-prefix header would settle it: this server could inject a <base href> and keep clean
+# URLs. Nobody has seen the headers a published App actually receives, so dump them once and find out.
+# Off by default, because the dump prints header VALUES and an App's log is readable by anyone who can
+# see the deployment.
+_OFF = ("", "0", "false", "no", "off")
+_SECRET_HEADERS = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-domino-api-key", "x-domino-jwt"}
+)
+# A budget rather than a single dump: the first request to arrive is not necessarily a viewer's. A
+# platform health check on the app port — or, as happened while testing this, serve.py's own sidecar
+# probe when the ports collide — would otherwise consume the one dump and teach us nothing. Every
+# request from the same page load carries the same forwarded headers, so a few is plenty, and a few is
+# still a bounded number of lines once per boot.
+_DUMP_BUDGET = 5
+_dumps_left = _DUMP_BUDGET
+_dump_lock = threading.Lock()
+
+
+def debug_headers_enabled() -> bool:
+    return (os.environ.get("SAGE_DEBUG_HEADERS") or "").strip().lower() not in _OFF
+
+
+def redacted_header_lines(items: Iterable[tuple[str, str]]) -> list[str]:
+    """Header lines for the log, credentials replaced by their length.
+
+    Length rather than nothing: it keeps "the header was absent" and "the header was there and we
+    withheld it" apart, which is the difference between an unauthenticated request and a redaction.
+    """
+    return [
+        f"{name}: <withheld, {len(value)} chars>" if name.lower() in _SECRET_HEADERS else f"{name}: {value}"
+        for name, value in items
+    ]
+
+
+def _claim_dump() -> bool:
+    """True for the first `_DUMP_BUDGET` callers. The server is threaded, so this has to be atomic."""
+    global _dumps_left
+    with _dump_lock:
+        if _dumps_left <= 0:
+            return False
+        _dumps_left -= 1
+        return True
+
+
 class _Handler(SimpleHTTPRequestHandler):
     """Static handler for a Vite build: SPA fallback, pinned content types, no directory listings.
 
@@ -104,6 +157,7 @@ class _Handler(SimpleHTTPRequestHandler):
         return f"{ctype}; charset=utf-8" if ctype.startswith(_TEXTUAL) else ctype
 
     def send_head(self):
+        self._maybe_dump_headers()
         self._resolve_spa_route()
         return super().send_head()
 
@@ -139,6 +193,20 @@ class _Handler(SimpleHTTPRequestHandler):
         # Reaping an idle keep-alive connection is the timeout above doing its job, not a fault.
         if not str(fmt).startswith("Request timed out"):
             self.log_message(fmt, *args)
+
+    def _maybe_dump_headers(self) -> None:
+        """Dump an early request's headers, if asked. See the mount-prefix probe note above.
+
+        Logged BEFORE the SPA rewrite, so the path is the one that arrived — the value that has to be
+        compared with the browser's URL to see what the proxy took off.
+        """
+        if not debug_headers_enabled() or not _claim_dump():
+            return
+        self.log_message("--- request as this container saw it (SAGE_DEBUG_HEADERS) ---")
+        self.log_message("%s", self.requestline)
+        for line in redacted_header_lines(self.headers.items()):
+            self.log_message("  %s", line)
+        self.log_message("--- end of dump; #18 wants a header carrying the browser-side prefix ---")
 
     def _resolve_spa_route(self) -> None:
         """Rewrite an unmatched extensionless path to index.html, as Vite's html fallback does.

@@ -248,3 +248,94 @@ def test_sidecar_url_prefers_the_injected_proxy_address(monkeypatch: pytest.Monk
 def test_sidecar_url_falls_back_to_the_documented_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DOMINO_API_PROXY", raising=False)
     assert serve.sidecar_url() == "http://localhost:8899/access-token"
+
+
+# --- mount-prefix probe (#18: is the browser-side prefix recoverable from a request header?) -----
+
+
+@pytest.fixture
+def probe_unfired(monkeypatch: pytest.MonkeyPatch):
+    """The dump budget is per process, so a test that wants it has to refill it first."""
+    monkeypatch.setattr(serve, "_dumps_left", serve._DUMP_BUDGET)
+
+
+def test_the_probe_is_off_unless_it_is_asked_for(monkeypatch: pytest.MonkeyPatch):
+    # Default-off matters: the dump prints header values, and an App's log is readable by anyone who
+    # can see the deployment.
+    monkeypatch.delenv("SAGE_DEBUG_HEADERS", raising=False)
+    assert serve.debug_headers_enabled() is False
+    for off in ("", "  ", "0", "false", "FALSE", "no"):
+        monkeypatch.setenv("SAGE_DEBUG_HEADERS", off)
+        assert serve.debug_headers_enabled() is False, off
+    for on in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("SAGE_DEBUG_HEADERS", on)
+        assert serve.debug_headers_enabled() is True, on
+
+
+def test_the_probe_withholds_credentials_but_keeps_their_length():
+    lines = serve.redacted_header_lines(
+        [
+            ("Host", "apps.cloud-dogfood.domino.tech"),
+            ("X-Forwarded-Prefix", "/apps/bda1c28f/"),
+            ("Cookie", "session=SUPERSECRET; other=1"),
+            ("Authorization", "Bearer eyJhbGciOi.SUPERSECRET.sig"),
+            ("X-Domino-Jwt", "SUPERSECRET"),
+        ]
+    )
+    joined = "\n".join(lines)
+    assert "SUPERSECRET" not in joined
+    assert "apps.cloud-dogfood.domino.tech" in joined  # the ones we are here to read survive
+    assert "/apps/bda1c28f/" in joined
+    assert "<withheld, 28 chars>" in joined  # the Cookie's length, so a missing one is distinguishable
+    assert joined.count("<withheld") == 3
+
+
+def test_the_probe_dumps_a_forwarded_prefix_header_when_one_arrives(
+    dist: Path, probe_unfired, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    # The whole point of #18: if Domino forwards the browser-side mount prefix in a header, serve.py
+    # can inject a <base href> and the app keeps clean URLs instead of falling back to a hash router.
+    monkeypatch.setenv("SAGE_DEBUG_HEADERS", "1")
+    with running(dist) as base:
+        r = httpx.get(base + "/reports/2026", headers={"X-Forwarded-Prefix": "/apps/bda1c28f/"})
+    assert r.status_code == 200
+    out = capsys.readouterr().out
+    assert "x-forwarded-prefix: /apps/bda1c28f/" in out.lower()
+    # The path as it ARRIVED, before the SPA rewrite — that is what has to be compared with the
+    # browser's URL to see what the proxy stripped.
+    assert "GET /reports/2026" in out
+
+
+def test_the_probe_stops_after_its_budget_rather_than_dumping_every_request(
+    dist: Path, probe_unfired, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    # Bounded, so leaving the flag on cannot fill the App log. More than one, so a platform health
+    # check on the app port cannot consume the only dump before a viewer arrives.
+    monkeypatch.setenv("SAGE_DEBUG_HEADERS", "1")
+    with running(dist) as base:
+        for _ in range(serve._DUMP_BUDGET + 3):
+            httpx.get(base + "/assets/index-abc123.js")
+    assert capsys.readouterr().out.count("as this container saw it") == serve._DUMP_BUDGET
+
+
+def test_a_health_check_does_not_use_up_the_viewer_s_dump(
+    dist: Path, probe_unfired, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setenv("SAGE_DEBUG_HEADERS", "1")
+    with running(dist) as base:
+        httpx.get(base + "/", headers={"User-Agent": "kube-probe/1.29"})
+        httpx.get(base + "/reports", headers={"X-Forwarded-Prefix": "/apps/bda1c28f/"})
+    out = capsys.readouterr().out
+    assert "kube-probe/1.29" in out
+    assert "/apps/bda1c28f/" in out  # the one we are actually here for still got dumped
+
+
+def test_nothing_is_dumped_when_the_flag_is_absent(
+    dist: Path, probe_unfired, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.delenv("SAGE_DEBUG_HEADERS", raising=False)
+    with running(dist) as base:
+        httpx.get(base + "/", headers={"Cookie": "session=SUPERSECRET"})
+    out = capsys.readouterr().out
+    assert "as this container saw it" not in out
+    assert "SUPERSECRET" not in out
