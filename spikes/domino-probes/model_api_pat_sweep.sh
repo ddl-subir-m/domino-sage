@@ -19,7 +19,13 @@
 set -u
 
 M=${MODEL_URL:-https://cloud-dogfood.domino.tech/models/6a8727f40ff0450030085fb3/latest/model}
-D=${MODEL_BODY:-'{"data":{"start":1,"stop":100}}'}
+# Matches spikes/domino-probes/model.py — predict(score). Domino's own sample snippet sends
+# {"start":1,"stop":100} instead, which is BOILERPLATE rather than anything read off the deployed
+# function, so it 400s against a model that does not happen to take start and stop.
+D=${MODEL_BODY:-'{"data":{"score":0.9}}'}
+
+# READ THE CODES CAREFULLY. 401 is refused at the door. 400 is the opposite result: the credential
+# was ACCEPTED and the model itself rejected the body. A 400 here is a pass, not a failure.
 
 code() { curl -sS -o /dev/null -w '%{http_code}' -m 20 -X POST "$M" -H 'Content-Type: application/json' -d "$D" "$@"; }
 
@@ -75,5 +81,6 @@ fi
 [ "$found" = 1 ] || echo "  (nothing found — run as: DOMINO_PAT=... $0)"
 
 echo
-echo "200 anywhere = serve.py can mint its own credential and the manual paste disappears."
-echo "All 401     = the model access token is the only key that opens a Model API."
+echo "200 or 400 anywhere = that credential AUTHENTICATED (400 just means the body was wrong),"
+echo "                      so serve.py could mint its own and the manual paste disappears."
+echo "All 401             = the model access token is the only key that opens a Model API."

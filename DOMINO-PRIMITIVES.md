@@ -399,7 +399,17 @@ strictly better on every axis that survives.
 **Neither path is automatable today.** There is no model-access-token endpoint in either spec —
 not in `public-api.json`, not in the v4 swagger. (`/modelDeployments/{id}/credentials` is the
 SageMaker STS one, unrelated.) The token is copied by hand from the model's Overview page, so any
-generated Model API call needs the creator to paste a secret into Sage first. A first pass at the
+generated Model API call needs the creator to paste a secret into Sage first. **Confirmed end to end, 2026-08-20:** `Basic base64(token:token)` with the model's own access
+token returns **200** with a real result. The same token as `Bearer`, as `X-Domino-Api-Key`, and
+as Basic with an empty username all return **401** — so the endpoint accepts exactly one
+credential in exactly one shape.
+
+Read the codes carefully when probing this: **401 is refused at the door, 400 is authenticated**
+and means only that the model disliked the body. A 400 is a pass. Domino's sample snippet sends
+`{"data":{"start":1,"stop":100}}`, which 400s against any model that does not take `start` and
+`stop`, and that is worth its own note below.
+
+A first pass at the
 automatable alternative failed: `Authorization: Bearer <sidecar token>` and
 `X-Domino-Api-Key: <sidecar token>` both returned **401**. That is consistent with
 `www-authenticate: Basic`, but it is not yet conclusive — the sidecar can hand back a string that
@@ -413,3 +423,17 @@ What Sage records today — the Binding — is unaffected either way.
 Reopening this needs a **platform** change on the model ingress: echo the request `Origin` with
 `Access-Control-Allow-Credentials: true`, *and* accept a Domino session as a credential for model
 invocation. Both, not either.
+
+## The Model API sample snippet does not know the model's signature
+
+Domino's Overview page shows a ready-to-run snippet for every Model API. Its body is
+**boilerplate**: `{"data": {"start": 1, "stop": 100}}`, regardless of what the deployed function
+takes. Against `predict(score)` it returns
+`400 {"error":{"message":"predict() got an unexpected keyword argument 'start'"}}`.
+
+So the platform does not expose the input shape anywhere a caller can read it. The listing carries
+no schema (`source.file` and `source.function` only), the snippet carries a placeholder, and there
+is no signature endpoint. **Anything that generates a call to a Model API has to learn the input
+shape from the creator** — which is exactly the "creator pastes one sample request" design chosen
+for #9 before any of this was probed. That decision now has evidence behind it rather than being
+the least-bad guess.
