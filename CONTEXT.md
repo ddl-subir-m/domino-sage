@@ -67,6 +67,12 @@ Sage enumerates, never typed. A Binding may have none, which means the Resource 
 the part of it the app reads is not.
 _Avoid_: path, location, target, qualifier, selection
 
+**Named query**:
+A statement the app can run, declared by name in the Built App's own repo. The browser sends a name
+and parameter values, never SQL. The agent writes them during the build, so what a published app can
+ask its Data Source is fixed before anyone opens it.
+_Avoid_: query, endpoint, SQL, prepared statement
+
 **Attachment**:
 A file bound into the Built App, reachable by the app's code. A Binding may also produce an
 Attachment, but most do not.

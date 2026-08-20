@@ -10,6 +10,7 @@ Deep module, narrow interface: project / build / build_stream / shutdown.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import re
@@ -40,6 +41,9 @@ from ..resources.bindings import (
     Binding,
     parse_bindings,
 )
+from ..resources.bound_schema import SCHEMA_PATH, parse_schema, render_schema
+from ..resources.bound_schema import agents_block as data_agents_block
+from ..resources.builtapp import catalog_problems, serve_module, stranded_levels
 from ..resources.model_api_credentials import (
     Credential,
     CredentialRequired,
@@ -54,6 +58,7 @@ from ..resources.pinned_model_api import pinned_model_api
 from ..resources.pinned_model_api import render_config as render_model_api_config
 from ..resources.preflight import stale_bindings, stale_message, unresolved_slots
 from ..resources.provider import (
+    Column,
     DataSource,
     FakeResourceProvider,
     ResourceProvider,
@@ -1246,8 +1251,26 @@ class Orchestrator:
                 return
             yield from self._build_stream(prompt, mentions)
         finally:
+            self._recheck_app_data()
             self._clear_turn_baseline()
             self._turn_lock.release()
+
+    def _recheck_app_data(self) -> None:
+        """Re-derive what the agent is told about the app's data, now that the turn is over (#15).
+
+        This is where a catalog the agent just wrote gets checked. `serve.py` refuses a broken query
+        at app startup, which is after a publish and a cold start — running the same check here puts
+        the app's own sentence in front of the agent on its next turn, while the creator is still in
+        the conversation that produced it.
+
+        End of turn rather than during: the agent may write `.sage/queries.json` in several edits, and
+        a half-written catalog is not a problem to report. Best-effort — a project that cannot be
+        resolved has nothing to check, and this must never be what fails a build that worked.
+        """
+        try:
+            self._write_app_data(self.project())
+        except Exception:
+            log.exception("app data: could not re-check the query catalog")
 
     def _clear_turn_baseline(self) -> None:
         """Mark "no turn running" so _rebaseline_turn stops touching the baseline once the turn that
@@ -2111,6 +2134,7 @@ class Orchestrator:
         try:
             yield from self._approve_locked(answers, plan_edits)
         finally:
+            self._recheck_app_data()
             self._clear_turn_baseline()
             self._turn_lock.release()
 
@@ -2779,8 +2803,37 @@ class Orchestrator:
         # decides whether the scope recorded here reaches the store or has to be written into the SQL
         # (#14). Domino's own string, not the label — `connector` says "Snowflake" for every Snowflake
         # source, and only the type string keys a table.
-        return self._record(Binding(KIND_DATA_SOURCE, source.id, source.name, source.name, *parts,
-                                    source.connector_type))
+        binding = Binding(KIND_DATA_SOURCE, source.id, source.name, source.name, *parts,
+                          source.connector_type)
+        # The schema BEFORE the record, because recording is what re-renders what the agent is told
+        # and that render reads this file. One extra query at the end of a cascade the creator has
+        # just spent three on, and the last one they wait for.
+        self._write_bound_schema(source, binding)
+        return self._record(binding)
+
+    def _write_bound_schema(self, source: DataSource, binding: Binding) -> None:
+        """Read what the bound tables hold, once, and record it for the agent (#15).
+
+        Written even when nothing came back, and written on every re-bind. This file describes the
+        Binding beside it, so a Scope that moved to another schema must not leave the previous
+        schema's columns behind for the agent to write queries against.
+
+        A store that will not answer is not a failed bind. The Binding is the creator's decision and
+        it stands; what they lose is the column names, and the agent is told that in as many words
+        rather than left to guess at names. Same reason readiness degrades rather than blocking the
+        listing (#10).
+        """
+        columns: list[Column] = []
+        if binding.schema:      # columns live under a schema; a Scope that stopped above one has none
+            try:
+                columns = self._resources.list_columns(
+                    source, binding.database or "", binding.schema, binding.table or "")
+            except ResourceUnavailable as e:
+                log.info("bound schema: %s did not answer for columns — %s", source.name, e)
+            except Exception:
+                log.exception("bound schema: could not read columns for %s", source.name)
+        self._write_generated(self.project().workspace.path / SCHEMA_PATH,
+                              render_schema(binding, columns))
 
     # ---- Model access tokens, pasted once and remembered (#9) ----
 
@@ -3342,15 +3395,62 @@ class Orchestrator:
         self._splice_agents(project, self._MODEL_API_BEGIN, self._MODEL_API_END,
                             model_api_agents_block(api))
 
-    def _write_app_resources(self, project: Project) -> None:
-        """Both pinned-Resource writers, then one baseline move for the pair.
+    _DATA_BEGIN = "<!-- sage:app-data:begin -->"
+    _DATA_END = "<!-- sage:app-data:end -->"
 
-        One entry point because a Binding change can move either pin, and because rebaselining once
-        per change keeps a mid-build bind from being counted as two separate writes by the agent.
+    def _write_app_data(self, project: Project) -> None:
+        """Tell the agent what the app's bound tables hold, and how to ask for them (#15).
+
+        Reads the schema back from `.sage/schema.json` rather than taking it as an argument, for the
+        same reason the two writers above re-read the manifest: what the agent is told has to be a
+        function of what is on disk. It is also what makes this callable at the end of every turn,
+        where re-reading the store would mean a warehouse round trip per turn.
+
+        The two things this cannot answer for itself — whether the Scope travels as configuration,
+        and which queries the app will refuse — come from the Built App's own `serve.py`, so Sage
+        cannot promise something the published app then rejects.
+        """
+        bindings = parse_bindings(project.workspace.read_bindings())
+        binding = next((b for b in bindings if b.kind == KIND_DATA_SOURCE), None)
+        schema_file = project.workspace.path / SCHEMA_PATH
+        if binding is None:
+            # An unbound Data Source leaves no columns behind. A schema describing a store this app no
+            # longer records would go on telling the agent to write queries against it.
+            schema_file.unlink(missing_ok=True)
+        else:
+            self._wm.ensure_query_helper()
+        template = self._wm.template
+        module = serve_module(template)
+        block = data_agents_block(
+            binding,
+            parse_schema(self._read_json(schema_file)),
+            stranded_levels(template, binding) if binding is not None else None,
+            catalog_problems(template, project.workspace.path),
+            getattr(module, "_DEFAULT_MAX_ROWS", 5000),
+        )
+        self._splice_agents(project, self._DATA_BEGIN, self._DATA_END, block)
+
+    def _write_app_resources(self, project: Project) -> None:
+        """Every pinned-Resource writer, then one baseline move for the set.
+
+        One entry point because a Binding change can move any of the pins, and because rebaselining
+        once per change keeps a mid-build bind from being counted as several separate writes by the
+        agent.
         """
         self._write_app_model(project)
         self._write_app_model_api(project)
+        self._write_app_data(project)
         self._rebaseline_turn(project)
+
+    @staticmethod
+    def _read_json(path: Path) -> object:
+        """A manifest's contents, or None when it is absent or unreadable. Unreadable reads as absent
+        on purpose: a stray comma in a generated file should cost the agent its column names, not the
+        whole turn."""
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _write_generated(path: Path, text: str) -> None:

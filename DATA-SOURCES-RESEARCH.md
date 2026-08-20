@@ -1167,3 +1167,30 @@ carry the level: refused unless the statement says where it reads.
 **LIVE-VERIFY.** Only Snowflake has been run for real, and only through the builder (#11's cascade).
 Nothing in this table has been exercised from inside a *published* App yet: `DOMINO_API_PROXY` is
 confirmed present there (ADR-0002), `DOMINO_DATASOURCE_PROXY_FLIGHT_HOST` is not.
+
+---
+
+## Addendum 5 — the fourth level: columns (#15)
+
+The cascade (#11) stops at tables. The agent writing an app's queries needs one level further down,
+so `SqlDialect` gained a `columns` statement — `INFORMATION_SCHEMA.COLUMNS`, selecting
+`TABLE_NAME`, `COLUMN_NAME`, `DATA_TYPE`, ordered by `ORDINAL_POSITION`.
+
+**One query for the whole Scope**, not one per table. The cascade measures ~3s a level against the
+live warehouse, so a schema of 200 tables would otherwise cost minutes at bind time. The statement
+takes an optional `AND TABLE_NAME = '…'` clause (`{table_clause}`) so the same statement narrows to
+one table when the creator picked one.
+
+**Same verification status as the rest of the table**: only Snowflake's has been run live, and it
+reuses the shape its `tables` statement already proved. The others are the standard
+`information_schema` form and are honest guesses, failing the same way — the connector's own error
+on that one level, not an empty answer.
+
+**Types are the store's own word** (`VARCHAR`, `NUMBER`, `TIMESTAMP_NTZ`), not normalised. The agent
+reads them to decide what a comparison should look like, and a tidied-up name would be Sage guessing
+on its behalf about a store it cannot see.
+
+**No rows, ever.** Names and types only. Sample data is production data in a model's context, and
+whether that is acceptable is the creator's explicit decision (#16) — the AGENTS.md region tells the
+agent not to read the store itself, which is what actually holds the line, since the agent has a
+shell and could otherwise go and look.

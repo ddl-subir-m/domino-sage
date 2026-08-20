@@ -40,6 +40,9 @@ _LLM_HELPER = str(Path("src") / "sageLlm.ts")
 # The same, for the Model API a Built App calls (#9). Separate file rather than more of sageLlm.ts:
 # the two call different hosts with different credentials, and only this one carries a secret.
 _MODEL_API_HELPER = str(Path("src") / "sageModelApi.ts")
+# And for the Data Source a Built App queries (#15). Separate again, and for a sharper reason than
+# the other two: this one calls the app's OWN server, which is the only Resource path that does.
+_QUERY_HELPER = str(Path("src") / "sageQuery.ts")
 
 
 @dataclass(frozen=True)
@@ -356,6 +359,12 @@ class WorkspaceManager:
         self._template = Path(template)
 
     @property
+    def template(self) -> Path:
+        """The warm template this manager seeds from. Read by the orchestrator so it can ask the
+        Built App's own `serve.py` what it will and will not run (#15)."""
+        return self._template
+
+    @property
     def path(self) -> Path:
         return self._dir
 
@@ -461,6 +470,10 @@ class WorkspaceManager:
     def ensure_model_api_helper(self) -> bool:
         """The same, for `src/sageModelApi.ts` (#9), and for projects seeded before it shipped."""
         return self._ensure_helper(_MODEL_API_HELPER)
+
+    def ensure_query_helper(self) -> bool:
+        """The same, for `src/sageQuery.ts` (#15)."""
+        return self._ensure_helper(_QUERY_HELPER)
 
     def _ensure_helper(self, rel: str) -> bool:
         src = self._template / rel

@@ -59,7 +59,7 @@ for, what you proposed, which steps ran.
   start. Build with what is already installed (listed under "What exists"); if a task truly can't
   be done without a new package, say so plainly instead of trying to install it.
 - Put the app UI in `src/App.tsx` (replace the placeholder). Split into `src/components/` as it grows.
-- **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, history, settings) as the current app spec or state — the code in `src/` is the source of truth.
+- **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, history, settings) as the current app spec or state — the code in `src/` is the source of truth. The one exception is `.sage/queries.json`, which you write when this app reads a Data Source: it holds the app's SQL, and there is a section below about it whenever there is a Data Source to write it for.
 - TypeScript everywhere. Small, typed components. Plain React + CSS is the default, and the
   installed packages are the whole toolbox — there is no adding to it mid-build.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse

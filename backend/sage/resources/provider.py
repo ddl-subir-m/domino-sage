@@ -183,8 +183,15 @@ class SqlDialect:
     reads as "this connector said <x>", not as an empty schema — the failure mode that would have the
     creator believe an answer.
 
-    Statements are formatted with `{db}` and `{schema}` (validated, quoted identifiers) and
-    `{schema_lit}` (the same name bare, for the string comparisons `information_schema` needs).
+    `columns` is the fourth level, and the only one no picker opens (#15). It is read once, when the
+    creator binds a Scope, so the agent writing the app's queries knows what the tables hold instead of
+    guessing column names. `None` for a connector whose columns Sage cannot list, which is the same
+    set as the rest of this table.
+
+    Statements are formatted with `{db}` and `{schema}` (validated, quoted identifiers),
+    `{schema_lit}` (the same name bare, for the string comparisons `information_schema` needs) and
+    `{table_clause}` (the whole `AND TABLE_NAME = '…'` phrase, or nothing when every table is wanted —
+    a phrase rather than a name so that "all tables" does not need a second statement per dialect).
     """
 
     databases: str | None
@@ -192,17 +199,19 @@ class SqlDialect:
     tables: str
     verified: bool = False
     quote: str = '"'  # `"` everywhere except the stores where it means a string literal by default
+    columns: str | None = None
 
     def ident(self, name: str) -> str:
         """One validated identifier, quoted. Quoted only to preserve case — the validation has
         already ruled out everything quoting would otherwise be protecting against."""
         return f"{self.quote}{safe_identifier(name)}{self.quote}"
 
-    def statement(self, template: str, database: str = "", schema: str = "") -> str:
+    def statement(self, template: str, database: str = "", schema: str = "", table: str = "") -> str:
         return template.format(
             db=self.ident(database) if database else "",
             schema=self.ident(schema) if schema else "",
             schema_lit=safe_identifier(schema) if schema else "",
+            table_clause=f" AND TABLE_NAME = '{safe_identifier(table)}'" if table else "",
         )
 
 
@@ -214,6 +223,13 @@ _ANSI_SCHEMAS = ("SELECT SCHEMA_NAME AS name FROM {db}.INFORMATION_SCHEMA.SCHEMA
                  "ORDER BY SCHEMA_NAME")
 _ANSI_TABLES = ("SELECT TABLE_NAME AS name FROM {db}.INFORMATION_SCHEMA.TABLES "
                 "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME")
+# One statement for the whole Scope, not one per table: a schema with 200 tables would otherwise be
+# 200 round trips at ~3s each. ORDINAL_POSITION so the agent reads the columns in the order the table
+# declares them, which is the order a person describing the table would use.
+_ANSI_COLUMNS = ("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
+                 "DATA_TYPE AS data_type FROM {db}.INFORMATION_SCHEMA.COLUMNS "
+                 "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
+                 "ORDER BY TABLE_NAME, ORDINAL_POSITION")
 
 # Keyed on `dataSourceType`, and a subset of SQL_CONNECTORS on purpose: a connector Sage can list but
 # cannot look inside still belongs in the panel, because recording the dependency is worth something
@@ -234,12 +250,13 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
         tables=("SELECT TABLE_NAME AS name FROM {db}.INFORMATION_SCHEMA.TABLES "
                 "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
         verified=True,
+        columns=_ANSI_COLUMNS,
     ),
     # Three levels: `sys.databases` is cross-database on one connection, unlike Postgres.
     "SQLServerConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
-                                  _ANSI_SCHEMAS, _ANSI_TABLES),
+                                  _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS),
     "SynapseConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
-                                _ANSI_SCHEMAS, _ANSI_TABLES),
+                                _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS),
     # Two levels. A Postgres connection is bound to one database and cannot read another's catalog,
     # so listing the others would offer choices that then fail. `pg_%` and `information_schema` are
     # dropped: they are the server's own bookkeeping, never what an app was built to read.
@@ -250,6 +267,10 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
          "ORDER BY SCHEMA_NAME"),
         ("SELECT TABLE_NAME AS name FROM INFORMATION_SCHEMA.TABLES "
          "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
+        columns=("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
+                 "DATA_TYPE AS data_type FROM INFORMATION_SCHEMA.COLUMNS "
+                 "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
+                 "ORDER BY TABLE_NAME, ORDINAL_POSITION"),
     ),
     # Two levels each, and in MySQL's family "database" and "schema" are one thing — so the single
     # namespace level is offered as the schema, which is the level the Binding records.
@@ -259,10 +280,15 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
         ("SELECT TABLE_NAME AS name FROM INFORMATION_SCHEMA.TABLES "
          "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
         quote="`",
+        columns=("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
+                 "DATA_TYPE AS data_type FROM INFORMATION_SCHEMA.COLUMNS "
+                 "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
+                 "ORDER BY TABLE_NAME, ORDINAL_POSITION"),
     ),
     # Catalogs are the outer level on both, and `SHOW` is how each names them.
-    "DatabricksConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, quote="`"),
-    "TrinoConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES),
+    "DatabricksConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, quote="`",
+                                   columns=_ANSI_COLUMNS),
+    "TrinoConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS),
     # Two levels. A BigQuery dataset holds its own `INFORMATION_SCHEMA`, so the tables view is
     # qualified by the schema rather than filtered on it.
     "BigQueryConfig": SqlDialect(
@@ -270,6 +296,9 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
         "SELECT SCHEMA_NAME AS name FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME",
         "SELECT TABLE_NAME AS name FROM {schema}.INFORMATION_SCHEMA.TABLES ORDER BY TABLE_NAME",
         quote="`",
+        columns=("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
+                 "DATA_TYPE AS data_type FROM {schema}.INFORMATION_SCHEMA.COLUMNS "
+                 "WHERE TRUE{table_clause} ORDER BY TABLE_NAME, ORDINAL_POSITION"),
     ),
 }
 # Same statements, same shape, different type strings. Written as aliases rather than repeated so a
@@ -301,6 +330,24 @@ def safe_identifier(name: str) -> str:
             "name may hold letters, digits, underscores and $ only."
         )
     return name
+
+
+@dataclass(frozen=True)
+class Column:
+    """One column of one table inside a Data Source (#15).
+
+    Carries the table as well as its own name, because the Scope a Binding records may be a whole
+    schema — the columns of thirty tables come back as one list, and which table each belongs to is
+    the half that makes them usable.
+
+    `type` is the store's own word for it (`VARCHAR`, `NUMBER`, `TIMESTAMP_NTZ`), not normalised.
+    The agent writing the app's queries reads it to decide what a comparison should look like, and a
+    tidied-up name would be Sage guessing on its behalf about a store it cannot see.
+    """
+
+    table: str
+    name: str
+    type: str = ""
 
 
 def dialect_for(source: DataSource) -> SqlDialect:
@@ -379,6 +426,12 @@ class ResourceProvider(Protocol):
     def list_schemas(self, source: DataSource, database: str) -> list[str]: ...
 
     def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]: ...
+
+    # Not a cascade level — no picker opens it. Read once when a Scope is bound, so the agent that
+    # writes the app's queries knows what the tables hold (#15). `table` narrows it to one; "" means
+    # every table in the schema, which is what a Scope that stopped at a schema is asking for.
+    def list_columns(self, source: DataSource, database: str, schema: str,
+                     table: str = "") -> list[Column]: ...
 
 
 def records_of(payload: Any) -> list[dict]:
@@ -725,6 +778,43 @@ class DominoResourceProvider:
         return self._introspect(
             source, dialect.statement(dialect.tables, database=database, schema=schema))
 
+    def list_columns(self, source: DataSource, database: str, schema: str,
+                     table: str = "") -> list[Column]:
+        """What the bound tables hold, in one query (#15).
+
+        One statement for the whole Scope, even when it is a schema of two hundred tables: the
+        cascade already measures ~3s a level against the live warehouse, so a query per table would
+        turn binding a schema into minutes. `table` narrows it when the creator picked one.
+
+        A connector with a cascade but no columns statement raises rather than answering []. An empty
+        list is what a schema with no tables looks like, and telling the two apart is the whole reason
+        the cascade's unverified dialects are affordable.
+        """
+        dialect = dialect_for(source)
+        if dialect.columns is None:
+            raise ResourceUnavailable(
+                f"Sage cannot read the columns inside a {source.connector or source.connector_type} "
+                "Data Source, so the agent will have to be told what the tables hold."
+            )
+        rows = self._introspect_rows(
+            source, dialect.statement(dialect.columns, database=database, schema=schema, table=table))
+        return [
+            Column(str(r.get("table_name") or ""), str(r.get("column_name") or ""),
+                   str(r.get("data_type") or ""))
+            for r in rows if str(r.get("column_name") or "")
+        ]
+
+    def _introspect_rows(self, source: DataSource, sql: str) -> list[dict]:
+        """`_introspect`, for a statement whose answer is rows rather than a list of names.
+
+        Column keys are lower-cased, because the same `AS table_name` comes back as `TABLE_NAME` from
+        Snowflake and `table_name` from Postgres — a caller keying on either spelling would work on
+        one warehouse and silently return nothing on the next.
+        """
+        frame = self._query(source, sql)
+        records = frame.to_dict("records") if hasattr(frame, "to_dict") else []
+        return [{str(k).lower(): v for k, v in row.items()} for row in records]
+
     def _introspect(self, source: DataSource, sql: str) -> list[str]:
         """Run one read-only introspection statement against a Data Source and return the names.
 
@@ -746,6 +836,10 @@ class DominoResourceProvider:
         resolves with no project attachment. The name arrives from `list_data_sources`, so it is
         Domino's own, not a caller's.
         """
+        return name_column(self._query(source, sql))
+
+    def _query(self, source: DataSource, sql: str) -> Any:
+        """One read-only statement against a Data Source, as a frame. The import notes above apply."""
         try:
             from domino_data.data_sources import DataSourceClient
         except ImportError as e:
@@ -755,13 +849,12 @@ class DominoResourceProvider:
             ) from e
         try:
             client = DataSourceClient()
-            frame = client.get_datasource(source.name).query(sql).to_pandas()
+            return client.get_datasource(source.name).query(sql).to_pandas()
         except Exception as e:
             # The store's own words, scrubbed. Naming the source matters because the creator is
             # looking at a list of them, and the connector's own error is the only signal that
             # separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
             raise ResourceUnavailable(f"{source.name} did not answer: {readable_error(e)}") from e
-        return name_column(frame)
 
     def _authentication_status(self, ids: list[str]) -> Any:
         """Whether the caller can open each of `ids`, positionally. `None` when Domino did not say.
@@ -934,6 +1027,33 @@ _FAKE_TREE: dict[str, dict[str, dict[str, list[str]]]] = {
     "ds-reporting": {"": {"public": ["accounts", "events"], "audit": ["access_log"]}},
 }
 
+# table -> [(column, store type)], for the columns the agent is given (#15). Keyed on table name
+# alone: the fake's table names are distinct across the tree, and a Scope is always resolved to one
+# schema before columns are asked for.
+#
+# A table that is in the tree and NOT here answers with no columns, which is deliberate — `STAGING`
+# is empty and `SCRATCH_FORECAST` is a table nobody described, so a local run rehearses a Scope whose
+# schema comes back thin as well as one that comes back full.
+_FAKE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "DIM_ACCOUNT": [("ACCOUNT_ID", "VARCHAR"), ("ACCOUNT_NAME", "VARCHAR"),
+                    ("SEGMENT", "VARCHAR"), ("SIGNED_AT", "TIMESTAMP_NTZ")],
+    "DIM_DATE": [("DATE_KEY", "DATE"), ("FISCAL_QUARTER", "VARCHAR"), ("IS_WEEKEND", "BOOLEAN")],
+    "FCT_USAGE_DAILY": [("USAGE_DATE", "DATE"), ("ACCOUNT_ID", "VARCHAR"),
+                        ("SEATS_ACTIVE", "NUMBER"), ("COMPUTE_HOURS", "FLOAT")],
+    "FCT_SUBSCRIPTION_REVENUE": [("MONTH", "DATE"), ("ACCOUNT_ID", "VARCHAR"),
+                                 ("ARR_USD", "NUMBER"), ("CURRENCY", "VARCHAR")],
+    "V_ARR_WATERFALL": [("MONTH", "DATE"), ("MOVEMENT", "VARCHAR"), ("AMOUNT_USD", "NUMBER")],
+    "V_CUSTOMER_HEALTH": [("ACCOUNT_ID", "VARCHAR"), ("HEALTH_SCORE", "NUMBER")],
+    "policies": [("policy_id", "int"), ("holder_name", "varchar"), ("premium", "decimal")],
+    "claims": [("claim_id", "int"), ("policy_id", "int"), ("amount", "decimal"),
+               ("filed_on", "date")],
+    "quotes": [("quote_id", "int"), ("policy_id", "int"), ("quoted_at", "datetime")],
+    "accounts": [("id", "integer"), ("email", "text"), ("created_at", "timestamp")],
+    "events": [("id", "integer"), ("account_id", "integer"), ("kind", "text"),
+               ("at", "timestamp")],
+    "access_log": [("at", "timestamp"), ("actor", "text"), ("path", "text")],
+}
+
 
 @dataclass
 class FakeResourceProvider:
@@ -945,6 +1065,9 @@ class FakeResourceProvider:
     # source id -> database -> schema -> tables, for the cascade (#11).
     tree: dict[str, dict[str, dict[str, list[str]]]] = field(
         default_factory=lambda: dict(_FAKE_TREE))
+    # table -> [(column, type)], for the schema the agent is given (#15).
+    columns: dict[str, list[tuple[str, str]]] = field(
+        default_factory=lambda: dict(_FAKE_COLUMNS))
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         return list(self.aliases)
@@ -971,3 +1094,21 @@ class FakeResourceProvider:
     def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]:
         dialect_for(source)
         return list(self.tree.get(source.id, {}).get(database, {}).get(schema, []))
+
+    def list_columns(self, source: DataSource, database: str, schema: str,
+                     table: str = "") -> list[Column]:
+        """The columns of the bound tables (#15), from `columns` above.
+
+        Refuses exactly where the real one does — a connector with a cascade but no columns statement
+        — so the state where Sage can list a schema and not read it is reachable without a warehouse.
+        """
+        dialect = dialect_for(source)
+        if dialect.columns is None:
+            raise ResourceUnavailable(
+                f"Sage cannot read the columns inside a {source.connector or source.connector_type} "
+                "Data Source, so the agent will have to be told what the tables hold."
+            )
+        wanted = self.list_tables(source, database, schema)
+        if table:
+            wanted = [t for t in wanted if t == table]
+        return [Column(t, name, ctype) for t in wanted for name, ctype in self.columns.get(t, [])]
