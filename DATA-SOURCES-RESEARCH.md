@@ -1012,24 +1012,28 @@ Two smaller findings from the same reading:
 query that costs seconds is cheap, and a cached row would let the cascade keep walking into a
 source Domino had stopped offering this caller.
 
+### Verified through the orchestrator, 2026-08-20
+
+**All three Snowflake levels enumerate in a real builder**: databases, schemas, and tables. Until
+this date none of them had. The 2.3s/3.5s/2.9s timings recorded when #11 shipped came from a probe
+script running on the image's system python, while the orchestrator runs from uv's isolated venv,
+which carried no `domino_data` until 49bc66e. For as long as #11 had been shipped, what the rail
+actually answered in a live builder was "Sage reads a Data Source's contents through the Domino data
+library, which is not installed here". `/api/diag` now reports that import, because the builder has
+no terminal and the two pythons were otherwise indistinguishable from outside.
+
+The third level is worth naming separately, because it is not a third of the same thing. Levels one
+and two are `SHOW DATABASES` and `SHOW SCHEMAS IN DATABASE {db}`; level three is `SELECT TABLE_NAME
+... FROM {db}.INFORMATION_SCHEMA.TABLES`, and its result is read by `name_column` from a named column
+rather than from `SHOW`'s output shape. So this run proves both statement kinds and both result
+shapes on Snowflake, not one kind three times.
+
 ### Still not verified
 
-Every dialect except Snowflake's, and the timings for any of them. The `information_schema`
-statements are unrun. First contact with a non-Snowflake source is the test, and the failure it
+Every dialect except Snowflake's, and the timings for any of them. The `INFORMATION_SCHEMA`
+statements are now proven on Snowflake but unrun on the other twelve dialects, where the same SQL
+meets a different catalog. First contact with a non-Snowflake source is the test, and the failure it
 produces is designed to be legible enough to fix the table from.
-
-**Update, 2026-08-20.** The cascade has now run through the orchestrator for the first time, against
-the live Snowflake warehouse: databases and schemas both enumerate. Until this point it never had —
-the earlier 2.3s/3.5s/2.9s timings were taken from a probe script on the image's system python, and
-the orchestrator runs from uv's isolated venv, which did not carry `domino_data` until 49bc66e. What
-the rail actually answered in a real builder, for as long as #11 had shipped, was "Sage reads a Data
-Source's contents through the Domino data library, which is not installed here".
-
-Note what that run does and does not cover. Snowflake's first two levels are `SHOW DATABASES` and
-`SHOW SCHEMAS IN DATABASE {db}`; the third is `SELECT TABLE_NAME ... FROM
-{db}.INFORMATION_SCHEMA.TABLES`, whose result `name_column` reads from a named column rather than
-from `SHOW`'s output shape. Two of three levels proven is two of *one* statement kind. The
-`INFORMATION_SCHEMA` path is still unrun, on every dialect including this one.
 
 ---
 
