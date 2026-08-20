@@ -33,7 +33,13 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
-from ..resources.bindings import KIND_LLM_ALIAS, KIND_MODEL_API, Binding, parse_bindings
+from ..resources.bindings import (
+    KIND_DATA_SOURCE,
+    KIND_LLM_ALIAS,
+    KIND_MODEL_API,
+    Binding,
+    parse_bindings,
+)
 from ..resources.model_api_credentials import (
     Credential,
     CredentialRequired,
@@ -47,7 +53,14 @@ from ..resources.pinned_model_api import agents_block as model_api_agents_block
 from ..resources.pinned_model_api import pinned_model_api
 from ..resources.pinned_model_api import render_config as render_model_api_config
 from ..resources.preflight import stale_bindings, stale_message, unresolved_slots
-from ..resources.provider import FakeResourceProvider, ResourceProvider, ResourceUnavailable
+from ..resources.provider import (
+    DataSource,
+    FakeResourceProvider,
+    ResourceProvider,
+    ResourceUnavailable,
+    cascade_levels,
+    safe_identifier,
+)
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
@@ -129,6 +142,18 @@ def _env_int(name: str, default: int) -> int:
         return int(os.environ[name])
     except (KeyError, ValueError):
         return default
+
+
+def _level(name: str) -> str:
+    """One level of a Data Source cascade path, as it arrives from the panel (#11).
+
+    Blank stays blank, because a store with no database level passes "" at that level legitimately
+    and it is not a name that failed to be one. Anything non-blank is charset-checked here, at the
+    edge, so a name Sage would refuse to send is a 400 the panel can read rather than a 502 blaming
+    the store for a request it never saw.
+    """
+    name = (name or "").strip()
+    return safe_identifier(name) if name else ""
 
 
 def _slug(name: str) -> str:
@@ -2598,9 +2623,46 @@ class Orchestrator:
                 "credential_type": d.credential_type,
                 "description": d.description,
                 "ready": d.ready,
+                # What the cascade can offer for this row (#11). `levels` is the panel's whole
+                # instruction: three levels, two when the connector has nothing above a schema, and
+                # none when Sage has no dialect for it — three different renderings that a connector
+                # name could not be asked to imply. The defaults, when Domino's own config pins them,
+                # are levels already answered and so levels not worth asking about.
+                "levels": cascade_levels(d),
+                "default_database": d.default_database,
+                "default_schema": d.default_schema,
             }
             for d in self._resources.list_data_sources()
         ]
+
+    # ---- What is inside one Data Source, a level at a time (#11) ----
+
+    def _data_source(self, source_id: str) -> DataSource:
+        """The row for one Data Source, resolved against the live listing.
+
+        Resolved here rather than taken from the request, for the reason `bind_llm_alias` resolves an
+        Alias against its listing: the listing is Domino's answer about what this caller may reach,
+        and the name and connector type that come out of it are what the cascade builds SQL from. A
+        request carrying its own connector type would be choosing which SQL Sage sends.
+
+        The cost is one listing per level opened. That is deliberate rather than overlooked — the
+        query behind a level takes seconds, so the listing beside it is noise, and caching the row
+        would mean the cascade could keep walking into a Data Source Domino had stopped offering.
+        """
+        source = next((d for d in self._resources.list_data_sources() if d.id == source_id), None)
+        if source is None:
+            raise LookupError(source_id)
+        return source
+
+    def list_data_source_databases(self, source_id: str) -> list[str]:
+        return self._resources.list_databases(self._data_source(source_id))
+
+    def list_data_source_schemas(self, source_id: str, database: str) -> list[str]:
+        return self._resources.list_schemas(self._data_source(source_id), _level(database))
+
+    def list_data_source_tables(self, source_id: str, database: str, schema: str) -> list[str]:
+        return self._resources.list_tables(
+            self._data_source(source_id), _level(database), _level(schema))
 
     # ---- Bindings: the Resources this app is recorded as using (#6) ----
 
@@ -2645,6 +2707,30 @@ class Orchestrator:
         if self._credentials(self.project()).get(model_api_id) is None:
             raise CredentialRequired(model_api_id)
         return self._record(Binding(KIND_MODEL_API, api["id"], api["name"], api["name"]))
+
+    def bind_data_source(
+        self, source_id: str, database: str = "", schema: str = "", table: str = "",
+    ) -> list[dict]:
+        """Record that the app uses one Data Source, and which part of it (#11).
+
+        Validated against the project's own listing, as the two kinds above are. The scope is not
+        validated against the store: proving a schema exists would cost two more queries and several
+        more seconds, and these names did not come from a keyboard — they came from the cascade the
+        creator has just walked, which is the listing.
+
+        The scope may be empty at every level, and that is a record worth keeping rather than a
+        half-finished one. A connector Sage has no dialect for cannot offer a scope at all, and "this
+        app uses this Data Source" was already the whole of what a Binding meant in #6.
+
+        Re-binding replaces in place, because `Binding.key` leaves the scope out. So changing the
+        chosen schema is one more pass through the cascade, not a Remove and a re-pick.
+        """
+        source = self._data_source(source_id)
+        # Charset-checked here as well as where the SQL is built. Not belt-and-braces for its own
+        # sake: this is what keeps the manifest holding only names that can be sent, so the slice that
+        # builds the app's query out of this record inherits the guarantee rather than re-earning it.
+        parts = [safe_identifier(p) if p else None for p in (database, schema, table)]
+        return self._record(Binding(KIND_DATA_SOURCE, source.id, source.name, source.name, *parts))
 
     # ---- Model access tokens, pasted once and remembered (#9) ----
 

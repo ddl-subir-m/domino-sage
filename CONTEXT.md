@@ -58,8 +58,14 @@ _Avoid_: resource panel, data panel, sidebar
 
 **Binding**:
 A recorded link between a Built App and a Resource it uses. Picking a Resource produces a
-Binding.
+Binding. A Data Source Binding also records a Scope.
 _Avoid_: connection, link, reference, wiring
+
+**Scope**:
+The database, schema and optionally table a Data Source Binding is read at. Chosen from lists
+Sage enumerates, never typed. A Binding may have none, which means the Resource is recorded but
+the part of it the app reads is not.
+_Avoid_: path, location, target, qualifier, selection
 
 **Attachment**:
 A file bound into the Built App, reachable by the app's code. A Binding may also produce an

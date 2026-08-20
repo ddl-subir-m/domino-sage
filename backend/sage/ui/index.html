@@ -374,9 +374,9 @@
   .tok-form textarea:focus { border-color: var(--primary); outline: none; }
   .tok-form textarea::placeholder { color: var(--faint); }
   .tok-actions { display: flex; align-items: center; gap: 10px; }
-  .tok-save { padding: 6px 12px; border: 0; border-radius: 8px; background: var(--primary); color: #fff; font-size: 12px; font-weight: 600; }
-  .tok-save:hover:not(:disabled) { background: var(--primary-hover); }
-  .tok-save:disabled { opacity: .5; cursor: default; }
+  .tok-save, .cas-save { padding: 6px 12px; border: 0; border-radius: 8px; background: var(--primary); color: #fff; font-size: 12px; font-weight: 600; }
+  .tok-save:hover:not(:disabled), .cas-save:hover:not(:disabled) { background: var(--primary-hover); }
+  .tok-save:disabled, .cas-save:disabled { opacity: .5; cursor: default; }
   /* Failures land under the box the paste went into, where the fix is. `.tok-detail` is the MODEL's
      own words — a traceback, or a 400 naming the argument it wanted — so it is shown raw and
      unwrapped in monospace: rewording somebody's stderr helps nobody debug it. */
@@ -386,6 +386,35 @@
     color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 10.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto;
   }
+  /* Choosing which database, schema and table a Data Source is read at (#11). Inline under the row
+     like the token form above, and for the same reason: the levels mean nothing apart from the
+     source name they came from, and each one takes seconds to answer, so a creator watching them
+     fill in has to be able to see which source is answering. Native selects rather than a custom
+     listbox — a warehouse schema holds hundreds of tables, and type-to-jump inside a select is the
+     one thing that makes a list that long usable with a keyboard. */
+  .cas { margin-top: 8px; display: flex; flex-direction: column; gap: 7px; }
+  .cas-lvl { display: flex; align-items: center; gap: 8px; }
+  .cas-lvl .cas-lbl { flex: 0 0 62px; font-size: 11.5px; color: var(--muted); }
+  .cas-lvl select {
+    flex: 1; min-width: 0; padding: 5px 7px; border: 1px solid var(--border-strong);
+    border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px;
+  }
+  .cas-lvl select:focus { border-color: var(--primary); outline: none; }
+  .cas-lvl select:disabled { opacity: .5; }
+  /* Under the level it belongs to, indented past the label so it reads as that level's answer rather
+     than the form's. Loading, nothing-here and the store's own error all land here, because they are
+     the three things one level can say and a creator has to be able to tell them apart. */
+  .cas-note { padding-left: 70px; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+  .cas-note.cas-bad { color: var(--lock); }
+  .cas-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  /* The recorded scope, on the row of the source it qualifies. Its own line rather than a chip
+     beside the name: a fully qualified table is long enough to push the name out of a rail this
+     narrow, and on a line of its own it can truncate with the full text in the tooltip. */
+  .cas-scope {
+    margin-top: 5px; font-size: 11.5px; color: var(--ok);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
   /* mode menu (Claude Code-style list: checkmark on the selected row, number shortcut on the right) */
   .mode-list { display: flex; flex-direction: column; margin: 2px -6px 0; }
   .mode-list button {
@@ -1337,12 +1366,279 @@ function renderModelApis() {
   for (const m of modelApisCache) el.appendChild(modelApiRow(m));
 }
 
-// ---------- Data Sources (Resources rail, #10) ----------
-// Browse only for now: no Use button, because picking one is a bigger act than recording a name —
-// the app has to query it at request time, and that is the next slice, not this one.
+// ---------- Data Sources (Resources rail, #10, #11) ----------
 // `null` = not loaded; `[]` = loaded and this caller has permission on no SQL Data Source.
 let dataSourcesCache = null;
 let dataSourcesError = null;
+
+// The cascade (#11). Picking a Data Source is not picking one thing: a source is a tree, and which
+// database, schema and table the app reads is the creator's choice, not a property of the source.
+// One picker is open at a time, so the choice is one object rather than a map — two half-made choices
+// on screen with two Save buttons is a way to record the wrong one.
+let cascadeFor = null;      // the source id whose picker is open
+let cascadeChoice = {};     // { database, schema, table }, as far as it has been chosen
+let cascadeSaving = false;
+// Answers, keyed on source + level + parent, because the answer differs per parent: the schemas of
+// DWH are not the schemas of SANDBOX. `undefined` = never asked, `null` = in flight, an array =
+// answered. Kept across opens, so reopening a picker is instant while a first open is not.
+let cascadeLists = {};
+let cascadeErrors = {};
+
+const CASCADE_PATH = { database: 'databases', schema: 'schemas', table: 'tables' };
+const CASCADE_LABEL = { database: 'Database', schema: 'Schema', table: 'Table' };
+
+function cascadeKey(id, level, parent) { return `${id}|${level}|${parent}`; }
+
+function cascadeParent(level) {
+  if (level === 'database') return '';
+  if (level === 'schema') return cascadeChoice.database || '';
+  return `${cascadeChoice.database || ''}.${cascadeChoice.schema || ''}`;
+}
+
+function cascadeUrl(id, level) {
+  const q = new URLSearchParams();
+  if (level !== 'database' && cascadeChoice.database) q.set('database', cascadeChoice.database);
+  if (level === 'table') q.set('schema', cascadeChoice.schema || '');
+  const qs = q.toString();
+  return `/api/data-sources/${encodeURIComponent(id)}/${CASCADE_PATH[level]}${qs ? `?${qs}` : ''}`;
+}
+
+// One level, asked once, and only when it is opened. Each level is a query through the source itself
+// and takes seconds — measured at 2.3s, 3.5s and 2.9s against the live warehouse — so walking the
+// whole tree up front would spend a minute of the creator's time on branches they never open.
+async function loadCascadeLevel(id, level) {
+  const key = cascadeKey(id, level, cascadeParent(level));
+  if (cascadeLists[key] !== undefined) return;
+  cascadeLists[key] = null;
+  delete cascadeErrors[key];
+  renderDataSources();
+  const { ok, body } = await api(cascadeUrl(id, level));
+  cascadeLists[key] = (ok && body.items) || [];
+  // The store's own words, not a rewrite of them. Sage has only run its introspection SQL live
+  // against Snowflake; for every other connector this message is the one thing that separates "Sage
+  // asked wrongly" from "this schema is empty", and those must not look alike.
+  if (!ok) cascadeErrors[key] = body.error || `Sage could not list the ${CASCADE_PATH[level]} in this Data Source.`;
+  renderDataSources();
+}
+
+// Open on the best starting point there is: the scope already recorded if the app already uses this
+// source, otherwise whatever the Data Source itself was configured with in Domino. A source that
+// names neither starts empty and works identically — that is the ordinary case, not a broken one.
+function openCascade(d) {
+  const bound = boundDataSource(d.id);
+  cascadeFor = d.id;
+  cascadeSaving = false;
+  cascadeChoice = bound
+    ? { database: bound.database || '', schema: bound.schema || '', table: bound.table || '' }
+    : { database: d.default_database || '', schema: d.default_schema || '', table: '' };
+  renderDataSources();
+  // Every level whose value is already decided, and then the first one that is not. A preconfigured
+  // source opens on the choice it is actually waiting for, rather than on a database Domino already
+  // knows the answer to.
+  for (const level of d.levels) {
+    loadCascadeLevel(d.id, level);
+    if (!cascadeChoice[level]) break;
+  }
+}
+
+function closeCascade() {
+  cascadeFor = null;
+  cascadeChoice = {};
+  cascadeSaving = false;
+  renderDataSources();
+}
+
+// Choosing a level clears everything under it: the schemas of one database are not the schemas of the
+// next, and a table left selected from the database before would record a scope that does not exist.
+function chooseCascade(d, level, value) {
+  const below = d.levels.slice(d.levels.indexOf(level) + 1);
+  cascadeChoice[level] = value;
+  for (const l of below) cascadeChoice[l] = '';
+  renderDataSources();
+  if (value && below.length) loadCascadeLevel(d.id, below[0]);
+}
+
+// The table is optional on purpose: plenty of apps read several tables out of one schema, and a
+// picker that recorded nothing short of a single table would leave those apps undescribable. The
+// levels above it are not optional, because a schema with no database is not a place.
+function cascadeReady(d) {
+  return d.levels.filter(l => l !== 'table').every(l => cascadeChoice[l]);
+}
+
+function boundDataSource(id) {
+  return (bindingsCache || []).find(b => b.kind === 'data_source' && b.id === id) || null;
+}
+
+function bindingScope(b) {
+  return [b.database, b.schema, b.table].filter(Boolean).join('.');
+}
+
+async function saveCascade(d, scoped) {
+  cascadeSaving = true;
+  renderDataSources();
+  const scope = scoped
+    ? { database: cascadeChoice.database || '', schema: cascadeChoice.schema || '', table: cascadeChoice.table || '' }
+    : {};
+  const res = await api('/api/bindings', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'data_source', id: d.id, ...scope }),
+  });
+  cascadeSaving = false;
+  // Closed only on success. A failed save that closed the picker would throw away a choice that took
+  // three queries to make, and the message would arrive with nothing left on screen to retry.
+  if (res.ok) closeCascade();
+  applyBindings(res, 'Sage could not record that Data Source.');
+}
+
+// Use, on a Data Source, opens the picker rather than recording the row: the source is a tree and the
+// app reads one part of it. A connector Sage cannot look inside is the exception — there is no tree to
+// walk, so Use records the source itself, which is all a Binding meant before #11.
+function dataSourceUseButton(d) {
+  const b = document.createElement('button');
+  const bound = boundDataSource(d.id);
+  const open = cascadeFor === d.id;
+  // A source with no cascade has nothing to change, so it says so rather than offering a click that
+  // would re-record what is already recorded.
+  const settled = bound && !d.levels.length;
+  b.className = bound ? 'used' : '';
+  b.textContent = settled ? 'Used' : bound ? 'Change' : 'Use';
+  // Disabled while its own picker is open, because the picker below IS this button's next step, and a
+  // control that does nothing when clicked reads as a broken one.
+  b.disabled = open || settled;
+  b.title = open
+    ? 'Choose a database and schema below to finish using this Data Source.'
+    : settled
+      ? 'This app already uses this Data Source, and there is nothing inside it for Sage to narrow '
+        + 'down. To undo it, use Remove under “Used by this app” above.'
+      : bound
+        ? 'Pick a different database, schema or table. The app keeps using this same Data Source, so '
+          + 'nothing has to be removed and re-picked.'
+        : d.levels.length
+          ? 'Use this Data Source in the app you are building, and choose which database, schema and '
+            + 'table it reads. Sage lists what is inside, so there is nothing to type.'
+          : 'Use this Data Source in the app you are building. Sage cannot list what is inside this '
+            + 'kind of connector, so it records the source and leaves the rest to your code.';
+  if (!b.disabled) b.onclick = () => (d.levels.length ? openCascade(d) : bindResource('data_source', d.id, b));
+  return b;
+}
+
+// One row per level, top down, each drawn from what its own level has answered so far. A level whose
+// parent is not chosen yet is drawn disabled and says what it is waiting for, rather than being
+// hidden: a creator who cannot see that a Table level exists does not know the choice is available.
+function cascadePicker(d) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cas';
+  let blocked = '';   // the label of the first level above this one that has no choice yet
+  for (const level of d.levels) {
+    const key = cascadeKey(d.id, level, cascadeParent(level));
+    const items = cascadeLists[key];
+    const err = cascadeErrors[key];
+    const lvl = document.createElement('div');
+    lvl.className = 'cas-lvl';
+    const sel = document.createElement('select');
+    let note = '';
+    let bad = false;
+    if (blocked) {
+      sel.disabled = true;
+      sel.innerHTML = `<option>Choose a ${esc(blocked.toLowerCase())} first</option>`;
+      sel.title = `Sage cannot list the ${CASCADE_PATH[level]} until it knows which ${blocked.toLowerCase()} to look in.`;
+    } else if (items === undefined || items === null) {
+      sel.disabled = true;
+      sel.innerHTML = '<option>Loading…</option>';
+      // Said out loud, because it is slow enough to look stuck: this is a query going to the store.
+      note = `Asking ${esc(d.name)} for its ${CASCADE_PATH[level]}. This is a query, so it takes a few seconds.`;
+    } else if (err) {
+      sel.disabled = true;
+      sel.innerHTML = `<option>Couldn’t list ${esc(CASCADE_PATH[level])}</option>`;
+      note = esc(err);
+      bad = true;
+    } else if (!items.length) {
+      sel.disabled = true;
+      sel.innerHTML = `<option>No ${esc(CASCADE_PATH[level])}</option>`;
+      // Empty and unreadable are different answers, and this is the empty one. Telling them apart is
+      // the whole reason the error above gets a branch of its own.
+      note = `${esc(d.name)} answered, and there are no ${CASCADE_PATH[level]} here`
+        + (level === 'table' ? ' in this schema.' : '.');
+    } else {
+      // A blank first option, so the select opens on a question rather than on an answer nobody
+      // picked. Every name carries a tooltip: a fully qualified table name is longer than this rail.
+      //
+      // Built as nodes rather than as HTML, because these names come from the store and nothing has
+      // vetted them: a table can be created under a quoted identifier holding any character at all,
+      // and `esc` does not escape the quote that would end an attribute. Set as properties, the name
+      // is never parsed as markup, so there is nothing to escape.
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = `Choose a ${CASCADE_LABEL[level].toLowerCase()}…`;
+      sel.appendChild(blank);
+      for (const n of items) {
+        const o = document.createElement('option');
+        o.value = n;
+        o.title = n;
+        o.textContent = n;
+        sel.appendChild(o);
+      }
+      sel.value = items.includes(cascadeChoice[level]) ? cascadeChoice[level] : '';
+      sel.title = sel.value || `${items.length} ${CASCADE_PATH[level]} in ${d.name}`;
+      sel.onchange = () => chooseCascade(d, level, sel.value);
+    }
+    lvl.innerHTML = `<span class="cas-lbl">${esc(CASCADE_LABEL[level])}</span>`;
+    lvl.appendChild(sel);
+    wrap.appendChild(lvl);
+    if (note) {
+      const n = document.createElement('div');
+      n.className = 'cas-note' + (bad ? ' cas-bad' : '');
+      n.innerHTML = note;
+      wrap.appendChild(n);
+    }
+    if (!blocked && !cascadeChoice[level]) blocked = CASCADE_LABEL[level];
+  }
+
+  const ready = cascadeReady(d);
+  // The level the picker is waiting on, and whether it is a dead end rather than a pending choice:
+  // it answered with nothing, or it would not answer at all.
+  const waiting = d.levels.filter(l => l !== 'table').find(l => !cascadeChoice[l]) || '';
+  const waitKey = waiting ? cascadeKey(d.id, waiting, cascadeParent(waiting)) : '';
+  const stuck = !!waiting && (!!cascadeErrors[waitKey]
+    || (Array.isArray(cascadeLists[waitKey]) && !cascadeLists[waitKey].length));
+  const actions = document.createElement('div');
+  actions.className = 'cas-actions';
+  const save = document.createElement('button');
+  save.className = 'cas-save';
+  save.textContent = boundDataSource(d.id) ? 'Save this scope' : 'Use this scope';
+  save.disabled = !ready || cascadeSaving;
+  save.title = cascadeSaving
+    ? 'Recording…'
+    : ready
+      ? `Record this app as reading ${bindingScope(cascadeChoice)}.`
+      : stuck
+        ? `Sage has no ${waiting} to offer for this source, so there is no scope to record. `
+          + 'Use it without a scope instead.'
+        : `Choose a ${waiting} first.`;
+  if (!save.disabled) save.onclick = () => saveCascade(d, true);
+  actions.appendChild(save);
+  // The way out of a dead end, and only when there is one. A store that will not answer — a stopped
+  // warehouse, or a connector whose introspection SQL Sage has not verified — would otherwise leave a
+  // creator unable to record even that their app uses this source, which is worth recording on its
+  // own. Offered on a picker that is merely half-filled, though, it reads as the easy way past a
+  // choice the creator was in the middle of making, so it is not.
+  if (!ready && stuck) {
+    const plain = document.createElement('button');
+    plain.className = 'link-btn';
+    plain.textContent = 'Use without a scope';
+    plain.title = 'Record this app as using this Data Source without saying which database or schema. '
+      + 'Useful when the source will not answer, or when your code decides at request time.';
+    plain.onclick = () => saveCascade(d, false);
+    actions.appendChild(plain);
+  }
+  const cancel = document.createElement('button');
+  cancel.className = 'link-btn';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = closeCascade;
+  actions.appendChild(cancel);
+  wrap.appendChild(actions);
+  return wrap;
+}
 
 // Three states, and only the middle one is a judgement. `ready === true` needs no chip at all: an
 // available row saying "available" is noise on every row in the list. `false` is Domino saying this
@@ -1374,8 +1670,24 @@ function dataSourceRow(d) {
       ? '<div class="res-why">Domino didn’t say whether you can open this one, so Sage can’t promise it works. '
         + '<span class="res-fix">Try again, or open it in Domino to check.</span></div>'
       : '';
+  // What the app is recorded as reading, on the row of the source it qualifies (#11). "warehouse" and
+  // "warehouse, MARTS schema" are different dependencies, and this is the list a creator checks to
+  // see which one they chose.
+  const bound = boundDataSource(d.id);
+  const scope = bound ? bindingScope(bound) : '';
+  const scopeLine = !bound ? ''
+    : scope
+      ? `<div class="cas-scope" title="This app is recorded as reading ${esc(scope)} from ${esc(d.name)}.">Reads ${esc(scope)}</div>`
+      // No scope, but a source that has levels to choose from — so the line says what is missing, and
+      // Change beside it is how to fill it in. A source with no levels says nothing here: its button
+      // already reads Used, and two ways of saying the same thing is one too many.
+      : d.levels.length
+        ? `<div class="cas-scope" title="This app is recorded as using ${esc(d.name)} without a database or schema. Use Change to choose one.">Used, with no database or schema chosen</div>`
+        : '';
   row.innerHTML = `<div class="res-head"><div class="res-name" title="${esc(d.name)}">${esc(d.name)}</div>${credChip}</div>`
-    + sub + desc + why;
+    + sub + desc + scopeLine + why;
+  row.querySelector('.res-head').appendChild(dataSourceUseButton(d));
+  if (cascadeFor === d.id) row.appendChild(cascadePicker(d));
   return row;
 }
 
@@ -1417,7 +1729,7 @@ let bindingsError = null;
 // id is only unique within its kind). Empty unless the session-open preflight proved one gone.
 let staleBindings = new Set();
 
-const KIND_LABELS = { llm_alias: 'LLM Alias', model_api: 'Model API' };
+const KIND_LABELS = { llm_alias: 'LLM Alias', model_api: 'Model API', data_source: 'Data Source' };
 
 function boundAliasIds() {
   return new Set((bindingsCache || []).filter(b => b.kind === 'llm_alias').map(b => b.id));
@@ -1470,12 +1782,13 @@ async function loadBindings() {
   renderResourceLists();  // the Use buttons only know what is already used once this list has arrived
 }
 
-// Both browsable groups carry Use buttons, and both read their state out of the Binding list, so
-// they redraw together \u2014 one of the two left stale would go on offering Use for a Resource the
-// group above already lists.
+// Every browsable group carries Use buttons, and all of them read their state out of the Binding
+// list, so they redraw together — one left stale would go on offering Use for a Resource the group
+// above already lists.
 function renderResourceLists() {
   renderLlmAliases();
   renderModelApis();
+  renderDataSources();
 }
 
 // The response carries the new list, so there is no second request to fetch it.
@@ -1533,8 +1846,14 @@ function bindingRow(b) {
   // for the many Aliases registered under no separate display name those are the same string, and
   // repeating it would only look like a mistake.
   const full = b.display_name === b.name ? b.name : `${b.display_name} · ${b.name}`;
+  // A Data Source Binding is the only kind that records more than which Resource (#11), and what it
+  // adds is the part a creator forgets: which database and schema the app reads.
+  const scope = b.kind === 'data_source' ? bindingScope(b) : '';
+  const scopeChip = scope
+    ? `<span class="a-chip cap" title="The app reads ${esc(scope)} from this Data Source. Use Change in the Data Sources group below to point it somewhere else.">${esc(scope)}</span>`
+    : '';
   row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(full)}">${esc(b.display_name)}</span>`
-    + `<span class="a-tags">${esc(kind)}</span>${pin}${gone}</span>`;
+    + `<span class="a-tags">${esc(kind)}</span>${scopeChip}${pin}${gone}</span>`;
   const btn = document.createElement('button');
   btn.textContent = 'Remove';
   // Removing the pinned Alias leaves the app's model-calling code in place with no model behind it,

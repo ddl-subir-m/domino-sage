@@ -51,6 +51,7 @@ Two adapters, as with assets:
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
@@ -145,6 +146,219 @@ class DataSource:
     # source the creator can see in Domino must not vanish from the rail just because one call to a
     # private endpoint failed.
     ready: bool | None = None
+    # Domino's raw `dataSourceType` ("SnowflakeConfig"), kept alongside the label rather than instead
+    # of it. The label is what a creator reads and Domino writes it for people; this is what decides
+    # which introspection SQL the cascade sends, and a label cannot: two deployments could both say
+    # "Snowflake" while only one type string is the one the allowlist and the dialect table key on.
+    # Appended rather than placed next to `connector` so the positional constructor calls that
+    # already exist keep meaning what they meant.
+    connector_type: str = ""
+    # What the source's own `config` already pins, if anything, so the cascade can open on it instead
+    # of asking a question Domino has already answered. Both were absent on the live warehouse — the
+    # session opened with `DB=None SCHEMA=None` — so "no default" is the ordinary case, and it is the
+    # case the cascade exists for.
+    default_database: str | None = None
+    default_schema: str | None = None
+
+
+# ---- What is inside a Data Source: one level at a time (#11) -------------------------------------
+# There is no introspection endpoint to call. The Data Source proxy takes SQL in and gives a table
+# back — that is the whole interface (Arrow Flight over gRPC, per DATA-SOURCES-RESEARCH.md Q2) — so
+# "what is in here" is itself a query, and the query is dialect-specific.
+
+
+@dataclass(frozen=True)
+class SqlDialect:
+    """How to enumerate one connector family's databases, schemas and tables.
+
+    `databases` is `None` for a store whose connection is already inside one database — Postgres and
+    MySQL among them — where there is no outer level to offer and a picker that opened on one would
+    show a list of one, or an error. Such a store cascades schema -> table, and its Bindings record
+    no database, which is a fact about the connector rather than a missing answer.
+
+    `verified` says whether these statements have been run against a live store of this kind. Only
+    Snowflake's have (DATA-SOURCES-RESEARCH.md Addendum 2, timed at 2.3s / 3.5s / 2.9s). The rest are
+    the standard `information_schema` shape and are honest guesses. That is affordable only because
+    of how they fail: a wrong statement comes back as the store's own error on that one level, which
+    reads as "this connector said <x>", not as an empty schema — the failure mode that would have the
+    creator believe an answer.
+
+    Statements are formatted with `{db}` and `{schema}` (validated, quoted identifiers) and
+    `{schema_lit}` (the same name bare, for the string comparisons `information_schema` needs).
+    """
+
+    databases: str | None
+    schemas: str
+    tables: str
+    verified: bool = False
+    quote: str = '"'  # `"` everywhere except the stores where it means a string literal by default
+
+    def ident(self, name: str) -> str:
+        """One validated identifier, quoted. Quoted only to preserve case — the validation has
+        already ruled out everything quoting would otherwise be protecting against."""
+        return f"{self.quote}{safe_identifier(name)}{self.quote}"
+
+    def statement(self, template: str, database: str = "", schema: str = "") -> str:
+        return template.format(
+            db=self.ident(database) if database else "",
+            schema=self.ident(schema) if schema else "",
+            schema_lit=safe_identifier(schema) if schema else "",
+        )
+
+
+# Spelled in upper case, which is the only spelling that works everywhere: SQL Server defines these
+# views as INFORMATION_SCHEMA and a case-sensitive collation rejects the lower-case form, while every
+# store that folds unquoted identifiers accepts either. The string LITERALS stay lower case, because
+# Postgres's own schema names are lower case and those are values, not identifiers.
+_ANSI_SCHEMAS = ("SELECT SCHEMA_NAME AS name FROM {db}.INFORMATION_SCHEMA.SCHEMATA "
+                 "ORDER BY SCHEMA_NAME")
+_ANSI_TABLES = ("SELECT TABLE_NAME AS name FROM {db}.INFORMATION_SCHEMA.TABLES "
+                "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME")
+
+# Keyed on `dataSourceType`, and a subset of SQL_CONNECTORS on purpose: a connector Sage can list but
+# cannot look inside still belongs in the panel, because recording the dependency is worth something
+# on its own (#6) and the alternative is hiding a source the creator can see in Domino. What it does
+# not get is a cascade that opens on an error.
+#
+# Left out, each one line from being added: DB2, Druid, GenericJDBC, Ignite, Netezza, Oracle, SAP
+# HANA, Teradata and Vertica. Not oversights — none of them serves the ANSI `information_schema`
+# views this table leans on, so an entry for them would be a guess with nothing behind it, and
+# `dialect_for` says so by name instead.
+SQL_DIALECTS: dict[str, SqlDialect] = {
+    # VERIFIED live against `Snowflake-Data-Warehouse` on cloud-dogfood. `SHOW` rather than
+    # `information_schema` at the top two levels because an unqualified `information_schema` query
+    # fails outright on a session with no current database, which is exactly the session Domino opens.
+    "SnowflakeConfig": SqlDialect(
+        databases="SHOW DATABASES",
+        schemas="SHOW SCHEMAS IN DATABASE {db}",
+        tables=("SELECT TABLE_NAME AS name FROM {db}.INFORMATION_SCHEMA.TABLES "
+                "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
+        verified=True,
+    ),
+    # Three levels: `sys.databases` is cross-database on one connection, unlike Postgres.
+    "SQLServerConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
+                                  _ANSI_SCHEMAS, _ANSI_TABLES),
+    "SynapseConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
+                                _ANSI_SCHEMAS, _ANSI_TABLES),
+    # Two levels. A Postgres connection is bound to one database and cannot read another's catalog,
+    # so listing the others would offer choices that then fail. `pg_%` and `information_schema` are
+    # dropped: they are the server's own bookkeeping, never what an app was built to read.
+    "PostgreSQLConfig": SqlDialect(
+        None,
+        ("SELECT SCHEMA_NAME AS name FROM INFORMATION_SCHEMA.SCHEMATA "
+         "WHERE SCHEMA_NAME NOT LIKE 'pg_%' AND SCHEMA_NAME <> 'information_schema' "
+         "ORDER BY SCHEMA_NAME"),
+        ("SELECT TABLE_NAME AS name FROM INFORMATION_SCHEMA.TABLES "
+         "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
+    ),
+    # Two levels each, and in MySQL's family "database" and "schema" are one thing — so the single
+    # namespace level is offered as the schema, which is the level the Binding records.
+    "MySQLConfig": SqlDialect(
+        None,
+        "SELECT SCHEMA_NAME AS name FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME",
+        ("SELECT TABLE_NAME AS name FROM INFORMATION_SCHEMA.TABLES "
+         "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
+        quote="`",
+    ),
+    # Catalogs are the outer level on both, and `SHOW` is how each names them.
+    "DatabricksConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, quote="`"),
+    "TrinoConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES),
+    # Two levels. A BigQuery dataset holds its own `INFORMATION_SCHEMA`, so the tables view is
+    # qualified by the schema rather than filtered on it.
+    "BigQueryConfig": SqlDialect(
+        None,
+        "SELECT SCHEMA_NAME AS name FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME",
+        "SELECT TABLE_NAME AS name FROM {schema}.INFORMATION_SCHEMA.TABLES ORDER BY TABLE_NAME",
+        quote="`",
+    ),
+}
+# Same statements, same shape, different type strings. Written as aliases rather than repeated so a
+# correction to one reaches every connector it was a correction for.
+SQL_DIALECTS["RedshiftConfig"] = SQL_DIALECTS["PostgreSQLConfig"]
+SQL_DIALECTS["GreenplumConfig"] = SQL_DIALECTS["PostgreSQLConfig"]
+SQL_DIALECTS["MariaDBConfig"] = SQL_DIALECTS["MySQLConfig"]
+SQL_DIALECTS["SingleStoreConfig"] = SQL_DIALECTS["MySQLConfig"]
+SQL_DIALECTS["ClickHouseConfig"] = SQL_DIALECTS["MySQLConfig"]
+
+_IDENTIFIER = re.compile(r"[A-Za-z0-9_$]+")
+
+
+def safe_identifier(name: str) -> str:
+    """One database, schema or table name, or a refusal.
+
+    These names come back from the browser, so they reach SQL from outside Sage, and the credential
+    behind that SQL is a service account that reads the entire company warehouse (`DOMINO` /
+    `APP_ROLE_DOMINO` over `DWH`, verified). So this is an allowlist of the characters a name may
+    hold, not an escape: anything else is refused rather than quoted, because a refusal cannot be got
+    subtly wrong and an escape can.
+
+    What that costs is a store using quoted, spaced or non-ASCII identifiers. Every name on the live
+    warehouse passes, and one that does not says so rather than being sent.
+    """
+    if not _IDENTIFIER.fullmatch(name or ""):
+        raise ValueError(
+            f"Sage will not send {name[:60]!r} to a database as a name. A database, schema or table "
+            "name may hold letters, digits, underscores and $ only."
+        )
+    return name
+
+
+def dialect_for(source: DataSource) -> SqlDialect:
+    """The introspection SQL for one source, or a refusal naming the connector."""
+    dialect = SQL_DIALECTS.get(source.connector_type)
+    if dialect is None:
+        known = source.connector or source.connector_type or "this kind of"
+        raise ResourceUnavailable(
+            f"Sage cannot list what is inside a {known} Data Source yet, so it cannot offer its "
+            "databases and schemas. You can still record that the app uses this Data Source."
+        )
+    return dialect
+
+
+def cascade_levels(source: DataSource) -> list[str]:
+    """The levels this source can offer, outermost first, or [] when Sage has no dialect for it.
+
+    The panel reads this rather than working it out from a connector name, and it is what tells a
+    two-level store apart from a broken one: `["schema", "table"]` means there is nothing above the
+    schema, where `[]` means Sage does not know how to look at all.
+    """
+    dialect = SQL_DIALECTS.get(source.connector_type)
+    if dialect is None:
+        return []
+    return (["database"] if dialect.databases else []) + ["schema", "table"]
+
+
+def name_column(frame: Any) -> list[str]:
+    """The names out of one introspection result.
+
+    Every statement above either selects its column as `name` or is a `SHOW`, whose name column
+    Snowflake also calls `name` — so `name` is the rule and the first column is the fallback, which
+    is what carries `SHOW CATALOGS` (it answers with `catalog`). Matched case-insensitively because
+    `AS name` comes back as `NAME` from the stores that upper-case unquoted identifiers.
+    """
+    columns = list(getattr(frame, "columns", []))
+    if not columns:
+        return []
+    picked = next((c for c in columns if str(c).lower() == "name"), columns[0])
+    return [str(v) for v in frame[picked].tolist() if str(v)]
+
+
+_SECRET_SHAPED = re.compile(r"[A-Za-z0-9_\-]{32,}")
+
+
+def readable_error(exc: Exception, limit: int = 300) -> str:
+    """A store's own failure, in a form that can be shown.
+
+    The message has to reach the creator — it is the only thing that makes an unverified dialect fail
+    honestly instead of looking like an empty schema. But `DataSourceClient.__repr__` prints its
+    api_key in plaintext (recorded in `spikes/domino-probes/snowflake_query_probe.py`, which had to
+    avoid printing the client for that reason), so an exception holding a client would carry the key
+    here. Any run of 32 or more identifier characters is replaced — the injected `DOMINO_USER_API_KEY`
+    is 64 — and the text is collapsed and cut, because a driver traceback in a side rail is not a
+    message anyone reads.
+    """
+    text = _SECRET_SHAPED.sub("[redacted]", " ".join(str(exc).split()))
+    return f"{type(exc).__name__}: {text[:limit]}" if text else type(exc).__name__
 
 
 class ResourceProvider(Protocol):
@@ -157,6 +371,14 @@ class ResourceProvider(Protocol):
     # No project argument, unlike the two above, and that asymmetry is the finding: a Data Source is
     # permission-scoped to the person, not the project.
     def list_data_sources(self) -> list[DataSource]: ...
+
+    # The cascade takes the resolved row, not an id, so a caller cannot hand in a connector type of
+    # its own and choose which SQL gets sent. `database` is "" for a store with no database level.
+    def list_databases(self, source: DataSource) -> list[str]: ...
+
+    def list_schemas(self, source: DataSource, database: str) -> list[str]: ...
+
+    def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]: ...
 
 
 def records_of(payload: Any) -> list[dict]:
@@ -306,9 +528,36 @@ def parse_data_sources(payload: Any) -> list[DataSource]:
                 connector=connector_label(rec),
                 credential_type=str(rec.get("credentialType") or ""),
                 description=str(rec["description"]) if rec.get("description") else None,
+                connector_type=str(rec.get("dataSourceType") or ""),
+                default_database=config_value(rec, "database", "databasename", "catalog"),
+                default_schema=config_value(rec, "schema", "schemaname", "dataset"),
             )
         )
     return out
+
+
+def config_value(record: dict, *keys: str) -> str | None:
+    """A default database or schema out of a Data Source's `config` map, if it names one.
+
+    `config` is a free map of string to string in the public spec (its whole example is
+    `{"host": "example-host.com"}`) and its keys are not enumerated anywhere, so this looks for the
+    ones a SQL connector would plausibly use, accepts that none of them is there, and never treats
+    absence as a fault. On the live warehouse both were absent, which is the finding the cascade was
+    built for rather than a gap in it.
+
+    Matched case-insensitively because the same map has been seen with camelCase keys, and a default
+    that exists but is spelled `databaseName` would otherwise cost the creator a level of clicking
+    for no reason.
+    """
+    config = record.get("config")
+    if not isinstance(config, dict):
+        return None
+    lowered = {str(k).lower(): v for k, v in config.items()}
+    for key in keys:
+        value = lowered.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def merge_readiness(sources: list[DataSource], statuses: Any) -> list[DataSource]:
@@ -429,6 +678,62 @@ class DominoResourceProvider:
             if not records_of(envelope) or (total is not None and offset >= total):
                 break
         return merge_readiness(rows, self._authentication_status([r.id for r in rows]))
+
+    # ---- The cascade: three levels, each its own call, each on being opened (#11) ----
+    # Not one call returning a tree. Each level costs seconds against the live warehouse (2.3s, 3.5s,
+    # 2.9s measured), so a prefetched tree would spend all three before the creator had looked at the
+    # first, and a warehouse with 30 schemas would spend thirty more.
+
+    def list_databases(self, source: DataSource) -> list[str]:
+        """The databases inside one source, or [] when its connector has no level above the schema.
+
+        [] here is not an empty state to render as "nothing found": `cascade_levels` is what says
+        whether this level exists at all, and a two-level store answers [] because there was never a
+        question, not because the answer was nothing.
+        """
+        dialect = dialect_for(source)
+        if dialect.databases is None:
+            return []
+        return self._introspect(source, dialect.databases)
+
+    def list_schemas(self, source: DataSource, database: str) -> list[str]:
+        dialect = dialect_for(source)
+        return self._introspect(source, dialect.statement(dialect.schemas, database=database))
+
+    def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]:
+        dialect = dialect_for(source)
+        return self._introspect(
+            source, dialect.statement(dialect.tables, database=database, schema=schema))
+
+    def _introspect(self, source: DataSource, sql: str) -> list[str]:
+        """Run one read-only introspection statement against a Data Source and return the names.
+
+        `domino_data` rather than HTTP, unlike everything else in this class: the SQL path is Arrow
+        Flight over gRPC to `datasource-proxy`, which is where the store's credentials live, and there
+        is no REST equivalent to reach instead. The import is local to this method for the reason
+        `httpx`'s is — the package is preinstalled in the Sage Environment (verified, 6.7.4) but is
+        not a test dependency, so a machine without it has to be able to run everything else.
+
+        Resolved by NAME, not by id: `get_datasource` takes the name, verified live, and a source
+        resolves with no project attachment. The name arrives from `list_data_sources`, so it is
+        Domino's own, not a caller's.
+        """
+        try:
+            from domino_data.data_sources import DataSourceClient
+        except ImportError as e:
+            raise ResourceUnavailable(
+                "Sage reads a Data Source's contents through the Domino data library, which is not "
+                "installed here. Data Sources will still list, but Sage cannot look inside one."
+            ) from e
+        try:
+            client = DataSourceClient()
+            frame = client.get_datasource(source.name).query(sql).to_pandas()
+        except Exception as e:
+            # The store's own words, scrubbed. Naming the source matters because the creator is
+            # looking at a list of them, and the connector's own error is the only signal that
+            # separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
+            raise ResourceUnavailable(f"{source.name} did not answer: {readable_error(e)}") from e
+        return name_column(frame)
 
     def _authentication_status(self, ids: list[str]) -> Any:
         """Whether the caller can open each of `ids`, positionally. `None` when Domino did not say.
@@ -556,14 +861,50 @@ _FAKE_MODEL_APIS = (
 # `ready=False` row is the case the panel exists for — `test` is an `Individual`-credential source, so
 # whether it opens depends on whether THIS person entered their own credentials, and here they have
 # not. The last row carries `ready=None`, the state a failed readiness call leaves behind.
+#
+# Since #11 the connector TYPE is on each row as well, because that is what decides whether the
+# cascade can open and how many levels it has. The four types here cover the three shapes the panel
+# has to draw: three levels (Snowflake), two (Postgres, where a database is not a thing to pick), and
+# none at all (`billing-oracle`, added for that state — Oracle is inside the SQL allowlist and
+# outside the dialect table, so it lists and records but cannot be looked inside).
 _FAKE_DATA_SOURCES = (
     DataSource("ds-dwh", "Snowflake-Data-Warehouse", "Snowflake", "Shared",
-               "The company warehouse. Reads across every schema.", True),
-    DataSource("ds-test", "test", "Snowflake", "Individual", None, False),
-    DataSource("ds-mssql", "AWS_MSSQL", "SQL Server", "Individual", None, True),
+               "The company warehouse. Reads across every schema.", True,
+               connector_type="SnowflakeConfig"),
+    DataSource("ds-test", "test", "Snowflake", "Individual", None, False,
+               connector_type="SnowflakeConfig"),
+    # The one source that pins a database in its own config, so the cascade opens on the schema level
+    # with the database already answered — the shortcut the live warehouse did not offer.
+    DataSource("ds-mssql", "AWS_MSSQL", "SQL Server", "Individual", None, True,
+               connector_type="SQLServerConfig", default_database="underwriting"),
     DataSource("ds-reporting", "reporting-replica", "PostgreSQL", "Shared",
-               "Read replica of the reporting database.", None),
+               "Read replica of the reporting database.", None,
+               connector_type="PostgreSQLConfig"),
+    DataSource("ds-oracle", "billing-oracle", "Oracle", "Shared", None, True,
+               connector_type="OracleConfig"),
 )
+
+# source id -> database -> schema -> tables. A store with no database level keys on "", the same empty
+# string the cascade passes at that level, so the fake and the real contract agree about what a
+# two-level store is rather than the fake inventing a shape of its own.
+#
+# `ds-test` is present and empty on purpose: a source whose databases genuinely list as nothing is a
+# state the panel has to draw, and it is a different sentence from a source Sage cannot look inside.
+_FAKE_TREE: dict[str, dict[str, dict[str, list[str]]]] = {
+    "ds-dwh": {
+        # Named after what the live warehouse actually holds, curated layers first, so a local run
+        # rehearses the real choice instead of `db1 / schema1 / table1`.
+        "DWH": {
+            "MARTS": ["DIM_ACCOUNT", "DIM_DATE", "FCT_USAGE_DAILY", "FCT_SUBSCRIPTION_REVENUE"],
+            "REPORTING": ["V_ARR_WATERFALL", "V_CUSTOMER_HEALTH"],
+            "STAGING": [],
+        },
+        "SANDBOX": {"PUBLIC": ["SCRATCH_FORECAST"]},
+    },
+    "ds-test": {},
+    "ds-mssql": {"underwriting": {"dbo": ["policies", "claims", "quotes"]}},
+    "ds-reporting": {"": {"public": ["accounts", "events"], "audit": ["access_log"]}},
+}
 
 
 @dataclass
@@ -573,6 +914,9 @@ class FakeResourceProvider:
     aliases: list[LlmAlias] = field(default_factory=lambda: list(_FAKE_ALIASES))
     model_apis: list[ModelApi] = field(default_factory=lambda: list(_FAKE_MODEL_APIS))
     data_sources: list[DataSource] = field(default_factory=lambda: list(_FAKE_DATA_SOURCES))
+    # source id -> database -> schema -> tables, for the cascade (#11).
+    tree: dict[str, dict[str, dict[str, list[str]]]] = field(
+        default_factory=lambda: dict(_FAKE_TREE))
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         return list(self.aliases)
@@ -584,3 +928,18 @@ class FakeResourceProvider:
 
     def list_data_sources(self) -> list[DataSource]:
         return list(self.data_sources)
+
+    # The cascade, from the tree above. `dialect_for` is called rather than skipped so the fake
+    # refuses a connector the real provider would also refuse: a source Sage has no dialect for has to
+    # fail the same way locally, or the state never gets drawn until someone is on a real deployment.
+    def list_databases(self, source: DataSource) -> list[str]:
+        dialect_for(source)
+        return sorted(d for d in self.tree.get(source.id, {}) if d)
+
+    def list_schemas(self, source: DataSource, database: str) -> list[str]:
+        dialect_for(source)
+        return sorted(self.tree.get(source.id, {}).get(database, {}))
+
+    def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]:
+        dialect_for(source)
+        return list(self.tree.get(source.id, {}).get(database, {}).get(schema, []))

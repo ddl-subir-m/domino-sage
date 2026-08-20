@@ -26,6 +26,12 @@ KIND_LLM_ALIAS = "llm_alias"
 # is unverified — a Model API is served from the main Domino host, not from the `apps.` host the
 # published page and the LLM Gateway share, so #7's same-origin recipe does not carry over untested.
 KIND_MODEL_API = "model_api"
+# A Data Source Binding (#11) records a scope as well as a Resource. A Data Source on its own names a
+# store, not the part of it an app reads, and the live warehouse is the whole company's — so "this app
+# uses Snowflake-Data-Warehouse" is not yet a choice anyone can act on. The cascade that produces the
+# scope runs in the build session, where querying already works; nothing here makes the Built App
+# query, which is a later slice.
+KIND_DATA_SOURCE = "data_source"
 
 
 @dataclass(frozen=True)
@@ -34,14 +40,46 @@ class Binding:
     id: str
     name: str
     display_name: str
+    # Where inside the Resource the choice landed (#11). Only a Data Source has these, and only down
+    # to the level the creator actually reached: stopping at a schema is a real choice — a narrower
+    # scope than the source and a wider one than a single table — so `table` unset means "the schema",
+    # not "unfinished". All three stay `None` for every other kind.
+    database: str | None = None
+    schema: str | None = None
+    table: str | None = None
 
     @property
     def key(self) -> tuple[str, str]:
-        """What makes two Bindings the same one. An id is only unique within its kind."""
+        """What makes two Bindings the same one. An id is only unique within its kind.
+
+        Deliberately excludes the scope. Choosing a different schema in the same Data Source is a
+        creator correcting one choice, not adding a second dependency, so it has to replace the
+        record in place — which is what lets the choice change without the Resource being unpicked
+        and picked again.
+        """
         return (self.kind, self.id)
 
+    @property
+    def scope(self) -> str:
+        """The chosen scope as one dotted label, or "" for a kind that has none.
+
+        Joined from whichever levels are set, so a store with no database level reads `public.events`
+        rather than `..events`.
+        """
+        return ".".join(p for p in (self.database, self.schema, self.table) if p)
+
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "id": self.id, "name": self.name, "display_name": self.display_name}
+        """The manifest entry and the HTTP row, one shape.
+
+        The scope keys are omitted when unset rather than written as nulls. This manifest is
+        committed to the creator's own app repo, so three nulls added to every LLM Alias entry that
+        already exists would show up as a dirty file in an app nobody had touched.
+        """
+        out = {"kind": self.kind, "id": self.id, "name": self.name, "display_name": self.display_name}
+        for key, value in (("database", self.database), ("schema", self.schema), ("table", self.table)):
+            if value:
+                out[key] = value
+        return out
 
 
 def parse_bindings(raw: object) -> list[Binding]:
@@ -60,5 +98,17 @@ def parse_bindings(raw: object) -> list[Binding]:
         if not kind or not rid:
             continue
         name = str(e.get("name") or rid)
-        out.append(Binding(kind, rid, name, str(e.get("display_name") or name)))
+        out.append(Binding(kind, rid, name, str(e.get("display_name") or name),
+                           _scope_part(e, "database"), _scope_part(e, "schema"),
+                           _scope_part(e, "table")))
     return out
+
+
+def _scope_part(entry: dict, key: str) -> str | None:
+    """One level of a recorded scope, or None when the entry does not name it.
+
+    A blank string reads back as None rather than "": the manifest omits an unset level, so a `""`
+    in the file was written by something else, and an empty scope level is not a scope level.
+    """
+    value = entry.get(key)
+    return value if isinstance(value, str) and value else None

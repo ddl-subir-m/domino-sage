@@ -19,6 +19,7 @@ import pytest
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.resources.provider import (
+    SQL_DIALECTS,
     DataSource,
     DominoResourceProvider,
     FakeResourceProvider,
@@ -26,13 +27,18 @@ from sage.resources.provider import (
     ModelApi,
     ResourceUnavailable,
     accessible_ids,
+    cascade_levels,
+    dialect_for,
     join_aliases,
     merge_readiness,
+    name_column,
     parse_capabilities,
     parse_costs,
     parse_data_sources,
     parse_model_apis,
+    readable_error,
     records_of,
+    safe_identifier,
 )
 from sage.router.models import ModelCatalog
 
@@ -563,11 +569,13 @@ def test_the_orchestrator_lists_data_sources_without_scoping_them_to_its_project
     # a Data Source is permission-scoped to the person. The provider's method takes none, so a
     # regression that reintroduces project scoping cannot even be expressed here.
     rows = _orch(tmp_path, FakeResourceProvider(
-        data_sources=[DataSource("d1", "warehouse", "Snowflake", "Shared", "desc", False)],
+        data_sources=[DataSource("d1", "warehouse", "Snowflake", "Shared", "desc", False,
+                                 connector_type="SnowflakeConfig")],
     )).list_data_sources()
     assert rows == [{
         "id": "d1", "name": "warehouse", "connector": "Snowflake",
         "credential_type": "Shared", "description": "desc", "ready": False,
+        "levels": ["database", "schema", "table"], "default_database": None, "default_schema": None,
     }]
 
 
@@ -598,3 +606,214 @@ def test_the_route_carries_both_kinds_and_one_failing_service_does_not_blank_the
     assert "model_apis" not in bad["errors"]
     assert [d["name"] for d in bad["data_sources"]][:1] == ["Snowflake-Data-Warehouse"]
     assert "data_sources" not in bad["errors"]
+
+
+# ---- the cascade (#11) ---------------------------------------------------------------------------
+#
+# There is no Domino endpoint that enumerates a Data Source's contents, so the cascade is SQL sent
+# through the source itself, and the shape of that SQL is per connector. Only Snowflake's has been
+# run live. These tests therefore pin the two things that survive that uncertainty: which levels a
+# connector is offered at all, and that a level Sage cannot ask about fails by name.
+
+
+class _Frame:
+    """The two attributes `name_column` touches, so the read path is testable without pandas — which
+    is not installed in the backend venv and is not a dependency Sage may add: it arrives inside the
+    Domino image alongside `domino_data`."""
+
+    def __init__(self, columns: dict[str, list]):
+        self.columns = list(columns)
+        self._data = columns
+
+    def __getitem__(self, key):
+        return type("_Col", (), {"tolist": lambda s, v=self._data[key]: v})()
+
+
+def _source(connector_type: str, **kw) -> DataSource:
+    return DataSource("d", "src", connector_type.removesuffix("Config"), "Shared", None, True,
+                      connector_type=connector_type, **kw)
+
+
+def test_the_cascade_offers_only_the_levels_a_connector_actually_has():
+    # Three cases that must stay distinguishable, because they send the creator somewhere different.
+    assert cascade_levels(_source("SnowflakeConfig")) == ["database", "schema", "table"]
+    # Postgres opens already inside one database. "No level above the schema" is a fact about the
+    # connector, not a missing answer, so the cascade starts one level down rather than showing a
+    # list of one.
+    assert cascade_levels(_source("PostgreSQLConfig")) == ["schema", "table"]
+    # And no dialect at all is empty, which the UI reads as "record it, do not offer a picker".
+    assert cascade_levels(_source("OracleConfig")) == []
+
+
+def test_a_connector_with_no_dialect_says_which_connector_rather_than_showing_nothing():
+    # The failure the panel must not have is an expander that opens on an empty list, because that
+    # reads as "this source holds nothing". Naming the connector is what makes it a fact.
+    with pytest.raises(ResourceUnavailable, match="Oracle"):
+        dialect_for(_source("OracleConfig"))
+
+
+def test_the_introspection_statements_only_read():
+    # Sage holds a shared service credential here, and one that can read the whole warehouse. Every
+    # statement it can ever send is in this table, so the table is the place to assert that.
+    banned = ("INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "MERGE")
+    for name, dialect in SQL_DIALECTS.items():
+        for template in (dialect.databases, dialect.schemas, dialect.tables):
+            if template is None:
+                continue
+            rendered = dialect.statement(template, database="DB", schema="s").upper()
+            assert rendered.startswith(("SELECT", "SHOW")), f"{name}: {rendered}"
+            for verb in banned:
+                assert verb not in rendered, f"{name} sends {verb}"
+
+
+def test_snowflakes_statements_are_the_ones_that_were_run_live():
+    # Pinned literally because these three are the only introspection statements in the table with a
+    # live run behind them (DATA-SOURCES-RESEARCH.md Addendum 2). A change here is a change to
+    # verified behaviour and should have to be made on purpose.
+    d = SQL_DIALECTS["SnowflakeConfig"]
+    assert d.verified
+    assert d.statement(d.databases) == "SHOW DATABASES"
+    assert d.statement(d.schemas, database="DWH") == 'SHOW SCHEMAS IN DATABASE "DWH"'
+    assert d.statement(d.tables, database="DWH", schema="MARTS") == (
+        'SELECT TABLE_NAME AS name FROM "DWH".INFORMATION_SCHEMA.TABLES '
+        "WHERE TABLE_SCHEMA = 'MARTS' ORDER BY TABLE_NAME")
+
+
+def test_a_name_is_refused_rather_than_escaped():
+    assert safe_identifier("FCT_USAGE_DAILY$1") == "FCT_USAGE_DAILY$1"
+    # An allowlist, not an escape: the credential behind this SQL reads the whole warehouse, so the
+    # bar is "could not be anything but a name", not "quoted correctly".
+    for bad in ('DWH"; DROP TABLE x', "a b", "", "sch.ema", "x--", "naïve"):
+        with pytest.raises(ValueError, match="letters, digits"):
+            safe_identifier(bad)
+
+
+def test_a_stores_failure_is_shown_without_carrying_a_credential():
+    # `DataSourceClient.__repr__` prints its api_key in plaintext, so an exception that holds a client
+    # would carry the key into the panel.
+    leaked = readable_error(RuntimeError("connect failed for key=" + "A" * 64))
+    assert "A" * 64 not in leaked and "[redacted]" in leaked
+    # The store's own words still have to arrive — they are the whole reason an unverified dialect
+    # fails honestly rather than looking like an empty schema.
+    assert "SQL compilation error" in readable_error(RuntimeError("SQL compilation error"))
+    # Redacted first, then cut — a cut that ran first would leave the front of a key showing.
+    long = readable_error(RuntimeError(" ".join(["driver traceback line"] * 90)))
+    assert long.startswith("RuntimeError: driver traceback") and len(long) < 350
+
+
+def test_the_names_are_read_out_of_whatever_column_the_store_used():
+    assert name_column(_Frame({"name": ["MARTS", "REPORTING"]})) == ["MARTS", "REPORTING"]
+    # `AS name` comes back upper-cased from a folding store.
+    assert name_column(_Frame({"NAME": ["a"], "kind": ["TABLE"]})) == ["a"]
+    # And `SHOW CATALOGS` has no `name` column at all — it answers with `catalog`.
+    assert name_column(_Frame({"catalog": ["hive", "tpch"]})) == ["hive", "tpch"]
+    assert name_column(_Frame({})) == []
+
+
+def test_a_data_sources_preconfigured_scope_is_read_when_it_is_there(tmp_path: Path):
+    # Half the point of the criterion: a source that names no default database is not a broken
+    # source, it is the ordinary case, and its cascade has to work identically.
+    listed = _orch(tmp_path, FakeResourceProvider()).list_data_sources()
+    rows = {d["name"]: d for d in listed}
+    assert rows["AWS_MSSQL"]["default_database"] == "underwriting"
+    assert rows["Snowflake-Data-Warehouse"]["default_database"] is None
+    assert rows["Snowflake-Data-Warehouse"]["levels"] == ["database", "schema", "table"]
+    assert rows["billing-oracle"]["levels"] == []
+
+
+def test_a_source_with_no_default_database_still_cascades_end_to_end(tmp_path: Path):
+    # The acceptance criterion, walked: nothing was preconfigured, and the creator still reaches a
+    # table by opening one level at a time.
+    orch = _orch(tmp_path, FakeResourceProvider())
+    assert orch.list_data_source_databases("ds-dwh") == ["DWH", "SANDBOX"]
+    assert orch.list_data_source_schemas("ds-dwh", "DWH") == ["MARTS", "REPORTING", "STAGING"]
+    tables = orch.list_data_source_tables("ds-dwh", "DWH", "MARTS")
+    assert "FCT_USAGE_DAILY" in tables
+    # An empty schema is empty, not broken — and is reachable, which is how the creator can tell.
+    assert orch.list_data_source_tables("ds-dwh", "DWH", "STAGING") == []
+
+
+def test_a_two_level_store_is_asked_for_schemas_without_a_database(tmp_path: Path):
+    orch = _orch(tmp_path, FakeResourceProvider())
+    assert orch.list_data_source_databases("ds-reporting") == []
+    assert orch.list_data_source_schemas("ds-reporting", "") == ["audit", "public"]
+    assert orch.list_data_source_tables("ds-reporting", "", "public") == ["accounts", "events"]
+
+
+def test_only_the_level_that_was_opened_is_asked_about(tmp_path: Path):
+    # Each level is a query through Arrow Flight and costs seconds (2.3s / 3.5s / 2.9s live), so
+    # prefetching the tree would spend a minute of the creator's time on branches never opened.
+    asked: list[str] = []
+
+    class Counting(FakeResourceProvider):
+        def list_databases(self, source):
+            asked.append("databases")
+            return super().list_databases(source)
+
+        def list_schemas(self, source, database):
+            asked.append(f"schemas:{database}")
+            return super().list_schemas(source, database)
+
+        def list_tables(self, source, database, schema):
+            asked.append(f"tables:{schema}")
+            return super().list_tables(source, database, schema)
+
+    orch = _orch(tmp_path, Counting())
+    orch.list_data_source_databases("ds-dwh")
+    assert asked == ["databases"]
+    orch.list_data_source_schemas("ds-dwh", "DWH")
+    assert asked == ["databases", "schemas:DWH"]
+    orch.list_data_source_tables("ds-dwh", "DWH", "MARTS")
+    assert asked == ["databases", "schemas:DWH", "tables:MARTS"]
+
+
+def test_a_name_the_creator_did_not_pick_from_a_list_is_refused_at_the_orchestrator(tmp_path: Path):
+    orch = _orch(tmp_path, FakeResourceProvider())
+    with pytest.raises(ValueError):
+        orch.list_data_source_schemas("ds-dwh", 'DWH"; DROP TABLE x')
+    with pytest.raises(ValueError):
+        orch.bind_data_source("ds-dwh", database="DWH", schema="a b")
+
+
+def test_an_unknown_source_id_is_a_lookup_failure_not_an_empty_list(tmp_path: Path):
+    orch = _orch(tmp_path, FakeResourceProvider())
+    with pytest.raises(LookupError):
+        orch.list_data_source_databases("ds-does-not-exist")
+
+
+def test_the_cascade_cannot_look_inside_a_source_without_the_domino_data_library():
+    # The library ships in the Domino image, not in Sage's venv, so this is the state a developer
+    # running the backend on a laptop is in — and the message has to separate it from "empty".
+    p = DominoResourceProvider("http://gw/v1", lambda: "tok")
+    with pytest.raises(ResourceUnavailable, match="not installed here"):
+        p.list_databases(_source("SnowflakeConfig"))
+
+
+def test_the_cascade_routes_carry_one_level_each(tmp_path: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
+
+    monkeypatch.setattr(appmod, "orchestrator", _orch(tmp_path, FakeResourceProvider()))
+    client = TestClient(appmod.control_app)
+
+    def get(path):
+        r = client.get(path)
+        return r.status_code, r.json()
+
+    assert get("/api/data-sources/ds-dwh/databases") == (200, {"items": ["DWH", "SANDBOX"]})
+    assert get("/api/data-sources/ds-dwh/schemas?database=DWH") == (
+        200, {"items": ["MARTS", "REPORTING", "STAGING"]})
+    ok, body = get("/api/data-sources/ds-dwh/tables?database=DWH&schema=MARTS")
+    assert ok == 200 and "DIM_ACCOUNT" in body["items"]
+
+    # The level is in the path rather than inferred from which query parameters arrived, so a
+    # two-level store asking for schemas with no database is a request, not a guess.
+    assert get("/api/data-sources/ds-reporting/schemas") == (200, {"items": ["audit", "public"]})
+
+    assert get("/api/data-sources/nope/databases")[0] == 404
+    assert get('/api/data-sources/ds-dwh/schemas?database=D";DROP')[0] == 400
+    status, body = get("/api/data-sources/ds-oracle/databases")
+    # 502 and not 404: the source exists and the creator can still record it. Only looking inside is
+    # unavailable, and the reason names the connector.
+    assert status == 502 and "Oracle" in body["error"]

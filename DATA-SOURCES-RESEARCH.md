@@ -952,3 +952,68 @@ not that Sage guessed the route wrong.
 Excluded, each one line from being offered: `DatasetConfig` and `NetAppVolumeConfig` (mount-
 shaped, already Assets, and 16 of the 22 rows), the object stores, the vector databases, and
 `MongoDBConfig` / `PalantirConfig` (neither speaks SQL).
+
+---
+
+## Addendum 4 — what #11 shipped on
+
+The cascade Addendum 2 proved possible is now the picker. `backend/sage/resources/provider.py`
+holds the statements, `sage/orchestrator/service.py` resolves and validates, and the rail draws
+one select per level. Three things are worth recording, because the file above does not predict
+them.
+
+### One connector is verified, twelve are honest guesses — the split is the design
+
+`SQL_DIALECTS` covers **13 of the 23** entries in `SQL_CONNECTORS`. Only `SnowflakeConfig` is
+marked `verified`, and it carries exactly the three statements timed in Addendum 2. The rest are
+the standard `information_schema` shape: Postgres (and Redshift, Greenplum), MySQL (and MariaDB,
+SingleStore, ClickHouse), SQL Server and Synapse via `sys.databases`, Databricks and Trino via
+`SHOW CATALOGS`, BigQuery.
+
+Left out, each one line from being added: DB2, Druid, GenericJDBC, Ignite, Netezza, Oracle, SAP
+HANA, Teradata, Vertica. None of them serves the ANSI `information_schema` views the table leans
+on, so an entry would be a guess with nothing behind it.
+
+That split is affordable only because of **how an unverified dialect fails**: a wrong statement
+comes back as the store's own error, on one level, shown in the rail — "this connector said
+*x*", not an empty schema. A source with no dialect at all never opens a picker; `dialect_for`
+refuses by name, and Use records the source without a scope, which is all a Binding meant before
+this issue. Neither path is a dead end, and neither dresses a failure as an answer.
+
+### Two-level stores are a third state, not a missing database
+
+Postgres, MySQL and BigQuery connect **inside** one database. `SqlDialect.databases is None`
+models that, and `cascade_levels` returns `["schema", "table"]`. This is distinct from `[]`,
+which means Sage cannot look inside at all. Collapsing the two would either show a Database
+select holding one item, or hide a schema list that works perfectly well.
+
+### The identifier allowlist is the guard Addendum 2 asked for, at both edges
+
+Addendum 2 established the blast radius: the `DOMINO` service account reads the whole company
+warehouse. So a name that reaches a `format()` template is validated against
+`[A-Za-z0-9_$]+` — an **allowlist, not an escape** — in `safe_identifier`, called at the
+orchestrator edge and again where the SQL is built. Quoting is applied on top, but only to
+preserve case; the validation has already ruled out what quoting would be protecting against.
+A refused name is a 400 naming the character class, not a silent drop.
+
+Two smaller findings from the same reading:
+
+- `readable_error` redacts any run of 32+ identifier characters before showing a store's
+  failure, because `DataSourceClient.__repr__` prints its api_key in plaintext (the probe script
+  had to avoid printing the client for that reason) and `DOMINO_USER_API_KEY` is 64 chars.
+  Redaction runs **before** truncation — a cut that ran first would leave the front of a key
+  showing.
+- Every introspection statement is `SELECT` or `SHOW`, asserted over the whole table in
+  `test_the_introspection_statements_only_read`. The credential can write; Sage's SQL cannot.
+
+### Levels resolve against a live listing, and are not cached
+
+`Orchestrator._data_source` re-lists Data Sources per level opened. One extra listing next to a
+query that costs seconds is cheap, and a cached row would let the cascade keep walking into a
+source Domino had stopped offering this caller.
+
+### Still not verified
+
+Every dialect except Snowflake's, and the timings for any of them. The `information_schema`
+statements are unrun. First contact with a non-Snowflake source is the test, and the failure it
+produces is designed to be legible enough to fix the table from.

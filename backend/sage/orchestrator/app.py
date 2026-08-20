@@ -42,7 +42,7 @@ from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..preview.prefix import domino_base_prefix, domino_project_label
 from ..preview.proxy import make_preview_app
-from ..resources.bindings import KIND_LLM_ALIAS, KIND_MODEL_API
+from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API
 from ..resources.model_api_credentials import CredentialRequired
 from ..resources.provider import DominoResourceProvider, FakeResourceProvider, ResourceUnavailable
 from ..router.models import Mode, ModelCatalog, Phase
@@ -694,6 +694,48 @@ def list_resources() -> JSONResponse:
     return JSONResponse(content=body)
 
 
+# One route per level of the Data Source cascade (#11), rather than one route that infers the level
+# from which query parameters happen to be present. The three are asked at different moments and each
+# one is a query against the store that can fail on its own, so a URL that says which level it is
+# keeps a failure legible in a network log — and there is no level to guess wrong.
+#
+# Every one answers 200 with `items`, or a reason. A reason, not an empty list: an empty schema and a
+# connector that refused the statement look identical in a list of nothing, and only one of them is
+# something the creator can act on.
+def _cascade(level, *args) -> JSONResponse:
+    """Run one cascade level and turn its failures into the right status.
+
+    502 is the store or Domino not answering — the wording of that is already the creator's to read.
+    400 is a name Sage will not send, which the panel should never produce, since it only ever sends
+    names the previous level returned; if it appears, the bug is in Sage and the code says so.
+    """
+    try:
+        return JSONResponse(content={"items": level(*args)})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": (
+            "That Data Source is not one Domino offers you, so Sage cannot look inside it."
+        )})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@control_app.get("/api/data-sources/{source_id}/databases")
+def list_data_source_databases(source_id: str) -> JSONResponse:
+    return _cascade(orchestrator.list_data_source_databases, source_id)
+
+
+@control_app.get("/api/data-sources/{source_id}/schemas")
+def list_data_source_schemas(source_id: str, database: str = "") -> JSONResponse:
+    return _cascade(orchestrator.list_data_source_schemas, source_id, database)
+
+
+@control_app.get("/api/data-sources/{source_id}/tables")
+def list_data_source_tables(source_id: str, database: str = "", schema: str = "") -> JSONResponse:
+    return _cascade(orchestrator.list_data_source_tables, source_id, database, schema)
+
+
 # Bindings are their own route, not part of /api/resources: that one has nothing to list for a kind
 # whose service will not answer, and a creator auditing an app needs the dependency list precisely
 # then.
@@ -708,6 +750,25 @@ async def add_binding(request: Request) -> JSONResponse:
     kind, resource_id = body.get("kind"), body.get("id")
     if not resource_id:
         return JSONResponse(status_code=400, content={"error": "id required"})
+    # A Data Source is handled before the pair below rather than folded in with them: it is the one
+    # kind whose record carries WHERE inside the Resource the choice landed, so it binds with four
+    # arguments where the others bind with one, and its 400 is a name rather than a missing Resource.
+    if kind == KIND_DATA_SOURCE:
+        try:
+            return JSONResponse(content={"bindings": orchestrator.bind_data_source(
+                resource_id,
+                str(body.get("database") or ""),
+                str(body.get("schema") or ""),
+                str(body.get("table") or ""),
+            )})
+        except LookupError:
+            return JSONResponse(status_code=404, content={"error": (
+                "That Data Source is not one Domino offers you, so the app cannot depend on it."
+            )})
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+        except ResourceUnavailable as e:
+            return JSONResponse(status_code=502, content={"error": str(e)})
     # One route, one record, two kinds — each with its own "why not" sentence, because the two are
     # refused for different reasons and "ask an admin for a grant" is the wrong advice for a Model
     # API that simply is not deployed in this project.

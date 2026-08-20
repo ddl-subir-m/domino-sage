@@ -13,7 +13,13 @@ from pathlib import Path
 
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
-from sage.resources.bindings import KIND_LLM_ALIAS, KIND_MODEL_API, Binding, parse_bindings
+from sage.resources.bindings import (
+    KIND_DATA_SOURCE,
+    KIND_LLM_ALIAS,
+    KIND_MODEL_API,
+    Binding,
+    parse_bindings,
+)
 from sage.resources.provider import FakeResourceProvider, LlmAlias, ModelApi
 from sage.router.models import ModelCatalog
 
@@ -377,3 +383,66 @@ def test_the_binding_list_answers_even_when_the_gateway_will_not(tmp_path: Path,
 
     assert client.get("/api/resources").json()["llm_aliases"] == []
     assert [b["name"] for b in client.get("/api/bindings").json()["bindings"]] == ["sonnet"]
+
+
+# ---- a Data Source Binding carries a scope (#11) -------------------------------------------------
+
+
+def test_binding_a_data_source_records_the_chosen_scope(tmp_path: Path):
+    # A Data Source Binding is the one kind that records more than which Resource: the same source
+    # holds many tables, and which one the app reads is the creator's choice, not a property of the
+    # source.
+    orch = _orch(tmp_path)
+    entries = orch.bind_data_source("ds-dwh", "DWH", "MARTS", "FCT_USAGE_DAILY")
+    assert [e for e in entries if e["kind"] == KIND_DATA_SOURCE] == [{
+        "kind": "data_source", "id": "ds-dwh", "name": "Snowflake-Data-Warehouse",
+        "display_name": "Snowflake-Data-Warehouse",
+        "database": "DWH", "schema": "MARTS", "table": "FCT_USAGE_DAILY",
+    }]
+
+
+def test_changing_the_scope_replaces_the_binding_instead_of_adding_one(tmp_path: Path):
+    # The criterion "can change choice without removing and re-picking the Resource". The key is
+    # kind+id and excludes the scope on purpose, so re-binding the same source overwrites.
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS", "FCT_USAGE_DAILY")
+    entries = orch.bind_data_source("ds-dwh", "SANDBOX", "public")
+    rows = [e for e in entries if e["kind"] == KIND_DATA_SOURCE]
+    assert len(rows) == 1
+    assert rows[0]["database"] == "SANDBOX" and rows[0]["schema"] == "public"
+    # And narrowing back out drops the table rather than leaving a stale one behind.
+    assert "table" not in rows[0]
+
+
+def test_a_scope_the_creator_did_not_choose_is_absent_rather_than_null(tmp_path: Path):
+    # The manifest is committed to the creator's own app repo, so a shape change that wrote three
+    # nulls onto every existing entry would show up as a diff in apps nobody touched.
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    orch.bind_data_source("ds-oracle")
+    written = json.loads((tmp_path / "mnt" / "code" / ".sage" / "bindings.json").read_text())
+    alias = next(e for e in written if e["kind"] == KIND_LLM_ALIAS)
+    assert set(alias) == {"kind", "id", "name", "display_name"}
+    source = next(e for e in written if e["kind"] == KIND_DATA_SOURCE)
+    assert set(source) == {"kind", "id", "name", "display_name"}
+
+
+def test_a_scope_survives_the_round_trip_through_the_file(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-mssql", "underwriting", "dbo", "claims")
+    written = (tmp_path / "mnt" / "code" / ".sage" / "bindings.json").read_text()
+    reread = parse_bindings(json.loads(written))
+    source = next(b for b in reread if b.kind == KIND_DATA_SOURCE)
+    assert (source.database, source.schema, source.table) == ("underwriting", "dbo", "claims")
+    # What the app's own code needs is the qualified name, which is why the record keeps the parts.
+    assert source.scope == "underwriting.dbo.claims"
+
+
+def test_a_scope_key_that_is_not_a_name_is_dropped_on_the_way_in():
+    # A hand-edited or older manifest, read defensively: the parts go into SQL, so anything that is
+    # not a plain string is not a name and is not kept.
+    entries = [{"kind": "data_source", "id": "d", "name": "s", "database": {"x": 1},
+                "schema": "", "table": ["t"]}]
+    binding = parse_bindings(entries)[0]
+    assert (binding.database, binding.schema, binding.table) == (None, None, None)
+    assert binding.scope == ""
