@@ -1017,3 +1017,39 @@ source Domino had stopped offering this caller.
 Every dialect except Snowflake's, and the timings for any of them. The `information_schema`
 statements are unrun. First contact with a non-Snowflake source is the test, and the failure it
 produces is designed to be legible enough to fix the table from.
+
+---
+
+## Addendum 4 — what #12 shipped on, and one correction
+
+The two guards above are now enforced, in `backend/sage/resources/publish_guard.py`, at both
+publish routes: the builder's (`Orchestrator.publish`) and the hub's (`HubService.publish_app`).
+The hub reads the app's Resource list from the committed `.sage/bindings.json` over the repo
+provider, because it publishes without a builder and has no workspace to read.
+
+**Correction to guard 2.** "Sage sets app visibility at publish time, so it can enforce this" is
+only half true. Sage sets `visibility: "GRANT_BASED"` when it *creates* an App, and a re-publish
+posts a **version** (`POST /api/apps/beta/apps/{id}/versions`), whose body carries no visibility at
+all. So Sage sets it once and can never set it again — an App's sharing can be changed afterwards
+on its own settings page, which is the page Sage's own Publish links to as "Manage settings in
+Domino". Enforcement therefore has to *read* the value back before a re-publish, which
+`ControlPlane.app_visibility` does.
+
+**Unverified, and the reason the guard fails open.** Nothing has yet confirmed what
+`GET /api/apps/beta/apps/{id}` calls that field on the way back, or which names Domino's own
+sharing settings carry; `publish_guard.OPEN_VISIBILITY` is a guess at the open ones. An
+unrecognised value is treated as *not* open, deliberately: Sage sets GRANT_BASED itself, so a
+renamed field read as "not GRANT_BASED" would refuse every re-publish of every app, including the
+ones nobody had touched. The credential guard beside it fails the other way — an unlistable Data
+Source refuses — because that listing is the same public endpoint the Resource Browser already
+reads successfully, so a failure there is loud and transient.
+
+One live probe closes it: publish an app through Sage, then
+
+```
+GET {DOMINO_API_HOST}/api/apps/beta/apps/{app_id}
+```
+
+and read which key holds `GRANT_BASED`. Change the sharing in Domino's UI and read it again for the
+open value. With both names in hand, `OPEN_VISIBILITY` can be replaced by an exact match and the
+guard can fail closed.

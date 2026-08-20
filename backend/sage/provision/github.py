@@ -57,6 +57,13 @@ class RepoProvider(Protocol):
         """True if `path` exists on branch/ref `ref` in repo `full_name` ("owner/name")."""
         ...
 
+    def read_file(self, full_name: str, path: str, ref: str) -> str | None:
+        """The text of `path` at `ref`, or None if it isn't there.
+
+        The hub publishes an app whose builder may never have run in this process, so the only copy
+        of that app's Resource list it can reach is the one committed to the repo (#12)."""
+        ...
+
 
 @dataclass
 class FakeRepoProvider:
@@ -65,6 +72,7 @@ class FakeRepoProvider:
     host: str = "github.com"
     created: list[RepoInfo] = field(default_factory=list)
     owner: str = "test-owner"
+    files: dict[tuple[str, str], str] = field(default_factory=dict)  # (full_name, path) -> text
 
     def create_repo(self, name: str, *, description: str = "", private: bool = True) -> RepoInfo:
         full = f"{self.owner}/{name}"
@@ -79,6 +87,11 @@ class FakeRepoProvider:
 
     def file_exists(self, full_name: str, path: str, ref: str) -> bool:
         return True  # fake mode: seeded repos always carry the template entry script
+
+    def read_file(self, full_name: str, path: str, ref: str) -> str | None:
+        # Nothing by default, not an empty manifest: a fake-mode hub has no app that has picked a
+        # Resource, and "no manifest" is the honest answer rather than "a manifest saying none".
+        return self.files.get((full_name, path))
 
 
 class GitHubProvider:
@@ -138,4 +151,20 @@ class GitHubProvider:
             return True
         if r.status_code == 404:  # file (or ref) absent
             return False
+        raise RepoProviderError(r.status_code, r.text)
+
+    def read_file(self, full_name: str, path: str, ref: str) -> str | None:
+        """The file's text at `ref`, or None when it is not there.
+
+        `Accept: application/vnd.github.raw` so the body IS the file — the default contents response
+        is a JSON envelope carrying base64, and a manifest is exactly the size where that starts
+        being an encoding to get wrong for no reason."""
+        with httpx.Client(transport=self._transport, timeout=self._timeout_s) as client:
+            r = client.get(f"{self._base_url}/repos/{full_name}/contents/{path}",
+                           params={"ref": ref},
+                           headers={**self._headers(), "Accept": "application/vnd.github.raw"})
+        if r.status_code == 200:
+            return r.text
+        if r.status_code == 404:  # file (or ref) absent
+            return None
         raise RepoProviderError(r.status_code, r.text)

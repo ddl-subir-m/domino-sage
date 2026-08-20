@@ -28,6 +28,8 @@ from ..provision import credentials
 from ..provision.domino import DominoControlPlane, FakeControlPlane
 from ..provision.github import FakeRepoProvider, GitHubProvider
 from ..provision.service import HubService, workspace_is_running
+from ..resources.provider import DominoResourceProvider
+from ..resources.publish_guard import PublishRefused
 
 log = logging.getLogger("sage.hub")
 logging.basicConfig(level=logging.INFO)
@@ -100,6 +102,11 @@ def _build_hub() -> tuple[HubService, str]:
         return _require_token(host)
 
     repo_provider = GitHubProvider(token_provider=token_provider)
+    # Data Sources only, for the publish guard (#12) — hence no gateway base URL: the hub has no
+    # LLM Gateway configured and never asks this provider for an Alias. The Domino API host and the
+    # sidecar token are the two things `list_data_sources` needs, and the hub already holds both.
+    api_token = sidecar_token()
+    resources = DominoResourceProvider("", api_token, api_host=api_host, api_token_provider=api_token)
     control_plane = DominoControlPlane(
         api_host,
         sidecar_token(),
@@ -109,7 +116,8 @@ def _build_hub() -> tuple[HubService, str]:
         builder_tool=os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder"),
         git_host=host,
     )
-    return HubService(control_plane, repo_provider, _TEMPLATE, push_token_provider=token_provider), "domino"
+    return HubService(control_plane, repo_provider, _TEMPLATE, push_token_provider=token_provider,
+                      resources=resources), "domino"
 
 
 def _require_token(host: str) -> str:
@@ -247,6 +255,12 @@ async def publish_app(project_id: str) -> JSONResponse:
     """Publish (or re-publish) the app's latest committed code as a live, shareable Domino App."""
     try:
         result = await run_in_threadpool(hub.publish_app, project_id)
+    except PublishRefused as e:
+        # 409, and never wrapped in "Couldn't publish the app:" — a guard refusal already says what
+        # is wrong and what to do about it, and a prefix that reads like a malfunction would take
+        # that away (#12).
+        return JSONResponse({"error": str(e), "refused": [p.to_dict() for p in e.problems]},
+                            status_code=409)
     except Exception as e:  # provisioning failure — human-readable, not a stack trace
         log.exception("publish_app failed")
         return JSONResponse({"error": f"Couldn't publish the app: {e}"}, status_code=502)

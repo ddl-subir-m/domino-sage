@@ -140,6 +140,13 @@
   .status-line.ok { color: var(--ok); } .status-line.err { color: var(--lock); } .status-line.warn { color: var(--warn); }
   .status-line .elapsed { color: var(--faint); font-variant-numeric: tabular-nums; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* a refused publish (#12) — a banner, not a status pill. It names a Binding and a remedy, which
+     takes a sentence or two to read and a trip to the rail to act on, so it holds its own block and
+     stays put. */
+  .guard-banner { align-self: stretch; width: 100%; background: var(--surface); border: 1px solid var(--lock); border-radius: 11px; padding: 11px 13px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 7px; }
+  .guard-banner .gb-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 650; color: var(--lock); }
+  .guard-banner .gb-item { font-size: 13px; line-height: 1.5; color: var(--text); }
+  .guard-banner .gb-foot { display: flex; gap: 12px; margin-top: 1px; }
   .divider { text-align: center; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .6px; margin: 6px 0; position: relative; }
   .divider::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--border); z-index: 0; }
   .divider span { position: relative; background: var(--bg); padding: 0 10px; z-index: 1; }
@@ -947,6 +954,9 @@ async function publishApp() {
   try {
     const { ok, body } = await api('/api/publish', { method: 'POST' });
     s.remove();
+    // A refusal is not a failure to report and move on from: it is a list of things to go and fix,
+    // so it gets a banner of its own rather than one more line in the transcript.
+    if (!ok && body.refused) { showPublishRefusal(body.refused); return; }
     if (!ok) { addStatus('err', '⚠', `Couldn't publish — ${esc(body.error || 'unknown error')}`); return; }
     const verb = body.republished ? 'Re-published' : 'Published';
     const links = [];
@@ -964,6 +974,27 @@ async function publishApp() {
   } finally {
     btn.disabled = false;
   }
+}
+
+// Sage refused to publish because of what the app reads (#12). Every problem at once, each naming
+// the Data Source it is about, because fixing one and being told about the next is how a creator
+// learns their own app one refusal at a time. Carries the `preflight` class for the same reason the
+// stale-Binding warnings do: it is a fact about the app that arrived on its own, not a message, so
+// it must not make an empty chat look used.
+function showPublishRefusal(problems) {
+  const d = document.createElement('div');
+  d.className = 'guard-banner preflight';
+  // Only when a problem is about a Binding. An app refused for being shared with everyone is fixed
+  // on its settings page in Domino, and a button offering the rail instead would be the wrong door.
+  const railable = problems.some(p => p.id);
+  d.innerHTML = `<div class="gb-head"><span>⛔</span><span>Sage didn’t publish this app</span></div>`
+    + problems.map(p => `<div class="gb-item">${esc(p.message)}</div>`).join('')
+    + (railable ? `<div class="gb-foot"><button class="link-btn">Show it in Resources</button></div>` : '');
+  if (railable) d.querySelector('.link-btn').onclick = () => {
+    if (!document.getElementById('rail').classList.contains('open')) toggleRail();
+    document.getElementById('bindings-group').scrollIntoView({ block: 'nearest' });
+  };
+  append(d);
 }
 
 // Poll a published app's deploy status until it goes live or fails (deploy = npm ci + build + serve,

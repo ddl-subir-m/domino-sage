@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from ..provision.domino import ControlPlane
+    from ..provision.domino import ControlPlane, PublishedApp
 
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG, Asset, AssetProvider, FakeAssetProvider, is_sensitive
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
@@ -60,6 +60,11 @@ from ..resources.provider import (
     ResourceUnavailable,
     cascade_levels,
     safe_identifier,
+)
+from ..resources.publish_guard import (
+    PublishRefused,
+    data_source_bindings,
+    publish_problems,
 )
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
@@ -2422,6 +2427,12 @@ class Orchestrator:
                 "or DOMINO_PROJECT_ID)."
             )
         project = self.project()
+        # Before anything is written, pushed or deployed: a refused publish must leave nothing
+        # behind, so a creator who fixes the Binding and publishes again is publishing the same code
+        # they were looking at. Which app already exists is settled here rather than after the save
+        # because the guard needs it — an app's sharing setting is a property of the deployed App.
+        existing = self._control_plane.find_project_app(self._domino_project_id)
+        self._refuse_unsafe_publish(project, existing)
         # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
         # app created from an older image would otherwise redeploy its original copy forever — and
         # keep hitting bugs fixed since (the Node-18 PATH order that crash-looped every build).
@@ -2458,7 +2469,6 @@ class Orchestrator:
         cp = self._control_plane
         pid = self._domino_project_id
         name = self._domino_project_name or self._project_id
-        existing = cp.find_project_app(pid)
         if existing and existing.id:  # already published — ship a new version, keep the URL
             app = cp.republish_app(existing.id)
             out = {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
@@ -2482,6 +2492,39 @@ class Orchestrator:
         else:
             phase = "pending"
         return {"app_id": app_id, "status": raw, "phase": phase}
+
+    def _refuse_unsafe_publish(self, project: Project, existing: PublishedApp | None) -> None:
+        """Refuse a publish that would re-export a Data Source (#12). No-op for an app that reads
+        none, which is every app Sage built before #11.
+
+        The two questions are asked here rather than carried in the manifest. A Binding records
+        which Data Source an app reads, and deliberately not what kind of credential it had at the
+        time: a credential can be changed from individual to shared, or the other way, long after
+        the pick, and the answer that matters is the one true at the moment the app is shared.
+        Sharing is read from the deployed App for the same reason — Sage sets it once, at create,
+        and cannot set it again on a re-publish.
+
+        Both reads are best-effort in the sense that a failure is caught here; what a failure MEANS
+        is `publish_problems`'s decision, and the two differ (a missing listing refuses, an
+        unreadable visibility does not).
+        """
+        bindings = data_source_bindings(parse_bindings(project.workspace.read_bindings()))
+        if not bindings:
+            return
+        try:
+            sources: list[DataSource] | None = self._resources.list_data_sources()
+        except Exception:
+            log.exception("publish: couldn't list Data Sources to check the credential guard")
+            sources = None
+        visibility = ""
+        if existing and existing.id:
+            try:
+                visibility = self._control_plane.app_visibility(existing.id)
+            except Exception:
+                log.exception("publish: couldn't read the app's visibility; treating it as not open")
+        problems = publish_problems(bindings, sources, visibility)
+        if problems:
+            raise PublishRefused(problems)
 
     def stop(self) -> dict:
         """Stop THIS builder's workspace so it stops consuming compute. Saves in-progress work first

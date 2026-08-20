@@ -89,6 +89,7 @@
     .banner.ok { display: block; background: color-mix(in srgb, var(--ok) 12%, var(--surface)); color: var(--ok);
       border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--border)); }
     .banner a { color: inherit; font-weight: 700; }
+    .banner .gb-item { margin-top: 6px; line-height: 1.5; }
 
     /* modal */
     .backdrop { position: fixed; inset: 0; background: rgba(15,15,30,.45); display: none; align-items: center;
@@ -163,6 +164,15 @@
     const $ = (id) => document.getElementById(id);
     const banner = (msg) => { const b = $('banner'); if (!msg) { b.className = 'banner'; b.textContent = ''; return; }
       b.className = 'banner err'; b.textContent = msg; };
+    // Sage refused to publish because of what the app reads (#12). Every problem at once, each
+    // naming the Data Source it is about — the banner stays until the next action, which is what a
+    // refusal needs and a toast would not give.
+    function refusal(problems) {
+      const b = $('banner');
+      b.className = 'banner err';
+      b.innerHTML = '<strong>Sage didn’t publish this app</strong>'
+        + problems.map(p => `<div class="gb-item">${esc(p.message)}</div>`).join('');
+    }
     // Success notice, optionally with one or more pre-built link elements (HTML strings).
     function info(msg, links) {
       const b = $('banner');
@@ -337,6 +347,7 @@
       try {
         const r = await fetch(api(`/api/apps/${id}/publish`), { method: 'POST' });
         const data = await r.json();
+        if (!r.ok && data.refused) { refusal(data.refused); return; }
         if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
         const verb = data.republished ? 'Re-published' : 'Published';
         const link = (href, label) => `<a href="${esc(href)}" target="_blank" rel="noopener">${label}</a>`;

@@ -11,6 +11,7 @@ best-effort and mark it so.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -19,8 +20,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from ..resources.bindings import parse_bindings
+from ..resources.provider import DataSource, FakeResourceProvider, ResourceProvider
+from ..resources.publish_guard import PublishRefused, data_source_bindings, publish_problems
 from . import naming
-from .domino import BUILDER_WORKSPACE_NAME, ControlPlane, ProjectRef
+from .domino import BUILDER_WORKSPACE_NAME, ControlPlane, ProjectRef, PublishedApp
 from .github import RepoInfo, RepoNameConflict, RepoProvider
 from .seed import seed_and_push
 
@@ -86,6 +90,7 @@ _DELETE_RETRY_DELAY = 5.0
 
 
 _ENTRY_POINT = "app.sh"  # the entry script Domino runs to serve a published app (repo root)
+_BINDINGS_PATH = ".sage/bindings.json"  # the app's committed Resource list, as the workspace writes it
 
 
 def _repo_full_name(git_url: str | None) -> str | None:
@@ -132,6 +137,7 @@ class HubService:
         name_limit: int = 50,
         seed: Seeder = seed_and_push,
         push_token_provider: Callable[[], str] | None = None,
+        resources: ResourceProvider | None = None,
     ) -> None:
         self._cp = control_plane
         self._repo = repo_provider
@@ -140,6 +146,10 @@ class HubService:
         self._name_limit = name_limit
         self._seed = seed
         self._push_token_provider = push_token_provider
+        # Only ever asked for Data Sources, and only when an app being published reads one (#12).
+        # A fake by default, like the orchestrator's: a hub with no Domino behind it has no listing
+        # to check against, and the fake answers about apps that have picked nothing anyway.
+        self._resources = resources or FakeResourceProvider()
 
     def list_apps(self) -> list[ProjectRef]:
         return self._cp.list_apps()
@@ -313,6 +323,7 @@ class HubService:
                     f"recreate the app, or add {_ENTRY_POINT} to the repo root and rebuild."
                 )
         existing = self._cp.find_project_app(project_id)
+        self._refuse_unsafe_publish(full, existing)
         if existing and existing.id:  # already published — ship a new version, keep the URL
             app = self._cp.republish_app(existing.id)
             out = {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
@@ -323,6 +334,51 @@ class HubService:
         # publish stays frictionless while the full config is one click away.
         out["manage_url"] = self._cp.app_manage_url(app.id, name or "")
         return out
+
+    def _refuse_unsafe_publish(self, full_name: str | None, existing: PublishedApp | None) -> None:
+        """Refuse a publish that would re-export a Data Source (#12), the same two questions the
+        builder asks in `Orchestrator._refuse_unsafe_publish`.
+
+        The hub publishes without a builder, so the app's Resource list is read from the committed
+        manifest on the default branch rather than from a workspace. That read fails OPEN — an app
+        with no manifest is the ordinary case (every app built before #11), and a repo the provider
+        could not answer for is not evidence that the app reads anything. Once the manifest DOES
+        name a Data Source, the guard is the builder's: an unanswerable credential refuses.
+        """
+        bindings = data_source_bindings(parse_bindings(self._read_bindings(full_name)))
+        if not bindings:
+            return
+        try:
+            sources: list[DataSource] | None = self._resources.list_data_sources()
+        except Exception:
+            log.exception("publish: couldn't list Data Sources to check the credential guard")
+            sources = None
+        visibility = ""
+        if existing and existing.id:
+            try:
+                visibility = self._cp.app_visibility(existing.id)
+            except Exception:
+                log.exception("publish: couldn't read the app's visibility; treating it as not open")
+        problems = publish_problems(bindings, sources, visibility)
+        if problems:
+            raise PublishRefused(problems)
+
+    def _read_bindings(self, full_name: str | None) -> list[dict]:
+        """The app's committed Resource list, or [] when there isn't one to read."""
+        if not full_name:
+            return []
+        try:
+            raw = self._repo.read_file(full_name, _BINDINGS_PATH, self._branch)
+        except Exception:
+            log.exception("publish: couldn't read %s from %s", _BINDINGS_PATH, full_name)
+            return []
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except ValueError:
+            log.warning("publish: %s in %s is not valid JSON", _BINDINGS_PATH, full_name)
+            return []
 
     def publish_status(self, app_id: str) -> dict[str, Any]:
         """Deploy status of a published app, so the hub can poll after Publish and show whether it

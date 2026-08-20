@@ -103,6 +103,7 @@ class ControlPlane(Protocol):
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]: ...
     def app_manage_url(self, app_id: str, project_name: str) -> str | None: ...
     def app_status(self, app_id: str) -> str: ...
+    def app_visibility(self, app_id: str) -> str: ...
 
 
 class DominoControlPlane:
@@ -437,6 +438,24 @@ class DominoControlPlane:
         inst = (d.get("currentVersion") or {}).get("currentInstance") or {}
         return str(inst.get("status") or "")
 
+    def app_visibility(self, app_id: str) -> str:
+        """The app's current sharing setting, or "" when the API did not say.
+
+        Read back rather than assumed, because Sage cannot keep setting it: `publish_app` sends
+        GRANT_BASED, but a re-publish posts a *version*, which carries no visibility at all. Between
+        two publishes the sharing can therefore be changed on the App's own settings page — the page
+        Publish links to as "Manage settings in Domino" — and the publish guard in
+        `sage.resources.publish_guard` is what this read exists for.
+
+        UNVERIFIED field name: `visibility` is what the create call sends, and nothing has yet
+        confirmed the detail response spells it the same way. "" is returned for anything
+        unexpected, and the guard reads "" as not-open on purpose — see `open_visibility`.
+        """
+        d = self._get(f"{_APPS_PATH}/{app_id}")
+        if not isinstance(d, dict):
+            return ""
+        return str(d.get("visibility") or "")
+
     def app_manage_url(self, app_id: str, project_name: str) -> str | None:
         """Host-relative deep-link to the App's settings/overview page in Domino (tier, autoscaling,
         data, sharing), so 1-click Publish stays frictionless while the full native config is one
@@ -494,6 +513,7 @@ class FakeControlPlane:
     published: dict[str, PublishedApp] = field(default_factory=dict)  # app_id -> app
     app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id (find_project_app)
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
+    app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
     tagged_sensitive: dict[str, str] = field(default_factory=dict)  # dataset_id -> snapshot_id tagged
     _seq: int = 0
@@ -590,3 +610,8 @@ class FakeControlPlane:
 
     def app_status(self, app_id: str) -> str:
         return self.app_statuses.get(app_id, "Running")
+
+    def app_visibility(self, app_id: str) -> str:
+        # Grant-based unless a test says otherwise: that is what publish_app sets, so it is what an
+        # app Sage published and nobody re-shared actually has.
+        return self.app_visibilities.get(app_id, "GRANT_BASED")

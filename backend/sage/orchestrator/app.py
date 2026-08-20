@@ -45,6 +45,7 @@ from ..preview.proxy import make_preview_app
 from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API
 from ..resources.model_api_credentials import CredentialRequired
 from ..resources.provider import DominoResourceProvider, FakeResourceProvider, ResourceUnavailable
+from ..resources.publish_guard import PublishRefused
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from .service import AttachTooLarge, DataReferenced, Orchestrator, UploadUnavailable
@@ -488,6 +489,12 @@ async def publish() -> JSONResponse:
     saves work (a git push) and makes several control-plane REST calls."""
     try:
         result = await run_in_threadpool(orchestrator.publish)
+    except PublishRefused as e:
+        # 409, not 400: the request is well formed and the app is fine — it is the state of what it
+        # reads that is in the way. `refused` carries every problem so the UI can name them all at
+        # once; `error` keeps the plain-text shape every other publish failure has.
+        return JSONResponse(status_code=409, content={
+            "error": str(e), "refused": [p.to_dict() for p in e.problems]})
     except RuntimeError as e:  # not-on-Domino / missing app.sh — human-readable, expected failures
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:
