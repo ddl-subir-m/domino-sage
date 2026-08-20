@@ -423,6 +423,14 @@ The sidecar token is bare, so none of those failed on a doubled `Bearer ` prefix
 most because `POST /api/pat/v1/tokens` can mint one from a published app's sidecar — it is refused
 too, so that door is shut.
 
+**Model invocation is a separate auth domain from the Domino REST API, and the docs only describe
+the latter.** Domino's documentation says to authenticate with the `X-Domino-Api-Key` header, and
+that is correct — for the platform API. The same key in the same header returns **200** on
+`/v4/users/self` and **401** on a Model API, in the same shell, seconds apart. So the 401s above are
+genuine refusals rather than a stale credential, and the header is not merely unsupported at the
+model endpoint: its CORS preflight allows exactly `authorization, content-type`, so a browser could
+not send `X-Domino-Api-Key` cross-origin even if the model wanted it.
+
 The SDK is not a way round it either. `dominodatalab` 1.4.8 has no method that fetches a model
 access token and none that invokes a model; its model surface is publish, versions and export. It
 wraps the REST API, and the REST API does not vend the secret: `ModelApiAccessToken` is metadata
