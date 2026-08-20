@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +30,10 @@ _DEPS_SENTINEL = Path(".bin") / "vite"
 # (ADR-0002). Both Sage-owned — see refresh_entry_script. serve.py comes FIRST: a refreshed app.sh
 # without it is an app that crash-loops, whereas a stale app.sh with a spare serve.py still serves.
 _DEPLOY_FILES = ("serve.py", "app.sh")
+# One binding writer at a time. Workspace is a frozen value object that callers re-create freely, so
+# the lock cannot live on the instance; a process-wide one is enough because a Sage process serves a
+# single project (D9) and every binding write goes through update_bindings.
+_BINDINGS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -286,6 +292,48 @@ class Workspace:
     def write_attachments(self, entries: list[dict]) -> None:
         self.attachments_path.parent.mkdir(parents=True, exist_ok=True)
         self.attachments_path.write_text(json.dumps(entries, indent=2))
+
+    @property
+    def bindings_path(self) -> Path:
+        """Committed manifest of the Resources this app uses (#6).
+
+        Its own file rather than another entry kind in attachments.json: that manifest's consumer,
+        the template's scripts/rehydrate-data.mjs, skips any entry it does not recognise without a
+        word, so a Binding stored there would vanish silently.
+        """
+        return self.path / ".sage" / "bindings.json"
+
+    def read_bindings(self) -> list[dict]:
+        if not self.bindings_path.exists():
+            return []
+        try:
+            data = json.loads(self.bindings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def update_bindings(self, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
+        """Read, change and republish the bindings manifest as one step, and return the new list.
+
+        Read-modify-write under a lock, then os.replace, so two requests that arrive together cannot
+        drop one of the two edits and a reader never sees a half-written file. write_attachments
+        does neither — it truncates in place, last writer wins — which is why this is not built on
+        it.
+        """
+        with _BINDINGS_LOCK:
+            entries = change(self.read_bindings())
+            self.bindings_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.bindings_path.with_name(self.bindings_path.name + ".tmp")
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(entries, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.bindings_path)
+            finally:
+                # A leftover .tmp inside committed .sage/ would land in the user's app repo.
+                tmp.unlink(missing_ok=True)
+            return entries
 
 
 class WorkspaceManager:

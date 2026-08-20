@@ -33,6 +33,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
+from ..resources.bindings import KIND_LLM_ALIAS, Binding, parse_bindings
 from ..resources.provider import FakeResourceProvider, ResourceProvider
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
@@ -2546,6 +2547,37 @@ class Orchestrator:
             }
             for a in self._resources.list_llm_aliases()
         ]
+
+    # ---- Bindings: the Resources this app is recorded as using (#6) ----
+
+    def list_bindings(self) -> list[dict]:
+        """Read from the manifest rather than the gateway, so this still answers "what does this app
+        depend on" when the gateway is unreachable — which is when the question gets asked."""
+        return [b.to_dict() for b in parse_bindings(self.project().workspace.read_bindings())]
+
+    def bind_llm_alias(self, alias_id: str) -> list[dict]:
+        """Record that this app uses one LLM Alias, and return the new Binding list.
+
+        The Alias must be one the caller can actually call: `list_llm_aliases` has already
+        intersected the grants, so anything absent from it is either not registered or not granted,
+        and recording a dependency on it would be recording a build that cannot run. Binding twice
+        is not an error — the second click just means the row is already in the group above.
+        """
+        alias = next((a for a in self.list_llm_aliases() if a["id"] == alias_id), None)
+        if alias is None:
+            raise LookupError(alias_id)
+        new = Binding(KIND_LLM_ALIAS, alias["id"], alias["name"], alias["display_name"])
+        def change(entries: list[dict]) -> list[dict]:
+            kept = [e for e in parse_bindings(entries) if e.key != new.key]
+            return [b.to_dict() for b in [*kept, new]]
+        return self.project().workspace.update_bindings(change)
+
+    def unbind(self, kind: str, resource_id: str) -> list[dict]:
+        """Drop one Binding. Removing a record that is already gone is not an error: the creator
+        wanted it gone, and it is."""
+        def change(entries: list[dict]) -> list[dict]:
+            return [b.to_dict() for b in parse_bindings(entries) if b.key != (kind, resource_id)]
+        return self.project().workspace.update_bindings(change)
 
     def _find_asset(self, dataset_id: str) -> Asset:
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)

@@ -338,6 +338,12 @@
   .res-cost { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
   .res-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
   .res-desc { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+  /* The name and its Use button share the first line: the button belongs to the row it acts on, and
+     putting it below the capability chips would move it away from the name that identifies it (#6). */
+  .res-head { display: flex; align-items: center; gap: 8px; }
+  .res-head .res-name { flex: 1; }
+  .res-head button { flex: 0 0 auto; padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
+  .res-head button.used { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
   /* mode menu (Claude Code-style list: checkmark on the selected row, number shortcut on the right) */
   .mode-list { display: flex; flex-direction: column; margin: 2px -6px 0; }
   .mode-list button {
@@ -512,6 +518,9 @@
         <button class="icon-btn" style="margin-left:auto" onclick="toggleRail()" aria-label="Close resources">✕</button>
       </div>
       <div class="rail-body">
+        <!-- Bindings first: auditing an app should not mean hunting through the kinds below (#6). -->
+        <div class="asset-group" id="bindings-group">Used by this app</div>
+        <div id="bindings"></div>
         <div class="asset-group">LLM Aliases</div>
         <div id="llm-aliases"><div class="hint">Loading LLM Aliases…</div></div>
         <div class="asset-group">Data</div>
@@ -874,6 +883,7 @@ function enterProject() {
   refreshStatus();
   loadPhasedBuild();
   loadResources();
+  loadBindings();
   loadAssets();
   openFilePath = null;
   for (const buf of fileBuffers.values()) buf.model.dispose();
@@ -946,10 +956,27 @@ function aliasRow(a) {
   const desc = a.description && a.description !== a.display_name && a.description !== a.name
     ? `<div class="res-desc">${esc(a.description)}</div>` : '';
   row.innerHTML =
-    `<div class="res-name" title="${esc(a.display_name)}">${esc(a.display_name)}</div>` +
+    `<div class="res-head"><div class="res-name" title="${esc(a.display_name)}">${esc(a.display_name)}</div></div>` +
     (alias || costEl ? `<div class="res-sub">${alias}${costEl}</div>` : '') +
     (caps ? `<div class="res-caps">${caps}</div>` : '') + desc;
+  row.querySelector('.res-head').appendChild(useButton(a));
   return row;
+}
+
+// One click records the dependency — no dialog, because a Binding is a record and Remove undoes it.
+// Until the manifest has been read, nothing is known to be used, so every row offers Use; loadBindings
+// re-renders these rows the moment it answers.
+function useButton(a) {
+  const b = document.createElement('button');
+  const used = boundAliasIds().has(a.id);
+  b.className = used ? 'used' : '';
+  b.textContent = used ? 'Used' : 'Use';
+  b.disabled = used;
+  b.title = used
+    ? 'This app already uses this LLM Alias. To undo it, use Remove under “Used by this app” above.'
+    : 'Record that this app uses this LLM Alias. It is written down, not wired up: routing, the agent and the published app do not change.';
+  if (!used) b.onclick = () => bindAlias(a.id, b);
+  return b;
 }
 
 function renderLlmAliases() {
@@ -978,6 +1005,89 @@ function renderLlmAliases() {
     return;
   }
   for (const a of aliasesCache) el.appendChild(aliasRow(a));
+}
+
+// ---------- Bindings: the Resources this app is recorded as using (#6) ----------
+// A Binding is a record. It says "this app depends on that Resource" so the creator can audit the app
+// later; it does not change model routing, the agent's prompt or the published app.
+// Read from the committed manifest, not from the gateway, so this group still answers when the
+// gateway does not — which is when "what does this app depend on" gets asked.
+let bindingsCache = null;   // null = not read yet; [] = read, and this app depends on nothing
+let bindingsError = null;
+
+const KIND_LABELS = { llm_alias: 'LLM Alias' };
+
+function boundAliasIds() {
+  return new Set((bindingsCache || []).filter(b => b.kind === 'llm_alias').map(b => b.id));
+}
+
+async function loadBindings() {
+  const { ok, body } = await api('/api/bindings');
+  bindingsCache = ok ? (body.bindings || []) : [];
+  bindingsError = ok ? null : (body.error || 'Sage could not read this app\u2019s Resource list.');
+  renderBindings();
+  renderLlmAliases();  // the Use buttons only know what is already used once this list has arrived
+}
+
+// The response carries the new list, so there is no second request to fetch it.
+function applyBindings(res, fallbackMsg) {
+  bindingsError = res.ok ? null : (res.body.error || fallbackMsg);
+  if (res.ok) bindingsCache = res.body.bindings || [];
+  renderBindings();
+  renderLlmAliases();
+  // The message lands in the group at the top, but the click that failed can be several rows down a
+  // scrolling rail — an explanation off the fold reads as nothing happening at all.
+  if (bindingsError) document.getElementById('bindings-group').scrollIntoView({ block: 'nearest' });
+}
+
+async function bindAlias(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const res = await api('/api/bindings', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'llm_alias', id }),
+  });
+  applyBindings(res, 'Sage could not record that Resource.');
+}
+
+async function unbindResource(kind, id) {
+  const res = await api(`/api/bindings/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  applyBindings(res, 'Sage could not remove that Resource.');
+}
+
+function bindingRow(b) {
+  const row = document.createElement('div');
+  row.className = 'asset-row';
+  // An unknown kind keeps its raw name rather than a guessed label: the record may come from a newer
+  // Sage, and mislabelling it would be worse than showing it plainly.
+  const kind = KIND_LABELS[b.kind] || b.kind;
+  row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(b.name)}">${esc(b.display_name)}</span>`
+    + `<span class="a-tags">${esc(kind)}</span></span>`;
+  const btn = document.createElement('button');
+  btn.textContent = 'Remove';
+  btn.title = 'Stop recording this app as using this Resource. Nothing else changes.';
+  btn.onclick = () => unbindResource(b.kind, b.id);
+  row.appendChild(btn);
+  return row;
+}
+
+function renderBindings() {
+  const el = document.getElementById('bindings');
+  if (!el) return;
+  const n = (bindingsCache || []).length;
+  document.getElementById('bindings-group').textContent = n ? `Used by this app \u00b7 ${n}` : 'Used by this app';
+  el.innerHTML = '';
+  if (bindingsError) {
+    const h = hintEl(esc(bindingsError));
+    h.classList.add('err');
+    el.appendChild(h);
+  }
+  if (bindingsCache === null) return;  // loadBindings is in flight; a "nothing yet" here would be a lie
+  if (!n) {
+    el.appendChild(hintEl('Nothing yet. Resources this app uses are listed here, so you can see what it '
+      + 'depends on. Choose Use on an LLM Alias below to add one.'));
+    return;
+  }
+  for (const b of bindingsCache) el.appendChild(bindingRow(b));
 }
 
 async function loadAssets() {

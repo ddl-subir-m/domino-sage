@@ -42,6 +42,7 @@ from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..preview.prefix import domino_base_prefix, domino_project_label
 from ..preview.proxy import make_preview_app
+from ..resources.bindings import KIND_LLM_ALIAS
 from ..resources.provider import DominoResourceProvider, FakeResourceProvider, ResourceUnavailable
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
@@ -604,6 +605,39 @@ def list_resources() -> JSONResponse:
         return JSONResponse(content={"llm_aliases": orchestrator.list_llm_aliases()})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+# Bindings are their own route, not part of /api/resources: that one 502s when the gateway will not
+# answer, and a creator auditing an app needs the dependency list precisely then.
+@control_app.get("/api/bindings")
+def list_bindings() -> JSONResponse:
+    return JSONResponse(content={"bindings": orchestrator.list_bindings()})
+
+
+@control_app.post("/api/bindings")
+async def add_binding(request: Request) -> JSONResponse:
+    body = await request.json()
+    kind, resource_id = body.get("kind"), body.get("id")
+    if not resource_id:
+        return JSONResponse(status_code=400, content={"error": "id required"})
+    if kind != KIND_LLM_ALIAS:
+        return JSONResponse(status_code=400, content={"error": f"unknown Resource kind: {kind}"})
+    try:
+        return JSONResponse(content={"bindings": orchestrator.bind_llm_alias(resource_id)})
+    except LookupError:
+        # Either it is not registered on the gateway, or this caller has no grant for it. Both mean
+        # the same thing to the creator: the app cannot depend on it.
+        return JSONResponse(
+            status_code=404,
+            content={"error": "That LLM Alias is not one you can use, so the app cannot depend on it."},
+        )
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@control_app.delete("/api/bindings/{kind}/{resource_id}")
+def remove_binding(kind: str, resource_id: str) -> JSONResponse:
+    return JSONResponse(content={"bindings": orchestrator.unbind(kind, resource_id)})
 
 
 @control_app.get("/api/project/assets/{dataset_id}/files")
