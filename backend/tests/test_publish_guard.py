@@ -28,6 +28,7 @@ from sage.resources.provider import DataSource, FakeResourceProvider
 from sage.resources.publish_guard import (
     INDIVIDUAL_CREDENTIAL,
     OPEN_APP,
+    UNCHECKED_APP,
     UNCHECKED_SOURCE,
     UNLISTED_SOURCE,
     PublishRefused,
@@ -82,22 +83,42 @@ def test_a_binding_whose_source_was_re_registered_still_matches_by_name():
     assert publish_problems([moved], SOURCES, "GRANT_BASED") == []
 
 
-def test_an_app_anyone_can_open_refuses_even_on_a_shared_credential():
-    (problem,) = publish_problems([SHARED_BINDING], SOURCES, "PUBLIC")
+def test_an_app_shared_beyond_its_collaborators_refuses_even_on_a_shared_credential():
+    (problem,) = publish_problems([SHARED_BINDING], SOURCES, "ANYONE_IN_DOMINO")
     assert problem.reason == OPEN_APP
     assert "Snowflake-Data-Warehouse" in problem.message
+    assert "ANYONE_IN_DOMINO" in problem.message  # quoted, so a wrong refusal is one report to fix
 
 
-def test_an_unrecognised_visibility_is_not_treated_as_open():
-    # The opposite call to the unlistable source above, and deliberately so: Sage sets GRANT_BASED
-    # itself and only reads the value back, so a renamed field would otherwise refuse every
-    # republish of every app — a guard that fires on everything gets turned off.
-    assert publish_problems([SHARED_BINDING], SOURCES, "SOME_FUTURE_SETTING") == []
+@pytest.mark.parametrize("closed", ["GRANT_BASED", "PRIVATE", "grant-based"])
+def test_a_visibility_that_keeps_the_app_behind_a_grant_publishes(closed: str):
+    # GRANT_BASED is what Sage sets and what a published app reads back — verified live on
+    # cloud-dogfood, which is what lets this list be the closed one rather than a guessed open one.
+    assert publish_problems([SHARED_BINDING], SOURCES, closed) == []
+
+
+def test_a_visibility_this_list_has_never_met_refuses():
+    # Fails closed, unlike before the field was verified. The value is quoted in the message, so a
+    # deployment spelling "restricted" differently costs one report and one entry, not a hole.
+    (problem,) = publish_problems([SHARED_BINDING], SOURCES, "SOME_FUTURE_SETTING")
+    assert problem.reason == OPEN_APP
+
+
+def test_an_app_that_is_not_published_yet_has_no_visibility_to_object_to():
+    # "" is not an unknown value: there is no App, so there is nothing to read, and the first
+    # publish is the one Sage sets GRANT_BASED on itself.
     assert publish_problems([SHARED_BINDING], SOURCES, "") == []
 
 
+def test_a_visibility_that_could_not_be_read_refuses():
+    (problem,) = publish_problems([SHARED_BINDING], SOURCES, None)
+    assert problem.reason == UNCHECKED_APP
+    assert "again" in problem.message
+
+
 def test_visibility_only_matters_to_an_app_that_reads_a_store():
-    assert publish_problems([], SOURCES, "PUBLIC") == []
+    assert publish_problems([], SOURCES, "ANYONE_IN_DOMINO") == []
+    assert publish_problems([], SOURCES, None) == []
 
 
 def test_every_problem_is_reported_at_once():
@@ -105,7 +126,7 @@ def test_every_problem_is_reported_at_once():
     # refusal at a time.
     second = DataSource("ds-mssql", "AWS_MSSQL", "SQL Server", "Individual", None, True)
     bindings = [INDIVIDUAL_BINDING, Binding(KIND_DATA_SOURCE, "ds-mssql", "AWS_MSSQL", "AWS_MSSQL")]
-    problems = publish_problems(bindings, [*SOURCES, second], "PUBLIC")
+    problems = publish_problems(bindings, [*SOURCES, second], "ANYONE_IN_DOMINO")
     assert [p.reason for p in problems] == [INDIVIDUAL_CREDENTIAL, INDIVIDUAL_CREDENTIAL, OPEN_APP]
 
 
@@ -163,7 +184,7 @@ def test_the_builder_refuses_to_republish_an_app_that_was_opened_up(tmp_path: Pa
     cp = FakeControlPlane()
     cp.published["app-9"] = PublishedApp(id="app-9", url="https://fake.domino/app/app-9")
     cp.app_projects["app-9"] = "proj-1"
-    cp.app_visibilities["app-9"] = "PUBLIC"
+    cp.app_visibilities["app-9"] = "ANYONE_IN_DOMINO"
     orch = _orch(tmp_path, cp)
     orch.bind_data_source("ds-dwh", "ANALYTICS", "MARTS")
 

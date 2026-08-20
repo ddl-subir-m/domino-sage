@@ -2516,12 +2516,13 @@ class Orchestrator:
         except Exception:
             log.exception("publish: couldn't list Data Sources to check the credential guard")
             sources = None
-        visibility = ""
+        visibility: str | None = ""   # "" = nothing published yet, so nothing to read
         if existing and existing.id:
             try:
                 visibility = self._control_plane.app_visibility(existing.id)
             except Exception:
-                log.exception("publish: couldn't read the app's visibility; treating it as not open")
+                log.exception("publish: couldn't read the app's visibility")
+                visibility = None
         problems = publish_problems(bindings, sources, visibility)
         if problems:
             raise PublishRefused(problems)

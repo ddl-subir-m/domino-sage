@@ -1035,21 +1035,40 @@ on its own settings page, which is the page Sage's own Publish links to as "Mana
 Domino". Enforcement therefore has to *read* the value back before a re-publish, which
 `ControlPlane.app_visibility` does.
 
-**Unverified, and the reason the guard fails open.** Nothing has yet confirmed what
-`GET /api/apps/beta/apps/{id}` calls that field on the way back, or which names Domino's own
-sharing settings carry; `publish_guard.OPEN_VISIBILITY` is a guess at the open ones. An
-unrecognised value is treated as *not* open, deliberately: Sage sets GRANT_BASED itself, so a
-renamed field read as "not GRANT_BASED" would refuse every re-publish of every app, including the
-ones nobody had touched. The credential guard beside it fails the other way — an unlistable Data
-Source refuses — because that listing is the same public endpoint the Resource Browser already
-reads successfully, so a failure there is loud and transient.
-
-One live probe closes it: publish an app through Sage, then
+**Verified live, 2026-08-20, cloud-dogfood** (`sage.tools.app_visibility`, on an app Sage had
+published). The detail response carries a **top-level `visibility`**, and an app Sage published
+reads **`GRANT_BASED`**. Its top-level keys in full:
 
 ```
-GET {DOMINO_API_HOST}/api/apps/beta/apps/{app_id}
+accessStatuses, configurationType, currentVersion, discoverable, entryPoint, id, mountDatasets,
+name, project, properties, publisher, renderIFrame, updatedAt, url, vanityUrl, views, visibility
 ```
 
-and read which key holds `GRANT_BASED`. Change the sharing in Domino's UI and read it again for the
-open value. With both names in hand, `OPEN_VISIBILITY` can be replaced by an exact match and the
-guard can fail closed.
+So the guard matches a **known-closed** list (`CLOSED_VISIBILITY = {GRANT_BASED, PRIVATE}`) and
+refuses everything else, quoting the value it saw. Before the field was verified this had to be the
+other way round — a guessed field name read as "not GRANT_BASED" would have refused every
+re-publish of every app — but that risk is gone once the name and the closed value have been seen.
+
+**What the sharing UI actually offers on this deployment.** Two independent axes, and only one of
+them is about access:
+
+| Control | Meaning |
+|---|---|
+| Dropdown: *Restricted (project collaborators)* | `visibility: GRANT_BASED` — the closed setting |
+| Dropdown: *Anyone in Domino* | the open one; value not yet read back |
+| Checkbox: *Globally discoverable* | "All Domino users can find this App and **request access** to view" — the separate top-level `discoverable` flag |
+
+There is **no anonymous/internet option here**, so "never publish `PUBLIC`" reads, on this
+deployment, as "never publish to every Domino user". `discoverable` is deliberately **not** guarded
+on: finding an app and being able to read what it queries are different things, and a request for
+access is still a request.
+
+**Still to read back:** the value behind *Anyone in Domino*. Not blocking — the known-closed match
+already refuses it — but worth adding to `CLOSED_VISIBILITY`'s comment as the confirmed open name.
+
+**`?projectId=` IS honored for beta apps** (same probe): the request that returns 284 rows
+unfiltered returned exactly this project's 1. The earlier "not reliably honored" reading came from
+projects holding only classic, non-beta apps, whose empty answer was the truth rather than a filter
+failing. `list_project_apps` keeps its client-side `project.id` match anyway, because it reads only
+one page of 100: a filter that silently stopped working would otherwise mean publishing a SECOND
+app instead of a new version, and taking the visibility guard down with it.

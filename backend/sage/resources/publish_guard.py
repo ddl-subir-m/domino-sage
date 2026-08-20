@@ -30,15 +30,24 @@ from .provider import DataSource
 # so every viewer reaches the store as the same principal the creator already saw named on the row.
 SHARED = "Shared"
 
-# Visibility values that mean "reachable without a Domino grant", normalised to upper snake case.
+# Visibility values that keep an app behind a grant, normalised to upper snake case.
 #
-# UNVERIFIED against a live deployment. Sage only ever SETS `GRANT_BASED`, and `publish_app` is
-# verified live doing so; what has never been seen is what `GET /api/apps/beta/apps/{id}` calls the
-# field on the way back, or which names Domino's own sharing settings carry. Until it has been,
-# `open_visibility` treats an unrecognised value as not-open — see the reasoning there.
-OPEN_VISIBILITY = frozenset({
-    "PUBLIC", "ANYONE", "ANYONE_CAN_ACCESS", "ANYONE_WITH_LINK", "ANONYMOUS",
-})
+# The KNOWN-CLOSED list, not a guessed open one, and that is the whole design. Verified live on
+# cloud-dogfood 2026-08-20 (`sage.tools.app_visibility`): the detail response carries a top-level
+# `visibility`, and an app Sage published reads `GRANT_BASED` — the setting Domino's own sharing
+# dropdown calls "Restricted (project collaborators)". `PRIVATE` is here because Domino spells the
+# same idea that way for projects and an app is cheap to be generous about in the closed direction.
+#
+# Everything else refuses. Before the field was verified this had to be the other way round — a
+# guessed field name read as "not GRANT_BASED" would have refused every re-publish of every app —
+# but that risk is gone now that the name and the closed value have both been seen. An unrecognised
+# value is reported verbatim in the refusal, so one report is enough to add a spelling here.
+CLOSED_VISIBILITY = frozenset({"GRANT_BASED", "PRIVATE"})
+
+# NOT guarded on: the separate top-level `discoverable` flag, which Domino describes as "All Domino
+# users can find this App and request access to view". Finding an app and being able to read what it
+# queries are different things — a request for access is still a request — so refusing on it would
+# refuse an app nobody can read.
 
 # Why a publish was refused. The message carries the whole explanation; this is for the caller that
 # wants to count or group them, and for a test that wants to name a case without matching prose.
@@ -46,6 +55,7 @@ INDIVIDUAL_CREDENTIAL = "individual-credential"
 UNLISTED_SOURCE = "unlisted-source"
 UNCHECKED_SOURCE = "unchecked-source"
 OPEN_APP = "open-visibility"
+UNCHECKED_APP = "unchecked-visibility"
 
 
 @dataclass(frozen=True)
@@ -87,28 +97,20 @@ def data_source_bindings(bindings: list[Binding]) -> list[Binding]:
 
 
 def open_visibility(raw: str) -> bool:
-    """Whether a visibility value means the app is reachable without a Domino grant.
+    """Whether a visibility value fails to keep the app behind a grant.
 
-    Matched against named values rather than as "anything that is not GRANT_BASED", because here
-    the unknown value is the likely one, not the exotic one: Sage sets GRANT_BASED itself and reads
-    it back only to catch a change made afterwards on Domino's own sharing page — the page Publish
-    links to as "Manage settings in Domino". A renamed field or a grown enum would then read as
-    not-GRANT_BASED for every app and refuse every republish, including the apps still exactly as
-    Sage left them. A guard that fires on everything protects nothing, because it gets turned off.
-
-    So an unrecognised value, and the empty string a caller passes when it could not ask, are both
-    reported as not-open. That is a real gap until the field is verified live. It is the smaller
-    one: the credential guard beside it still stands, and an app that was already open was already
-    open — this guard failing means a re-publish it should have stopped goes through, not that Sage
-    opened anything.
+    Anything not in `CLOSED_VISIBILITY` counts, the empty string excepted: "" is what a caller
+    passes when there is no published app to read a visibility FROM, and a first publish is one Sage
+    sets `GRANT_BASED` on itself. `None` — the caller asked and could not get an answer — never
+    reaches here; `publish_problems` refuses on it directly.
     """
-    return raw.strip().upper().replace("-", "_").replace(" ", "_") in OPEN_VISIBILITY
+    return bool(raw.strip()) and raw.strip().upper().replace("-", "_").replace(" ", "_") not in CLOSED_VISIBILITY
 
 
 def publish_problems(
     bindings: list[Binding],
     sources: list[DataSource] | None,
-    visibility: str,
+    visibility: str | None,
 ) -> list[PublishProblem]:
     """Every reason not to publish an app holding these Data Source Bindings.
 
@@ -120,13 +122,22 @@ def publish_problems(
     so a failure there is loud and transient, where an unverified visibility field would fail
     silently and permanently.
 
-    `visibility` is the app's current sharing setting, or "" when there is no published app yet or
-    the caller could not read it.
+    `visibility` is the app's current sharing setting: "" when there is no published app to read one
+    from, and `None` when the caller asked and could not get an answer. `None` refuses, for the
+    reason `sources=None` does — an app that reads a store and whose sharing could not be read is
+    not an app to assume anything about.
     """
     problems = [_credential_problem(b, sources) for b in bindings]
     out = [p for p in problems if p is not None]
-    if bindings and open_visibility(visibility):
-        out.append(PublishProblem(OPEN_APP, _open_message(bindings)))
+    if not bindings:
+        return out
+    if visibility is None:
+        out.append(PublishProblem(UNCHECKED_APP, (
+            "Sage couldn't reach Domino to check who this app is shared with, and it won't publish "
+            "an app that reads a store without knowing that. Try publishing again in a moment."
+        )))
+    elif open_visibility(visibility):
+        out.append(PublishProblem(OPEN_APP, _open_message(bindings, visibility)))
     return out
 
 
@@ -168,15 +179,15 @@ def _match(b: Binding, sources: list[DataSource]) -> DataSource | None:
     return by_id or next((s for s in sources if s.name == b.name), None)
 
 
-def _open_message(bindings: list[Binding]) -> str:
-    # The remedy names the page rather than the control on it. Sage sets this value once and has
-    # never read Domino's own label for it, and sending a creator to look for a word that is not
-    # there is worse than sending them to the right page.
+def _open_message(bindings: list[Binding], visibility: str) -> str:
+    # The raw value is quoted for two readers. A creator sees which setting is in the way; whoever
+    # gets the report of a wrongly-refused publish sees the spelling to add to CLOSED_VISIBILITY,
+    # which is the whole cost of failing closed on a value this list has not met.
     return (
-        f"This app can be opened by anyone, and it reads {_names(bindings)}. A published app "
-        f"queries the store as its publisher, so anyone who reached the app would be reading it. "
-        f"Change the app's sharing on its settings page in Domino so that only people you grant "
-        f"access can open it, then publish again."
+        f"This app is shared beyond its project collaborators (its visibility is {visibility}), and "
+        f"it reads {_names(bindings)}. A published app queries the store as its publisher, so "
+        f"everyone the app is shared with would be reading it. Set the app's sharing back to "
+        f"restricted on its settings page in Domino, then publish again."
     )
 
 

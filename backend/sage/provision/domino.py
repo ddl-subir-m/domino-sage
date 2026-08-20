@@ -403,8 +403,15 @@ class DominoControlPlane:
 
         Live-verified schema of the beta apps API: results are wrapped as {"items": [...], "metadata":
         {...}}, the list is GLOBAL (every app on the deployment), and each item nests its project as
-        `project.id` (no top-level projectId, and the ?projectId= query filter isn't reliably honored).
-        So we match on project.id client-side — never include another project's app."""
+        `project.id` (no top-level projectId). We send ?projectId= AND match on project.id
+        client-side — never include another project's app.
+
+        The filter IS honored for beta apps: verified 2026-08-20 on cloud-dogfood, where the same
+        request that returns 284 rows unfiltered returned exactly this project's 1. The earlier
+        "not reliably honored" reading came from projects holding only classic, non-beta apps, whose
+        empty answer was the truth rather than a filter failing. The client-side match stays as the
+        belt to that braces: one page of 100 is all this reads, so a filter that silently stopped
+        working would otherwise mean publishing a SECOND app instead of a new version."""
         d = self._get(_APPS_PATH, params={"projectId": project_id, "offset": 0, "limit": 100})
         items = d if isinstance(d, list) else (d.get("items") or [])
         out: list[PublishedApp] = []
