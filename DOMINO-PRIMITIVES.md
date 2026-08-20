@@ -438,6 +438,18 @@ only — `id`, `name`, `created`, `createdBy`, `lastGenerated`, `lastGeneratedBy
 `lastGenerated` implies a generate action, but no route in any of the three specs performs one, and
 `ModelApiUpdateRequest` cannot set tokens either.
 
+The Overview page does not fetch it either. Sniffed live in the browser: a full load of
+`/models/{id}/overview` makes no call that returns a token — the only same-origin traffic is
+`activeStatus` polling and `v4/users/notifications/unreadStatus`. The token is **server-rendered
+into the document**. Scanning the returned HTML, the only 64-character blob that is not New Relic
+telemetry sits *outside* every `<script>` tag and appears 15 times, once per language sample — it is
+markup in the code snippet, not data the page fetched. Nothing mints it client-side: none of the
+page's 24 same-origin bundles holds a route string matching `accessToken`, `access-token`,
+`modelApiKey` or `apiKey`.
+
+So the manual paste is not a gap in the public spec that some internal endpoint quietly fills. There
+is no endpoint.
+
 **So a model access token is copied by hand from the Overview page, and there is no alternative.**
 Any generated Model API call — browser or server — requires the creator to paste a secret into
 Sage. That is a product decision to take deliberately, not a detail to absorb: it is a manual
