@@ -560,6 +560,26 @@ def config_value(record: dict, *keys: str) -> str | None:
     return None
 
 
+def data_library_ready() -> str:
+    """"" when THIS interpreter can read inside a Data Source, otherwise why it cannot.
+
+    The same import `_introspect` makes, deliberately: the question "will the cascade work here" has
+    exactly one right way to be answered, and a probe that checked something adjacent would go on
+    saying yes after the real import started failing.
+
+    It exists because the builder has no terminal. `domino_data` ships in the Domino base image's
+    system python, the orchestrator runs from uv's isolated venv, and for a while those were
+    different answers with nothing in between to say so — the cascade reported "the Domino data
+    library is not installed here" on a deployment that had it. `/api/diag` is where that is visible
+    now, next to `sage_rev`, because both answer the same question: did the rebuild take effect.
+    """
+    try:
+        from domino_data.data_sources import DataSourceClient  # noqa: F401
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    return ""
+
+
 def merge_readiness(sources: list[DataSource], statuses: Any) -> list[DataSource]:
     """Attach `POST /v4/datasource/authentication-status`'s answer to the rows it was asked about.
 

@@ -44,7 +44,12 @@ from ..preview.prefix import domino_base_prefix, domino_project_label
 from ..preview.proxy import make_preview_app
 from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API
 from ..resources.model_api_credentials import CredentialRequired
-from ..resources.provider import DominoResourceProvider, FakeResourceProvider, ResourceUnavailable
+from ..resources.provider import (
+    DominoResourceProvider,
+    FakeResourceProvider,
+    ResourceUnavailable,
+    data_library_ready,
+)
 from ..resources.publish_guard import PublishRefused
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
@@ -368,6 +373,9 @@ def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
     project without starting anything, so it's safe to hit mid-build. Key signals:
       - sage_rev: which code is actually running (confirm a rebuild took effect)
+      - data_library: whether THIS interpreter can read inside a Data Source. The builder has no
+        terminal, and the package sits in the image's system python while the orchestrator runs from
+        uv's venv, so this is the only place the difference is visible
       - model_calls: how many inferences reached the shim THIS turn. 0 while a turn is live means the
         model call never got to the gateway (OpenCode stuck earlier, e.g. on a tool), not a gateway hang
       - last_gateway_error: set if a model call failed/severed
@@ -385,9 +393,11 @@ def diag() -> JSONResponse:
         base_port = _opencode_base_port(orchestrator._opencode_cwd)
     except Exception:
         base_port = None
+    library = data_library_ready()
     return JSONResponse(content={
         "sage_rev": _SAGE_REV,
         "gateway_mode": GATEWAY_MODE,
+        "data_library": {"ok": not library, "detail": library or "domino_data is importable"},
         "ports": {"control_port": control_port, "base_port": base_port,
                   "match": base_port == control_port},
         "agents": orchestrator.resolved_agents(),
