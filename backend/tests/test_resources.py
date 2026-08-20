@@ -19,6 +19,7 @@ import pytest
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.resources.provider import (
+    DataSource,
     DominoResourceProvider,
     FakeResourceProvider,
     LlmAlias,
@@ -26,8 +27,10 @@ from sage.resources.provider import (
     ResourceUnavailable,
     accessible_ids,
     join_aliases,
+    merge_readiness,
     parse_capabilities,
     parse_costs,
+    parse_data_sources,
     parse_model_apis,
     records_of,
 )
@@ -296,6 +299,219 @@ def test_a_project_with_more_model_apis_than_one_page_is_listed_whole():
     assert "offset=1" in seen[1]
 
 
+# ---- Data Sources: the allowlist, and readiness asked rather than inferred (#10) -----------------
+
+# The shape `/api/datasource/v1/datasources` returned live on cloud-dogfood, trimmed to the fields the
+# panel reads, plus the kinds that have to be filtered out. The two Snowflake sources really did both
+# report `displayName: "Snowflake"` — that is the case the primary-identifier rule exists for.
+DATA_SOURCES = {
+    "dataSources": [
+        {"id": "d1", "name": "Snowflake-Data-Warehouse", "displayName": "Snowflake",
+         "dataSourceType": "SnowflakeConfig", "authType": "KeyPair", "credentialType": "Shared",
+         "description": "The company warehouse."},
+
+        {"id": "d2", "name": "test", "displayName": "Snowflake",
+         "dataSourceType": "SnowflakeConfig", "authType": "Basic", "credentialType": "Individual",
+         "description": ""},
+
+        {"id": "d3", "name": "AWS_MSSQL", "displayName": "SQL Server",
+         "dataSourceType": "SQLServerConfig", "authType": "Basic", "credentialType": "Individual"},
+
+        # Mount-shaped, and 16 of the 22 rows live were these two kinds.
+        {"id": "d4", "name": "shared-files", "displayName": "Dataset",
+         "dataSourceType": "DatasetConfig", "credentialType": "Shared"},
+        {"id": "d5", "name": "netapp-vol", "displayName": "NetApp Volume",
+         "dataSourceType": "NetAppVolumeConfig", "credentialType": "Shared"},
+
+        # Right family, wrong question: a key lookup and a similarity search, not a query.
+        {"id": "d6", "name": "raw-bucket", "displayName": "Amazon S3",
+         "dataSourceType": "S3Config", "credentialType": "Shared"},
+        {"id": "d7", "name": "embeddings", "displayName": "Pinecone",
+         "dataSourceType": "PineconeConfig", "credentialType": "Shared"},
+
+        # A connector Domino ships after this code was written.
+        {"id": "d8", "name": "brand-new", "displayName": "Some New Store",
+         "dataSourceType": "SomeNewStoreConfig", "credentialType": "Shared"},
+    ],
+    "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": 8}, "requestId": "r",
+                 "notices": []},
+}
+
+OFFERED = ["Snowflake-Data-Warehouse", "test", "AWS_MSSQL"]
+
+
+def test_only_sql_and_warehouse_connectors_are_offered():
+    # One access path, one shape: query in, table out. Everything downstream of picking a Data
+    # Source assumes it, so a connector that cannot answer a query is not a row this panel can offer.
+    assert [d.name for d in parse_data_sources(DATA_SOURCES)] == OFFERED
+
+
+def test_an_unknown_connector_type_is_hidden_rather_than_shown():
+    # The reason the filter is an allowlist. Domino's enum already carries 33 values and grows
+    # without asking us; a row Sage cannot render is worse than a row Sage does not mention.
+    assert "brand-new" not in [d.name for d in parse_data_sources(DATA_SOURCES)]
+    assert parse_data_sources({"dataSources": [{"id": "x", "name": "x",
+                                                "dataSourceType": "SomeNewStoreConfig"}]}) == []
+
+
+def test_mount_shaped_sources_are_left_to_the_assets_panel():
+    # Already surfaced as Assets. Listing them here would show one thing twice under two mental
+    # models, and the mount half of the pair has no query at all.
+    offered = [d.name for d in parse_data_sources(DATA_SOURCES)]
+    assert "shared-files" not in offered and "netapp-vol" not in offered
+
+
+def test_object_stores_and_vector_databases_are_not_offered():
+    offered = [d.name for d in parse_data_sources(DATA_SOURCES)]
+    assert "raw-bucket" not in offered and "embeddings" not in offered
+
+
+def test_the_row_is_identified_by_its_own_name_not_its_connector_type():
+    # Both Snowflake sources report displayName "Snowflake" (verified live). Reversing these two
+    # fields renders two rows a creator cannot tell apart, which is the whole panel wasted.
+    rows = parse_data_sources(DATA_SOURCES)
+    assert [d.name for d in rows[:2]] == ["Snowflake-Data-Warehouse", "test"]
+    assert [d.connector for d in rows[:2]] == ["Snowflake", "Snowflake"]
+    # An empty description stays absent rather than becoming "", so the row renders one line not two.
+    assert rows[0].description == "The company warehouse."
+    assert rows[1].description is None
+
+
+def test_the_connector_label_falls_back_to_the_type_with_its_suffix_dropped():
+    (d,) = parse_data_sources({"dataSources": [
+        {"id": "x", "name": "x", "dataSourceType": "PostgreSQLConfig", "credentialType": "Shared"}]})
+    assert d.connector == "PostgreSQL"
+
+
+def test_a_source_with_no_name_is_dropped():
+    # The name is the only field that tells two sources of one connector apart.
+    assert parse_data_sources({"dataSources": [
+        {"id": "x", "name": "", "dataSourceType": "SnowflakeConfig"}]}) == []
+
+
+def test_readiness_is_what_domino_says_and_not_what_the_credential_type_implies():
+    # `test` and `AWS_MSSQL` are both Individual-credential sources, and Domino reports one openable
+    # and the other not. Inferring readiness from the credential type would have called them the
+    # same, which is the guess this second call exists to replace.
+    rows = merge_readiness(parse_data_sources(DATA_SOURCES), [True, False, True])
+    assert [(d.name, d.ready) for d in rows] == [
+        ("Snowflake-Data-Warehouse", True), ("test", False), ("AWS_MSSQL", True)]
+    assert rows[2].credential_type == "Individual"
+
+
+def test_a_readiness_answer_of_the_wrong_shape_leaves_every_row_undecided():
+    # The endpoint answers a bare boolean array — position is the only thing tying an answer to a
+    # source. A row called unusable because a boolean slid by one is worse than one that admits
+    # Domino did not say, so a mismatch decides nothing.
+    rows = parse_data_sources(DATA_SOURCES)
+    for answer in ([True, False], None, {"statuses": [True, True, True]}, "true"):
+        assert [d.ready for d in merge_readiness(rows, answer)] == [None, None, None]
+
+
+def test_undecided_is_not_the_same_as_unready():
+    # Three states, not two: the rail says "cannot open this" and "cannot tell" differently.
+    (unready,) = merge_readiness(parse_data_sources(
+        {"dataSources": [DATA_SOURCES["dataSources"][1]]}), [False])
+    assert unready.ready is False
+    assert merge_readiness([unready], None)[0].ready is False
+
+
+@contextmanager
+def stub_data_source_api(*, listing: list[object], readiness: object, readiness_status: int = 200):
+    """A Domino API answering both halves of the Data Source listing, recording what it was asked.
+
+    Routed by method because these two are a GET and a POST to different paths — `stub_domino_api`
+    above only speaks GET.
+    """
+    seen: list[tuple[str, str, object]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def _reply(self, status: int, payload: object):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            gets = [s for s in seen if s[0] == "GET"]
+            seen.append(("GET", self.path, None))
+            self._reply(200, listing[min(len(gets), len(listing) - 1)])
+
+        def do_POST(self):
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            seen.append(("POST", self.path, json.loads(raw or b"{}")))
+            self._reply(readiness_status, readiness)
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}", seen
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+
+def test_the_provider_asks_the_permission_keyed_listing_and_then_asks_about_readiness():
+    with stub_data_source_api(listing=[DATA_SOURCES], readiness=[True, False, True]) as (host, seen):
+        out = DominoResourceProvider("http://gw/v1", lambda: "t", api_host=host).list_data_sources()
+    assert [(d.name, d.ready) for d in out] == [
+        ("Snowflake-Data-Warehouse", True), ("test", False), ("AWS_MSSQL", True)]
+    # The public, permission-keyed listing — not `/v4/datasource/projects/{id}`, which answered
+    # `200 []` live for a user with a working Snowflake source, and not
+    # `/v4/datasource/dataSources/all`, which answered 403 because it wants an admin grant.
+    assert seen[0][1].startswith("/api/datasource/v1/datasources?")
+    assert "projectId" not in seen[0][1]
+    # Readiness is asked about exactly the rows the panel will draw, in the order it will draw them,
+    # because the answer carries no ids of its own.
+    assert seen[1][0] == "POST" and seen[1][1] == "/v4/datasource/authentication-status"
+    assert seen[1][2] == {"dataSourceIds": ["d1", "d2", "d3"]}
+
+
+def test_a_failed_readiness_call_still_lists_the_sources():
+    # The listing already succeeded. Hiding sources the creator can see in Domino because a private
+    # endpoint 500'd would be the empty-panel dead end this listing was chosen to avoid — so the
+    # rows stay and say readiness is unknown.
+    with stub_data_source_api(listing=[DATA_SOURCES], readiness={"error": "nope"},
+                              readiness_status=500) as (host, _):
+        out = DominoResourceProvider("http://gw/v1", lambda: "t", api_host=host).list_data_sources()
+    assert [d.name for d in out] == OFFERED
+    assert [d.ready for d in out] == [None, None, None]
+
+
+def test_a_page_of_nothing_but_filtered_out_kinds_does_not_end_the_listing():
+    # Pagination counts the raw page, not the rows that survived the allowlist. On the live
+    # deployment 16 of 22 sources were dataset-backed, so a page of only those is the ordinary case —
+    # stopping there would hide every SQL source that came after it.
+    def page(records, total):
+        return {"dataSources": records,
+                "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": total}}}
+
+    mounts = [{"id": f"m{i}", "name": f"m{i}", "dataSourceType": "DatasetConfig"} for i in range(2)]
+    sql = [{"id": "s1", "name": "warehouse", "dataSourceType": "SnowflakeConfig",
+            "credentialType": "Shared"}]
+    with stub_data_source_api(listing=[page(mounts, 3), page(sql, 3), page([], 3)],
+                              readiness=[True]) as (host, seen):
+        p = DominoResourceProvider("http://gw/v1", lambda: "t", api_host=host)
+        p._PAGE = 2
+        assert [d.name for d in p.list_data_sources()] == ["warehouse"]
+    assert "offset=2" in seen[1][1]
+
+
+def test_data_sources_are_unlistable_rather_than_empty_off_domino():
+    # "Sage could not ask" and "you have none" send the creator to different places, and only one of
+    # them is true here.
+    p = DominoResourceProvider("http://gw/v1", lambda: "tok")
+    with pytest.raises(ResourceUnavailable, match="not configured to reach one"):
+        p.list_data_sources()
+
+
 # ---- through the orchestrator, on the injected fake ----------------------------------------------
 
 
@@ -342,6 +558,19 @@ def test_the_orchestrator_lists_model_apis_scoped_to_its_own_project(tmp_path: P
     assert asked == ["proj-1"]
 
 
+def test_the_orchestrator_lists_data_sources_without_scoping_them_to_its_project(tmp_path: Path):
+    # No project argument at all, unlike the two listings above, and that asymmetry is the finding:
+    # a Data Source is permission-scoped to the person. The provider's method takes none, so a
+    # regression that reintroduces project scoping cannot even be expressed here.
+    rows = _orch(tmp_path, FakeResourceProvider(
+        data_sources=[DataSource("d1", "warehouse", "Snowflake", "Shared", "desc", False)],
+    )).list_data_sources()
+    assert rows == [{
+        "id": "d1", "name": "warehouse", "connector": "Snowflake",
+        "credential_type": "Shared", "description": "desc", "ready": False,
+    }]
+
+
 def test_the_route_carries_both_kinds_and_one_failing_service_does_not_blank_the_other(tmp_path: Path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -353,6 +582,7 @@ def test_the_route_carries_both_kinds_and_one_failing_service_does_not_blank_the
     assert [a["name"] for a in body["llm_aliases"]][:1] == ["gpt-5.4"]
 
     assert [m["name"] for m in body["model_apis"]][:1] == ["churn-risk"]
+    assert [d["name"] for d in body["data_sources"]][:1] == ["Snowflake-Data-Warehouse"]
     assert body["errors"] == {}
 
     class GatewayDown(FakeResourceProvider):
@@ -366,3 +596,5 @@ def test_the_route_carries_both_kinds_and_one_failing_service_does_not_blank_the
     assert bad["llm_aliases"] == [] and "503" in bad["errors"]["llm_aliases"]
     assert [m["name"] for m in bad["model_apis"]][:1] == ["churn-risk"]
     assert "model_apis" not in bad["errors"]
+    assert [d["name"] for d in bad["data_sources"]][:1] == ["Snowflake-Data-Warehouse"]
+    assert "data_sources" not in bad["errors"]

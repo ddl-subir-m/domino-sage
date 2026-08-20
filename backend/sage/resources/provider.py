@@ -24,6 +24,24 @@ That call goes to the Domino API host, not to the gateway, so this one adapter s
 surfaces. It is still one object because the rail asks one question — "what can I use?" — and
 splitting it would only move the joining somewhere less obvious.
 
+The Data Source (#10): also two calls, and the FIRST one is a choice with a wrong answer.
+
+    GET  {api}/api/datasource/v1/datasources          -> what this caller has permission on
+    POST {api}/v4/datasource/authentication-status    -> whether they can actually open each one
+
+Three listings exist and two of them are traps. `/v4/datasource/projects/{projectId}` answered
+`200 []` live on cloud-dogfood for a user who had a working Snowflake source, because attaching a
+Data Source to a project is optional bookkeeping in Domino, not what makes it usable — a picker built
+on it shows an empty panel to someone who can already query. `/v4/datasource/dataSources/all`
+answered `403` (it wants `ManageDataSourceExternalData`, an admin grant). The public listing,
+`getAccessibleAndActiveDataSources`, returned the source with no project attachment at all
+(verified 2026-08-18, DATA-SOURCES-RESEARCH.md), and its semantics — active, and the caller has
+access — are exactly the panel's question.
+
+That listing is pre-filtered, so it cannot answer "would this one work for me". Hence the second
+call: a Data Source can be visible and still be unopenable, because an `Individual` credential is
+entered per person and this caller may not have entered theirs. Readiness is asked, not inferred.
+
 Auth is the existing Domino control-plane bearer path — a `token_provider` from
 `sage.gateway.client` (the workspace sidecar in a container, a dgw_ PAT off-Domino). Nothing new.
 
@@ -34,7 +52,7 @@ Two adapters, as with assets:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 
@@ -74,12 +92,71 @@ class ModelApi:
     status: str | None = None
 
 
+# Connector types the rail offers, keyed on Domino's own `dataSourceType`. An ALLOWLIST rather than
+# a denylist so an unfamiliar future connector hides instead of rendering as a broken row: Domino's
+# enum already carries 33 values and grows without asking us, and the live deployment returned two
+# kinds (`DatasetConfig`, `NetAppVolumeConfig`) that are not in the published enum at all.
+#
+# What is in: SQL and warehouse kinds. They share one access path (Arrow Flight) and one shape —
+# query in, table out — which is the shape everything downstream of picking one assumes.
+#
+# What is deliberately out, and why:
+#   - `DatasetConfig`, `NetAppVolumeConfig`  mount-shaped. Already surfaced as Assets, and 16 of the
+#     22 rows live were these — listing them here would show the same thing twice under two mental
+#     models, one of which (a mount) has no query at all.
+#   - object stores (`S3Config`, `GCSConfig`, `ADLSConfig`, `AzureBlobStorageConfig`,
+#     `GenericS3Config`, `TabularS3GlueConfig`) — a different protocol and a different question
+#     ("which key?", not "which table?").
+#   - vector databases (`PineconeConfig`, `QdrantConfig`) — a similarity search is not a query.
+#   - `MongoDBConfig`, `PalantirConfig` — neither speaks SQL.
+# Each is one line away from being offered, which is the point of the list being explicit.
+SQL_CONNECTORS = frozenset({
+    "BigQueryConfig", "ClickHouseConfig", "DB2Config", "DB2NativeConfig", "DatabricksConfig",
+    "DruidConfig", "GenericJDBCConfig", "GreenplumConfig", "IgniteConfig", "MariaDBConfig",
+    "MySQLConfig", "NetezzaConfig", "OracleConfig", "PostgreSQLConfig", "RedshiftConfig",
+    "SAPHanaConfig", "SQLServerConfig", "SingleStoreConfig", "SnowflakeConfig", "SynapseConfig",
+    "TeradataConfig", "TrinoConfig", "VerticaConfig",
+})
+
+
+@dataclass(frozen=True)
+class DataSource:
+    """A Domino connector to an external store the caller has permission on.
+
+    `name` and `connector` are not interchangeable, and getting them the wrong way round is the one
+    mistake that makes this panel useless. Live on cloud-dogfood two different Snowflake sources —
+    `test` and `Snowflake-Data-Warehouse` — both reported `displayName: "Snowflake"`. So Domino's
+    `displayName` is the CONNECTOR TYPE's label, not the instance's; `name` is the only field that
+    tells two sources apart, and it is the row's primary identifier.
+    """
+
+    id: str
+    name: str  # the source's own name — the row's primary identifier
+    connector: str  # the connector type's label ("Snowflake"), shown as secondary
+    # "Shared" | "Individual", verbatim. NOT a readiness signal and deliberately not folded into
+    # `ready`: an `Individual` source is one the creator can query right now, in a build session that
+    # runs as them. It only becomes a problem at publish time, where a Built App runs as its publisher
+    # and would re-export that one person's access to every viewer — which is where ADR-0001 puts the
+    # guard. The rail states the fact early so it is not a surprise later; it does not block on it.
+    credential_type: str
+    description: str | None = None
+    # Whether Domino says this caller can actually open the source. `None` means Domino did not
+    # answer the readiness question — not the same as "no", and rendered as its own state, because a
+    # source the creator can see in Domino must not vanish from the rail just because one call to a
+    # private endpoint failed.
+    ready: bool | None = None
+
+
 class ResourceProvider(Protocol):
     def list_llm_aliases(self) -> list[LlmAlias]: ...
 
     # Takes the project explicitly, as the asset provider's list_datasets(project_id) does: the
     # orchestrator owns which project this builder is bound to, and the provider stays a client.
     def list_model_apis(self, project_id: str | None) -> list[ModelApi]: ...
+
+    # No project argument, unlike the two above, and that asymmetry is the finding: a Data Source is
+    # permission-scoped to the person, not the project.
+    def list_data_sources(self) -> list[DataSource]: ...
 
 
 def records_of(payload: Any) -> list[dict]:
@@ -192,6 +269,65 @@ def parse_model_apis(payload: Any) -> list[ModelApi]:
     return out
 
 
+def connector_label(record: dict) -> str:
+    """The connector type's human label for a Data Source record.
+
+    Domino's own `displayName` is that label (see `DataSource`), so it is used as-is rather than
+    mapped through a table this repo would then have to keep in step with 33 connector types. When it
+    is missing, the raw type reads well enough with its suffix dropped: `SnowflakeConfig` ->
+    `Snowflake`. A row without a type label is not worth refusing.
+    """
+    label = str(record.get("displayName") or "").strip()
+    return label or str(record.get("dataSourceType") or "").removesuffix("Config")
+
+
+def parse_data_sources(payload: Any) -> list[DataSource]:
+    """Data Source rows out of a `/api/datasource/v1/datasources` body, filtered to SQL kinds.
+
+    The envelope names its list `dataSources`, which `records_of` does not know about, so that is
+    read here. Rows are returned with `ready` unset — readiness is a second call.
+
+    A record with no name is dropped, as a Model API's is: the name is the row's only identifier, so
+    a nameless row is not one a creator could tell apart from another.
+    """
+    items = payload.get("dataSources") if isinstance(payload, dict) else None
+    records = records_of(items if items is not None else payload)
+    out: list[DataSource] = []
+    for rec in records:
+        if str(rec.get("dataSourceType") or "") not in SQL_CONNECTORS:
+            continue
+        name = str(rec.get("name") or "")
+        if not name:
+            continue
+        out.append(
+            DataSource(
+                id=str(rec.get("id") or ""),
+                name=name,
+                connector=connector_label(rec),
+                credential_type=str(rec.get("credentialType") or ""),
+                description=str(rec["description"]) if rec.get("description") else None,
+            )
+        )
+    return out
+
+
+def merge_readiness(sources: list[DataSource], statuses: Any) -> list[DataSource]:
+    """Attach `POST /v4/datasource/authentication-status`'s answer to the rows it was asked about.
+
+    The endpoint answers a bare array of booleans with no ids in it, so the only thing tying an answer
+    to a source is its POSITION in the list that was sent. That is a contract worth distrusting: if
+    the array is not a list of exactly the right length, every row keeps `ready=None` rather than
+    being paired off against a shorter answer. A row labelled unusable because a boolean slid by one
+    is worse than a row that admits Domino did not say.
+    """
+    if not isinstance(statuses, list) or len(statuses) != len(sources):
+        return sources
+    return [
+        replace(src, ready=bool(ok)) if isinstance(ok, bool) else src
+        for src, ok in zip(sources, statuses)
+    ]
+
+
 class DominoResourceProvider:
     """Resources from Domino: LLM Aliases from the LLM Gateway, Model APIs from the Domino API.
 
@@ -199,10 +335,10 @@ class DominoResourceProvider:
     the gateway's control plane sits at its root, so both alias calls come off one URL that is
     already configured and there is nothing new to set up.
 
-    `api_host` is the Domino API (`DOMINO_API_HOST`), which is where Model APIs live — a different
-    service from the gateway, so it carries its own bearer, exactly as the asset provider does. Left
-    unset, Model APIs report as unavailable instead of as an empty list: Sage that cannot ask has
-    not learned the project has none.
+    `api_host` is the Domino API (`DOMINO_API_HOST`), which is where Model APIs and Data Sources live
+    — a different service from the gateway, so it carries its own bearer, exactly as the asset
+    provider does. Left unset, both report as unavailable instead of as an empty list: Sage that
+    cannot ask has not learned the project has none.
     """
 
     _PAGE = 100
@@ -256,6 +392,65 @@ class DominoResourceProvider:
                 break
         return out
 
+    def list_data_sources(self) -> list[DataSource]:
+        """Data Sources this caller has permission on, SQL kinds only, with readiness asked for.
+
+        No project scope, deliberately: the live probe that settled this found the project-scoped
+        listing answering `200 []` for a user with a working Snowflake source, because attaching a
+        source to a project is optional bookkeeping in Domino. Permission is what decides usability,
+        and the public listing is keyed on it.
+        """
+        if not self._api_host:
+            raise ResourceUnavailable(
+                "Sage lists Data Sources from the Domino API, and it is not configured to reach one, "
+                "so it cannot tell which Data Sources you have."
+            )
+        path = "/api/datasource/v1/datasources"
+        rows: list[DataSource] = []
+        offset = 0
+        for _ in range(self._MAX_PAGES):
+            payload = self._get(
+                path,
+                root=self._api_host,
+                service="The Domino API",
+                token_provider=self._api_token_provider,
+                params={"offset": offset, "limit": self._PAGE},
+            )
+            envelope = payload.get("dataSources") if isinstance(payload, dict) else payload
+            rows += parse_data_sources(payload)
+            meta = payload.get("metadata") if isinstance(payload, dict) else None
+            total = ((meta or {}).get("pagination") or {}).get("totalCount")
+            offset += self._PAGE
+            # Counted on the RAW page, not on the rows that survived the allowlist: a page made
+            # entirely of dataset-backed sources filters down to nothing, and stopping there would
+            # hide every SQL source that came after it.
+            if not records_of(envelope) or (total is not None and offset >= total):
+                break
+        return merge_readiness(rows, self._authentication_status([r.id for r in rows]))
+
+    def _authentication_status(self, ids: list[str]) -> Any:
+        """Whether the caller can open each of `ids`, positionally. `None` when Domino did not say.
+
+        A private endpoint — there is no public equivalent for this question, which is the same
+        reason `sage.provision.domino` reaches for `/v4` for workspace lifecycle. Because it is
+        private it is also the least certain call in this file, so a failure here degrades the panel
+        to "readiness unknown" rather than failing the listing that already succeeded. Losing the
+        readiness chip is a small lie by omission; hiding Data Sources the creator can see in Domino
+        is the empty-panel dead end this whole listing was chosen to avoid.
+        """
+        if not ids:
+            return None
+        try:
+            return self._post(
+                "/v4/datasource/authentication-status",
+                {"dataSourceIds": ids},
+                root=self._api_host,
+                service="The Domino API",
+                token_provider=self._api_token_provider,
+            )
+        except ResourceUnavailable:
+            return None
+
     def _get(
         self,
         path: str,
@@ -265,14 +460,42 @@ class DominoResourceProvider:
         token_provider: Callable[[], str] | None = None,
         params: dict | None = None,
     ) -> Any:
+        return self._send("GET", path, root=root, service=service,
+                          token_provider=token_provider, params=params)
+
+    def _post(
+        self,
+        path: str,
+        body: dict,
+        *,
+        root: str | None = None,
+        service: str = "The LLM Gateway",
+        token_provider: Callable[[], str] | None = None,
+    ) -> Any:
+        return self._send("POST", path, root=root, service=service,
+                          token_provider=token_provider, json_body=body)
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        root: str | None,
+        service: str,
+        token_provider: Callable[[], str] | None,
+        params: dict | None = None,
+        json_body: dict | None = None,
+    ) -> Any:
         import httpx  # local import so tests never need it on the path they don't take
 
         token = (token_provider or self._token_provider)()
         try:
-            r = httpx.get(
+            r = httpx.request(
+                method,
                 (self._root if root is None else root) + path,
                 headers={"Authorization": f"Bearer {token}"},
                 params=params,
+                json=json_body,
                 timeout=self._timeout_s,
             )
         except Exception as e:
@@ -326,12 +549,28 @@ _FAKE_MODEL_APIS = (
 )
 
 
+# Drawn from what cloud-dogfood actually returned (2026-08-18): two Snowflake sources whose
+# `displayName` was identical, one SQL Server, and the credential spread that was really there. The
+# `ready=False` row is the case the panel exists for — `test` is an `Individual`-credential source, so
+# whether it opens depends on whether THIS person entered their own credentials, and here they have
+# not. The last row carries `ready=None`, the state a failed readiness call leaves behind.
+_FAKE_DATA_SOURCES = (
+    DataSource("ds-dwh", "Snowflake-Data-Warehouse", "Snowflake", "Shared",
+               "The company warehouse. Reads across every schema.", True),
+    DataSource("ds-test", "test", "Snowflake", "Individual", None, False),
+    DataSource("ds-mssql", "AWS_MSSQL", "SQL Server", "Individual", None, True),
+    DataSource("ds-reporting", "reporting-replica", "PostgreSQL", "Shared",
+               "Read replica of the reporting database.", None),
+)
+
+
 @dataclass
 class FakeResourceProvider:
     """In-memory Resources for local testing/demo (no gateway)."""
 
     aliases: list[LlmAlias] = field(default_factory=lambda: list(_FAKE_ALIASES))
     model_apis: list[ModelApi] = field(default_factory=lambda: list(_FAKE_MODEL_APIS))
+    data_sources: list[DataSource] = field(default_factory=lambda: list(_FAKE_DATA_SOURCES))
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         return list(self.aliases)
@@ -340,3 +579,6 @@ class FakeResourceProvider:
         """The project is ignored, not validated: this fake stands in for a Domino that answers, and
         a local run has no project ids for a test to be right or wrong about."""
         return list(self.model_apis)
+
+    def list_data_sources(self) -> list[DataSource]:
+        return list(self.data_sources)

@@ -2579,6 +2579,29 @@ class Orchestrator:
             for m in self._resources.list_model_apis(self._domino_project_id)
         ]
 
+    def list_data_sources(self) -> list[dict]:
+        """Data Sources this caller has permission on, shaped for the Resource Browser (#10).
+
+        Unscoped, unlike the two listings above, because a Data Source belongs to the person and not
+        to the project: attaching one to a project is optional bookkeeping in Domino, and a listing
+        keyed on it answered `200 []` live for a user with a working Snowflake source.
+
+        The provider has already dropped connector kinds this panel cannot offer, so every row here
+        is one a creator could go on to pick. `ready` is the only thing that varies: `False` means
+        Domino says this caller cannot open it, and `None` means Domino would not say.
+        """
+        return [
+            {
+                "id": d.id,
+                "name": d.name,
+                "connector": d.connector,
+                "credential_type": d.credential_type,
+                "description": d.description,
+                "ready": d.ready,
+            }
+            for d in self._resources.list_data_sources()
+        ]
+
     # ---- Bindings: the Resources this app is recorded as using (#6) ----
 
     def list_bindings(self) -> list[dict]:

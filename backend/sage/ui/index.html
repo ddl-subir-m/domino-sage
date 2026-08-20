@@ -345,6 +345,21 @@
   .res-head .res-name { flex: 1; }
   .res-head button { flex: 0 0 auto; padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
   .res-head button.used { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+  /* A Data Source that Domino says this caller cannot open (#10). Dimmed rather than hidden: it is
+     the right kind of thing and the creator may well be able to fix it, so the row has to stay
+     readable enough to say which source the remedy below it belongs to. Everything EXCEPT the
+     reason dims — including the credential chip, which at full strength was the brightest thing on
+     a row meant to read as unavailable. The remedy is the one part that has to stay legible. */
+  .res-row.res-off > *:not(.res-why) { opacity: .5; }
+  /* Set off from the description above it rather than continuing it. Both are grey at 11.5px, so
+     without the rule they ran together as one paragraph and the reason stopped reading as a reason. */
+  .res-why {
+    margin-top: 7px; padding-left: 8px; border-left: 2px solid var(--border);
+    font-size: 11.5px; color: var(--muted); line-height: 1.45;
+  }
+  .res-why.res-blocked { border-left-color: var(--warn); }
+  .res-why .res-fix { color: var(--text); }
+
   /* Pasting a Model API's access token (#9). Inline under the row rather than in a modal: the token
      is copied from Domino's Overview page for THIS model, and a dialog would cover the row that
      asked for it, leaving nothing on screen to say which model the paste belongs to. */
@@ -552,6 +567,10 @@
         <div id="llm-aliases"><div class="hint">Loading LLM Aliases…</div></div>
         <div class="asset-group">Model APIs</div>
         <div id="model-apis"><div class="hint">Loading Model APIs…</div></div>
+        <!-- Directly above the Data group: a Data Source and an upload are two answers to the same
+             question, and the model kinds above belong together for the same reason (#10). -->
+        <div class="asset-group">Data Sources</div>
+        <div id="data-sources"><div class="hint">Loading Data Sources…</div></div>
         <div class="asset-group">Data</div>
         <div class="upload-form">
           <div class="field">
@@ -1022,8 +1041,11 @@ async function loadResources() {
   aliasesError = ok ? (errors.llm_aliases || null) : 'The LLM Gateway did not answer.';
   modelApisCache = ok ? (body.model_apis || []) : [];
   modelApisError = ok ? (errors.model_apis || null) : 'Domino did not answer.';
+  dataSourcesCache = ok ? (body.data_sources || []) : [];
+  dataSourcesError = ok ? (errors.data_sources || null) : 'Domino did not answer.';
   renderLlmAliases();
   renderModelApis();
+  renderDataSources();
 }
 
 function retryResources() {
@@ -1031,8 +1053,11 @@ function retryResources() {
   aliasesError = null;
   modelApisCache = null;
   modelApisError = null;
+  dataSourcesCache = null;
+  dataSourcesError = null;
   renderLlmAliases();
   renderModelApis();
+  renderDataSources();
   loadResources();
 }
 
@@ -1310,6 +1335,74 @@ function renderModelApis() {
     return;
   }
   for (const m of modelApisCache) el.appendChild(modelApiRow(m));
+}
+
+// ---------- Data Sources (Resources rail, #10) ----------
+// Browse only for now: no Use button, because picking one is a bigger act than recording a name —
+// the app has to query it at request time, and that is the next slice, not this one.
+// `null` = not loaded; `[]` = loaded and this caller has permission on no SQL Data Source.
+let dataSourcesCache = null;
+let dataSourcesError = null;
+
+// Three states, and only the middle one is a judgement. `ready === true` needs no chip at all: an
+// available row saying "available" is noise on every row in the list. `false` is Domino saying this
+// caller cannot open it, and `null` is Domino not answering the question — which is not the same
+// answer and must not be dressed as one.
+function dataSourceRow(d) {
+  const row = document.createElement('div');
+  row.className = 'res-row' + (d.ready === false ? ' res-off' : '');
+  // The credential model, stated at browse time rather than sprung at publish time. An Individual
+  // source is queryable now — the build session runs as the creator — so this is a fact on the row,
+  // not a warning on it, and it does not disable anything.
+  const shared = d.credential_type === 'Shared';
+  const credChip = d.credential_type
+    ? `<span class="a-chip cap" title="${esc(shared
+        ? 'A shared service-account credential, so everyone reaches this store as the same principal. This is the kind an app can be published with.'
+        : 'The credential belongs to one person. You can query it here, but an app published on it would reach the store as its publisher, so Sage will not publish one.')}">${esc(d.credential_type)}</span>`
+    : '';
+  // The connector type is secondary, never the identifier: two Snowflake sources both report
+  // displayName "Snowflake" and only `name` tells them apart.
+  const sub = d.connector
+    ? `<div class="res-sub"><span class="res-alias" title="Connector type">${esc(d.connector)}</span></div>` : '';
+  const desc = d.description ? `<div class="res-desc">${esc(d.description)}</div>` : '';
+  // A reason and the one thing to do about it. Not shown when everything is fine, because a row
+  // carrying an explanation of nothing is a row that looks broken.
+  const why = d.ready === false
+    ? '<div class="res-why res-blocked">Domino has no working credentials for you on this Data Source. '
+      + '<span class="res-fix">Open it in Domino under Data &gt; Data Sources and add yours.</span></div>'
+    : d.ready === null
+      ? '<div class="res-why">Domino didn’t say whether you can open this one, so Sage can’t promise it works. '
+        + '<span class="res-fix">Try again, or open it in Domino to check.</span></div>'
+      : '';
+  row.innerHTML = `<div class="res-head"><div class="res-name" title="${esc(d.name)}">${esc(d.name)}</div>${credChip}</div>`
+    + sub + desc + why;
+  return row;
+}
+
+function renderDataSources() {
+  const el = document.getElementById('data-sources');
+  if (!el) return;
+  el.innerHTML = '';
+  if (dataSourcesCache === null) { el.appendChild(hintEl('Loading Data Sources…')); return; }
+  if (dataSourcesError) {
+    const h = hintEl(`${esc(dataSourcesError)} <button class="link-btn">Try again</button>`);
+    h.classList.add('err');
+    el.appendChild(h);
+    h.querySelector('.link-btn').onclick = retryResources;
+    return;
+  }
+  if (!dataSourcesCache.length) {
+    // Says which sorts count, because the list is filtered: someone who has a Domino Dataset source
+    // would otherwise read "none" as Sage being broken rather than as that one living under Data.
+    const h = hintEl('No Data Sources available to you. A Data Source is a Domino connection to a '
+      + 'database or warehouse — Snowflake, BigQuery, Postgres and the like. Ask whoever owns one to '
+      + 'grant you access in Domino, then <button class="link-btn">Try again</button>. '
+      + 'Files stored in Domino Datasets appear under Data below.');
+    el.appendChild(h);
+    h.querySelector('.link-btn').onclick = retryResources;
+    return;
+  }
+  for (const d of dataSourcesCache) el.appendChild(dataSourceRow(d));
 }
 
 // ---------- Bindings: the Resources this app is recorded as using (#6) ----------

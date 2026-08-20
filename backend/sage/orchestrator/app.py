@@ -670,19 +670,20 @@ def list_assets() -> dict:
 
 @control_app.get("/api/resources")
 def list_resources() -> JSONResponse:
-    """Domino Resources this caller can pick: LLM Aliases (#5) and Model APIs (#8).
+    """Domino Resources this caller can pick: LLM Aliases (#5), Model APIs (#8), Data Sources (#10).
 
     A service that won't answer is reported as a readable reason rather than an empty list, so the
     rail can say "the gateway is not answering" instead of "you have no models".
 
-    That reason is carried PER KIND, and the response stays 200. The two kinds come from two
+    That reason is carried PER KIND, and the response stays 200. The three kinds come from two
     different Domino services and fail independently, so a single failing status would let the
     Domino API being down blank out the LLM Aliases as well — reporting nothing available when only
-    one half is. Each group in the rail renders its own list or its own reason.
+    one third is. Each group in the rail renders its own list or its own reason.
     """
     kinds = {
         "llm_aliases": orchestrator.list_llm_aliases,
         "model_apis": orchestrator.list_model_apis,
+        "data_sources": orchestrator.list_data_sources,
     }
     body: dict = {"errors": {}}
     for key, listing in kinds.items():

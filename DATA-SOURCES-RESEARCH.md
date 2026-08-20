@@ -896,3 +896,51 @@ polish:
 
 For the demo itself, prefer the curated layers (`MARTS`, `REPORTING`) over `INTERMEDIATE`
 or `STAGING`.
+
+---
+
+## Addendum 3 — what #10 shipped on, and the one call it still assumes
+
+`backend/sage/resources/provider.py` now lists Data Sources. It takes the recommendation above
+verbatim: the public `GET /api/datasource/v1/datasources`, unscoped, `name` as the row's
+identifier and `displayName` as the connector badge.
+
+### Readiness needed a second call, because the listing cannot answer it
+
+`getAccessibleAndActiveDataSources` is pre-filtered to active-and-accessible, so every row it
+returns is one the caller has permission on. That makes it unable to answer *"would this one
+open for me"* — an `Individual` credential is entered per person, and a source can be listed
+while this particular person has entered nothing. So the provider follows the listing with
+`POST /v4/datasource/authentication-status`, `{dataSourceIds: [...]}` → `array<boolean>`.
+
+`credentialType` is **shown, not enforced** at browse time. An `Individual` source is
+queryable in a build session, which runs as the creator; it only becomes a hazard at publish
+time, where ADR-0001 puts the guard. Inferring "unusable" from it at browse time would grey
+out two of the three sources on this deployment that the creator can query today.
+
+### `LIVE-VERIFY` — the readiness call has never been run
+
+It is the only unverified thing in the path. Two properties matter:
+
+- **It answers at all.** Private spec, `/v4`, no public equivalent. Run it in a workspace:
+  ```bash
+  curl -sS -X POST -H "Authorization: Bearer $(curl -s localhost:8899/access-token)" \
+    -H 'Content-Type: application/json' \
+    -d '{"dataSourceIds":["<id from the public listing>"]}' \
+    "$DOMINO_API_HOST/v4/datasource/authentication-status" | jq .
+  ```
+- **The booleans come back positionally, in request order.** The response carries no ids, so
+  position is the only join. `merge_readiness` refuses to pair anything up unless the array
+  length matches exactly, but a *reordered* answer of the right length would be believed.
+
+A failure here degrades to `ready=None` — every row still lists, with the rail saying Domino
+did not answer — rather than failing the listing. That is deliberate: hiding sources the
+creator can see in Domino is the empty-panel dead end the whole endpoint choice avoids.
+Expected shape of a wrong answer is a 404 (route absent on this deployment) or a 403.
+
+### The allowlist as shipped
+
+23 SQL/warehouse types in `SQL_CONNECTORS`. On this deployment that turns 22 rows into 6.
+Excluded, each one line from being offered: `DatasetConfig` and `NetAppVolumeConfig` (mount-
+shaped, already Assets, and 16 of the 22 rows), the object stores, the vector databases, and
+`MongoDBConfig` / `PalantirConfig` (neither speaks SQL).
