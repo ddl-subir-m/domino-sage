@@ -42,7 +42,7 @@ from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..preview.prefix import domino_base_prefix, domino_project_label
 from ..preview.proxy import make_preview_app
-from ..resources.bindings import KIND_LLM_ALIAS
+from ..resources.bindings import KIND_LLM_ALIAS, KIND_MODEL_API
 from ..resources.provider import DominoResourceProvider, FakeResourceProvider, ResourceUnavailable
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
@@ -706,17 +706,25 @@ async def add_binding(request: Request) -> JSONResponse:
     kind, resource_id = body.get("kind"), body.get("id")
     if not resource_id:
         return JSONResponse(status_code=400, content={"error": "id required"})
-    if kind != KIND_LLM_ALIAS:
-        return JSONResponse(status_code=400, content={"error": f"unknown Resource kind: {kind}"})
-    try:
-        return JSONResponse(content={"bindings": orchestrator.bind_llm_alias(resource_id)})
-    except LookupError:
+    # One route, one record, two kinds — each with its own "why not" sentence, because the two are
+    # refused for different reasons and "ask an admin for a grant" is the wrong advice for a Model
+    # API that simply is not deployed in this project.
+    if kind == KIND_LLM_ALIAS:
         # Either it is not registered on the gateway, or this caller has no grant for it. Both mean
         # the same thing to the creator: the app cannot depend on it.
-        return JSONResponse(
-            status_code=404,
-            content={"error": "That LLM Alias is not one you can use, so the app cannot depend on it."},
+        bind, missing = orchestrator.bind_llm_alias, (
+            "That LLM Alias is not one you can use, so the app cannot depend on it."
         )
+    elif kind == KIND_MODEL_API:
+        bind, missing = orchestrator.bind_model_api, (
+            "That Model API is not one this project offers, so the app cannot depend on it."
+        )
+    else:
+        return JSONResponse(status_code=400, content={"error": f"unknown Resource kind: {kind}"})
+    try:
+        return JSONResponse(content={"bindings": bind(resource_id)})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": missing})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 

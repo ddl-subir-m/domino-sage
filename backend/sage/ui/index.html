@@ -1063,7 +1063,7 @@ function useButton(a) {
     : pinned
       ? `Record that this app also uses this LLM Alias. The app goes on calling ${pinned.display_name}, the one marked “App’s model” above.`
       : 'Use this LLM Alias in the app you are building. The app calls it from the viewer’s own browser, so each viewer uses their own Domino access.';
-  if (!used) b.onclick = () => bindAlias(a.id, b);
+  if (!used) b.onclick = () => bindResource('llm_alias', a.id, b);
   return b;
 }
 
@@ -1095,9 +1095,8 @@ function renderLlmAliases() {
   for (const a of aliasesCache) el.appendChild(aliasRow(a));
 }
 
-// ---------- Model APIs (Resources rail, #8) ----------
-// Browse only, on purpose: picking one is #9, and a Use button here would record a dependency the
-// built app has no code to honour yet. `null` = not loaded; `[]` = loaded and this project has none.
+// ---------- Model APIs (Resources rail, #8, pickable since #9) ----------
+// `null` = not loaded; `[]` = loaded and this project has none.
 let modelApisCache = null;
 let modelApisError = null;
 
@@ -1120,7 +1119,26 @@ function modelApiRow(m) {
   const desc = m.description ? `<div class="res-desc">${esc(m.description)}</div>` : '';
   row.innerHTML =
     `<div class="res-head"><div class="res-name" title="${esc(m.name)}">${esc(m.name)}</div>${chip}</div>` + desc;
+  row.querySelector('.res-head').appendChild(modelApiUseButton(m));
   return row;
+}
+
+// The Use button says less than the Alias one, and deliberately. A Model API Binding is a record and
+// only a record today: Sage pins an Alias into the app's source (#7) but writes no code that calls a
+// Model API, because how a browser reaches one is not yet verified. Promising the app will call it
+// would be the one thing this button cannot deliver, so it promises the record instead.
+function modelApiUseButton(m) {
+  const b = document.createElement('button');
+  const used = boundModelApiIds().has(m.id);
+  b.className = used ? 'used' : '';
+  b.textContent = used ? 'Used' : 'Use';
+  b.disabled = used;
+  b.title = used
+    ? 'This app already uses this Model API. To undo it, use Remove under “Used by this app” above.'
+    : 'Record that the app you are building uses this Model API. It is listed under “Used by this app” '
+      + 'so you and anyone reviewing the app can see what it depends on.';
+  if (!used) b.onclick = () => bindResource('model_api', m.id, b);
+  return b;
 }
 
 function renderModelApis() {
@@ -1161,10 +1179,14 @@ let bindingsError = null;
 // id is only unique within its kind). Empty unless the session-open preflight proved one gone.
 let staleBindings = new Set();
 
-const KIND_LABELS = { llm_alias: 'LLM Alias' };
+const KIND_LABELS = { llm_alias: 'LLM Alias', model_api: 'Model API' };
 
 function boundAliasIds() {
   return new Set((bindingsCache || []).filter(b => b.kind === 'llm_alias').map(b => b.id));
+}
+
+function boundModelApiIds() {
+  return new Set((bindingsCache || []).filter(b => b.kind === 'model_api').map(b => b.id));
 }
 
 // The Alias the published app actually calls (#7): the FIRST one in the manifest, which is the order
@@ -1202,7 +1224,15 @@ async function loadBindings() {
   bindingsCache = ok ? (body.bindings || []) : [];
   bindingsError = ok ? null : (body.error || 'Sage could not read this app\u2019s Resource list.');
   renderBindings();
-  renderLlmAliases();  // the Use buttons only know what is already used once this list has arrived
+  renderResourceLists();  // the Use buttons only know what is already used once this list has arrived
+}
+
+// Both browsable groups carry Use buttons, and both read their state out of the Binding list, so
+// they redraw together \u2014 one of the two left stale would go on offering Use for a Resource the
+// group above already lists.
+function renderResourceLists() {
+  renderLlmAliases();
+  renderModelApis();
 }
 
 // The response carries the new list, so there is no second request to fetch it.
@@ -1210,17 +1240,17 @@ function applyBindings(res, fallbackMsg) {
   bindingsError = res.ok ? null : (res.body.error || fallbackMsg);
   if (res.ok) bindingsCache = res.body.bindings || [];
   renderBindings();
-  renderLlmAliases();
+  renderResourceLists();
   // The message lands in the group at the top, but the click that failed can be several rows down a
   // scrolling rail — an explanation off the fold reads as nothing happening at all.
   if (bindingsError) document.getElementById('bindings-group').scrollIntoView({ block: 'nearest' });
 }
 
-async function bindAlias(id, btn) {
+async function bindResource(kind, id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
   const res = await api('/api/bindings', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'llm_alias', id }),
+    body: JSON.stringify({ kind, id }),
   });
   applyBindings(res, 'Sage could not record that Resource.');
 }
@@ -1283,7 +1313,7 @@ function renderBindings() {
   if (bindingsCache === null) return;  // loadBindings is in flight; a "nothing yet" here would be a lie
   if (!n) {
     el.appendChild(hintEl('Nothing yet. Resources this app uses are listed here, so you can see what it '
-      + 'depends on. Choose Use on an LLM Alias below to add one.'));
+      + 'depends on. Choose Use on an LLM Alias or a Model API below to add one.'));
     return;
   }
   for (const b of bindingsCache) el.appendChild(bindingRow(b));

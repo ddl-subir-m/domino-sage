@@ -158,6 +158,14 @@ def test_a_binding_of_a_kind_this_sage_cannot_check_is_left_alone():
     assert stale_bindings([other], ALIASES) == []
 
 
+def test_a_model_api_binding_is_never_judged_against_the_alias_listing():
+    # A kind Sage records (#9) but this check cannot answer for: Model APIs come off the Domino API,
+    # not the gateway, so every one of them would read as missing from an alias listing. Badging them
+    # "Gone" would send a creator to remove a Model API that is deployed and running.
+    api = Binding("model_api", "id-churn", "churn-risk", "churn-risk")
+    assert stale_bindings([api], ALIASES) == []
+
+
 # ---- Bindings: through the orchestrator, which is what session open calls ------------------------
 
 

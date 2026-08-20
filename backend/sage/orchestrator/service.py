@@ -33,7 +33,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
-from ..resources.bindings import KIND_LLM_ALIAS, Binding, parse_bindings
+from ..resources.bindings import KIND_LLM_ALIAS, KIND_MODEL_API, Binding, parse_bindings
 from ..resources.pinned_model import CONFIG_PATH, agents_block, pinned_alias, render_config
 from ..resources.preflight import stale_bindings, stale_message, unresolved_slots
 from ..resources.provider import FakeResourceProvider, ResourceProvider, ResourceUnavailable
@@ -2586,7 +2586,26 @@ class Orchestrator:
         alias = next((a for a in self.list_llm_aliases() if a["id"] == alias_id), None)
         if alias is None:
             raise LookupError(alias_id)
-        new = Binding(KIND_LLM_ALIAS, alias["id"], alias["name"], alias["display_name"])
+        return self._record(Binding(KIND_LLM_ALIAS, alias["id"], alias["name"], alias["display_name"]))
+
+    def bind_model_api(self, model_api_id: str) -> list[dict]:
+        """Record that this app uses one Model API, and return the new Binding list (#9).
+
+        Validated against the project's own listing, for the reason the Alias is: a record naming
+        something the creator cannot reach is a dependency on a call that cannot run. The listing is
+        already scoped to this project and already permission-filtered by Domino, so anything absent
+        from it is not this app's to depend on.
+
+        A Model API has ONE name and no separate display name, so both fields carry it. That keeps
+        the manifest one shape across kinds, and the row renders the name once rather than twice.
+        """
+        api = next((m for m in self.list_model_apis() if m["id"] == model_api_id), None)
+        if api is None:
+            raise LookupError(model_api_id)
+        return self._record(Binding(KIND_MODEL_API, api["id"], api["name"], api["name"]))
+
+    def _record(self, new: Binding) -> list[dict]:
+        """Write one Binding into the manifest, and re-derive what the app's source says about it."""
         def change(entries: list[dict]) -> list[dict]:
             # Re-binding replaces IN PLACE rather than moving to the end. Order decides which Alias
             # the app calls (#7), so appending an already-bound one would repin an app that already

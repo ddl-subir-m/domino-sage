@@ -19,8 +19,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# The only kind #6 can create. Other Resource kinds join this vocabulary as they arrive.
+# The kinds Sage records. Other Resource kinds join this vocabulary as they arrive.
 KIND_LLM_ALIAS = "llm_alias"
+# A Model API Binding (#9) is a record only, for now: the first LLM Alias is pinned into the app's
+# source, but nothing yet writes the code that calls a Model API, because how a browser reaches one
+# is unverified — a Model API is served from the main Domino host, not from the `apps.` host the
+# published page and the LLM Gateway share, so #7's same-origin recipe does not carry over untested.
+KIND_MODEL_API = "model_api"
 
 
 @dataclass(frozen=True)
