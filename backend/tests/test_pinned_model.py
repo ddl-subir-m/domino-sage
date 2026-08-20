@@ -1,0 +1,242 @@
+"""The one LLM Alias a Built App calls, pinned into the app's own source (#7).
+
+Two things can go wrong here and neither shows up as an exception. The app can ship pointing at a
+model nobody chose — or at a model somebody un-chose — because the file on disk drifted from the
+Binding record. And the file can be *written* correctly but be unbuildable, because the config
+landed without the helper that imports it. So the tests are about what ends up on disk after a
+Binding change, and about the two orderings that decide whether the result compiles.
+
+The rendering is pure and tested directly. The writing runs through a real Orchestrator over a real
+workspace, because the manifest is a thing under test rather than something to fake.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from sage.gateway.client import FakeGatewayClient
+from sage.orchestrator.service import Orchestrator
+from sage.resources.bindings import Binding
+from sage.resources.pinned_model import CONFIG_PATH, HELPER_PATH, agents_block, pinned_alias, render_config
+from sage.resources.provider import FakeResourceProvider, LlmAlias
+from sage.router.models import ModelCatalog
+
+BASE = "https://apps.example.com/apps/llm_gateway/v1"
+
+ALIASES = [
+    LlmAlias("id-sonnet", "sonnet", "Claude Sonnet 4.6", None, ["chat"], {"input": 3.0}),
+    LlmAlias("id-qwen", "qwen-2-5", "Qwen 2.5 (Domino-hosted)", None, ["chat"], {}),
+]
+
+CATALOG = ModelCatalog(
+    sovereign_plan="qwen-2-5", sovereign_implement="qwen-2-5", sovereign_ask="qwen-2-5",
+    plan="sonnet", implement="sonnet", ask="sonnet",
+)
+
+REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+
+
+def _binding(rid: str, name: str, display: str = "", kind: str = "llm_alias") -> Binding:
+    return Binding(kind, rid, name, display or name)
+
+
+def _template(tmp: Path) -> Path:
+    """A template carrying the helper, like the shipped one. Stub contents, so a test can tell a
+    copy from a coincidence."""
+    t = tmp / "template"
+    (t / "src").mkdir(parents=True, exist_ok=True)
+    (t / "src" / "App.tsx").write_text("placeholder")
+    (t / HELPER_PATH).write_text("// stub helper\n")
+    (t / CONFIG_PATH).write_text(render_config(None, None, None))
+    (t / "package.json").write_text("{}")
+    (t / "AGENTS.md").write_text("# Template rules\n")
+    return t
+
+
+def _orch(tmp_path: Path) -> Orchestrator:
+    orch = Orchestrator(
+        workspace_dir=tmp_path / "mnt" / "code",
+        template=_template(tmp_path),
+        gateway=FakeGatewayClient(),
+        catalog=CATALOG,
+        project_id="Sage",
+        resources=FakeResourceProvider(list(ALIASES)),
+        browser_gateway_base=BASE,
+        cost_project_label="my-app",
+    )
+    orch.project(start_preview=False)  # nothing under test needs the dev server
+    return orch
+
+
+def _config(orch: Orchestrator) -> str:
+    return (orch.project().workspace.path / CONFIG_PATH).read_text()
+
+
+def _agents(orch: Orchestrator) -> str:
+    return (orch.project().workspace.path / "AGENTS.md").read_text()
+
+
+# ---- which Alias gets pinned ---------------------------------------------------------------------
+
+
+def test_nothing_is_pinned_when_the_app_depends_on_nothing():
+    assert pinned_alias([]) is None
+
+
+def test_the_first_alias_in_the_manifest_is_the_one_pinned():
+    # First, not last: manifest order is the order they were chosen, so anchoring on the first means
+    # adding a second Binding cannot silently change what an already-built app answers with.
+    aliases = [_binding("id-sonnet", "sonnet"), _binding("id-qwen", "qwen-2-5")]
+    assert pinned_alias(aliases).name == "sonnet"
+
+
+def test_a_binding_of_another_kind_is_skipped_rather_than_pinned():
+    # Bindings are a mixed list of recorded dependencies (#6). Only an LLM Alias can be called.
+    entries = [_binding("ds-1", "sales_db", kind="data_source"), _binding("id-qwen", "qwen-2-5")]
+    assert pinned_alias(entries).name == "qwen-2-5"
+
+
+# ---- the generated config ------------------------------------------------------------------------
+
+
+def test_the_config_pins_the_alias_name_not_its_id():
+    # `name` is what a request's `model` field carries. Pinning the gateway's internal id would
+    # compile fine and 404 on the viewer's first question.
+    text = render_config(_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6"), BASE, "my-app")
+    assert 'alias: "sonnet"' in text
+    assert 'displayName: "Claude Sonnet 4.6"' in text
+    assert f'base: "{BASE}"' in text
+    assert 'project: "my-app"' in text
+
+
+def test_no_alias_nulls_the_base_and_the_project_too():
+    # A base with no alias would let the helper build a URL for a model that was never chosen.
+    text = render_config(None, BASE, "my-app")
+    for field in ("alias", "displayName", "base", "project"):
+        assert f"{field}: null" in text
+    assert BASE not in text and "my-app" not in text
+
+
+def test_an_alias_named_with_a_quote_cannot_end_the_literal_early():
+    # These strings come from a gateway's registration records, not from us.
+    alias = _binding('weird"id', 'say "hi"', "back\\slash")
+    text = render_config(alias, BASE, "my-app")
+    assert r'alias: "say \"hi\""' in text
+    assert r'displayName: "back\\slash"' in text
+
+
+def test_the_no_model_config_is_byte_identical_to_the_one_shipped_in_the_template():
+    # The template's copy is what a fresh app is born with, and this function is what every later
+    # write produces. If they differ, seeding a project and then binding-and-unbinding an Alias
+    # leaves a diff in the user's repo that nobody asked for.
+    assert render_config(None, None, None) == (REPO_TEMPLATE / CONFIG_PATH).read_text()
+
+
+# ---- what the agent is told -----------------------------------------------------------------------
+
+
+def test_the_agent_is_told_nothing_when_no_model_is_pinned():
+    # An agent told about a model that is not there writes a call that cannot run.
+    assert agents_block(None) == ""
+
+
+def test_the_agent_is_given_the_import_the_display_name_and_the_load_check():
+    block = agents_block(_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6"))
+    assert "Claude Sonnet 4.6" in block
+    assert 'from "./sageLlm"' in block
+    assert "checkModel" in block          # the check whose absence only breaks for OTHER people
+    assert "src/sageLlm.config.ts" in block  # ... and the two files it must not rewrite
+    assert "src/sageLlm.ts" in block
+
+
+# ---- through the Orchestrator, which is what a Binding change calls ------------------------------
+
+
+def test_a_fresh_project_starts_with_no_model_pinned(tmp_path):
+    orch = _orch(tmp_path)
+    assert _config(orch) == render_config(None, None, None)
+    assert "sage:app-model" not in _agents(orch)
+
+
+def test_binding_an_alias_writes_it_into_the_apps_own_source(tmp_path):
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    text = _config(orch)
+    assert 'alias: "sonnet"' in text and f'base: "{BASE}"' in text
+    assert "sage:app-model:begin" in _agents(orch)
+    assert "Claude Sonnet 4.6" in _agents(orch)
+
+
+def test_unbinding_puts_the_app_back_to_having_no_model(tmp_path):
+    # Both halves matter: a config still naming the Alias would keep calling it, and an AGENTS.md
+    # still describing it would keep the agent writing calls to it.
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    orch.unbind("llm_alias", "id-sonnet")
+    assert _config(orch) == render_config(None, None, None)
+    assert "sage:app-model" not in _agents(orch)
+
+
+def test_the_agents_block_is_replaced_not_repeated(tmp_path):
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    orch.unbind("llm_alias", "id-sonnet")
+    orch.bind_llm_alias("id-qwen")
+    assert _agents(orch).count("sage:app-model:begin") == 1
+    assert "Claude Sonnet 4.6" not in _agents(orch)
+
+
+def test_adding_a_second_alias_does_not_change_what_the_app_calls(tmp_path):
+    # The rail disables Use on a bound row, but the endpoint is still callable, and a creator
+    # recording a second dependency must not have their working app repointed under them.
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    orch.bind_llm_alias("id-qwen")
+    assert 'alias: "sonnet"' in _config(orch)
+
+
+def test_re_binding_the_alias_already_in_use_is_a_no_op(tmp_path):
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    orch.bind_llm_alias("id-qwen")
+    orch.bind_llm_alias("id-sonnet")   # the one already pinned, recorded again
+    assert 'alias: "sonnet"' in _config(orch)
+
+
+def test_removing_the_pinned_alias_promotes_the_next_one(tmp_path):
+    # Removal is how a creator switches model, so the row below has to take over.
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    orch.bind_llm_alias("id-qwen")
+    orch.unbind("llm_alias", "id-sonnet")
+    assert 'alias: "qwen-2-5"' in _config(orch)
+
+
+def test_an_unchanged_config_is_not_rewritten(tmp_path):
+    # This file is committed to the user's repo. A rewrite with identical content still shows up as
+    # a dirty file in the turn's tree comparison and in their git history.
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    config = orch.project().workspace.path / CONFIG_PATH
+    before = config.stat().st_mtime_ns
+    orch.bind_llm_alias("id-sonnet")
+    assert config.stat().st_mtime_ns == before
+
+
+def test_a_project_seeded_before_this_feature_gets_the_helper_it_lacks(tmp_path):
+    # The config imports the helper, so writing one into a pre-#7 repo without the other leaves an
+    # app that cannot build at all — a worse outcome than the missing feature.
+    orch = _orch(tmp_path)
+    helper = orch.project().workspace.path / HELPER_PATH
+    helper.unlink()
+    orch.bind_llm_alias("id-sonnet")
+    assert helper.read_text() == "// stub helper\n"
+
+
+def test_a_helper_the_app_already_has_is_left_alone(tmp_path):
+    # Missing-only: this file is imported by code the agent wrote, so replacing a working copy
+    # under a running build is the bigger risk. The config beside it is what actually changes.
+    orch = _orch(tmp_path)
+    helper = orch.project().workspace.path / HELPER_PATH
+    helper.write_text("// edited by someone\n")
+    orch.bind_llm_alias("id-sonnet")
+    assert helper.read_text() == "// edited by someone\n"

@@ -34,6 +34,7 @@ from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
 from ..resources.bindings import KIND_LLM_ALIAS, Binding, parse_bindings
+from ..resources.pinned_model import CONFIG_PATH, agents_block, pinned_alias, render_config
 from ..resources.preflight import stale_bindings, stale_message, unresolved_slots
 from ..resources.provider import FakeResourceProvider, ResourceProvider, ResourceUnavailable
 from ..router.model_control import ModelControl
@@ -905,6 +906,7 @@ class Orchestrator:
         domino_run_id: str | None = None,
         cost_project_label: str | None = None,
         gateway_ui_url: str | None = None,
+        browser_gateway_base: str | None = None,
         opencode_client: OpenCodeClient | None = None,
     ) -> None:
         self._wm = WorkspaceManager(workspace_dir, template)
@@ -932,6 +934,11 @@ class Orchestrator:
         # nothing off-Domino, which hides the link instead of pointing it somewhere dead.
         self._cost_project_label = cost_project_label or project_id
         self._gateway_ui_url = gateway_ui_url
+        # The LLM Gateway URL a PUBLISHED app's browser code calls (#7). The same URL Sage itself
+        # routes through: a published app is served from the gateway's own host, so it is
+        # same-origin there and the viewer's Domino session cookie authenticates the call. None
+        # when Sage is not pointed at a Domino gateway, and then no app is given a model to call.
+        self._browser_gateway_base = browser_gateway_base
         self._opencode_cwd = Path(opencode_cwd) if opencode_cwd else Path.cwd()
         self._feedback = feedback or FeedbackRunner()
         # One container hosts one project (D9): a single bound project, attached lazily on first
@@ -2569,16 +2576,25 @@ class Orchestrator:
             raise LookupError(alias_id)
         new = Binding(KIND_LLM_ALIAS, alias["id"], alias["name"], alias["display_name"])
         def change(entries: list[dict]) -> list[dict]:
-            kept = [e for e in parse_bindings(entries) if e.key != new.key]
-            return [b.to_dict() for b in [*kept, new]]
-        return self.project().workspace.update_bindings(change)
+            # Re-binding replaces IN PLACE rather than moving to the end. Order decides which Alias
+            # the app calls (#7), so appending an already-bound one would repin an app that already
+            # works — from a call that was meant to be a no-op.
+            current = parse_bindings(entries)
+            if any(b.key == new.key for b in current):
+                return [(new if b.key == new.key else b).to_dict() for b in current]
+            return [b.to_dict() for b in [*current, new]]
+        entries = self.project().workspace.update_bindings(change)
+        self._write_app_model(self.project())
+        return entries
 
     def unbind(self, kind: str, resource_id: str) -> list[dict]:
         """Drop one Binding. Removing a record that is already gone is not an error: the creator
         wanted it gone, and it is."""
         def change(entries: list[dict]) -> list[dict]:
             return [b.to_dict() for b in parse_bindings(entries) if b.key != (kind, resource_id)]
-        return self.project().workspace.update_bindings(change)
+        entries = self.project().workspace.update_bindings(change)
+        self._write_app_model(self.project())
+        return entries
 
     # ---- Preflight: what a build will need, checked before it needs it (#17) ----
 
@@ -3032,6 +3048,48 @@ class Orchestrator:
             if b != -1 and e != -1:
                 existing = existing[:b] + block + existing[e + len(self._AGENTS_END):]
             elif block:
+                existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
+            agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+        self._rebaseline_turn(project)
+
+    _MODEL_BEGIN = "<!-- sage:app-model:begin -->"
+    _MODEL_END = "<!-- sage:app-model:end -->"
+
+    def _write_app_model(self, project: Project) -> None:
+        """Pin the app's model into its own source, and tell the agent it is there (#7).
+
+        Called on every Binding change, and reads the manifest back rather than taking the new list,
+        so the file on disk is a function of the record on disk and cannot drift from it.
+
+        Helper BEFORE config, for the reason _DEPLOY_FILES is ordered: the config is imported by the
+        helper, so a config that lands without one is an app that no longer compiles, while a helper
+        without a config is inert.
+
+        Written only when the text changes. This file is committed to the user's app repo, and a
+        rewrite with identical content would still show up as a dirty file in the turn's tree
+        comparison and in their git history.
+        """
+        alias = pinned_alias(parse_bindings(project.workspace.read_bindings()))
+        if alias is not None:
+            self._wm.ensure_llm_helper()
+        config = project.workspace.path / CONFIG_PATH
+        text = render_config(alias, self._browser_gateway_base, self._cost_project_label)
+        if not config.is_file() or config.read_text() != text:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(text)
+        block = agents_block(alias)
+        if block:
+            block = f"{self._MODEL_BEGIN}\n" + block + f"\n{self._MODEL_END}"
+        agents = project.workspace.path / "AGENTS.md"
+        with self._agents_lock:  # serialize with the other two managed regions in this file
+            existing = agents.read_text() if agents.exists() else ""
+            b, e = existing.find(self._MODEL_BEGIN), existing.find(self._MODEL_END)
+            if b != -1 and e != -1:
+                existing = existing[:b] + block + existing[e + len(self._MODEL_END):]
+            elif block:
+                # Appended, with no anchor among the other regions: this one describes what the app
+                # has, like the attached-data block, so its position carries no meaning and staying
+                # out of the ordering leaves write_instructions' own splice untouched.
                 existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
             agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
         self._rebaseline_turn(project)

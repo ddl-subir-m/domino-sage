@@ -48,6 +48,10 @@ for, what you proposed, which steps ran.
   editing now.
 - **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html`. The config
   is known-good; regenerating it wastes turns and breaks the preview.
+- **Do not touch `src/sageLlm.ts` or `src/sageLlm.config.ts` either.** Sage owns both and rewrites
+  them: they hold which language model this app calls, which is chosen in Sage rather than in code.
+  Import from them, never edit them. If no model has been chosen, `sageLlm.config.ts` is all nulls
+  and there is nothing to fix here — say the app needs a model chosen in Sage.
 - **Never run `npm install` / `yarn add` / `pnpm add`.** It does not just fail — it breaks the
   workspace. `node_modules` here is a symlink to a warm, pre-installed copy, and npm refuses to
   write into a symlinked one: it deletes the link *before* it knows whether the install resolves.

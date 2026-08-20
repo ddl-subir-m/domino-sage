@@ -1042,9 +1042,15 @@ function useButton(a) {
   b.className = used ? 'used' : '';
   b.textContent = used ? 'Used' : 'Use';
   b.disabled = used;
+  // Two different sentences for an app that has no model yet and one that already has one, because
+  // only the first Alias is the one the app calls (#7). One tooltip covering both would either
+  // promise this row will be called when it will not, or bury the promise when it is the whole point.
+  const pinned = pinnedAlias();
   b.title = used
     ? 'This app already uses this LLM Alias. To undo it, use Remove under “Used by this app” above.'
-    : 'Record that this app uses this LLM Alias. It is written down, not wired up: routing, the agent and the published app do not change.';
+    : pinned
+      ? `Record that this app also uses this LLM Alias. The app goes on calling ${pinned.display_name}, the one marked “App’s model” above.`
+      : 'Use this LLM Alias in the app you are building. The app calls it from the viewer’s own browser, so each viewer uses their own Domino access.';
   if (!used) b.onclick = () => bindAlias(a.id, b);
   return b;
 }
@@ -1092,6 +1098,13 @@ const KIND_LABELS = { llm_alias: 'LLM Alias' };
 
 function boundAliasIds() {
   return new Set((bindingsCache || []).filter(b => b.kind === 'llm_alias').map(b => b.id));
+}
+
+// The Alias the published app actually calls (#7): the FIRST one in the manifest, which is the order
+// they were chosen in. Anchoring on the first means adding a second Binding cannot silently change
+// what an app already built does. null until loadBindings has answered, so no row is marked on a guess.
+function pinnedAlias() {
+  return (bindingsCache || []).find(b => b.kind === 'llm_alias') || null;
 }
 
 // Check this app's recorded Bindings against the gateway when the session opens (#17), so a stale
@@ -1162,6 +1175,13 @@ function bindingRow(b) {
   const gone = staleBindings.has(`${b.kind} ${b.id}`)
     ? `<span class="a-chip" title="The LLM Gateway no longer offers this Resource. Remove it, or pick a different one, before you build on it.">Gone</span>`
     : '';
+  // Which row the app's code actually calls (#7). Without it, a creator holding two Aliases has no way
+  // to tell which one their app talks to, and the answer is not visible anywhere else in the product.
+  const p = pinnedAlias();
+  const isPinned = !!p && p.kind === b.kind && p.id === b.id;
+  const pin = isPinned
+    ? `<span class="a-chip" title="The app calls this model, straight from each viewer’s browser under their own Domino identity. Remove it to point the app at another Alias.">App’s model</span>`
+    : '';
   // The label is the only part of the row that can shrink, so a chip beside it costs display-name
   // characters — enough that a stale Resource, the one a creator most needs to identify, is the row
   // that reads worst. The tooltip therefore carries the full display name as well as the Alias name;
@@ -1169,10 +1189,14 @@ function bindingRow(b) {
   // repeating it would only look like a mistake.
   const full = b.display_name === b.name ? b.name : `${b.display_name} · ${b.name}`;
   row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(full)}">${esc(b.display_name)}</span>`
-    + `<span class="a-tags">${esc(kind)}</span>${gone}</span>`;
+    + `<span class="a-tags">${esc(kind)}</span>${pin}${gone}</span>`;
   const btn = document.createElement('button');
   btn.textContent = 'Remove';
-  btn.title = 'Stop recording this app as using this Resource. Nothing else changes.';
+  // Removing the pinned Alias leaves the app's model-calling code in place with no model behind it,
+  // which is a consequence worth stating before the click rather than discovering in the app.
+  btn.title = isPinned
+    ? 'Stop using this LLM Alias. The app stops calling it and says so on load; the screens built around it stay.'
+    : 'Stop recording this app as using this Resource. Nothing else changes.';
   btn.onclick = () => unbindResource(b.kind, b.id);
   row.appendChild(btn);
   return row;

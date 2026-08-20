@@ -296,6 +296,11 @@ propagation exists but is selectable **only by admins at publish time**, and Sag
 are not admins — so per-viewer identity is structurally unavailable to Sage-published apps,
 not merely deferred.
 
+**One exception, and it is the whole reason it is worth having:** anything the app's *browser*
+calls runs as the **viewer**, because it carries the viewer's own Domino session cookie. That
+does not extend to the app's server, and it only reaches hosts the app's page is same-origin
+with — which, for a Domino App, includes every other Domino App. See the next section.
+
 The accepted design is therefore **creator-access inheritance**: the app uses its creator's
 access, and viewers inherit it. Two guards make that safe, and both are enforceable because
 Sage publishes the app:
@@ -304,3 +309,41 @@ Sage publishes the app:
 2. **Never publish a resource-querying app as `PUBLIC`.** Authenticated at minimum.
 
 See `DATA-SOURCES-RESEARCH.md` for why guard 2 is a requirement rather than polish.
+
+## VERIFIED — the browser path: same-origin calls run as the viewer
+
+Probed live on cloud-dogfood, 2026-08-19, from a signed-in Chrome tab. This is what issue #7
+is built on, and it is the one place a Sage-published app escapes creator-access inheritance.
+
+A published app is served from `apps.<domino-host>/apps-internal/<id>/`. The LLM Gateway is
+another Domino App **on that same host**, at `apps.<domino-host>/apps/llm_gateway/v1`. So a
+`fetch` from the app's page is same-origin: **no CORS, no preflight, no key in the page, and
+no server hop.** Cookies alone, with **no `Authorization` header and no CSRF token**:
+
+| Request | Result |
+|---|---|
+| `GET /v1/models` | 200, 6 aliases. **`id` IS the alias name** — the value a call's `model` field takes |
+| `POST /v1/chat/completions` | 200, a real completion |
+| the same, plus `X-LLM-Tag-sage-*` headers | 200, and the tags land |
+| the same, plus `"stream": true` | 200 `text/event-stream` |
+| `GET /v1/whoami` | resolves the **browsing** user, not the app's publisher |
+| `GET /api/usage/tags` | `sage-component=built-app` is there, and queryable |
+
+**The catch: a browser call carries no project context.** `/v1/whoami` returns an empty
+`project_name` for it, so the gateway's first-class per-project columns are blank for this
+traffic. A `sage-project` tag is the only thing that says which app the spend came from —
+and tag keys the gateway reserves (`user`, `model`, `alias`, `project`, `cost`, …) are
+**silently dropped**, so every key has to be namespaced.
+
+**Two failure modes worth knowing before you debug them.** A signed-out session is served an
+**HTML login page with a 200**, not a 401 — a body that will not parse means the session, not
+the gateway. And route names are not guessable: `GET /apps/llm_gateway/openapi.json` and read
+the real paths (`/apps/llm_gateway/api/usage/mine` is a 404; the real one is
+`/api/usage/mine/logs`).
+
+**Why this is better than a server hop, not just cheaper.** A hop would spend the publisher's
+grant on every viewer — the exact sharing that creator-access inheritance has to be guarded
+against. From the browser, each viewer spends their own grant and the usage log attributes it
+to them. The cost is that availability becomes a property of the **viewer**: an app that skips
+an on-load availability check works perfectly for the creator who picked the model and fails on
+a button press for the colleague they sent it to.

@@ -189,6 +189,34 @@ def _gateway_ui_url(project_label: str | None) -> str | None:
     return f"{root}/#mine?range=30d&breakdown=tag:sage-phase&tag={tag}"
 
 
+def _browser_gateway_base() -> str | None:
+    """The gateway URL to pin into a Built App's own source, for its browser code to call (#7).
+
+    The very URL Sage routes through, unchanged. A published app is served from the gateway's own
+    host (`apps.<domino-host>`), so that absolute URL is same-origin there and the viewer's Domino
+    session cookie authenticates the call — no key in the page, no server hop, and the gateway
+    attributes the spend to whoever opened the app.
+
+    SAGE_GATEWAY_UI_URL wins when it is set, because that variable already means "where a browser
+    reaches this gateway" — it exists for the dashboard link. GATEWAY_BASE_URL is where SAGE's
+    server reaches it, which on cloud-dogfood is the same external URL, but a deployment that routes
+    Sage over an internal cluster address would otherwise pin one no viewer's browser can resolve.
+
+    None outside `domino` mode, the same gate _build_resources uses. In `openai` mode each model
+    routes to its own vendor behind an API key, and in `fake` mode there is no gateway at all;
+    pinning either into an app would ship a call the browser cannot make. The app then reports
+    having no model, which is true.
+    """
+    if GATEWAY_MODE != "domino":
+        return None
+    base = (os.environ.get("SAGE_GATEWAY_UI_URL", "").strip()
+            or os.environ.get("GATEWAY_BASE_URL", "").strip())
+    if not base:
+        return None
+    # Either variable may be given with or without the API suffix; the helper appends paths to it.
+    return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/v1"
+
+
 def _build_resources():
     """LLM Aliases from the Domino LLM Gateway when Sage is pointed at one, else an in-memory fake.
 
@@ -220,6 +248,7 @@ orchestrator = Orchestrator(
     domino_run_id=os.environ.get("DOMINO_RUN_ID"),
     cost_project_label=_COST_PROJECT_LABEL,
     gateway_ui_url=_gateway_ui_url(_COST_PROJECT_LABEL),
+    browser_gateway_base=_browser_gateway_base(),
 )
 
 # Preflight of Sage's own model slots (#17). Loud but not fatal: a slot resolves against the LLM

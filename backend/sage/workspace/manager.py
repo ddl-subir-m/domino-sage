@@ -34,6 +34,9 @@ _DEPLOY_FILES = ("serve.py", "app.sh")
 # the lock cannot live on the instance; a process-wide one is enough because a Sage process serves a
 # single project (D9) and every binding write goes through update_bindings.
 _BINDINGS_LOCK = threading.Lock()
+# The helper a Built App calls its model through (#7). Sage-owned like the deploy files above,
+# and committed to the app's repo for the same reason: a published app has no Sage around it.
+_LLM_HELPER = str(Path("src") / "sageLlm.ts")
 
 
 @dataclass(frozen=True)
@@ -439,3 +442,21 @@ class WorkspaceManager:
             shutil.copy2(src, dst)  # copy2 keeps the +x bit Domino needs to run app.sh
             changed = True
         return changed
+
+    def ensure_llm_helper(self) -> bool:
+        """Put the Sage-owned model helper in the workspace if it is absent. True if it was copied.
+
+        `src/sageLlm.ts` ships in the template, so every project seeded after #7 already has it. This
+        is for the ones seeded before: their repo has no helper, and writing the config file next to a
+        missing module would leave an app that cannot build. Missing-only, unlike
+        refresh_entry_script, because this file is imported by app code the agent wrote — replacing a
+        working copy under a build is a bigger risk than a stale copy, and the config beside it is
+        what actually changes.
+        """
+        src = self._template / _LLM_HELPER
+        dst = self._dir / _LLM_HELPER
+        if not src.is_file() or dst.is_file():
+            return False
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        return True

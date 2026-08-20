@@ -1,8 +1,9 @@
 """Bindings — the recorded link between a Built App and a Resource it uses (#6).
 
-A Binding is a record, not a wiring. It says "this app depends on this Resource", so a creator can
-see what the app gained and an auditor can read the list. Nothing in routing, in the agent's prompt
-or in the published app reads it yet.
+A Binding is a record first: it says "this app depends on this Resource", so a creator can see what
+the app gained and an auditor can read the list. Since #7 the first LLM Alias in the list is also the
+model the published app calls — `resources.pinned_model` pins it into the app's own source — while
+Sage's own routing and the model slots it uses are untouched by any of this.
 
 Why its own manifest, and not another entry kind in `.sage/attachments.json`: that file's consumer
 is the template's `scripts/rehydrate-data.mjs`, which `continue`s past any entry without
