@@ -771,6 +771,45 @@ async function loadHealth() {
     document.getElementById('publish-btn').style.display = '';
     document.getElementById('stop-btn').style.display = '';
   }
+  showSlotPreflight(body.preflight_slots);
+}
+
+// One of Sage's own model slots names an LLM Alias this gateway does not offer (#17). The build that
+// routes to it still fails, but the reason arrives now rather than partway through the user's first
+// turn — and it is a configuration fact about the builder, so it is worth saying unprompted.
+//
+// `pending` means the startup check has not landed yet (it runs off the boot thread so a slow
+// gateway cannot hold the port). Re-ask a few times rather than losing the answer to a race; give up
+// quietly, because a check that never completed is not evidence that anything is wrong.
+let slotPreflightTries = 0;
+function showSlotPreflight(pre) {
+  if (!pre) return;
+  if (pre.state === 'pending') {
+    if (++slotPreflightTries > 5) return;
+    setTimeout(async () => showSlotPreflight((await api('/healthz')).body.preflight_slots), 2000);
+    return;
+  }
+  // 'unreachable' says the gateway would not answer, not that a slot is broken — announcing the
+  // second on the strength of the first sends someone to fix a setting that was correct. The rail
+  // already reports an unreachable gateway, where a user is actually asking about models.
+  if (pre.state !== 'problems') return;
+  for (const s of pre.slots || []) {
+    const el = addStatus('warn', '⚠', `${esc(s.message)} <button class="link-btn">Open model assignments</button>`);
+    if (!el) continue;
+    el.classList.add('preflight');   // keeps the starter prompts visible — see syncStarters
+    const b = el.querySelector('.link-btn');
+    if (b) b.onclick = openModelAssignments;
+  }
+}
+
+// The remedy for a broken slot: the panel where its model can be reassigned, already expanded. The
+// assignments live in a <details> inside the model popover, and a link that only opened the popover
+// would leave the user hunting for the collapsed half that actually matters.
+function openModelAssignments() {
+  togglePop('model-pop');
+  const ed = document.getElementById('catalog-editor');
+  ed.open = true;
+  ed.scrollIntoView({ block: 'nearest' });
 }
 
 // A published Domino App and its settings page live on the MAIN host. The builder is served from
@@ -871,7 +910,9 @@ async function bootProject() {
 // view (preview + model panel) is always live — there is no separate "no project" mode.
 function syncStarters() {
   const box = document.getElementById('messages');
-  const hasMessages = [...box.children].some(c => c.id !== 'empty');
+  // A preflight warning is not a message: it is a fact about the builder that arrived on its own. If
+  // it counted, a fresh project with a broken model slot would lose its starter prompts to it.
+  const hasMessages = [...box.children].some(c => c.id !== 'empty' && !c.classList.contains('preflight'));
   document.getElementById('empty').style.display = hasMessages ? 'none' : '';
 }
 
@@ -884,6 +925,7 @@ function enterProject() {
   loadPhasedBuild();
   loadResources();
   loadBindings();
+  loadPreflight();
   loadAssets();
   openFilePath = null;
   for (const buf of fileBuffers.values()) buf.model.dispose();
@@ -1014,11 +1056,37 @@ function renderLlmAliases() {
 // gateway does not — which is when "what does this app depend on" gets asked.
 let bindingsCache = null;   // null = not read yet; [] = read, and this app depends on nothing
 let bindingsError = null;
+// Bindings the gateway no longer offers, keyed the way a Binding is identified (kind + id, since an
+// id is only unique within its kind). Empty unless the session-open preflight proved one gone.
+let staleBindings = new Set();
 
 const KIND_LABELS = { llm_alias: 'LLM Alias' };
 
 function boundAliasIds() {
   return new Set((bindingsCache || []).filter(b => b.kind === 'llm_alias').map(b => b.id));
+}
+
+// Check this app's recorded Bindings against the gateway when the session opens (#17), so a stale
+// Resource is met with an explanation rather than a build that fails on it. Its own request, fired
+// after the project view is already live: boot must not wait on a gateway to answer.
+async function loadPreflight() {
+  const { ok, body } = await api('/api/preflight');
+  const pre = (ok && body.bindings) || null;
+  // 'unreachable' means we could not check, which is not evidence anything is gone — badging a row
+  // stale on that basis would send a creator to remove a Resource that works.
+  if (!pre || pre.state !== 'problems') return;
+  staleBindings = new Set((pre.bindings || []).map(b => `${b.kind} ${b.id}`));
+  renderBindings();   // badge the rows, if the rail has already drawn them
+  for (const b of pre.bindings) {
+    const el = addStatus('warn', '⚠', `${esc(b.message)} <button class="link-btn">Show it in Resources</button>`);
+    if (!el) continue;
+    el.classList.add('preflight');
+    const btn = el.querySelector('.link-btn');
+    if (btn) btn.onclick = () => {
+      if (!document.getElementById('rail').classList.contains('open')) toggleRail();
+      document.getElementById('bindings-group').scrollIntoView({ block: 'nearest' });
+    };
+  }
 }
 
 async function loadBindings() {
@@ -1051,6 +1119,7 @@ async function bindAlias(id, btn) {
 
 async function unbindResource(kind, id) {
   const res = await api(`/api/bindings/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  staleBindings.delete(`${kind} ${id}`);   // removed is removed; it must not come back as a badge
   applyBindings(res, 'Sage could not remove that Resource.');
 }
 
@@ -1060,8 +1129,13 @@ function bindingRow(b) {
   // An unknown kind keeps its raw name rather than a guessed label: the record may come from a newer
   // Sage, and mislabelling it would be worse than showing it plainly.
   const kind = KIND_LABELS[b.kind] || b.kind;
+  // A Resource the gateway no longer offers (#17). The badge sits next to the thing to fix, which
+  // the chat warning cannot do; both exist because the rail may never be opened.
+  const gone = staleBindings.has(`${b.kind} ${b.id}`)
+    ? `<span class="a-chip" title="The LLM Gateway no longer offers this Resource. Remove it, or pick a different one, before you build on it.">Gone</span>`
+    : '';
   row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(b.name)}">${esc(b.display_name)}</span>`
-    + `<span class="a-tags">${esc(kind)}</span></span>`;
+    + `<span class="a-tags">${esc(kind)}</span>${gone}</span>`;
   const btn = document.createElement('button');
   btn.textContent = 'Remove';
   btn.title = 'Stop recording this app as using this Resource. Nothing else changes.';

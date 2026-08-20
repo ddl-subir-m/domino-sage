@@ -222,6 +222,38 @@ orchestrator = Orchestrator(
     gateway_ui_url=_gateway_ui_url(_COST_PROJECT_LABEL),
 )
 
+# Preflight of Sage's own model slots (#17). Loud but not fatal: a slot resolves against the LLM
+# Gateway, so a gateway blip or one de-registered Alias would otherwise be enough to stop the
+# builder from starting at all — and a Domino App that exits explains nothing to the user who opened
+# it. An ERROR log, /healthz, and a banner in the builder cover the maintainer and the user; the
+# build that routes to the broken slot still fails, but now with a reason known before it started.
+#
+# On a thread so "at startup" cannot mean "after the gateway's timeout": this is two HTTP calls, and
+# blocking module import on them would hold up the port Domino is waiting for. `pending` is the
+# honest answer for the first moment or so after boot.
+PREFLIGHT_SLOTS: dict = {"state": "pending", "error": None, "slots": []}
+
+
+def _run_slot_preflight() -> None:
+    global PREFLIGHT_SLOTS
+    if GATEWAY_MODE == "openai":
+        # Each model routes to its own vendor here, so there is no LLM Gateway holding an Alias list
+        # to resolve against. Checking anyway would report every slot as missing.
+        PREFLIGHT_SLOTS = {"state": "skipped", "error": None, "slots": [],
+                           "reason": "openai gateway mode has no LLM Gateway to resolve slots against."}
+        return
+    result = orchestrator.preflight_slots()
+    for problem in result["slots"]:
+        log.error("preflight: %s", problem["message"])
+    if result["state"] == "unreachable":
+        log.warning("preflight: could not check Sage's model slots — %s", result["error"])
+    elif result["state"] == "ok":
+        log.info("preflight: every configured model slot resolves on the gateway")
+    PREFLIGHT_SLOTS = result
+
+
+threading.Thread(target=_run_slot_preflight, name="sage-preflight-slots", daemon=True).start()
+
 control_app = FastAPI(title="sage orchestrator")
 
 # The Domino proxy path prefix, single-sourced from env (empty locally). Baked into Vite's `base`
@@ -285,6 +317,10 @@ def healthz() -> dict:
         "open_weight_models": [
             {"id": m.id, "provider": m.provider} for m in OPEN_WEIGHT_MODELS
         ] if GATEWAY_MODE == "openai" else [],
+        # Whether Sage's own configured model slots resolve on the gateway (#17). Here rather than
+        # on its own route because /healthz is already the one call that answers "is this builder
+        # correctly wired", and the UI already makes it on load.
+        "preflight_slots": PREFLIGHT_SLOTS,
     }
 
 
@@ -638,6 +674,21 @@ async def add_binding(request: Request) -> JSONResponse:
 @control_app.delete("/api/bindings/{kind}/{resource_id}")
 def remove_binding(kind: str, resource_id: str) -> JSONResponse:
     return JSONResponse(content={"bindings": orchestrator.unbind(kind, resource_id)})
+
+
+@control_app.get("/api/preflight")
+def preflight() -> JSONResponse:
+    """The Bindings this app records that the gateway no longer offers (#17).
+
+    Its own route, called by the UI just after the project view is live, rather than folded into
+    /api/project: that call is what boot blocks on, and a stale Binding is worth a warning, not
+    worth holding the builder shut while a gateway decides whether to answer. An app with no
+    Bindings — most apps, most of the time — makes no gateway call at all.
+
+    Always 200, never 502: "we could not check" is a `state`, not a failure of the request. A 502
+    here would read to the UI exactly like the rail's, where it means "you have no models".
+    """
+    return JSONResponse(content={"bindings": orchestrator.preflight_bindings()})
 
 
 @control_app.get("/api/project/assets/{dataset_id}/files")

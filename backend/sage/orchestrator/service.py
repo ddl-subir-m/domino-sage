@@ -34,7 +34,8 @@ from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
 from ..resources.bindings import KIND_LLM_ALIAS, Binding, parse_bindings
-from ..resources.provider import FakeResourceProvider, ResourceProvider
+from ..resources.preflight import stale_bindings, stale_message, unresolved_slots
+from ..resources.provider import FakeResourceProvider, ResourceProvider, ResourceUnavailable
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
@@ -2578,6 +2579,54 @@ class Orchestrator:
         def change(entries: list[dict]) -> list[dict]:
             return [b.to_dict() for b in parse_bindings(entries) if b.key != (kind, resource_id)]
         return self.project().workspace.update_bindings(change)
+
+    # ---- Preflight: what a build will need, checked before it needs it (#17) ----
+
+    def preflight_slots(self) -> dict:
+        """Resolve every configured model slot against the gateway. One listing, at startup.
+
+        The DEPLOYMENT catalog, not a project's: this is Sage checking its own configuration before
+        any project is attached, so a maintainer learns about a missing Alias from a log line rather
+        than from a user's failed build. A project's per-slot overrides are the user's own choice and
+        are reported to them by the model panel, not here.
+
+        A gateway that will not answer reports `unreachable`, not `problems`: we did not learn that
+        a slot is broken, we learned that we could not check. Announcing the former on the strength
+        of the latter would send a maintainer to edit a setting that was correct all along.
+        """
+        try:
+            aliases = self._resources.list_llm_aliases()
+        except ResourceUnavailable as e:
+            return {"state": "unreachable", "error": str(e), "slots": []}
+        problems = unresolved_slots(self._catalog, aliases)
+        return {
+            "state": "problems" if problems else "ok",
+            "error": None,
+            "slots": [p.to_dict() for p in problems],
+        }
+
+    def preflight_bindings(self) -> dict:
+        """Check this project's recorded Bindings against the gateway. One listing, at session open.
+
+        Reads the manifest directly rather than through `project()`, so this stays callable from
+        inside the attach path without recursing through the memo it is being called from.
+        """
+        workspace = self._project.workspace if self._project is not None else Workspace(self._project_id, self._wm.path)
+        recorded = parse_bindings(workspace.read_bindings())
+        if not recorded:
+            # Nothing to check, so nothing worth a gateway call: the overwhelmingly common case at
+            # session open is an app with no Bindings at all, and that must cost nothing.
+            return {"state": "ok", "error": None, "bindings": []}
+        try:
+            aliases = self._resources.list_llm_aliases()
+        except ResourceUnavailable as e:
+            return {"state": "unreachable", "error": str(e), "bindings": []}
+        gone = stale_bindings(recorded, aliases)
+        return {
+            "state": "problems" if gone else "ok",
+            "error": None,
+            "bindings": [{**b.to_dict(), "message": stale_message(b)} for b in gone],
+        }
 
     def _find_asset(self, dataset_id: str) -> Asset:
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
