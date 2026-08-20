@@ -797,9 +797,30 @@ function showSlotPreflight(pre) {
     const el = addStatus('warn', '⚠', `${esc(s.message)} <button class="link-btn">Open model assignments</button>`);
     if (!el) continue;
     el.classList.add('preflight');   // keeps the starter prompts visible — see syncStarters
+    slotWarnings.set(s.slot, { el, alias: s.alias });
     const b = el.querySelector('.link-btn');
     if (b) b.onclick = openModelAssignments;
   }
+  // The check ran against the DEPLOYMENT catalog, before any project was attached. This project may
+  // already reassign the slot, in which case the warning was never true here.
+  pruneSlotWarnings(lastModel && lastModel.catalog);
+}
+
+// Warnings on screen, by slot, so one can be taken down again. The startup check cannot know a
+// project's overrides — it runs before any project exists — so a slot it objects to may be reassigned
+// either already or by the user acting on the warning. Leaving the sentence up in that case nags
+// someone about a setting they have just corrected.
+const slotWarnings = new Map();
+
+function pruneSlotWarnings(catalog) {
+  if (!catalog) return;
+  for (const [slot, w] of slotWarnings) {
+    const alias = (catalog[slot] || '').split('/').pop();   // same bare-id reduction the router makes
+    if (!alias || alias === w.alias) continue;
+    w.el.remove();
+    slotWarnings.delete(slot);
+  }
+  syncStarters();   // the transcript may be empty again, and the starter prompts belong back
 }
 
 // The remedy for a broken slot: the panel where its model can be reassigned, already expanded. The
@@ -1141,7 +1162,13 @@ function bindingRow(b) {
   const gone = staleBindings.has(`${b.kind} ${b.id}`)
     ? `<span class="a-chip" title="The LLM Gateway no longer offers this Resource. Remove it, or pick a different one, before you build on it.">Gone</span>`
     : '';
-  row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(b.name)}">${esc(b.display_name)}</span>`
+  // The label is the only part of the row that can shrink, so a chip beside it costs display-name
+  // characters — enough that a stale Resource, the one a creator most needs to identify, is the row
+  // that reads worst. The tooltip therefore carries the full display name as well as the Alias name;
+  // for the many Aliases registered under no separate display name those are the same string, and
+  // repeating it would only look like a mistake.
+  const full = b.display_name === b.name ? b.name : `${b.display_name} · ${b.name}`;
+  row.innerHTML = `<span class="a-name"><span class="a-label" title="${esc(full)}">${esc(b.display_name)}</span>`
     + `<span class="a-tags">${esc(kind)}</span>${gone}</span>`;
   const btn = document.createElement('button');
   btn.textContent = 'Remove';
@@ -1557,6 +1584,14 @@ async function refreshStatus() {
   // is the opposite case — it names the model answering right now, so it reads the pinned m.mode.
   if (showOverride && m.catalog) renderCatalog(m.catalog, m.picked_model, m.sensitivity_locked, uiMode);
   if (uiMode === 'auto' && m.catalog) renderAutoModels(m.catalog, m.phase, m.sensitivity_locked);
+  if (m.catalog) {
+    fillCatalogFields(m.catalog);
+    // A slot the project has reassigned is no longer routing to the Alias preflight objected to, so
+    // its warning has stopped being true (#17). Taken down here rather than left to the next reload,
+    // because this runs right after the user edits a slot — the moment they are looking for the
+    // change to have landed.
+    pruneSlotWarnings(m.catalog);
+  }
   renderModelChip(m);
   renderCostLink(body.cost);
   renderLockButton(m);
@@ -1656,6 +1691,13 @@ function renderCatalog(catalog, pickedModel, locked, mode) {
   }
   sel.innerHTML = options;
   sel.value = pickedModel || '';
+}
+
+// The six assignment inputs. Split out of renderCatalog because the two are shown in opposite modes:
+// #pick above is a plan/implement override, while #catalog-editor is displayed in auto — so while
+// these lines lived in renderCatalog the panel was visible with every field blank, and a field that
+// does not say what a slot is currently set to cannot be used to change it.
+function fillCatalogFields(catalog) {
   document.getElementById('cat-plan').value = catalog.plan;
   document.getElementById('cat-implement').value = catalog.implement;
   document.getElementById('cat-sovereign-plan').value = catalog.sovereign_plan;
