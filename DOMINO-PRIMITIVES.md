@@ -409,14 +409,31 @@ and means only that the model disliked the body. A 400 is a pass. Domino's sampl
 `{"data":{"start":1,"stop":100}}`, which 400s against any model that does not take `start` and
 `stop`, and that is worth its own note below.
 
-A first pass at the
-automatable alternative failed: `Authorization: Bearer <sidecar token>` and
-`X-Domino-Api-Key: <sidecar token>` both returned **401**. That is consistent with
-`www-authenticate: Basic`, but it is not yet conclusive — the sidecar can hand back a string that
-already carries a `Bearer ` prefix, which would have made the header read `Bearer Bearer ...` and
-fail for the wrong reason. `spikes/domino-probes/model_api_auth_shapes.sh` settles it by printing
-the token's shape and sweeping the remaining forms. If any returns 200, a published app's
-`serve.py` can mint its own credential as the publisher and the manual paste disappears.
+**No credential Sage can obtain programmatically opens a Model API.** Every platform identity was
+swept in all four shapes, from the owner's own workspace, against a private model:
+
+| Credential | Bearer | `X-Domino-Api-Key` | Basic `(v:v)` | Basic `(:v)` |
+|---|---|---|---|---|
+| Model access token | 401 | 401 | **200** | 401 |
+| Sidecar JWT (`/access-token`) | 401 | 401 | 401 | 401 |
+| User API key | 401 | 401 | 401 | 401 |
+| Personal access token (PAT) | 401 | 401 | 401 | 401 |
+
+The sidecar token is bare, so none of those failed on a doubled `Bearer ` prefix. The PAT mattered
+most because `POST /api/pat/v1/tokens` can mint one from a published app's sidecar — it is refused
+too, so that door is shut.
+
+The SDK is not a way round it either. `dominodatalab` 1.4.8 has no method that fetches a model
+access token and none that invokes a model; its model surface is publish, versions and export. It
+wraps the REST API, and the REST API does not vend the secret: `ModelApiAccessToken` is metadata
+only — `id`, `name`, `created`, `createdBy`, `lastGenerated`, `lastGeneratedBy`, never the value.
+`lastGenerated` implies a generate action, but no route in any of the three specs performs one, and
+`ModelApiUpdateRequest` cannot set tokens either.
+
+**So a model access token is copied by hand from the Overview page, and there is no alternative.**
+Any generated Model API call — browser or server — requires the creator to paste a secret into
+Sage. That is a product decision to take deliberately, not a detail to absorb: it is a manual
+credential step in a tool whose pitch is that you describe an app and it appears.
 
 What Sage records today — the Binding — is unaffected either way.
 
