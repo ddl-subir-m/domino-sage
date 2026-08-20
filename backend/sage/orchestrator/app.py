@@ -43,6 +43,7 @@ from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..preview.prefix import domino_base_prefix, domino_project_label
 from ..preview.proxy import make_preview_app
 from ..resources.bindings import KIND_LLM_ALIAS, KIND_MODEL_API
+from ..resources.model_api_credentials import CredentialRequired
 from ..resources.provider import DominoResourceProvider, FakeResourceProvider, ResourceUnavailable
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
@@ -723,10 +724,50 @@ async def add_binding(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": f"unknown Resource kind: {kind}"})
     try:
         return JSONResponse(content={"bindings": bind(resource_id)})
+    except CredentialRequired:
+        # 409, not 404: the Model API is there and the record is refused because Sage is missing
+        # something the creator can supply. The rail asks for the snippet before binding, so this is
+        # the invariant holding rather than the usual path — but it has to say what to do anyway,
+        # because anything that binds without going through the rail lands here.
+        return JSONResponse(status_code=409, content={"error": (
+            "Sage needs this Model API's access token before an app can call it. Open the Model "
+            "API's Overview page in Domino, copy the sample request, and paste it into Sage."
+        )})
     except LookupError:
         return JSONResponse(status_code=404, content={"error": missing})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+# Its own route rather than a field on /api/resources: a Model API listing is what the project
+# offers, and this is what Sage remembers about it. The two come from different places and one must
+# not fail because the other did.
+@control_app.get("/api/model-api-credentials")
+def list_model_api_credentials() -> JSONResponse:
+    """Which Model APIs Sage holds a token for. Ids only — a token Sage has stored is never read
+    back out over HTTP, so the rail can tell which rows will prompt without the value crossing
+    into a page where a devtools panel is watching."""
+    return JSONResponse(content={"ids": orchestrator.model_api_credential_ids()})
+
+
+@control_app.post("/api/model-api-credentials")
+async def add_model_api_credential(request: Request) -> JSONResponse:
+    """Take a pasted sample request for one Model API, verify it, and remember it (#9).
+
+    Always 200 when the request was well-formed, with `ok` saying whether the paste worked. The
+    failures here are the creator's to fix in the form they are looking at — a bad token, the wrong
+    model's snippet, half a paste — and an HTTP error code would make the rail treat them as Sage
+    breaking rather than as an answer to render beside the box.
+    """
+    body = await request.json()
+    resource_id, snippet = body.get("id"), body.get("snippet")
+    if not resource_id:
+        return JSONResponse(status_code=400, content={"error": "id required"})
+    if not isinstance(snippet, str) or not snippet.strip():
+        return JSONResponse(content={"ok": False, "error": (
+            "Paste the sample request from the Model API's Overview page in Domino."
+        )})
+    return JSONResponse(content=orchestrator.save_model_api_credential(resource_id, snippet))
 
 
 @control_app.delete("/api/bindings/{kind}/{resource_id}")

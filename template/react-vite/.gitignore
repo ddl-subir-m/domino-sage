@@ -26,3 +26,6 @@ dist-ssr
 # Python (serve.py serves the published build)
 __pycache__/
 *.py[cod]
+
+# Model access tokens a creator pasted (#9). Never committed.
+.sage/model-api-credentials.json

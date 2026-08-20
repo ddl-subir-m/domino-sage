@@ -34,7 +34,18 @@ from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.supervisor import ViteSupervisor
 from ..resources.bindings import KIND_LLM_ALIAS, KIND_MODEL_API, Binding, parse_bindings
+from ..resources.model_api_credentials import (
+    Credential,
+    CredentialRequired,
+    CredentialStore,
+    verify_credential,
+)
+from ..resources.model_api_snippet import parse_snippet
 from ..resources.pinned_model import CONFIG_PATH, agents_block, pinned_alias, render_config
+from ..resources.pinned_model_api import CONFIG_PATH as MODEL_API_CONFIG_PATH
+from ..resources.pinned_model_api import agents_block as model_api_agents_block
+from ..resources.pinned_model_api import pinned_model_api
+from ..resources.pinned_model_api import render_config as render_model_api_config
 from ..resources.preflight import stale_bindings, stale_message, unresolved_slots
 from ..resources.provider import FakeResourceProvider, ResourceProvider, ResourceUnavailable
 from ..router.model_control import ModelControl
@@ -2598,11 +2609,54 @@ class Orchestrator:
 
         A Model API has ONE name and no separate display name, so both fields carry it. That keeps
         the manifest one shape across kinds, and the row renders the name once rather than twice.
+
+        Refuses without a stored credential, which is what makes a Model API Binding mean something
+        an app can act on. Unlike an LLM Alias — where the viewer's own session is the credential —
+        a Model API opens for nothing but its access token, so a Binding recorded without one would
+        pin a model the app cannot call and report it as a dependency that works. The rail asks for
+        the snippet before it gets here; this is the invariant behind that, not a second prompt.
         """
         api = next((m for m in self.list_model_apis() if m["id"] == model_api_id), None)
         if api is None:
             raise LookupError(model_api_id)
+        if self._credentials(self.project()).get(model_api_id) is None:
+            raise CredentialRequired(model_api_id)
         return self._record(Binding(KIND_MODEL_API, api["id"], api["name"], api["name"]))
+
+    # ---- Model access tokens, pasted once and remembered (#9) ----
+
+    def _credentials(self, project: Project) -> CredentialStore:
+        return CredentialStore(project.workspace.path)
+
+    def model_api_credential_ids(self) -> list[str]:
+        """Which Model APIs Sage already holds a token for. The rail reads this to know which Use
+        buttons can act at once and which have to ask first."""
+        return sorted(self._credentials(self.project()).ids())
+
+    def save_model_api_credential(self, model_api_id: str, snippet: str) -> dict:
+        """Take a pasted sample request, prove it opens the model, and remember it.
+
+        Verified before it is stored, never after. An unverified token fails for the first person to
+        open the published app — where there is no form, no Sage and nobody who can fix it — whereas
+        a token checked here fails while the creator is still looking at the paste that produced it.
+
+        The id in the pasted URL is checked against the Model API being bound. Two snippets look
+        alike and a creator with several Overview tabs open can easily copy the wrong one; without
+        this the app would call somebody else's model and report every mismatch as a bad body.
+        """
+        parsed = parse_snippet(snippet)
+        if not parsed.complete:
+            return {"ok": False, "error": parsed.missing()}
+        if parsed.model_id and parsed.model_id != model_api_id:
+            return {"ok": False, "error": (
+                "That snippet is for a different Model API. Copy the sample request from the "
+                "Overview page of the model you are adding."
+            )}
+        result = verify_credential(parsed.url, parsed.token)
+        if not result.ok:
+            return {"ok": False, "error": result.message, "detail": result.detail}
+        self._credentials(self.project()).put(model_api_id, Credential(parsed.url, parsed.token))
+        return {"ok": True, "url": parsed.url}
 
     def _record(self, new: Binding) -> list[dict]:
         """Write one Binding into the manifest, and re-derive what the app's source says about it."""
@@ -2615,7 +2669,7 @@ class Orchestrator:
                 return [(new if b.key == new.key else b).to_dict() for b in current]
             return [b.to_dict() for b in [*current, new]]
         entries = self.project().workspace.update_bindings(change)
-        self._write_app_model(self.project())
+        self._write_app_resources(self.project())
         return entries
 
     def unbind(self, kind: str, resource_id: str) -> list[dict]:
@@ -2624,7 +2678,7 @@ class Orchestrator:
         def change(entries: list[dict]) -> list[dict]:
             return [b.to_dict() for b in parse_bindings(entries) if b.key != (kind, resource_id)]
         entries = self.project().workspace.update_bindings(change)
-        self._write_app_model(self.project())
+        self._write_app_resources(self.project())
         return entries
 
     # ---- Preflight: what a build will need, checked before it needs it (#17) ----
@@ -3085,6 +3139,8 @@ class Orchestrator:
 
     _MODEL_BEGIN = "<!-- sage:app-model:begin -->"
     _MODEL_END = "<!-- sage:app-model:end -->"
+    _MODEL_API_BEGIN = "<!-- sage:app-model-api:begin -->"
+    _MODEL_API_END = "<!-- sage:app-model-api:end -->"
 
     def _write_app_model(self, project: Project) -> None:
         """Pin the app's model into its own source, and tell the agent it is there (#7).
@@ -3103,27 +3159,67 @@ class Orchestrator:
         alias = pinned_alias(parse_bindings(project.workspace.read_bindings()))
         if alias is not None:
             self._wm.ensure_llm_helper()
-        config = project.workspace.path / CONFIG_PATH
-        text = render_config(alias, self._browser_gateway_base, self._cost_project_label)
-        if not config.is_file() or config.read_text() != text:
-            config.parent.mkdir(parents=True, exist_ok=True)
-            config.write_text(text)
-        block = agents_block(alias)
+        self._write_generated(project.workspace.path / CONFIG_PATH,
+                              render_config(alias, self._browser_gateway_base, self._cost_project_label))
+        self._splice_agents(project, self._MODEL_BEGIN, self._MODEL_END, agents_block(alias))
+
+    def _write_app_model_api(self, project: Project) -> None:
+        """Pin the app's Model API into its own source, and tell the agent it is there (#9).
+
+        The Model API twin of _write_app_model, and the same contract: reads the manifest back rather
+        than taking a list, writes only on change, helper before config.
+
+        The credential is read here rather than passed in for that same reason — the file on disk is
+        a function of what is on disk. A Binding whose credential has gone renders as no Model API,
+        which is what `render_config` documents and what bind refuses to create in the first place.
+        """
+        bindings = parse_bindings(project.workspace.read_bindings())
+        api = pinned_model_api(bindings)
+        credential = self._credentials(project).get(api.id) if api is not None else None
+        if api is not None:
+            self._wm.ensure_model_api_helper()
+        self._write_generated(project.workspace.path / MODEL_API_CONFIG_PATH,
+                              render_model_api_config(api, credential))
+        self._splice_agents(project, self._MODEL_API_BEGIN, self._MODEL_API_END,
+                            model_api_agents_block(api))
+
+    def _write_app_resources(self, project: Project) -> None:
+        """Both pinned-Resource writers, then one baseline move for the pair.
+
+        One entry point because a Binding change can move either pin, and because rebaselining once
+        per change keeps a mid-build bind from being counted as two separate writes by the agent.
+        """
+        self._write_app_model(project)
+        self._write_app_model_api(project)
+        self._rebaseline_turn(project)
+
+    @staticmethod
+    def _write_generated(path: Path, text: str) -> None:
+        """A Sage-generated file, written only when its content changes.
+
+        These are committed to the user's app repo, and a rewrite with identical content would still
+        show up as a dirty file in the turn's tree comparison and in their git history.
+        """
+        if not path.is_file() or path.read_text() != text:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+    def _splice_agents(self, project: Project, begin: str, end: str, block: str) -> None:
+        """Replace one managed region of AGENTS.md, or drop it when the block is empty."""
         if block:
-            block = f"{self._MODEL_BEGIN}\n" + block + f"\n{self._MODEL_END}"
+            block = f"{begin}\n" + block + f"\n{end}"
         agents = project.workspace.path / "AGENTS.md"
-        with self._agents_lock:  # serialize with the other two managed regions in this file
+        with self._agents_lock:  # serialize with the other managed regions in this file
             existing = agents.read_text() if agents.exists() else ""
-            b, e = existing.find(self._MODEL_BEGIN), existing.find(self._MODEL_END)
+            b, e = existing.find(begin), existing.find(end)
             if b != -1 and e != -1:
-                existing = existing[:b] + block + existing[e + len(self._MODEL_END):]
+                existing = existing[:b] + block + existing[e + len(end):]
             elif block:
                 # Appended, with no anchor among the other regions: this one describes what the app
                 # has, like the attached-data block, so its position carries no meaning and staying
                 # out of the ordering leaves write_instructions' own splice untouched.
                 existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
             agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
-        self._rebaseline_turn(project)
 
     def _rebaseline_turn(self, project: Project) -> None:
         """Move a running turn's working-tree baseline forward over writes WE just made on the

@@ -137,10 +137,25 @@ def test_an_id_is_only_unique_within_its_kind(tmp_path: Path):
 # ---- Model APIs (#9) ----------------------------------------------------------------------------
 
 
+def _credential(orch, model_api_id: str = "id-churn") -> None:
+    """Give Sage a stored token for one Model API, the way a verified paste would.
+
+    Written straight into the store rather than through `save_model_api_credential`, which calls the
+    model to check the token before keeping it. Binding is what these tests are about; the paste and
+    its verification have their own file.
+    """
+    from sage.resources.model_api_credentials import Credential, CredentialStore
+
+    CredentialStore(orch.project().workspace.path).put(
+        model_api_id, Credential(f"https://dogfood.example/models/{model_api_id}/latest/model", "t" * 64)
+    )
+
+
 def test_binding_a_model_api_records_the_name_as_both_labels(tmp_path: Path):
     # A Model API has one name and no separate display name. Both fields carry it so the manifest is
     # one shape across kinds, and the row renders the name once rather than twice.
     orch = _orch(tmp_path)
+    _credential(orch)
     assert orch.bind_model_api("id-churn") == [
         {"kind": "model_api", "id": "id-churn", "name": "churn-risk", "display_name": "churn-risk"}
     ]
@@ -149,6 +164,7 @@ def test_binding_a_model_api_records_the_name_as_both_labels(tmp_path: Path):
 def test_a_stopped_model_api_can_still_be_recorded(tmp_path: Path):
     # Status says whether it would answer now, not whether it is worth composing with.
     orch = _orch(tmp_path)
+    _credential(orch, "id-demand")
     assert [b["name"] for b in orch.bind_model_api("id-demand")] == ["demand-forecast"]
 
 
@@ -167,6 +183,7 @@ def test_a_model_api_this_project_does_not_offer_is_refused(tmp_path: Path):
 
 def test_binding_the_same_model_api_twice_leaves_one_row(tmp_path: Path):
     orch = _orch(tmp_path)
+    _credential(orch)
     orch.bind_model_api("id-churn")
     orch.bind_model_api("id-churn")
     assert len(orch.list_bindings()) == 1
@@ -174,6 +191,7 @@ def test_binding_the_same_model_api_twice_leaves_one_row(tmp_path: Path):
 
 def test_the_two_kinds_share_one_list_in_the_order_they_were_chosen(tmp_path: Path):
     orch = _orch(tmp_path)
+    _credential(orch)
     orch.bind_model_api("id-churn")
     orch.bind_llm_alias("id-sonnet")
     assert [(b["kind"], b["id"]) for b in orch.list_bindings()] == [
@@ -187,6 +205,7 @@ def test_a_model_api_recorded_first_does_not_take_the_alias_pin(tmp_path: Path):
     from sage.resources.pinned_model import CONFIG_PATH
 
     orch = _orch(tmp_path)
+    _credential(orch)
     orch.bind_model_api("id-churn")
     orch.bind_llm_alias("id-sonnet")
     assert '"sonnet"' in (orch.project().workspace.path / CONFIG_PATH).read_text()
@@ -303,7 +322,9 @@ def test_the_routes_record_and_remove_a_model_api(tmp_path: Path, monkeypatch):
 
     import sage.orchestrator.app as appmod
 
-    monkeypatch.setattr(appmod, "orchestrator", _orch(tmp_path))
+    orch = _orch(tmp_path)
+    _credential(orch)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
     client = TestClient(appmod.control_app)
 
     made = client.post("/api/bindings", json={"kind": KIND_MODEL_API, "id": "id-churn"})

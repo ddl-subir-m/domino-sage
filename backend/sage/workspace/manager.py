@@ -37,6 +37,9 @@ _BINDINGS_LOCK = threading.Lock()
 # The helper a Built App calls its model through (#7). Sage-owned like the deploy files above,
 # and committed to the app's repo for the same reason: a published app has no Sage around it.
 _LLM_HELPER = str(Path("src") / "sageLlm.ts")
+# The same, for the Model API a Built App calls (#9). Separate file rather than more of sageLlm.ts:
+# the two call different hosts with different credentials, and only this one carries a secret.
+_MODEL_API_HELPER = str(Path("src") / "sageModelApi.ts")
 
 
 @dataclass(frozen=True)
@@ -453,8 +456,15 @@ class WorkspaceManager:
         working copy under a build is a bigger risk than a stale copy, and the config beside it is
         what actually changes.
         """
-        src = self._template / _LLM_HELPER
-        dst = self._dir / _LLM_HELPER
+        return self._ensure_helper(_LLM_HELPER)
+
+    def ensure_model_api_helper(self) -> bool:
+        """The same, for `src/sageModelApi.ts` (#9), and for projects seeded before it shipped."""
+        return self._ensure_helper(_MODEL_API_HELPER)
+
+    def _ensure_helper(self, rel: str) -> bool:
+        src = self._template / rel
+        dst = self._dir / rel
         if not src.is_file() or dst.is_file():
             return False
         dst.parent.mkdir(parents=True, exist_ok=True)

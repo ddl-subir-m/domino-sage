@@ -345,6 +345,32 @@
   .res-head .res-name { flex: 1; }
   .res-head button { flex: 0 0 auto; padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); font-size: 12px; }
   .res-head button.used { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+  /* Pasting a Model API's access token (#9). Inline under the row rather than in a modal: the token
+     is copied from Domino's Overview page for THIS model, and a dialog would cover the row that
+     asked for it, leaving nothing on screen to say which model the paste belongs to. */
+  .tok-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .tok-form .tok-lbl { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+  .tok-form .tok-lbl.warn-note { color: var(--faint); }
+  .tok-form textarea {
+    width: 100%; min-height: 76px; resize: vertical; padding: 7px 8px;
+    border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5;
+  }
+  .tok-form textarea:focus { border-color: var(--primary); outline: none; }
+  .tok-form textarea::placeholder { color: var(--faint); }
+  .tok-actions { display: flex; align-items: center; gap: 10px; }
+  .tok-save { padding: 6px 12px; border: 0; border-radius: 8px; background: var(--primary); color: #fff; font-size: 12px; font-weight: 600; }
+  .tok-save:hover:not(:disabled) { background: var(--primary-hover); }
+  .tok-save:disabled { opacity: .5; cursor: default; }
+  /* Failures land under the box the paste went into, where the fix is. `.tok-detail` is the MODEL's
+     own words — a traceback, or a 400 naming the argument it wanted — so it is shown raw and
+     unwrapped in monospace: rewording somebody's stderr helps nobody debug it. */
+  .tok-err { font-size: 11.5px; color: var(--lock); line-height: 1.45; }
+  .tok-detail {
+    margin-top: 4px; padding: 6px 8px; border-radius: 6px; background: var(--surface-2);
+    color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto;
+  }
   /* mode menu (Claude Code-style list: checkmark on the selected row, number shortcut on the right) */
   .mode-list { display: flex; flex-direction: column; margin: 2px -6px 0; }
   .mode-list button {
@@ -988,7 +1014,9 @@ let aliasesError = null;
 // One call fills every kind, and each kind carries its own error: the LLM Gateway and the Domino API
 // are different services, so one being down must not make the other group say "none available".
 async function loadResources() {
-  const { ok, body } = await api('/api/resources');
+  // Both in flight at once. The credential list decides what a Model API's Use button does, so a row
+  // rendered before it lands would offer to bind a model Sage cannot yet call.
+  const [{ ok, body }] = await Promise.all([api('/api/resources'), loadModelApiCredentials()]);
   const errors = (ok && body.errors) || {};
   aliasesCache = ok ? (body.llm_aliases || []) : [];
   aliasesError = ok ? (errors.llm_aliases || null) : 'The LLM Gateway did not answer.';
@@ -1100,6 +1128,22 @@ function renderLlmAliases() {
 let modelApisCache = null;
 let modelApisError = null;
 
+// Model APIs Sage already holds an access token for. One of these is what a Model API Binding needs
+// before it can be recorded, so this set is what decides whether Use binds straight away or has to
+// ask. Ids only: no route returns a stored token, and this one is no exception.
+let modelApiCredentialIds = new Set();
+// The row whose paste form is open, what has been typed into it, and why the last save failed. Held
+// here rather than in the DOM because renderModelApis rebuilds every row — on a bind, on a retry —
+// and a half-typed snippet that vanished under the creator would be theirs to go and fetch again.
+let credentialFormFor = null;
+let credentialFormText = '';
+let credentialFormError = null;   // {error, detail} from the last refused save
+
+async function loadModelApiCredentials() {
+  const { ok, body } = await api('/api/model-api-credentials');
+  if (ok) modelApiCredentialIds = new Set(body.ids || []);
+}
+
 function modelApiRow(m) {
   const row = document.createElement('div');
   row.className = 'res-row';
@@ -1120,25 +1164,125 @@ function modelApiRow(m) {
   row.innerHTML =
     `<div class="res-head"><div class="res-name" title="${esc(m.name)}">${esc(m.name)}</div>${chip}</div>` + desc;
   row.querySelector('.res-head').appendChild(modelApiUseButton(m));
+  if (credentialFormFor === m.id) row.appendChild(credentialForm(m));
   return row;
 }
 
-// The Use button says less than the Alias one, and deliberately. A Model API Binding is a record and
-// only a record today: Sage pins an Alias into the app's source (#7) but writes no code that calls a
-// Model API, because how a browser reaches one is not yet verified. Promising the app will call it
-// would be the one thing this button cannot deliver, so it promises the record instead.
+// Two things Use can do here, and the difference is the whole of #9. A Model API is served from the
+// main Domino host, so a published page reaching it is cross-origin and the viewer's session cookie
+// is refused before the request is sent — the model's own access token is the only credential that
+// works. So Sage either holds that token, in which case Use binds and the app can call the model, or
+// it does not, in which case Use opens the paste form under the row. Asked once per Model API: after
+// that the token is remembered, and every later app that uses this model binds straight away.
 function modelApiUseButton(m) {
   const b = document.createElement('button');
   const used = boundModelApiIds().has(m.id);
+  const known = modelApiCredentialIds.has(m.id);
+  const asking = credentialFormFor === m.id;
   b.className = used ? 'used' : '';
   b.textContent = used ? 'Used' : 'Use';
-  b.disabled = used;
+  // Disabled while its own form is open, because the form below IS the button's next step — clicking
+  // it again would do nothing, and a control that does nothing reads as broken.
+  b.disabled = used || asking;
   b.title = used
     ? 'This app already uses this Model API. To undo it, use Remove under “Used by this app” above.'
-    : 'Record that the app you are building uses this Model API. It is listed under “Used by this app” '
-      + 'so you and anyone reviewing the app can see what it depends on.';
-  if (!used) b.onclick = () => bindResource('model_api', m.id, b);
+    : asking
+      ? 'Paste the sample request below to finish adding this Model API.'
+      : known
+        ? 'Use this Model API in the app you are building. Sage already has its access token, so your '
+          + 'app can send it prediction requests — call callModelApi() from your code.'
+        : 'Use this Model API in the app you are building. Sage needs its access token first: paste '
+          + 'the sample request from the model’s Overview page in Domino once, and Sage remembers it.';
+  if (!used && !asking) {
+    b.onclick = () => (known ? bindResource('model_api', m.id, b) : openCredentialForm(m.id));
+  }
   return b;
+}
+
+function openCredentialForm(id) {
+  credentialFormFor = id;
+  credentialFormText = '';
+  credentialFormError = null;
+  renderModelApis();
+  const ta = document.querySelector('.tok-form textarea');
+  if (ta) ta.focus();
+}
+
+function closeCredentialForm() {
+  credentialFormFor = null;
+  credentialFormText = '';
+  credentialFormError = null;
+  renderModelApis();
+}
+
+// Where the creator is sent, what to copy, and what happens to it. Every language tab on the Overview
+// page carries both halves Sage needs — the URL and the token — so it does not matter which one is
+// copied, and saying so saves a decision that has no wrong answer.
+function credentialForm(m) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tok-form';
+  wrap.innerHTML =
+    `<div class="tok-lbl">Open <b>${esc(m.name)}</b> in Domino, go to its Overview page, and copy the `
+      + 'sample request from any language tab. Sage checks it against the model, then remembers it for '
+      + 'this Model API and will not ask again.</div>'
+    + '<textarea spellcheck="false" placeholder="var accessToken = &quot;…&quot;;&#10;$.ajax({&#10;'
+      + '  url: &quot;https://…/models/…/latest/model&quot;,&#10;  …"></textarea>'
+    // Directly under the box the paste went into, above everything else: a refusal is about what was
+    // typed there, and putting it below the note would read as a comment on the note.
+    + '<div class="tok-err" style="display:none"></div>'
+    // Said before the paste, not after. The token is compiled into the published app's bundle, which
+    // is how Domino's own sample calls a Model API from a page — but it means whoever opens the app
+    // can read it, and that is the creator's call to make with the fact in front of them.
+    + '<div class="tok-lbl warn-note">The token is built into the published app, so anyone who opens '
+      + 'the app can read it. That is how Domino’s own sample calls a Model API from a page.</div>'
+    + '<div class="tok-actions"><button class="tok-save" disabled>Save and use</button>'
+      + '<button class="link-btn">Cancel</button></div>';
+
+  const ta = wrap.querySelector('textarea');
+  const save = wrap.querySelector('.tok-save');
+  ta.value = credentialFormText;
+  save.disabled = !ta.value.trim();
+  ta.oninput = () => { credentialFormText = ta.value; save.disabled = !ta.value.trim(); };
+  // Enter alone belongs to the textarea — a pasted snippet is several lines.
+  ta.onkeydown = e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !save.disabled) save.click(); };
+  wrap.querySelector('.link-btn').onclick = closeCredentialForm;
+  save.onclick = () => saveCredential(m.id, save);
+
+  if (credentialFormError) {
+    const err = wrap.querySelector('.tok-err');
+    err.style.display = '';
+    err.innerHTML = esc(credentialFormError.error)
+      + (credentialFormError.detail ? `<div class="tok-detail">${esc(credentialFormError.detail)}</div>` : '');
+  }
+  return wrap;
+}
+
+// Verify, then remember, then bind — in that order. Sage calls the model with the pasted credential
+// before keeping it, because an unverified token fails for the first person to open the published
+// app, where there is no form and nobody who can fix it. The check is a real request, so it can take
+// a few seconds and the button says so.
+async function saveCredential(id, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  const res = await api('/api/model-api-credentials', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, snippet: credentialFormText }),
+  });
+  const body = res.body || {};
+  if (!res.ok || !body.ok) {
+    credentialFormError = {
+      error: body.error || 'Sage could not check that access token. Try again in a moment.',
+      detail: body.detail || null,
+    };
+    renderModelApis();   // rebuilds the row with the reason under the box the paste went into
+    return;
+  }
+  modelApiCredentialIds.add(id);
+  credentialFormFor = null;
+  credentialFormText = '';
+  credentialFormError = null;
+  renderModelApis();     // close the form now; the bind below re-renders again with Used
+  await bindResource('model_api', id, null);
 }
 
 function renderModelApis() {
@@ -1169,8 +1313,9 @@ function renderModelApis() {
 }
 
 // ---------- Bindings: the Resources this app is recorded as using (#6) ----------
-// A Binding is a record. It says "this app depends on that Resource" so the creator can audit the app
-// later; it does not change model routing, the agent's prompt or the published app.
+// A Binding says "this app depends on that Resource", so the creator can audit the app later. The
+// FIRST of each kind is also the one the app's own code calls — the pinned Alias (#7) and the pinned
+// Model API (#9) — and those two are written into the app's source. The rest are the record alone.
 // Read from the committed manifest, not from the gateway, so this group still answers when the
 // gateway does not — which is when "what does this app depend on" gets asked.
 let bindingsCache = null;   // null = not read yet; [] = read, and this app depends on nothing
@@ -1194,6 +1339,11 @@ function boundModelApiIds() {
 // what an app already built does. null until loadBindings has answered, so no row is marked on a guess.
 function pinnedAlias() {
   return (bindingsCache || []).find(b => b.kind === 'llm_alias') || null;
+}
+
+// Same rule, same reason, for the Model API the app calls (#9).
+function pinnedModelApi() {
+  return (bindingsCache || []).find(b => b.kind === 'model_api') || null;
 }
 
 // Check this app's recorded Bindings against the gateway when the session opens (#17), so a stale
@@ -1274,11 +1424,16 @@ function bindingRow(b) {
     : '';
   // Which row the app's code actually calls (#7). Without it, a creator holding two Aliases has no way
   // to tell which one their app talks to, and the answer is not visible anywhere else in the product.
-  const p = pinnedAlias();
+  const p = b.kind === 'model_api' ? pinnedModelApi() : pinnedAlias();
   const isPinned = !!p && p.kind === b.kind && p.id === b.id;
-  const pin = isPinned
-    ? `<span class="a-chip" title="The app calls this model, straight from each viewer’s browser under their own Domino identity. Remove it to point the app at another Alias.">App’s model</span>`
-    : '';
+  // Both pins are "the one the app calls", but they are called in different ways and a creator
+  // reading the row needs the difference: an Alias spends each viewer's own grant, a Model API is
+  // called with one shared token that ships inside the app.
+  const pin = !isPinned
+    ? ''
+    : b.kind === 'model_api'
+      ? `<span class="a-chip" title="The app sends its prediction requests to this Model API, using the access token you pasted. That token is built into the published app, so anyone who opens it can read it.">App’s Model API</span>`
+      : `<span class="a-chip" title="The app calls this model, straight from each viewer’s browser under their own Domino identity. Remove it to point the app at another Alias.">App’s model</span>`;
   // The label is the only part of the row that can shrink, so a chip beside it costs display-name
   // characters — enough that a stale Resource, the one a creator most needs to identify, is the row
   // that reads worst. The tooltip therefore carries the full display name as well as the Alias name;
@@ -1291,9 +1446,13 @@ function bindingRow(b) {
   btn.textContent = 'Remove';
   // Removing the pinned Alias leaves the app's model-calling code in place with no model behind it,
   // which is a consequence worth stating before the click rather than discovering in the app.
-  btn.title = isPinned
-    ? 'Stop using this LLM Alias. The app stops calling it and says so on load; the screens built around it stay.'
-    : 'Stop recording this app as using this Resource. Nothing else changes.';
+  btn.title = !isPinned
+    ? 'Stop recording this app as using this Resource. Nothing else changes.'
+    : b.kind === 'model_api'
+      ? 'Stop using this Model API. Its access token is taken out of the app, and calls to it start '
+        + 'failing with an explanation; the screens built around it stay. Sage keeps the token, so '
+        + 'adding this Model API back does not ask for it again.'
+      : 'Stop using this LLM Alias. The app stops calling it and says so on load; the screens built around it stay.';
   btn.onclick = () => unbindResource(b.kind, b.id);
   row.appendChild(btn);
   return row;

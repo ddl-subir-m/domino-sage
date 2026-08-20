@@ -457,6 +457,13 @@ credential step in a tool whose pitch is that you describe an app and it appears
 
 What Sage records today — the Binding — is unaffected either way.
 
+**One id, not two.** VERIFIED live 2026-08-20: `GET /api/modelServing/v1/modelApis/{id}` answers 200
+for the id taken straight out of `/models/{id}/overview`, and its `id` field equals it. So the id the
+Resource browser lists (`parse_model_apis` reads `rec["id"]`) is the same id that appears in the
+invocation URL a creator pastes, which is what lets Sage tell a snippet copied from the wrong
+Overview tab from the right one. `activeVersion.id` is a *different* id and is not in that URL — the
+version segment is `latest` or `activeVersion.number`.
+
 Reopening this needs a **platform** change on the model ingress: echo the request `Origin` with
 `Access-Control-Allow-Credentials: true`, *and* accept a Domino session as a credential for model
 invocation. Both, not either.
