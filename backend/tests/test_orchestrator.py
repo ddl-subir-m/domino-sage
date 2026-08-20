@@ -150,6 +150,33 @@ def test_shutdown_saves_work_before_stopping_resources(tmp_path: Path):
     assert saved == ["save before stop"]  # committed + pushed before teardown
 
 
+def test_shutdown_never_saves_into_a_repo_the_workspace_merely_sits_inside(tmp_path: Path):
+    """#20: locally the workspace lands at `backend/workspaces/app`, inside Sage's own source tree
+    and gitignored, so it is not its own repo. Stop-save walked up to the enclosing one, staged the
+    whole tree from a subdirectory, and pushed Sage's uncommitted source to `origin/main`.
+
+    The stop-safe promise covers the app's repo. It does not extend to a repo the workspace happens
+    to sit inside, where saving is the opposite of safe: it publishes work nobody reviewed.
+    """
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "sage@example.com")
+    _git(tmp_path, "config", "user.name", "sage")
+    source = tmp_path / "sage_source.py"
+    source.write_text("committed\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "seed")
+    head = _git(tmp_path, "rev-parse", "HEAD").strip()
+    source.write_text("an in-progress edit nobody asked to publish\n")
+
+    orch = _orch(tmp_path)  # workspace is tmp_path/mnt/code — inside the repo just created
+    orch.project(start_preview=False)
+    orch.shutdown()  # the real _save_to_git, not a stub
+
+    assert _git(tmp_path, "rev-parse", "HEAD").strip() == head
+    # And the edit is still an edit — not swept into a commit somewhere else.
+    assert "sage_source.py" in _git(tmp_path, "status", "--porcelain")
+
+
 def test_shutdown_without_a_project_is_a_noop(tmp_path: Path):
     orch = _orch(tmp_path)  # never attached
     saved = []

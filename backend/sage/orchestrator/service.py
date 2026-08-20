@@ -2288,12 +2288,12 @@ class Orchestrator:
 
     def _save_to_git(self, project: Project, prompt: str) -> dict | None:
         """Commit + push the workspace after a clean build so the app and .sage/ transcript are
-        durable. Returns None when the workspace isn't a git repo (local dev / the /tmp spike — no
-        save line to show); otherwise a `saved` event. Never raises into the build."""
+        durable. Returns None when the workspace isn't the root of its own git repo (local dev / the
+        /tmp spike — no save line to show); otherwise a `saved` event. Never raises into the build."""
         from ..workspace import git
 
         path = project.workspace.path
-        if not git.is_repo(path):
+        if not git.is_repo_root(path):
             return None
         message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
         # Hard backstop: never stage attached-data copies, even if the agent ignored the fix nudge.
@@ -2368,7 +2368,7 @@ class Orchestrator:
 
         project = self.project()
         path = project.workspace.path
-        if not git.is_repo(path) or not git.has_remote(path):
+        if not git.is_repo_root(path) or not git.has_remote(path):
             return {"status": "no-remote", "conflicts": [], "pushed": False,
                     "detail": "this app has no git remote to pull from"}
         try:

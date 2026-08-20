@@ -36,11 +36,26 @@ def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     )
 
 
-def is_repo(path: Path) -> bool:
-    if not Path(path).is_dir():
+def is_repo_root(path: Path) -> bool:
+    """True only when `path` is the ROOT of its own repo — not merely somewhere inside one.
+
+    The distinction is the whole bug in #20. Locally the workspace sits at `backend/workspaces/app`,
+    inside Sage's own source tree and gitignored, so it is not its own repo. The old check asked
+    `--is-inside-work-tree`, which walks up until it finds a repo and answers `true` — and a save
+    from a subdirectory stages the whole enclosing tree, so stopping the local orchestrator committed
+    and pushed Sage's uncommitted source to `origin/main`. `--show-toplevel` names the repo it found,
+    which lets the caller notice the answer came from somewhere above it.
+
+    Paths are resolved on both sides: on macOS a `/tmp` workspace reports `/private/tmp`, and a
+    string compare would call a real repo root not-a-root.
+    """
+    p = Path(path)
+    if not p.is_dir():
         return False
-    r = _git(path, "rev-parse", "--is-inside-work-tree", check=False)
-    return r.returncode == 0 and r.stdout.strip() == "true"
+    r = _git(p, "rev-parse", "--show-toplevel", check=False)
+    if r.returncode != 0:
+        return False
+    return Path(r.stdout.strip()).resolve() == p.resolve()
 
 
 def has_remote(path: Path) -> bool:

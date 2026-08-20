@@ -198,7 +198,7 @@ port. Locally, `localhost:8080` unchanged (empty prefix).
   `git commit && git push` is wired (2.8 below), and is NOT observable on the `/tmp` spike (scratch
   dir is wiped on restart regardless). The spike restart losing history is expected for that reason.
 - 2.8 ✅ **Commit + push on clean build** (`make test` green, 75 passed). `sage/workspace/git.py`:
-  `is_repo`/`has_remote`/`commit_and_push` via `git`, using Domino's pre-authorized credential helper
+  `is_repo_root`/`has_remote`/`commit_and_push` via `git`, using Domino's pre-authorized credential helper
   (no token handling; falls back to a sage identity only when none is configured). `build_stream`
   auto-commits+pushes after a turn ends with a passing typecheck (message = first line of the prompt)
   and emits a `saved` SSE event, persisted to history and rendered in the UI; a push failure logs +

@@ -28,11 +28,20 @@ def _work_repo(tmp_path: Path, with_remote: bool = True) -> Path:
     return work
 
 
-def test_is_repo_and_has_remote(tmp_path: Path):
+def test_is_repo_root_and_has_remote(tmp_path: Path):
     work = _work_repo(tmp_path)
-    assert git.is_repo(work)
+    assert git.is_repo_root(work)
     assert git.has_remote(work)
-    assert not git.is_repo(tmp_path / "not-a-repo")
+    assert not git.is_repo_root(tmp_path / "not-a-repo")
+
+
+def test_a_directory_inside_a_repo_is_not_a_repo_root(tmp_path: Path):
+    """#20: asking "am I inside a repo" gets a truthful yes about the WRONG repo. The local
+    workspace sits inside Sage's own source tree, and a save from there staged and pushed it."""
+    work = _work_repo(tmp_path)
+    nested = work / "workspaces" / "app"
+    nested.mkdir(parents=True)
+    assert not git.is_repo_root(nested)
 
 
 def test_commit_and_push_pushes_to_remote(tmp_path: Path):
