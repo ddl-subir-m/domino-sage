@@ -315,7 +315,9 @@ def merge_readiness(sources: list[DataSource], statuses: Any) -> list[DataSource
     """Attach `POST /v4/datasource/authentication-status`'s answer to the rows it was asked about.
 
     The endpoint answers a bare array of booleans with no ids in it, so the only thing tying an answer
-    to a source is its POSITION in the list that was sent. That is a contract worth distrusting: if
+    to a source is its POSITION in the list that was sent. Positional-in-request-order is verified
+    live (2026-08-20, DATA-SOURCES-RESEARCH.md Addendum 3), but it is still a contract worth
+    distrusting, because nothing in the response would reveal the day it stops holding: if
     the array is not a list of exactly the right length, every row keeps `ready=None` rather than
     being paired off against a shorter answer. A row labelled unusable because a boolean slid by one
     is worse than a row that admits Domino did not say.

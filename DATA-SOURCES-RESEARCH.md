@@ -899,7 +899,7 @@ or `STAGING`.
 
 ---
 
-## Addendum 3 — what #10 shipped on, and the one call it still assumes
+## Addendum 3 — what #10 shipped on
 
 `backend/sage/resources/provider.py` now lists Data Sources. It takes the recommendation above
 verbatim: the public `GET /api/datasource/v1/datasources`, unscoped, `name` as the row's
@@ -918,25 +918,33 @@ queryable in a build session, which runs as the creator; it only becomes a hazar
 time, where ADR-0001 puts the guard. Inferring "unusable" from it at browse time would grey
 out two of the three sources on this deployment that the creator can query today.
 
-### `LIVE-VERIFY` — the readiness call has never been run
+### `VERIFIED` — the readiness call answers, and it answers positionally
 
-It is the only unverified thing in the path. Two properties matter:
+Run against the dogfood deployment from inside a workspace, August 20, 2026. Both properties
+`merge_readiness` leans on hold.
 
-- **It answers at all.** Private spec, `/v4`, no public equivalent. Run it in a workspace:
-  ```bash
-  curl -sS -X POST -H "Authorization: Bearer $(curl -s localhost:8899/access-token)" \
-    -H 'Content-Type: application/json' \
-    -d '{"dataSourceIds":["<id from the public listing>"]}' \
-    "$DOMINO_API_HOST/v4/datasource/authentication-status" | jq .
-  ```
-- **The booleans come back positionally, in request order.** The response carries no ids, so
-  position is the only join. `merge_readiness` refuses to pair anything up unless the array
-  length matches exactly, but a *reordered* answer of the right length would be believed.
+**It answers at all.** `POST {api}/v4/datasource/authentication-status` with
+`{"dataSourceIds": [...]}` returns a bare JSON array of booleans, one per requested id — no
+envelope, no ids. Private spec, `/v4`, no public equivalent, but present here.
 
-A failure here degrades to `ready=None` — every row still lists, with the rail saying Domino
-did not answer — rather than failing the listing. That is deliberate: hiding sources the
-creator can see in Domino is the empty-panel dead end the whole endpoint choice avoids.
-Expected shape of a wrong answer is a 404 (route absent on this deployment) or a 403.
+**The booleans are positional, in request order.** Proved by swapping the first two ids and
+watching the answer follow:
+
+```
+["65eed…07f7", "6615…156a", "67ab…931f"]  ->  [false, true,  false]
+["6615…156a", "65eed…07f7", "67ab…931f"]  ->  [true,  false, false]
+```
+
+The first arrangement alone proves nothing, and this is the trap worth carrying forward:
+`[false,true,false]` is a palindrome, so reversing the request returns a byte-identical array
+whether the server honours order or sorts the ids and ignores it. Moving the single `true` off
+centre is what makes the test decisive. When probing any positional API, choose inputs whose
+expected answer is asymmetric.
+
+A failure still degrades to `ready=None` — every row lists, with the rail saying Domino did
+not answer — rather than failing the listing. That is now the deployment-varies fallback
+rather than the expected case: a 404 would mean the route is absent on some other deployment,
+not that Sage guessed the route wrong.
 
 ### The allowlist as shipped
 
