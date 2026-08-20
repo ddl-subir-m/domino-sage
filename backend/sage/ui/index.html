@@ -432,7 +432,11 @@
   .upload-form .field { display: flex; flex-direction: column; gap: 5px; }
   .upload-form .lbl { font-size: 12px; color: var(--muted); font-weight: 500; }
   .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-  .filepick {
+  /* `label.` rather than `.filepick`, to outrank `.rail label` above: that rule turns every label in
+     the rail into a block, which left the file name on a second line at its full length instead of
+     one row that truncates — and a long file name then widened the whole rail into a horizontal
+     scrollbar. */
+  label.filepick {
     display: flex; align-items: center; gap: 10px; border: 1px dashed var(--border-strong);
     border-radius: 9px; padding: 10px 12px; background: var(--surface-2); cursor: pointer;
   }
@@ -2330,6 +2334,9 @@ function onUploadFileChange() {
   const el = document.getElementById('upload-fname');
   const name = input.files && input.files[0] && input.files[0].name;
   el.textContent = name || 'No file selected';
+  // The row truncates, so the whole name has to be somewhere: a long export name is longer than the
+  // rail and the end of it is the part that tells two of them apart.
+  el.title = name || '';
   el.classList.toggle('empty', !name);
 }
 function onSensToggle() {
@@ -2555,7 +2562,15 @@ function closeRail() {
 
 /* ---------- chat rendering ---------- */
 function scrollDown() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
-function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+// Every caller puts this into HTML: between tags, or inside a double-quoted attribute. So the quotes
+// are escaped as well as the angle bracket — a title of ${esc(name)} is one of the commonest shapes
+// here, and a name arriving from outside Sage (a warehouse table, a git path, a model's own error
+// text) can hold anything, a quote included. No caller shows this string as plain text, so the
+// entities never reach what a person reads.
+function esc(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 function addUser(text) {
   const d = document.createElement('div'); d.className = 'msg user';
   d.innerHTML = `<div class="body">${esc(text)}</div>`;
@@ -3281,11 +3296,11 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'typecheck') { stopWorking(); addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`); trail(); }
   else if (ev.type === 'turn-summary') { stopWorking(); if (ev.shim_bypassed) addStatus('err', '⚠', `Inference bypassed Sage — OpenCode dialed :${ev.base_port} but the shim serves :${ev.control_port}. This turn ran 0 model calls through Sage; model routing and the sovereignty lock did not apply.` + ((ev.vendor_keys && ev.vendor_keys.length) ? ` A direct vendor key (${esc(ev.vendor_keys.join(', '))}) is in the workspace — that's how a model was reached, entirely outside Sage.` : ` No direct vendor key is set, so a model shouldn't have been reachable this way — check what OpenCode connected to.`) + ` Fix the opencode.json baseURL port.`); if (!ev.gate) addStatus(ev.wrote_code ? 'ok' : '', ev.wrote_code ? '✎' : 'ℹ', turnSummaryMsg(ev)); trail(); }
   else if (ev.type === 'opencode-log') { addStatus('', '🔍', 'OpenCode server log (why no model was called):'); const pre = document.createElement('pre'); pre.className = 'oc-log'; pre.textContent = (ev.lines || []).join('\n'); append(pre); trail(); }
-  else if (ev.type === 'iterate') { setWorking(ev.reason ? esc(ev.reason) : 'Fixing errors'); }
+  else if (ev.type === 'iterate') { setWorking(ev.reason || 'Fixing errors'); }
   else if (ev.type === 'plan-stale') { supersedePlanCards(ev.note); }
   else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan, ev.kind, ev.steps); trail(); }
   else if (ev.type === 'build-plan') { stopWorking(); addStepList(ev); trail(); }
-  else if (ev.type === 'step-start') { markStep(ev.n, 'running', '▸'); addPhaseBar(ev); setWorking(`Phase ${ev.n} of ${ev.total} — ${esc(ev.label)}`); trail(); }
+  else if (ev.type === 'step-start') { markStep(ev.n, 'running', '▸'); addPhaseBar(ev); setWorking(`Phase ${ev.n} of ${ev.total} — ${ev.label}`); trail(); }
   else if (ev.type === 'step-done') { markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); markPhase(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); }
   else if (ev.type === 'done') { stopWorking(); settlePhases(ev.ok); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
