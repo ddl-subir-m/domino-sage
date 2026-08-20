@@ -9,6 +9,7 @@ from __future__ import annotations
 import http.client
 import importlib.util
 import socket
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -25,6 +26,10 @@ def _load_serve():
     spec = importlib.util.spec_from_file_location("builtapp_serve", _SERVE_PY)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec: `serve.py` uses `from __future__ import annotations`, so a dataclass
+    # resolves its field types by looking its own module up in sys.modules. Running the app for real
+    # (`python3 serve.py`) puts it there as __main__; loading it by path here does not unless we do.
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 

@@ -22,6 +22,8 @@ import re
 import threading
 import time
 import urllib.request
+from dataclasses import dataclass
+from datetime import date
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -152,7 +154,65 @@ class _Handler(SimpleHTTPRequestHandler):
         ctype = _TYPES.get(ext) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         return f"{ctype}; charset=utf-8" if ctype.startswith(_TEXTUAL) else ctype
 
+    def do_POST(self):
+        """The named-query route, and the only method this server answers besides GET and HEAD.
+
+        Everything a caller can influence is the name in the path and the values in `params`. The
+        name selects a statement the app's own repo declared; it is never part of one.
+        """
+        name = urlsplit(self.path).path[len(_API_PREFIX):] if self._is_query_path() else ""
+        try:
+            if not name:
+                raise QueryProblem(HTTPStatus.NOT_FOUND, "No such endpoint.")
+            query = getattr(self.server, "sage_queries", {}).get(name)
+            if query is None:
+                raise QueryProblem(HTTPStatus.NOT_FOUND, f"This app has no query called {name}.")
+            params = query.bind(self._body().get("params"))
+            result = getattr(self.server, "sage_executor", unavailable_executor)(query, params)
+        except QueryProblem as e:
+            return self._send_json(e.status, {"error": e.message})
+        except Exception as e:   # an executor that failed in a way it did not describe
+            self.log_message("query %s failed: %s: %s", name, type(e).__name__, e)
+            return self._send_json(HTTPStatus.BAD_GATEWAY,
+                                   {"error": "This app could not read its data source."})
+        return self._send_json(HTTPStatus.OK, result)
+
+    def _is_query_path(self) -> bool:
+        return urlsplit(self.path).path.startswith(_API_PREFIX)
+
+    def _body(self) -> dict:
+        """The request body as an object. Capped, because a parameter object is small and reading an
+        unbounded one would let a single request hold a thread and a lot of memory."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise QueryProblem(HTTPStatus.BAD_REQUEST, "The request body was not readable.") from None
+        if length > _MAX_BODY:
+            raise QueryProblem(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "The request body is too large.")
+        if length <= 0:
+            return {}
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise QueryProblem(HTTPStatus.BAD_REQUEST, "The request body is not valid JSON.") from None
+        return body if isinstance(body, dict) else {}
+
+    def _send_json(self, status, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(int(status))
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_head(self):
+        # A query path is POST-only. Answering it from the static tree would send the SPA rewrite
+        # below an extensionless path and hand back index.html — a 200 of HTML where the caller
+        # expects JSON, which reads as a broken app rather than as the wrong method.
+        if self._is_query_path():
+            self._send_json(HTTPStatus.METHOD_NOT_ALLOWED,
+                            {"error": "This endpoint takes POST."})
+            return None
         # Before the SPA rewrite, so this is the path that ARRIVED — and still percent-encoded,
         # because the shim subtracts it from location.pathname, which is encoded too.
         received = urlsplit(self.path).path
@@ -237,10 +297,267 @@ class _Handler(SimpleHTTPRequestHandler):
         self.path = "/index.html"
 
 
-def build_server(root: Path | str, *, host: str = "0.0.0.0", port: int = 8888) -> ThreadingHTTPServer:
+# ---- Named queries: the app's only path to data (#13) ------------------------------------------
+#
+# The browser sends a NAME and parameters. It never sends SQL, and there is no route that would
+# accept any. That is not tidiness — the Data Source credential is a shared service account with
+# broad warehouse read (ADR-0001, and the publish guards in #12 are what keep it shared), so a
+# generic SQL endpoint would make every published app a warehouse console for everyone it is shared
+# with. The name is looked up in a catalog the app's own repo carries; nothing a caller sends is
+# ever used to build a statement.
+#
+# This file does not execute anything. The executor is injected, #13 lands with a fake, and the real
+# Arrow Flight one arrives in #14. What lands here is the boundary and the shape of what crosses it.
+
+_QUERIES_REL = ".sage/queries.json"   # the catalog, written by the creator's agent (#15)
+_BINDINGS_REL = ".sage/bindings.json"  # the Resources this app is recorded as using (#6)
+_MAX_BODY = 64 * 1024                  # a parameter object; anything larger is not one
+_API_PREFIX = "/api/queries/"
+
+# `:name` — the only placeholder form. Declared parameters and placeholders must agree exactly, which
+# is what lets #14 substitute without having to guess what was meant to be a value.
+_PLACEHOLDER = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+class QueryProblem(Exception):
+    """A named query cannot answer, and the reason is the caller's to read.
+
+    Carries the status because the three cases need different ones and a viewer-facing app should
+    not have to guess: 404 for a name that is not in the catalog, 400 for parameters that do not fit
+    what the query declared, 503 for a query that is in the catalog but unusable.
+    """
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+@dataclass(frozen=True)
+class Param:
+    """One declared parameter of a named query.
+
+    A type, and optionally the values it may take. Types rather than free text because a parameter
+    reaches a store as part of a statement, and the check that it is an integer is the check that it
+    is not a fragment of SQL. `enum` narrows further where the author knows the domain; where they do
+    not — a search box, an open date range — the type alone still holds the line.
+    """
+
+    name: str
+    type: str
+    enum: tuple = ()
+
+    def coerce(self, value: object) -> object:
+        """The supplied value as the declared type, or raise. Never returns a string it was not
+        given: coercing "3" to 3 would let a caller decide which branch of this check to take."""
+        if self.enum and value not in self.enum:
+            raise QueryProblem(HTTPStatus.BAD_REQUEST, (
+                f"'{self.name}' must be one of: {', '.join(str(e) for e in self.enum)}."))
+        if self.type == "string":
+            if not isinstance(value, str):
+                raise QueryProblem(HTTPStatus.BAD_REQUEST, f"'{self.name}' must be text.")
+            return value
+        if self.type == "bool":
+            # Before int: bool IS an int in Python, so an unguarded int check would accept True for
+            # a number and quietly send 1 to the store.
+            if not isinstance(value, bool):
+                raise QueryProblem(HTTPStatus.BAD_REQUEST, f"'{self.name}' must be true or false.")
+            return value
+        if self.type == "int":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise QueryProblem(HTTPStatus.BAD_REQUEST, f"'{self.name}' must be a whole number.")
+            return value
+        if self.type == "float":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise QueryProblem(HTTPStatus.BAD_REQUEST, f"'{self.name}' must be a number.")
+            return float(value)
+        if self.type == "date":
+            # The shape is checked before fromisoformat rather than left to it: 3.11 also accepts
+            # "20240101" and a full timestamp, and a parameter that parses two ways a caller did not
+            # intend is the kind of latitude this boundary exists to remove.
+            if isinstance(value, str) and _ISO_DATE.fullmatch(value):
+                try:
+                    return date.fromisoformat(value)
+                except ValueError:
+                    pass    # well-shaped but not a real date, e.g. 2024-02-31
+            raise QueryProblem(HTTPStatus.BAD_REQUEST,
+                               f"'{self.name}' must be a date, written as YYYY-MM-DD.")
+        raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE,
+                           f"'{self.name}' is declared with a type this app cannot check.")
+
+
+@dataclass(frozen=True)
+class Query:
+    """One named query, as the catalog records it.
+
+    `problem` set means the query was declared and is not usable — a Binding it names has gone, or
+    its declaration does not hold together. It is kept in the catalog rather than dropped so the
+    answer to asking for it is the reason, not "no such query", which would send someone looking for
+    a typo in a name that is spelled correctly.
+    """
+
+    name: str
+    binding: str
+    sql: str
+    params: tuple = ()
+    problem: str = ""
+
+    def bind(self, supplied: object) -> dict:
+        """The supplied parameters, checked against what this query declares. Values only — the SQL
+        is not touched here and never sees a caller's text.
+
+        Every declared parameter is required, and a parameter that was not declared is refused
+        rather than ignored: a caller who sends `region` to a query that does not take one has
+        misunderstood what they are asking, and silently answering the unfiltered question is a wrong
+        answer rather than a partial one.
+        """
+        if self.problem:
+            raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, self.problem)
+        if supplied is None:
+            supplied = {}
+        if not isinstance(supplied, dict):
+            raise QueryProblem(HTTPStatus.BAD_REQUEST, "'params' must be an object of name to value.")
+        declared = {p.name: p for p in self.params}
+        unknown = sorted(set(supplied) - set(declared))
+        if unknown:
+            raise QueryProblem(HTTPStatus.BAD_REQUEST, (
+                f"{self.name} does not take {', '.join(unknown)}."))
+        missing = sorted(set(declared) - set(supplied))
+        if missing:
+            raise QueryProblem(HTTPStatus.BAD_REQUEST, (
+                f"{self.name} needs {', '.join(missing)}."))
+        return {name: declared[name].coerce(value) for name, value in supplied.items()}
+
+
+def load_queries(project_root: Path) -> dict:
+    """The app's query catalog, checked against its Bindings, at startup rather than per request.
+
+    Startup is the only place this can be honest. A catalog read per request would turn a query
+    naming a Binding that has gone into a transport error for whoever happened to ask, over and over,
+    with the reason buried in whatever the store said. Checked once, a broken query has a sentence
+    attached to it before anyone asks.
+
+    A missing catalog is not a fault: an app that reads no store has none, which is every app the
+    template has produced so far. It returns {}, and the query route then answers 404 for any name,
+    which is the truth.
+    """
+    raw = _read_json(project_root / _QUERIES_REL)
+    if not isinstance(raw, list):
+        return {}
+    bound = {
+        str(b.get("id") or ""): b for b in _read_json(project_root / _BINDINGS_REL) or []
+        if isinstance(b, dict) and b.get("kind") == "data_source"
+    }
+    out = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "")
+        if not name or name in out:
+            continue   # unnamed, or a duplicate of one already read — first declaration wins
+        out[name] = _one_query(entry, name, bound)
+    return out
+
+
+def _one_query(entry: dict, name: str, bound: dict) -> Query:
+    """One catalog entry as a Query, usable or with the reason it is not."""
+    binding = str(entry.get("binding") or "")
+    sql = entry.get("sql")
+    params, bad = _params_of(entry.get("params"))
+    placeholders = set(_PLACEHOLDER.findall(sql)) if isinstance(sql, str) else set()
+    declared = {p.name for p in params}
+
+    if not isinstance(sql, str) or not sql.strip():
+        problem = f"The query {name} has no statement to run."
+    elif bad:
+        problem = f"The query {name} declares a parameter Sage cannot read: {bad}."
+    elif not binding:
+        problem = f"The query {name} does not say which Data Source it reads."
+    elif binding not in bound:
+        problem = (f"The query {name} reads the Data Source {binding}, which this app is no longer "
+                   f"recorded as using.")
+    elif placeholders - declared:
+        problem = (f"The query {name} uses {', '.join(sorted(placeholders - declared))}, which it "
+                   f"does not declare as a parameter.")
+    elif declared - placeholders:
+        problem = (f"The query {name} declares {', '.join(sorted(declared - placeholders))}, which "
+                   f"its statement never uses.")
+    else:
+        problem = ""
+    return Query(name, binding, sql if isinstance(sql, str) else "", tuple(params), problem)
+
+
+def _params_of(raw: object) -> tuple:
+    """The declared parameters, and the name of the first one that could not be read."""
+    if raw is None:
+        return [], ""
+    if not isinstance(raw, list):
+        return [], "params is not a list"
+    out = []
+    for p in raw:
+        if not isinstance(p, dict) or not str(p.get("name") or ""):
+            return out, "an entry with no name"
+        name, ptype = str(p["name"]), str(p.get("type") or "")
+        if ptype not in ("string", "int", "float", "bool", "date"):
+            return out, f"{name} has type {ptype or '(none)'}"
+        enum = p.get("enum")
+        if enum is not None and not isinstance(enum, list):
+            return out, f"{name} has an enum that is not a list"
+        out.append(Param(name, ptype, tuple(enum) if enum else ()))
+    return out, ""
+
+
+def _read_json(path: Path) -> object:
+    """A JSON file's contents, or None when it is absent or unreadable. Unreadable is reported by the
+    caller as an empty catalog rather than raised: a published app that will not boot because a
+    manifest has a stray comma is worse than one that says it has no queries."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def unavailable_executor(query: Query, params: dict) -> dict:
+    """The default: this app has no way to reach a store.
+
+    #13 ships the boundary; #14 ships the executor that crosses it. Until then a published app says
+    so plainly rather than shipping a fake that would answer a viewer's real question with invented
+    rows.
+    """
+    raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE,
+                       "This app cannot reach its Data Source yet, so it has no data to show.")
+
+
+def build_server(root: Path | str, *, host: str = "0.0.0.0", port: int = 8888,
+                 project_root: Path | str | None = None, executor=None) -> ThreadingHTTPServer:
     """A bound (not yet serving) server for the build at `root`. Threaded so one slow client can't
-    hold up the rest of a page's assets."""
-    return ThreadingHTTPServer((host, port), partial(_Handler, directory=str(root)))
+    hold up the rest of a page's assets.
+
+    `project_root` is where the app's `.sage/` manifests live — the repo root, which is the working
+    directory app.sh runs from, not the `dist/` being served. `executor` is the seam: a callable
+    taking (query, params) and returning {columns, rows}. It is injected rather than imported so a
+    test can prove the boundary without a store, and so #14 can put a real one behind it without
+    touching anything above.
+    """
+    srv = ThreadingHTTPServer((host, port), partial(_Handler, directory=str(root)))
+    srv.sage_queries = load_queries(Path(project_root or "."))
+    srv.sage_executor = executor or unavailable_executor
+    return srv
+
+
+def _log_query_catalog(queries: dict) -> None:
+    """What the app can answer, and what it cannot, once — in the App log Domino surfaces.
+
+    A broken query is an error line at startup rather than a surprise for the first viewer who asks
+    for it, which is the whole point of checking the catalog before serving instead of per request.
+    """
+    if not queries:
+        return
+    broken = [q for q in queries.values() if q.problem]
+    print(f"[sage] queries: {len(queries) - len(broken)} of {len(queries)} usable", flush=True)
+    for q in broken:
+        print(f"[sage] query unusable: {q.problem}", flush=True)
 
 
 def _log_sidecar_status() -> None:
@@ -263,6 +580,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dir", default="dist", help="build directory to serve (default: dist)")
     ap.add_argument("--host", default="0.0.0.0", help="bind address (default: 0.0.0.0)")
     ap.add_argument("--port", type=int, default=8888, help="bind port (default: 8888)")
+    ap.add_argument("--project-root", default=".",
+                    help="where .sage/ lives (default: the working directory)")
     args = ap.parse_args(argv)
 
     root = Path(args.dir).resolve()
@@ -270,8 +589,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[sage] nothing to serve: {root}/index.html is missing — did `npm run build` run?", flush=True)
         return 1
 
-    # Constructing the server binds the port, so Domino's proxy can connect while we log.
-    srv = build_server(root, host=args.host, port=args.port)
+    # Constructing the server binds the port, so Domino's proxy can connect while we log. The
+    # manifests sit beside app.sh in the repo root, which is where it runs us from — `root` is the
+    # build being served, which does not carry them.
+    srv = build_server(root, host=args.host, port=args.port, project_root=Path(args.project_root))
+    _log_query_catalog(srv.sage_queries)
     elapsed = _cold_start_secs()
     print(f"[sage] serving {root} on {args.host}:{args.port}", flush=True)
     if elapsed is not None:
