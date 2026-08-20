@@ -105,9 +105,9 @@ registrations), building the Resource Browser's LLM Alias rows (#5):
 **`effective_costs` is a flat `{"input": float, "output": float}` map** — not nested, not
 per-token-class. No unit is reported anywhere in the record.
 
-**The unit is evidenced, not documented.** `sonnet` reads `3 / 15`, `opus` `5 / 25`, `gpt-5.4`
-`2.5 / 15` — the vendors' published **USD per 1M tokens**. That is strong enough to read the
-numbers by, and too weak to print a currency next to.
+**The unit is USD per 1M tokens** — confirmed for Sage's purposes, and the API sends nothing to
+say so. The figures agree: `sonnet` reads `3 / 15`, `opus` `5 / 25`, `gpt-5.4` `2.5 / 15`, which are
+the vendors' published per-1M-token USD rates. A picker can print a currency.
 
 **`{"input": 1.0, "output": 2.0}` is the gateway falling back, not a price.** Six unrelated
 aliases report exactly that (`bedrock-qwen3-coder`, `qwen-2-5`, `gpt-5.4-nano`, `haiku`,

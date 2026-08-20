@@ -916,14 +916,15 @@ function retryResources() {
   loadResources();
 }
 
-// The gateway's own field names and numbers, unchanged. It reports no unit, so none is shown; the
+// The gateway's own field names and numbers, unchanged apart from the currency. The rates are USD
+// (confirmed by the product owner — the API itself sends no unit), so `$` is safe to print; the
 // tooltip says where the authoritative figure lives.
 function costText(costs) {
   const keys = Object.keys(costs || {});
   if (!keys.length) return null;
   const first = ['input', 'output'];
   keys.sort((a, b) => (first.indexOf(a) + 1 || 99) - (first.indexOf(b) + 1 || 99) || a.localeCompare(b));
-  return keys.map(k => `${k} ${costs[k]}`).join(' · ');
+  return keys.map(k => `${k} $${costs[k]}`).join(' · ');
 }
 
 function aliasRow(a) {
@@ -938,7 +939,7 @@ function aliasRow(a) {
   const alias = a.name && a.name !== a.display_name
     ? `<span class="res-alias" title="The name a model request must use">${esc(a.name)}</span>` : '';
   const costEl = cost
-    ? `<span class="res-cost" title="Rates the gateway reports for this Alias (${esc(cost)}). It sends no unit; the gateway's Usage and cost dashboard is the authority on what a call actually cost.">${esc(cost)}</span>`
+    ? `<span class="res-cost" title="USD rates the gateway reports for this Alias (${esc(cost)}), per 1M tokens. The gateway's Usage and cost dashboard is the authority on what a call actually cost.">${esc(cost)}</span>`
     : '';
   // Several Aliases report a description that is just their own name again; repeating it adds a
   // line and says nothing.

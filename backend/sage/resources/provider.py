@@ -42,8 +42,8 @@ class LlmAlias:
     capabilities: list[str] = field(default_factory=list)  # "chat", "tools", "embeddings", …
     # `effective_costs` verbatim: {rate name -> number}. Live on Sage's gateway (2026-08-19) this is
     # a flat {"input": x, "output": y}, and the figures match the vendors' published per-1M-token USD
-    # rates for sonnet (3/15), opus (5/25) and gpt-5.4 (2.5/15) — so the unit is evidenced, not
-    # documented. Nothing is normalised or relabelled here: six unrelated aliases all report
+    # rates for sonnet (3/15), opus (5/25) and gpt-5.4 (2.5/15) — the API sends no unit, but the
+    # figures are USD per 1M tokens. Nothing is normalised or relabelled here: six unrelated aliases all report
     # {1.0, 2.0}, which is the gateway falling back rather than a real price, and the gateway's own
     # Usage & cost dashboard stays the authority on what a call actually cost.
     costs: dict[str, float] = field(default_factory=dict)
