@@ -55,6 +55,47 @@ def _walk(node: object, path: str = "") -> list[tuple[str, str]]:
     return out
 
 
+def _find(client: httpx.Client, host: str, headers: dict, project_id: str) -> tuple[str, str]:
+    """This project's published app, and a second finding on the way.
+
+    The beta list is GLOBAL — every app on the deployment, 284 rows on cloud-dogfood — and whether
+    `?projectId=` filters it has never been settled. `list_project_apps` sends the parameter AND
+    matches on `project.id` client-side, but reads only the first page, so if the parameter is
+    ignored the app of a project whose rows sort past row 100 is invisible. That would not fail
+    loudly: `find_project_app` would answer None, publish would create a SECOND app rather than a
+    new version, and the visibility guard would never read a visibility at all.
+
+    So this pages to the end and says what it saw. The line it prints is the answer.
+    """
+    page, offset, scoped, total_seen = 100, 0, True, 0
+    found = ("", "")
+    for _ in range(50):  # backstop against a non-terminating pager
+        r = client.get(f"{host}{_APPS_PATH}",
+                       params={"projectId": project_id, "offset": offset, "limit": page},
+                       headers=headers)
+        r.raise_for_status()
+        body = r.json()
+        items = body if isinstance(body, list) else (body.get("items") or [])
+        total_seen += len(items)
+        for a in items:
+            if (a.get("project") or {}).get("id") != project_id:
+                scoped = False       # the parameter did not filter: foreign rows came back
+            elif not found[0] and a.get("id"):
+                found = (str(a["id"]), str(a.get("name") or ""))
+        meta = body.get("metadata") if isinstance(body, dict) else None
+        total = (meta or {}).get("totalCount")
+        offset += page
+        if not items or (total is not None and offset >= total):
+            break
+    print(f"scanned {total_seen} rows; ?projectId= "
+          f"{'IS honored (every row was this project)' if scoped else 'is NOT honored (foreign rows came back)'}")
+    if not scoped and total_seen > page:
+        print("  -> list_project_apps reads only the first page of an unfiltered global list. "
+              "Past 100 rows it can miss this project's app: publish would create a second app "
+              "instead of a new version, and the visibility guard would never run. Worth an issue.")
+    return found
+
+
 def main() -> int:
     host = os.environ.get("DOMINO_API_HOST", "").rstrip("/")
     if not host:
@@ -66,19 +107,13 @@ def main() -> int:
     app_id = sys.argv[1] if len(sys.argv) > 1 else ""
     with httpx.Client(timeout=30.0) as client:
         if not app_id:
-            # The beta list is global (every app on the deployment), so the project match is made
-            # here rather than trusted to ?projectId= — same reason `list_project_apps` does.
             project_id = os.environ.get("DOMINO_PROJECT_ID", "")
-            r = client.get(f"{host}{_APPS_PATH}", params={"offset": 0, "limit": 100}, headers=headers)
-            r.raise_for_status()
-            items = r.json().get("items") or []
-            mine = [a for a in items if (a.get("project") or {}).get("id") == project_id]
-            if not mine:
+            app_id, name = _find(client, host, headers, project_id)
+            if not app_id:
                 print(f"no published app found for project {project_id!r}. "
                       f"Publish one first, or pass an app id as the argument.")
                 return 1
-            app_id = str(mine[0].get("id") or "")
-            print(f"app: {mine[0].get('name')!r}  id={app_id}")
+            print(f"app: {name!r}  id={app_id}")
 
         r = client.get(f"{host}{_APPS_PATH}/{app_id}", headers=headers)
         r.raise_for_status()
