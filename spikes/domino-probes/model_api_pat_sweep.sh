@@ -33,6 +33,18 @@ sweep() { # name, value
     "$(code -u ":$v")"
 }
 
+# Say up front which of the two credentials that actually matter are present. Without this the
+# run reads as a clean negative when in truth neither was ever tested — a variable set on its own
+# shell line is not exported, so a child process never sees it.
+present() { # name, what is lost when it is missing
+  local n="$1" v="${!1:-}"
+  if [ -n "$v" ]; then printf '  %-12s present, len=%s\n' "$n" "${#v}"
+  else printf '  %-12s MISSING — %s\n' "$n" "$2"; fi
+}
+present MODEL_TOKEN "no control, so a 401 below cannot be told from a broken harness"
+present DOMINO_PAT  "the whole point of this run; pass it INLINE, not on its own shell line"
+echo
+
 # A known-good credential proves the URL, body and harness are right, so a 401 below means the
 # credential was refused rather than the script being wrong.
 if [ -n "${MODEL_TOKEN:-}" ]; then
