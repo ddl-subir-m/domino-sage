@@ -228,7 +228,15 @@ def _build_resources():
         return FakeResourceProvider()
     key = os.environ.get("GATEWAY_API_KEY", "")
     token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    return DominoResourceProvider(base, token)
+    # Model APIs come off the Domino API instead, on its own bearer — the same recipe _build_assets
+    # uses, because it is the same host and the same token. Absent (Sage pointed at a Domino gateway
+    # from outside Domino), the provider reports Model APIs as unlistable rather than as none.
+    api_host = os.environ.get("DOMINO_API_HOST", "").strip()
+    api_key = os.environ.get("DOMINO_API_KEY")
+    api_token = static_token(api_key) if api_key else sidecar_token(
+        os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL)
+    )
+    return DominoResourceProvider(base, token, api_host=api_host, api_token_provider=api_token)
 
 
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
@@ -661,19 +669,32 @@ def list_assets() -> dict:
 
 @control_app.get("/api/resources")
 def list_resources() -> JSONResponse:
-    """Domino Resources this caller can pick. LLM Aliases first (#5); other kinds join this payload.
+    """Domino Resources this caller can pick: LLM Aliases (#5) and Model APIs (#8).
 
-    A gateway that won't answer is a 502 with a readable reason rather than an empty list, so the
+    A service that won't answer is reported as a readable reason rather than an empty list, so the
     rail can say "the gateway is not answering" instead of "you have no models".
+
+    That reason is carried PER KIND, and the response stays 200. The two kinds come from two
+    different Domino services and fail independently, so a single failing status would let the
+    Domino API being down blank out the LLM Aliases as well — reporting nothing available when only
+    one half is. Each group in the rail renders its own list or its own reason.
     """
-    try:
-        return JSONResponse(content={"llm_aliases": orchestrator.list_llm_aliases()})
-    except ResourceUnavailable as e:
-        return JSONResponse(status_code=502, content={"error": str(e)})
+    kinds = {
+        "llm_aliases": orchestrator.list_llm_aliases,
+        "model_apis": orchestrator.list_model_apis,
+    }
+    body: dict = {"errors": {}}
+    for key, listing in kinds.items():
+        try:
+            body[key] = listing()
+        except ResourceUnavailable as e:
+            body[key], body["errors"][key] = [], str(e)
+    return JSONResponse(content=body)
 
 
-# Bindings are their own route, not part of /api/resources: that one 502s when the gateway will not
-# answer, and a creator auditing an app needs the dependency list precisely then.
+# Bindings are their own route, not part of /api/resources: that one has nothing to list for a kind
+# whose service will not answer, and a creator auditing an app needs the dependency list precisely
+# then.
 @control_app.get("/api/bindings")
 def list_bindings() -> JSONResponse:
     return JSONResponse(content={"bindings": orchestrator.list_bindings()})

@@ -2556,6 +2556,18 @@ class Orchestrator:
             for a in self._resources.list_llm_aliases()
         ]
 
+    def list_model_apis(self) -> list[dict]:
+        """Model APIs deployed in THIS project, shaped for the Resource Browser (#8).
+
+        Scoped to the project Sage is bound to, which is the only scope a normal user can ask for:
+        the deployment-wide listing is an admin surface. `_domino_project_id` is the same id the
+        dataset listing already runs on, so nothing new has to be configured for this to work.
+        """
+        return [
+            {"id": m.id, "name": m.name, "description": m.description, "status": m.status}
+            for m in self._resources.list_model_apis(self._domino_project_id)
+        ]
+
     # ---- Bindings: the Resources this app is recorded as using (#6) ----
 
     def list_bindings(self) -> list[dict]:

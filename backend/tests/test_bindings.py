@@ -229,7 +229,8 @@ def test_the_route_refuses_an_alias_you_cannot_use_and_an_unknown_kind(tmp_path:
 
 
 def test_the_binding_list_answers_even_when_the_gateway_will_not(tmp_path: Path, monkeypatch):
-    # The reason bindings are not part of /api/resources, which 502s as a whole.
+    # The reason bindings are not part of /api/resources, which has nothing to offer for a kind whose
+    # service is down.
     from fastapi.testclient import TestClient
 
     import sage.orchestrator.app as appmod
@@ -238,7 +239,7 @@ def test_the_binding_list_answers_even_when_the_gateway_will_not(tmp_path: Path,
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-sonnet")
 
-    class Broken:
+    class Broken(FakeResourceProvider):
         def list_llm_aliases(self):
             raise ResourceUnavailable("The LLM Gateway answered 503 at /v1/models.")
 
@@ -246,5 +247,5 @@ def test_the_binding_list_answers_even_when_the_gateway_will_not(tmp_path: Path,
     monkeypatch.setattr(appmod, "orchestrator", orch)
     client = TestClient(appmod.control_app)
 
-    assert client.get("/api/resources").status_code == 502
+    assert client.get("/api/resources").json()["llm_aliases"] == []
     assert [b["name"] for b in client.get("/api/bindings").json()["bindings"]] == ["sonnet"]

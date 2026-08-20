@@ -22,11 +22,13 @@ from sage.resources.provider import (
     DominoResourceProvider,
     FakeResourceProvider,
     LlmAlias,
+    ModelApi,
     ResourceUnavailable,
     accessible_ids,
     join_aliases,
     parse_capabilities,
     parse_costs,
+    parse_model_apis,
     records_of,
 )
 from sage.router.models import ModelCatalog
@@ -189,6 +191,111 @@ def test_the_error_message_never_carries_the_token():
     assert "supersecret" not in str(e.value)
 
 
+# ---- Model APIs: the parse, and the project scope it cannot be asked without (#8) ----------------
+
+# One record in the shape the live listing returns, trimmed to the fields the picker reads.
+MODEL_APIS = {
+    "items": [
+        {"id": "m1", "name": "churn-risk", "description": "Scores cancellation risk.",
+         "isArchived": False,
+         "activeVersion": {"id": "v9", "number": 3, "deployment": {"status": "Running", "isPending": False}}},
+        {"id": "m2", "name": "demand-forecast", "description": "", "isArchived": False,
+         "activeVersion": {"id": "v2", "number": 1, "deployment": {"status": "Stopped", "isPending": False}}},
+        {"id": "m3", "name": "never-deployed", "description": "", "isArchived": False},
+        {"id": "m4", "name": "retired-scorer", "description": "", "isArchived": True,
+         "activeVersion": {"id": "v1", "number": 1, "deployment": {"status": "Stopped", "isPending": False}}},
+    ],
+    "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": 4}, "requestId": "r", "notices": []},
+}
+
+
+def test_the_row_carries_the_name_as_its_identifier_and_the_deployment_status():
+    rows = parse_model_apis(MODEL_APIS)
+    assert [m.name for m in rows[:2]] == ["churn-risk", "demand-forecast"]
+    assert rows[0] == ModelApi("m1", "churn-risk", "Scores cancellation risk.", "Running")
+    # Domino's own word, not a boolean: "Stopped" and "no version at all" are different situations
+    # and a creator reading the row should be able to tell which one they are looking at.
+    assert rows[1].status == "Stopped" and rows[1].description is None
+    assert rows[2].status is None
+
+
+def test_an_archived_model_api_is_not_offered():
+    # Archiving is how a Model API is retired, so it is not a disabled-but-relevant Resource — it is
+    # one nobody would pick, and it would only make the live ones harder to find.
+    assert "retired-scorer" not in [m.name for m in parse_model_apis(MODEL_APIS)]
+
+
+def test_a_record_with_no_name_is_dropped():
+    # The name IS the row's identifier here, so a nameless row is not one a creator could pick.
+    assert parse_model_apis({"items": [{"id": "m9", "name": ""}]}) == []
+
+
+def test_model_apis_are_unlistable_rather_than_empty_when_there_is_no_project_to_scope_to():
+    # The unscoped listing 403s ("not authorized to view access configuration") because it is an
+    # admin surface, so a call without a project cannot succeed. Reporting "none" would tell the
+    # creator their project is empty when Sage never managed to ask.
+    p = DominoResourceProvider("http://gw/v1", lambda: "tok", api_host="http://api")
+    with pytest.raises(ResourceUnavailable, match="not running in one"):
+        p.list_model_apis(None)
+    off_domino = DominoResourceProvider("http://gw/v1", lambda: "tok")
+    with pytest.raises(ResourceUnavailable, match="not running in one"):
+        off_domino.list_model_apis("proj-1")
+
+
+@contextmanager
+def stub_domino_api(pages: list[object]):
+    """A Domino API that answers the Model API listing, handing out `pages` in order and recording
+    every path it was asked for (query string included)."""
+    seen: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            payload = pages[min(len(seen) - 1, len(pages) - 1)]
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}", seen
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+
+def test_the_provider_scopes_the_listing_to_the_project_it_was_asked_about():
+    with stub_domino_api([MODEL_APIS]) as (api_host, seen):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "gwtok", api_host=api_host, api_token_provider=lambda: "apitok"
+        ).list_model_apis("proj-1")
+    assert [m.name for m in out] == ["churn-risk", "demand-forecast", "never-deployed"]
+    assert seen[0].startswith("/api/modelServing/v1/modelApis?")
+    assert "projectId=proj-1" in seen[0]
+
+
+def test_a_project_with_more_model_apis_than_one_page_is_listed_whole():
+    # A silently truncated list reads as "that is all of them", which is the one thing it is not.
+    def page(names, total):
+        return {"items": [{"id": n, "name": n} for n in names],
+                "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": total}}}
+
+    with stub_domino_api([page(["a"], 2), page(["b"], 2), page([], 2)]) as (api_host, seen):
+        p = DominoResourceProvider("http://gw/v1", lambda: "t", api_host=api_host)
+        p._PAGE = 1
+        assert [m.name for m in p.list_model_apis("proj-1")] == ["a", "b"]
+    assert "offset=1" in seen[1]
+
+
 # ---- through the orchestrator, on the injected fake ----------------------------------------------
 
 
@@ -217,7 +324,25 @@ def test_the_default_provider_is_the_fake_so_a_local_run_lists_something(tmp_pat
     assert rows and all(r["display_name"] and r["capabilities"] for r in rows)
 
 
-def test_the_route_returns_the_aliases_and_a_502_when_the_gateway_will_not_answer(tmp_path: Path, monkeypatch):
+def test_the_orchestrator_lists_model_apis_scoped_to_its_own_project(tmp_path: Path):
+    asked: list[str | None] = []
+
+    class Recording(FakeResourceProvider):
+        def list_model_apis(self, project_id):
+            asked.append(project_id)
+            return [ModelApi("m1", "churn-risk", "Scores cancellation risk.", "Running")]
+
+    orch = _orch(tmp_path, Recording())
+    orch._domino_project_id = "proj-1"
+    assert orch.list_model_apis() == [
+        {"id": "m1", "name": "churn-risk", "description": "Scores cancellation risk.", "status": "Running"}
+    ]
+    # The project is not optional: the deployment-wide listing needs an admin role a Sage user has not
+    # got, so the orchestrator has to hand its own project down rather than let the call go unscoped.
+    assert asked == ["proj-1"]
+
+
+def test_the_route_carries_both_kinds_and_one_failing_service_does_not_blank_the_other(tmp_path: Path, monkeypatch):
     from fastapi.testclient import TestClient
 
     import sage.orchestrator.app as appmod
@@ -227,11 +352,17 @@ def test_the_route_returns_the_aliases_and_a_502_when_the_gateway_will_not_answe
     body = client.get("/api/resources").json()
     assert [a["name"] for a in body["llm_aliases"]][:1] == ["gpt-5.4"]
 
-    class Broken:
+    assert [m["name"] for m in body["model_apis"]][:1] == ["churn-risk"]
+    assert body["errors"] == {}
+
+    class GatewayDown(FakeResourceProvider):
         def list_llm_aliases(self):
             raise ResourceUnavailable("The LLM Gateway answered 503 at /v1/models.")
 
-    monkeypatch.setattr(appmod, "orchestrator", _orch(tmp_path, Broken()))
-    bad = client.get("/api/resources")
-    # A 502 with a reason, not 200 with an empty list: "no models" would blame the wrong thing.
-    assert bad.status_code == 502 and "503" in bad.json()["error"]
+    monkeypatch.setattr(appmod, "orchestrator", _orch(tmp_path, GatewayDown()))
+    bad = client.get("/api/resources").json()
+    # A reason, not an empty list: "no models" would blame the wrong thing. And the reason is carried
+    # per kind — Model APIs come from a different Domino service, so they are still listed.
+    assert bad["llm_aliases"] == [] and "503" in bad["errors"]["llm_aliases"]
+    assert [m["name"] for m in bad["model_apis"]][:1] == ["churn-risk"]
+    assert "model_apis" not in bad["errors"]

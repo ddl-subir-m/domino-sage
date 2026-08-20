@@ -318,6 +318,7 @@
   .a-chip.up { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); background: color-mix(in srgb, var(--primary) 8%, transparent); }
   /* A capability is a plain fact about the model, not a warning — the base chip's red would read as one. */
   .a-chip.cap { color: var(--muted); border-color: var(--border); background: var(--surface-2); }
+  .a-chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); background: color-mix(in srgb, var(--ok) 8%, transparent); }
   .asset-row .a-tags { flex: 0 0 auto; color: var(--faint); font-size: 11px; }
   .ds-row { cursor: pointer; user-select: none; }
   .a-caret { flex: 0 0 auto; color: var(--faint); font-size: 10px; width: 10px; display: inline-block; }
@@ -523,6 +524,8 @@
         <div id="bindings"></div>
         <div class="asset-group">LLM Aliases</div>
         <div id="llm-aliases"><div class="hint">Loading LLM Aliases…</div></div>
+        <div class="asset-group">Model APIs</div>
+        <div id="model-apis"><div class="hint">Loading Model APIs…</div></div>
         <div class="asset-group">Data</div>
         <div class="upload-form">
           <div class="field">
@@ -982,17 +985,26 @@ const expanded = new Set();  // dataset ids whose file list is expanded
 let aliasesCache = null;
 let aliasesError = null;
 
+// One call fills every kind, and each kind carries its own error: the LLM Gateway and the Domino API
+// are different services, so one being down must not make the other group say "none available".
 async function loadResources() {
   const { ok, body } = await api('/api/resources');
+  const errors = (ok && body.errors) || {};
   aliasesCache = ok ? (body.llm_aliases || []) : [];
-  aliasesError = ok ? null : (body.error || 'The LLM Gateway did not answer.');
+  aliasesError = ok ? (errors.llm_aliases || null) : 'The LLM Gateway did not answer.';
+  modelApisCache = ok ? (body.model_apis || []) : [];
+  modelApisError = ok ? (errors.model_apis || null) : 'Domino did not answer.';
   renderLlmAliases();
+  renderModelApis();
 }
 
 function retryResources() {
   aliasesCache = null;
   aliasesError = null;
+  modelApisCache = null;
+  modelApisError = null;
   renderLlmAliases();
+  renderModelApis();
   loadResources();
 }
 
@@ -1081,6 +1093,61 @@ function renderLlmAliases() {
     return;
   }
   for (const a of aliasesCache) el.appendChild(aliasRow(a));
+}
+
+// ---------- Model APIs (Resources rail, #8) ----------
+// Browse only, on purpose: picking one is #9, and a Use button here would record a dependency the
+// built app has no code to honour yet. `null` = not loaded; `[]` = loaded and this project has none.
+let modelApisCache = null;
+let modelApisError = null;
+
+function modelApiRow(m) {
+  const row = document.createElement('div');
+  row.className = 'res-row';
+  // Domino's own word for the state, not a rewrite of it. "Running" is the only one that means the
+  // endpoint would answer now, so it is the only one shown as healthy; the rest are shown plainly
+  // rather than as warnings, because a stopped model is still a model you could compose with.
+  const running = m.status === 'Running';
+  const label = m.status || 'Not deployed';
+  const title = running
+    ? 'This Model API is deployed and answering requests.'
+    : m.status
+      ? `Domino reports this Model API as ${m.status}. Someone with access to it has to start it before it answers requests.`
+      : 'This Model API has no deployed version yet, so there is nothing to send a request to.';
+  const chip = `<span class="a-chip ${running ? 'ok' : 'cap'}" title="${esc(title)}">${esc(label)}</span>`;
+  // Descriptions are usually empty on real Model APIs, so the line only appears when it says
+  // something — an empty second line would suggest the row failed to load.
+  const desc = m.description ? `<div class="res-desc">${esc(m.description)}</div>` : '';
+  row.innerHTML =
+    `<div class="res-head"><div class="res-name" title="${esc(m.name)}">${esc(m.name)}</div>${chip}</div>` + desc;
+  return row;
+}
+
+function renderModelApis() {
+  const el = document.getElementById('model-apis');
+  if (!el) return;
+  el.innerHTML = '';
+  if (modelApisCache === null) {
+    el.appendChild(hintEl('Loading Model APIs…'));
+    return;
+  }
+  if (modelApisError) {
+    const h = hintEl(`${esc(modelApisError)} <button class="link-btn">Try again</button>`);
+    h.classList.add('err');
+    el.appendChild(h);
+    h.querySelector('.link-btn').onclick = retryResources;
+    return;
+  }
+  if (!modelApisCache.length) {
+    const h = hintEl('This project has no Model APIs. A Model API is a model your team has already '
+      + 'deployed, which an app can send prediction requests to. Deploy one from this project in '
+      + 'Domino, or ask whoever owns the model to deploy it here — then '
+      + '<button class="link-btn">Try again</button>.');
+    el.appendChild(h);
+    h.querySelector('.link-btn').onclick = retryResources;
+    return;
+  }
+  for (const m of modelApisCache) el.appendChild(modelApiRow(m));
 }
 
 // ---------- Bindings: the Resources this app is recorded as using (#6) ----------
