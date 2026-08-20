@@ -106,7 +106,16 @@ RUN cd /opt/sage/template/react-vite \
     && find node_modules/@rolldown/binding-linux-x64-gnu -name '*.node' 2>/dev/null | grep -q . \
     && echo "[sage] rolldown native binding OK"
 # Python deps for the orchestrator baked into a uv venv.
-RUN cd /opt/sage/backend && (uv sync --frozen || uv sync)
+#
+# `--extra domino` pulls dominodatalab-data, which reads inside a Data Source (Arrow Flight to
+# datasource-proxy). The base image already has it in its system python, and that is no help: this
+# venv is isolated, `app.sh` starts the orchestrator with `uv run` inside it, and the import fails
+# there no matter what the image carries. Asserted below rather than trusted — a missing extra
+# degrades silently to "Sage cannot look inside one" in a running builder, which is exactly the
+# failure this line exists to prevent.
+RUN cd /opt/sage/backend \
+    && (uv sync --frozen --extra domino || uv sync --extra domino) \
+    && uv run python -c "from domino_data.data_sources import DataSourceClient; print('[sage] domino_data OK')"
 
 # The workspace user owns the baked tree so app.sh (run as ubuntu) can read/exec + write its venv.
 RUN chown -R ubuntu:ubuntu /opt/sage

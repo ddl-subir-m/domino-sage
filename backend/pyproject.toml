@@ -16,6 +16,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0,<9.0", "ruff==0.16.1"]  # ruff pinned exactly — see [tool.ruff] required-version
+# Reading INSIDE a Data Source (the #11 cascade): Arrow Flight over gRPC to datasource-proxy, which
+# `domino_data` speaks and nothing else does. An EXTRA, not a dependency, on both counts:
+#   - it pulls pandas and pyarrow, ~200MB installed, which no test and no laptop needs;
+#   - the Sage image installs it explicitly (`uv sync --extra domino`), so the one place that does
+#     need it says so out loud.
+# The Domino base image already carries this package in its SYSTEM python — which is no help,
+# because the orchestrator runs from uv's isolated venv and cannot see system site-packages. That
+# gap is why the cascade answered "the Domino data library is not installed here" in a real builder
+# while listing worked fine. See `DominoResourceProvider._introspect`.
+domino = ["dominodatalab-data>=6.7,<7"]
 
 [build-system]
 requires = ["hatchling"]

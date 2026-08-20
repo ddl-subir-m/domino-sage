@@ -710,9 +710,17 @@ class DominoResourceProvider:
 
         `domino_data` rather than HTTP, unlike everything else in this class: the SQL path is Arrow
         Flight over gRPC to `datasource-proxy`, which is where the store's credentials live, and there
-        is no REST equivalent to reach instead. The import is local to this method for the reason
-        `httpx`'s is — the package is preinstalled in the Sage Environment (verified, 6.7.4) but is
-        not a test dependency, so a machine without it has to be able to run everything else.
+        is no REST equivalent to reach instead.
+
+        The package ships in the Domino base image, and that was never the question — the
+        orchestrator runs under `uv run`, in an isolated venv that cannot see system site-packages,
+        so an image full of it still raised the ImportError below in a live builder while listing
+        worked fine. It is now declared as the `domino` extra and installed into THAT venv by the
+        image build, which asserts the import rather than assuming it.
+
+        The import stays local to this method, as `httpx`'s does, because the extra is deliberately
+        not part of `--extra dev`: it pulls pandas and pyarrow, and a laptop running the tests has
+        to be able to run everything else without them.
 
         Resolved by NAME, not by id: `get_datasource` takes the name, verified live, and a source
         resolves with no project attachment. The name arrives from `list_data_sources`, so it is
