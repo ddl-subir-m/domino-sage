@@ -805,8 +805,15 @@ function showSlotPreflight(pre) {
 // The remedy for a broken slot: the panel where its model can be reassigned, already expanded. The
 // assignments live in a <details> inside the model popover, and a link that only opened the popover
 // would leave the user hunting for the collapsed half that actually matters.
-function openModelAssignments() {
-  togglePop('model-pop');
+// It opens, and never toggles shut: the sentence above it says to pick a different model, so a second
+// click reading as "put that away again" would be the wrong answer to the wrong question.
+function openModelAssignments(e) {
+  // The document-level handler closes every .pop on any click outside the chrome, and a chat link is
+  // outside it. Without stopping the click here the popover opens and the same event shuts it, so the
+  // remedy link looks broken.
+  if (e) e.stopPropagation();
+  const pop = document.getElementById('model-pop');
+  if (!pop.classList.contains('open')) togglePop('model-pop');
   const ed = document.getElementById('catalog-editor');
   ed.open = true;
   ed.scrollIntoView({ block: 'nearest' });
@@ -1075,7 +1082,7 @@ async function loadPreflight() {
   // 'unreachable' means we could not check, which is not evidence anything is gone — badging a row
   // stale on that basis would send a creator to remove a Resource that works.
   if (!pre || pre.state !== 'problems') return;
-  staleBindings = new Set((pre.bindings || []).map(b => `${b.kind} ${b.id}`));
+  staleBindings = new Set((pre.bindings || []).map(b => `${b.kind} ${b.id}`));
   renderBindings();   // badge the rows, if the rail has already drawn them
   for (const b of pre.bindings) {
     const el = addStatus('warn', '⚠', `${esc(b.message)} <button class="link-btn">Show it in Resources</button>`);
