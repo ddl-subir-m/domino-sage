@@ -1061,27 +1061,47 @@ accessStatuses, configurationType, currentVersion, discoverable, entryPoint, id,
 name, project, properties, publisher, renderIFrame, updatedAt, url, vanityUrl, views, visibility
 ```
 
-So the guard matches a **known-closed** list (`CLOSED_VISIBILITY = {GRANT_BASED, PRIVATE}`) and
-refuses everything else, quoting the value it saw. Before the field was verified this had to be the
-other way round — a guessed field name read as "not GRANT_BASED" would have refused every
-re-publish of every app — but that risk is gone once the name and the closed value have been seen.
+So the guard matches an **allow** list (`ALLOWED_VISIBILITY = {GRANT_BASED, PRIVATE,
+AUTHENTICATED}`) and refuses everything else, quoting the value it saw. Before the field was verified
+this had to be inverted — a guessed field name read as "not GRANT_BASED" would have refused every
+re-publish of every app — but that risk is gone once the name and the real values have been seen.
 
-**What the sharing UI actually offers on this deployment.** Two independent axes, and only one of
-them is about access:
+**The whole sharing vocabulary, read back 2026-08-20.** Two independent axes, and only one is about
+access:
 
-| Control | Meaning |
+| Control | Field and value |
 |---|---|
-| Dropdown: *Restricted (project collaborators)* | `visibility: GRANT_BASED` — the closed setting |
-| Dropdown: *Anyone in Domino* | the open one; value not yet read back |
-| Checkbox: *Globally discoverable* | "All Domino users can find this App and **request access** to view" — the separate top-level `discoverable` flag |
+| Dropdown: *Restricted (project collaborators)* | `visibility: "GRANT_BASED"` — what Sage sets at create |
+| Dropdown: *Anyone in Domino* | `visibility: "AUTHENTICATED"` |
+| Checkbox: *Globally discoverable* | the separate top-level `discoverable` flag; "All Domino users can find this App and **request access** to view" |
 
-There is **no anonymous/internet option here**, so "never publish `PUBLIC`" reads, on this
-deployment, as "never publish to every Domino user". `discoverable` is deliberately **not** guarded
-on: finding an app and being able to read what it queries are different things, and a request for
-access is still a request.
+Both were read from live apps: `GRANT_BASED` from one Sage published and nobody re-shared, and
+`AUTHENTICATED` from one deliberately republished at *Anyone in Domino*. `discoverable` was `false`
+on both, which is what confirms it is an independent field rather than the same setting seen twice.
 
-**Still to read back:** the value behind *Anyone in Domino*. Not blocking — the known-closed match
-already refuses it — but worth adding to `CLOSED_VISIBILITY`'s comment as the confirmed open name.
+**`AUTHENTICATED` is ALLOWED**, and that is this document's own line — "never publish a
+resource-querying app as `PUBLIC`; authenticated at minimum". Every viewer of such an app is a named
+Domino user who signed in, and since #13 what they can run is the set of named queries the creator
+declared rather than the warehouse. The exposure the guard was written against is an anonymous app
+on the open internet.
+
+**Consequence worth naming: on this deployment guard 2 stops nothing.** There is no anonymous
+setting to refuse, so it is a guard for a case that cannot arise here, and it becomes active on a
+deployment that offers one. That is the honest outcome of drawing the line where the research drew
+it, not a defect. The credential guard carries the weight in the meantime, and it is the one that
+fires on real configurations.
+
+`discoverable` is deliberately **not** guarded on: finding an app and being able to read what it
+queries are different things, and a request for access is still a request.
+
+**Two id spaces, resolved.** They are not two systems — they are two fields on one record.
+`id` is the 24-hex ObjectId the beta API keys on and the manage URL uses; `vanityUrl` is the UUID
+that appears in `/apps/{uuid}` viewer links. Same app, same response.
+
+**`extendedIdentityPropagationToAppsEnabled: false`**, seen on `currentVersion`. This is the
+per-viewer identity setting ADR-0001 names as admin-only and unavailable to Sage's users, and it is
+the assumption the entire shared-credential guard rests on. First time it has been observed rather
+than assumed.
 
 **`?projectId=` IS honored for beta apps** (same probe): the request that returns 284 rows
 unfiltered returned exactly this project's 1. The earlier "not reliably honored" reading came from

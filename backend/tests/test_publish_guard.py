@@ -83,23 +83,30 @@ def test_a_binding_whose_source_was_re_registered_still_matches_by_name():
     assert publish_problems([moved], SOURCES, "GRANT_BASED") == []
 
 
-def test_an_app_shared_beyond_its_collaborators_refuses_even_on_a_shared_credential():
-    (problem,) = publish_problems([SHARED_BINDING], SOURCES, "ANYONE_IN_DOMINO")
+def test_an_app_open_to_people_who_never_signed_in_refuses_even_on_a_shared_credential():
+    (problem,) = publish_problems([SHARED_BINDING], SOURCES, "PUBLIC")
     assert problem.reason == OPEN_APP
     assert "Snowflake-Data-Warehouse" in problem.message
-    assert "ANYONE_IN_DOMINO" in problem.message  # quoted, so a wrong refusal is one report to fix
+    assert "PUBLIC" in problem.message   # quoted, so a wrong refusal is one report to fix
 
 
-@pytest.mark.parametrize("closed", ["GRANT_BASED", "PRIVATE", "grant-based"])
-def test_a_visibility_that_keeps_the_app_behind_a_grant_publishes(closed: str):
-    # GRANT_BASED is what Sage sets and what a published app reads back — verified live on
-    # cloud-dogfood, which is what lets this list be the closed one rather than a guessed open one.
-    assert publish_problems([SHARED_BINDING], SOURCES, closed) == []
+@pytest.mark.parametrize("allowed", ["GRANT_BASED", "AUTHENTICATED", "PRIVATE", "grant-based"])
+def test_a_visibility_that_still_requires_signing_in_publishes(allowed: str):
+    # Both settings Domino's sharing dropdown actually offers, verified live on cloud-dogfood:
+    # GRANT_BASED is "Restricted (project collaborators)" and what Sage sets at create,
+    # AUTHENTICATED is "Anyone in Domino".
+    assert publish_problems([SHARED_BINDING], SOURCES, allowed) == []
+
+
+def test_anyone_in_domino_is_allowed_because_every_viewer_signed_in():
+    # The line ADR-0001's research draws — "never PUBLIC, authenticated at minimum" — and since #13
+    # a viewer can only run the named queries the creator declared, not the warehouse.
+    assert publish_problems([SHARED_BINDING], SOURCES, "AUTHENTICATED") == []
 
 
 def test_a_visibility_this_list_has_never_met_refuses():
-    # Fails closed, unlike before the field was verified. The value is quoted in the message, so a
-    # deployment spelling "restricted" differently costs one report and one entry, not a hole.
+    # Fails closed. The value is quoted in the message, so a deployment spelling one of the allowed
+    # settings differently costs one report and one entry, not a hole.
     (problem,) = publish_problems([SHARED_BINDING], SOURCES, "SOME_FUTURE_SETTING")
     assert problem.reason == OPEN_APP
 
@@ -117,7 +124,7 @@ def test_a_visibility_that_could_not_be_read_refuses():
 
 
 def test_visibility_only_matters_to_an_app_that_reads_a_store():
-    assert publish_problems([], SOURCES, "ANYONE_IN_DOMINO") == []
+    assert publish_problems([], SOURCES, "PUBLIC") == []
     assert publish_problems([], SOURCES, None) == []
 
 
@@ -126,7 +133,7 @@ def test_every_problem_is_reported_at_once():
     # refusal at a time.
     second = DataSource("ds-mssql", "AWS_MSSQL", "SQL Server", "Individual", None, True)
     bindings = [INDIVIDUAL_BINDING, Binding(KIND_DATA_SOURCE, "ds-mssql", "AWS_MSSQL", "AWS_MSSQL")]
-    problems = publish_problems(bindings, [*SOURCES, second], "ANYONE_IN_DOMINO")
+    problems = publish_problems(bindings, [*SOURCES, second], "PUBLIC")
     assert [p.reason for p in problems] == [INDIVIDUAL_CREDENTIAL, INDIVIDUAL_CREDENTIAL, OPEN_APP]
 
 
@@ -178,13 +185,25 @@ def test_the_builder_publishes_a_shared_credential(tmp_path: Path):
     assert orch.publish()["published"] is True
 
 
+def test_the_builder_republishes_an_app_shared_with_every_domino_user(tmp_path: Path):
+    # Not a refusal: every viewer signed in, and #13 bounds them to the creator's named queries.
+    cp = FakeControlPlane()
+    cp.published["app-8"] = PublishedApp(id="app-8", url="https://fake.domino/app/app-8")
+    cp.app_projects["app-8"] = "proj-1"
+    cp.app_visibilities["app-8"] = "AUTHENTICATED"
+    orch = _orch(tmp_path, cp)
+    orch.bind_data_source("ds-dwh", "ANALYTICS", "MARTS")
+
+    assert orch.publish()["republished"] is True
+
+
 def test_the_builder_refuses_to_republish_an_app_that_was_opened_up(tmp_path: Path):
     # The case the read-back exists for: Sage published this app grant-based, and somebody changed
     # it afterwards on the settings page Publish itself links to.
     cp = FakeControlPlane()
     cp.published["app-9"] = PublishedApp(id="app-9", url="https://fake.domino/app/app-9")
     cp.app_projects["app-9"] = "proj-1"
-    cp.app_visibilities["app-9"] = "ANYONE_IN_DOMINO"
+    cp.app_visibilities["app-9"] = "PUBLIC"
     orch = _orch(tmp_path, cp)
     orch.bind_data_source("ds-dwh", "ANALYTICS", "MARTS")
 

@@ -30,24 +30,30 @@ from .provider import DataSource
 # so every viewer reaches the store as the same principal the creator already saw named on the row.
 SHARED = "Shared"
 
-# Visibility values that keep an app behind a grant, normalised to upper snake case.
+# Visibility values a Data Source app may be published at, normalised to upper snake case.
 #
-# The KNOWN-CLOSED list, not a guessed open one, and that is the whole design. Verified live on
-# cloud-dogfood 2026-08-20 (`sage.tools.app_visibility`): the detail response carries a top-level
-# `visibility`, and an app Sage published reads `GRANT_BASED` — the setting Domino's own sharing
-# dropdown calls "Restricted (project collaborators)". `PRIVATE` is here because Domino spells the
-# same idea that way for projects and an app is cheap to be generous about in the closed direction.
+# An ALLOW list, not a guessed open one, and that is the whole design. Both entries that matter are
+# verified live on cloud-dogfood 2026-08-20 (`sage.tools.app_visibility`): the detail response
+# carries a top-level `visibility`, and Domino's sharing dropdown offers exactly two settings —
+# "Restricted (project collaborators)" is `GRANT_BASED`, which is what Sage sets at create, and
+# "Anyone in Domino" is `AUTHENTICATED`. `PRIVATE` is here because Domino spells the closed idea that
+# way for projects and an app is cheap to be generous about in that direction.
 #
-# Everything else refuses. Before the field was verified this had to be the other way round — a
-# guessed field name read as "not GRANT_BASED" would have refused every re-publish of every app —
-# but that risk is gone now that the name and the closed value have both been seen. An unrecognised
-# value is reported verbatim in the refusal, so one report is enough to add a spelling here.
-CLOSED_VISIBILITY = frozenset({"GRANT_BASED", "PRIVATE"})
+# `AUTHENTICATED` is ALLOWED, which is the line ADR-0001's source research draws: "never publish a
+# resource-querying app as PUBLIC — authenticated at minimum". Every viewer of such an app is a named
+# Domino user who signed in, and since #13 what they can run is the set of named queries the creator
+# declared rather than the warehouse. The thing that guard was written against is an anonymous app on
+# the open internet, and that is what is still refused.
+#
+# Everything else refuses, including any anonymous or link-based setting a deployment offers that
+# this list has not met. An unrecognised value is quoted verbatim in the refusal, so a deployment
+# spelling one of the allowed settings differently costs one report and one entry, not a hole.
+ALLOWED_VISIBILITY = frozenset({"GRANT_BASED", "PRIVATE", "AUTHENTICATED"})
 
 # NOT guarded on: the separate top-level `discoverable` flag, which Domino describes as "All Domino
-# users can find this App and request access to view". Finding an app and being able to read what it
-# queries are different things — a request for access is still a request — so refusing on it would
-# refuse an app nobody can read.
+# users can find this App and request access to view", and which the live probe confirmed is an
+# independent field. Finding an app and being able to read what it queries are different things — a
+# request for access is still a request — so refusing on it would refuse an app nobody can read.
 
 # Why a publish was refused. The message carries the whole explanation; this is for the caller that
 # wants to count or group them, and for a test that wants to name a case without matching prose.
@@ -97,14 +103,19 @@ def data_source_bindings(bindings: list[Binding]) -> list[Binding]:
 
 
 def open_visibility(raw: str) -> bool:
-    """Whether a visibility value fails to keep the app behind a grant.
+    """Whether a visibility value puts the app in front of people who never signed in.
 
-    Anything not in `CLOSED_VISIBILITY` counts, the empty string excepted: "" is what a caller
+    Anything not in `ALLOWED_VISIBILITY` counts, the empty string excepted: "" is what a caller
     passes when there is no published app to read a visibility FROM, and a first publish is one Sage
     sets `GRANT_BASED` on itself. `None` — the caller asked and could not get an answer — never
     reaches here; `publish_problems` refuses on it directly.
+
+    On a deployment whose sharing offers only the two settings cloud-dogfood does, this is a guard
+    for a setting that does not exist there yet, and it stops nothing. That is the honest outcome
+    rather than a defect: the exposure it was written against is an app anyone on the internet can
+    open, and the credential guard beside it is what carries the weight in the meantime.
     """
-    return bool(raw.strip()) and raw.strip().upper().replace("-", "_").replace(" ", "_") not in CLOSED_VISIBILITY
+    return bool(raw.strip()) and raw.strip().upper().replace("-", "_").replace(" ", "_") not in ALLOWED_VISIBILITY
 
 
 def publish_problems(
@@ -181,13 +192,13 @@ def _match(b: Binding, sources: list[DataSource]) -> DataSource | None:
 
 def _open_message(bindings: list[Binding], visibility: str) -> str:
     # The raw value is quoted for two readers. A creator sees which setting is in the way; whoever
-    # gets the report of a wrongly-refused publish sees the spelling to add to CLOSED_VISIBILITY,
+    # gets the report of a wrongly-refused publish sees the spelling to add to ALLOWED_VISIBILITY,
     # which is the whole cost of failing closed on a value this list has not met.
     return (
-        f"This app is shared beyond its project collaborators (its visibility is {visibility}), and "
-        f"it reads {_names(bindings)}. A published app queries the store as its publisher, so "
-        f"everyone the app is shared with would be reading it. Set the app's sharing back to "
-        f"restricted on its settings page in Domino, then publish again."
+        f"This app can be opened by people who are not signed in to Domino (its visibility is "
+        f"{visibility}), and it reads {_names(bindings)}. A published app queries the store as its "
+        f"publisher, so anyone who reached the app would be reading it. Share the app with Domino "
+        f"users instead, on its settings page in Domino, then publish again."
     )
 
 
