@@ -347,3 +347,69 @@ against. From the browser, each viewer spends their own grant and the usage log 
 to them. The cost is that availability becomes a property of the **viewer**: an app that skips
 an on-load availability check works perfectly for the creator who picked the model and fails on
 a button press for the colleague they sent it to.
+
+## VERIFIED — the browser path does NOT carry over to Model APIs
+
+Probed live on cloud-dogfood, 2026-08-20, against a running Model API
+(`/models/6a8727f40ff0450030085fb3/latest/model`). This is the counterpart to the section
+above, and it settles issue #9: the same-origin recipe that makes #7 work **cannot be
+repeated for a Model API**, for two independent reasons.
+
+A Model API is not an App. It is served from the **main** host, and the apps ingress does not
+route to it — `apps.<host>/models/<id>/latest/model` is a **404** where the main host answers
+**401** on the identical path. So there is no same-origin variant to fall back to. Every call
+from a published app's page is cross-origin.
+
+**The cross-origin call is allowed, but only uncredentialed.** The preflight succeeds:
+
+| Request | Result |
+|---|---|
+| `OPTIONS`, `Origin: apps.<host>`, `Access-Control-Request-Method: POST` | **204** — preflight passes |
+| response headers | `access-control-allow-origin: *`, `allow-methods: POST`, `allow-headers: authorization,content-type` |
+| `POST`, no credentials | **401**, `www-authenticate: Basic realm="closed site"` |
+| `POST`, with a `Cookie` header | **401**, headers byte-identical — no `Vary: Origin`, no `Allow-Credentials` |
+
+**`Access-Control-Allow-Origin: *` is the wall, and it is a spec-level one.** A wildcard with
+no `Access-Control-Allow-Credentials: true` means a browser will **refuse** the response to any
+`fetch(..., {credentials: 'include'})`. The viewer's Domino session cookie therefore cannot
+reach a Model API from a page — not "is rejected by Domino", but *is never sent, and the
+response is discarded even if it were*. The headers are identical across a 204 preflight, an
+unauthenticated 401, and a cookie-bearing 401, which says this is static ingress config rather
+than anything that turns on when a credential shows up.
+
+**The credential it wants is a shared secret, and Domino's own sample puts it in the page.**
+`www-authenticate: Basic` means the model access token. The snippet Domino shows on the model's
+Overview page is a static HTML file with `var accessToken = "..."` in plain sight, sent as
+`Basic btoa(token + ":" + token)`. So the browser call is not merely possible, it is the vendor's
+documented pattern — and it is uncredentialed in the CORS sense, which is why `ACAO: *` does not
+block it.
+
+**But it authenticates the token, not the person.** Every viewer of the page presents the same
+secret and gets identical access, and that secret is readable in devtools and replayable from
+anywhere until it is rotated. The token is at least narrow — one model, revocable — but it is not
+an identity.
+
+**So #9's premise does not hold, and criterion 2 turns out to be a means rather than an end.**
+The issue asks for the browser call *so that* each viewer's own Model API permissions apply. The
+browser call does not deliver that; nothing does. Once per-viewer identity is off the table, the
+browser buys nothing over a server hop except exposure of the secret — the access granted is the
+same shared access either way. A server hop keeps the token out of the page and is therefore
+strictly better on every axis that survives.
+
+**Neither path is automatable today.** There is no model-access-token endpoint in either spec —
+not in `public-api.json`, not in the v4 swagger. (`/modelDeployments/{id}/credentials` is the
+SageMaker STS one, unrelated.) The token is copied by hand from the model's Overview page, so any
+generated Model API call needs the creator to paste a secret into Sage first. A first pass at the
+automatable alternative failed: `Authorization: Bearer <sidecar token>` and
+`X-Domino-Api-Key: <sidecar token>` both returned **401**. That is consistent with
+`www-authenticate: Basic`, but it is not yet conclusive — the sidecar can hand back a string that
+already carries a `Bearer ` prefix, which would have made the header read `Bearer Bearer ...` and
+fail for the wrong reason. `spikes/domino-probes/model_api_auth_shapes.sh` settles it by printing
+the token's shape and sweeping the remaining forms. If any returns 200, a published app's
+`serve.py` can mint its own credential as the publisher and the manual paste disappears.
+
+What Sage records today — the Binding — is unaffected either way.
+
+Reopening this needs a **platform** change on the model ingress: echo the request `Origin` with
+`Access-Control-Allow-Credentials: true`, *and* accept a Domino session as a credential for model
+invocation. Both, not either.
