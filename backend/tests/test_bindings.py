@@ -398,6 +398,7 @@ def test_binding_a_data_source_records_the_chosen_scope(tmp_path: Path):
         "kind": "data_source", "id": "ds-dwh", "name": "Snowflake-Data-Warehouse",
         "display_name": "Snowflake-Data-Warehouse",
         "database": "DWH", "schema": "MARTS", "table": "FCT_USAGE_DAILY",
+        "connector_type": "SnowflakeConfig",
     }]
 
 
@@ -424,7 +425,9 @@ def test_a_scope_the_creator_did_not_choose_is_absent_rather_than_null(tmp_path:
     alias = next(e for e in written if e["kind"] == KIND_LLM_ALIAS)
     assert set(alias) == {"kind", "id", "name", "display_name"}
     source = next(e for e in written if e["kind"] == KIND_DATA_SOURCE)
-    assert set(source) == {"kind", "id", "name", "display_name"}
+    # `connector_type` is not a scope level and is written whether or not one was chosen: it is a
+    # property of the Resource, and the published app needs it to know what a Scope can travel as.
+    assert set(source) == {"kind", "id", "name", "display_name", "connector_type"}
 
 
 def test_a_scope_survives_the_round_trip_through_the_file(tmp_path: Path):

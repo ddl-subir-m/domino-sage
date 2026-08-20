@@ -47,6 +47,13 @@ class Binding:
     database: str | None = None
     schema: str | None = None
     table: str | None = None
+    # Domino's own `dataSourceType` ("SnowflakeConfig"), recorded because the Built App has to decide
+    # something offline that only this answers: whether the chosen Scope can travel as a configuration
+    # override on the query (#14). The SDK's config classes differ per connector — three of them carry
+    # a schema, most carry none — so a published app with no Sage around it and no network at boot can
+    # still say which of its queries are honest. Recorded rather than asked at query time for the same
+    # reason `display_name` is: the record has to read when the network does not.
+    connector_type: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -76,7 +83,8 @@ class Binding:
         already exists would show up as a dirty file in an app nobody had touched.
         """
         out = {"kind": self.kind, "id": self.id, "name": self.name, "display_name": self.display_name}
-        for key, value in (("database", self.database), ("schema", self.schema), ("table", self.table)):
+        for key, value in (("database", self.database), ("schema", self.schema),
+                           ("table", self.table), ("connector_type", self.connector_type)):
             if value:
                 out[key] = value
         return out
@@ -100,7 +108,7 @@ def parse_bindings(raw: object) -> list[Binding]:
         name = str(e.get("name") or rid)
         out.append(Binding(kind, rid, name, str(e.get("display_name") or name),
                            _scope_part(e, "database"), _scope_part(e, "schema"),
-                           _scope_part(e, "table")))
+                           _scope_part(e, "table"), str(e.get("connector_type") or "")))
     return out
 
 

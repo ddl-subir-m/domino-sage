@@ -74,3 +74,30 @@ greppable line once it holds the port, so a regression is visible in any App's l
 Take the total from the App log of the first publish after this change
 and add a row, then compare later publishes against it — the per-stage lines say which stage owns
 any increase.
+
+## Which Python (#14)
+
+`app.sh` sets `PATH=/usr/local/bin:/usr/bin:$PATH` so our Node beats conda's. The same line puts
+`/usr/bin/python3` — a stock Debian interpreter with no `domino_data` — ahead of the one that has it.
+That cost nothing while `serve.py` was stdlib-only. Now that it queries Data Sources, the interpreter
+is chosen deliberately.
+
+`app.sh` takes the first candidate that can resolve `domino_data.data_sources`:
+
+1. `$SAGE_APP_PYTHON`, for an Environment none of the rest describes
+2. `/opt/sage/backend/.venv/bin/python` — the Environment build **asserts** this one can import the
+   library, and a published App runs on the Sage Environment (`_app_version` uses the hub's own
+   `DOMINO_ENVIRONMENT_ID`)
+3. `/opt/conda/bin/python3`, `/opt/conda/bin/python` — where the Domino base image's copy lives
+4. whatever `python3` PATH resolves to
+
+`importlib.util.find_spec`, not a real import: importing `domino_data` pulls pandas and pyarrow, and
+paying that up to four times before the port is bound would show up as cold start. `serve.py` makes
+the real import in a background thread once it is serving and logs which interpreter answered:
+
+    [sage] python: /opt/sage/backend/.venv/bin/python
+    [sage] data library: ready (/opt/sage/backend/.venv/bin/python)
+
+Choosing wrong costs the queries, not the app. `serve.py` imports and serves under any of these — the
+SDK import is late and local — so an app that reads no Data Source serves exactly as before, and one
+that does says so per query, in a sentence, to the viewer.

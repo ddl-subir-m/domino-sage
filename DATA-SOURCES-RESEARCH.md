@@ -1109,3 +1109,61 @@ projects holding only classic, non-beta apps, whose empty answer was the truth r
 failing. `list_project_apps` keeps its client-side `project.id` match anyway, because it reads only
 one page of 100: a filter that silently stopped working would otherwise mean publishing a SECOND
 app instead of a new version, and taking the visibility guard down with it.
+
+---
+
+## Addendum 4 — what a Scope can travel as (#14, read 2026-08-20)
+
+**VERIFIED against the installed package**, `dominodatalab-data` 6.7.4 (`domino_data/configuration_gen.py`,
+generated 2025-10-15), read class by class — all 23 SQL connectors.
+
+The plan for #14 was that the Binding's database and schema ride along as `configOverwrites` so the
+generated SQL stays unqualified. That works, but **not for most connectors**. Which keys a Data
+Source will accept is fixed per connector by the SDK's generated config classes, and only **three of
+the twenty-three carry a schema**.
+
+| `dataSourceType` | database level → | schema level → | Cascade (#11) records |
+|---|---|---|---|
+| `SnowflakeConfig` | `database` | `schema` | database, schema, table |
+| `DatabricksConfig` | `catalog` | `schema` | catalog, schema, table |
+| `TrinoConfig` | `catalog` | `schema` | catalog, schema, table |
+| `MySQLConfig` | — | `database` | schema, table (one namespace level) |
+| `PostgreSQLConfig` | `database` | **none** | schema, table |
+| `RedshiftConfig` | `database` | **none** | schema, table |
+| `SQLServerConfig` | `database` | **none** | database, schema, table |
+| `SynapseConfig` | **none** | **none** | database, schema, table |
+| `BigQueryConfig` | **none** (only `project`) | **none** | schema, table |
+| `GreenplumConfig`, `MariaDBConfig`, `SingleStoreConfig`, `ClickHouseConfig` | **none** | **none** | schema, table |
+| `OracleConfig`, `DB2NativeConfig` | `database` | **none** | no dialect — no Scope recorded |
+
+Every remaining class carries only `datetimePrecision`.
+
+**MySQL is the one that reads backwards.** Its family has a single namespace level, which the cascade
+offers as a *schema* and the SDK calls a *database*. Sent under the name the cascade used, it would
+be dropped.
+
+**Why this is not a detail.** A schema that cannot travel leaves an unqualified statement running on
+whatever the connection defaults to. That does not fail — it answers, with rows from the wrong
+schema, and a warehouse holding the same table in `dev` and `prod` answers convincingly. So
+`serve.py` refuses such a query at startup **unless the statement names the level itself**
+(`_SCOPE_KEYS`, `_scope_problem`): the Scope must either be enforceable or already stated. A
+connector Sage cannot scope is then not a dead end — #15's agent writes `FROM marts.orders` and the
+query runs.
+
+**Consequence for the Binding.** The published app has no Sage around it and nothing to ask at boot,
+so `connector_type` (Domino's own `dataSourceType`) is now recorded in `.sage/bindings.json` beside
+the Scope. A Binding written before this has none, and is treated exactly as a connector that cannot
+carry the level: refused unless the statement says where it reads.
+
+**Two SDK details the executor depends on**, same reading:
+
+- `Datasource.update(config)` stores an override that `query()` reads via `config.config()`, and
+  `query()` is also where `_get_credential_override()` runs — so going through `update` + `query`
+  rather than `DataSourceClient.execute` directly is what keeps an OAuth or AWS-IAM source working.
+- `AuthMiddlewareFactory.start_call` fetches a **fresh** JWT from the token sidecar for every RPC
+  (`auth.py`), so a long-lived `DataSourceClient` in a published App does not go stale and nothing in
+  `serve.py` needs to hold a token.
+
+**LIVE-VERIFY.** Only Snowflake has been run for real, and only through the builder (#11's cascade).
+Nothing in this table has been exercised from inside a *published* App yet: `DOMINO_API_PROXY` is
+confirmed present there (ADR-0002), `DOMINO_DATASOURCE_PROXY_FLIGHT_HOST` is not.

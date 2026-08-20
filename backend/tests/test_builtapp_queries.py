@@ -70,7 +70,7 @@ def app(tmp_path: Path) -> Path:
     (tmp_path / ".sage").mkdir()
     _write_bindings(tmp_path, [{"kind": "data_source", "id": "ds-dwh", "name": "warehouse",
                                 "display_name": "warehouse", "database": "ANALYTICS",
-                                "schema": "MARTS"}])
+                                "schema": "MARTS", "connector_type": "SnowflakeConfig"}])
     return tmp_path
 
 

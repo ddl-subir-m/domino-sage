@@ -49,12 +49,39 @@ stage "build complete"
 # relative and must NOT become "/": an absolute base would ask the apps host for /assets/... with no
 # app id in the path, breaking every route including the root page. Relative alone was not enough
 # either — it broke any route two or more segments deep (#18) — so serve.py recovers the prefix at
-# request time and stamps a <base href> into the page it serves. Stdlib-only Python, so `python3` is
-# whatever the image ships (same as the viewer-identity probe's app.sh); nothing to install.
+# request time and stamps a <base href> into the page it serves.
 #
-# CAREFUL when the query API lands on top of this (#13/#14): the PATH line above, which exists to
-# beat conda's node, also puts /usr/bin/python3 ahead of the conda interpreter that carries
-# domino_data + pyarrow. Stdlib-only is why that costs nothing today. Importing the Domino SDK will
-# need the interpreter chosen deliberately rather than left to PATH — verify which one has it in the
-# Sage Environment first, since the probe that confirmed the sidecar ran on a stock Domino image.
-exec python3 serve.py --dir dist --host 0.0.0.0 --port 8888
+# The PATH line above, which exists to beat conda's node, also puts /usr/bin/python3 ahead of the
+# conda interpreter that carries domino_data + pyarrow. That cost nothing while serve.py was
+# stdlib-only; now that it runs Data Source queries (#14), the interpreter is chosen deliberately
+# rather than left to PATH. serve.py itself imports and serves under any of them — the SDK import is
+# late and local — so a wrong choice here costs the queries, not the app.
+#
+# Candidates, in order. First is the Sage venv, which the Environment build ASSERTS can import the
+# library; then conda, which is where the Domino base image's own copy lives; then whatever PATH
+# says, which is the answer on an image whose system python has it. SAGE_APP_PYTHON overrides the
+# lot, for an app deployed on an Environment none of this describes.
+#
+# find_spec, not a real import: importing domino_data pulls pandas and pyarrow, and paying that up to
+# four times before the port is bound would show up as cold start (ADR-0002). serve.py makes the real
+# import in the background once it is serving, and logs which interpreter answered.
+SAGE_PYTHON="${SAGE_APP_PYTHON:-}"
+if [ -z "$SAGE_PYTHON" ]; then
+  for candidate in /opt/sage/backend/.venv/bin/python /opt/conda/bin/python3 /opt/conda/bin/python \
+                   "$(command -v python3 || true)"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    if "$candidate" -c 'import importlib.util,sys; sys.exit(0 if importlib.util.find_spec("domino_data.data_sources") else 1)' 2>/dev/null; then
+      SAGE_PYTHON="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$SAGE_PYTHON" ]; then
+  # Not fatal: an app that reads no Data Source is every app the template produced before #14, and it
+  # serves exactly as well. One that does read one says so per query, in a sentence, to the viewer.
+  SAGE_PYTHON="$(command -v python3)"
+  echo "[sage] no interpreter here carries the Domino data library; Data Source queries will fail"
+fi
+echo "[sage] python: $SAGE_PYTHON"
+
+exec "$SAGE_PYTHON" serve.py --dir dist --host 0.0.0.0 --port 8888

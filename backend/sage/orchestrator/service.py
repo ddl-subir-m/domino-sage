@@ -2774,7 +2774,13 @@ class Orchestrator:
         # sake: this is what keeps the manifest holding only names that can be sent, so the slice that
         # builds the app's query out of this record inherits the guarantee rather than re-earning it.
         parts = [safe_identifier(p) if p else None for p in (database, schema, table)]
-        return self._record(Binding(KIND_DATA_SOURCE, source.id, source.name, source.name, *parts))
+        # The connector type travels with the scope, because the published app cannot ask for it: what
+        # a Data Source will accept as a configuration override differs per connector, and that is what
+        # decides whether the scope recorded here reaches the store or has to be written into the SQL
+        # (#14). Domino's own string, not the label — `connector` says "Snowflake" for every Snowflake
+        # source, and only the type string keys a table.
+        return self._record(Binding(KIND_DATA_SOURCE, source.id, source.name, source.name, *parts,
+                                    source.connector_type))
 
     # ---- Model access tokens, pasted once and remembered (#9) ----
 
