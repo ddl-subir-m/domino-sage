@@ -1235,7 +1235,15 @@ def _preview_upstream() -> str:
     return orchestrator.project().supervisor.upstream()
 
 
-control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX))
+# The previewed app's own named queries (#24). Answered by `serve.py` on loopback rather than 404'd
+# by Vite, which serves the app but has never served its data. Attaching is deliberately NOT forced
+# here — `_preview_upstream` above is what seeds the project, and a query arriving before the page
+# that would ask it means something is wrong rather than something to boot a project for.
+def _preview_queries():
+    return orchestrator._project.queries if orchestrator._project is not None else None
+
+
+control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries))
 
 
 def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:

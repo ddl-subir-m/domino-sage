@@ -206,9 +206,11 @@ def _how_to_ask(binding: Binding, stranded: list[tuple[str, str]] | None, max_ro
         "```", "",
         ("- **`runQuery` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
-        ("- **Queries answer in the published app, not in the preview.** The preview serves the app "
-         "with a dev server that has no query API, so `runQuery` failing there is expected and is "
-         "NOT a bug to chase. Build the screen so it shows the error message and moves on."),
+        ("- **Queries answer in the preview too**, against the same Data Source, the same Scope and "
+         "the same statements the published app will use. So a query that fails while you are "
+         "building is a real failure and worth fixing now — do not design a screen around it, and "
+         "do not treat an empty result as the normal state. Preview answers are cached for a few "
+         "seconds, so a change made in the store may take a moment to show."),
         ("- **Do not read the Data Source yourself.** No scripts, no SQL anywhere except "
          "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "
          "above is what you have; if it is not enough, ask the user."),

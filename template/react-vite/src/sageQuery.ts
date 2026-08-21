@@ -24,11 +24,15 @@ export type QueryResult = {
   truncated: boolean;
 };
 
-// The preview has no query API — it is Vite's dev server, and only the published app runs `serve.py`.
-// So a 404 with no JSON body means "not published yet" far more often than it means a wrong name,
-// and saying so beats a bare 404 that reads as a bug in the app.
+// Since #24 the preview answers queries too — Sage runs the very same `serve.py` beside the dev
+// server and its proxy sends `/api/queries/*` there. So this no longer means "not published yet".
+//
+// The test is unchanged and still right: a 404 carrying NO JSON body did not come from `serve.py`,
+// which always names what it refused. It came from Vite, which means nothing was there to intercept
+// the call — no Data Source bound, or the query server did not come up. Both leave the app with data
+// it cannot reach, which is what to say.
 const NOT_SERVED =
-  "This app's data is only available once it is published. In the preview there is nothing to query yet.";
+  "This app's data isn't available. Check that its Data Source is still bound in Sage.";
 
 /**
  * Run one of this app's named queries.

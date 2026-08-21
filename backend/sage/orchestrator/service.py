@@ -33,6 +33,7 @@ from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
+from ..preview.queries import PreviewQueries
 from ..preview.supervisor import ViteSupervisor
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
@@ -860,6 +861,7 @@ class Project:
     id: str
     workspace: Workspace
     supervisor: ViteSupervisor
+    queries: PreviewQueries
     control: ModelControl
     shim: EnforcementShim
     snapshot: TurnSnapshot
@@ -1041,9 +1043,16 @@ class Orchestrator:
         shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway,
                                project_name=self._cost_project_label)
         supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
+        # Same lifetime and the same gate as the preview it answers for (#24): it is only ever
+        # reached through the preview proxy, so a build session with no preview has nothing to dial
+        # it. `start` never raises — a query server that will not come up leaves the preview exactly
+        # as it was before this existed.
+        queries = PreviewQueries(workspace.path, self._wm.template)
         if start_preview:
             supervisor.start()
-        self._project = Project(self._project_id, workspace, supervisor, control, shim, TurnSnapshot(workspace.path),
+            queries.start()
+        self._project = Project(self._project_id, workspace, supervisor, queries, control, shim,
+                                TurnSnapshot(workspace.path),
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
         self._rehydrate_attached(self._project)
@@ -3749,6 +3758,10 @@ class Orchestrator:
                 self._project.supervisor.stop()
             except Exception:
                 log.exception("shutdown: failed to stop preview")
+            try:
+                self._project.queries.stop()
+            except Exception:
+                log.exception("shutdown: failed to stop the preview query server")
         if self._oc_server:
             try:
                 self._oc_server.stop()

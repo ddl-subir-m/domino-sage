@@ -205,9 +205,19 @@ def test_the_agent_is_told_not_to_read_the_store_itself():
     assert "Do not read the Data Source yourself" in block
 
 
-def test_the_agent_is_warned_that_the_preview_cannot_answer_queries():
-    # Otherwise it sees the preview 404, decides the query is broken, and "fixes" working code (#24).
-    assert "not in the preview" in block_for()
+def test_the_agent_is_told_the_preview_answers_queries_and_a_failure_there_is_real():
+    """The inverse of what this asserted before #24 shipped, and the inversion is the point.
+
+    While the preview could not answer, the agent had to be told so — otherwise it read the 404 as a
+    broken query and "fixed" working code. Now that Sage runs `serve.py` beside the dev server, the
+    old warning is worse than useless: it licensed the agent to design a screen around a failure
+    instead of fixing it, which is how a dashboard ends up shipping with an apology where its data
+    should be.
+    """
+    block = block_for()
+    assert "answer in the preview too" in block
+    assert "a real failure and worth fixing now" in block
+    assert "not in the preview" not in block
 
 
 def test_the_queries_the_app_will_refuse_are_quoted_in_the_apps_own_words():

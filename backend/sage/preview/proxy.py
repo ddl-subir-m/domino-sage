@@ -3,9 +3,16 @@
 Reverse-proxies the generated app's Vite dev server into the builder UI: HTTP for the app,
 and the HMR WebSocket so edits live-reload inside the preview iframe.
 
-Deep module, narrow interface: `make_preview_app(get_upstream)`. `get_upstream()` returns the
-current Vite base URL (e.g. "http://127.0.0.1:5173") — a callable because the supervisor (3.4)
-DISCOVERS the real port at runtime (Vite may auto-increment) and Vite can restart on a new port.
+Deep module, narrow interface: `make_preview_app(get_upstream, base_prefix, get_queries)`.
+`get_upstream()` returns the current Vite base URL (e.g. "http://127.0.0.1:5173") — a callable
+because the supervisor (3.4) DISCOVERS the real port at runtime (Vite may auto-increment) and Vite
+can restart on a new port.
+
+`get_queries()` returns the project's `PreviewQueries`, or None. It is here because this proxy is
+the only thing between the previewed page and a server, so `/api/queries/*` is intercepted on the
+way past and answered by `serve.py` itself rather than 404'd by Vite, which has never served an
+app's data (#24). Also a callable, and for the same reason: the project it belongs to is attached
+lazily on the first request.
 """
 from __future__ import annotations
 
@@ -20,8 +27,52 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 # Hop-by-hop headers must not be forwarded across a proxy.
 _HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer", "proxy-authorization", "proxy-authenticate"}
 
+# What `sageQuery.ts` asks for, minus the leading slash this app's paths arrive without.
+_QUERY_PREFIX = "api/queries/"
 
-def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "") -> FastAPI:
+# A warehouse query is seconds, not milliseconds — the live baseline is 2.0-3.9s and a first scan of
+# a cold table is slower. Generous, but bounded: a Flight call that never returns would otherwise
+# hold the creator's request open until they gave up on the preview rather than on the query. The
+# handler thread behind it stays stuck (a blocking C call cannot be interrupted), which is why they
+# are daemon threads — a few leaked ones are survivable and none of them delay shutdown.
+_QUERY_TIMEOUT_S = 60.0
+
+
+async def _answer_query(request: Request, path: str, queries) -> Response | None:
+    """One named-query call, answered by `serve.py` on loopback. None when there is nobody to ask.
+
+    Everything the creator reads on a failure here is `serve.py`'s own sentence, forwarded verbatim
+    with its own status — that is the whole point of running the real module rather than a second
+    implementation, and rewording anything in flight would undo it.
+    """
+    if queries is None or queries.port is None:
+        return None
+    queries.refresh()   # the agent may have rewritten the catalog since the last request
+    url = f"http://127.0.0.1:{queries.port}/{path}"
+    try:
+        async with httpx.AsyncClient(timeout=_QUERY_TIMEOUT_S) as client:
+            answer = await client.request(
+                request.method, url, content=await request.body(),
+                headers={"content-type": request.headers.get("content-type", "application/json")},
+            )
+    except httpx.TimeoutException:
+        return JSONResponse(status_code=504, content={"error": (
+            "This query is taking longer than the preview will wait. It may still be fine in the "
+            "published app — or it may be scanning more than it needs to."
+        )})
+    except (httpx.HTTPError, OSError) as e:
+        # The server is ours and on loopback, so this is a bug rather than a condition. Say so
+        # plainly instead of dressing it as something the creator can act on.
+        return JSONResponse(status_code=502, content={
+            "error": "Sage could not reach this app's query server in the preview.",
+            "detail": f"{type(e).__name__}: {e}",
+        })
+    return Response(content=answer.content, status_code=answer.status_code,
+                    media_type=answer.headers.get("content-type", "application/json"))
+
+
+def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
+                     get_queries: Callable[[], object | None] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
     Vite bakes `base = <base_prefix>/preview/` into the HTML/JS it serves, so it only responds at
@@ -29,6 +80,10 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "") -> 
     middleware strips Domino's proxy prefix, and the `/preview` Mount strips its own segment), so we
     re-add `<base_prefix>/preview` when forwarding upstream to land on Vite's base. `base_prefix` is
     "" for local dev, where `base` is just `/preview/`.
+
+    `get_queries` is optional: without it — and whenever it answers None — `/api/queries/*` goes to
+    Vite and 404s exactly as it did before #24, which `sageQuery.ts` already reads correctly as
+    "not published yet".
     """
     vite_base = f"{base_prefix}/preview"  # what the browser sees == what Vite serves at
 
@@ -76,6 +131,16 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "") -> 
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     async def http_proxy(request: Request, path: str) -> Response:
+        # The app's own named queries, before Vite gets a chance to 404 them (#24). Vite serves the
+        # app; it has never served its data. Answered here rather than by a route on the control app
+        # because this proxy is already the one thing standing between the previewed page and its
+        # server, so it is the only place the interception costs nothing to reach.
+        if path.startswith(_QUERY_PREFIX):
+            answered = await _answer_query(request, path, get_queries and get_queries())
+            if answered is not None:
+                return answered
+            # Fall through when there is no query server: Vite 404s, and `sageQuery.ts` already has
+            # the right sentence for that — "only available once it is published". Which is true.
         try:
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
         except Exception as e:
