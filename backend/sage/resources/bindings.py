@@ -120,3 +120,56 @@ def _scope_part(entry: dict, key: str) -> str | None:
     """
     value = entry.get(key)
     return value if isinstance(value, str) and value else None
+
+
+# What each kind is called in a sentence, and what the app's own code does with the first record of
+# that kind. The FIRST is the one the app is wired to for all three kinds — `pinned_model` writes it
+# into `src/sageLlm.config.ts`, `pinned_model_api` into its own config, and `bound_schema` describes
+# only the first Data Source. A creator can bind more than one of a kind, and mentioning one of the
+# others is a real request, but the agent has to be told the app is not wired to it: AGENTS.md
+# describes the wired one alone, so nothing else would say so.
+_KIND_TEXT = {
+    KIND_LLM_ALIAS: ("LLM Alias", "the model this app calls"),
+    KIND_MODEL_API: ("Model API", "the Model API this app calls"),
+    KIND_DATA_SOURCE: ("Data Source", "the Data Source this app queries"),
+}
+
+
+def mention_note(mentioned: list[Binding], recorded: list[Binding]) -> str:
+    """The block a turn carries when the creator @mentioned Resources in the prompt (#31), or "".
+
+    A mention has to reach the agent as an IDENTITY, not as the text of a name. The creator picked a
+    row out of a list, two Resources of different kinds can carry the same name, and a Data Source
+    Binding also holds a scope — none of which survives "use BigQuery_Demo" in prose.
+
+    How to USE each kind is deliberately not repeated here: AGENTS.md already carries a managed block
+    per wired Resource, and a second copy on every mentioning turn would cost context and drift from
+    it. What this block adds is which Resource was meant, plus the one thing AGENTS.md cannot say —
+    that a mentioned Resource is not the one the app is wired to, since AGENTS.md only ever describes
+    the wired one.
+    """
+    if not mentioned:
+        return ""
+    wired: dict[str, Binding] = {}
+    for b in recorded:
+        wired.setdefault(b.kind, b)
+    lines = []
+    for b in mentioned:
+        kind, role = _KIND_TEXT.get(b.kind, (b.kind, ""))
+        # The display name is what the creator picked from; the name is what they typed after the @.
+        # Both, when they differ, so neither reading of the mention is left guessing.
+        name = b.display_name if b.display_name == b.name else f"{b.display_name} (`{b.name}`)"
+        scope = f", scoped to `{b.scope}`" if b.scope else ""
+        app = wired.get(b.kind)
+        if not role or app is None:
+            said = "recorded as used by this app."
+        elif app.key == b.key:
+            said = role[0].upper() + role[1:] + "."
+        else:
+            said = (f"recorded, but NOT {role} — that is **{app.display_name}**. Which one the app "
+                    f"uses is chosen in Sage, not in code, so do not rewire the app to this one; if "
+                    f"that is what the user wants, tell them to change it in the Resources rail.")
+        lines.append(f"- {kind} **{name}**{scope} — {said}")
+    return ("The user @mentioned these Resources in the message above. This app is already recorded "
+            "as using each one, and AGENTS.md says how to use it — take these as the exact Resources "
+            "the request is about, and do not substitute or add another:\n" + "\n".join(lines))

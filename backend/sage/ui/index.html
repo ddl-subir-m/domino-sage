@@ -2515,7 +2515,7 @@ function runPrompt(prompt) {
   addUser(prompt);
   buildPhase = 'plan';
   setWorking(workLabel());
-  return runStream('/api/project/build/stream', { prompt, mentions: [] }, turnStart);
+  return runStream('/api/project/build/stream', { prompt, mentions: [], resources: [] }, turnStart);
 }
 
 async function uploadFile() {
@@ -3152,15 +3152,16 @@ async function build() {
   const prompt = ta.value.trim();
   if (!prompt) return;
   hideMentionMenu();
-  const mentions = collectMentions(prompt);   // "@file" tokens -> attached-file paths
+  const mentions = collectMentions(prompt);            // "@file" tokens -> attached-file paths
+  const resources = collectResourceMentions(prompt);   // "@resource" tokens -> bound Resources
   ta.value = ''; autogrow(ta);
   // A turn is already streaming: queue this message instead of starting a second, concurrent
   // runStream. Two streams would share one #messages DOM, one `working` spinner and one
   // `building` flag — so they'd interleave cards (turns out of chronological order) and a
   // teardown in one would slice the other's messages out by turnStart (messages "disappear").
   // The queued message sends automatically when the current turn ends; it can be cancelled.
-  if (building) { enqueueMessage(prompt, mentions); return; }
-  await startTurn(prompt, mentions);
+  if (building) { enqueueMessage(prompt, mentions, resources); return; }
+  await startTurn(prompt, mentions, resources);
 }
 
 // Lock any still-open plan card to a read-only record. An old card's Approve builds from plan.md, so
@@ -3183,27 +3184,27 @@ function supersedePlanCards(note) {
 }
 
 // Render one user turn and stream its build. Assumes no turn is currently in flight.
-async function startTurn(prompt, mentions) {
+async function startTurn(prompt, mentions, resources) {
   if (!active) enterProject();
   const msgBox = document.getElementById('messages');
   const turnStart = msgBox.children.length; // first DOM node belonging to this turn
   addUser(prompt);
   buildPhase = 'plan';
   setWorking(workLabel());
-  await runStream('/api/project/build/stream', { prompt, mentions }, turnStart);
+  await runStream('/api/project/build/stream', { prompt, mentions, resources }, turnStart);
 }
 
 /* ---------- queued messages (typed while a turn is streaming) ---------- */
-let queue = []; // [{ prompt, mentions, el }] pending turns, sent FIFO when the stream frees up
+let queue = []; // [{ prompt, mentions, resources, el }] pending turns, sent FIFO when the stream frees up
 
-function enqueueMessage(prompt, mentions) {
+function enqueueMessage(prompt, mentions, resources) {
   const box = document.getElementById('queue');
   const el = document.createElement('div');
   el.className = 'queued-msg';
   el.innerHTML = '<span class="qico">⏳</span><span class="qtext"></span>'
     + '<button class="qcancel" title="Remove from queue">✕</button>';
   el.querySelector('.qtext').textContent = prompt;
-  const item = { prompt, mentions, el };
+  const item = { prompt, mentions, resources, el };
   el.querySelector('.qcancel').onclick = () => {
     const i = queue.indexOf(item);
     if (i >= 0) queue.splice(i, 1);
@@ -3221,7 +3222,7 @@ function drainQueue() {
   if (document.querySelector('.plan-card .plan-actions')) return;
   const next = queue.shift();
   next.el.remove();
-  startTurn(next.prompt, next.mentions); // fire-and-forget; sets building=true, chains on completion
+  startTurn(next.prompt, next.mentions, next.resources); // fire-and-forget; sets building=true, chains on completion
 }
 
 // Drop all pending messages (e.g. the user stopped the current turn).
@@ -3316,7 +3317,7 @@ async function requeueRefusedTurn(payload, turnStart) {
   const msgBox = document.getElementById('messages');
   while (typeof turnStart === 'number' && msgBox.children.length > turnStart) msgBox.removeChild(msgBox.lastChild);
   if (payload.prompt) {
-    enqueueMessage(payload.prompt, payload.mentions || []);
+    enqueueMessage(payload.prompt, payload.mentions || [], payload.resources || []);
     addStatus('', '⏳', 'Another build is still running — your message is queued and will send when it finishes.');
   } else {
     addStatus('err', '⚠', 'Another build is still running. Approve the plan again once it finishes.');
@@ -4049,22 +4050,55 @@ async function saveOpenFile() {
 /* ---------- composer helpers ---------- */
 function autogrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
 
-/* ---------- @mention: reference an attached file by name ----------
-   Typing "@" opens a menu of attached files. Selecting inserts "@<filename>" into the prompt;
-   on send, build() maps each "@<filename>" back to its workspace path and passes it to the agent
-   (see collectMentions + build). The agent can already resolve these paths from AGENTS.md, so the
-   mention is a strong hint even if the server doesn't pre-attach file bytes. */
-let mentionState = null;   // { items: [attachedFile], active: idx } while the menu is open
+/* ---------- @mention: reference an attached file or a bound Resource by name ----------
+   Typing "@" opens a menu of attached files and of the Resources this app is bound to. Selecting
+   inserts "@<name>" into the prompt; on send, build() maps each token back to what it names and
+   passes that to the agent — an attached file's workspace path, or a Binding's identity (see
+   collectMentions / collectResourceMentions + build). Two fields rather than one, because a
+   Resource has no path: nothing about it resolves to a file.
+   Only BOUND Resources are offered, not everything browsable in the rail. Mentioning one this app
+   has no Binding for would ask the agent to use a Resource with no schema, credential or config
+   behind it. */
+let mentionState = null;   // { items: [candidate], active: idx } while the menu is open
+// Which Resource a token was PICKED for. Two Resources of different kinds can carry one name (an
+// Alias and a Model API both called `sonnet`), and the menu shows them as two rows — so a creator
+// who picked one row must not have both sent. Read only to break that tie; the text stays the source
+// of truth for whether a mention is there at all.
+let pickedMentions = new Map();   // resource name -> { kind, id }
 
 function mentionBase(e) { return (e.file || e.path || '').split('/').pop(); }
+
+// Everything "@" can name, in one shape. `token` is what gets inserted and matched; `label` is the
+// right-hand note that tells two similar names apart — the dataset for a file, the kind (and the
+// scope, for a Data Source) for a Resource, so a Data Source and a Model API of one name are
+// distinguishable in the menu.
+function mentionCandidates() {
+  const files = attachedFiles.map(e => ({
+    token: mentionBase(e), title: mentionBase(e), label: e.dataset || '', sensitive: e.sensitive,
+  }));
+  // The Alias/Resource NAME is the token, not the display name: it is the identifier form (`sonnet`,
+  // `Snowflake-Data-Warehouse`), while a display name ("Claude Sonnet 4.6") carries spaces that the
+  // one-word @token grammar cannot match. The row's tooltip carries both.
+  const resources = (bindingsCache || []).map(b => {
+    const kind = KIND_LABELS[b.kind] || b.kind;
+    const scope = b.kind === 'data_source' ? bindingScope(b) : '';
+    return {
+      token: b.name, label: scope ? `${kind} \u00b7 ${scope}` : kind,
+      title: b.display_name === b.name ? b.name : `${b.display_name} \u00b7 ${b.name}`,
+      ref: { kind: b.kind, id: b.id },
+    };
+  });
+  return files.concat(resources);
+}
 
 function updateMentionMenu() {
   const ta = document.getElementById('prompt');
   const before = ta.value.slice(0, ta.selectionStart);
   const m = before.match(/(^|\s)@([^\s@]*)$/);       // an @token being typed, at the caret
-  if (!m || !attachedFiles.length) return hideMentionMenu();
+  if (!m) return hideMentionMenu();
   const q = m[2].toLowerCase();
-  const items = attachedFiles.filter(e => (mentionBase(e) + ' ' + (e.dataset || '')).toLowerCase().includes(q)).slice(0, 8);
+  const items = mentionCandidates()
+    .filter(c => (c.token + ' ' + c.title + ' ' + c.label).toLowerCase().includes(q)).slice(0, 8);
   if (!items.length) return hideMentionMenu();
   mentionState = { items, active: 0 };
   renderMentionMenu();
@@ -4077,7 +4111,8 @@ function renderMentionMenu() {
     const row = document.createElement('div');
     row.className = 'mm-item' + (i === mentionState.active ? ' active' : '');
     const lock = e.sensitive ? `<span class="mm-lock" title="Sensitive — the sovereign model is locked">🔒</span>` : '';
-    row.innerHTML = `<span class="mm-name">${esc(mentionBase(e))}</span>${lock}<span class="mm-src">${esc(e.dataset || '')}</span>`;
+    row.innerHTML = `<span class="mm-name" title="${esc(e.title)}">${esc(e.token)}</span>${lock}`
+      + `<span class="mm-src">${esc(e.label)}</span>`;
     row.onmousedown = ev => { ev.preventDefault(); selectMention(i); };  // mousedown beats the textarea blur
     row.onmouseenter = () => { mentionState.active = i; renderMentionMenu(); };
     menu.appendChild(row);
@@ -4105,20 +4140,47 @@ function selectMention(idx) {
   const m = ta.value.slice(0, caret).match(/(^|\s)@([^\s@]*)$/);
   if (!m) return hideMentionMenu();
   const atPos = caret - m[2].length - 1;             // index of the '@'
-  const insert = '@' + mentionBase(e) + ' ';
+  if (e.ref) pickedMentions.set(e.token, e.ref);   // which row, for a name two Resources share
+  const insert = '@' + e.token + ' ';
   ta.value = ta.value.slice(0, atPos) + insert + ta.value.slice(caret);
   const pos = atPos + insert.length;
   ta.setSelectionRange(pos, pos);
   autogrow(ta); hideMentionMenu(); ta.focus();
 }
 
+// Is "@<name>" still standing in the prompt? One rule for both kinds of token, so a file and a
+// Resource can never disagree about what counts as a mention.
+function mentionedIn(text, name) {
+  const re = new RegExp('(^|\\s)@' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?=\\s|$)');
+  return re.test(text);
+}
+
 // Map "@<filename>" tokens still present in the prompt back to attached-file workspace paths.
 function collectMentions(text) {
   const out = [];
   for (const e of attachedFiles) {
-    const base = mentionBase(e);
-    const re = new RegExp('(^|\\s)@' + base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?=\\s|$)');
-    if (re.test(text) && !out.includes(e.path)) out.push(e.path);
+    const path = e.path;
+    if (mentionedIn(text, mentionBase(e)) && !out.includes(path)) out.push(path);
+  }
+  return out;
+}
+
+// Map "@<name>" tokens back to the Bindings they name, as identities (kind + id) rather than text:
+// an id is only unique within its kind, and the turn has to carry WHICH Resource was meant.
+function collectResourceMentions(text) {
+  const bound = bindingsCache || [];
+  const out = [];
+  for (const name of new Set(bound.map(b => b.name))) {
+    if (!mentionedIn(text, name)) continue;
+    let named = bound.filter(b => b.name === name);
+    // The pick wins when a name is shared. A token typed by hand was never picked, and a pick whose
+    // Resource has since been unbound is no pick at all: both fall back to every Binding of that
+    // name — each labelled by kind for the agent, which is still an answer where the bare word in
+    // the sentence was not.
+    const picked = pickedMentions.get(name);
+    const one = picked && named.find(b => b.kind === picked.kind && b.id === picked.id);
+    if (one) named = [one];
+    for (const b of named) out.push({ kind: b.kind, id: b.id });
   }
   return out;
 }

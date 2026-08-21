@@ -86,9 +86,9 @@ def _build(tmp: Path, turns: list[Turn], *, verdict: str = "BUILD"):
     return orch, oc, gateway
 
 
-def _run(orch, prompt: str, mode: Mode = Mode.AUTO) -> list[dict]:
+def _run(orch, prompt: str, mode: Mode = Mode.AUTO, resources: list[dict] | None = None) -> list[dict]:
     orch.project(start_preview=False).control.set_mode(mode)
-    return list(orch.build_stream(prompt))
+    return list(orch.build_stream(prompt, None, resources))
 
 
 def _get_built(orch) -> None:
@@ -318,3 +318,42 @@ def test_a_marker_on_a_plan_turn_is_stripped_from_the_card(tmp_path: Path):
     plan = next(e for e in events if e["type"] == "plan-proposed")["plan"]
     assert "Add a table" in plan
     assert "NOTHING_TO_BUILD" not in plan
+
+
+# --- @mentioned Resources (#31) ------------------------------------------------------------------
+
+
+def test_a_mentioned_resource_reaches_the_agent_as_a_binding_not_a_word(tmp_path: Path):
+    """What the creator typed is "@sonnet", which is a word. What the agent gets is the record behind
+    it — the kind, the Resource, and what the app already does with it — because the word alone is
+    what a creator holding several Bindings has no way to disambiguate."""
+    orch, oc, _gw = _build(tmp_path, [Turn(text="1. A table\n2. A chart")])
+    orch.bind_llm_alias("f-sonnet")
+
+    _run(orch, "use @sonnet to summarise the rows", resources=[{"kind": "llm_alias", "id": "f-sonnet"}])
+
+    sent = oc.prompts[0]["text"]
+    assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in sent
+    assert "The model this app calls" in sent
+    # After the request, not before it: the gate wraps the prompt in its own preamble, and a block
+    # that landed in the middle would read as part of the instructions rather than as the reference.
+    assert sent.index("@sonnet to summarise") < sent.index("LLM Alias")
+
+
+def test_a_mention_rides_the_user_turn_only(tmp_path: Path):
+    """Same rule the attached-file listing follows. A nudge carries no new user reference, and the
+    block repeated on one reads as a second request for the same Resource."""
+    orch, oc, _gw = _build(tmp_path, [
+        Turn(text="1. A table\n2. A chart"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Here's how I'd approach it: first the schema, then the table."),  # nothing -> nudged
+        Turn(text="Done.", writes={"src/App.tsx": "// v2\n"}),
+    ], verdict="BUILD")
+    orch.bind_llm_alias("f-sonnet")
+    _get_built(orch)
+
+    _run(orch, "wire @sonnet into the header", resources=[{"kind": "llm_alias", "id": "f-sonnet"}])
+
+    user_turn, nudge = oc.prompts[2]["text"], oc.prompts[3]["text"]
+    assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in user_turn
+    assert "LLM Alias" not in nudge

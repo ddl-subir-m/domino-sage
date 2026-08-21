@@ -1042,13 +1042,16 @@ def build_stream(body: dict) -> StreamingResponse:
 
     prompt = (body or {}).get("prompt", "")
     mentions = (body or {}).get("mentions") or None  # workspace paths of @-referenced attached files
+    # @-referenced Resources (#31), as `{"kind", "id"}` Binding identities. Their own field rather
+    # than more entries in `mentions`: a Resource has no path, so nothing here resolves to a file.
+    resources = (body or {}).get("resources") or None
 
     def sse():
         if not prompt:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
             return
         try:
-            for evt in orchestrator.build_stream(prompt, mentions):
+            for evt in orchestrator.build_stream(prompt, mentions, resources):
                 yield f"data: {_json.dumps(evt)}\n\n"
         except Exception as e:
             log.exception("build_stream failed")

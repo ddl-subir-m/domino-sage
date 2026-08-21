@@ -18,6 +18,7 @@ from sage.resources.bindings import (
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
     Binding,
+    mention_note,
     parse_bindings,
 )
 from sage.resources.provider import FakeResourceProvider, LlmAlias, ModelApi
@@ -449,3 +450,63 @@ def test_a_scope_key_that_is_not_a_name_is_dropped_on_the_way_in():
     binding = parse_bindings(entries)[0]
     assert (binding.database, binding.schema, binding.table) == (None, None, None)
     assert binding.scope == ""
+
+
+# ---- @mentioning a bound Resource in the builder chat (#31) -------------------------------------
+
+
+def test_a_mention_carries_the_kind_and_the_scope_not_just_the_name():
+    # The whole point of the channel: a name in prose says nothing about WHICH Resource, and a Data
+    # Source's scope is not sayable in a sentence at all.
+    alias = Binding(KIND_LLM_ALIAS, "id-sonnet", "sonnet", "Claude Sonnet 4.6")
+    source = Binding(KIND_DATA_SOURCE, "ds-dwh", "Snowflake-Data-Warehouse",
+                     "Snowflake-Data-Warehouse", "DWH", "MARTS", "FCT_USAGE_DAILY")
+    note = mention_note([alias, source], [alias, source])
+    assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in note
+    assert "Data Source **Snowflake-Data-Warehouse**, scoped to `DWH.MARTS.FCT_USAGE_DAILY`" in note
+    assert "The model this app calls" in note and "The Data Source this app queries" in note
+
+
+def test_a_mention_of_a_resource_the_app_is_not_wired_to_says_so():
+    # A creator holding two Aliases can ask about either, but only the first is written into the
+    # app's source. Told nothing, the agent points the app at the mentioned one — a change AGENTS.md
+    # forbids and Sage would overwrite on the next Binding change.
+    wired = Binding(KIND_LLM_ALIAS, "id-sonnet", "sonnet", "Claude Sonnet 4.6")
+    other = Binding(KIND_LLM_ALIAS, "id-haiku", "haiku", "Claude Haiku 4.5")
+    note = mention_note([other], [wired, other])
+    assert "NOT the model this app calls" in note
+    assert "**Claude Sonnet 4.6**" in note          # names the one it IS wired to
+    assert "do not rewire the app to this one" in note
+
+
+def test_a_kind_this_sage_does_not_know_is_still_mentionable():
+    # Same rule as parse_bindings: a newer Sage's record is not this one's to drop, and a mention of
+    # it must not claim to know what the app does with it.
+    b = Binding("vector_store", "v1", "embeddings", "embeddings")
+    note = mention_note([b], [b])
+    assert "vector_store **embeddings** — recorded as used by this app." in note
+
+
+def test_nothing_mentioned_costs_the_turn_nothing():
+    assert mention_note([], [Binding(KIND_LLM_ALIAS, "id-sonnet", "sonnet", "sonnet")]) == ""
+
+
+def test_only_a_resource_this_app_is_bound_to_is_honored(tmp_path: Path):
+    # The UI offers bound Resources only, but the turn arrives over HTTP: an unbound id must resolve
+    # to nothing rather than to a Resource with no schema, credential or config behind it.
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    project = orch.project()
+    assert "sonnet" in orch._resource_mention_note(project, [{"kind": "llm_alias", "id": "id-sonnet"}])
+    assert orch._resource_mention_note(project, [{"kind": "llm_alias", "id": "id-embed"}]) == ""
+    # An id is only unique within its kind, so the kind is half the identity, not a label.
+    assert orch._resource_mention_note(project, [{"kind": "model_api", "id": "id-sonnet"}]) == ""
+    assert orch._resource_mention_note(project, None) == ""
+    assert orch._resource_mention_note(project, ["id-sonnet"]) == ""   # not a ref
+
+
+def test_the_same_resource_mentioned_twice_is_one_line(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    ref = {"kind": "llm_alias", "id": "id-sonnet"}
+    assert orch._resource_mention_note(orch.project(), [ref, ref]).count("- LLM Alias") == 1

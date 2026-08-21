@@ -40,6 +40,7 @@ from ..resources.bindings import (
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
     Binding,
+    mention_note,
     parse_bindings,
 )
 from ..resources.bound_schema import (
@@ -1325,6 +1326,31 @@ class Orchestrator:
             out.append(item)
         return out or None
 
+    def _resource_mention_note(self, project: Project, resources: list[dict] | None) -> str:
+        """The block a turn carries for the Resources the creator @mentioned (#31), or "" for none.
+
+        A ref is `{"kind", "id"}` — a Binding's identity rather than a name — because the name is
+        exactly what cannot survive the trip: two kinds can carry the same one, and the creator picked
+        a row out of a list. Attachments resolve to a path; a Resource has none, so this is its own
+        channel and not another entry in `mentions`.
+
+        Only Resources this app holds a Binding for are honored, the same rule `_resolve_mentions`
+        applies to attachments: mentioning one it is not bound to would ask the agent to use a
+        Resource with no schema, credential or config behind it.
+        """
+        if not resources:
+            return ""
+        recorded = parse_bindings(project.workspace.read_bindings())
+        known = {b.key: b for b in recorded}
+        mentioned: list[Binding] = []
+        for ref in resources:
+            if not isinstance(ref, dict):
+                continue
+            b = known.get((str(ref.get("kind") or ""), str(ref.get("id") or "")))
+            if b is not None and b not in mentioned:
+                mentioned.append(b)
+        return mention_note(mentioned, recorded)
+
     def _image_data_uri(self, real: Path) -> str | None:
         """An image inlined as `data:<mime>;base64,...` for the agent's prompt, or None if it can't
         be. Images are the one type where a descriptor isn't enough — the pixels ARE the content.
@@ -1340,7 +1366,8 @@ class Orchestrator:
         data, mime = fitted
         return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
-    def build_stream(self, prompt: str, mentions: list[str] | None = None):
+    def build_stream(self, prompt: str, mentions: list[str] | None = None,
+                     resources: list[dict] | None = None):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time. If a turn is already streaming, refuse rather than run a second one
@@ -1361,7 +1388,7 @@ class Orchestrator:
                     and _looks_like_change_request(prompt)):
                 yield from self._ask_mode_refusal(prompt)
                 return
-            yield from self._build_stream(prompt, mentions)
+            yield from self._build_stream(prompt, mentions, resources)
         finally:
             self._recheck_app_data()
             self._clear_turn_baseline()
@@ -1443,7 +1470,8 @@ class Orchestrator:
             log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
         return seen
 
-    def _build_stream(self, prompt: str, mentions: list[str] | None = None, *, is_approval: bool = False,
+    def _build_stream(self, prompt: str, mentions: list[str] | None = None,
+                      resources: list[dict] | None = None, *, is_approval: bool = False,
                       user_text: str | None = None, mode: Mode | None = None,
                       session_id: str | None = None, brief: PlanStep | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
@@ -1461,7 +1489,8 @@ class Orchestrator:
         a phase reuses this loop instead of forking a second copy of it.
 
         `mentions` are workspace paths of attached files the user @-referenced; they're resolved to
-        real files and attached to this turn's prompt (see _resolve_mentions)."""
+        real files and attached to this turn's prompt (see _resolve_mentions). `resources` are the
+        Bindings they @-referenced, which ride the prompt text instead (see _resource_mention_note)."""
         import time
 
         project = self.project()
@@ -1480,6 +1509,10 @@ class Orchestrator:
         # Attach the @-mentioned files to the user's turn only — not to the internal nudge/fix
         # follow-ups below, which carry no new user reference.
         mention_files = self._resolve_mentions(project, mentions)
+        # Rides the prompt TEXT, appended at the send below rather than here: the gate/answer/plan
+        # forks wrap `current` in their own preamble, and the block has to stay at the end of what
+        # the agent reads — beside the attachment listing, which is rendered the same way.
+        resource_note = self._resource_mention_note(project, resources)
         # What the turn actually carries. An attachment that silently arrives without its pixels
         # (image too large, wrong kind, unreadable) is indistinguishable from a normal descriptor
         # once it reaches the agent, so record it here where /api/diag can show it.
@@ -1929,8 +1962,12 @@ class Orchestrator:
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
-            client.send_prompt(sid, current, agent=agent, attachments=mention_files)
-            mention_files = None  # attach only on the first (user) turn, not the nudge/fix follow-ups
+            client.send_prompt(sid, f"{current}\n\n{resource_note}" if resource_note else current,
+                               agent=agent, attachments=mention_files)
+            # Both ride the first (user) turn only, not the nudge/fix follow-ups: those carry no new
+            # user reference, and a repeated block reads as a second request for the same Resource.
+            mention_files = None
+            resource_note = ""
             appeared = False
             start = time.monotonic()
             # The shim classifies plan/implement per model call (phase_classifier). We only observe
