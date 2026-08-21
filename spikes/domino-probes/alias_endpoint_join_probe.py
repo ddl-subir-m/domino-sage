@@ -102,12 +102,17 @@ st_a, aliases_raw, note_a = get(f"{ROOT}/api/aliases", KEY or TOK)
 st_m, models_raw, note_m = get(f"{GATEWAY}/models", KEY or TOK)
 st_e, eps_raw, note_e = get(f"{HOST}/api/gen-ai/beta/endpoints", TOK)          # unscoped — Q4
 st_p, provs_raw, note_p = get(f"{ROOT}/api/providers", KEY or TOK)
+# The permission filter on its own. /v1/models is permission AND (maybe) status; this is
+# permission alone, so the two together separate "no grant" from "not serving" (Q1).
+st_acc, acc_raw, note_acc = get(f"{ROOT}/api/aliases/accessible", KEY or TOK)
 
 aliases, models, eps, provs = (records(x) for x in (aliases_raw, models_raw, eps_raw, provs_raw))
 print(f"GET /api/aliases                 -> {st_a} {note_a} ({len(aliases)} records)")
 print(f"GET {{gateway}}/v1/models          -> {st_m} {note_m} ({len(models)} ids)")
 print(f"GET /api/gen-ai/beta/endpoints   -> {st_e} {note_e} ({len(eps)} endpoints)   <-- Q4")
 print(f"GET /api/providers               -> {st_p} {note_p} ({len(provs)} providers)")
+granted = set(map(str, (acc_raw or {}).get("accessible_ids") or [])) if isinstance(acc_raw, dict) else set()
+print(f"GET /api/aliases/accessible      -> {st_acc} {note_acc} ({len(granted)} granted ids)")
 
 if st_e != 200:
     print("\n>>> Q4 FAILED. The unscoped listing does not answer for this caller.")
@@ -184,16 +189,39 @@ for name, ptype, why in unjoined:
 print("\n" + "=" * 78)
 print("Q1 — DOES A STOPPED ENDPOINT STILL APPEAR IN /v1/models?  (#21's premise)")
 print("=" * 78)
-dead = [(n, s) for n, f, s, en, acc in joined if s not in ("Running",) and acc]
-alive_but_gone = [(n, s) for n, f, s, en, acc in joined if s == "Running" and not acc]
-for n, s in dead:
-    print(f"  {n}: endpoint {s}, but the alias IS in /v1/models -> preflight says OK today")
-if not dead:
-    print("  No alias in /v1/models points at a non-Running endpoint right now.")
-    print("  Either nothing is stopped, or /v1/models already filters them.")
-    print("  >>> To settle it: stop a hosted endpoint you own, re-run, and look here again.")
-for n, s in alive_but_gone:
-    print(f"  {n}: endpoint Running but NOT in /v1/models (a grant issue, not a status one)")
+not_running = [(n, st, acc) for n, f, st, en, acc in joined if st != "Running"]
+by_name_or_id = {}
+for a in aliases:
+    for k in (a.get("name"), a.get("id")):
+        if k:
+            by_name_or_id[str(k)] = a
+
+if not joined:
+    print("  INCONCLUSIVE — no alias on this gateway carries an endpoint_url at all, so there was")
+    print("  nothing to join. This gateway registers no hosted endpoint. Check GATEWAY_BASE_URL")
+    print("  points at the LLM Gateway app, not some other app.")
+elif not not_running:
+    print("  INCONCLUSIVE — every joined alias points at a Running endpoint, so the premise was")
+    print("  never exercised. Stop one of them and re-run.")
+for n, st, acc in not_running:
+    rec = by_name_or_id.get(str(n), {})
+    rid = str(rec.get("id") or "")
+    is_granted = (n in granted) or (rid and rid in granted)
+    print(f"  {n}: endpoint is {st}, in /v1/models = {'yes' if acc else 'NO'}, "
+          f"in accessible_ids = {'yes' if is_granted else 'NO' if granted else '?'}")
+    if acc:
+        print("    -> PREMISE TRUE. A non-Running endpoint's alias is still offered.")
+        print("       preflight passes today and the build fails later. #21 is real. Build it.")
+    elif is_granted:
+        print("    -> PREMISE FALSE. The caller HAS the grant, yet /v1/models withholds it, so")
+        print("       /v1/models already filters on status. unresolved_slots catches this today.")
+        print("       #21 shrinks to wording: say 'stopped' where it now says 'not offered'.")
+    elif granted:
+        print("    -> CONFOUNDED. No grant for this alias, so its absence says nothing about")
+        print("       status. Stop a Running endpoint you DO have a grant for, then re-run.")
+    else:
+        print("    -> UNKNOWN. /api/aliases/accessible did not answer, so permission and status")
+        print("       cannot be told apart. Fix that call first.")
 
 # ---- Q5: the rejected alternative --------------------------------------------------------------
 print("\n" + "=" * 78)
@@ -208,11 +236,17 @@ if provs and all(p.get("health_status") is None for p in provs):
 print("""
 ==================================================================================
 WHAT TO DO WITH THIS OUTPUT
-  Q1 dead list non-empty  -> #21 is real as written. Build it.
-  Q1 dead list empty      -> stop an endpoint you own and re-run before believing it.
-  Q2 winner               -> the field the join is written on.
-  Q3 unjoined list        -> every one must be reported as unknown, not stopped.
-  Q4 non-200              -> #21 may not be buildable deployment-wide. Say so on the ticket.
-  Q5 health populated     -> reconsider; it is one call on a host Sage already talks to.
+  Q1  -> reads its own verdict above. CONFOUNDED means the one case we have is an
+         alias the caller has no grant for, so stop a Running endpoint you DO have a
+         grant for and re-run. That is the only way left to separate the two.
+  Q2  -> ANSWERED 2026-08-21 on cloud-dogfood: the join is `url`, after stripping the
+         trailing /v1. Not id, not vanityUrl.
+  Q3  -> every unjoined alias must be reported as unknown, never as stopped. On
+         cloud-dogfood that is 12 of 14, across bedrock/vertex/anthropic/openai.
+  Q4  -> ANSWERED: 200 unscoped for a normal caller, one deployment-wide call.
+  Q5  -> REJECTED 2026-08-21, and not because the field is empty. The qwen-2-5-14b
+         provider reports health='error' while its endpoint is Running, off a check a
+         month stale. It would call a working model broken. It is also per-provider,
+         not per-alias, so it is the wrong granularity anyway.
 Record the result in DOMINO-PRIMITIVES.md beside the qwen-2-5 block (line ~197).
 ==================================================================================""")
