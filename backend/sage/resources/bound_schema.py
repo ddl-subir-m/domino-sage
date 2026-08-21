@@ -211,6 +211,17 @@ def _how_to_ask(binding: Binding, stranded: list[tuple[str, str]] | None, max_ro
          "building is a real failure and worth fixing now — do not design a screen around it, and "
          "do not treat an empty result as the normal state. Preview answers are cached for a few "
          "seconds, so a change made in the store may take a moment to show."),
+        ("- **If the data cannot be reached, the WHOLE SCREEN says so — not just the panel that "
+         "asked.** This is a different state from an empty list, and it is the one that goes wrong. "
+         "When `runQuery` fails, every control fed by a query is inert at the same moment: a filter "
+         "whose options come from a query has no options, and a button that re-runs one does "
+         "nothing. Render that, do not decorate it. Disable those controls and say why beside them "
+         "— a select holding only \"All\" next to an enabled primary button tells the viewer the app "
+         "works and the store is empty, and neither is true. Drop the headings and feature badges "
+         "that name filters, metrics or date ranges the screen cannot currently show; they are "
+         "claims, not decoration. Do not leave a filled primary button that does nothing when "
+         "pressed — if the only useful action is to try again, make that the primary action. The "
+         "test to apply: a viewer reads **not yet**, rather than **working, but empty**."),
         ("- **Do not read the Data Source yourself.** No scripts, no SQL anywhere except "
          "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "
          "above is what you have; if it is not enough, ask the user."),

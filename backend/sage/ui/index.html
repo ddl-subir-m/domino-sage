@@ -506,6 +506,15 @@
   .spacer { flex: 1; }
   .preview-loading { position: absolute; inset: 0; display: none; place-items: center; background: var(--surface); color: var(--faint); font-size: 13px; gap: 8px; }
   .preview-loading.show { display: grid; }
+  /* What the build is doing, in the pane that otherwise says nothing about it (#1). A phased build
+     deliberately keeps its early phases away from the app's main screen, so the preview can sit
+     unchanged for minutes while the rail narrates work — the two halves of the screen disagreeing is
+     the actual complaint. A thin strip, because it is context and not an event. */
+  .preview-note { position: absolute; left: 0; right: 0; bottom: 0; display: none; align-items: center;
+    gap: 8px; padding: 6px 12px; font-size: 12px; background: color-mix(in srgb, var(--surface) 92%, transparent);
+    border-top: 1px solid var(--border); color: var(--faint); backdrop-filter: blur(2px); }
+  .preview-note.show { display: flex; }
+  .preview-note .pn-phase { color: var(--ink); font-weight: 600; }
   .preview-loading .ico { font-size: 16px; animation: spin 1s linear infinite; }
 
   /* ---------- code / file tree ---------- */
@@ -775,6 +784,7 @@
       <div class="work-main">
         <iframe id="preview" title="preview" style="display:none"></iframe>
         <div class="preview-loading" id="preview-loading"><span class="ico">◐</span><span>Loading preview…</span></div>
+        <div class="preview-note" id="preview-note"></div>
         <div id="editor-pane" style="display:none">
           <div class="editor-empty" id="editor-empty">Select a file from the tree to view and edit it.</div>
           <div id="monaco-editor"></div>
@@ -3614,6 +3624,19 @@ function settlePhases(ok) {
   phaseBars.forEach((bar, n) => { if (bar.classList.contains('running')) markPhase(n, 'ok', '✓'); });
 }
 
+// Say which phase is running, in the preview pane (#1). Not a refresh: reloading the iframe between
+// phases would cost a spinner flash per phase and change nothing, because a phase that wrote
+// `types.ts` has nothing to show — the plan shape keeps early phases off the main screen on purpose.
+// What was actually missing is a sentence, so the pane stops reading as stalled while work happens.
+function previewNote(phase, label) {
+  const el = document.getElementById('preview-note');
+  if (!el) return;
+  if (!phase) { el.classList.remove('show'); el.innerHTML = ''; return; }
+  el.innerHTML = `<span class="pn-phase">${esc(phase)}</span><span>${esc(label)}</span>`
+    + `<span class="spacer"></span><span>the preview updates when a phase changes what's on screen</span>`;
+  el.classList.add('show');
+}
+
 function leakMsg(ev) {
   const where = (ev.where || []).map(esc).join(', ');
   return `<b>${esc(ev.file)}</b> was copied into your app code${where ? ` (${where})` : ''}. `
@@ -3641,9 +3664,9 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'plan-stale') { supersedePlanCards(ev.note); }
   else if (ev.type === 'plan-proposed') { stopWorking(); addPlanCard(ev.plan, ev.kind, ev.steps); trail(); }
   else if (ev.type === 'build-plan') { stopWorking(); addStepList(ev); trail(); }
-  else if (ev.type === 'step-start') { markStep(ev.n, 'running', '▸'); addPhaseBar(ev); setWorking(`Phase ${ev.n} of ${ev.total} — ${ev.label}`); trail(); }
+  else if (ev.type === 'step-start') { markStep(ev.n, 'running', '▸'); addPhaseBar(ev); setWorking(`Phase ${ev.n} of ${ev.total} — ${ev.label}`); previewNote(`Phase ${ev.n} of ${ev.total}`, ev.label); trail(); }
   else if (ev.type === 'step-done') { markStep(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); markPhase(ev.n, ev.ok ? 'ok' : 'bad', ev.ok ? '✓' : '✕'); }
-  else if (ev.type === 'done') { stopWorking(); settlePhases(ev.ok); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
+  else if (ev.type === 'done') { stopWorking(); settlePhases(ev.ok); previewNote(''); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'ask-blocked') { stopWorking(); askBlocked(ev); trail(); }
   else if (ev.type === 'ask-active') { addStatus('warn', '⚠', esc(ev.message)); trail(); }

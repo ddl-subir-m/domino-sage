@@ -147,6 +147,10 @@ components outside what was asked.
   `useEffect`** — a loader defined but only called from a retry button leaves the page stuck on the
   spinner forever. Every non-terminal state must have a code path that reaches a terminal one.
 - **Error:** a human-readable message plus how to recover.
+- **A screen whose whole data source is unreachable is NOT an empty collection.** An empty list is
+  one region with nothing in it; this is every control on the screen going inert at once, and the
+  two need opposite treatments. Do not reach for the empty state above by analogy — if this app
+  reads a store, "The app's data" below says what to render instead.
 - **Interactive elements:** hover and focus styles; explain disabled states.
 
 ### Accessibility & restraint

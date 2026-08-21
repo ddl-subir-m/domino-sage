@@ -651,3 +651,60 @@ def test_sharing_from_an_app_with_no_data_source_is_a_404(tmp_path: Path, monkey
     response = client_for(orch, monkeypatch).post(
         "/api/project/samples", json={"tables": ["anything"], "sensitive": False})
     assert response.status_code == 404
+
+
+# ---- the whole-screen state, distinct from an empty collection (#32) ------------------------------
+
+
+def test_the_agent_is_told_the_whole_screen_says_so_not_just_the_panel_that_asked():
+    """Observed live 2026-08-21: a dashboard whose data pane correctly said the data was not
+    available, surrounded on the same screen by three hero pills claiming "Date range ready" and
+    "Platform and device filters", a fully live "Refine view" panel whose selects held only `All`,
+    and a filled primary "Apply filters" button that did nothing.
+
+    Every part of that was the agent following the States section by analogy: it built the empty
+    state for the ONE collection that asked, and left the rest of the screen asserting it worked.
+    The state that actually occurs for a Data-Source app is not one empty list, it is every control
+    inert at once, and nothing told the agent that was a different thing.
+    """
+    block = block_for()
+    assert "WHOLE SCREEN says so" in block
+    assert "different state from an empty list" in block
+
+
+def test_the_agent_is_told_to_disable_the_controls_and_say_why():
+    # The first criterion, and the user's own design rule: a disabled element explains why it is
+    # disabled. A select holding one dead option explains nothing.
+    block = block_for()
+    assert "Disable those controls and say why beside them" in block
+    assert 'holding only "All"' in block
+
+
+def test_the_agent_is_told_not_to_advertise_what_the_screen_cannot_show():
+    # The second criterion. Feature badges and headings naming filters or metrics are claims about
+    # what the screen does, and a screen that cannot query is not doing any of them.
+    block = block_for()
+    assert "Drop the headings and feature badges" in block
+    assert "they are claims" in block
+
+
+def test_the_agent_is_told_a_dead_primary_button_is_not_an_option():
+    # The third criterion. A filled primary button is the strongest thing on a screen, and one that
+    # does nothing when pressed is the single loudest false claim the state can make.
+    block = block_for()
+    assert "filled primary button that does nothing when pressed" in block
+    assert "make that the primary action" in block
+
+
+def test_the_agent_is_given_the_test_to_apply_rather_than_only_the_rules():
+    # The fifth criterion, in the words it is written in, so the agent can check its own screen
+    # against the thing a creator will actually read off it.
+    block = block_for()
+    assert "not yet" in block and "working, but empty" in block
+
+
+def test_an_app_with_no_data_source_is_told_none_of_this():
+    # The region exists only for an app that reads a store. Describing an unreachable store to an app
+    # that has none costs context on every turn and invites a screen built around data it cannot
+    # reach — the same reason the rest of this block is conditional.
+    assert agents_block(None, [], None, None, 5000) == ""
