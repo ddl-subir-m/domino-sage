@@ -242,6 +242,38 @@ lifecycle, and add a preflight that resolves every configured `SAGE_MODEL_*` ali
 `/v1/models` at startup. The preflight is small and would convert a confusing mid-build
 failure into a legible one.
 
+### VERIFIED 2026-08-22 — the workspace JWT opens the REST API from off-Domino
+
+`backend/.env`'s `GATEWAY_API_KEY` is not a `dgw_` PAT. It is a Keycloak JWT (`iss:
+https://cloud-dogfood.domino.tech/auth/realms/DominoRealm`) with roughly a 6-hour life, captured from
+a workspace sidecar. From a laptop, with no sidecar and no VPN, it opens **both** control planes:
+
+| Call | `Authorization: Bearer <jwt>` | `X-Domino-Api-Key: <jwt>` |
+|------|------------------------------|---------------------------|
+| `{gateway}/v1/models`, `/api/aliases`, `/api/aliases/accessible`, `/api/providers` | **200** | — |
+| `{api}/v4/users/self` | **200** | 403 `No current user in request` |
+| `{api}/api/gen-ai/beta/endpoints` | **200** | 403 |
+
+This does not contradict #9's credential sweep, which found the sidecar JWT refused with 401 at every
+shape — that sweep was against a **Model API**, and model invocation is a separate auth domain from
+the REST API. The two results together say: one token, two of the three domains.
+
+**What it unlocks.** Anything that needs only the gateway and the Domino REST API can be verified
+against real Domino from a laptop, with no workspace and no Environment rebuild:
+
+```bash
+cd backend && set -a && . ./.env && set +a
+export DOMINO_API_HOST=https://cloud-dogfood.domino.tech
+export DOMINO_API_KEY="$GATEWAY_API_KEY"      # the same JWT; `static_token` makes it a Bearer
+```
+
+`_build_resources` then constructs the real `DominoResourceProvider` and every Resource listing
+answers. **Publish still cannot work this way** — `_build_control_plane` takes its token from the
+sidecar unconditionally, with no `DOMINO_API_KEY` fallback (`orchestrator/app.py:128-136`).
+
+Check the expiry before blaming the code: decode the payload's `exp` locally rather than reading a
+401 as a bug in whatever is being tested.
+
 ### MEASURED 2026-08-21 — how preflight can see a stopped endpoint (#21)
 
 `spikes/domino-probes/alias_endpoint_join_probe.py`, run on cloud-dogfood against

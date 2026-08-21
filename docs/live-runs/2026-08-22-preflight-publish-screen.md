@@ -51,6 +51,23 @@ project and the only Running endpoint of 18.
 
 ## 1. #21 — preflight names the model that will not answer
 
+> **✅ Verified 2026-08-22 from a laptop, no workspace needed.** The `GATEWAY_API_KEY` in
+> `backend/.env` is a Keycloak JWT that opens the Domino REST API too, so the real
+> `DominoResourceProvider` runs against the real gateway and the real endpoints listing from a Mac
+> (recipe in `DOMINO-PRIMITIVES.md`, "the workspace JWT opens the REST API from off-Domino").
+> Against live data: 9 accessible aliases, 2 carrying `endpoint_url`, 18 endpoints (12 Stopped,
+> 4 Failed, 1 BuildFailed, 1 Running); the join resolved `local-domino-llm` →
+> `Mistral-7B-Instruct-v02` / `Stopped`; `preflight_slots` and `preflight_bindings` both produced the
+> right sentence and the right status; the all-vendor case made **0** endpoint calls and the
+> three-hosted-slot case made **1**; a dead API host reported `unreachable` with no slots.
+> It also found two defects — see `cd9fd69` and `4ac13e9`.
+>
+> **What is still worth doing here:** step 1a in a *deployed* builder, to see the warning render on
+> real data rather than on the fakes the local UI pass used. Everything below still applies; it is
+> now a smoke check rather than a discovery.
+
+
+
 Two entry points, and the ticket asks for both. The Binding one needs no restart, so do it first.
 
 ### 1a. A Binding pointing at a stopped endpoint
