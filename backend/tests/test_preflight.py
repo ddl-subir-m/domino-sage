@@ -711,3 +711,32 @@ def test_both_slot_checks_report_in_slots_order(tmp_path: Path):
     result = _orch(tmp_path, catalog=catalog, resources=_CountingProvider()).preflight_slots()
 
     assert [s["slot"] for s in result["slots"]] == ["sovereign_plan", "implement"]
+
+
+class _MixedGateway(_CountingProvider):
+    """A gateway that offers hosted Aliases the app does not use — cloud-dogfood's real shape, and
+    the one the all-vendor fake could not produce."""
+
+    def list_llm_aliases(self) -> list[LlmAlias]:
+        return list(HOSTED)   # qwen-2-5 is hosted; sonnet is not
+
+
+def test_a_gateway_with_hosted_aliases_the_app_does_not_use_still_pays_nothing(tmp_path: Path):
+    # Found against the real gateway, not by a unit test: keying the skip on "does this gateway offer
+    # any hosted Alias" is always true on cloud-dogfood, so every session open paid a round trip for
+    # an answer that could not apply. It has to key on what is actually being checked.
+    _MixedGateway.calls = 0
+    catalog = _hosted_catalog(sovereign_plan="sonnet")   # no slot names the hosted alias
+    result = _orch(tmp_path, catalog=catalog, resources=_MixedGateway()).preflight_slots()
+
+    assert _MixedGateway.calls == 0
+    assert result == {"state": "ok", "error": None, "slots": []}
+
+
+def test_a_binding_on_a_vendor_alias_pays_nothing_either(tmp_path: Path):
+    _MixedGateway.calls = 0
+    orch = _orch(tmp_path, catalog=_hosted_catalog(sovereign_plan="sonnet"), resources=_MixedGateway())
+    orch.bind_llm_alias("id-sonnet")
+
+    assert orch.preflight_bindings()["state"] == "ok"
+    assert _MixedGateway.calls == 0

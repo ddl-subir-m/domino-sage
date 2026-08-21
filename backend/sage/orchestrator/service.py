@@ -3161,7 +3161,8 @@ class Orchestrator:
             aliases = self._resources.list_llm_aliases()
         except ResourceUnavailable as e:
             return {"state": "unreachable", "error": str(e), "slots": []}
-        endpoints, errors = self._endpoint_listing(aliases)
+        slot_aliases = {(getattr(self._catalog, slot, "") or "").rsplit("/", 1)[-1] for slot in SLOTS}
+        endpoints, errors = self._endpoint_listing(aliases, slot_aliases)
         # Sorted back into SLOTS order across BOTH checks. Each returns its own findings in that
         # order, but concatenating them does not preserve it, and a reader met with `implement`
         # above `sovereign_plan` has to work out that the list is in no order at all.
@@ -3199,7 +3200,8 @@ class Orchestrator:
         # record left to carry an endpoint_url, so this returns nothing for it anyway — but saying so
         # here is cheaper than making a reader work that out from two files.
         aliases = listings.get(KIND_LLM_ALIAS) or []
-        endpoints, endpoint_errors = self._endpoint_listing(aliases)
+        endpoints, endpoint_errors = self._endpoint_listing(
+            aliases, {b.name for b in recorded if b.kind == KIND_LLM_ALIAS})
         errors += endpoint_errors
         stalled = [(b, m, st) for b, m, st in bindings_on_dead_endpoints(recorded, aliases, endpoints)
                    if b not in gone]
@@ -3248,20 +3250,21 @@ class Orchestrator:
                 errors.append(str(e))
         return listings, errors
 
-    def _endpoint_listing(self, aliases: list) -> tuple[list | None, list[str]]:
-        """Hosted GenAI Endpoints, but only when some Alias here actually points at one.
+    def _endpoint_listing(self, aliases: list, wanted: set[str]) -> tuple[list | None, list[str]]:
+        """Hosted GenAI Endpoints, but only when something being checked actually points at one.
 
-        The skip is the point. 12 of the 14 aliases on cloud-dogfood carry no `endpoint_url` at all,
-        because they are vendor models, so on the ordinary gateway this check costs NOTHING — no
-        second call, at startup or at session open. The call is made only when an Alias could be
-        affected by the answer, which is the same rule `_binding_listings` applies per kind and
-        `_held_tokens` applies to the token store.
+        The skip is the point, and `wanted` is what makes it real. Keying it on "does this gateway
+        offer any hosted Alias" looked equivalent and is not: cloud-dogfood offers two of nine, so
+        that test is always true there and every session open paid a ~1.5s round trip for an answer
+        that could not apply to it. Keyed on the Aliases actually named by the slots or the Bindings
+        in hand, an app using only vendor models pays nothing — the same rule `_binding_listings`
+        applies per kind and `_held_tokens` applies to the token store.
 
         None means "not checked", which is what `endpoint_status` reads as "learned nothing". That is
         the same value a failed listing produces, deliberately: neither is evidence that a model is
         broken, and only the returned `error` tells the two apart for the caller.
         """
-        if not any(getattr(a, "endpoint_url", None) for a in aliases):
+        if not any(getattr(a, "endpoint_url", None) for a in aliases if a.name in wanted):
             return None, []
         try:
             return self._resources.list_hosted_endpoints(), []
