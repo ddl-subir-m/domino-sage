@@ -70,6 +70,7 @@ greppable line once it holds the port, so a regression is visible in any App's l
 | Date | Serving process | Total | Notes |
 |------|-----------------|-------|-------|
 | 2026-08-19 | `serve.py` (stdlib) | 13s | First publish after the swap. Warm template deps: `npm ci` finished at +8s. `vite build` 195ms of the +4s build stage; the rest is `tsc -b`. |
+| 2026-08-21 | `serve.py` (stdlib) | 14s | First publish carrying the self-hosted font (#19) and a named-query catalog (#13, #15) — 8 queries over a BigQuery Data Source. `build complete` at +13s against the baseline's +12s, so the font costs nothing measurable. The intermediate `dependencies installed` and `data rehydrated` lines were not captured on this run, so only the total and the build mark are comparable. `queries: 8 of 8 usable` is new since the baseline: `serve.py` validates the catalog before it binds the port. |
 
 Take the total from the App log of the first publish after this change
 and add a row, then compare later publishes against it — the per-stage lines say which stage owns
