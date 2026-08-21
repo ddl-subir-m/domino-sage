@@ -2530,6 +2530,30 @@ class Orchestrator:
         out["manage_url"] = cp.app_manage_url(app.id, name)
         return out
 
+    def publish_check(self) -> dict:
+        """What the published app is going to refuse to answer, asked BEFORE it is published (#26).
+
+        #15 already runs this check at the end of every build turn and splices the sentences into
+        AGENTS.md, which closes the loop as long as there is a next turn. A creator who reads the
+        plan, likes it and publishes never gets one: the app deploys, and several minutes later the
+        first viewer meets a 503 carrying a sentence the creator could have read before the deploy
+        started. So the same check runs once more, on the way out.
+
+        Not a guard, and deliberately not shaped like one. A broken query is one screen of an app
+        that may be fine everywhere else, and it re-exports nothing — which is the only thing
+        `_refuse_unsafe_publish` exists to stop. This tells the creator; the creator decides. It is
+        therefore a separate read rather than a step inside `publish`, and `publish` is unchanged.
+
+        Local and pure: two JSON files off the workspace disk and no network, so the common answer —
+        an app with no queries, or with queries that hold together — costs the publish flow nothing.
+
+        `checked` is false when Sage could not run the check at all (a template carrying no
+        `serve.py`). That is not the same answer as "no problems", and must not be reported as one.
+        """
+        project = self.project()
+        problems = catalog_problems(self._wm.template, project.workspace.path)
+        return {"checked": problems is not None, "queries": problems or []}
+
     def publish_status(self, app_id: str) -> dict:
         """Deploy status of a published app so the UI can poll after Publish. Maps the raw instance
         status to a phase: running (live) / failed / pending (still deploying)."""

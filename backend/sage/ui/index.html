@@ -147,6 +147,10 @@
   .guard-banner .gb-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 650; color: var(--lock); }
   .guard-banner .gb-item { font-size: 13px; line-height: 1.5; color: var(--text); }
   .guard-banner .gb-foot { display: flex; gap: 12px; margin-top: 1px; }
+/* the same block saying something the creator may publish past (#26). A warning that borrows the
+   refusal's red would be read as a refusal, and this one has a button that publishes. */
+.guard-banner.warn { border-color: var(--warn); }
+.guard-banner.warn .gb-head { color: var(--warn); }
   .divider { text-align: center; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .6px; margin: 6px 0; position: relative; }
   .divider::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--border); z-index: 0; }
   .divider span { position: relative; background: var(--bg); padding: 0 10px; z-index: 1; }
@@ -943,11 +947,54 @@ function mainHostUrl(u) {
   return u;
 }
 
+// The Publish button: check, confirm, then deploy.
+async function publishApp() {
+  // Ask the app's own query checker before the deploy, not the first viewer several minutes after it
+  // (#26). A warning, never a gate: a check that couldn't be fetched must not stand between a
+  // creator and their app, so anything other than a list of problems falls through to the confirm.
+  //
+  // The button is held down for the duration, short as it is: an orchestrator slow to answer would
+  // otherwise leave a live button that does nothing, and a second click a second banner.
+  const btn = document.getElementById('publish-btn');
+  btn.disabled = true;
+  let broken;
+  try { broken = await brokenQueries(); } finally { btn.disabled = false; }
+  if (broken.length) { showQueryWarning(broken); return; }
+  if (!confirm('Publish this app as a live Domino App?\n\nThis deploys the latest saved (committed) code. Any in-progress edits are saved first.')) return;
+  await doPublish();
+}
+
+// The sentences the published app would put in front of a viewer, or [] for "nothing to say" —
+// which covers a clean catalog, an app with no queries, and a check that failed, because none of
+// the three is a reason to interrupt someone who is publishing.
+async function brokenQueries() {
+  try {
+    const { ok, body } = await api('/api/publish-check');
+    return ok && Array.isArray(body.queries) ? body.queries : [];
+  } catch { return []; }
+}
+
+// Some of this app's named queries will not answer once it is deployed (#26). Shown in the app's own
+// words — this is verbatim what the first viewer would have read out of a 503 after a cold start.
+// Amber and not red, and the button publishes: unlike the refusal below, nothing here is unsafe, so
+// the creator gets the fact and the decision. Same `preflight` class, same reason.
+function showQueryWarning(problems) {
+  const d = document.createElement('div');
+  d.className = 'guard-banner warn preflight';
+  d.innerHTML = `<div class="gb-head"><span>⚠</span><span>Some of this app's queries won’t answer</span></div>`
+    + problems.map(p => `<div class="gb-item">${esc(p)}</div>`).join('')
+    + `<div class="gb-item">Sage has already told the agent about these, so asking it to fix them takes one message. `
+    + `Publishing now deploys the app with them still broken.</div>`
+    + `<div class="gb-foot"><button class="link-btn">Publish anyway</button></div>`;
+  const go = d.querySelector('.link-btn');
+  go.onclick = () => { go.disabled = true; doPublish(); };
+  append(d);
+}
+
 // Publish this app's committed code as a live, shareable Domino App, then poll the deploy to a
 // terminal state. Surfaces "Open app ↗" and "Manage settings in Domino ↗" links in the chat pane,
 // and reveals the toolbar Manage button once we know the app's settings URL.
-async function publishApp() {
-  if (!confirm('Publish this app as a live Domino App?\n\nThis deploys the latest saved (committed) code. Any in-progress edits are saved first.')) return;
+async function doPublish() {
   const btn = document.getElementById('publish-btn');
   btn.disabled = true;
   const s = addStatus('spin', '◐', 'Publishing to Domino…');

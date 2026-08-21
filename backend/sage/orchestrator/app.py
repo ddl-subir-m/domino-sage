@@ -513,6 +513,19 @@ async def publish() -> JSONResponse:
     return JSONResponse(content=result)
 
 
+@control_app.get("/api/publish-check")
+async def publish_check() -> JSONResponse:
+    """Which of this app's named queries the published app would refuse, read before publishing
+    (#26): {checked, queries}. A warning the UI shows and the creator may publish past — no state
+    changes here, and `POST /api/publish` neither calls this nor cares whether the UI did."""
+    try:
+        result = await run_in_threadpool(orchestrator.publish_check)
+    except Exception as e:
+        log.exception("publish-check failed")
+        return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
+    return JSONResponse(content=result)
+
+
 @control_app.get("/api/publish-status")
 async def publish_status(app_id: str) -> JSONResponse:
     """Deploy status of a published app so the UI can poll after Publish: {phase, status, app_id}."""
