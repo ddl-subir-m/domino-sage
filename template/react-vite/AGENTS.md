@@ -59,6 +59,11 @@ for, what you proposed, which steps ran.
   start. Build with what is already installed (listed under "What exists"); if a task truly can't
   be done without a new package, say so plainly instead of trying to install it.
 - Put the app UI in `src/App.tsx` (replace the placeholder). Split into `src/components/` as it grows.
+- **Send one edit at a time to a given file.** Several edits to the same file go out in parallel,
+  so every one after the first is applied against a file that already changed under it and comes
+  back rejected; you then re-read, re-edit, and race yourself again, and the turn makes no
+  progress. Change a file, let that change land, then make the next one. Editing *different*
+  files at once is fine and still worth doing.
 - **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, history, settings) as the current app spec or state — the code in `src/` is the source of truth. The one exception is `.sage/queries.json`, which you write when this app reads a Data Source: it holds the app's SQL, and there is a section below about it whenever there is a Data Source to write it for.
 - TypeScript everywhere. Small, typed components. Plain React + CSS is the default, and the
   installed packages are the whole toolbox — there is no adding to it mid-build.
@@ -106,6 +111,12 @@ Every app must look intentional and consistent. These rules are what separate a 
   than "this is revenue".
 - **Every series needs an explicit `name`.** Without it recharts renders `name="undefined"` into the
   DOM and the tooltip and legend both say "undefined".
+- **`Tooltip`'s `formatter`: leave its parameters unannotated.** recharts types `value` as
+  `ValueType | undefined`, and `ValueType` is `number | string | ReadonlyArray<number | string>` —
+  so `(value: number)` fails `tsc`, and so does the obvious second guess,
+  `(value: number | string | undefined)`, which still misses the readonly array. Let both
+  parameters infer and convert inside the body:
+  `formatter={(value, name) => ["$" + Number(value).toFixed(2), name]}`. Same for `labelFormatter`.
 - **Label it:** axis labels with units, and a title unless the surrounding card already says it.
   Bar-chart y-axes start at zero. Tooltips show the exact value.
 - An empty or still-loading chart gets the same treatment as any other collection — see below.
