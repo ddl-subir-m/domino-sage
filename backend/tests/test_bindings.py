@@ -18,6 +18,7 @@ from sage.resources.bindings import (
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
     Binding,
+    Mention,
     mention_note,
     parse_bindings,
 )
@@ -461,7 +462,7 @@ def test_a_mention_carries_the_kind_and_the_scope_not_just_the_name():
     alias = Binding(KIND_LLM_ALIAS, "id-sonnet", "sonnet", "Claude Sonnet 4.6")
     source = Binding(KIND_DATA_SOURCE, "ds-dwh", "Snowflake-Data-Warehouse",
                      "Snowflake-Data-Warehouse", "DWH", "MARTS", "FCT_USAGE_DAILY")
-    note = mention_note([alias, source], [alias, source])
+    note = mention_note([Mention(alias), Mention(source)], [alias, source])
     assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in note
     assert "Data Source **Snowflake-Data-Warehouse**, scoped to `DWH.MARTS.FCT_USAGE_DAILY`" in note
     assert "The model this app calls" in note and "The Data Source this app queries" in note
@@ -473,7 +474,7 @@ def test_a_mention_of_a_resource_the_app_is_not_wired_to_says_so():
     # forbids and Sage would overwrite on the next Binding change.
     wired = Binding(KIND_LLM_ALIAS, "id-sonnet", "sonnet", "Claude Sonnet 4.6")
     other = Binding(KIND_LLM_ALIAS, "id-haiku", "haiku", "Claude Haiku 4.5")
-    note = mention_note([other], [wired, other])
+    note = mention_note([Mention(other)], [wired, other])
     assert "NOT the model this app calls" in note
     assert "**Claude Sonnet 4.6**" in note          # names the one it IS wired to
     assert "do not rewire the app to this one" in note
@@ -483,7 +484,7 @@ def test_a_kind_this_sage_does_not_know_is_still_mentionable():
     # Same rule as parse_bindings: a newer Sage's record is not this one's to drop, and a mention of
     # it must not claim to know what the app does with it.
     b = Binding("vector_store", "v1", "embeddings", "embeddings")
-    note = mention_note([b], [b])
+    note = mention_note([Mention(b)], [b])
     assert "vector_store **embeddings** — recorded as used by this app." in note
 
 
@@ -510,3 +511,41 @@ def test_the_same_resource_mentioned_twice_is_one_line(tmp_path: Path):
     orch.bind_llm_alias("id-sonnet")
     ref = {"kind": "llm_alias", "id": "id-sonnet"}
     assert orch._resource_mention_note(orch.project(), [ref, ref]).count("- LLM Alias") == 1
+
+
+def test_a_mention_can_name_one_table_inside_the_data_source(tmp_path: Path):
+    # As deep as a mention goes. The Scope says what the app queries; a table says what THIS request
+    # is about, which a Binding cannot record without changing what the published app reads.
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")   # a schema, so the Scope holds many tables
+    note = orch._resource_mention_note(
+        orch.project(), [{"kind": "data_source", "id": "ds-dwh", "table": "FCT_USAGE_DAILY"}])
+    assert "scoped to `DWH.MARTS`" in note                    # the Binding is unchanged
+    assert "the table `FCT_USAGE_DAILY` inside it" in note    # and the request is narrowed
+    assert "AGENTS.md data block lists" in note               # the columns are not repeated here
+
+
+def test_a_table_the_recorded_schema_does_not_name_is_dropped(tmp_path: Path):
+    # Same fail-closed rule the Binding follows. A table outside the Scope is one the agent has no
+    # columns for, so pointing at it would be pointing at nothing.
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    note = orch._resource_mention_note(
+        orch.project(), [{"kind": "data_source", "id": "ds-dwh", "table": "SCRATCH_FORECAST"}])
+    assert "Data Source **Snowflake-Data-Warehouse**" in note   # the Resource still resolves
+    assert "SCRATCH_FORECAST" not in note                       # the table does not
+    assert "inside it" not in note
+
+
+def test_the_source_and_a_table_in_it_are_one_line(tmp_path: Path):
+    # "@Snowflake-Data-Warehouse and @FCT_USAGE_DAILY" names one Resource once. Two lines would read
+    # as two dependencies, which is exactly the confusion the mention exists to remove.
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    note = orch._resource_mention_note(orch.project(), [
+        {"kind": "data_source", "id": "ds-dwh"},
+        {"kind": "data_source", "id": "ds-dwh", "table": "FCT_USAGE_DAILY"},
+        {"kind": "data_source", "id": "ds-dwh", "table": "DIM_ACCOUNT"},
+    ])
+    assert note.count("- Data Source") == 1
+    assert "the tables `FCT_USAGE_DAILY`, `DIM_ACCOUNT` inside it" in note

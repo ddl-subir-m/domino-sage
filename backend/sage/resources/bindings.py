@@ -90,6 +90,20 @@ class Binding:
         return out
 
 
+@dataclass(frozen=True)
+class Mention:
+    """One @mention in a prompt: the Binding it names, and the tables inside it it pointed at (#31).
+
+    A table rides the Binding rather than standing on its own because that is what it is — not a
+    Resource Sage can be bound to, but a place inside one. Keeping them apart is what lets the note
+    say the true thing: a mentioned table narrows the REQUEST, while the Binding's scope is still
+    what the published app queries.
+    """
+
+    binding: Binding
+    tables: tuple[str, ...] = ()
+
+
 def parse_bindings(raw: object) -> list[Binding]:
     """Bindings from a manifest body, in file order.
 
@@ -135,7 +149,7 @@ _KIND_TEXT = {
 }
 
 
-def mention_note(mentioned: list[Binding], recorded: list[Binding]) -> str:
+def mention_note(mentions: list[Mention], recorded: list[Binding]) -> str:
     """The block a turn carries when the creator @mentioned Resources in the prompt (#31), or "".
 
     A mention has to reach the agent as an IDENTITY, not as the text of a name. The creator picked a
@@ -148,13 +162,14 @@ def mention_note(mentioned: list[Binding], recorded: list[Binding]) -> str:
     that a mentioned Resource is not the one the app is wired to, since AGENTS.md only ever describes
     the wired one.
     """
-    if not mentioned:
+    if not mentions:
         return ""
     wired: dict[str, Binding] = {}
     for b in recorded:
         wired.setdefault(b.kind, b)
     lines = []
-    for b in mentioned:
+    for mention in mentions:
+        b = mention.binding
         kind, role = _KIND_TEXT.get(b.kind, (b.kind, ""))
         # The display name is what the creator picked from; the name is what they typed after the @.
         # Both, when they differ, so neither reading of the mention is left guessing.
@@ -169,6 +184,13 @@ def mention_note(mentioned: list[Binding], recorded: list[Binding]) -> str:
             said = (f"recorded, but NOT {role} — that is **{app.display_name}**. Which one the app "
                     f"uses is chosen in Sage, not in code, so do not rewire the app to this one; if "
                     f"that is what the user wants, tell them to change it in the Resources rail.")
+        # The tables the creator reached for inside the Resource. Their columns are already in the
+        # AGENTS.md data block, so this points rather than repeats — the block is re-read every turn,
+        # and a second copy of the columns here would cost context to say what is already said.
+        if mention.tables:
+            named = ", ".join(f"`{t}`" for t in mention.tables)
+            said += (f" The request is about {'the table' if len(mention.tables) == 1 else 'the tables'} "
+                     f"{named} inside it, whose columns the AGENTS.md data block lists.")
         lines.append(f"- {kind} **{name}**{scope} — {said}")
     return ("The user @mentioned these Resources in the message above. This app is already recorded "
             "as using each one, and AGENTS.md says how to use it — take these as the exact Resources "

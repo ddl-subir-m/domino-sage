@@ -40,6 +40,7 @@ from ..resources.bindings import (
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
     Binding,
+    Mention,
     mention_note,
     parse_bindings,
 )
@@ -1332,24 +1333,38 @@ class Orchestrator:
         A ref is `{"kind", "id"}` — a Binding's identity rather than a name — because the name is
         exactly what cannot survive the trip: two kinds can carry the same one, and the creator picked
         a row out of a list. Attachments resolve to a path; a Resource has none, so this is its own
-        channel and not another entry in `mentions`.
+        channel and not another entry in `mentions`. An optional `table` names one place inside a
+        Data Source, which is as deep as a mention goes: everything below the Binding's scope was
+        already enumerated when the Scope was bound, and everything outside it is not on disk.
 
         Only Resources this app holds a Binding for are honored, the same rule `_resolve_mentions`
         applies to attachments: mentioning one it is not bound to would ask the agent to use a
-        Resource with no schema, credential or config behind it.
+        Resource with no schema, credential or config behind it. A table is held to the same rule
+        against the recorded schema — one that is not in it is one the agent has no columns for.
         """
         if not resources:
             return ""
         recorded = parse_bindings(project.workspace.read_bindings())
         known = {b.key: b for b in recorded}
-        mentioned: list[Binding] = []
+        in_schema = {c.table for c in
+                     parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH))}
+        # Grouped by Binding, in the order they were mentioned: "@Snowflake-Data-Warehouse and
+        # @FCT_USAGE_DAILY" names one Resource once, not twice, and the tables belong on that line.
+        order: list[tuple[str, str]] = []
+        tables: dict[tuple[str, str], list[str]] = {}
         for ref in resources:
             if not isinstance(ref, dict):
                 continue
-            b = known.get((str(ref.get("kind") or ""), str(ref.get("id") or "")))
-            if b is not None and b not in mentioned:
-                mentioned.append(b)
-        return mention_note(mentioned, recorded)
+            key = (str(ref.get("kind") or ""), str(ref.get("id") or ""))
+            if key not in known:
+                continue
+            if key not in tables:
+                order.append(key)
+                tables[key] = []
+            table = str(ref.get("table") or "")
+            if table and table in in_schema and table not in tables[key]:
+                tables[key].append(table)
+        return mention_note([Mention(known[k], tuple(tables[k])) for k in order], recorded)
 
     def _image_data_uri(self, real: Path) -> str | None:
         """An image inlined as `data:<mime>;base64,...` for the agent's prompt, or None if it can't

@@ -1824,6 +1824,10 @@ function sharedSampleTables() {
 // without a fetch. Refreshed by every call that changes it.
 let sharedSamplesCache = [];
 let sharedSamplesSensitive = false;
+// Every table inside the bound Scope, for the @ menu (#31). Enumerated when the Scope was bound and
+// read back out of `.sage/schema.json`, so the list costs no warehouse query — the same request the
+// rail already makes for shared samples carries it.
+let boundTablesCache = [];
 
 function sampleControl(d) {
   const wrap = document.createElement('div');
@@ -2126,12 +2130,14 @@ async function loadSharedSamples() {
   if (!(bindingsCache || []).some(b => b.kind === 'data_source')) {
     sharedSamplesCache = [];
     sharedSamplesSensitive = false;
+    boundTablesCache = [];
     return;
   }
   const { ok, body } = await api('/api/project/samples');
   if (!ok) return;   // could not ask is not evidence nothing is shared; leave the row as it was
   sharedSamplesCache = body.shared || [];
   sharedSamplesSensitive = Boolean(body.sensitive);
+  boundTablesCache = body.tables || [];
   renderDataSources();
 }
 
@@ -4088,7 +4094,18 @@ function mentionCandidates() {
       ref: { kind: b.kind, id: b.id },
     };
   });
-  return files.concat(resources);
+  // One level deeper, and only this one: the tables inside the bound Scope. Flat rows rather than a
+  // drill-down, because the menu has no modes — you type, it narrows — and a level to descend into
+  // would mean Escape backs out instead of closing, and a filter that knows which level it is on.
+  // Nothing ABOVE the Scope is offered: those levels are not on disk, and reading them would cost a
+  // warehouse query per keystroke for Resources this app has no schema for.
+  const source = (bindingsCache || []).find(b => b.kind === 'data_source');
+  const tables = source ? boundTablesCache.map(t => ({
+    token: t, label: `Table \u00b7 ${source.display_name}`,
+    title: `${t} \u2014 inside ${source.display_name}`,
+    ref: { kind: source.kind, id: source.id, table: t },
+  })) : [];
+  return files.concat(resources, tables);
 }
 
 function updateMentionMenu() {
@@ -4165,22 +4182,31 @@ function collectMentions(text) {
   return out;
 }
 
-// Map "@<name>" tokens back to the Bindings they name, as identities (kind + id) rather than text:
-// an id is only unique within its kind, and the turn has to carry WHICH Resource was meant.
+function sameRef(a, b) {
+  return a.kind === b.kind && a.id === b.id && (a.table || '') === (b.table || '');
+}
+
+// Map "@<name>" tokens back to what they name, as identities (kind + id, plus a table when the token
+// named one) rather than text: an id is only unique within its kind, and the turn has to carry WHICH
+// Resource was meant. Read off the same candidate list the menu renders, so what a row offers and
+// what the turn sends cannot drift apart.
 function collectResourceMentions(text) {
-  const bound = bindingsCache || [];
+  const byToken = new Map();
+  for (const c of mentionCandidates()) {
+    if (!c.ref) continue;                      // an attached file — collectMentions has that one
+    if (!byToken.has(c.token)) byToken.set(c.token, []);
+    byToken.get(c.token).push(c.ref);
+  }
   const out = [];
-  for (const name of new Set(bound.map(b => b.name))) {
-    if (!mentionedIn(text, name)) continue;
-    let named = bound.filter(b => b.name === name);
+  for (const [token, refs] of byToken) {
+    if (!mentionedIn(text, token)) continue;
     // The pick wins when a name is shared. A token typed by hand was never picked, and a pick whose
-    // Resource has since been unbound is no pick at all: both fall back to every Binding of that
-    // name — each labelled by kind for the agent, which is still an answer where the bare word in
-    // the sentence was not.
-    const picked = pickedMentions.get(name);
-    const one = picked && named.find(b => b.kind === picked.kind && b.id === picked.id);
-    if (one) named = [one];
-    for (const b of named) out.push({ kind: b.kind, id: b.id });
+    // Resource has since been unbound is no pick at all: both fall back to every match for that name
+    // — each labelled by kind for the agent, which is still an answer where the bare word in the
+    // sentence was not.
+    const picked = pickedMentions.get(token);
+    const one = picked && refs.find(r => sameRef(r, picked));
+    for (const ref of (one ? [one] : refs)) out.push(ref);
   }
   return out;
 }
