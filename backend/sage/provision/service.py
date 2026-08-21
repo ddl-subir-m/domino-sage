@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from ..resources.bindings import parse_bindings
+from ..resources.builtapp import catalog_problems
 from ..resources.provider import DataSource, FakeResourceProvider, ResourceProvider
 from ..resources.publish_guard import PublishRefused, data_source_bindings, publish_problems
 from . import naming
@@ -91,6 +93,7 @@ _DELETE_RETRY_DELAY = 5.0
 
 _ENTRY_POINT = "app.sh"  # the entry script Domino runs to serve a published app (repo root)
 _BINDINGS_PATH = ".sage/bindings.json"  # the app's committed Resource list, as the workspace writes it
+_QUERIES_PATH = ".sage/queries.json"    # the query catalog the creator's agent wrote (#15)
 
 
 def _repo_full_name(git_url: str | None) -> str | None:
@@ -363,6 +366,53 @@ class HubService:
         problems = publish_problems(bindings, sources, visibility)
         if problems:
             raise PublishRefused(problems)
+
+    def publish_check(self, project_id: str) -> dict[str, Any]:
+        """What the published app is going to refuse to answer, asked BEFORE the hub publishes (#27).
+
+        The same question `Orchestrator.publish_check` asks, answered for the creator who never
+        opened the builder — which is precisely the person #26 was written for and the one route that
+        did not tell them. It informs and does not block: a broken query is one screen of an app that
+        may be fine everywhere else, and the creator can publish straight past it, exactly as they can
+        from the rail.
+
+        The hub has no workspace, so the two manifests come off the default branch rather than off
+        disk, and are written to a temp dir for the checker to read. That is deliberate. The
+        alternative — a sibling of `catalog_problems` taking raw payloads — would need `load_queries`
+        to grow a seam that does not read from disk, and it does not have one on purpose: it ships in
+        the creator's app repo and answers to the app, not to Sage. A temp dir per hub publish is the
+        cheaper thing to spend, and it keeps ONE implementation and one call signature.
+
+        Everything here fails open. No repo, an unreadable one, and a template with no `serve.py` all
+        answer `checked: false` with nothing to say, because none of the three is evidence that a
+        query is broken. An app with no catalog answers `checked: true` with nothing to say, which is
+        a different fact and costs no temp dir at all.
+        """
+        ref = next((a for a in self._cp.list_apps() if a.id == project_id), None)
+        full = _repo_full_name(ref.git_url) if ref else None
+        if not full:
+            return {"checked": False, "queries": []}
+        try:
+            queries = self._repo.read_file(full, _QUERIES_PATH, self._branch)
+            # `read_file` answers None for a file that is not there and raises for a repo it could
+            # not reach, so the two stay tellable apart here even though they look the same later.
+            if queries is None:
+                return {"checked": True, "queries": []}
+            bindings = self._repo.read_file(full, _BINDINGS_PATH, self._branch)
+        except Exception:
+            log.exception("publish-check: couldn't read the manifests from %s", full)
+            return {"checked": False, "queries": []}
+        with tempfile.TemporaryDirectory(prefix="sage-publish-check-") as tmp:
+            root = Path(tmp)
+            (root / _QUERIES_PATH).parent.mkdir(parents=True, exist_ok=True)
+            (root / _QUERIES_PATH).write_text(queries, encoding="utf-8")
+            # A missing bindings manifest is written as missing rather than as an empty one: the
+            # published app would read it the same way, and the point of this check is to say what
+            # THAT app will say.
+            if bindings is not None:
+                (root / _BINDINGS_PATH).write_text(bindings, encoding="utf-8")
+            problems = catalog_problems(self._template, root)
+        return {"checked": problems is not None, "queries": problems or []}
 
     def _read_bindings(self, full_name: str | None) -> list[dict]:
         """The app's committed Resource list, or [] when there isn't one to read."""

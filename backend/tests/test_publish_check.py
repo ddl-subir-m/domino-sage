@@ -27,6 +27,8 @@ import httpx
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.provision.domino import FakeControlPlane
+from sage.provision.github import FakeRepoProvider
+from sage.provision.service import HubService
 from sage.resources.builtapp import serve_module
 from sage.resources.provider import FakeResourceProvider
 from sage.router.models import ModelCatalog
@@ -236,3 +238,187 @@ def _running(root: Path):
         srv.shutdown()
         srv.server_close()
         t.join(timeout=5)
+
+
+# ---- the same question, asked on the hub's route (#27) --------------------------------------------
+#
+# #26 shipped the check on the builder's route only. The creator this was written for — the one who
+# read the plan, liked it and closed the builder — comes back to the gallery, and that was the one
+# route that did not tell them. The hub has no workspace, so the two manifests come off the default
+# branch and are written to a temp dir for the SAME checker. What is worth pinning here is that it is
+# the same checker: a second implementation for the from-git case would be right on the day it was
+# written and wrong on the day someone changed `serve.py`.
+
+_GIT_URL = "https://github.com/me/sage-sales-app.git"
+_FULL = "me/sage-sales-app"
+
+
+def _hub_for(tmp: Path, cp: FakeControlPlane, repo: FakeRepoProvider, *, with_serve: bool = True) -> HubService:
+    return HubService(cp, repo, _template(tmp, with_serve=with_serve), seed=lambda *a, **k: None,
+                      resources=FakeResourceProvider())
+
+
+def _repo_carrying(orch: Orchestrator, entries: list) -> FakeRepoProvider:
+    """A repo holding exactly what the builder just wrote to disk.
+
+    Taken off the workspace rather than hand-written, so the two routes are provably fed the same
+    bytes — the point of the comparison below is the checker, not a fixture that happens to agree.
+    """
+    root = _write_queries(orch, entries)
+    repo = FakeRepoProvider()
+    repo.files[(_FULL, ".sage/queries.json")] = (root / ".sage" / "queries.json").read_text()
+    repo.files[(_FULL, ".sage/bindings.json")] = (root / ".sage" / "bindings.json").read_text()
+    return repo
+
+
+def test_the_hub_names_a_broken_query_before_the_deploy(tmp_path: Path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+    repo = _repo_carrying(_orch(tmp_path / "b"), [UNDECLARED])
+
+    result = _hub_for(tmp_path, cp, repo).publish_check(ref.id)
+
+    assert result["checked"] is True
+    assert len(result["queries"]) == 1
+    assert "since" in result["queries"][0] and "revenue" in result["queries"][0]
+
+
+def test_the_hub_and_the_rail_say_the_same_words(tmp_path: Path):
+    # The criterion, and the reason there is no second checker. Same sentences, not a paraphrase —
+    # and by construction the same ones the published app puts in its 503, which the rail's own test
+    # already pins against the running server.
+    orch = _orch(tmp_path / "b")
+    repo = _repo_carrying(orch, [UNDECLARED, SOUND])
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+
+    from_the_rail = orch.publish_check()
+    from_the_hub = _hub_for(tmp_path, cp, repo).publish_check(ref.id)
+
+    assert from_the_hub == from_the_rail
+    assert from_the_hub["queries"]
+
+
+def test_the_hub_says_nothing_about_a_catalog_that_holds_together(tmp_path: Path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+    repo = _repo_carrying(_orch(tmp_path / "b"), [SOUND])
+
+    assert _hub_for(tmp_path, cp, repo).publish_check(ref.id) == {"checked": True, "queries": []}
+
+
+def test_an_app_with_no_catalog_costs_the_hub_publish_nothing(tmp_path: Path):
+    # Every app built before #11, and every app that reads no store. `checked` is true because the
+    # question WAS answered — there are no queries to be broken.
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+
+    assert _hub_for(tmp_path, cp, FakeRepoProvider()).publish_check(ref.id) == {
+        "checked": True, "queries": []}
+
+
+def test_a_repo_the_hub_could_not_read_does_not_report_a_clean_bill(tmp_path: Path):
+    # "We could not check" must never be published as "nothing is wrong" — and it must not block
+    # either, which the publish test below pins.
+    class _DeadRepo(FakeRepoProvider):
+        def read_file(self, full_name: str, path: str, ref: str) -> str | None:
+            raise RuntimeError("GitHub said 502")
+
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+
+    assert _hub_for(tmp_path, cp, _DeadRepo()).publish_check(ref.id) == {"checked": False, "queries": []}
+
+
+def test_an_app_with_no_repo_is_not_reported_as_clean(tmp_path: Path):
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url="")
+
+    assert _hub_for(tmp_path, cp, FakeRepoProvider()).publish_check(ref.id) == {
+        "checked": False, "queries": []}
+
+
+def test_a_template_the_hub_cannot_read_does_not_report_a_clean_bill(tmp_path: Path):
+    # Same distinction the rail draws for a template carrying no `serve.py`: Sage could not ask.
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+    repo = _repo_carrying(_orch(tmp_path / "b"), [UNDECLARED])
+
+    result = _hub_for(tmp_path, cp, repo, with_serve=False).publish_check(ref.id)
+
+    assert result == {"checked": False, "queries": []}
+
+
+def test_a_catalog_whose_bindings_manifest_is_missing_is_judged_as_the_app_would(tmp_path: Path):
+    # The published app would read the same absent file, so the check reports what THAT app says
+    # rather than inventing an empty manifest to be kinder than the runtime is.
+    orch = _orch(tmp_path / "b")
+    root = _write_queries(orch, [SOUND])
+    repo = FakeRepoProvider()
+    repo.files[(_FULL, ".sage/queries.json")] = (root / ".sage" / "queries.json").read_text()
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+
+    result = _hub_for(tmp_path, cp, repo).publish_check(ref.id)
+
+    assert result["checked"] is True
+    assert len(result["queries"]) == 1   # the Binding the query names is not there to be found
+
+
+def test_the_hub_check_publishes_nothing(tmp_path: Path):
+    # It informs. #12's guards refuse; this one must not even touch the control plane.
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+    repo = _repo_carrying(_orch(tmp_path / "b"), [UNDECLARED])
+
+    _hub_for(tmp_path, cp, repo).publish_check(ref.id)
+
+    assert not cp.published
+
+
+def test_a_broken_query_does_not_stop_the_hub_publishing(tmp_path: Path):
+    # Informs rather than refuses: the creator can publish straight past it, exactly as from the rail.
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+    repo = _repo_carrying(_orch(tmp_path / "b"), [UNDECLARED])
+    hub = _hub_for(tmp_path, cp, repo)
+
+    assert hub.publish_check(ref.id)["queries"]
+    assert hub.publish_app(ref.id)["published"] is True
+
+
+def test_the_hub_route_answers_with_the_problems(tmp_path: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import sage.hub.app as hubmod
+
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+    repo = _repo_carrying(_orch(tmp_path / "b"), [UNDECLARED])
+    monkeypatch.setattr(hubmod, "hub", _hub_for(tmp_path, cp, repo))
+
+    r = TestClient(hubmod.app).get(f"/api/apps/{ref.id}/publish-check")
+
+    assert r.status_code == 200
+    assert r.json()["checked"] is True
+    assert len(r.json()["queries"]) == 1
+
+
+def test_the_hub_route_never_fails_the_request_it_precedes(tmp_path: Path, monkeypatch):
+    # Unlike the builder's, which 502s so the failure is visible in a log the maintainer reads. Here
+    # a 500 would be a hub that cannot publish because it could not run an advisory check, so this
+    # answers 200 with `checked: false` — the shape the UI already reads as "nothing to say".
+    from fastapi.testclient import TestClient
+
+    import sage.hub.app as hubmod
+
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+    hub = _hub_for(tmp_path, cp, FakeRepoProvider())
+    monkeypatch.setattr(hub, "publish_check", _raise)
+    monkeypatch.setattr(hubmod, "hub", hub)
+
+    r = TestClient(hubmod.app, raise_server_exceptions=False).get(f"/api/apps/{ref.id}/publish-check")
+
+    assert r.status_code == 200
+    assert r.json() == {"checked": False, "queries": []}

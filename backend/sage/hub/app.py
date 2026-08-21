@@ -267,6 +267,24 @@ async def stop_app(project_id: str, request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.get("/api/apps/{project_id}/publish-check")
+async def publish_check(project_id: str) -> JSONResponse:
+    """The sentences the published app would put in front of a viewer, asked before publishing (#27).
+
+    Its own GET rather than a step inside publish, mirroring the builder's route: this informs, and
+    the creator decides. Always 200 — "we could not check" is a `checked: false` in the body, not a
+    failed request, because a hub that cannot read a repo must still be able to publish.
+    """
+    try:
+        result = await run_in_threadpool(hub.publish_check, project_id)
+    except Exception:
+        # Never blocks the publish it precedes: the UI reads an error the same way it reads a clean
+        # catalog, which is "nothing to say".
+        log.exception("publish_check failed")
+        return JSONResponse({"checked": False, "queries": []})
+    return JSONResponse(result)
+
+
 @app.post("/api/apps/{project_id}/publish")
 async def publish_app(project_id: str) -> JSONResponse:
     """Publish (or re-publish) the app's latest committed code as a live, shareable Domino App."""
