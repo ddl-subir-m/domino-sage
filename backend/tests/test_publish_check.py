@@ -422,3 +422,22 @@ def test_the_hub_route_never_fails_the_request_it_precedes(tmp_path: Path, monke
 
     assert r.status_code == 200
     assert r.json() == {"checked": False, "queries": []}
+
+
+def test_a_repo_that_404s_reads_as_no_catalog_rather_than_as_a_failure(tmp_path: Path):
+    """Pinning what real GitHub actually does, found by running against it on 2026-08-22.
+
+    `read_file` maps 404 to None, and GitHub answers 404 for a missing file, a missing ref and a
+    missing repo alike. So a deleted repo lands on `checked: true` with nothing to say, not on
+    `checked: false`. That is the honest outcome and not worth a second round trip to sharpen: a repo
+    that is not there has no catalog either, and `publish_app`'s entry-script pre-check already fails
+    that publish loudly. The test exists so nobody "corrects" it into an extra call later.
+    """
+    class _Missing(FakeRepoProvider):
+        def read_file(self, full_name: str, path: str, ref: str) -> str | None:
+            return None      # what a 404 becomes, for any of the three reasons
+
+    cp = FakeControlPlane()
+    ref = cp.create_project("Sales App", git_url=_GIT_URL)
+
+    assert _hub_for(tmp_path, cp, _Missing()).publish_check(ref.id) == {"checked": True, "queries": []}

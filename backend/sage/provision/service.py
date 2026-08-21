@@ -383,10 +383,18 @@ class HubService:
         the creator's app repo and answers to the app, not to Sage. A temp dir per hub publish is the
         cheaper thing to spend, and it keeps ONE implementation and one call signature.
 
-        Everything here fails open. No repo, an unreadable one, and a template with no `serve.py` all
-        answer `checked: false` with nothing to say, because none of the three is evidence that a
-        query is broken. An app with no catalog answers `checked: true` with nothing to say, which is
-        a different fact and costs no temp dir at all.
+        Everything here fails open, and `checked` says which kind of silence it is. Measured against
+        real GitHub on 2026-08-22, because the distinction is finer than it first looks:
+
+          - a project with no git_url, or a template with no `serve.py`  -> `checked: false`
+          - a token that is bad or lacks scope (401/403, which `read_file` RAISES) -> `checked: false`
+          - an app with no catalog, and a repo that 404s                 -> `checked: true`
+
+        That last row merges two things on purpose. GitHub answers 404 for a missing file, a missing
+        ref and a missing repo alike, so `read_file` cannot tell them apart and neither can this. It
+        costs nothing: a repo that is not there has no catalog to check either, and the publish it
+        precedes fails loudly on its own entry-script pre-check rather than quietly. Buying the
+        distinction would mean a second round trip on every hub publish for a field no user sees.
         """
         ref = next((a for a in self._cp.list_apps() if a.id == project_id), None)
         full = _repo_full_name(ref.git_url) if ref else None
