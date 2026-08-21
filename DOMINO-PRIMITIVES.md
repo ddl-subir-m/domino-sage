@@ -133,8 +133,9 @@ and `description` is often `""` — or a copy of the name (`gpt-5.4`).
 
 So a Domino-hosted GenAI endpoint reaches the gateway through the `domino_platform`
 provider. Provider records also carry **`health_status`** and **`last_health_check`** —
-a readiness signal, the gateway's analogue of a data source's `status` or an endpoint's
-`Running`. A picker should surface it.
+which look like a readiness signal, the gateway's analogue of a data source's `status` or an
+endpoint's `Running`. **They are not one. Do not surface them.** Measured 2026-08-21: see
+"health_status is stale and wrong" below.
 
 ### RESOLVED — Sage's gateway is fine; the scare was the wrong deployment
 
@@ -227,8 +228,10 @@ populated field a picker can rely on.
 1. **Alias `status` does not reflect endpoint health.** `status: "active"` is alias
    configuration. Nothing suggests it flips when the endpoint behind it stops — that is what
    the provider record's `health_status` and `last_health_check` are for. So a picker showing
-   alias `status` would label a dead model "active". Use the provider's health field.
-   (Unverified in the stopped case; it would need the endpoint stopped to prove.)
+   alias `status` would label a dead model "active". That much still holds — but the
+   remedy named here was wrong. **Do not use the provider's health field either**; it was
+   measured on 2026-08-21 and is stale and wrong (below). Endpoint status comes from
+   `GET /api/gen-ai/beta/endpoints`, joined on `url`.
 2. **Sage has no model-availability preflight.** There are `/healthz` endpoints
    (`shim/app.py:69`, `hub/app.py:133`) but no check that the configured aliases resolve. So
    a stopped sovereign endpoint surfaces as an opaque mid-build failure rather than a clear
@@ -238,6 +241,53 @@ populated field a picker can rely on.
 lifecycle, and add a preflight that resolves every configured `SAGE_MODEL_*` alias against
 `/v1/models` at startup. The preflight is small and would convert a confusing mid-build
 failure into a legible one.
+
+### MEASURED 2026-08-21 — how preflight can see a stopped endpoint (#21)
+
+`spikes/domino-probes/alias_endpoint_join_probe.py`, run on cloud-dogfood against
+`/apps/llm_gateway/v1`. 14 aliases, 8 accessible, 18 endpoints, 1 Running.
+
+**Status costs one call, deployment-wide.** `GET /api/gen-ai/beta/endpoints` answered **200
+unscoped** for a normal (non-admin) caller. `projectId` is an optional query parameter, so it
+is not a call per slot or per Binding. Response is `ModelEndpointsListingV1 {items: [...]}`;
+status lives at `currentVersion.status`, and `currentVersion` is **optional** — an endpoint
+with no version has no status at all. The enum (`ModelEndpointStatusV1`) is `Building,
+BuildFailed, Starting, Running, Stopping, Stopped, Failed, Unknown` — richer than
+stopped-versus-gone, and it separates three different remedies: start it, replace it, wait.
+
+**The join key is `url`, and it arrives free.** The alias record already carries
+`endpoint_url`; `provider.py:772` already fetches `/api/aliases` and the parse at `:592`
+throws the field away. Matching is on the endpoint's **`url`**, after stripping the trailing
+`/v1` from `endpoint_url` — measured `{'id': 0, 'url': 2, 'vanityUrl': 0}`. The line above
+that calls it "that vanity id" is loose; the value sits in a `url` path and matches `url`.
+
+**Missing the join is the normal case, not an edge case.** 12 of 14 aliases carry no
+`endpoint_url` at all — every `anthropic`, `bedrock`, `vertex` and `openai` one. Only
+`qwen-2-5` and `local-domino-llm` join. So "not a hosted endpoint" must be a first-class
+answer that reads as *unknown*, never as *stopped*.
+
+**`health_status` is stale and wrong — the alternative is rejected.** The field is populated
+(`healthy`, `error`, `unknown`), which is why it looked usable. But the `qwen-2-5-14b` vllm
+provider reports **`health='error'` while its endpoint is `Running`**, off a
+`last_health_check` of 2026-07-20 — a month stale. `Domino Platform` reports `healthy` with
+`last_health_check: None`, never checked at all. A source that calls a working model broken is
+worse than no source. It is also per-provider, not per-alias, so it is the wrong granularity
+regardless.
+
+**Still open: does a stopped endpoint's alias stay in `/v1/models`?** One case exists —
+`local-domino-llm` points at the `Stopped` `Mistral-7B-Instruct-v02` and is absent from
+`/v1/models` — but it is **confounded**: that alias is also absent from
+`/api/aliases/accessible`, so the caller holds no grant for it and the absence says nothing
+about status. Settle it by having `local-domino-llm` granted to the Sage caller and re-running;
+it already points at a stopped endpoint, so no endpoint needs stopping. Do **not** stop
+`qwen-2-5` for the experiment: it is `Consumer` access in another team's project and the only
+Running endpoint of 18.
+
+**This does not gate the work.** Either answer needs the same listing and the same `url` join.
+If the alias stays in `/v1/models`, preflight needs a new check. If it drops out,
+`unresolved_slots` already fires — but its message says the alias is not registered and tells
+the creator to register it, when the alias *is* registered and the endpoint is merely stopped.
+Wrong remedy, same fix required to tell the two apart.
 
 ### What direct calls established anyway — still useful at REGISTRATION time
 

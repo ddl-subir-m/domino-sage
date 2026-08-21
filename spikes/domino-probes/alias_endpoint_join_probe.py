@@ -121,6 +121,20 @@ if st_e != 200:
 
 accessible = {str(r.get("id")) for r in models if r.get("id")}
 
+# Two LLM Gateway deployments exist on cloud-dogfood and only one is Sage's
+# (DOMINO-PRIMITIVES.md:139). The sparse one answers with ~4 OpenRouter aliases, none
+# carrying an endpoint_url, so the join finds nothing and the sovereign tier looks
+# de-registered. That trap cost two runs before this guard existed. Sage's own defaults
+# (shim/app.py:51-56) are the tell: all four resolve on the right gateway.
+SAGE_DEFAULTS = ("qwen-2-5", "gpt-5.4", "bedrock-qwen3-coder", "sonnet")
+absent = [d for d in SAGE_DEFAULTS if d not in accessible]
+if absent:
+    print(f"\n  !! {len(absent)} of Sage's {len(SAGE_DEFAULTS)} default aliases are missing here: "
+          f"{', '.join(absent)}")
+    print("     You are probably pointed at the WRONG GATEWAY. Sage's is /apps/llm_gateway/v1.")
+    print("     See DOMINO-PRIMITIVES.md:139. Re-run with GATEWAY_BASE_URL set to that one")
+    print("     before believing anything below.")
+
 # ---- the endpoint table ------------------------------------------------------------------------
 print("\n" + "=" * 78)
 print("HOSTED GenAI ENDPOINTS — status is on currentVersion, which is OPTIONAL")
