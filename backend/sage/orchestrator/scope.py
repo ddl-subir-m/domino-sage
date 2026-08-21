@@ -17,8 +17,19 @@ Three properties the caller depends on:
     interrupts one of those with an approval wall every time, while a wrong BUILD lands a diff the
     user can revert (the snapshot is already there). This is the OPPOSITE of the first-build gate's
     bias, where ambiguity gates — on turn one there is no app to fall back to.
-  * Fails open. Any error, timeout, or answer we don't recognise returns False and the turn builds
-    exactly as it does today. A classifier that is down must not be a classifier that blocks builds.
+  * Fails OPEN when it is down, SAFE when it is broken — two different failures with two different
+    right answers. An error or a timeout means the call never landed: that returns False and the turn
+    builds exactly as it does today, because a classifier nobody can reach must not be a classifier
+    that blocks builds. An answer that arrives and is unreadable is the opposite case — the call
+    worked and the contract didn't — and that returns True, because a needless plan card is a pause
+    the user can approve away while a needless build is a diff already written into their app.
+    Observed live 2026-08-21 (#29): four consecutive empty verdicts, every one silently absorbed into
+    a build, on turns whose whole content was "the data you asked about isn't attached".
+  * Reports itself broken instead of degrading quietly. Three unreadable answers in a row is not a
+    flake, so it trips a breaker: logged once at ERROR for the maintainer (it lands in the ring
+    /api/diag/log serves), and the classifier is not called again this process. A permanently broken
+    one then costs nothing and falls back to the old build default, rather than walling every Auto
+    turn behind an approval prompt it can never stop asking for.
   * Bounded. The call runs on a worker thread with a hard wall-clock timeout, because the gateway
     client sets no read timeout on streams by design (a mid-build stall was traced to one) and a hung
     classify would otherwise hang the whole turn before it started.
@@ -67,6 +78,55 @@ MAX_FILES = 60
 
 # Above this a file is an asset, not source, and counting its newlines is pointless I/O.
 MAX_FILE_BYTES = 200_000
+
+# Unreadable answers in a row before the classifier is declared broken and stops being called. One
+# is a flake and two is bad luck, but a model that has answered outside a one-word vocabulary three
+# consecutive times is not going to start complying on the fourth — and by then the user has sat
+# through three approval walls they didn't ask for.
+MAX_UNREADABLE = 3
+
+
+class _Health:
+    """Consecutive unreadable answers, and the breaker they trip.
+
+    Process-wide, not per-project: a Sage builder serves one project, and the thing being tracked is
+    the classifier — a gateway route and a model — not anything about a workspace. Held as an object
+    rather than two module globals so a test can reset it without reaching for `global`."""
+
+    def __init__(self) -> None:
+        self.unreadable = 0
+        self.broken = False
+
+    def reset(self) -> None:
+        self.unreadable = 0
+        self.broken = False
+
+    def answered(self) -> None:
+        """A verdict we could read. Consecutive is the point — an answer clears the streak, so a
+        classifier that is merely flaky never reaches the breaker."""
+        self.unreadable = 0
+
+    def unreadable_answer(self, answer: str) -> bool:
+        """Record an answer in neither vocabulary; return what wants_a_plan should return.
+
+        True (gate) until the breaker trips, then False (build) forever after."""
+        self.unreadable += 1
+        if self.unreadable < MAX_UNREADABLE:
+            log.warning("scope: unrecognised verdict %r (%d in a row) — planning instead of building",
+                        answer[:60], self.unreadable)
+            return True
+        if not self.broken:
+            self.broken = True
+            # ERROR, and said once: this is the line a maintainer should find in /api/diag/log when a
+            # user reports that Sage suddenly wants to plan everything, or stopped planning anything.
+            log.error("scope: classifier BROKEN — %d unreadable verdicts in a row (last %r). "
+                      "Not calling it again; every Auto turn now builds ungated, as it did before "
+                      "the classifier existed. Check the gateway route for the ask model.",
+                      self.unreadable, answer[:60])
+        return False
+
+
+_health = _Health()
 
 _SYSTEM = """\
 You decide whether a change request to an existing web app is big enough to deserve a written plan \
@@ -206,6 +266,10 @@ def wants_a_plan(
     text = (prompt or "").strip()
     if not text:
         return False
+    if _health.broken:
+        # Declared broken earlier in this process (see _Health). Skip the call entirely rather than
+        # pay for another answer we already know we can't read.
+        return False
 
     # File paths are app structure, not user data — but they are still workspace content leaving the
     # box, so this rides the same routing as the prompt and a locked project sends it sovereign. The
@@ -217,9 +281,14 @@ def wants_a_plan(
             {"role": "system", "content": _SYSTEM + app_context(root)},
             {"role": "user", "content": text[:MAX_PROMPT_CHARS]},
         ],
-        # One word is the whole contract; the ceiling is slack for a model that opens with a space
-        # or a stray newline, not room to explain itself.
-        "max_tokens": 8,
+        # One word is the whole contract, but the CEILING can't be one word's worth. A route with
+        # extended thinking on spends this budget on reasoning tokens before emitting any content,
+        # and the call then returns a perfectly successful response whose content is "" — which is
+        # what four consecutive turns saw in #29, each one logged as an unrecognised verdict and
+        # absorbed into a build. Raised to leave room for that. It costs nothing in the ordinary
+        # case: max_tokens is a ceiling, not a spend, and a model answering "BUILD" still stops at
+        # one word.
+        "max_tokens": 256,
         "temperature": 0,
         "stream": True,
     }
@@ -249,10 +318,13 @@ def wants_a_plan(
 
     verdict = answer.strip().upper()
     if verdict.startswith("PLAN"):
+        _health.answered()
         return True
-    if not verdict.startswith("BUILD"):
-        # An answer in neither vocabulary means the contract didn't hold — treat it as no signal
-        # rather than guessing, and say so, because a model that stopped answering in one word is
-        # something to notice rather than silently absorb.
-        log.warning("scope: unrecognised verdict %r — building without a plan", answer[:60])
-    return False
+    if verdict.startswith("BUILD"):
+        _health.answered()
+        return False
+    # An answer in neither vocabulary means the contract didn't hold. Returning False here — which is
+    # what this did until #29 — is not "no signal", it is a guess, and it guesses the one outcome
+    # with side effects: the turn goes on to write code. Gate instead, and let _Health decide when a
+    # run of these stops being an anomaly and becomes a broken classifier.
+    return _health.unreadable_answer(answer)

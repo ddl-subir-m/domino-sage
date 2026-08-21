@@ -42,6 +42,16 @@ def _ask(gateway, prompt="add scheduled retraining", **kw):
     return scope.wants_a_plan(prompt, gateway=gateway, catalog=CATALOG, locked=False, **kw)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_health():
+    """The unreadable-answer streak is process-wide (see scope._Health), so without this a test that
+    leaves the breaker tripped would silently turn every later test into an assertion about the
+    breaker instead of about the verdict it scripted."""
+    scope._health.reset()
+    yield
+    scope._health.reset()
+
+
 # --- the verdict -------------------------------------------------------------------------------
 
 def test_plan_verdict_gates_and_build_verdict_does_not():
@@ -85,10 +95,50 @@ def test_a_timeout_builds_instead_of_hanging_the_turn():
 
 
 @pytest.mark.parametrize("verdict", ["MAYBE", "", "I think you should plan this one"])
-def test_an_answer_outside_the_vocabulary_builds(verdict):
-    # Including the sentence that CONTAINS "plan" — matching on a substring would turn every
-    # chatty refusal to follow the format into a spurious approval wall.
-    assert _ask(StubGateway(verdict)) is False
+def test_an_answer_outside_the_vocabulary_plans_rather_than_builds(verdict):
+    # #29: this returned False, which is not "no signal" — it is a guess, and it guesses the one
+    # outcome that writes to the user's app. The call ARRIVED here, so the classifier isn't down;
+    # its contract broke, and the safe side of a broken contract is the pause, not the diff.
+    #
+    # Still no substring matching: the third verdict CONTAINS "plan" and is unreadable all the same,
+    # because a rule that read it would turn every chatty refusal into a deliberate-looking gate.
+    assert _ask(StubGateway(verdict)) is True
+
+
+def test_three_unreadable_answers_in_a_row_trip_the_breaker(caplog):
+    gw = StubGateway("")
+    assert [_ask(gw) for _ in range(scope.MAX_UNREADABLE)] == [True] * (scope.MAX_UNREADABLE - 1) + [False]
+
+    # Declared broken, and it says so at ERROR — this is the line a maintainer finds in
+    # /api/diag/log when Sage starts wanting to plan everything. Criterion: surfaced, not only
+    # logged per-turn.
+    assert any(r.levelname == "ERROR" and "BROKEN" in r.message for r in caplog.records)
+
+    # And it stops being called. A classifier this broken must not cost a gateway round trip per
+    # turn, and must not leave every Auto turn behind an approval wall it can never lift: from here
+    # the turn builds ungated, exactly as it did before the classifier existed.
+    calls = len(gw.seen)
+    assert _ask(gw) is False
+    assert len(gw.seen) == calls
+
+
+def test_a_readable_verdict_clears_the_streak():
+    # Consecutive is the whole rule. A classifier that is merely flaky — one bad answer between good
+    # ones — must never reach the breaker, or a healthy install eventually declares itself broken.
+    for _ in range(10):
+        assert _ask(StubGateway("")) is True
+        assert _ask(StubGateway("BUILD")) is False
+    assert scope._health.broken is False
+
+
+def test_errors_and_timeouts_do_not_count_towards_broken():
+    # Down and broken are different failures with different right answers (see the module
+    # docstring). A gateway outage must keep failing OPEN however long it lasts — it is not evidence
+    # about the model's answers, because no answer arrived.
+    for _ in range(scope.MAX_UNREADABLE * 2):
+        assert _ask(StubGateway(raises=RuntimeError("gateway 502"))) is False
+    assert scope._health.broken is False
+    assert _ask(StubGateway("PLAN")) is True
 
 
 def test_an_empty_prompt_never_calls_the_gateway():
@@ -112,8 +162,10 @@ def test_an_unlocked_project_classifies_on_the_cheap_ask_model():
     _ask(gw)
     request, labels = gw.seen[0]
     assert request["model"] == "ask-model"
-    # One word out. A classifier that costs what a build costs isn't worth having.
-    assert request["max_tokens"] <= 8
+    # One word out, but the ceiling has to clear a thinking budget: at 8 tokens a route with
+    # extended thinking on returns a successful response whose content is "" every single time,
+    # which is #29. Still small enough that this can't cost what a build costs.
+    assert 8 < request["max_tokens"] <= 512
     assert request["temperature"] == 0
     # Tagged as its own component so orchestration overhead stays separable from build inference.
     assert labels.component == "scope"

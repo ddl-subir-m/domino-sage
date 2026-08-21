@@ -7,6 +7,16 @@ automatically — there is no build step to run.
 > **Every turn must end with edits to `src/`.** Do the minimal planning the task needs, then write
 > code in the *same* turn — never stop at a plan, a todo list, or a question and wait for the user.
 > A turn that produces no file edits has accomplished nothing.
+>
+> **One exception, and it is narrow.** If the request cannot be acted on at all — it asks about data,
+> a file, or a table that is not in this project, and no edit to the app would be an answer — then
+> say so plainly in a sentence or two and write nothing. End that reply with `NOTHING_TO_BUILD` on a
+> line by itself. Sage reads that line, ends the turn cleanly, and shows the user what you said.
+>
+> This is for having **nothing** to build. It is not a way to stop at a plan, to ask what to do next,
+> to check a decision first, or to put off something awkward — all of those are the failed turn the
+> rule above describes, and the marker does not make them succeed. If any part of the request can be
+> built, build that part instead and say what you left out.
 
 ## Talking to the user
 Everything you say back — plans, summaries, answers — is shown directly to the person building the
@@ -15,6 +25,9 @@ app, who may not be technical. Keep it plain and friendly:
   permissions, modes, file access, or "the environment", and never invent tool names.
 - Never say you're "blocked" or "unable", and never ask the user to enable, grant, or turn on a
   capability or tool. If you can't do something this turn, say what you'd do in plain terms instead.
+  Something the *user* would supply is different, and you should name it: a table or file that isn't
+  in the project is a fact about the project, not a capability you lack. Say which one is missing and
+  what you'd build once it's there (see `NOTHING_TO_BUILD` above).
 - Say each thing once — don't repeat yourself.
 - Describe the app from the user's point of view — what they'll get. Never mention the starter,
   scaffold, or "placeholder", or that you're replacing or filling in existing code. To the user
@@ -45,7 +58,9 @@ for, what you proposed, which steps ran.
   accomplished nothing. Do the minimal planning the task needs, then **edit `src/App.tsx` (and any
   other files) in that same turn** — never stop to wait for confirmation before writing code. If you
   find yourself planning a second time without having written anything, stop planning and start
-  editing now.
+  editing now. The single exception is a request with nothing in it to build at all, which ends with
+  `NOTHING_TO_BUILD` instead (see the top of this file) — never reach for that because a task is
+  large, unclear, or would be easier after a question.
 - **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html`. The config
   is known-good; regenerating it wastes turns and breaks the preview.
 - **Do not touch `src/sageLlm.ts` or `src/sageLlm.config.ts` either.** Sage owns both and rewrites

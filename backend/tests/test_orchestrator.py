@@ -619,6 +619,36 @@ def test_looks_like_question_false_for_builds_and_ambiguous(prompt):
     assert _looks_like_question(prompt) is False
 
 
+# An interrogative content clause has no question mark and no interrogative lead, so both rules above
+# are blind to it — and the clause these prompts trail ("...then we'll build X") loses them to the
+# build-verb veto outright. The first is the live prompt from #29, verbatim: it was classified as a
+# build, and the answer ("there is no clickstream table attached yet") was written into the user's
+# app instead of said to them.
+@pytest.mark.parametrize("prompt", [
+    ("explore the clickstream table and tell me what information it has we will then use it to "
+     "build a new dashboard"),
+    "tell me what columns are in the orders table",
+    "show me what the data looks like before we add a chart",
+    "describe what state the app keeps",
+])
+def test_an_info_clause_before_a_build_verb_is_a_question(prompt):
+    assert _looks_like_question(prompt) is True
+    assert _looks_like_change_request(prompt) is False  # still complementary
+
+
+# The mirror image, and the reason the rule is about ORDER rather than about the clause. These carry
+# the same two fragments in the opposite order, and a rule that only looked for "tell me what" would
+# turn every build request that asks for a summary afterwards into a read-only turn that never builds.
+@pytest.mark.parametrize("prompt", [
+    "build a dashboard and tell me what you did",
+    "add a severity filter, then show me what changed",
+    "refactor the table and describe what you moved",
+])
+def test_an_info_clause_after_a_build_verb_is_still_a_build(prompt):
+    assert _looks_like_question(prompt) is False
+    assert _looks_like_change_request(prompt) is True
+
+
 def test_approve_prompt_includes_plan_and_answers():
     p = _approve_prompt("## Plan\n1. do it", "cols: id, amount")
     assert "## Approved plan" in p and "1. do it" in p

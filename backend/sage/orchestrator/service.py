@@ -343,6 +343,48 @@ def _asks_about_a_change(prompt: str) -> bool:
                             or _INFO_ASK.match(text) is not None)
 
 
+# An interrogative CONTENT clause: an information verb handing off to a question word. "tell me what
+# information the table has" is a question with no question mark and no interrogative lead, so
+# neither rule in _looks_like_question can see it — and the clause such a prompt usually trails
+# ("...we'll then use it to build a dashboard") loses it outright to the build-verb veto. That is
+# #29, observed live 2026-08-21: the answer to the question was written into the user's app.
+#
+# Unanchored, unlike _INFO_ASK, because the clause rarely opens the sentence — "explore the
+# clickstream table AND TELL ME WHAT information it has". That is only safe with the ordering rule
+# in _leads_with_a_question below; on its own it would also match "build a dashboard and tell me
+# what you did", which is plainly a request for the dashboard.
+_INFO_CLAUSE = re.compile(
+    r"\b(?:tell|show|explain|describe)\s+(?:me|us)?\s*(?:about\s+)?"
+    r"(?:what|which|how|why|whether|where|when|who)\b",
+)
+
+# The same vocabulary as _BUILD_VERB, as a pattern, because the ordering rule needs WHERE the first
+# build verb is and the word-set membership test can only say whether one is present.
+_BUILD_VERB_RE = re.compile(r"\b(?:" + "|".join(sorted(_BUILD_VERB)) + r")\b")
+
+
+def _leads_with_a_question(prompt: str) -> bool:
+    """True when an interrogative content clause sits BEFORE the first build verb.
+
+    Consulted by both classifiers below, alongside _asks_about_a_change, so the two stay
+    complementary — a prompt this claims must not also read as a change request in Ask mode.
+
+    Order is the whole rule, and it is doing real work rather than papering over one transcript:
+
+        "explore the table and tell me what it has, then we'll build a dashboard"  -> question
+        "build a dashboard and tell me what you did"                               -> change request
+
+    Same two fragments, opposite requests. Which one the user leads with is what separates them, and
+    a build verb mentioned downstream of the question is the job the answer is FOR, not this turn's
+    instruction."""
+    text = prompt.strip().lower()
+    info = _INFO_CLAUSE.search(text)
+    if info is None:
+        return False
+    build = _BUILD_VERB_RE.search(text)
+    return build is None or info.start() < build.start()
+
+
 # The design artifact a prompt can ask for by name. Paired with _asks_about_a_change below, this is
 # what separates "give me an architecture to add a queue" (wants a document) from "how would you add
 # a queue" (wants an answer) — both are questions, but only the first names a deliverable.
@@ -437,7 +479,7 @@ def _looks_like_question(prompt: str) -> bool:
     words = re.findall(r"[a-z']+", text)
     if not words:
         return False
-    if _asks_about_a_change(prompt):
+    if _asks_about_a_change(prompt) or _leads_with_a_question(prompt):
         return True
     if any(w in _BUILD_VERB for w in words):
         return False
@@ -449,8 +491,9 @@ def _looks_like_change_request(prompt: str) -> bool:
     for information. Used only in Ask mode, to refuse the turn before it runs (see _ask_mode_refusal).
 
     An explicit build verb anywhere wins, exactly as it does in _looks_like_question, and both defer
-    to _asks_about_a_change first — so the two agree on every prompt and one is never both."""
-    if _asks_about_a_change(prompt):
+    to _asks_about_a_change and _leads_with_a_question first — so the two agree on every prompt and
+    one is never both."""
+    if _asks_about_a_change(prompt) or _leads_with_a_question(prompt):
         return False
     words = re.findall(r"[a-z']+", prompt.lower())
     return any(w in _BUILD_VERB for w in words)
@@ -596,6 +639,35 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     time. Falls back to the index when a part carries no id, which is the old behaviour and no worse
     than it was."""
     return (m["id"], part.get("id") or i)
+
+
+# The one way an agent may end a turn without editing `src/`. AGENTS.md holds that rule absolutely —
+# "a turn that produces no file edits has accomplished nothing" — because the failure it was written
+# against is an agent that plans, stalls and calls that a turn. But an absolute rule has no room for
+# a request that cannot be acted on at all, and an agent that may not decline and may not stop has
+# only one move left: write its own explanation into the app. That is #29 — a creator ended up with
+# a dashboard whose UI said the file they attached wasn't showing up.
+#
+# A marker is what lets both rules stand. The src/ requirement stays absolute and the exception is
+# something the agent must CLAIM, out loud, in a token it would not emit by accident — so "nothing to
+# build" and "stopped at a plan" stay distinguishable here, which they are not from the outside.
+NO_BUILD_MARKER = "NOTHING_TO_BUILD"
+# Its own line, per AGENTS.md, with the wrappers a model reaches for unprompted (backticks, bold)
+# tolerated — a turn that ends correctly must not be re-classified as a stall over a pair of
+# backticks. Not tolerated mid-sentence: that is where a model QUOTES the marker while explaining
+# itself, and reading that as a claim would hand every agent an accidental way out of the rule.
+_NO_BUILD_LINE = re.compile(
+    rf"^[ \t]*[`*_]*{NO_BUILD_MARKER}[`*_]*[ \t]*$\n?", re.MULTILINE)
+
+
+def _take_no_build_marker(text: str) -> tuple[str, bool]:
+    """Split one assistant text part into the prose to show and whether it claimed nothing to build.
+
+    Stripped rather than shown. It is a signal addressed to Sage, and the user reads every word the
+    agent says — a bare NOTHING_TO_BUILD sitting under a friendly explanation reads as a leaked
+    error code, which is a smaller version of the same defect this whole mechanism exists to fix."""
+    stripped = _NO_BUILD_LINE.sub("", text)
+    return stripped, stripped != text
 
 
 def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool, arch: bool = False) -> str:
@@ -1770,6 +1842,11 @@ class Orchestrator:
         # it to implement instead of declaring success. Capped so a model that refuses to write
         # can't loop forever.
         made_edits = False
+        # Set when the agent claims this turn's request cannot be acted on at all (NO_BUILD_MARKER).
+        # Not reset between nudge iterations, and it doesn't need to be: a claimed turn returns
+        # before the nudge loop can run, and the two nudges that follow a WRITING turn (runtime,
+        # leak) can't reach a turn that wrote nothing.
+        nothing_to_build = False
         nudges = 0
         MAX_NUDGES = _env_int("SAGE_MAX_NUDGES", 3)
         # When a turn routed to the cheap implement-tier coder writes nothing, pin the strong
@@ -1930,19 +2007,28 @@ class Orchestrator:
                             yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
+                            # Take the marker out before anything else looks at this text — the
+                            # dedupe below, the plan card, the transcript. Stripped on EVERY turn,
+                            # including gated ones: the claim is only honoured on a build turn (see
+                            # the exit below), but a marker left in the text on a plan turn would be
+                            # persisted into plan.md and shown on the approval card.
+                            body, claimed = _take_no_build_marker(part["text"])
+                            nothing_to_build = nothing_to_build or claimed
+                            if not body.strip():
+                                continue  # the marker was the whole part; there is no prose to show
                             # Second line of defence behind _part_key: parts with no id still key on a
                             # shifting index, and a model that restates itself verbatim produces a
                             # genuinely distinct part. Either way the same paragraph twice in the
                             # transcript is never what the user should read, so drop the repeat.
-                            if part["text"].strip() in emitted_text:
+                            if body.strip() in emitted_text:
                                 continue
-                            emitted_text.add(part["text"].strip())
+                            emitted_text.add(body.strip())
                             if gate:
                                 # Gate turns render this text once, in the plan card below — don't also
                                 # stream it live, or the user sees the same prose twice (loose text + card).
-                                plan_text_parts.append(part["text"])
+                                plan_text_parts.append(body)
                             else:
-                                yield persist({"type": "agent", "kind": "text", "text": part["text"]})
+                                yield persist({"type": "agent", "kind": "text", "text": body})
                 cur_phase = project.control.snapshot().phase.value
                 if cur_phase != last_phase:
                     last_phase = cur_phase
@@ -2027,6 +2113,24 @@ class Orchestrator:
                                "steps": steps if steps >= MIN_STEPS else 0})
                 yield persist({"type": "done", "ok": True,
                                "decision": "architecture ready" if arch else "awaiting approval"})
+                return
+
+            # The agent said this request cannot be acted on (NO_BUILD_MARKER) and, true to that,
+            # wrote nothing. Finish here. Two things are being skipped, and the second is the point:
+            # the typecheck, which would be 10-30s of tsc over a tree nobody touched, and the
+            # implement-nudge below. That nudge exists to break an agent stalled at a plan; pointed
+            # at an agent that correctly declined, it force-switches the turn to Implement, pins the
+            # strong model, and pushes until something gets written into src/App.tsx — which is
+            # exactly how the user's dashboard ended up displaying "the file isn't showing up" (#29).
+            #
+            # Never trusted over the filesystem. An agent that claims this AND edits files falls
+            # through to the normal build path, where its edits are typechecked and kept like any
+            # other build's: the marker excuses a turn from editing, it can't unmake edits. The same
+            # ordering also means a gated turn resolved its plan above before we got here, so a
+            # marker on a plan turn is stripped from the card and otherwise ignored.
+            if nothing_to_build and not agent_wrote():
+                restore_mode()
+                yield persist({"type": "done", "ok": True, "decision": "nothing to build"})
                 return
 
             yield {"type": "typecheck-start"}

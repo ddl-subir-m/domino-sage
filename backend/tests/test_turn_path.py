@@ -210,3 +210,111 @@ def test_a_question_after_a_failure_does_not_spend_the_gate(tmp_path: Path):
     assert ws.read_last_turn_failed() is True  # asking about the failure must not consume it
 
     assert _done(_run(orch, "try that again"))["decision"] == "awaiting approval"
+
+
+# --- a turn with nothing to build (#29) -----------------------------------------------------------
+
+def _app(orch) -> str:
+    return (orch.project(start_preview=False).workspace.path / "src" / "App.tsx").read_text()
+
+
+def test_a_question_on_a_built_app_is_answered_without_touching_it(tmp_path: Path):
+    """The first half of #29: the user asked to be TOLD something about a built app.
+
+    `_a_question_is_answered_without_building` covers the same short-circuit on turn one, where the
+    app doesn't exist yet; this is the case that actually shipped broken, because a built app is the
+    only state in which a turn has somewhere to write the answer."""
+    orch, oc, _gw = _build(tmp_path, [
+        Turn(text="1. A table\n2. A chart"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="There is no clickstream table attached to this project yet."),
+    ], verdict="BUILD")
+    _get_built(orch)
+
+    events = _run(orch, "explore the clickstream table and tell me what information it has "
+                        "we will then use it to build a new dashboard")
+
+    assert _done(events)["decision"] == "answered"
+    assert oc.prompts[-1]["agent"] == "sage-ask"
+    # The whole defect in one assertion: the app is exactly as the build left it.
+    assert _app(orch) == "// v1\n"
+
+
+def test_a_request_that_cannot_be_acted_on_ends_the_turn_instead_of_writing_the_app(tmp_path: Path):
+    """The purer half of #29. "i attached it" is a statement, not a question, so the answer-only
+    path above can't catch it — the turn dispatches as a build and the agent has genuinely nothing
+    to build. Before the marker existed its only legal move was to write its explanation into
+    src/App.tsx, and the creator ended up with a dashboard whose UI said their file wasn't showing."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text="1. A table\n2. A chart"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="I still can't see a clickstream table in this project. Once it's attached I'll "
+                  "build the dashboard on top of it.\nNOTHING_TO_BUILD"),
+    ], verdict="BUILD")
+    _get_built(orch)
+
+    events = _run(orch, "i attached it")
+
+    assert _done(events) == {"type": "done", "ok": True, "decision": "nothing to build"}
+    assert _app(orch) == "// v1\n"
+    # Not nudged. The nudge is what turned a correct refusal into a write: it force-switches the
+    # turn to Implement and pushes until something lands in src/.
+    assert "iterate" not in _kinds(events)
+    # And no typecheck, for the same reason a plan turn skips it — dead time over an untouched tree,
+    # with a "passed" line that reads like a build was verified.
+    assert "typecheck" not in _kinds(events)
+
+    # The user is TOLD, and the marker isn't part of what they read.
+    said = "\n".join(e["text"] for e in events if e.get("type") == "agent" and e.get("kind") == "text")
+    assert "clickstream table" in said
+    assert "NOTHING_TO_BUILD" not in said
+
+
+def test_a_turn_that_writes_nothing_without_the_marker_is_still_a_failure(tmp_path: Path):
+    """The rule the marker is an exception to has to stay closed. An agent that stalls at a plan
+    looks identical from outside — no edits, some prose — and must still be nudged and then reported,
+    or #29's fix quietly re-opens the failure AGENTS.md's src/ rule was written against."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text="1. A table\n2. A chart"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Here's how I'd approach it: first the schema, then the table."),
+    ], verdict="BUILD")
+    _get_built(orch)
+
+    events = _run(orch, "add a severity filter")
+
+    assert _done(events)["ok"] is False
+    assert "iterate" in _kinds(events)
+
+
+def test_the_marker_cannot_unmake_edits(tmp_path: Path):
+    """Claimed AND wrote. The filesystem is the ground truth: the marker excuses a turn from
+    editing, it can't retroactively excuse the edits it made. Falls through to the normal build
+    path so those edits are typechecked and kept like any other build's."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text="1. A table\n2. A chart"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Nothing to do here.\nNOTHING_TO_BUILD", writes={"src/App.tsx": "// v2\n"}),
+    ], verdict="BUILD")
+    _get_built(orch)
+
+    events = _run(orch, "make the table sortable")
+
+    assert _done(events)["decision"] != "nothing to build"
+    assert _done(events)["ok"] is True
+    assert _app(orch) == "// v2\n"
+
+
+def test_a_marker_on_a_plan_turn_is_stripped_from_the_card(tmp_path: Path):
+    """A gated turn writes nothing by design, so honouring the marker there would let any planner
+    end the turn with no plan to approve. The gate resolves first; the marker is only stripped, so
+    it can't be persisted into plan.md or shown on the approval card."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text="1. Add a table\n2. Wire up the data\nNOTHING_TO_BUILD"),
+    ])
+    events = _run(orch, "build me a dashboard")
+
+    assert _done(events)["decision"] == "awaiting approval"
+    plan = next(e for e in events if e["type"] == "plan-proposed")["plan"]
+    assert "Add a table" in plan
+    assert "NOTHING_TO_BUILD" not in plan
