@@ -250,9 +250,12 @@ if provs and all(p.get("health_status") is None for p in provs):
 print("""
 ==================================================================================
 WHAT TO DO WITH THIS OUTPUT
-  Q1  -> reads its own verdict above. CONFOUNDED means the one case we have is an
-         alias the caller has no grant for, so stop a Running endpoint you DO have a
-         grant for and re-run. That is the only way left to separate the two.
+  Q1  -> ANSWERED 2026-08-21 on cloud-dogfood: PREMISE TRUE. Once local-domino-llm was
+         granted, /v1/models offered it while its endpoint stayed Stopped. /v1/models
+         filters on permission alone, so unresolved_slots cannot catch a stopped
+         endpoint. #21 needs a new check, not a reworded message. The verdict above
+         re-derives this on any gateway; CONFOUNDED just means no granted alias there
+         points at a non-Running endpoint.
   Q2  -> ANSWERED 2026-08-21 on cloud-dogfood: the join is `url`, after stripping the
          trailing /v1. Not id, not vanityUrl.
   Q3  -> every unjoined alias must be reported as unknown, never as stopped. On

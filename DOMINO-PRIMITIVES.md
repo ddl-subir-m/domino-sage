@@ -274,20 +274,30 @@ provider reports **`health='error'` while its endpoint is `Running`**, off a
 worse than no source. It is also per-provider, not per-alias, so it is the wrong granularity
 regardless.
 
-**Still open: does a stopped endpoint's alias stay in `/v1/models`?** One case exists —
-`local-domino-llm` points at the `Stopped` `Mistral-7B-Instruct-v02` and is absent from
-`/v1/models` — but it is **confounded**: that alias is also absent from
-`/api/aliases/accessible`, so the caller holds no grant for it and the absence says nothing
-about status. Settle it by having `local-domino-llm` granted to the Sage caller and re-running;
-it already points at a stopped endpoint, so no endpoint needs stopping. Do **not** stop
-`qwen-2-5` for the experiment: it is `Consumer` access in another team's project and the only
-Running endpoint of 18.
+**CONFIRMED: a stopped endpoint's alias is still offered.** `local-domino-llm` points at the
+`Stopped` `Mistral-7B-Instruct-v02`. Ungranted, it was absent from `/v1/models` and the case was
+confounded — absence could have been permission or status. Once the alias was granted to the
+Sage caller, `/v1/models` and `/api/aliases/accessible` both went from 8 ids to 9 and **both now
+offer it, while its endpoint stays `Stopped`**. The experiment needed no endpoint stopped and
+nobody else disturbed.
 
-**This does not gate the work.** Either answer needs the same listing and the same `url` join.
-If the alias stays in `/v1/models`, preflight needs a new check. If it drops out,
-`unresolved_slots` already fires — but its message says the alias is not registered and tells
-the creator to register it, when the alias *is* registered and the endpoint is merely stopped.
-Wrong remedy, same fix required to tell the two apart.
+So **`/v1/models` filters on permission alone.** It carries no signal about whether the endpoint
+behind an alias is serving. `unresolved_slots` (`preflight.py:53`) therefore cannot catch this:
+the alias resolves, preflight passes, the turn routes, and the build fails partway through on a
+gateway error. That is the failure #21 exists to move earlier, and it is real.
+
+**So it is a new check, not a reworded message.** Join every configured slot and every LLM Alias
+Binding to the endpoints listing on `url`, and report on `currentVersion.status`:
+
+| Condition | What the creator reads |
+|-----------|------------------------|
+| No `endpoint_url` on the alias | Nothing — it is a vendor model, 12 of 14 are |
+| `Running` | Nothing |
+| `Stopped` | Start the endpoint |
+| `Failed`, `BuildFailed` | Pick a different Alias — this endpoint is broken |
+| `Starting`, `Stopping` | Wait, it is changing state |
+| `Unknown`, or no `currentVersion` | Could not check — never "stopped" |
+| Endpoints call failed | Could not check — same rule `stale_bindings` already uses for a listing that did not arrive |
 
 ### What direct calls established anyway — still useful at REGISTRATION time
 
