@@ -514,6 +514,8 @@
     gap: 8px; padding: 6px 12px; font-size: 12px; background: color-mix(in srgb, var(--surface) 92%, transparent);
     border-top: 1px solid var(--border); color: var(--faint); backdrop-filter: blur(2px); }
   .preview-note.show { display: flex; }
+  .preview-note { white-space: nowrap; overflow: hidden; }
+  .preview-note > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .preview-note .pn-phase { color: var(--ink); font-weight: 600; }
   .preview-loading .ico { font-size: 16px; animation: spin 1s linear infinite; }
 
@@ -2094,7 +2096,8 @@ async function loadPreflight() {
   // 'unreachable' means we could not check, which is not evidence anything is gone — badging a row
   // stale on that basis would send a creator to remove a Resource that works.
   if (!pre || pre.state !== 'problems') return;
-  staleBindings = new Map((pre.bindings || []).map(b => [`${b.kind} ${b.id}`, b.message || '']));
+  staleBindings = new Map((pre.bindings || []).map(b => [`${b.kind} ${b.id}`,
+    { why: b.message || '', status: b.status || '' }]));
   renderBindings();   // badge the rows, if the rail has already drawn them
   for (const b of pre.bindings) {
     const el = addStatus('warn', '⚠', `${esc(b.message)} <button class="link-btn">Show it in Resources</button>`);
@@ -2175,12 +2178,17 @@ function bindingRow(b) {
   const kind = KIND_LABELS[b.kind] || b.kind;
   // A Resource the gateway no longer offers (#17). The badge sits next to the thing to fix, which
   // the chat warning cannot do; both exist because the rail may never be opened.
-  const goneWhy = staleBindings.get(`${b.kind} ${b.id}`);
+  const problem = staleBindings.get(`${b.kind} ${b.id}`);
+  const goneWhy = problem ? problem.why : '';
   // "Unusable" rather than "Gone" for a Model API whose token has been lost: the Resource is still
   // there, and a badge saying otherwise would send the creator to remove something that is deployed.
-  const gone = goneWhy
-    ? `<span class="a-chip" title="${esc(goneWhy)}">${/access token/.test(goneWhy) ? 'No token' : 'Gone'}</span>`
-    : '';
+  // Same reasoning, stronger case, for an Alias whose Hosted GenAI Endpoint is not serving (#21):
+  // it is registered, granted and offered, so "Gone" would send the creator to remove a Resource
+  // that works and hide the one thing they can actually do, which is start the endpoint. That row
+  // gets Domino's own status word — the same vocabulary the Model API rows already use.
+  const label = problem && problem.status ? esc(problem.status)
+    : /access token/.test(goneWhy) ? 'No token' : 'Gone';
+  const gone = problem ? `<span class="a-chip" title="${esc(goneWhy)}">${label}</span>` : '';
   // Which row the app's code actually calls (#7). Without it, a creator holding two Aliases has no way
   // to tell which one their app talks to, and the answer is not visible anywhere else in the product.
   const p = b.kind === 'model_api' ? pinnedModelApi() : pinnedAlias();

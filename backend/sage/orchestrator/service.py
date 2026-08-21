@@ -65,6 +65,7 @@ from ..resources.pinned_model_api import agents_block as model_api_agents_block
 from ..resources.pinned_model_api import pinned_model_api
 from ..resources.pinned_model_api import render_config as render_model_api_config
 from ..resources.preflight import (
+    SLOTS,
     bindings_on_dead_endpoints,
     credential_message,
     missing_credentials,
@@ -3161,8 +3162,12 @@ class Orchestrator:
         except ResourceUnavailable as e:
             return {"state": "unreachable", "error": str(e), "slots": []}
         endpoints, errors = self._endpoint_listing(aliases)
-        problems = ([p.to_dict() for p in unresolved_slots(self._catalog, aliases)]
-                    + [p.to_dict() for p in slots_on_dead_endpoints(self._catalog, aliases, endpoints)])
+        # Sorted back into SLOTS order across BOTH checks. Each returns its own findings in that
+        # order, but concatenating them does not preserve it, and a reader met with `implement`
+        # above `sovereign_plan` has to work out that the list is in no order at all.
+        found = (list(unresolved_slots(self._catalog, aliases))
+                 + list(slots_on_dead_endpoints(self._catalog, aliases, endpoints)))
+        problems = [p.to_dict() for p in sorted(found, key=lambda p: SLOTS.index(p.slot))]
         return {
             # Same precedence as `preflight_bindings`: a listing that failed does not unlearn what
             # the other one answered, so real problems outrank "could not check" while `error` still
@@ -3196,10 +3201,12 @@ class Orchestrator:
         aliases = listings.get(KIND_LLM_ALIAS) or []
         endpoints, endpoint_errors = self._endpoint_listing(aliases)
         errors += endpoint_errors
-        stalled = [(b, m) for b, m in bindings_on_dead_endpoints(recorded, aliases, endpoints)
+        stalled = [(b, m, st) for b, m, st in bindings_on_dead_endpoints(recorded, aliases, endpoints)
                    if b not in gone]
-        problems = ([(b, stale_message(b)) for b in gone]
-                    + [(b, credential_message(b)) for b in tokenless]
+        # The third element is the endpoint's status, or None for the two problems that are not about
+        # an endpoint. It exists for the rail's chip: see `bindings_on_dead_endpoints`.
+        problems = ([(b, stale_message(b), None) for b in gone]
+                    + [(b, credential_message(b), None) for b in tokenless]
                     + stalled)
         return {
             # `problems` outranks `unreachable`, because one listing failing does not unlearn what
@@ -3207,7 +3214,9 @@ class Orchestrator:
             # never told that a partial answer was the whole one.
             "state": "problems" if problems else "unreachable" if errors else "ok",
             "error": " ".join(errors) or None,
-            "bindings": [{**b.to_dict(), "message": message} for b, message in problems],
+            "bindings": [{**b.to_dict(), "message": message,
+                          **({"status": status} if status else {})}
+                         for b, message, status in problems],
         }
 
     # Which listing is authoritative for which kind, and how to fetch it. An LLM Alias comes off the

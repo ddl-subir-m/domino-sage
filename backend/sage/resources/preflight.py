@@ -191,14 +191,18 @@ def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
 
 
 def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
-                               endpoints: list[HostedEndpoint] | None) -> list[tuple[Binding, str]]:
-    """The LLM Alias Bindings whose endpoint will not answer, each with what the creator reads.
+                               endpoints: list[HostedEndpoint] | None) -> list[tuple[Binding, str, str]]:
+    """The LLM Alias Bindings whose endpoint will not answer: the Binding, the sentence, the status.
 
-    Returned as (Binding, sentence) pairs because the sentence needs the endpoint's name and status,
-    which the Binding does not carry — unlike `stale_message`, which can be derived from the Binding
-    alone. The caller already builds pairs of exactly this shape for the stale ones.
+    Returned as triples because neither of the other two facts can be derived from the Binding —
+    unlike `stale_message`, which can. The sentence needs the endpoint's name, and the **status has
+    to travel separately** even though the sentence already contains it: the rail badges the row with
+    a short chip, and a chip that said "Gone" here would send the creator to remove an Alias that is
+    registered, granted and offered, whose endpoint is merely stopped. That is the exact confusion
+    this issue exists to prevent, so the chip gets Domino's own word rather than a guess made by
+    pattern-matching the prose.
     """
-    out: list[tuple[Binding, str]] = []
+    out: list[tuple[Binding, str, str]] = []
     for b in bindings:
         if b.kind != KIND_LLM_ALIAS:
             continue
@@ -210,7 +214,7 @@ def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
             f"This app is recorded using the LLM Alias {b.display_name}, whose Hosted GenAI "
             f"Endpoint {endpoint} is {status}. Its calls will fail. "
             f"{endpoint_remedy(status, 'pick a different Alias')}, before you build on it."
-        )))
+        ), status))
     return out
 
 

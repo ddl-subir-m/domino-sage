@@ -577,8 +577,11 @@ def test_the_slot_report_carries_the_status_verbatim_for_the_log():
 
 def test_a_binding_whose_endpoint_is_stopped_is_reported():
     b = _binding("id-qwen", "qwen-2-5", "Qwen 2.5 (Domino-hosted)")
-    ((got, message),) = bindings_on_dead_endpoints([b], HOSTED, [_endpoint("Stopped")])
+    ((got, message, status),) = bindings_on_dead_endpoints([b], HOSTED, [_endpoint("Stopped")])
     assert got is b
+    # The status travels beside the sentence, for the rail's chip. A chip reading "Gone" here would
+    # send the creator to remove an Alias that is registered, granted and offered.
+    assert status == "Stopped"
     assert "Qwen 2.5 (Domino-hosted)" in message and "is Stopped" in message
     # A Binding is changed in the Resources rail, so its fallback is an Alias, not a "model".
     assert "Start that endpoint, or pick a different Alias" in message
@@ -674,3 +677,37 @@ def test_session_open_reports_a_binding_whose_endpoint_is_stopped(tmp_path):
     assert result["state"] == "problems"
     ((one,),) = ([b for b in result["bindings"]],)
     assert one["id"] == "id-qwen" and "is Stopped" in one["message"]
+
+
+def test_the_status_reaches_the_rail_so_the_chip_does_not_read_gone(tmp_path: Path):
+    # Found by QA-ing the real UI, not by a unit test: the rail badges a stale Binding "Gone", and an
+    # Alias on a stopped endpoint rode the same channel and inherited that word. It is registered,
+    # granted and still offered — "Gone" points at the wrong remedy, which is the one thing #21's
+    # second criterion exists to stop.
+    orch = _orch(tmp_path, catalog=_hosted_catalog(), resources=_CountingProvider())
+    orch.bind_llm_alias("id-qwen")
+
+    (row,) = orch.preflight_bindings()["bindings"]
+
+    assert row["status"] == "Stopped"
+
+
+def test_a_binding_that_has_gone_carries_no_status_to_confuse_the_chip(tmp_path: Path):
+    # The other half: a Resource that really is gone must not gain a status field, or the chip would
+    # stop saying the one word that IS right for it.
+    orch = _orch(tmp_path, resources=FakeResourceProvider(list(ALIASES)))
+    orch.bind_llm_alias("id-sonnet")
+    orch._resources = FakeResourceProvider([])   # the gateway now offers nothing
+
+    (row,) = orch.preflight_bindings()["bindings"]
+
+    assert "status" not in row
+
+
+def test_both_slot_checks_report_in_slots_order(tmp_path: Path):
+    # Also found in the UI: `implement` rendered above `sovereign_plan`, because the two checks were
+    # concatenated rather than merged. Each is ordered on its own; the pair was not.
+    catalog = _hosted_catalog(sovereign_plan="qwen-2-5", implement="ghost-model")
+    result = _orch(tmp_path, catalog=catalog, resources=_CountingProvider()).preflight_slots()
+
+    assert [s["slot"] for s in result["slots"]] == ["sovereign_plan", "implement"]
