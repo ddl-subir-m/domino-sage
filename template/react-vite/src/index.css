@@ -1,3 +1,27 @@
+/* Inter, from this app's own origin (#19). The entry page used to <link> Google's stylesheet, so
+   every viewer's browser reached fonts.googleapis.com and then fonts.gstatic.com before styled text
+   could paint — a third-party request Sage put in the app rather than the person who built it, and
+   one that a tenant with locked-down egress answers by quietly falling back to system-ui.
+
+   One variable file covering the whole weight range, latin only: byte-for-byte the subset the
+   browser was already downloading. It lives in src/assets and NOT in public/, because Vite only
+   rewrites url() for assets it can see — from public/ this would stay an absolute path and break
+   under Domino's app mount prefix (#18). Hashed into dist/assets/, where serve.py already caches it
+   for a year.
+
+   From @fontsource-variable/inter@5.3.0 (files/inter-latin-wght-normal.woff2), SIL OFL 1.1, license
+   in OFL.txt beside it. unicode-range is upstream's: a character outside latin falls through to
+   system-ui exactly as it did before. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./assets/fonts/inter-latin-var.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
   /* Domino design tokens — see AGENTS.md. Style with these, don't hardcode hex. */
   --text: #2e2e38;

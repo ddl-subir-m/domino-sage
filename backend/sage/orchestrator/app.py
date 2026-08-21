@@ -34,6 +34,7 @@ from fastapi.responses import (
 from starlette.concurrency import run_in_threadpool
 
 _UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
+_FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG, DominoAssetProvider, FakeAssetProvider
 from ..feedback.runner import FeedbackRunner
@@ -345,6 +346,21 @@ control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 def ui() -> FileResponse:
     """The thin builder UI (single static page). no-store so the current HTML is always served."""
     return FileResponse(_UI, headers={"Cache-Control": "no-store"})
+
+
+@control_app.get("/fonts/inter-latin-var.woff2")
+def font() -> FileResponse:
+    """Inter, from Sage's own origin (#19). See the @font-face block in the page for the why.
+
+    A year, immutable, where the page above it is no-store — both correct: the HTML changes on every
+    deploy and these bytes never do, because replacing the font means a new filename here and in the
+    page that asks for it.
+    """
+    return FileResponse(
+        _FONT,
+        media_type="font/woff2",  # pinned: mimetypes has no answer for .woff2 on a bare Linux image
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @control_app.get("/healthz")

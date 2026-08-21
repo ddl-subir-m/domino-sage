@@ -35,6 +35,8 @@ log = logging.getLogger("sage.hub")
 logging.basicConfig(level=logging.INFO)
 
 _UI = Path(__file__).resolve().parent / "ui" / "index.html"
+# The builder's copy, deliberately shared rather than a second 47 kB of the same bytes in git.
+_FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 _REPO = Path(__file__).resolve().parents[3]
 _TEMPLATE = Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite"))
 # The git host whose Domino credential the hub uses to create repos + push seeds. Setting it
@@ -136,6 +138,21 @@ app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(_UI, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/fonts/inter-latin-var.woff2")
+def font() -> FileResponse:
+    """Inter, from Sage's own origin (#19). See the @font-face block in the page for the why.
+
+    A year, immutable, where the page above it is no-store — both correct: the HTML changes on every
+    deploy and these bytes never do, because replacing the font means a new filename here and in the
+    page that asks for it.
+    """
+    return FileResponse(
+        _FONT,
+        media_type="font/woff2",  # pinned: mimetypes has no answer for .woff2 on a bare Linux image
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/healthz")

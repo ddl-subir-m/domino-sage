@@ -81,8 +81,10 @@ Every app must look intentional and consistent. These rules are what separate a 
   `var(--text)` / `var(--text-muted)` for copy; `var(--border)` for dividers and input borders;
   `var(--bg)` / `var(--surface)` for backgrounds; `var(--ok)` / `var(--warn)` / `var(--danger)`
   for status. **Never hardcode hex values** — use the variables so light and dark themes both work.
-- **Type:** Inter. Scale — page title 28–32px/600, section heading 20px/600, card title 16px/600,
-  body 14–15px/400, caption 12px. One `<h1>` per screen. Left-align body text.
+- **Type:** Inter, served from this app's own origin. The `@font-face` at the top of
+  `src/index.css` and the file it points at are Sage's — leave both alone, or the app quietly falls
+  back to a system font. Scale — page title 28–32px/600, section heading 20px/600, card title
+  16px/600, body 14–15px/400, caption 12px. One `<h1>` per screen. Left-align body text.
 - **Spacing:** 8px grid (4 / 8 / 12 / 16 / 24 / 32). Space **within** a group ≈ half the space
   **between** groups. Be generous; don't crowd elements.
 - **Radius & shadow:** use `var(--radius)` and `var(--shadow)`; keep them consistent everywhere.
