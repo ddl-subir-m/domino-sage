@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..router.models import ModelCatalog
-from .bindings import KIND_LLM_ALIAS, Binding
+from .bindings import KIND_DATA_SOURCE, KIND_MODEL_API, Binding
 from .provider import LlmAlias
 
 # Every slot in ModelCatalog, in the order the model panel lists them. Written out rather than
@@ -70,29 +70,86 @@ def unresolved_slots(catalog: ModelCatalog, aliases: list[LlmAlias]) -> list[Slo
     return problems
 
 
-def stale_bindings(bindings: list[Binding], aliases: list[LlmAlias]) -> list[Binding]:
+def stale_bindings(bindings: list[Binding], listings: dict[str, list | None]) -> list[Binding]:
     """The recorded Bindings whose Resource has gone, in manifest order.
 
-    Matched on id OR name, because the manifest keeps both and they are authoritative for different
-    things: the control plane keys on id, a model call keys on name. A Binding written before an
-    Alias was re-registered under a new id still names the same Resource if the name resolves, and
-    calling that stale would send a creator to remove something that works.
+    `listings` maps a kind to the listing authoritative for it, or to None when that listing could not
+    be fetched. Those two are deliberately different answers, and both differ from a kind that is
+    absent entirely: only a listing that ARRIVED can prove that something missing from it is gone.
+    That is the rule this always had — not being able to check something is not evidence that it is
+    gone — now applied per kind rather than to everything that was not an Alias.
 
-    Only kinds this Sage can check are judged. A Binding of an unknown kind — a newer Sage's record,
-    or a Resource kind whose listing is not in this call — is left alone: not being able to check
-    something is not evidence that it is gone.
+    One listing failing does not suppress the others. A gateway that is down says nothing about
+    whether a Data Source still exists, and withholding that answer because a different call failed
+    would lose the one thing Sage did learn.
+
+    Matched on id OR name, because the manifest keeps both and they are authoritative for different
+    things: the control plane keys on id, a model call keys on name, and `get_datasource` takes the
+    name. A Binding written before a Resource was re-registered under a new id still names the same
+    thing if the name resolves, and calling that stale would send a creator to remove something that
+    works. `publish_guard._match` makes the same match for the same reason.
     """
-    known = {a.id for a in aliases} | {a.name for a in aliases}
-    return [
-        b for b in bindings
-        if b.kind == KIND_LLM_ALIAS and b.id not in known and b.name not in known
-    ]
+    out: list[Binding] = []
+    for b in bindings:
+        rows = listings.get(b.kind)
+        if rows is None:        # unchecked, or unlistable — either way, nothing was learned
+            continue
+        if not any(getattr(r, "id", None) == b.id or getattr(r, "name", None) == b.name
+                   for r in rows):
+            out.append(b)
+    return out
+
+
+def missing_credentials(bindings: list[Binding], held: set[str] | None) -> list[Binding]:
+    """Model API Bindings this app can no longer call, because Sage holds no access token for them.
+
+    A failure the other two kinds have no equivalent for. An LLM Alias is called with the viewer's own
+    Domino session and a Data Source through the container's sidecar, but a Model API opens for
+    nothing except a token someone pasted (#9) — so a token that has gone leaves a Binding reading as
+    a working dependency and an app whose calls fail.
+
+    `held` is None when the token store was not read, which is left alone for the reason a listing
+    that did not arrive is.
+    """
+    if held is None:
+        return []
+    return [b for b in bindings if b.kind == KIND_MODEL_API and b.id not in held]
 
 
 def stale_message(b: Binding) -> str:
     """What a creator reads about one stale Binding. Names the label the row showed when they made
-    the choice, since that is the only version of the Resource they ever saw."""
+    the choice, since that is the only version of the Resource they ever saw.
+
+    One sentence per kind, because the three go missing for different reasons and lead to different
+    places: an Alias is de-registered on the gateway, a Model API is undeployed from this project, and
+    a Data Source is a grant the creator no longer holds. One message for all three would send two
+    thirds of the people who read it to the wrong screen.
+    """
+    if b.kind == KIND_MODEL_API:
+        return (
+            f"This app is recorded as using the Model API {b.display_name}, which is no longer "
+            f"deployed in this project. Its prediction calls will fail. Remove it, or pick a "
+            f"different Model API, before you build on it."
+        )
+    if b.kind == KIND_DATA_SOURCE:
+        # Says publishing too, because that refusal (#12) is the one a creator would otherwise meet
+        # first, at the point where the app is already built.
+        return (
+            f"This app is recorded as reading the Data Source {b.display_name}, which is no longer "
+            f"among the Data Sources you have permission on. Sage will not publish an app that reads "
+            f"a store it cannot check. Remove it, or pick a different Data Source, before you build "
+            f"on it."
+        )
     return (
         f"This app is recorded as using the LLM Alias {b.display_name}, which the LLM Gateway no "
         f"longer offers. Remove it, or pick a different Alias, before you build on it."
+    )
+
+
+def credential_message(b: Binding) -> str:
+    """What a creator reads about a Model API Binding whose access token has gone."""
+    return (
+        f"This app is recorded as using the Model API {b.display_name}, but Sage no longer holds an "
+        f"access token for it, so the app cannot call it. Use it again in the Resources panel to "
+        f"paste a new token, or remove it."
     )

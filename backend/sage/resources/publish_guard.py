@@ -162,6 +162,10 @@ def _credential_problem(b: Binding, sources: list[DataSource] | None) -> Publish
         ), b.kind, b.id)
     source = _match(b, sources)
     if source is None:
+        # Since #23 this is the SECOND line rather than the first: session-open preflight reports a
+        # Data Source that has gone, so a creator normally meets it before building rather than at
+        # publish. The guard stays because preflight is a warning and this is a refusal, and because
+        # a listing that failed at session open leaves nothing for the creator to have seen.
         return PublishProblem(UNLISTED_SOURCE, (
             f"This app is recorded as reading the Data Source {b.display_name}, which isn't in the "
             f"Data Sources you have permission on, so Sage can't tell whether its credential is "

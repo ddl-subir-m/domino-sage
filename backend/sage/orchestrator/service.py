@@ -63,7 +63,13 @@ from ..resources.pinned_model_api import CONFIG_PATH as MODEL_API_CONFIG_PATH
 from ..resources.pinned_model_api import agents_block as model_api_agents_block
 from ..resources.pinned_model_api import pinned_model_api
 from ..resources.pinned_model_api import render_config as render_model_api_config
-from ..resources.preflight import stale_bindings, stale_message, unresolved_slots
+from ..resources.preflight import (
+    credential_message,
+    missing_credentials,
+    stale_bindings,
+    stale_message,
+    unresolved_slots,
+)
 from ..resources.provider import (
     Column,
     DataSource,
@@ -3031,19 +3037,69 @@ class Orchestrator:
         workspace = self._project.workspace if self._project is not None else Workspace(self._project_id, self._wm.path)
         recorded = parse_bindings(workspace.read_bindings())
         if not recorded:
-            # Nothing to check, so nothing worth a gateway call: the overwhelmingly common case at
-            # session open is an app with no Bindings at all, and that must cost nothing.
+            # Nothing to check, so nothing worth a call: the overwhelmingly common case at session
+            # open is an app with no Bindings at all, and that must cost nothing.
             return {"state": "ok", "error": None, "bindings": []}
-        try:
-            aliases = self._resources.list_llm_aliases()
-        except ResourceUnavailable as e:
-            return {"state": "unreachable", "error": str(e), "bindings": []}
-        gone = stale_bindings(recorded, aliases)
+        listings, errors = self._binding_listings({b.kind for b in recorded})
+        gone = stale_bindings(recorded, listings)
+        # A Model API that has gone is not also reported as having no token: it is the same Binding
+        # to remove, and the more useful half of why.
+        held = self._held_tokens(workspace, {b.kind for b in recorded})
+        tokenless = [b for b in missing_credentials(recorded, held) if b not in gone]
+        problems = ([(b, stale_message(b)) for b in gone]
+                    + [(b, credential_message(b)) for b in tokenless])
         return {
-            "state": "problems" if gone else "ok",
-            "error": None,
-            "bindings": [{**b.to_dict(), "message": stale_message(b)} for b in gone],
+            # `problems` outranks `unreachable`, because one listing failing does not unlearn what
+            # another one answered. `error` still carries what could not be checked, so a caller is
+            # never told that a partial answer was the whole one.
+            "state": "problems" if problems else "unreachable" if errors else "ok",
+            "error": " ".join(errors) or None,
+            "bindings": [{**b.to_dict(), "message": message} for b, message in problems],
         }
+
+    # Which listing is authoritative for which kind, and how to fetch it. An LLM Alias comes off the
+    # gateway; a Model API off the Domino API scoped to this project, which is the only scope a
+    # non-admin can ask for; a Data Source off the caller's own permission listing, unscoped, because
+    # a Data Source is granted to a person rather than to a project.
+    def _binding_listings(self, kinds: set[str]) -> tuple[dict[str, list | None], list[str]]:
+        """The listings needed to judge these Binding kinds, and what could not be fetched.
+
+        A kind with no Bindings costs no call — an app that uses one Alias and nothing else makes the
+        same single request it made before this. A listing that fails maps to None rather than being
+        omitted, which is the same answer to `stale_bindings` and a different one to the caller: the
+        `error` it produces is how "we could not check" stays distinguishable from "nothing is wrong".
+        """
+        fetchers = (
+            (KIND_LLM_ALIAS, self._resources.list_llm_aliases),
+            (KIND_MODEL_API, lambda: self._resources.list_model_apis(self._domino_project_id)),
+            (KIND_DATA_SOURCE, self._resources.list_data_sources),
+        )
+        listings: dict[str, list | None] = {}
+        errors: list[str] = []
+        for kind, fetch in fetchers:
+            if kind not in kinds:
+                continue
+            try:
+                listings[kind] = fetch()
+            except ResourceUnavailable as e:
+                listings[kind] = None
+                errors.append(str(e))
+        return listings, errors
+
+    @staticmethod
+    def _held_tokens(workspace: Workspace, kinds: set[str]) -> set[str] | None:
+        """The Model APIs Sage still holds an access token for, or None when it did not look.
+
+        Local, so it costs no call — but it is still skipped for an app with no Model API Binding,
+        because a read that can answer nothing is a read worth not making.
+        """
+        if KIND_MODEL_API not in kinds:
+            return None
+        try:
+            return set(CredentialStore(workspace.path).ids())
+        except Exception:
+            log.exception("preflight: could not read the Model API token store")
+            return None
 
     def _find_asset(self, dataset_id: str) -> Asset:
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)

@@ -13,8 +13,13 @@ from pathlib import Path
 
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
-from sage.resources.bindings import Binding
-from sage.resources.preflight import stale_bindings, unresolved_slots
+from sage.resources.bindings import KIND_DATA_SOURCE, KIND_MODEL_API, Binding
+from sage.resources.preflight import (
+    missing_credentials,
+    stale_bindings,
+    stale_message,
+    unresolved_slots,
+)
 from sage.resources.provider import FakeResourceProvider, LlmAlias, ResourceUnavailable
 from sage.router.models import ModelCatalog
 
@@ -136,34 +141,90 @@ def _binding(rid: str, name: str, display: str = "") -> Binding:
     return Binding("llm_alias", rid, name, display or name)
 
 
+ALIAS_LISTING = {"llm_alias": ALIASES}
+# The fake's own Model APIs and Data Sources, so the "still there" cases are checked against the same
+# rows the orchestrator would fetch rather than against a second set invented here.
+FAKE = FakeResourceProvider()
+MODEL_APIS = list(FAKE.model_apis)
+DATA_SOURCES = list(FAKE.data_sources)
+
+
 def test_a_binding_whose_alias_is_still_offered_is_not_stale():
-    assert stale_bindings([_binding("id-sonnet", "sonnet")], ALIASES) == []
+    assert stale_bindings([_binding("id-sonnet", "sonnet")], ALIAS_LISTING) == []
 
 
 def test_a_binding_whose_resource_has_gone_is_stale():
     gone = _binding("id-gpt", "gpt-5.4", "gpt-5.4")
-    assert stale_bindings([gone, _binding("id-sonnet", "sonnet")], ALIASES) == [gone]
+    assert stale_bindings([gone, _binding("id-sonnet", "sonnet")], ALIAS_LISTING) == [gone]
 
 
 def test_a_binding_still_resolves_when_only_its_id_has_changed():
     # The manifest keeps id AND name; the control plane keys on id, a model call keys on name. An
     # Alias re-registered under a new id is the same Resource, and calling it stale would send a
     # creator to remove something that works.
-    assert stale_bindings([_binding("stale-id", "sonnet")], ALIASES) == []
+    assert stale_bindings([_binding("stale-id", "sonnet")], ALIAS_LISTING) == []
 
 
 def test_a_binding_of_a_kind_this_sage_cannot_check_is_left_alone():
-    # A newer Sage's record. Not being able to check something is not evidence that it is gone.
-    other = Binding("data_source", "ds-1", "warehouse", "Warehouse")
-    assert stale_bindings([other], ALIASES) == []
+    # A newer Sage's record: a kind with no listing in this call at all. Not being able to check
+    # something is not evidence that it is gone.
+    other = Binding("nothing_sage_knows", "x-1", "thing", "Thing")
+    assert stale_bindings([other], ALIAS_LISTING) == []
 
 
-def test_a_model_api_binding_is_never_judged_against_the_alias_listing():
-    # A kind Sage records (#9) but this check cannot answer for: Model APIs come off the Domino API,
-    # not the gateway, so every one of them would read as missing from an alias listing. Badging them
-    # "Gone" would send a creator to remove a Model API that is deployed and running.
-    api = Binding("model_api", "id-churn", "churn-risk", "churn-risk")
-    assert stale_bindings([api], ALIASES) == []
+def test_a_kind_is_only_ever_judged_against_its_own_listing(tmp_path):
+    # #23's whole point. A Model API comes off the Domino API and a Data Source off the caller's
+    # permission listing, so judging either against the alias listing would call every one of them
+    # gone — and send a creator to remove a Model API that is deployed and running.
+    api = Binding(KIND_MODEL_API, "f-churn", "churn-risk", "churn-risk")
+    source = Binding(KIND_DATA_SOURCE, "ds-dwh", "Snowflake-Data-Warehouse",
+                     "Snowflake-Data-Warehouse")
+    assert stale_bindings([api, source], ALIAS_LISTING) == []
+    assert stale_bindings([api, source],
+                          {**ALIAS_LISTING, "model_api": MODEL_APIS,
+                           "data_source": DATA_SOURCES}) == []
+
+
+def test_each_kind_is_reported_when_its_own_listing_has_lost_it():
+    api = Binding(KIND_MODEL_API, "id-gone", "gone-api", "gone-api")
+    source = Binding(KIND_DATA_SOURCE, "ds-gone", "gone-source", "gone-source")
+    listings = {"llm_alias": ALIASES, "model_api": MODEL_APIS, "data_source": []}
+    assert stale_bindings([api, source], listings) == [api, source]
+
+
+def test_a_listing_that_did_not_arrive_judges_nothing():
+    # None is "we could not check", which is a different answer from an empty listing — only a
+    # listing that ARRIVED can prove that something missing from it is gone.
+    api = Binding(KIND_MODEL_API, "f-churn", "churn-risk", "churn-risk")
+    assert stale_bindings([api], {"model_api": None}) == []
+    assert stale_bindings([api], {"model_api": []}) == [api]
+
+
+def test_one_listing_failing_does_not_suppress_another():
+    # A gateway that is down says nothing about whether a Data Source still exists, and withholding
+    # that because a different call failed would lose the one thing Sage did learn.
+    alias = _binding("id-gone", "gone-alias")
+    source = Binding(KIND_DATA_SOURCE, "ds-gone", "gone-source", "gone-source")
+    assert stale_bindings([alias, source], {"llm_alias": None, "data_source": []}) == [source]
+
+
+def test_each_kind_gets_the_sentence_that_leads_where_its_fix_is():
+    # Three reasons, three screens. One message for all of them would send two thirds of the people
+    # who read it to the wrong place.
+    assert "LLM Gateway" in stale_message(_binding("id", "a"))
+    assert "deployed in this project" in stale_message(
+        Binding(KIND_MODEL_API, "id", "churn", "churn"))
+    assert "permission on" in stale_message(Binding(KIND_DATA_SOURCE, "id", "dwh", "dwh"))
+
+
+def test_a_model_api_whose_token_has_gone_is_reported_too():
+    # The failure the other two kinds have no equivalent for: an Alias is called with the viewer's
+    # own session and a Data Source through the sidecar, but a Model API opens for nothing except a
+    # token someone pasted (#9).
+    api = Binding(KIND_MODEL_API, "f-churn", "churn-risk", "churn-risk")
+    assert missing_credentials([api], held=set()) == [api]
+    assert missing_credentials([api], held={"f-churn"}) == []
+    assert missing_credentials([api], held=None) == []      # not looked at is not "gone"
 
 
 # ---- Bindings: through the orchestrator, which is what session open calls ------------------------
@@ -279,3 +340,111 @@ def test_the_preflight_route_is_200_even_when_the_gateway_will_not_answer(tmp_pa
     r = client.get("/api/preflight")
     assert r.status_code == 200
     assert r.json()["bindings"]["state"] == "unreachable"
+
+
+# ---- Bindings of every kind, through the orchestrator (#23) ---------------------------------------
+
+
+def _bound(tmp_path, *, model_api=False, data_source=False, resources=None):
+    """An orchestrator with the asked-for Binding kinds already recorded."""
+    from sage.resources.model_api_credentials import Credential, CredentialStore
+
+    orch = _orch(tmp_path, resources=resources)
+    orch.bind_llm_alias("id-sonnet")
+    if model_api:
+        # Straight into the store, as test_bindings.py does: `save_model_api_credential` calls the
+        # model to verify the token, and the paste has its own tests.
+        CredentialStore(orch.project().workspace.path).put(
+            "f-churn", Credential("https://dogfood.example/models/id-churn/latest/model", "t" * 64))
+        orch.bind_model_api("f-churn")
+    if data_source:
+        orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    return orch
+
+
+def test_a_data_source_that_has_gone_is_reported_at_session_open(tmp_path):
+    # Today this is caught only at publish, by #12's guard — the right refusal in the wrong place,
+    # because the creator has already built against it.
+    orch = _bound(tmp_path, data_source=True)
+    orch._resources.data_sources = [s for s in orch._resources.data_sources if s.id != "ds-dwh"]
+    result = orch.preflight_bindings()
+    assert result["state"] == "problems"
+    (row,) = result["bindings"]
+    assert row["kind"] == KIND_DATA_SOURCE
+    assert "permission on" in row["message"]
+
+
+def test_a_model_api_that_is_no_longer_deployed_is_reported_at_session_open(tmp_path):
+    orch = _bound(tmp_path, model_api=True)
+    orch._resources.model_apis = [m for m in orch._resources.model_apis if m.id != "f-churn"]
+    result = orch.preflight_bindings()
+    assert [b["kind"] for b in result["bindings"]] == [KIND_MODEL_API]
+    assert "deployed in this project" in result["bindings"][0]["message"]
+
+
+def test_bindings_of_every_kind_that_are_all_fine_report_nothing(tmp_path):
+    orch = _bound(tmp_path, model_api=True, data_source=True)
+    assert orch.preflight_bindings() == {"state": "ok", "error": None, "bindings": []}
+
+
+def test_a_kind_whose_listing_could_not_be_fetched_is_not_called_gone(tmp_path):
+    orch = _bound(tmp_path, data_source=True)
+
+    def refuse():
+        raise ResourceUnavailable("Domino did not answer.")
+
+    orch._resources.list_data_sources = refuse
+    result = orch.preflight_bindings()
+    assert result["state"] == "unreachable"
+    assert result["bindings"] == []
+    assert "Domino did not answer." in result["error"]
+
+
+def test_one_listing_failing_still_reports_what_another_answered(tmp_path):
+    # Criterion 4. A dead gateway says nothing about whether a Data Source still exists.
+    orch = _bound(tmp_path, data_source=True)
+    orch._resources.data_sources = [s for s in orch._resources.data_sources if s.id != "ds-dwh"]
+
+    def refuse():
+        raise ResourceUnavailable("The LLM Gateway did not answer.")
+
+    orch._resources.list_llm_aliases = refuse
+    result = orch.preflight_bindings()
+    assert result["state"] == "problems"            # what we learned outranks what we could not
+    assert [b["kind"] for b in result["bindings"]] == [KIND_DATA_SOURCE]
+    assert "LLM Gateway did not answer." in result["error"]
+
+
+def test_a_kind_with_no_bindings_is_never_listed(tmp_path):
+    # Criterion 5. An app that uses one Alias and nothing else makes the same single request it made
+    # before #23.
+    orch = _bound(tmp_path)
+    asked = []
+    for kind, name in (("model_api", "list_model_apis"), ("data_source", "list_data_sources")):
+        setattr(orch._resources, name, lambda *a, _k=kind, **k: asked.append(_k) or [])
+    orch.preflight_bindings()
+    assert asked == []
+
+
+def _drop_tokens(orch) -> None:
+    """Lose the stored tokens the way a real app does: the Binding manifest is committed and the
+    token store is gitignored, so a fresh clone has the record and none of the credentials."""
+    from sage.resources.model_api_credentials import CredentialStore
+
+    CredentialStore(orch.project().workspace.path).path.unlink()
+
+
+def test_a_model_api_whose_token_has_gone_is_reported(tmp_path):
+    orch = _bound(tmp_path, model_api=True)
+    _drop_tokens(orch)
+    result = orch.preflight_bindings()
+    assert [b["kind"] for b in result["bindings"]] == [KIND_MODEL_API]
+    assert "access token" in result["bindings"][0]["message"]
+
+
+def test_a_model_api_that_is_gone_is_reported_once_not_twice(tmp_path):
+    # It is the same Binding to remove, and "no longer deployed" is the more useful half of why.
+    orch = _bound(tmp_path, model_api=True)
+    orch._resources.model_apis = [m for m in orch._resources.model_apis if m.id != "f-churn"]
+    _drop_tokens(orch)
+    assert len(orch.preflight_bindings()["bindings"]) == 1

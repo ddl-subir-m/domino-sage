@@ -1987,7 +1987,10 @@ let bindingsCache = null;   // null = not read yet; [] = read, and this app depe
 let bindingsError = null;
 // Bindings the gateway no longer offers, keyed the way a Binding is identified (kind + id, since an
 // id is only unique within its kind). Empty unless the session-open preflight proved one gone.
-let staleBindings = new Set();
+// Keyed "kind id", valued with the sentence preflight produced for that row. A Map rather than a Set
+// since #23: the three kinds go missing for different reasons and lead to different screens, so the
+// badge cannot carry one hardcoded explanation for all of them.
+let staleBindings = new Map();
 
 const KIND_LABELS = { llm_alias: 'LLM Alias', model_api: 'Model API', data_source: 'Data Source' };
 
@@ -2020,7 +2023,7 @@ async function loadPreflight() {
   // 'unreachable' means we could not check, which is not evidence anything is gone — badging a row
   // stale on that basis would send a creator to remove a Resource that works.
   if (!pre || pre.state !== 'problems') return;
-  staleBindings = new Set((pre.bindings || []).map(b => `${b.kind} ${b.id}`));
+  staleBindings = new Map((pre.bindings || []).map(b => [`${b.kind} ${b.id}`, b.message || '']));
   renderBindings();   // badge the rows, if the rail has already drawn them
   for (const b of pre.bindings) {
     const el = addStatus('warn', '⚠', `${esc(b.message)} <button class="link-btn">Show it in Resources</button>`);
@@ -2101,8 +2104,11 @@ function bindingRow(b) {
   const kind = KIND_LABELS[b.kind] || b.kind;
   // A Resource the gateway no longer offers (#17). The badge sits next to the thing to fix, which
   // the chat warning cannot do; both exist because the rail may never be opened.
-  const gone = staleBindings.has(`${b.kind} ${b.id}`)
-    ? `<span class="a-chip" title="The LLM Gateway no longer offers this Resource. Remove it, or pick a different one, before you build on it.">Gone</span>`
+  const goneWhy = staleBindings.get(`${b.kind} ${b.id}`);
+  // "Unusable" rather than "Gone" for a Model API whose token has been lost: the Resource is still
+  // there, and a badge saying otherwise would send the creator to remove something that is deployed.
+  const gone = goneWhy
+    ? `<span class="a-chip" title="${esc(goneWhy)}">${/access token/.test(goneWhy) ? 'No token' : 'Gone'}</span>`
     : '';
   // Which row the app's code actually calls (#7). Without it, a creator holding two Aliases has no way
   // to tell which one their app talks to, and the answer is not visible anywhere else in the product.
