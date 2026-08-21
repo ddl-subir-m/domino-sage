@@ -183,6 +183,11 @@ class SqlDialect:
     reads as "this connector said <x>", not as an empty schema — the failure mode that would have the
     creator believe an answer.
 
+    `sample` is not a level at all: it reads ROWS, and it runs only when a creator explicitly asks for
+    it (#16). Kept beside the rest because it is the same per-connector problem — `LIMIT` is not
+    spelled the same everywhere — and because a connector Sage cannot look inside cannot be sampled
+    either.
+
     `columns` is the fourth level, and the only one no picker opens (#15). It is read once, when the
     creator binds a Scope, so the agent writing the app's queries knows what the tables hold instead of
     guessing column names. `None` for a connector whose columns Sage cannot list, which is the same
@@ -200,18 +205,24 @@ class SqlDialect:
     verified: bool = False
     quote: str = '"'  # `"` everywhere except the stores where it means a string literal by default
     columns: str | None = None
+    sample: str | None = None
 
     def ident(self, name: str) -> str:
         """One validated identifier, quoted. Quoted only to preserve case — the validation has
         already ruled out everything quoting would otherwise be protecting against."""
         return f"{self.quote}{safe_identifier(name)}{self.quote}"
 
-    def statement(self, template: str, database: str = "", schema: str = "", table: str = "") -> str:
+    def statement(self, template: str, database: str = "", schema: str = "", table: str = "",
+                  limit: int = 0) -> str:
         return template.format(
             db=self.ident(database) if database else "",
             schema=self.ident(schema) if schema else "",
             schema_lit=safe_identifier(schema) if schema else "",
+            table=self.ident(table) if table else "",
             table_clause=f" AND TABLE_NAME = '{safe_identifier(table)}'" if table else "",
+            # An int this side of the boundary, never a caller's text. It reaches the statement
+            # through `%d`-style formatting of a value Python has already proved is a whole number.
+            limit=int(limit),
         )
 
 
@@ -226,6 +237,13 @@ _ANSI_TABLES = ("SELECT TABLE_NAME AS name FROM {db}.INFORMATION_SCHEMA.TABLES "
 # One statement for the whole Scope, not one per table: a schema with 200 tables would otherwise be
 # 200 round trips at ~3s each. ORDINAL_POSITION so the agent reads the columns in the order the table
 # declares them, which is the order a person describing the table would use.
+# Reading rows, which only #16's explicit act ever runs. Three spellings, because the standard one
+# is not universal: SQL Server's family has no `LIMIT` and takes `TOP` before the select list, and a
+# store with no database level must not have an empty `{db}` prefix left in front of the schema.
+_SAMPLE_3 = "SELECT * FROM {db}.{schema}.{table} LIMIT {limit}"
+_SAMPLE_2 = "SELECT * FROM {schema}.{table} LIMIT {limit}"
+_SAMPLE_TOP = "SELECT TOP {limit} * FROM {db}.{schema}.{table}"
+
 _ANSI_COLUMNS = ("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
                  "DATA_TYPE AS data_type FROM {db}.INFORMATION_SCHEMA.COLUMNS "
                  "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
@@ -251,12 +269,15 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                 "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
         verified=True,
         columns=_ANSI_COLUMNS,
+        sample=_SAMPLE_3,
     ),
     # Three levels: `sys.databases` is cross-database on one connection, unlike Postgres.
     "SQLServerConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
-                                  _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS),
+                                  _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS,
+                                  sample=_SAMPLE_TOP),
     "SynapseConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
-                                _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS),
+                                _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS,
+                                sample=_SAMPLE_TOP),
     # Two levels. A Postgres connection is bound to one database and cannot read another's catalog,
     # so listing the others would offer choices that then fail. `pg_%` and `information_schema` are
     # dropped: they are the server's own bookkeeping, never what an app was built to read.
@@ -271,6 +292,7 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                  "DATA_TYPE AS data_type FROM INFORMATION_SCHEMA.COLUMNS "
                  "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
                  "ORDER BY TABLE_NAME, ORDINAL_POSITION"),
+        sample=_SAMPLE_2,
     ),
     # Two levels each, and in MySQL's family "database" and "schema" are one thing — so the single
     # namespace level is offered as the schema, which is the level the Binding records.
@@ -284,11 +306,13 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                  "DATA_TYPE AS data_type FROM INFORMATION_SCHEMA.COLUMNS "
                  "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
                  "ORDER BY TABLE_NAME, ORDINAL_POSITION"),
+        sample=_SAMPLE_2,
     ),
     # Catalogs are the outer level on both, and `SHOW` is how each names them.
     "DatabricksConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, quote="`",
-                                   columns=_ANSI_COLUMNS),
-    "TrinoConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS),
+                                   columns=_ANSI_COLUMNS, sample=_SAMPLE_3),
+    "TrinoConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS,
+                              sample=_SAMPLE_3),
     # Two levels. A BigQuery dataset holds its own `INFORMATION_SCHEMA`, so the tables view is
     # qualified by the schema rather than filtered on it.
     "BigQueryConfig": SqlDialect(
@@ -299,6 +323,7 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
         columns=("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
                  "DATA_TYPE AS data_type FROM {schema}.INFORMATION_SCHEMA.COLUMNS "
                  "WHERE TRUE{table_clause} ORDER BY TABLE_NAME, ORDINAL_POSITION"),
+        sample=_SAMPLE_2,
     ),
 }
 # Same statements, same shape, different type strings. Written as aliases rather than repeated so a
@@ -348,6 +373,24 @@ class Column:
     table: str
     name: str
     type: str = ""
+
+
+@dataclass(frozen=True)
+class SampleRows:
+    """A handful of real rows out of one table (#16).
+
+    Only ever produced by an explicit act. Rows are production data, and putting them in a model's
+    context is a decision that belongs to the person who knows what is in the table — never to a rule
+    that inferred it would be helpful.
+
+    Values arrive already reduced to what JSON has words for, and long ones already cut: a store
+    answers with decimals, timestamps and blobs, and one wide column would otherwise spend the
+    agent's context on a base64 run nobody reads.
+    """
+
+    table: str
+    columns: list[str]
+    rows: list[list]
 
 
 def dialect_for(source: DataSource) -> SqlDialect:
@@ -408,6 +451,44 @@ def readable_error(exc: Exception, limit: int = 300) -> str:
     return f"{type(exc).__name__}: {text[:limit]}" if text else type(exc).__name__
 
 
+# One cell's worth of context. A warehouse column can hold a base64 blob or a whole JSON document,
+# and the agent is being shown the SHAPE of the data — a value cut at this length still says "this is
+# an email address" or "this is a currency code", which is the entire reason for showing it.
+SAMPLE_CELL_LIMIT = 80
+
+
+def sample_value(value: Any, limit: int = SAMPLE_CELL_LIMIT) -> Any:
+    """One store value as something JSON can carry and a model can read.
+
+    Anything without a JSON word for it is stringified rather than dropped, for the reason the Built
+    App's executor does the same: a column the agent can read beats a column that silently went
+    missing. Nulls stay null, because "this column is often empty" is one of the more useful things a
+    sample says.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        text = value
+    elif hasattr(value, "isoformat"):
+        text = value.isoformat()
+    else:
+        text = str(value)
+    if isinstance(text, str) and len(text) > limit:
+        return text[:limit] + "…"
+    return text
+
+
+def frame_rows(frame: Any, limit: int = SAMPLE_CELL_LIMIT) -> tuple[list[str], list[list]]:
+    """A result frame as (column names in order, rows by position).
+
+    By position rather than by name, as the Built App's own drain is: a query selecting two columns
+    with the same name would otherwise answer with one of them twice.
+    """
+    columns = [str(c) for c in getattr(frame, "columns", [])]
+    if not columns:
+        return [], []
+    values = [frame[c].tolist() for c in frame.columns]
+    return columns, [[sample_value(col[i], limit) for col in values] for i in range(len(values[0]))]
+
+
 class ResourceProvider(Protocol):
     def list_llm_aliases(self) -> list[LlmAlias]: ...
 
@@ -432,6 +513,11 @@ class ResourceProvider(Protocol):
     # every table in the schema, which is what a Scope that stopped at a schema is asking for.
     def list_columns(self, source: DataSource, database: str, schema: str,
                      table: str = "") -> list[Column]: ...
+
+    # Rows, and the only method here that reads any. Runs when a creator asks and never otherwise
+    # (#16), which is why it takes one table at a time: what is exposed is picked, not swept up.
+    def sample_rows(self, source: DataSource, database: str, schema: str, table: str,
+                    limit: int = 5) -> SampleRows: ...
 
 
 def records_of(payload: Any) -> list[dict]:
@@ -804,6 +890,25 @@ class DominoResourceProvider:
             for r in rows if str(r.get("column_name") or "")
         ]
 
+    def sample_rows(self, source: DataSource, database: str, schema: str, table: str,
+                    limit: int = 5) -> SampleRows:
+        """A handful of real rows out of one table, because a creator asked for them (#16).
+
+        `SELECT *` with the store's own row limit, which is not spelled the same everywhere — hence a
+        statement per dialect rather than one with `LIMIT` appended. The table name is validated and
+        quoted by `statement`, as every other identifier Sage sends is.
+        """
+        dialect = dialect_for(source)
+        if dialect.sample is None:
+            raise ResourceUnavailable(
+                f"Sage cannot read rows out of a {source.connector or source.connector_type} Data "
+                "Source, so it cannot show the agent what this table holds."
+            )
+        frame = self._query(source, dialect.statement(
+            dialect.sample, database=database, schema=schema, table=table, limit=max(1, int(limit))))
+        columns, rows = frame_rows(frame)
+        return SampleRows(table, columns, rows)
+
     def _introspect_rows(self, source: DataSource, sql: str) -> list[dict]:
         """`_introspect`, for a statement whose answer is rows rather than a list of names.
 
@@ -1034,6 +1139,26 @@ _FAKE_TREE: dict[str, dict[str, dict[str, list[str]]]] = {
 # A table that is in the tree and NOT here answers with no columns, which is deliberate — `STAGING`
 # is empty and `SCRATCH_FORECAST` is a table nobody described, so a local run rehearses a Scope whose
 # schema comes back thin as well as one that comes back full.
+# table -> rows, positionally matching `_FAKE_COLUMNS`. Only a couple of tables carry any: a local
+# run has to rehearse BOTH sides of #16 — a table the creator chose to sample and one they did not —
+# and inventing plausible rows for every table would make sharing look like the default it must not
+# be.
+_FAKE_ROWS: dict[str, list[list]] = {
+    "FCT_USAGE_DAILY": [
+        ["2026-08-18", "ACC-1042", 37, 12.5],
+        ["2026-08-18", "ACC-2213", 4, 0.0],
+        ["2026-08-19", "ACC-1042", 41, 18.25],
+    ],
+    "DIM_ACCOUNT": [
+        ["ACC-1042", "Northwind Trading", "Enterprise", "2024-03-11T00:00:00"],
+        ["ACC-2213", "Bluebird Health", "Mid-Market", "2025-11-02T00:00:00"],
+    ],
+    "accounts": [
+        [1, "ops@northwind.example", "2024-03-11T09:14:00"],
+        [2, "admin@bluebird.example", "2025-11-02T16:02:00"],
+    ],
+}
+
 _FAKE_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "DIM_ACCOUNT": [("ACCOUNT_ID", "VARCHAR"), ("ACCOUNT_NAME", "VARCHAR"),
                     ("SEGMENT", "VARCHAR"), ("SIGNED_AT", "TIMESTAMP_NTZ")],
@@ -1068,6 +1193,8 @@ class FakeResourceProvider:
     # table -> [(column, type)], for the schema the agent is given (#15).
     columns: dict[str, list[tuple[str, str]]] = field(
         default_factory=lambda: dict(_FAKE_COLUMNS))
+    # table -> rows, for the samples a creator can choose to share (#16).
+    rows: dict[str, list[list]] = field(default_factory=lambda: dict(_FAKE_ROWS))
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         return list(self.aliases)
@@ -1112,3 +1239,20 @@ class FakeResourceProvider:
         if table:
             wanted = [t for t in wanted if t == table]
         return [Column(t, name, ctype) for t in wanted for name, ctype in self.columns.get(t, [])]
+
+    def sample_rows(self, source: DataSource, database: str, schema: str, table: str,
+                    limit: int = 5) -> SampleRows:
+        """Rows for one table, from `rows` above. Refuses where the real one does.
+
+        A table with no rows recorded answers with none rather than raising: an empty table is a real
+        thing to sample, and it is a different answer from a connector that cannot be sampled at all.
+        """
+        dialect = dialect_for(source)
+        if dialect.sample is None:
+            raise ResourceUnavailable(
+                f"Sage cannot read rows out of a {source.connector or source.connector_type} Data "
+                "Source, so it cannot show the agent what this table holds."
+            )
+        names = [name for name, _ in self.columns.get(table, [])]
+        rows = [[sample_value(v) for v in row] for row in self.rows.get(table, [])[:max(1, limit)]]
+        return SampleRows(table, names, rows)

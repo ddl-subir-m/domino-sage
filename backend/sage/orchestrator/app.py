@@ -854,6 +854,50 @@ def remove_binding(kind: str, resource_id: str) -> JSONResponse:
     return JSONResponse(content={"bindings": orchestrator.unbind(kind, resource_id)})
 
 
+@control_app.get("/api/project/samples")
+def sample_candidates() -> JSONResponse:
+    """Which tables the creator could show the agent, and what is already shared (#16).
+
+    Read from the schema recorded when the Scope was bound, so opening the choice costs no query and
+    no wait. `bindable: false` means this app records no Data Source, and the panel says so rather
+    than offering an empty list of tables.
+    """
+    return JSONResponse(content=orchestrator.sample_candidates())
+
+
+@control_app.post("/api/project/samples")
+async def share_samples(request: Request) -> JSONResponse:
+    """Show the agent real rows from the tables the creator ticked.
+
+    The whole payload is the creator's decision — which tables, and whether the rows are sensitive.
+    An empty `tables` is not an error but the opposite choice: stop showing any.
+
+    502 for a store that will not answer, as the cascade's routes do: the rows are the thing being
+    asked for, so unlike a Binding there is nothing to record when they do not arrive.
+    """
+    body = await request.json()
+    tables = body.get("tables")
+    try:
+        return JSONResponse(content=orchestrator.share_sample_rows(
+            [str(t) for t in tables] if isinstance(tables, list) else [],
+            bool(body.get("sensitive")),
+        ))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content={"error": str(e) or (
+            "This app is not recorded as using a Data Source.")})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@control_app.delete("/api/project/samples")
+def stop_sharing_samples() -> JSONResponse:
+    """Stop showing the agent any rows. Leaves the sovereign lock on — it is sticky, because the
+    model has already seen what it has seen."""
+    return JSONResponse(content=orchestrator.clear_sample_rows())
+
+
 @control_app.get("/api/preflight")
 def preflight() -> JSONResponse:
     """The Bindings this app records that the gateway no longer offers (#17).

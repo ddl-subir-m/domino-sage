@@ -21,13 +21,21 @@ import pytest
 from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.resources.bound_schema import (
     INLINE_COLUMN_LIMIT,
+    SAMPLES_PATH,
     SCHEMA_PATH,
     agents_block,
+    parse_samples,
     parse_schema,
+    render_samples,
     render_schema,
 )
 from sage.resources.builtapp import catalog_problems, serve_module, stranded_levels
-from sage.resources.provider import Column, FakeResourceProvider, ResourceUnavailable
+from sage.resources.provider import (
+    Column,
+    FakeResourceProvider,
+    ResourceUnavailable,
+    SampleRows,
+)
 
 # The app template itself, which is what SAGE_TEMPLATE points at and what WorkspaceManager seeds
 # from — so this is the same `serve.py` that ends up in every published app.
@@ -39,13 +47,14 @@ POSTGRES = Binding(KIND_DATA_SOURCE, "ds-pg", "reporting", "reporting",
                    None, "public", None, "PostgreSQLConfig")
 
 
-def block_for(binding=SNOWFLAKE, columns=None, stranded=(), problems=(), max_rows=5000) -> str:
+def block_for(binding=SNOWFLAKE, columns=None, stranded=(), problems=(), max_rows=5000,
+              samples=(False, ())) -> str:
     # `stranded` and `problems` pass through as None when that is what they are: None means "Sage
     # could not check", which renders differently from an empty list, so the helper must not flatten
     # the two into each other.
     return agents_block(binding, list(columns or []),
                         None if stranded is None else list(stranded),
-                        None if problems is None else list(problems), max_rows)
+                        None if problems is None else list(problems), max_rows, samples=samples)
 
 
 # ---- reading the columns, through the fake provider ----------------------------------------------
@@ -277,7 +286,7 @@ def orchestrator(tmp_path: Path):
     from sage.router.models import ModelCatalog
 
     template = tmp_path / "template"
-    (template / "src").mkdir(parents=True)
+    (template / "src").mkdir(parents=True, exist_ok=True)
     (template / "src" / "App.tsx").write_text("placeholder")
     (template / "package.json").write_text("{}")
     shutil.copy2(TEMPLATE / "serve.py", template / "serve.py")
@@ -294,6 +303,12 @@ def orchestrator(tmp_path: Path):
     )
     orch.project(start_preview=False)
     return orch
+
+
+def orchestrator_on(tmp_path: Path):
+    """A second Orchestrator over the same workspace — an orchestrator restart, which is what makes
+    an in-memory lock worth re-firing."""
+    return orchestrator(tmp_path)
 
 
 def workspace_of(orch) -> Path:
@@ -399,3 +414,230 @@ def test_a_catalog_that_holds_together_is_not_reported_as_a_problem(tmp_path: Pa
     }]))
     orch._recheck_app_data()
     assert "will refuse" not in (workspace_of(orch) / "AGENTS.md").read_text()
+
+
+# ---- sample rows, only ever because someone asked (#16) --------------------------------------------
+
+
+def test_sample_rows_come_back_cut_and_json_safe():
+    provider = FakeResourceProvider()
+    sample = provider.sample_rows(source(provider, "ds-dwh"), "DWH", "MARTS", "FCT_USAGE_DAILY")
+    assert sample.table == "FCT_USAGE_DAILY"
+    assert sample.columns == ["USAGE_DATE", "ACCOUNT_ID", "SEATS_ACTIVE", "COMPUTE_HOURS"]
+    assert sample.rows[0] == ["2026-08-18", "ACC-1042", 37, 12.5]
+
+
+def test_a_wide_value_is_cut_rather_than_dropped():
+    # The agent is being shown the SHAPE of the data. A value cut at the limit still says "this is an
+    # email address"; a base64 blob in full just spends context.
+    from sage.resources.provider import sample_value
+    assert sample_value("x" * 200).endswith("…")
+    assert len(sample_value("x" * 200)) == 81
+    assert sample_value(None) is None      # "this column is often empty" is worth showing
+
+
+def test_the_row_limit_is_spelled_the_way_each_store_spells_it():
+    # SQL Server's family has no LIMIT and takes TOP before the select list. Appending ` LIMIT 5` to
+    # one statement for every connector would be a syntax error on two of them.
+    from sage.resources.provider import SQL_DIALECTS
+    snow = SQL_DIALECTS["SnowflakeConfig"]
+    mssql = SQL_DIALECTS["SQLServerConfig"]
+    assert snow.statement(snow.sample, database="DWH", schema="MARTS", table="T", limit=5) == (
+        'SELECT * FROM "DWH"."MARTS"."T" LIMIT 5')
+    assert mssql.statement(mssql.sample, database="u", schema="dbo", table="T", limit=5) == (
+        'SELECT TOP 5 * FROM "u"."dbo"."T"')
+
+
+def test_a_two_level_store_does_not_get_an_empty_database_prefix():
+    from sage.resources.provider import SQL_DIALECTS
+    pg = SQL_DIALECTS["PostgreSQLConfig"]
+    assert pg.statement(pg.sample, schema="public", table="events", limit=5) == (
+        'SELECT * FROM "public"."events" LIMIT 5')
+
+
+def test_the_samples_record_keeps_the_treatment_beside_the_rows():
+    # `sensitive` is the creator's judgement about their own data, so it is recorded rather than
+    # re-derived — and it is what re-fires the in-memory sovereign lock when a session reopens.
+    written = render_samples(True, [SampleRows("orders", ["id"], [[1], [2]])])
+    sensitive, samples = parse_samples(json.loads(written))
+    assert sensitive is True
+    assert samples == [SampleRows("orders", ["id"], [[1], [2]])]
+
+
+def test_an_unreadable_samples_record_is_no_samples_and_not_sensitive():
+    assert parse_samples("{not json") == (False, [])
+
+
+def test_nothing_shared_adds_nothing_to_what_the_agent_reads():
+    # Criterion 4: working from the schema alone is the default and stays fully supported.
+    assert "Sample rows" not in block_for()
+
+
+def test_shared_rows_are_named_but_never_quoted_into_agents_md():
+    # AGENTS.md is committed. The whole reason the samples file is gitignored is that rows must not
+    # travel with the repo, so this region can only ever point at them.
+    block = block_for(samples=(False, ["orders", "customers"]))
+    assert "`orders` and `customers`" in block
+    assert SAMPLES_PATH in block
+    assert "Never copy them anywhere" in block
+
+
+def test_a_sensitive_share_tells_the_agent_the_conversation_stays_in_domino():
+    assert "sovereign models" in block_for(samples=(True, ["orders"]))
+    assert "sovereign models" not in block_for(samples=(False, ["orders"]))
+
+
+def test_sharing_reads_the_picked_tables_and_locks_when_marked_sensitive(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    assert orch.project(start_preview=False).control.snapshot().sensitivity_locked is False
+    result = orch.share_sample_rows(["FCT_USAGE_DAILY", "DIM_ACCOUNT"], sensitive=True)
+    assert result["shared"] == ["FCT_USAGE_DAILY", "DIM_ACCOUNT"]
+    assert orch.project(start_preview=False).control.snapshot().sensitivity_locked is True
+    sensitive, samples = parse_samples(json.loads((workspace_of(orch) / SAMPLES_PATH).read_text()))
+    assert sensitive is True
+    assert [s.table for s in samples] == ["FCT_USAGE_DAILY", "DIM_ACCOUNT"]
+
+
+def test_sharing_without_marking_sensitive_does_not_lock(tmp_path: Path):
+    # Criterion 2. Sage does not infer the treatment from the fact that this is warehouse data — the
+    # creator knows what is in the table and Sage does not.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
+    assert orch.project(start_preview=False).control.snapshot().sensitivity_locked is False
+
+
+def test_the_shared_rows_never_get_committed(tmp_path: Path):
+    # The rest of .sage/ rides into the published app's container. Rows must not.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
+    ignored = (workspace_of(orch) / ".gitignore").read_text().split()
+    assert SAMPLES_PATH in ignored
+
+
+def test_only_the_picked_tables_are_read(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    asked = []
+    real = orch._resources.sample_rows
+    orch._resources.sample_rows = lambda *a, **k: (asked.append(a[3]), real(*a, **k))[1]
+    orch.share_sample_rows(["DIM_ACCOUNT"], sensitive=False)
+    assert asked == ["DIM_ACCOUNT"]
+
+
+def test_sharing_again_replaces_rather_than_accumulates(tmp_path: Path):
+    # The picker shows what is currently shared, so the list that comes back IS the choice: a table
+    # unticked is one the creator wants the agent to stop seeing.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows(["FCT_USAGE_DAILY", "DIM_ACCOUNT"], sensitive=False)
+    orch.share_sample_rows(["DIM_ACCOUNT"], sensitive=False)
+    assert orch.sample_candidates()["shared"] == ["DIM_ACCOUNT"]
+
+
+def test_stopping_takes_the_rows_away_and_leaves_the_lock_on(tmp_path: Path):
+    # Sticky, exactly as detaching a sensitive file is: the model has already seen what it has seen,
+    # and unlocking is its own deliberate act with its own warning.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=True)
+    orch.clear_sample_rows()
+    assert not (workspace_of(orch) / SAMPLES_PATH).exists()
+    assert "Sample rows" not in (workspace_of(orch) / "AGENTS.md").read_text()
+    assert orch.project(start_preview=False).control.snapshot().sensitivity_locked is True
+
+
+def test_sharing_nothing_is_the_opposite_choice_rather_than_an_error(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
+    assert orch.share_sample_rows([], sensitive=False)["shared"] == []
+    assert not (workspace_of(orch) / SAMPLES_PATH).exists()
+
+
+def test_the_picker_offers_the_tables_the_scope_recorded(tmp_path: Path):
+    # From the recorded schema, not the store: opening the choice must cost no query and no wait.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    candidates = orch.sample_candidates()
+    assert candidates["bindable"] is True
+    assert candidates["tables"] == ["DIM_ACCOUNT", "DIM_DATE", "FCT_USAGE_DAILY",
+                                    "FCT_SUBSCRIPTION_REVENUE"]
+    assert candidates["shared"] == []
+
+
+def test_an_app_with_no_data_source_has_nothing_to_offer(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    assert orch.sample_candidates() == {"bindable": False, "tables": [], "shared": [],
+                                        "sensitive": False}
+
+
+def test_a_reopened_session_relocks_for_rows_that_are_still_there(tmp_path: Path):
+    # The lock is in-memory. Without this it would drop on restart while the rows it was protecting
+    # sit in the workspace for the agent to read.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=True)
+    reopened = orchestrator_on(tmp_path)
+    assert reopened.project(start_preview=False).control.snapshot().sensitivity_locked is True
+
+
+def test_a_reopened_session_does_not_lock_for_rows_shared_without_the_mark(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
+    reopened = orchestrator_on(tmp_path)
+    assert reopened.project(start_preview=False).control.snapshot().sensitivity_locked is False
+
+
+# ---- the routes the panel calls --------------------------------------------------------------------
+
+
+def client_for(orch, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as appmod
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    return TestClient(appmod.control_app)
+
+
+def test_the_panel_can_read_share_and_stop(tmp_path: Path, monkeypatch):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    client = client_for(orch, monkeypatch)
+
+    offered = client.get("/api/project/samples").json()
+    assert "FCT_USAGE_DAILY" in offered["tables"] and offered["shared"] == []
+
+    shared = client.post("/api/project/samples",
+                         json={"tables": ["FCT_USAGE_DAILY"], "sensitive": True})
+    assert shared.status_code == 200
+    assert shared.json() == {"shared": ["FCT_USAGE_DAILY"], "sensitive": True, "rows": 3}
+
+    assert client.delete("/api/project/samples").json()["shared"] == []
+
+
+def test_a_store_that_will_not_answer_is_a_502_with_its_own_reason(tmp_path: Path, monkeypatch):
+    # Unlike a Binding, there is nothing to record when the rows do not arrive — the rows ARE what
+    # was asked for, so this fails rather than half-succeeding.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+
+    def refuse(*args, **kwargs):
+        raise ResourceUnavailable("Snowflake-Data-Warehouse did not answer: timeout")
+
+    orch._resources.sample_rows = refuse
+    response = client_for(orch, monkeypatch).post(
+        "/api/project/samples", json={"tables": ["FCT_USAGE_DAILY"], "sensitive": False})
+    assert response.status_code == 502
+    assert "did not answer" in response.json()["error"]
+    assert not (workspace_of(orch) / SAMPLES_PATH).exists()
+
+
+def test_sharing_from_an_app_with_no_data_source_is_a_404(tmp_path: Path, monkeypatch):
+    orch = orchestrator(tmp_path)
+    response = client_for(orch, monkeypatch).post(
+        "/api/project/samples", json={"tables": ["anything"], "sensitive": False})
+    assert response.status_code == 404

@@ -29,3 +29,7 @@ __pycache__/
 
 # Model access tokens a creator pasted (#9). Never committed.
 .sage/model-api-credentials.json
+# Real rows from a Data Source, shown to the agent because the creator asked (#16). Never committed:
+# the rest of .sage/ rides into the published app's container, which is right for column names and
+# wrong for production data.
+.sage/samples.json

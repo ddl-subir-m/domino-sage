@@ -22,9 +22,15 @@ from __future__ import annotations
 import json
 
 from .bindings import Binding
-from .provider import Column
+from .provider import Column, SampleRows
 
 SCHEMA_PATH = ".sage/schema.json"
+# Gitignored, unlike every other manifest here (#16). `.sage/` is committed and rides into the
+# published app's container, which is right for names and types and wrong for rows: sample data in
+# that file would put production data in the creator's git history and inside the deployed app. So
+# samples live where a clone cannot pick them up — and AGENTS.md, which IS committed, can only point
+# at them, never quote them.
+SAMPLES_PATH = ".sage/samples.json"
 
 # Above this many columns the region names the tables and points at the file instead of listing
 # everything. Chosen against the shape of the thing being described: a single bound table is tens of
@@ -69,9 +75,38 @@ def parse_schema(raw: object) -> list[Column]:
     return out
 
 
+def render_samples(sensitive: bool, samples: list[SampleRows]) -> str:
+    """`.sage/samples.json` — the rows a creator chose to share, and how they chose to treat them.
+
+    `sensitive` is recorded beside the rows rather than inferred from them, because it is the
+    creator's judgement about their own data and nothing here can second-guess it. It is also what
+    re-fires the sovereign lock when a session reopens: the lock is in-memory, and for attachments it
+    is restored from a committed manifest — this file is the only place a sample's treatment is
+    written down.
+    """
+    return json.dumps({
+        "sensitive": bool(sensitive),
+        "tables": [{"name": s.table, "columns": s.columns, "rows": s.rows} for s in samples],
+    }, indent=2) + "\n"
+
+
+def parse_samples(raw: object) -> tuple[bool, list[SampleRows]]:
+    """(whether the creator marked them sensitive, the shared tables). Unreadable is no samples,
+    which is the safe reading in both directions: nothing is shown to the agent, and nothing claims
+    to be sensitive that Sage cannot show."""
+    if not isinstance(raw, dict):
+        return False, []
+    out: list[SampleRows] = []
+    for table in raw.get("tables") or []:
+        if isinstance(table, dict) and str(table.get("name") or ""):
+            out.append(SampleRows(str(table["name"]), list(table.get("columns") or []),
+                                  [list(r) for r in table.get("rows") or [] if isinstance(r, list)]))
+    return bool(raw.get("sensitive")), out
+
+
 def agents_block(binding: Binding | None, columns: list[Column],
                  stranded: list[tuple[str, str]] | None, problems: list[str] | None,
-                 max_rows: int) -> str:
+                 max_rows: int, *, samples: tuple[bool, list[str]] = (False, ())) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
     Empty when no Data Source is bound. Describing the machinery for a store that is not there would
@@ -93,6 +128,7 @@ def agents_block(binding: Binding | None, columns: list[Column],
     # The example names one of this app's own tables. A generic `usage` reads as a placeholder the
     # agent has to translate, and the translation is exactly the step this block exists to remove.
     lines += _how_to_ask(binding, stranded, max_rows, columns[0].table if columns else "usage")
+    lines += _samples_section(*samples)
     lines += _problems_section(problems)
     return "\n".join(lines)
 
@@ -208,6 +244,45 @@ def _scope_rule(binding: Binding, stranded: list[tuple[str, str]] | None, table:
     return (f"- **The statement has to name {levels} itself** — "
             f"`FROM {_qualified(table, stranded)}`. This connector will not take that part of the "
             "Scope as configuration, so a query that leaves it out is refused before it runs.")
+
+
+def _samples_section(sensitive: bool, tables) -> list[str]:
+    """The rows a creator chose to share, named but not quoted (#16).
+
+    Named, because the agent has to know they exist to go and read them. Not quoted, because this
+    region is written into AGENTS.md and AGENTS.md is committed — the whole reason the samples file is
+    gitignored is that rows must not travel with the repo.
+
+    Absent entirely when nothing was shared, which is the default and stays fully supported: the
+    columns above are enough to write a working query, and #15 shipped exactly that.
+    """
+    tables = list(tables)
+    if not tables:
+        return []
+    out = [
+        "### Sample rows", "",
+        (f"The user has chosen to show you a few real rows from {_and_list(tables)}. They are in "
+         f"`{SAMPLES_PATH}` — read that file when you need to see the shape of the data: what a code "
+         "column actually contains, how a date is written, whether a column is usually empty."), "",
+        ("- **A handful of rows, not a distribution.** Do not draw conclusions about totals, ranges "
+         "or how many rows a table has from them, and do not write them into the app as expected "
+         "values."),
+        ("- **Never copy them anywhere.** Not into `src/`, not into a fixture, not into a test. The "
+         "app reads the store at request time, so a copied row is both a snapshot that is wrong "
+         "tomorrow and real data in a repo."),
+    ]
+    if sensitive:
+        out.append(
+            "- The user marked this data sensitive, so Sage is running on sovereign models and "
+            "nothing in this conversation leaves Domino. Keep it that way: do not put row values "
+            "into a file, a commit message, or anything that travels.")
+    out.append("")
+    return out
+
+
+def _and_list(names: list[str]) -> str:
+    quoted = [f"`{n}`" for n in names]
+    return quoted[0] if len(quoted) == 1 else ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
 
 
 def _problems_section(problems: list[str] | None) -> list[str]:

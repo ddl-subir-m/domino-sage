@@ -73,6 +73,13 @@ and parameter values, never SQL. The agent writes them during the build, so what
 ask its Data Source is fixed before anyone opens it.
 _Avoid_: query, endpoint, SQL, prepared statement
 
+**Sample rows**:
+A few real rows from a bound table, shown to the agent because the creator asked for them. Never a
+default and never inferred: the creator picks the tables and chooses whether the rows are treated as
+sensitive, which is what decides if the session is [[Sovereign]]. Declining leaves the agent working
+from column names and types, which is fully supported.
+_Avoid_: preview, sample data, examples, peek
+
 **Attachment**:
 A file bound into the Built App, reachable by the app's code. A Binding may also produce an
 Attachment, but most do not.

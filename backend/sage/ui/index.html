@@ -1723,7 +1723,232 @@ function dataSourceRow(d) {
     + sub + desc + scopeLine + why;
   row.querySelector('.res-head').appendChild(dataSourceUseButton(d));
   if (cascadeFor === d.id) row.appendChild(cascadePicker(d));
+  // Offered only once a schema is chosen, because tables are what gets sampled and there are none
+  // above a schema. Never a default and never automatic (#16): this is the whole act, and it has to
+  // be something the creator does on purpose.
+  if (bound && bound.schema && cascadeFor !== d.id) row.appendChild(sampleControl(d));
+  if (samplesFor === d.id) row.appendChild(samplePicker(d));
   return row;
+}
+
+// ---------- Sample rows: shown to the agent only because someone asked (#16) ----------
+// The agent works from column names and types by default (#15) and that stays fully supported. Rows
+// are different in kind: they are production data, and putting them in a model's context is the
+// creator's call — so it is an explicit act, with the sovereignty treatment chosen the same way a
+// sensitive upload chooses it, and never inferred from the data.
+let samplesFor = null;        // the source id whose picker is open
+let samplesData = null;       // {tables, shared, sensitive} — null while loading
+let samplesError = null;
+let samplesSaving = false;
+let samplesPick = new Set();  // the tables ticked right now
+let samplesSensitive = false;
+
+function sharedSampleTables() {
+  return (samplesData && samplesData.shared) || sharedSamplesCache;
+}
+
+// What the rail knows about shared samples between openings of the picker, so the row can say so
+// without a fetch. Refreshed by every call that changes it.
+let sharedSamplesCache = [];
+let sharedSamplesSensitive = false;
+
+function sampleControl(d) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cas-scope';
+  const shared = sharedSamplesCache.length;
+  const open = samplesFor === d.id;
+  const label = shared
+    ? `Showing the agent rows from ${shared} table${shared === 1 ? '' : 's'}`
+    : 'The agent sees column names only';
+  wrap.innerHTML = `<span>${esc(label)}</span> `;
+  const btn = document.createElement('button');
+  btn.className = 'link-btn';
+  btn.textContent = shared ? 'Change' : 'Show sample rows';
+  btn.disabled = open;
+  btn.title = shared
+    ? 'Change which tables the agent can see rows from, or stop showing it any.'
+    : 'Let the agent see a few real rows, so it can tell what a column actually contains. Real data '
+      + 'from your store — you choose which tables, and how it is treated.';
+  if (!open) btn.onclick = () => openSamples(d);
+  wrap.appendChild(btn);
+  if (sharedSamplesSensitive) {
+    const badge = document.createElement('span');
+    badge.className = 'lock-badge';
+    badge.textContent = 'sovereign';
+    badge.title = 'You marked these rows sensitive, so Sage is routing to sovereign models only.';
+    wrap.appendChild(document.createTextNode(' '));
+    wrap.appendChild(badge);
+  }
+  return wrap;
+}
+
+async function openSamples(d) {
+  samplesFor = d.id;
+  samplesData = null;
+  samplesError = null;
+  samplesSaving = false;
+  renderDataSources();
+  const { ok, body } = await api('/api/project/samples');
+  if (samplesFor !== d.id) return;   // the creator moved on while this was in flight
+  if (!ok) {
+    samplesError = (body && body.error) || 'Sage could not read this app\u2019s tables.';
+  } else {
+    samplesData = body;
+    samplesPick = new Set(body.shared || []);
+    // Unchecked unless it already IS the treatment they chose. A box Sage pre-ticks is Sage deciding
+    // how someone else\u2019s data should be handled, which is the one thing this must not do.
+    samplesSensitive = Boolean(body.sensitive);
+  }
+  renderDataSources();
+}
+
+function closeSamples() {
+  samplesFor = null;
+  samplesData = null;
+  samplesError = null;
+  samplesSaving = false;
+  samplesPick = new Set();
+  renderDataSources();
+}
+
+function toggleSamplePick(table) {
+  if (samplesPick.has(table)) samplesPick.delete(table); else samplesPick.add(table);
+  renderDataSources();
+}
+
+function samplePicker(d) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cas';
+  if (samplesError) {
+    const h = hintEl(esc(samplesError));
+    h.classList.add('err');
+    wrap.appendChild(h);
+    wrap.appendChild(sampleButtons(d, true));
+    return wrap;
+  }
+  if (samplesData === null) {
+    wrap.appendChild(hintEl('Reading this app\u2019s tables\u2026'));
+    return wrap;
+  }
+  const tables = samplesData.tables || [];
+  if (!tables.length) {
+    // Distinguishes "no tables recorded" from "no rows": the creator can act on the first by
+    // re-choosing a scope, and would get nowhere trying to act on the second.
+    wrap.appendChild(hintEl('Sage did not record any tables for this scope, so there is nothing to '
+      + 'show rows from. Use Change above to pick a schema Sage can look inside.'));
+    wrap.appendChild(sampleButtons(d, true));
+    return wrap;
+  }
+  const list = document.createElement('div');
+  list.className = 'cas-lvl';
+  list.innerHTML = '<label class="lbl">Tables the agent may see rows from</label>';
+  for (const t of tables) {
+    const row = document.createElement('label');
+    row.className = 'sens-toggle' + (samplesPick.has(t) ? ' on' : '');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = samplesPick.has(t);
+    box.onchange = () => toggleSamplePick(t);
+    const body = document.createElement('span');
+    body.className = 'st-body';
+    body.innerHTML = `<span class="st-title"><span>${esc(t)}</span></span>`;
+    row.appendChild(box);
+    row.appendChild(body);
+    list.appendChild(row);
+  }
+  wrap.appendChild(list);
+  wrap.appendChild(sampleSensToggle());
+  wrap.appendChild(sampleButtons(d, false));
+  return wrap;
+}
+
+// The same control, worded the same way, as the upload panel\u2019s — because it is the same decision
+// and the creator has already learnt what it does there.
+function sampleSensToggle() {
+  const label = document.createElement('label');
+  label.className = 'sens-toggle' + (samplesSensitive ? ' on' : '');
+  label.title = 'Mark these rows sensitive to force the sovereign model';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = samplesSensitive;
+  box.onchange = () => { samplesSensitive = !samplesSensitive; renderDataSources(); };
+  const body = document.createElement('span');
+  body.className = 'st-body';
+  body.innerHTML = '<span class="st-title"><span>Mark as <b>sensitive</b></span>'
+    + '<span class="lock-badge">locks sovereign</span></span>'
+    + '<span class="st-desc">Routes only to sovereign models, so these rows never leave Domino. '
+    + 'Stays on for the rest of the session, even after you stop sharing.</span>';
+  label.appendChild(box);
+  label.appendChild(body);
+  return label;
+}
+
+function sampleButtons(d, closeOnly) {
+  const bar = document.createElement('div');
+  bar.className = 'cas-actions';
+  if (!closeOnly) {
+    const save = document.createElement('button');
+    save.className = 'primary';
+    save.textContent = samplesSaving ? 'Reading rows\u2026' : 'Show these rows';
+    save.disabled = samplesSaving || !samplesPick.size;
+    save.title = samplesPick.size
+      ? 'Read a few rows from each ticked table and show them to the agent.'
+      : 'Tick at least one table, or use Stop showing rows.';
+    save.onclick = () => shareSamples(d);
+    bar.appendChild(save);
+    if (sharedSamplesCache.length) {
+      const stop = document.createElement('button');
+      stop.textContent = 'Stop showing rows';
+      stop.disabled = samplesSaving;
+      stop.title = 'Take the rows away from the agent. The sovereign lock stays on \u2014 the model has '
+        + 'already seen them \u2014 and you can turn it off in the model panel.';
+      stop.onclick = () => stopSamples();
+      bar.appendChild(stop);
+    }
+  }
+  const cancel = document.createElement('button');
+  cancel.className = 'link-btn';
+  cancel.textContent = closeOnly ? 'Close' : 'Cancel';
+  cancel.disabled = samplesSaving;
+  cancel.onclick = closeSamples;
+  bar.appendChild(cancel);
+  return bar;
+}
+
+async function shareSamples(d) {
+  samplesSaving = true;
+  renderDataSources();
+  const { ok, body } = await api('/api/project/samples', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tables: [...samplesPick], sensitive: samplesSensitive }),
+  });
+  samplesSaving = false;
+  if (!ok) {
+    // Left open on failure, as the cascade is: the choice took ticking to make, and a message with
+    // nothing on screen to retry against is not a message anyone can act on.
+    samplesError = (body && body.error) || 'Sage could not read rows from that Data Source.';
+    renderDataSources();
+    return;
+  }
+  sharedSamplesCache = body.shared || [];
+  sharedSamplesSensitive = Boolean(body.sensitive);
+  closeSamples();
+  refreshStatus();   // the sovereign lock may have just fired
+  addStatus(body.sensitive ? 'err' : 'ok', body.sensitive ? '\u{1F512}' : '\u{1F441}',
+            `The agent can now see rows from <b>${esc(sharedSamplesCache.join(', '))}</b>`
+            + (body.sensitive ? ' \u2014 sovereign model locked' : ''));
+}
+
+async function stopSamples() {
+  samplesSaving = true;
+  renderDataSources();
+  const { ok } = await api('/api/project/samples', { method: 'DELETE' });
+  samplesSaving = false;
+  if (!ok) { samplesError = 'Sage could not stop showing those rows.'; renderDataSources(); return; }
+  sharedSamplesCache = [];
+  sharedSamplesSensitive = false;
+  closeSamples();
+  addStatus('ok', '\u{1F441}', 'The agent no longer sees any rows from your Data Source');
 }
 
 function renderDataSources() {
@@ -1815,6 +2040,22 @@ async function loadBindings() {
   bindingsError = ok ? null : (body.error || 'Sage could not read this app\u2019s Resource list.');
   renderBindings();
   renderResourceLists();  // the Use buttons only know what is already used once this list has arrived
+  loadSharedSamples();    // so the row can say what the agent can see without opening the picker
+}
+
+// Whether any rows are currently shared (#16). Its own request, after the rail is already drawn: it
+// reads two manifests and no store, so it is cheap, but nothing on screen should wait for it.
+async function loadSharedSamples() {
+  if (!(bindingsCache || []).some(b => b.kind === 'data_source')) {
+    sharedSamplesCache = [];
+    sharedSamplesSensitive = false;
+    return;
+  }
+  const { ok, body } = await api('/api/project/samples');
+  if (!ok) return;   // could not ask is not evidence nothing is shared; leave the row as it was
+  sharedSamplesCache = body.shared || [];
+  sharedSamplesSensitive = Boolean(body.sensitive);
+  renderDataSources();
 }
 
 // Every browsable group carries Use buttons, and all of them read their state out of the Binding
@@ -2325,7 +2566,9 @@ async function refreshStatus() {
   document.getElementById('sensitivity-lock-hint').style.display = m.sensitivity_locked ? 'block' : 'none';
   // Non-blocking caution: sensitive data is attached but sovereign routing is NOT locked (the user
   // unlocked it). Attribute the off-state to the user's action and name the recovery.
-  const sensitiveAttached = attachedFiles.some(e => e.sensitive);
+  // Rows the creator marked sensitive count here as much as a file does (#16): both are data they
+  // said should stay in Domino, and unlocking after either one is the same caution.
+  const sensitiveAttached = attachedFiles.some(e => e.sensitive) || sharedSamplesSensitive;
   document.getElementById('lock-caution').classList.toggle('show', sensitiveAttached && !m.sensitivity_locked);
   lastModel = m;
 }

@@ -41,7 +41,14 @@ from ..resources.bindings import (
     Binding,
     parse_bindings,
 )
-from ..resources.bound_schema import SCHEMA_PATH, parse_schema, render_schema
+from ..resources.bound_schema import (
+    SAMPLES_PATH,
+    SCHEMA_PATH,
+    parse_samples,
+    parse_schema,
+    render_samples,
+    render_schema,
+)
 from ..resources.bound_schema import agents_block as data_agents_block
 from ..resources.builtapp import catalog_problems, serve_module, stranded_levels
 from ..resources.model_api_credentials import (
@@ -1034,7 +1041,22 @@ class Orchestrator:
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
         self._rehydrate_attached(self._project)
+        self._relock_for_samples(self._project)
         return self._project
+
+    def _relock_for_samples(self, project: Project) -> None:
+        """Re-fire the sovereign lock for shared sample rows, the way `_rehydrate_attached` does for a
+        sensitive attachment (#16).
+
+        The lock is sticky but in-memory, so an orchestrator restart would otherwise drop it while
+        the rows it was protecting are still sitting in the workspace for the agent to read. Read
+        from the samples file itself rather than a committed manifest, because that file is
+        gitignored — which also means a fresh clone has neither the rows nor the lock, and that is
+        the point of gitignoring them.
+        """
+        sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
+        if sensitive and samples:
+            project.control.on_assets_changed([True])
 
     def _rehydrate_attached(self, project: Project) -> None:
         """Restore the attached-files list. The manifest (.sage/attachments.json) is the source of
@@ -2835,6 +2857,88 @@ class Orchestrator:
         self._write_generated(self.project().workspace.path / SCHEMA_PATH,
                               render_schema(binding, columns))
 
+    # ---- Sample rows, only ever because someone asked (#16) ----
+
+    def sample_candidates(self) -> dict:
+        """The tables the creator could show the agent, and what is already shared.
+
+        The picker's data. Read from the recorded schema rather than the store, so opening the choice
+        costs nothing — the tables were enumerated when the Scope was bound.
+        """
+        project = self.project()
+        binding = self._data_source_binding(project)
+        if binding is None:
+            return {"bindable": False, "tables": [], "shared": [], "sensitive": False}
+        recorded = parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH))
+        sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
+        return {
+            "bindable": True,
+            "scope": binding.scope,
+            "tables": list(dict.fromkeys(c.table for c in recorded)),
+            "shared": [s.table for s in samples],
+            "sensitive": sensitive,
+        }
+
+    def share_sample_rows(self, tables: list[str], sensitive: bool, limit: int = 5) -> dict:
+        """Show the agent a few real rows from the tables the creator picked (#16).
+
+        Every part of this is the creator's: whether to share at all, which tables, and whether the
+        rows are sensitive. Sage infers none of it — a rule that decided warehouse data is sensitive
+        would be Sage making a judgement about data it cannot see, and one that decided it is not
+        would be worse.
+
+        Replaces rather than adds. The picker shows what is currently shared, so the list that comes
+        back IS the choice, and a table unticked is a table the creator wants the agent to stop
+        seeing.
+
+        Read at the moment of sharing, not per turn. Rows go stale, which is why re-sharing exists —
+        but re-reading the store on every turn would mean production data crossing to a model
+        continuously on the strength of one click.
+        """
+        project = self.project()
+        binding = self._data_source_binding(project)
+        if binding is None:
+            raise LookupError("This app is not recorded as using a Data Source.")
+        wanted = [t for t in dict.fromkeys(tables) if t]
+        if not wanted:
+            return self.clear_sample_rows()
+        source = self._data_source(binding.id)
+        samples = [
+            self._resources.sample_rows(source, binding.database or "", binding.schema or "", table,
+                                        limit)
+            for table in wanted
+        ]
+        self._ensure_gitignored(project.workspace, SAMPLES_PATH)
+        self._write_generated(project.workspace.path / SAMPLES_PATH,
+                              render_samples(sensitive, samples))
+        if sensitive:
+            project.control.on_assets_changed([True])   # the same sticky lock a sensitive upload fires
+        self._write_app_data(project)
+        self._rebaseline_turn(project)
+        return {"shared": [s.table for s in samples], "sensitive": bool(sensitive),
+                "rows": sum(len(s.rows) for s in samples)}
+
+    def clear_sample_rows(self) -> dict:
+        """Stop showing the agent any rows.
+
+        Does NOT clear the sovereign lock, for the same reason detaching a sensitive file does not:
+        the lock is sticky because the model has already seen what it has seen, and unlocking is its
+        own deliberate act with its own warning.
+        """
+        project = self.project()
+        (project.workspace.path / SAMPLES_PATH).unlink(missing_ok=True)
+        self._write_app_data(project)
+        self._rebaseline_turn(project)
+        return {"shared": [], "sensitive": False, "rows": 0}
+
+    def _data_source_binding(self, project: Project) -> Binding | None:
+        recorded = parse_bindings(project.workspace.read_bindings())
+        return next((b for b in recorded if b.kind == KIND_DATA_SOURCE), None)
+
+    def _shared_samples(self, project: Project) -> tuple[bool, list[str]]:
+        sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
+        return sensitive, [s.table for s in samples]
+
     # ---- Model access tokens, pasted once and remembered (#9) ----
 
     def _credentials(self, project: Project) -> CredentialStore:
@@ -2987,7 +3091,7 @@ class Orchestrator:
                 {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel,
                  "size": size, "sensitive": sensitive, "source": "dataset", "dataset_rel_path": file_path}
             )
-            self._ensure_data_gitignored(project.workspace)
+            self._ensure_gitignored(project.workspace, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
         project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
@@ -3079,7 +3183,7 @@ class Orchestrator:
                  "size": size, "sensitive": effective_sensitive, "source": "upload",
                  "dataset_rel_path": rel_in_dataset}
             )
-            self._ensure_data_gitignored(project.workspace)
+            self._ensure_gitignored(project.workspace, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
         except Exception:
@@ -3427,6 +3531,7 @@ class Orchestrator:
             stranded_levels(template, binding) if binding is not None else None,
             catalog_problems(template, project.workspace.path),
             getattr(module, "_DEFAULT_MAX_ROWS", 5000),
+            samples=self._shared_samples(project),
         )
         self._splice_agents(project, self._DATA_BEGIN, self._DATA_END, block)
 
@@ -3541,9 +3646,8 @@ class Orchestrator:
             agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
 
     @staticmethod
-    def _ensure_data_gitignored(workspace: Workspace) -> None:
+    def _ensure_gitignored(workspace: Workspace, line: str) -> None:
         gi = workspace.path / ".gitignore"
-        line = "public/data/"
         existing = gi.read_text() if gi.exists() else ""
         if line not in existing.split():
             gi.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")

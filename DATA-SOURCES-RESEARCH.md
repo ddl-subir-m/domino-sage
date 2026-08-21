@@ -1194,3 +1194,41 @@ on its behalf about a store it cannot see.
 whether that is acceptable is the creator's explicit decision (#16) — the AGENTS.md region tells the
 agent not to read the store itself, which is what actually holds the line, since the agent has a
 shell and could otherwise go and look.
+
+---
+
+## Addendum 6 — reading rows, and where they may live (#16)
+
+`SqlDialect.sample` reads rows. It is not a cascade level — nothing opens it, and it runs only when a
+creator explicitly asks — but it lives beside the rest because it is the same per-connector problem.
+
+**Three spellings, because the standard one is not universal.**
+
+| Shape | Connectors | Statement |
+|---|---|---|
+| Three levels | Snowflake, Databricks, Trino | `SELECT * FROM {db}.{schema}.{table} LIMIT {n}` |
+| Two levels | PostgreSQL, Redshift, Greenplum, MySQL family, BigQuery | `SELECT * FROM {schema}.{table} LIMIT {n}` |
+| `TOP` | SQL Server, Synapse | `SELECT TOP {n} * FROM {db}.{schema}.{table}` |
+
+SQL Server's family has no `LIMIT` and takes `TOP` before the select list, so appending ` LIMIT 5` to
+one statement for every connector is a syntax error on two of them. A store with no database level
+must not be left with an empty `{db}.` in front of the schema either. Same verification status as
+everything else in the table: only Snowflake has been run live.
+
+**Where the rows may live is the load-bearing decision.** Every other manifest under `.sage/` is
+committed and rides into the published app's container — right for column names and types, wrong for
+rows. So `.sage/samples.json` is gitignored, and `AGENTS.md`, which IS committed, can only name the
+shared tables and point at the file. It can never quote a row.
+
+Two consequences worth stating:
+
+- A fresh clone has neither the rows nor the sovereign lock they set. That is the point of
+  gitignoring them, not a gap.
+- The sovereign lock is in-memory and is re-fired at session open. For attachments that is done from
+  the committed `.sage/attachments.json`; for samples the only record of the treatment is the
+  gitignored file itself, so `_relock_for_samples` reads it directly.
+
+**Cells are cut at 80 characters** and non-JSON values stringified. The agent is being shown the
+SHAPE of the data — a value cut at that length still says "this is an email address" or "this is a
+currency code", which is the whole reason for showing it, while a base64 blob in full just spends
+context.
