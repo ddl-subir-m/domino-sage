@@ -65,8 +65,10 @@ from ..resources.pinned_model_api import agents_block as model_api_agents_block
 from ..resources.pinned_model_api import pinned_model_api
 from ..resources.pinned_model_api import render_config as render_model_api_config
 from ..resources.preflight import (
+    bindings_on_dead_endpoints,
     credential_message,
     missing_credentials,
+    slots_on_dead_endpoints,
     stale_bindings,
     stale_message,
     unresolved_slots,
@@ -3158,11 +3160,16 @@ class Orchestrator:
             aliases = self._resources.list_llm_aliases()
         except ResourceUnavailable as e:
             return {"state": "unreachable", "error": str(e), "slots": []}
-        problems = unresolved_slots(self._catalog, aliases)
+        endpoints, errors = self._endpoint_listing(aliases)
+        problems = ([p.to_dict() for p in unresolved_slots(self._catalog, aliases)]
+                    + [p.to_dict() for p in slots_on_dead_endpoints(self._catalog, aliases, endpoints)])
         return {
-            "state": "problems" if problems else "ok",
-            "error": None,
-            "slots": [p.to_dict() for p in problems],
+            # Same precedence as `preflight_bindings`: a listing that failed does not unlearn what
+            # the other one answered, so real problems outrank "could not check" while `error` still
+            # carries what went unchecked.
+            "state": "problems" if problems else "unreachable" if errors else "ok",
+            "error": " ".join(errors) or None,
+            "slots": problems,
         }
 
     def preflight_bindings(self) -> dict:
@@ -3183,8 +3190,17 @@ class Orchestrator:
         # to remove, and the more useful half of why.
         held = self._held_tokens(workspace, {b.kind for b in recorded})
         tokenless = [b for b in missing_credentials(recorded, held) if b not in gone]
+        # An Alias that has gone is not also judged on the endpoint behind it: there is no alias
+        # record left to carry an endpoint_url, so this returns nothing for it anyway — but saying so
+        # here is cheaper than making a reader work that out from two files.
+        aliases = listings.get(KIND_LLM_ALIAS) or []
+        endpoints, endpoint_errors = self._endpoint_listing(aliases)
+        errors += endpoint_errors
+        stalled = [(b, m) for b, m in bindings_on_dead_endpoints(recorded, aliases, endpoints)
+                   if b not in gone]
         problems = ([(b, stale_message(b)) for b in gone]
-                    + [(b, credential_message(b)) for b in tokenless])
+                    + [(b, credential_message(b)) for b in tokenless]
+                    + stalled)
         return {
             # `problems` outranks `unreachable`, because one listing failing does not unlearn what
             # another one answered. `error` still carries what could not be checked, so a caller is
@@ -3222,6 +3238,26 @@ class Orchestrator:
                 listings[kind] = None
                 errors.append(str(e))
         return listings, errors
+
+    def _endpoint_listing(self, aliases: list) -> tuple[list | None, list[str]]:
+        """Hosted GenAI Endpoints, but only when some Alias here actually points at one.
+
+        The skip is the point. 12 of the 14 aliases on cloud-dogfood carry no `endpoint_url` at all,
+        because they are vendor models, so on the ordinary gateway this check costs NOTHING — no
+        second call, at startup or at session open. The call is made only when an Alias could be
+        affected by the answer, which is the same rule `_binding_listings` applies per kind and
+        `_held_tokens` applies to the token store.
+
+        None means "not checked", which is what `endpoint_status` reads as "learned nothing". That is
+        the same value a failed listing produces, deliberately: neither is evidence that a model is
+        broken, and only the returned `error` tells the two apart for the caller.
+        """
+        if not any(getattr(a, "endpoint_url", None) for a in aliases):
+            return None, []
+        try:
+            return self._resources.list_hosted_endpoints(), []
+        except ResourceUnavailable as e:
+            return None, [str(e)]
 
     @staticmethod
     def _held_tokens(workspace: Workspace, kinds: set[str]) -> set[str] | None:

@@ -15,12 +15,19 @@ from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.resources.bindings import KIND_DATA_SOURCE, KIND_MODEL_API, Binding
 from sage.resources.preflight import (
+    bindings_on_dead_endpoints,
     missing_credentials,
+    slots_on_dead_endpoints,
     stale_bindings,
     stale_message,
     unresolved_slots,
 )
-from sage.resources.provider import FakeResourceProvider, LlmAlias, ResourceUnavailable
+from sage.resources.provider import (
+    FakeResourceProvider,
+    HostedEndpoint,
+    LlmAlias,
+    ResourceUnavailable,
+)
 from sage.router.models import ModelCatalog
 
 ALIASES = [
@@ -448,3 +455,222 @@ def test_a_model_api_that_is_gone_is_reported_once_not_twice(tmp_path):
     orch._resources.model_apis = [m for m in orch._resources.model_apis if m.id != "f-churn"]
     _drop_tokens(orch)
     assert len(orch.preflight_bindings()["bindings"]) == 1
+
+
+# ---- endpoints: an Alias that resolves, behind a model that will not answer (#21) ----------------
+#
+# The gap these close is narrow and was measured rather than assumed. `/v1/models` filters on
+# permission alone, so a granted Alias whose Hosted GenAI Endpoint is stopped is STILL offered —
+# `unresolved_slots` sees nothing wrong, preflight passes, and the build dies partway through on a
+# gateway error. Everything below is about saying that earlier, and about the four different ways of
+# knowing nothing, which must stay silent rather than become "this is broken".
+
+HOSTED = [
+    LlmAlias("id-qwen", "qwen-2-5", "Qwen 2.5 (Domino-hosted)", None, ["chat"], {},
+             "https://apps.example.tech/endpoints/308f788c/v1"),
+    LlmAlias("id-sonnet", "sonnet", "Claude Sonnet 4.6", None, ["chat"], {"input": 3.0}),
+]
+
+
+def _endpoint(status: str | None, url: str = "https://apps.example.tech/endpoints/308f788c",
+              name: str = "qwen-2-5") -> HostedEndpoint:
+    return HostedEndpoint("308f788c", name, url, status)
+
+
+def _hosted_catalog(**over) -> ModelCatalog:
+    return replace(ModelCatalog(sovereign_plan="qwen-2-5", sovereign_implement="sonnet",
+                                sovereign_ask="sonnet", plan="sonnet", implement="sonnet",
+                                ask="sonnet"), **over)
+
+
+def test_a_slot_whose_endpoint_is_stopped_is_reported():
+    (p,) = slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint("Stopped")])
+    assert (p.slot, p.alias, p.endpoint, p.status) == (
+        "sovereign_plan", "qwen-2-5", "qwen-2-5", "Stopped")
+
+
+def test_a_slot_whose_endpoint_is_running_is_not_reported():
+    assert slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint("Running")]) == []
+
+
+def test_the_remedy_for_a_stopped_endpoint_is_to_start_it():
+    (p,) = slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint("Stopped")])
+    assert "Start that endpoint" in p.message
+    assert "sovereign_plan" in p.message and "qwen-2-5" in p.message
+
+
+def test_the_remedy_for_a_broken_endpoint_is_to_pick_another_not_to_start_it():
+    # The distinction #21's second criterion turns on: telling someone to start an endpoint that
+    # failed to build sends them somewhere nothing can be done.
+    for status in ("Failed", "BuildFailed"):
+        (p,) = slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint(status)])
+        assert "needs its owner to fix it" in p.message
+        assert "Start that endpoint" not in p.message
+
+
+def test_the_remedy_for_an_endpoint_mid_transition_is_to_wait():
+    for status in ("Building", "Starting", "Stopping"):
+        (p,) = slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint(status)])
+        assert "wait for it" in p.message
+
+
+def test_an_unknown_status_is_never_reported_as_stopped():
+    # Domino's own word for "we do not know". Reporting it would turn "could not check" into "this
+    # is broken", which is exactly what the fourth criterion forbids.
+    assert slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint("Unknown")]) == []
+
+
+def test_an_endpoint_with_no_current_version_has_no_status_and_is_not_reported():
+    assert slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint(None)]) == []
+
+
+def test_a_status_this_sage_does_not_recognise_stays_silent():
+    # A newer platform adding a status must not make every slot read as broken.
+    assert slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint("Hibernating")]) == []
+
+
+def test_an_alias_with_no_endpoint_url_is_never_judged_on_an_endpoint():
+    # The common case, not an edge one: 12 of 14 aliases on cloud-dogfood are vendor models with
+    # nothing on Domino behind them. A vendor model must never read as "stopped".
+    catalog = _hosted_catalog(sovereign_plan="sonnet")
+    assert slots_on_dead_endpoints(catalog, HOSTED, [_endpoint("Stopped")]) == []
+
+
+def test_a_listing_that_did_not_arrive_reports_nothing():
+    # Same rule `stale_bindings` applies to a listing that is None. Not being able to check is not
+    # evidence that anything is wrong.
+    assert slots_on_dead_endpoints(_hosted_catalog(), HOSTED, None) == []
+
+
+def test_an_alias_pointing_at_an_endpoint_that_is_not_in_the_listing_reports_nothing():
+    assert slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint("Stopped", url="https://x/other")]) == []
+
+
+def test_the_join_ignores_a_trailing_slash_on_either_side():
+    aliases = [replace(HOSTED[0], endpoint_url="https://apps.example.tech/endpoints/308f788c/v1/")]
+    ends = [_endpoint("Stopped", url="https://apps.example.tech/endpoints/308f788c/")]
+    assert len(slots_on_dead_endpoints(_hosted_catalog(), aliases, ends)) == 1
+
+
+def test_a_missing_alias_is_reported_once_as_missing_and_not_also_as_stopped():
+    # The two checks share the UI's per-slot warning key, so a slot reported by both would leak one
+    # of the two warnings. They cannot collide: a missing Alias has no record to carry an endpoint.
+    catalog = _hosted_catalog(sovereign_plan="ghost-model")
+    assert [p.slot for p in unresolved_slots(catalog, HOSTED)] == ["sovereign_plan"]
+    assert slots_on_dead_endpoints(catalog, HOSTED, [_endpoint("Stopped")]) == []
+
+
+def test_every_slot_on_a_dead_endpoint_is_reported_not_just_the_first():
+    catalog = _hosted_catalog(sovereign_implement="qwen-2-5", ask="qwen-2-5")
+    assert [p.slot for p in slots_on_dead_endpoints(catalog, HOSTED, [_endpoint("Stopped")])] == [
+        "sovereign_plan", "sovereign_implement", "ask"]
+
+
+def test_the_slot_report_carries_the_status_verbatim_for_the_log():
+    (p,) = slots_on_dead_endpoints(_hosted_catalog(), HOSTED, [_endpoint("BuildFailed")])
+    assert p.to_dict()["status"] == "BuildFailed"
+    assert p.to_dict()["endpoint"] == "qwen-2-5"
+
+
+# ---- endpoints: the same question asked of a Binding ---------------------------------------------
+
+
+def test_a_binding_whose_endpoint_is_stopped_is_reported():
+    b = _binding("id-qwen", "qwen-2-5", "Qwen 2.5 (Domino-hosted)")
+    ((got, message),) = bindings_on_dead_endpoints([b], HOSTED, [_endpoint("Stopped")])
+    assert got is b
+    assert "Qwen 2.5 (Domino-hosted)" in message and "is Stopped" in message
+    # A Binding is changed in the Resources rail, so its fallback is an Alias, not a "model".
+    assert "Start that endpoint, or pick a different Alias" in message
+
+
+def test_a_binding_whose_endpoint_is_running_is_not_reported():
+    b = _binding("id-qwen", "qwen-2-5")
+    assert bindings_on_dead_endpoints([b], HOSTED, [_endpoint("Running")]) == []
+
+
+def test_a_binding_of_another_kind_is_never_judged_on_an_endpoint():
+    b = Binding(KIND_DATA_SOURCE, "ds-1", "Snowflake-Data-Warehouse", "Snowflake")
+    assert bindings_on_dead_endpoints([b], HOSTED, [_endpoint("Stopped")]) == []
+
+
+# ---- endpoints: through the orchestrator, which is what startup and session open call -------------
+
+
+class _HostedProvider(FakeResourceProvider):
+    """A gateway whose one alias is Domino-hosted, so the endpoint listing is actually consulted."""
+
+    def list_llm_aliases(self) -> list[LlmAlias]:
+        return list(HOSTED)
+
+
+class _CountingProvider(_HostedProvider):
+    """Counts the endpoint call, because "no call per slot" is an acceptance criterion, and the
+    ordinary gateway must pay nothing at all."""
+
+    calls = 0
+
+    def list_hosted_endpoints(self) -> list[HostedEndpoint]:
+        type(self).calls += 1
+        return [_endpoint("Stopped")]
+
+
+class _VendorOnlyCounting(_CountingProvider):
+    def list_llm_aliases(self) -> list[LlmAlias]:
+        return [HOSTED[1]]  # sonnet, no endpoint_url
+
+
+class _DeadEndpointListing(_HostedProvider):
+    def list_hosted_endpoints(self) -> list[HostedEndpoint]:
+        raise ResourceUnavailable("The Domino API did not answer (ConnectError).")
+
+
+def test_startup_reports_a_slot_whose_endpoint_is_stopped(tmp_path):
+    orch = _orch(tmp_path, catalog=_hosted_catalog(), resources=_CountingProvider())
+    result = orch.preflight_slots()
+    assert result["state"] == "problems"
+    assert [(s["slot"], s["status"]) for s in result["slots"]] == [("sovereign_plan", "Stopped")]
+
+
+def test_startup_makes_one_endpoint_call_for_six_slots(tmp_path):
+    # Three of the six slots point at the hosted alias; the criterion is no call per slot.
+    _CountingProvider.calls = 0
+    catalog = _hosted_catalog(sovereign_implement="qwen-2-5", ask="qwen-2-5")
+    _orch(tmp_path, catalog=catalog, resources=_CountingProvider()).preflight_slots()
+    assert _CountingProvider.calls == 1
+
+
+def test_a_gateway_with_no_hosted_alias_makes_no_endpoint_call_at_all(tmp_path):
+    # The ordinary case. 12 of 14 aliases on cloud-dogfood are vendor models, and a check that can
+    # answer nothing is a call worth not making.
+    _VendorOnlyCounting.calls = 0
+    catalog = _hosted_catalog(sovereign_plan="sonnet")
+    result = _orch(tmp_path, catalog=catalog, resources=_VendorOnlyCounting()).preflight_slots()
+    assert _VendorOnlyCounting.calls == 0
+    assert result == {"state": "ok", "error": None, "slots": []}
+
+
+def test_an_endpoint_listing_that_will_not_answer_is_unreachable_not_a_broken_slot(tmp_path):
+    result = _orch(tmp_path, catalog=_hosted_catalog(),
+                   resources=_DeadEndpointListing()).preflight_slots()
+    assert result["state"] == "unreachable"
+    assert result["slots"] == []
+    assert "Domino API" in result["error"]
+
+
+def test_a_broken_slot_still_outranks_an_endpoint_listing_that_failed(tmp_path):
+    # One listing failing does not unlearn what the other answered.
+    catalog = _hosted_catalog(plan="ghost-model")
+    result = _orch(tmp_path, catalog=catalog, resources=_DeadEndpointListing()).preflight_slots()
+    assert result["state"] == "problems"
+    assert [s["slot"] for s in result["slots"]] == ["plan"]
+    assert "Domino API" in result["error"]
+
+
+def test_session_open_reports_a_binding_whose_endpoint_is_stopped(tmp_path):
+    orch = _orch(tmp_path, catalog=_hosted_catalog(), resources=_CountingProvider())
+    orch.bind_llm_alias("id-qwen")
+    result = orch.preflight_bindings()
+    assert result["state"] == "problems"
+    ((one,),) = ([b for b in result["bindings"]],)
+    assert one["id"] == "id-qwen" and "is Stopped" in one["message"]

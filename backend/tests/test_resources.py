@@ -35,6 +35,7 @@ from sage.resources.provider import (
     parse_capabilities,
     parse_costs,
     parse_data_sources,
+    parse_endpoints,
     parse_model_apis,
     readable_error,
     records_of,
@@ -817,3 +818,63 @@ def test_the_cascade_routes_carry_one_level_each(tmp_path: Path, monkeypatch):
     # 502 and not 404: the source exists and the creator can still record it. Only looking inside is
     # unavailable, and the reason names the connector.
     assert status == 502 and "Oracle" in body["error"]
+
+
+# ---- Hosted GenAI Endpoints: the listing preflight joins an Alias to (#21) ------------------------
+#
+# Shapes taken from a live `GET /api/gen-ai/beta/endpoints` on cloud-dogfood (2026-08-21) and from
+# `ModelEndpointsListingV1` in the public API spec. The two facts that matter and are easy to get
+# wrong: `currentVersion` is OPTIONAL, and the join key is `url` rather than `id` or `vanityUrl`.
+
+ENDPOINTS = {"items": [
+    {"id": "308f788c", "name": "qwen-2-5", "vanityUrl": "https://apps.x.tech/endpoints/qwen-vanity",
+     "url": "https://apps.x.tech/endpoints/308f788c",
+     "currentVersion": {"number": 1, "status": "Running"}},
+    {"id": "629c65ce", "name": "Mistral-7B-Instruct-v02",
+     "url": "https://apps.x.tech/endpoints/629c65ce",
+     "currentVersion": {"number": 3, "status": "Stopped"}},
+    # Never built, so it has no currentVersion at all — the schema allows this and it occurs live.
+    {"id": "777", "name": "never-built", "url": "https://apps.x.tech/endpoints/777"},
+]}
+
+
+def test_endpoints_are_parsed_with_their_status():
+    rows = parse_endpoints(ENDPOINTS)
+    assert [(e.name, e.status) for e in rows] == [
+        ("qwen-2-5", "Running"), ("Mistral-7B-Instruct-v02", "Stopped"), ("never-built", None)]
+
+
+def test_an_endpoint_with_no_current_version_has_no_status_rather_than_a_bad_one():
+    (never_built,) = [e for e in parse_endpoints(ENDPOINTS) if e.name == "never-built"]
+    assert never_built.status is None
+
+
+def test_an_endpoint_with_no_url_is_dropped():
+    # The url is the only thing an Alias can be joined on, so a row without one cannot answer the
+    # only question this listing is fetched for.
+    assert parse_endpoints({"items": [{"id": "x", "name": "no-url"}]}) == []
+
+
+def test_a_trailing_slash_on_the_endpoint_url_is_normalised_away():
+    (one,) = parse_endpoints({"items": [{"id": "x", "name": "n", "url": "https://apps.x.tech/e/1/"}]})
+    assert one.url == "https://apps.x.tech/e/1"
+
+
+def test_an_empty_listing_parses_to_nothing():
+    assert parse_endpoints({"items": []}) == []
+    assert parse_endpoints({}) == []
+
+
+def test_an_alias_carries_the_endpoint_url_it_was_registered_with():
+    # The join key, and it arrives in a call Sage already makes. Dropping it here was what made the
+    # endpoint behind an Alias unknowable without a second lookup.
+    records = [{"id": "id-qwen", "name": "qwen-2-5", "display_name": "Qwen 2.5",
+                "endpoint_url": "https://apps.x.tech/endpoints/308f788c/v1"}]
+    (alias,) = join_aliases({"qwen-2-5"}, records)
+    assert alias.endpoint_url == "https://apps.x.tech/endpoints/308f788c/v1"
+
+
+def test_a_vendor_alias_has_no_endpoint_url():
+    # 12 of the 14 aliases on cloud-dogfood are this shape. None must be treated as a hosted endpoint.
+    (alias,) = join_aliases({"sonnet"}, [{"id": "a", "name": "sonnet", "display_name": "Sonnet"}])
+    assert alias.endpoint_url is None

@@ -291,7 +291,10 @@ def _run_slot_preflight() -> None:
     for problem in result["slots"]:
         log.error("preflight: %s", problem["message"])
     if result["state"] == "unreachable":
-        log.warning("preflight: could not check Sage's model slots — %s", result["error"])
+        # "could not finish", not "could not check": since #21 this state is also reached when the
+        # slots themselves resolved and only the endpoint listing behind them failed, and the error
+        # string is what says which of the two happened.
+        log.warning("preflight: could not finish checking Sage's model slots — %s", result["error"])
     elif result["state"] == "ok":
         log.info("preflight: every configured model slot resolves on the gateway")
     PREFLIGHT_SLOTS = result

@@ -18,8 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..router.models import ModelCatalog
-from .bindings import KIND_DATA_SOURCE, KIND_MODEL_API, Binding
-from .provider import LlmAlias
+from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
+from .provider import HostedEndpoint, LlmAlias
 
 # Every slot in ModelCatalog, in the order the model panel lists them. Written out rather than
 # derived from the dataclass fields so a future non-model field on ModelCatalog cannot silently
@@ -68,6 +68,150 @@ def unresolved_slots(catalog: ModelCatalog, aliases: list[LlmAlias]) -> list[Slo
         if alias and alias not in offered:
             problems.append(SlotProblem(slot, alias))
     return problems
+
+
+# What each endpoint status means for a build about to start. Keyed on Domino's own words
+# (`ModelEndpointStatusV1`), grouped by the remedy rather than by the word, because the remedies are
+# what differ: an endpoint someone stopped gets started again, a broken one gets replaced, and one
+# mid-transition just needs a minute. `Running` is absent because it is the case with nothing to say.
+#
+# `Unknown` is absent DELIBERATELY, and so is every status not listed here. Domino ships `Unknown` as
+# its own word for "we do not know", and a status we do not recognise is the same answer from a
+# newer platform. Both must stay silent: reporting either as a problem would turn "we could not
+# check" into "this is broken", which is the one thing #21's fourth criterion forbids.
+_NOT_SERVING: dict[str, str] = {
+    "Stopped": "stopped",
+    "Failed": "broken",
+    "BuildFailed": "broken",
+    "Building": "changing",
+    "Starting": "changing",
+    "Stopping": "changing",
+}
+
+
+def endpoint_status(alias_name: str, aliases: list[LlmAlias],
+                    endpoints: list[HostedEndpoint] | None) -> tuple[str, str] | None:
+    """The endpoint behind this Alias and its status, or None when there is nothing to report.
+
+    None covers four different silences that must not be told apart by the caller, because all four
+    mean the same thing to a creator — no sentence:
+
+      - the Alias is not offered at all (a missing Alias is `unresolved_slots`' sentence, not this
+        one, and saying both would put two warnings on one slot)
+      - the Alias has no `endpoint_url`, so it is a vendor model with nothing on Domino behind it.
+        This is the COMMON case, not an edge one: 12 of 14 aliases on cloud-dogfood (2026-08-21)
+      - the endpoints listing did not arrive, so nothing was learned. Same rule `stale_bindings`
+        applies to a listing that is None, for the same reason
+      - the endpoint is Running, has no status at all, or reports one we do not recognise
+
+    Joined on the endpoint's `url` after dropping the alias url's trailing `/v1` — measured live, and
+    it is `url` rather than `id` or `vanityUrl` (DOMINO-PRIMITIVES.md). Both sides are stripped of a
+    trailing slash so a gateway that stores one does not silently miss every join.
+    """
+    if endpoints is None:
+        return None
+    alias = next((a for a in aliases if a.name == alias_name), None)
+    if alias is None or not alias.endpoint_url:
+        return None
+    target = alias.endpoint_url.rstrip("/").removesuffix("/v1").rstrip("/")
+    endpoint = next((e for e in endpoints if e.url.rstrip("/") == target), None)
+    if endpoint is None or not endpoint.status:
+        return None
+    if endpoint.status not in _NOT_SERVING:
+        return None
+    return endpoint.name or alias_name, endpoint.status
+
+
+def endpoint_remedy(status: str, alternative: str) -> str:
+    """The half of the sentence that says what to do, which is the half that differs.
+
+    #21's second criterion turns on this: "start the endpoint" and "pick a different Alias" are
+    opposite instructions, and one message covering both would send half the readers the wrong way.
+
+    `alternative` is the fallback in the reader's own vocabulary. A slot is changed on the model
+    panel and a Binding is changed in the Resources rail, so the same status has to end in a
+    different noun depending on which screen the reader is being sent to.
+    """
+    kind = _NOT_SERVING[status]
+    if kind == "stopped":
+        return f"Start that endpoint, or {alternative}"
+    if kind == "broken":
+        return f"That endpoint needs its owner to fix it, so {alternative}"
+    return f"It should come back on its own, so wait for it or {alternative}"
+
+
+@dataclass(frozen=True)
+class EndpointProblem:
+    """A model slot whose Alias resolves, but whose endpoint is not serving (#21).
+
+    Deliberately the same shape as `SlotProblem`, and reported in the same list: to a creator this is
+    the same event — the model behind this slot will not answer — and #21's first criterion asks for
+    it to be "reported the same way a missing Alias is". The UI keys its warnings on `slot`, and the
+    two can never collide on one slot: an Alias that is missing has no record to carry an
+    `endpoint_url`, so `unresolved_slots` and this check are mutually exclusive by construction.
+    """
+
+    slot: str
+    alias: str
+    endpoint: str
+    status: str  # Domino's own word, so the log says which of the six it was
+
+    @property
+    def message(self) -> str:
+        return (
+            f"Sage's {self.slot} model is set to the LLM Alias {self.alias}, whose Hosted GenAI "
+            f"Endpoint {self.endpoint} is {self.status}. Turns that route to {self.slot} will fail. "
+            f"{endpoint_remedy(self.status, 'pick a different model for that slot')}."
+        )
+
+    def to_dict(self) -> dict:
+        return {"slot": self.slot, "alias": self.alias, "endpoint": self.endpoint,
+                "status": self.status, "message": self.message}
+
+
+def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
+                            endpoints: list[HostedEndpoint] | None) -> list[EndpointProblem]:
+    """The configured slots whose Alias resolves but whose endpoint will not answer, in SLOTS order.
+
+    Runs over the same slots as `unresolved_slots` and answers the question that one cannot: an Alias
+    pointing at a stopped endpoint is still offered by `/v1/models`, because that listing filters on
+    permission alone (verified live 2026-08-21). So the slot resolves, preflight passes, the turn
+    routes, and the build fails partway through on a gateway error — which is the failure this moves
+    earlier.
+    """
+    problems: list[EndpointProblem] = []
+    for slot in SLOTS:
+        alias = (getattr(catalog, slot, "") or "").rsplit("/", 1)[-1]
+        if not alias:
+            continue
+        found = endpoint_status(alias, aliases, endpoints)
+        if found:
+            problems.append(EndpointProblem(slot, alias, found[0], found[1]))
+    return problems
+
+
+def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
+                               endpoints: list[HostedEndpoint] | None) -> list[tuple[Binding, str]]:
+    """The LLM Alias Bindings whose endpoint will not answer, each with what the creator reads.
+
+    Returned as (Binding, sentence) pairs because the sentence needs the endpoint's name and status,
+    which the Binding does not carry — unlike `stale_message`, which can be derived from the Binding
+    alone. The caller already builds pairs of exactly this shape for the stale ones.
+    """
+    out: list[tuple[Binding, str]] = []
+    for b in bindings:
+        if b.kind != KIND_LLM_ALIAS:
+            continue
+        found = endpoint_status(b.name, aliases, endpoints)
+        if not found:
+            continue
+        endpoint, status = found
+        out.append((b, (
+            f"This app is recorded using the LLM Alias {b.display_name}, whose Hosted GenAI "
+            f"Endpoint {endpoint} is {status}. Its calls will fail. "
+            f"{endpoint_remedy(status, 'pick a different Alias')}, before you build on it."
+        )))
+    return out
 
 
 def stale_bindings(bindings: list[Binding], listings: dict[str, list | None]) -> list[Binding]:

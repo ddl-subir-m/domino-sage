@@ -76,6 +76,30 @@ class LlmAlias:
     # {1.0, 2.0}, which is the gateway falling back rather than a real price, and the gateway's own
     # Usage & cost dashboard stays the authority on what a call actually cost.
     costs: dict[str, float] = field(default_factory=dict)
+    # Where this alias sends its calls, verbatim. Only a Domino-hosted alias has one — 12 of the 14
+    # on cloud-dogfood (2026-08-21) do not, because they are vendor models with nothing on Domino
+    # behind them. It is kept because it is the ONLY join back to a Hosted GenAI Endpoint, whose
+    # status is what says the model will actually answer (#21): `/v1/models` filters on permission
+    # alone, so a granted alias whose endpoint is stopped is still offered.
+    endpoint_url: str | None = None
+
+
+@dataclass(frozen=True)
+class HostedEndpoint:
+    """A Domino-hosted GenAI Endpoint — the vLLM deployment an LLM Alias can point at.
+
+    Not a Resource a creator picks; nothing lists these in the rail. It exists so preflight can say
+    whether the model behind an Alias is serving, which no other listing answers (#21).
+    """
+
+    id: str
+    name: str
+    url: str  # what `LlmAlias.endpoint_url` joins to, once its trailing /v1 is off
+    # `currentVersion.status`, verbatim, or None when there is no current version at all — an
+    # endpoint that has never been built has no status rather than a bad one. Kept as Domino's own
+    # word for the same reason `ModelApi.status` is: "Stopped" and "BuildFailed" lead to different
+    # remedies, and reducing them to a boolean would send half the readers to the wrong one.
+    status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -496,6 +520,11 @@ class ResourceProvider(Protocol):
     # orchestrator owns which project this builder is bound to, and the provider stays a client.
     def list_model_apis(self, project_id: str | None) -> list[ModelApi]: ...
 
+    # No argument at all, and unscoped: the listing is deployment-wide and already filtered to what
+    # this caller may see. Not a Resource anyone picks — preflight alone reads it, to say whether the
+    # endpoint behind an Alias is serving (#21).
+    def list_hosted_endpoints(self) -> list[HostedEndpoint]: ...
+
     # No project argument, unlike the two above, and that asymmetry is the finding: a Data Source is
     # permission-scoped to the person, not the project.
     def list_data_sources(self) -> list[DataSource]: ...
@@ -593,6 +622,7 @@ def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
                 description=str(rec["description"]) if rec.get("description") else None,
                 capabilities=parse_capabilities(rec.get("capabilities")),
                 costs=parse_costs(rec.get("effective_costs")),
+                endpoint_url=str(rec["endpoint_url"]) if rec.get("endpoint_url") else None,
             )
         )
     for extra in sorted(accessible - claimed):
@@ -624,6 +654,31 @@ def parse_model_apis(payload: Any) -> list[ModelApi]:
                 id=str(rec.get("id") or ""),
                 name=name,
                 description=str(rec["description"]) if rec.get("description") else None,
+                status=str(status) if status else None,
+            )
+        )
+    return out
+
+
+def parse_endpoints(payload: Any) -> list[HostedEndpoint]:
+    """Hosted GenAI Endpoints out of a `GET /api/gen-ai/beta/endpoints` body.
+
+    `currentVersion` is optional in the schema and absent in practice for an endpoint that never
+    built, so a missing status is carried as None rather than invented. A record with no url is
+    dropped: the url is the only thing an Alias can be joined on, so a row without one cannot answer
+    the only question this listing is fetched for.
+    """
+    out: list[HostedEndpoint] = []
+    for rec in records_of(payload):
+        url = str(rec.get("url") or "").rstrip("/")
+        if not url:
+            continue
+        status = ((rec.get("currentVersion") or {}).get("status"))
+        out.append(
+            HostedEndpoint(
+                id=str(rec.get("id") or ""),
+                name=str(rec.get("name") or ""),
+                url=url,
                 status=str(status) if status else None,
             )
         )
@@ -772,6 +827,28 @@ class DominoResourceProvider:
         models = self._get("/v1/models")  # accessible set, already filtered for this caller
         aliases = self._get("/api/aliases")  # display name, capabilities, cost
         return join_aliases(accessible_ids(models), records_of(aliases))
+
+    def list_hosted_endpoints(self) -> list[HostedEndpoint]:
+        """Every Hosted GenAI Endpoint this caller can see, deployment-wide.
+
+        One call, unscoped. `projectId` is an optional query parameter and omitting it answered 200
+        for a non-admin caller (verified live 2026-08-21, DOMINO-PRIMITIVES.md), which is what keeps
+        preflight at a fixed cost rather than one call per slot or per Binding. It is deliberately
+        NOT scoped to Sage's own project: the endpoint an Alias points at usually belongs to another
+        team, which is the case that made #21 worth checking at all.
+        """
+        if not self._api_host:
+            raise ResourceUnavailable(
+                "Sage reads Hosted GenAI Endpoint status from the Domino API, and it is not running "
+                "against one, so it cannot tell whether the endpoint behind a model is running."
+            )
+        payload = self._get(
+            "/api/gen-ai/beta/endpoints",
+            root=self._api_host,
+            service="The Domino API",
+            token_provider=self._api_token_provider,
+        )
+        return parse_endpoints(payload)
 
     def list_model_apis(self, project_id: str | None) -> list[ModelApi]:
         """Model APIs deployed in ONE project. The scope is not a filter for convenience — the
@@ -1186,6 +1263,9 @@ class FakeResourceProvider:
 
     aliases: list[LlmAlias] = field(default_factory=lambda: list(_FAKE_ALIASES))
     model_apis: list[ModelApi] = field(default_factory=lambda: list(_FAKE_MODEL_APIS))
+    # Empty by default: none of the fake aliases is Domino-hosted, so there is nothing for one to
+    # point at, and a local run should not invent an endpoint the alias list does not reference.
+    hosted_endpoints: list[HostedEndpoint] = field(default_factory=list)
     data_sources: list[DataSource] = field(default_factory=lambda: list(_FAKE_DATA_SOURCES))
     # source id -> database -> schema -> tables, for the cascade (#11).
     tree: dict[str, dict[str, dict[str, list[str]]]] = field(
@@ -1198,6 +1278,9 @@ class FakeResourceProvider:
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         return list(self.aliases)
+
+    def list_hosted_endpoints(self) -> list[HostedEndpoint]:
+        return list(self.hosted_endpoints)
 
     def list_model_apis(self, project_id: str | None) -> list[ModelApi]:
         """The project is ignored, not validated: this fake stands in for a Domino that answers, and
