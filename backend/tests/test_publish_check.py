@@ -230,7 +230,7 @@ def _running(root: Path):
     assert serve is not None
     srv = serve.build_server(root / "dist", host="127.0.0.1", port=0, project_root=root,
                              executor=None)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
         yield f"http://127.0.0.1:{srv.server_address[1]}"

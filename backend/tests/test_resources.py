@@ -154,7 +154,7 @@ def stub_gateway(models: object, aliases: object, *, html_at: str | None = None)
             pass
 
     srv = HTTPServer(("127.0.0.1", 0), Handler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
         yield f"http://127.0.0.1:{srv.server_address[1]}/v1", seen
@@ -273,7 +273,7 @@ def stub_domino_api(pages: list[object]):
             pass
 
     srv = HTTPServer(("127.0.0.1", 0), Handler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
         yield f"http://127.0.0.1:{srv.server_address[1]}", seen
@@ -455,7 +455,7 @@ def stub_data_source_api(*, listing: list[object], readiness: object, readiness_
             pass
 
     srv = HTTPServer(("127.0.0.1", 0), Handler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
         yield f"http://127.0.0.1:{srv.server_address[1]}", seen

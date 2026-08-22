@@ -166,7 +166,7 @@ def running(app: Path, store: Store, max_rows: int = 5000):
     executor = serve.FlightExecutor(serve.load_sources(app), max_rows)
     srv = serve.build_server(app / "dist", host="127.0.0.1", port=0, project_root=app,
                              executor=executor)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     thread.start()
     try:
         with sdk(store):
@@ -440,7 +440,7 @@ def test_an_image_without_the_domino_library_says_so_once_per_ask(app: Path):
     executor = serve.FlightExecutor(serve.load_sources(app), 100)
     srv = serve.build_server(app / "dist", host="127.0.0.1", port=0, project_root=app,
                              executor=executor)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     thread.start()
     try:
         with sdk(None):

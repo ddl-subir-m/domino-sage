@@ -87,7 +87,7 @@ def running(app: Path, executor=None):
     """The server on a throwaway port, serving app/dist with app/ as the project root."""
     srv = serve.build_server(app / "dist", host="127.0.0.1", port=0,
                              project_root=app, executor=executor)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
         yield f"http://127.0.0.1:{srv.server_address[1]}"

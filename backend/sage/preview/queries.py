@@ -137,8 +137,13 @@ class PreviewQueries:
             executor = self._build_executor()
             server = module.build_server(self._workspace / "dist", host="127.0.0.1", port=0,
                                          project_root=self._workspace, executor=executor)
-            thread = threading.Thread(target=server.serve_forever, name="sage-preview-queries",
-                                      daemon=True)
+            # 50ms, not `serve_forever`'s 0.5s default: that interval is how long the loop sleeps
+            # between checks for the shutdown flag, so it is also the floor on how long `stop()`
+            # blocks. A Binding change restarts this server while the creator waits, and half a
+            # second of that wait buying nothing is worse than an idle `select` twenty times a
+            # second, which costs nothing measurable.
+            thread = threading.Thread(target=server.serve_forever, args=(0.05,),
+                                      name="sage-preview-queries", daemon=True)
             thread.start()
         except Exception:
             # Never fatal. Losing the preview's query API costs the creator a publish to try a query,

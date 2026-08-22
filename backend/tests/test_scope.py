@@ -80,18 +80,28 @@ def test_an_upstream_failure_builds_instead_of_blocking():
 
 
 def test_a_timeout_builds_instead_of_hanging_the_turn():
+    import threading
     import time
+
+    # Released only after the assertions below, so the call really is still in flight when the
+    # timeout has to fire. A bare sleep(30) would prove the same thing and then outlive the test:
+    # the worker is a non-daemon pool thread, so `concurrent.futures`' atexit handler joins it and
+    # the whole pytest process sits out the rest of the 30s before it can exit.
+    released = threading.Event()
 
     class Hanging:
         def route(self, request, labels):
-            time.sleep(30)
+            released.wait(30)
             yield b""
 
     started = time.monotonic()
-    assert _ask(Hanging(), timeout_s=0.2) is False
-    # The bound has to be real: an executor shut down with wait=True would block here for the full
-    # 30s and the timeout above it would buy nothing. This assertion is the whole test.
-    assert time.monotonic() - started < 5
+    try:
+        assert _ask(Hanging(), timeout_s=0.2) is False
+        # The bound has to be real: an executor shut down with wait=True would block here for the
+        # full 30s and the timeout above it would buy nothing. This assertion is the whole test.
+        assert time.monotonic() - started < 5
+    finally:
+        released.set()
 
 
 @pytest.mark.parametrize("verdict", ["MAYBE", "", "I think you should plan this one"])

@@ -61,7 +61,7 @@ def dist(tmp_path: Path) -> Path:
 def running(root: Path):
     """The server on a throwaway port, yielding its base URL."""
     srv = serve.build_server(root, host="127.0.0.1", port=0)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
         yield f"http://127.0.0.1:{srv.server_address[1]}"
@@ -263,7 +263,7 @@ def _stub_sidecar(body: bytes):
             pass
 
     srv = HTTPServer(("127.0.0.1", 0), Handler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
         yield f"http://127.0.0.1:{srv.server_address[1]}/access-token"
