@@ -549,3 +549,17 @@ def test_the_source_and_a_table_in_it_are_one_line(tmp_path: Path):
     ])
     assert note.count("- Data Source") == 1
     assert "the tables `FCT_USAGE_DAILY`, `DIM_ACCOUNT` inside it" in note
+
+
+def test_a_table_is_not_attributed_to_a_source_the_schema_does_not_describe(tmp_path: Path):
+    # #33: binding a second Data Source leaves `.sage/schema.json` describing the second while every
+    # reader takes the first. A table read out of that file is not inside the Resource the mention
+    # names, and saying it is would be a false statement the agent cannot check.
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")            # first: the one a mention resolves to
+    orch.bind_data_source("ds-mssql", "underwriting", "dbo")   # second: the one the schema describes
+    note = orch._resource_mention_note(
+        orch.project(), [{"kind": "data_source", "id": "ds-dwh", "table": "claims"}])
+    assert "Data Source **Snowflake-Data-Warehouse**" in note   # the Resource still resolves
+    assert "claims" not in note                                 # its table does not
+    assert "inside it" not in note

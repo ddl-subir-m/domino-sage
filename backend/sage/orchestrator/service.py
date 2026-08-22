@@ -1346,8 +1346,13 @@ class Orchestrator:
             return ""
         recorded = parse_bindings(project.workspace.read_bindings())
         known = {b.key: b for b in recorded}
-        in_schema = {c.table for c in
-                     parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH))}
+        # Which Resource the recorded schema actually describes, and what it holds. Binding a second
+        # Data Source leaves the file describing the OTHER one (#33), so a table read out of it is
+        # not inside the Resource this mention names — and saying it is would be a false statement
+        # the agent has no way to check.
+        recorded_schema = self._read_json(project.workspace.path / SCHEMA_PATH)
+        described = str(recorded_schema.get("source") or "") if isinstance(recorded_schema, dict) else ""
+        in_schema = {c.table for c in parse_schema(recorded_schema)}
         # Grouped by Binding, in the order they were mentioned: "@Snowflake-Data-Warehouse and
         # @FCT_USAGE_DAILY" names one Resource once, not twice, and the tables belong on that line.
         order: list[tuple[str, str]] = []
@@ -1362,7 +1367,8 @@ class Orchestrator:
                 order.append(key)
                 tables[key] = []
             table = str(ref.get("table") or "")
-            if table and table in in_schema and table not in tables[key]:
+            if (table and table in in_schema and known[key].name == described
+                    and table not in tables[key]):
                 tables[key].append(table)
         return mention_note([Mention(known[k], tuple(tables[k])) for k in order], recorded)
 
@@ -3066,12 +3072,17 @@ class Orchestrator:
         project = self.project()
         binding = self._data_source_binding(project)
         if binding is None:
-            return {"bindable": False, "tables": [], "shared": [], "sensitive": False}
-        recorded = parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH))
+            return {"bindable": False, "source": "", "tables": [], "shared": [], "sensitive": False}
+        recorded_raw = self._read_json(project.workspace.path / SCHEMA_PATH)
+        recorded = parse_schema(recorded_raw)
         sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
         return {
             "bindable": True,
             "scope": binding.scope,
+            # Which Resource these tables are actually from. Normally the Binding above — but the
+            # schema on disk describes the LAST Data Source bound, not the first (#33), so a caller
+            # that labels these tables has to be able to tell the two apart.
+            "source": str((recorded_raw or {}).get("source") or "") if isinstance(recorded_raw, dict) else "",
             "tables": list(dict.fromkeys(c.table for c in recorded)),
             "shared": [s.table for s in samples],
             "sensitive": sensitive,

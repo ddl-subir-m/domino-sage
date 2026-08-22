@@ -580,7 +580,7 @@ def test_the_picker_offers_the_tables_the_scope_recorded(tmp_path: Path):
 
 def test_an_app_with_no_data_source_has_nothing_to_offer(tmp_path: Path):
     orch = orchestrator(tmp_path)
-    assert orch.sample_candidates() == {"bindable": False, "tables": [], "shared": [],
+    assert orch.sample_candidates() == {"bindable": False, "source": "", "tables": [], "shared": [],
                                         "sensitive": False}
 
 

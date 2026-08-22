@@ -1828,6 +1828,10 @@ let sharedSamplesSensitive = false;
 // read back out of `.sage/schema.json`, so the list costs no warehouse query — the same request the
 // rail already makes for shared samples carries it.
 let boundTablesCache = [];
+// The Resource those tables came out of. Normally the bound Data Source — but the schema on disk
+// describes the LAST source bound, not the first (#33), so the menu compares the two and offers no
+// table rows when they disagree, rather than labelling one source's tables with another's name.
+let boundTablesSource = '';
 
 function sampleControl(d) {
   const wrap = document.createElement('div');
@@ -2131,6 +2135,7 @@ async function loadSharedSamples() {
     sharedSamplesCache = [];
     sharedSamplesSensitive = false;
     boundTablesCache = [];
+    boundTablesSource = '';
     return;
   }
   const { ok, body } = await api('/api/project/samples');
@@ -2138,6 +2143,7 @@ async function loadSharedSamples() {
   sharedSamplesCache = body.shared || [];
   sharedSamplesSensitive = Boolean(body.sensitive);
   boundTablesCache = body.tables || [];
+  boundTablesSource = body.source || '';
   renderDataSources();
 }
 
@@ -4100,7 +4106,8 @@ function mentionCandidates() {
   // Nothing ABOVE the Scope is offered: those levels are not on disk, and reading them would cost a
   // warehouse query per keystroke for Resources this app has no schema for.
   const source = (bindingsCache || []).find(b => b.kind === 'data_source');
-  const tables = source ? boundTablesCache.map(t => ({
+  const mine = source && source.name === boundTablesSource;   // see boundTablesSource (#33)
+  const tables = mine ? boundTablesCache.map(t => ({
     token: t, label: `Table \u00b7 ${source.display_name}`,
     title: `${t} \u2014 inside ${source.display_name}`,
     ref: { kind: source.kind, id: source.id, table: t },
