@@ -49,6 +49,7 @@ from ..resources.bound_schema import (
     SAMPLES_PATH,
     SCHEMA_PATH,
     BoundSource,
+    SharedSample,
     parse_samples,
     parse_schema,
     recorded_scope,
@@ -3098,15 +3099,22 @@ class Orchestrator:
         """What the recorded schema holds, per bound Data Source, in Binding order (#33).
 
         Read from `.sage/schema.json` rather than from any store, so asking costs nothing — every
-        table here was enumerated when its Scope was bound. Two callers want it and want it
-        differently: the sample picker offers one source's tables, the builder's `@` menu offers all
-        of them, each row labelled with the source it is inside.
+        table here was enumerated when its Scope was bound. Three callers want it and want it
+        differently: the sample picker offers one source's tables and needs that source's own choice
+        ticked, the rail labels each store's row with what it is showing, and the builder's `@` menu
+        offers every table, each labelled with the store it is inside.
+
+        `shared` and `sensitive` ride along for that reason — one read of two files answers all
+        three, where a request per store would mean one per row on every project open.
         """
         project = self.project()
         columns = parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH))
+        shared = self._shared(project)
         return [
             {"id": b.id, "name": b.name, "display_name": b.display_name, "scope": b.scope,
-             "tables": list(dict.fromkeys(c.table for c in columns.get(b.id, [])))}
+             "tables": list(dict.fromkeys(c.table for c in columns.get(b.id, []))),
+             "shared": [x.rows.table for x in shared if x.binding == b.id],
+             "sensitive": any(x.sensitive for x in shared if x.binding == b.id)}
             for b in parse_bindings(project.workspace.read_bindings()) if b.kind == KIND_DATA_SOURCE
         ]
 
@@ -3122,20 +3130,23 @@ class Orchestrator:
         if binding is None:
             return {"bindable": False, "source": "", "tables": [], "shared": [], "sensitive": False,
                     "sources": sources}
-        sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
+        first = next((s for s in sources if s["id"] == binding.id), None) or {}
         return {
             "bindable": True,
             "scope": binding.scope,
             "source": binding.name,
-            "tables": next((s["tables"] for s in sources if s["id"] == binding.id), []),
-            "shared": [s.table for s in samples],
-            "sensitive": sensitive,
-            # Every bound source, for the builder's `@` menu. Same file, same read — a second route
-            # would mean a second request on project open to answer from the manifest already here.
+            # The first store's own answer at the top level, where a caller written before several
+            # sources were bindable expects to find it.
+            "tables": first.get("tables", []),
+            "shared": first.get("shared", []),
+            "sensitive": bool(first.get("sensitive")),
+            # Every bound source, for the picker, the rail and the builder's `@` menu. Same read —
+            # a route per store would mean a request per row on every project open.
             "sources": sources,
         }
 
-    def share_sample_rows(self, tables: list[str], sensitive: bool, limit: int = 5) -> dict:
+    def share_sample_rows(self, source_id: str, tables: list[str], sensitive: bool,
+                          limit: int = 5) -> dict:
         """Show the agent a few real rows from the tables the creator picked (#16).
 
         Every part of this is the creator's: whether to share at all, which tables, and whether the
@@ -3152,48 +3163,100 @@ class Orchestrator:
         continuously on the strength of one click.
         """
         project = self.project()
-        binding = self._data_source_binding(project)
-        if binding is None:
-            raise LookupError("This app is not recorded as using a Data Source.")
+        binding = self._binding_for(project, source_id)
         wanted = [t for t in dict.fromkeys(tables) if t]
         if not wanted:
-            return self.clear_sample_rows()
+            return self.clear_sample_rows(source_id)
         source = self._data_source(binding.id)
-        samples = [
-            self._resources.sample_rows(source, binding.database or "", binding.schema or "", table,
-                                        limit)
+        fresh = [
+            SharedSample(binding.id, sensitive,
+                         self._resources.sample_rows(source, binding.database or "",
+                                                     binding.schema or "", table, limit))
             for table in wanted
         ]
+        # This source's choice replaces this source's rows and leaves every other store's alone. The
+        # picker is opened from one Data Source's row and shows one store's tables, so a save that
+        # replaced the whole file would silently un-share the rows chosen from the store next to it.
+        kept = [s for s in self._shared(project) if s.binding != binding.id]
         self._ensure_gitignored(project.workspace, SAMPLES_PATH)
-        self._write_generated(project.workspace.path / SAMPLES_PATH,
-                              render_samples(sensitive, samples))
+        self._write_generated(project.workspace.path / SAMPLES_PATH, render_samples(kept + fresh))
         if sensitive:
             project.control.on_assets_changed([True])   # the same sticky lock a sensitive upload fires
         self._write_app_data(project)
         self._rebaseline_turn(project)
-        return {"shared": [s.table for s in samples], "sensitive": bool(sensitive),
-                "rows": sum(len(s.rows) for s in samples)}
+        return {"shared": [s.rows.table for s in fresh], "sensitive": bool(sensitive),
+                "rows": sum(len(s.rows.rows) for s in fresh)}
 
-    def clear_sample_rows(self) -> dict:
-        """Stop showing the agent any rows.
+    def clear_sample_rows(self, source_id: str = "") -> dict:
+        """Stop showing the agent rows from one Data Source, or from all of them.
+
+        One source by default of the picker, which is opened from a store's own row: "stop showing
+        these" there means that store's rows, not the ones chosen next to another store. No id clears
+        the file, which is what a caller with no store in mind means.
 
         Does NOT clear the sovereign lock, for the same reason detaching a sensitive file does not:
         the lock is sticky because the model has already seen what it has seen, and unlocking is its
         own deliberate act with its own warning.
         """
         project = self.project()
-        (project.workspace.path / SAMPLES_PATH).unlink(missing_ok=True)
+        path = project.workspace.path / SAMPLES_PATH
+        kept = [s for s in self._shared(project) if s.binding != source_id] if source_id else []
+        if kept:
+            self._write_generated(path, render_samples(kept))
+        else:
+            path.unlink(missing_ok=True)
         self._write_app_data(project)
         self._rebaseline_turn(project)
-        return {"shared": [], "sensitive": False, "rows": 0}
+        return {"shared": [s.rows.table for s in kept],
+                "sensitive": any(s.sensitive for s in kept), "rows": 0}
 
     def _data_source_binding(self, project: Project) -> Binding | None:
         recorded = parse_bindings(project.workspace.read_bindings())
         return next((b for b in recorded if b.kind == KIND_DATA_SOURCE), None)
 
-    def _shared_samples(self, project: Project) -> tuple[bool, list[str]]:
-        sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
-        return sensitive, [s.table for s in samples]
+    def _shared(self, project: Project) -> list[SharedSample]:
+        """The rows currently shared, with every entry attributed to a Data Source Binding.
+
+        An entry written before #33 names none; it can only have come from the first Data Source,
+        which is the one the picker read from when there was no other. Resolved here rather than in
+        `parse_samples`, which has no Binding list to resolve it against.
+        """
+        _, shared = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
+        first = self._data_source_binding(project)
+        if first is None:
+            return shared
+        return [s if s.binding else replace(s, binding=first.id) for s in shared]
+
+    def _shared_samples(self, project: Project) -> tuple[bool, list[tuple[str, list[str]]]]:
+        """(is any of it sensitive, the shared tables per store) for the AGENTS.md region.
+
+        Grouped in Binding order rather than in file order, so the section reads in the same order as
+        the store sections above it.
+        """
+        shared = self._shared(project)
+        bindings = [b for b in parse_bindings(project.workspace.read_bindings())
+                    if b.kind == KIND_DATA_SOURCE]
+        groups = [(b.display_name, [s.rows.table for s in shared if s.binding == b.id])
+                  for b in bindings]
+        return any(s.sensitive for s in shared), [g for g in groups if g[1]]
+
+    def _binding_for(self, project: Project, source_id: str) -> Binding:
+        """The Data Source Binding a request names, or the first one when it names none.
+
+        Falling back keeps a caller that predates several sources working, and raises rather than
+        guessing when the id names something this app does not use — sharing rows out of a store the
+        app has no Binding for is exactly the thing the creator did not agree to.
+        """
+        recorded = [b for b in parse_bindings(project.workspace.read_bindings())
+                    if b.kind == KIND_DATA_SOURCE]
+        if not recorded:
+            raise LookupError("This app is not recorded as using a Data Source.")
+        if not source_id:
+            return recorded[0]
+        found = next((b for b in recorded if b.id == source_id), None)
+        if found is None:
+            raise LookupError("This app is not recorded as using that Data Source.")
+        return found
 
     # ---- Model access tokens, pasted once and remembered (#9) ----
 

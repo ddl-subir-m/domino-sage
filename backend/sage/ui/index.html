@@ -1817,13 +1817,18 @@ let samplesPick = new Set();  // the tables ticked right now
 let samplesSensitive = false;
 
 function sharedSampleTables() {
-  return (samplesData && samplesData.shared) || sharedSamplesCache;
+  return (samplesData && samplesData.shared) || sharedFor(samplesFor).shared;
 }
 
-// What the rail knows about shared samples between openings of the picker, so the row can say so
-// without a fetch. Refreshed by every call that changes it.
-let sharedSamplesCache = [];
-let sharedSamplesSensitive = false;
+// What the rail knows about shared samples between openings of the picker, so a row can say so
+// without a fetch. Per store since #33: one count rendered on every row would tell the creator that
+// the store they are looking at is showing rows the store beside it is showing.
+// Refreshed by every call that changes it.
+let sharedSamplesCache = {};   // source id -> { shared: [table], sensitive: bool }
+
+function sharedFor(sourceId) {
+  return sharedSamplesCache[sourceId] || { shared: [], sensitive: false };
+}
 // Every bound Data Source and the tables inside its Scope, for the @ menu (#31, #33). Enumerated
 // when each Scope was bound and read back out of `.sage/schema.json`, so the list costs no warehouse
 // query — the same request the rail already makes for shared samples carries it.
@@ -1832,7 +1837,8 @@ let boundSourcesCache = [];   // [{ id, name, display_name, scope, tables: [] }]
 function sampleControl(d) {
   const wrap = document.createElement('div');
   wrap.className = 'cas-scope';
-  const shared = sharedSamplesCache.length;
+  const mine = sharedFor(d.id);
+  const shared = mine.shared.length;
   const open = samplesFor === d.id;
   const label = shared
     ? `Showing the agent rows from ${shared} table${shared === 1 ? '' : 's'}`
@@ -1848,7 +1854,7 @@ function sampleControl(d) {
       + 'from your store — you choose which tables, and how it is treated.';
   if (!open) btn.onclick = () => openSamples(d);
   wrap.appendChild(btn);
-  if (sharedSamplesSensitive) {
+  if (mine.sensitive) {
     const badge = document.createElement('span');
     badge.className = 'lock-badge';
     badge.textContent = 'sovereign';
@@ -1870,13 +1876,27 @@ async function openSamples(d) {
   if (!ok) {
     samplesError = (body && body.error) || 'Sage could not read this app\u2019s tables.';
   } else {
-    samplesData = body;
-    samplesPick = new Set(body.shared || []);
+    // This store's own tables and its own choice. The response carries every bound store, and the
+    // picker was opened from one row — showing another store's tables here would offer rows from a
+    // store the creator is not looking at.
+    const mine = (body.sources || []).find(x => x.id === d.id) || {};
+    samplesData = { ...body, tables: mine.tables || [], shared: mine.shared || [] };
+    cacheSharedSamples(body);
+    samplesPick = new Set(mine.shared || []);
     // Unchecked unless it already IS the treatment they chose. A box Sage pre-ticks is Sage deciding
     // how someone else\u2019s data should be handled, which is the one thing this must not do.
-    samplesSensitive = Boolean(body.sensitive);
+    samplesSensitive = Boolean(mine.sensitive);
   }
   renderDataSources();
+}
+
+// Every store's shared rows, out of one response. Replaces the map rather than merging into it, so a
+// store whose rows were dropped elsewhere does not linger in the rail as still showing them.
+function cacheSharedSamples(body) {
+  sharedSamplesCache = {};
+  for (const src of body.sources || []) {
+    sharedSamplesCache[src.id] = { shared: src.shared || [], sensitive: Boolean(src.sensitive) };
+  }
 }
 
 function closeSamples() {
@@ -1973,13 +1993,14 @@ function sampleButtons(d, closeOnly) {
       : 'Tick at least one table, or use Stop showing rows.';
     save.onclick = () => shareSamples(d);
     bar.appendChild(save);
-    if (sharedSamplesCache.length) {
+    if (sharedFor(d.id).shared.length) {
       const stop = document.createElement('button');
       stop.textContent = 'Stop showing rows';
       stop.disabled = samplesSaving;
-      stop.title = 'Take the rows away from the agent. The sovereign lock stays on \u2014 the model has '
-        + 'already seen them \u2014 and you can turn it off in the model panel.';
-      stop.onclick = () => stopSamples();
+      stop.title = 'Take this Data Source\u2019s rows away from the agent. Rows you chose from another '
+        + 'Data Source stay. The sovereign lock stays on \u2014 the model has already seen them \u2014 '
+        + 'and you can turn it off in the model panel.';
+      stop.onclick = () => stopSamples(d);
       bar.appendChild(stop);
     }
   }
@@ -1997,7 +2018,7 @@ async function shareSamples(d) {
   renderDataSources();
   const { ok, body } = await api('/api/project/samples', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ tables: [...samplesPick], sensitive: samplesSensitive }),
+    body: JSON.stringify({ source: d.id, tables: [...samplesPick], sensitive: samplesSensitive }),
   });
   samplesSaving = false;
   if (!ok) {
@@ -2007,25 +2028,26 @@ async function shareSamples(d) {
     renderDataSources();
     return;
   }
-  sharedSamplesCache = body.shared || [];
-  sharedSamplesSensitive = Boolean(body.sensitive);
+  sharedSamplesCache[d.id] = { shared: body.shared || [], sensitive: Boolean(body.sensitive) };
   closeSamples();
   refreshStatus();   // the sovereign lock may have just fired
   addStatus(body.sensitive ? 'err' : 'ok', body.sensitive ? '\u{1F512}' : '\u{1F441}',
-            `The agent can now see rows from <b>${esc(sharedSamplesCache.join(', '))}</b>`
+            `The agent can now see rows from <b>${esc((body.shared || []).join(', '))}</b>`
+            + ` in ${esc(d.name)}`
             + (body.sensitive ? ' \u2014 sovereign model locked' : ''));
 }
 
-async function stopSamples() {
+async function stopSamples(d) {
   samplesSaving = true;
   renderDataSources();
-  const { ok } = await api('/api/project/samples', { method: 'DELETE' });
+  const { ok } = await api(`/api/project/samples?source=${encodeURIComponent(d.id)}`,
+                           { method: 'DELETE' });
   samplesSaving = false;
   if (!ok) { samplesError = 'Sage could not stop showing those rows.'; renderDataSources(); return; }
-  sharedSamplesCache = [];
-  sharedSamplesSensitive = false;
+  // This store only: rows chosen next to another store were a separate decision and stay.
+  sharedSamplesCache[d.id] = { shared: [], sensitive: false };
   closeSamples();
-  addStatus('ok', '\u{1F441}', 'The agent no longer sees any rows from your Data Source');
+  addStatus('ok', '\u{1F441}', `The agent no longer sees any rows from ${esc(d.name)}`);
 }
 
 function renderDataSources() {
@@ -2128,15 +2150,13 @@ async function loadBindings() {
 // reads two manifests and no store, so it is cheap, but nothing on screen should wait for it.
 async function loadSharedSamples() {
   if (!(bindingsCache || []).some(b => b.kind === 'data_source')) {
-    sharedSamplesCache = [];
-    sharedSamplesSensitive = false;
+    sharedSamplesCache = {};
     boundSourcesCache = [];
     return;
   }
   const { ok, body } = await api('/api/project/samples');
   if (!ok) return;   // could not ask is not evidence nothing is shared; leave the row as it was
-  sharedSamplesCache = body.shared || [];
-  sharedSamplesSensitive = Boolean(body.sensitive);
+  cacheSharedSamples(body);
   boundSourcesCache = body.sources || [];
   renderDataSources();
 }
@@ -2659,7 +2679,8 @@ async function refreshStatus() {
   // unlocked it). Attribute the off-state to the user's action and name the recovery.
   // Rows the creator marked sensitive count here as much as a file does (#16): both are data they
   // said should stay in Domino, and unlocking after either one is the same caution.
-  const sensitiveAttached = attachedFiles.some(e => e.sensitive) || sharedSamplesSensitive;
+  const sensitiveAttached = attachedFiles.some(e => e.sensitive)
+    || Object.values(sharedSamplesCache).some(x => x.sensitive);
   document.getElementById('lock-caution').classList.toggle('show', sensitiveAttached && !m.sensitivity_locked);
   lastModel = m;
 }

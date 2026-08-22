@@ -24,6 +24,7 @@ from sage.resources.bound_schema import (
     SAMPLES_PATH,
     SCHEMA_PATH,
     BoundSource,
+    SharedSample,
     agents_block,
     parse_samples,
     parse_schema,
@@ -477,10 +478,26 @@ def test_a_two_level_store_does_not_get_an_empty_database_prefix():
 def test_the_samples_record_keeps_the_treatment_beside_the_rows():
     # `sensitive` is the creator's judgement about their own data, so it is recorded rather than
     # re-derived — and it is what re-fires the in-memory sovereign lock when a session reopens.
-    written = render_samples(True, [SampleRows("orders", ["id"], [[1], [2]])])
+    rows = SampleRows("orders", ["id"], [[1], [2]])
+    written = render_samples([SharedSample("ds-dwh", True, rows)])
     sensitive, samples = parse_samples(json.loads(written))
     assert sensitive is True
-    assert samples == [SampleRows("orders", ["id"], [[1], [2]])]
+    assert samples == [SharedSample("ds-dwh", True, rows)]
+
+
+def test_a_samples_record_written_before_stores_were_named_still_reads(tmp_path: Path):
+    """This file is gitignored, so an entry with no Binding only ever reaches a workspace whose
+    orchestrator was upgraded under it — but it holds real rows the agent is already being shown, and
+    dropping them would un-share data without anyone choosing to."""
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    (workspace_of(orch) / SAMPLES_PATH).write_text(json.dumps({
+        "sensitive": True,
+        "tables": [{"name": "FCT_USAGE_DAILY", "columns": ["USAGE_DATE"], "rows": [["2026-01-01"]]}],
+    }))
+    # Attributed to the only store that could have produced it: the first.
+    assert orch._shared(orch.project()) == [
+        SharedSample("ds-dwh", True, SampleRows("FCT_USAGE_DAILY", ["USAGE_DATE"], [["2026-01-01"]]))]
 
 
 def test_an_unreadable_samples_record_is_no_samples_and_not_sensitive():
@@ -495,27 +512,36 @@ def test_nothing_shared_adds_nothing_to_what_the_agent_reads():
 def test_shared_rows_are_named_but_never_quoted_into_agents_md():
     # AGENTS.md is committed. The whole reason the samples file is gitignored is that rows must not
     # travel with the repo, so this region can only ever point at them.
-    block = block_for(samples=(False, ["orders", "customers"]))
+    block = block_for(samples=(False, [("warehouse", ["orders", "customers"])]))
     assert "`orders` and `customers`" in block
     assert SAMPLES_PATH in block
     assert "Never copy them anywhere" in block
 
 
 def test_a_sensitive_share_tells_the_agent_the_conversation_stays_in_domino():
-    assert "sovereign models" in block_for(samples=(True, ["orders"]))
-    assert "sovereign models" not in block_for(samples=(False, ["orders"]))
+    assert "sovereign models" in block_for(samples=(True, [("warehouse", ["orders"])]))
+    assert "sovereign models" not in block_for(samples=(False, [("warehouse", ["orders"])]))
+
+
+def test_rows_shared_from_two_stores_say_which_store_each_came_from():
+    # A table name stops identifying anything once two stores are bound — `events` in the warehouse
+    # is not `events` in the app database — and the agent reading these rows is about to write a
+    # query that has to name a Binding.
+    block = block_for(samples=(False, [("warehouse", ["events"]), ("app-db", ["events", "users"])]))
+    assert "`events` in **warehouse**" in block
+    assert "`events` and `users` in **app-db**" in block
 
 
 def test_sharing_reads_the_picked_tables_and_locks_when_marked_sensitive(tmp_path: Path):
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     assert orch.project(start_preview=False).control.snapshot().sensitivity_locked is False
-    result = orch.share_sample_rows(["FCT_USAGE_DAILY", "DIM_ACCOUNT"], sensitive=True)
+    result = orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY", "DIM_ACCOUNT"], sensitive=True)
     assert result["shared"] == ["FCT_USAGE_DAILY", "DIM_ACCOUNT"]
     assert orch.project(start_preview=False).control.snapshot().sensitivity_locked is True
     sensitive, samples = parse_samples(json.loads((workspace_of(orch) / SAMPLES_PATH).read_text()))
     assert sensitive is True
-    assert [s.table for s in samples] == ["FCT_USAGE_DAILY", "DIM_ACCOUNT"]
+    assert [s.rows.table for s in samples] == ["FCT_USAGE_DAILY", "DIM_ACCOUNT"]
 
 
 def test_sharing_without_marking_sensitive_does_not_lock(tmp_path: Path):
@@ -523,7 +549,7 @@ def test_sharing_without_marking_sensitive_does_not_lock(tmp_path: Path):
     # creator knows what is in the table and Sage does not.
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=False)
     assert orch.project(start_preview=False).control.snapshot().sensitivity_locked is False
 
 
@@ -531,7 +557,7 @@ def test_the_shared_rows_never_get_committed(tmp_path: Path):
     # The rest of .sage/ rides into the published app's container. Rows must not.
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=False)
     ignored = (workspace_of(orch) / ".gitignore").read_text().split()
     assert SAMPLES_PATH in ignored
 
@@ -542,7 +568,7 @@ def test_only_the_picked_tables_are_read(tmp_path: Path):
     asked = []
     real = orch._resources.sample_rows
     orch._resources.sample_rows = lambda *a, **k: (asked.append(a[3]), real(*a, **k))[1]
-    orch.share_sample_rows(["DIM_ACCOUNT"], sensitive=False)
+    orch.share_sample_rows("ds-dwh", ["DIM_ACCOUNT"], sensitive=False)
     assert asked == ["DIM_ACCOUNT"]
 
 
@@ -551,8 +577,8 @@ def test_sharing_again_replaces_rather_than_accumulates(tmp_path: Path):
     # unticked is one the creator wants the agent to stop seeing.
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.share_sample_rows(["FCT_USAGE_DAILY", "DIM_ACCOUNT"], sensitive=False)
-    orch.share_sample_rows(["DIM_ACCOUNT"], sensitive=False)
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY", "DIM_ACCOUNT"], sensitive=False)
+    orch.share_sample_rows("ds-dwh", ["DIM_ACCOUNT"], sensitive=False)
     assert orch.sample_candidates()["shared"] == ["DIM_ACCOUNT"]
 
 
@@ -561,7 +587,7 @@ def test_stopping_takes_the_rows_away_and_leaves_the_lock_on(tmp_path: Path):
     # and unlocking is its own deliberate act with its own warning.
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=True)
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=True)
     orch.clear_sample_rows()
     assert not (workspace_of(orch) / SAMPLES_PATH).exists()
     assert "Sample rows" not in (workspace_of(orch) / "AGENTS.md").read_text()
@@ -571,8 +597,8 @@ def test_stopping_takes_the_rows_away_and_leaves_the_lock_on(tmp_path: Path):
 def test_sharing_nothing_is_the_opposite_choice_rather_than_an_error(tmp_path: Path):
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
-    assert orch.share_sample_rows([], sensitive=False)["shared"] == []
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=False)
+    assert orch.share_sample_rows("ds-dwh", [], sensitive=False)["shared"] == []
     assert not (workspace_of(orch) / SAMPLES_PATH).exists()
 
 
@@ -598,7 +624,7 @@ def test_a_reopened_session_relocks_for_rows_that_are_still_there(tmp_path: Path
     # sit in the workspace for the agent to read.
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=True)
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=True)
     reopened = orchestrator_on(tmp_path)
     assert reopened.project(start_preview=False).control.snapshot().sensitivity_locked is True
 
@@ -606,7 +632,7 @@ def test_a_reopened_session_relocks_for_rows_that_are_still_there(tmp_path: Path
 def test_a_reopened_session_does_not_lock_for_rows_shared_without_the_mark(tmp_path: Path):
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.share_sample_rows(["FCT_USAGE_DAILY"], sensitive=False)
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=False)
     reopened = orchestrator_on(tmp_path)
     assert reopened.project(start_preview=False).control.snapshot().sensitivity_locked is False
 

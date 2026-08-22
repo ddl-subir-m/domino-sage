@@ -139,7 +139,27 @@ def _columns_of(entry: dict) -> list[Column]:
     return out
 
 
-def render_samples(sensitive: bool, samples: list[SampleRows]) -> str:
+@dataclass(frozen=True)
+class SharedSample:
+    """One table's shared rows, and which Data Source they came out of (#16, #33).
+
+    The Binding id rather than the store's name, for the reason the schema record keys on it: two
+    stores in one app can hold a table of the same name, and `events` shared from the warehouse is
+    not `events` shared from the app database. Without it the two collide in one file and the picker
+    cannot tell which of its boxes to tick.
+
+    `sensitive` is per table because the choice is: a creator sharing rows from a claims table and
+    from a product catalogue has said two different things about two different tables. The project's
+    sovereign lock fires if ANY of them is sensitive, which is what `render_samples` records at the
+    top of the file.
+    """
+
+    binding: str
+    sensitive: bool
+    rows: SampleRows
+
+
+def render_samples(shared: list[SharedSample]) -> str:
     """`.sage/samples.json` — the rows a creator chose to share, and how they chose to treat them.
 
     `sensitive` is recorded beside the rows rather than inferred from them, because it is the
@@ -147,25 +167,37 @@ def render_samples(sensitive: bool, samples: list[SampleRows]) -> str:
     re-fires the sovereign lock when a session reopens: the lock is in-memory, and for attachments it
     is restored from a committed manifest — this file is the only place a sample's treatment is
     written down.
+
+    The top-level `sensitive` is the OR of the entries, so the one question the lock asks is answered
+    without reading them.
     """
     return json.dumps({
-        "sensitive": bool(sensitive),
-        "tables": [{"name": s.table, "columns": s.columns, "rows": s.rows} for s in samples],
+        "sensitive": any(s.sensitive for s in shared),
+        "tables": [{"binding": s.binding, "name": s.rows.table, "sensitive": s.sensitive,
+                    "columns": s.rows.columns, "rows": s.rows.rows} for s in shared],
     }, indent=2) + "\n"
 
 
-def parse_samples(raw: object) -> tuple[bool, list[SampleRows]]:
-    """(whether the creator marked them sensitive, the shared tables). Unreadable is no samples,
-    which is the safe reading in both directions: nothing is shown to the agent, and nothing claims
-    to be sensitive that Sage cannot show."""
+def parse_samples(raw: object) -> tuple[bool, list[SharedSample]]:
+    """(whether anything shared is sensitive, the shared tables). Unreadable is no samples,
+    which is the safe reading: the agent is shown nothing it was not certainly given.
+
+    An entry written before #33 names no Binding. It reads back with an empty one, and the caller —
+    which knows the Bindings — resolves that to the first Data Source, the only one that could have
+    produced it. This file is gitignored, so that only ever happens to a workspace whose orchestrator
+    was upgraded under it, never to a clone.
+    """
     if not isinstance(raw, dict):
         return False, []
-    out: list[SampleRows] = []
+    legacy_sensitive = bool(raw.get("sensitive"))
+    out: list[SharedSample] = []
     for table in raw.get("tables") or []:
         if isinstance(table, dict) and str(table.get("name") or ""):
-            out.append(SampleRows(str(table["name"]), list(table.get("columns") or []),
-                                  [list(r) for r in table.get("rows") or [] if isinstance(r, list)]))
-    return bool(raw.get("sensitive")), out
+            rows = SampleRows(str(table["name"]), list(table.get("columns") or []),
+                              [list(r) for r in table.get("rows") or [] if isinstance(r, list)])
+            sensitive = bool(table["sensitive"]) if "sensitive" in table else legacy_sensitive
+            out.append(SharedSample(str(table.get("binding") or ""), sensitive, rows))
+    return any(s.sensitive for s in out), out
 
 
 def agents_block(sources: list[BoundSource], problems: list[str] | None,
@@ -354,6 +386,8 @@ def _scope_rule(binding: Binding, stranded: list[tuple[str, str]] | None, table:
 def _samples_section(sensitive: bool, tables) -> list[str]:
     """The rows a creator chose to share, named but not quoted (#16).
 
+    `tables` is (store, table names) per Data Source they were shared from, in Binding order.
+
     Named, because the agent has to know they exist to go and read them. Not quoted, because this
     region is written into AGENTS.md and AGENTS.md is committed — the whole reason the samples file is
     gitignored is that rows must not travel with the repo.
@@ -361,12 +395,20 @@ def _samples_section(sensitive: bool, tables) -> list[str]:
     Absent entirely when nothing was shared, which is the default and stays fully supported: the
     columns above are enough to write a working query, and #15 shipped exactly that.
     """
-    tables = list(tables)
-    if not tables:
+    groups = [(store, list(names)) for store, names in tables if names]
+    if not groups:
         return []
+    # Which store each shared table is in, once there is more than one. A table name alone stops
+    # identifying anything the moment two stores are bound — `events` in the warehouse is not
+    # `events` in the app database — and the agent reading these rows is about to write a query that
+    # has to name a Binding.
+    if len(groups) == 1:
+        named = _and_list(groups[0][1])
+    else:
+        named = _and_list_of([f"{_and_list(names)} in **{store}**" for store, names in groups])
     out = [
         "### Sample rows", "",
-        (f"The user has chosen to show you a few real rows from {_and_list(tables)}. They are in "
+        (f"The user has chosen to show you a few real rows from {named}. They are in "
          f"`{SAMPLES_PATH}` — read that file when you need to see the shape of the data: what a code "
          "column actually contains, how a date is written, whether a column is usually empty."), "",
         ("- **A handful of rows, not a distribution.** Do not draw conclusions about totals, ranges "
@@ -386,8 +428,11 @@ def _samples_section(sensitive: bool, tables) -> list[str]:
 
 
 def _and_list(names: list[str]) -> str:
-    quoted = [f"`{n}`" for n in names]
-    return quoted[0] if len(quoted) == 1 else ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
+    return _and_list_of([f"`{n}`" for n in names])
+
+
+def _and_list_of(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
 
 
 def _problems_section(problems: list[str] | None) -> list[str]:

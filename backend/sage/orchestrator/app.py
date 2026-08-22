@@ -911,6 +911,9 @@ async def share_samples(request: Request) -> JSONResponse:
     tables = body.get("tables")
     try:
         return JSONResponse(content=orchestrator.share_sample_rows(
+            # Which store these tables are in. Optional, so a caller that predates several bound
+            # sources still means the first one; a store this app has no Binding for is a 404.
+            str(body.get("source") or ""),
             [str(t) for t in tables] if isinstance(tables, list) else [],
             bool(body.get("sensitive")),
         ))
@@ -924,10 +927,12 @@ async def share_samples(request: Request) -> JSONResponse:
 
 
 @control_app.delete("/api/project/samples")
-def stop_sharing_samples() -> JSONResponse:
-    """Stop showing the agent any rows. Leaves the sovereign lock on — it is sticky, because the
-    model has already seen what it has seen."""
-    return JSONResponse(content=orchestrator.clear_sample_rows())
+def stop_sharing_samples(source: str = "") -> JSONResponse:
+    """Stop showing the agent rows from one Data Source, or from all of them when none is named.
+
+    Leaves the sovereign lock on — it is sticky, because the model has already seen what it has seen.
+    """
+    return JSONResponse(content=orchestrator.clear_sample_rows(source))
 
 
 @control_app.get("/api/preflight")
