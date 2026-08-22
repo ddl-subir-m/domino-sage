@@ -5,9 +5,10 @@ setup:
 	npm ci
 	cd backend && uv sync --extra dev
 
-# Backend tests.
+# Backend tests. -n auto fans them across cores. Drop it to read interleaved output or to run
+# a single failure under a debugger: `cd backend && uv run pytest -q <nodeid>`.
 test:
-	cd backend && uv run pytest -q
+	cd backend && uv run pytest -q -n auto
 
 # Run the enforcement shim alone (FakeGateway unless GATEWAY_BASE_URL/KEY are set).
 shim:
