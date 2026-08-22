@@ -465,7 +465,8 @@ def test_a_mention_carries_the_kind_and_the_scope_not_just_the_name():
     note = mention_note([Mention(alias), Mention(source)], [alias, source])
     assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in note
     assert "Data Source **Snowflake-Data-Warehouse**, scoped to `DWH.MARTS.FCT_USAGE_DAILY`" in note
-    assert "This app's default model" in note and "The Data Source this app queries" in note
+    assert "This app's default model" in note
+    assert 'Queries read it by naming `"binding": "ds-dwh"`' in note
 
 
 def test_a_mention_of_an_alias_that_is_not_the_default_says_how_to_call_it():
@@ -490,7 +491,7 @@ def test_a_mention_of_a_resource_the_app_is_not_wired_to_says_so():
     note = mention_note([Mention(other)], [wired, other])
     assert "NOT the Model API this app calls" in note
     assert "**churn-risk**" in note                 # names the one it IS wired to
-    assert "do not rewire the app to this one" in note
+    assert "do not rewire it to this one" in note
 
 
 def test_a_kind_this_sage_does_not_know_is_still_mentionable():

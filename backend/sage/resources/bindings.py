@@ -136,25 +136,40 @@ def _scope_part(entry: dict, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-# What each kind is called in a sentence, and what the app's own code does with the first record of
-# that kind. The FIRST is the one the app is wired to for all three kinds — `pinned_model` writes it
-# into `src/sageLlm.config.ts`, `pinned_model_api` into its own config, and `bound_schema` describes
-# only the first Data Source. A creator can bind more than one of a kind, and mentioning one of the
-# others is a real request, but the agent has to be told the app is not wired to it: AGENTS.md
-# describes the wired one alone, so nothing else would say so.
-_KIND_TEXT = {
-    KIND_LLM_ALIAS: ("LLM Alias", "this app's default model"),
-    KIND_MODEL_API: ("Model API", "the Model API this app calls"),
-    KIND_DATA_SOURCE: ("Data Source", "the Data Source this app queries"),
+# What each kind is called in a sentence. What the app can DO with a second one of that kind is not
+# a property of the kind, so it lives in `_what_the_app_does_with` below rather than in this table.
+_KIND_LABEL = {
+    KIND_LLM_ALIAS: "LLM Alias",
+    KIND_MODEL_API: "Model API",
+    KIND_DATA_SOURCE: "Data Source",
 }
 
-# What to say about a Binding of this kind that is not the first. An LLM Alias is callable by name
-# since #34, so naming one is a request the agent can act on and the note says how. The other two
-# still describe one Resource each, so naming another is a request the app cannot yet carry — and an
-# agent not told that writes a call with no config or no columns behind it.
-_KIND_OTHERS = {
-    KIND_LLM_ALIAS: "callable by name",
-}
+
+def _what_the_app_does_with(b: Binding, first: Binding | None) -> str:
+    """The sentence that says what naming THIS Resource means for the app being built.
+
+    The three kinds answer differently, and the difference is the whole of what an agent gets wrong.
+    An LLM Alias is picked per call, so the first is only a default (#34). A Data Source is picked
+    per query, so the first is not even that — each query carries its Binding's id (#33). A Model API
+    is one url and one token in the app's source, so a second one is a record the app cannot act on,
+    and an agent not told that writes a call with no config behind it.
+    """
+    if b.kind == KIND_LLM_ALIAS:
+        if first is None or first.key == b.key:
+            return "This app's default model — the one a call that names no model reaches."
+        return (f'Also callable by name — pass `alias: "{b.name}"` for the calls this request means '
+                f"for it. The default stays **{first.display_name}**.")
+    if b.kind == KIND_DATA_SOURCE:
+        # No default to name: `serve.py` resolves each query against the Binding the query itself
+        # carries, so there is no such thing as the Data Source this app reads.
+        return f'Queries read it by naming `"binding": "{b.id}"`.'
+    if b.kind == KIND_MODEL_API:
+        if first is None or first.key == b.key:
+            return "The Model API this app calls."
+        return (f"recorded, but NOT the Model API this app calls — that is **{first.display_name}**. "
+                f"The app holds one Model API's url and token, so do not rewire it to this one; if "
+                f"that is what the user wants, tell them to change it in the Resources rail.")
+    return "recorded as used by this app."
 
 
 def mention_note(mentions: list[Mention], recorded: list[Binding]) -> str:
@@ -172,30 +187,18 @@ def mention_note(mentions: list[Mention], recorded: list[Binding]) -> str:
     """
     if not mentions:
         return ""
-    wired: dict[str, Binding] = {}
+    first: dict[str, Binding] = {}
     for b in recorded:
-        wired.setdefault(b.kind, b)
+        first.setdefault(b.kind, b)
     lines = []
     for mention in mentions:
         b = mention.binding
-        kind, role = _KIND_TEXT.get(b.kind, (b.kind, ""))
+        kind = _KIND_LABEL.get(b.kind, b.kind)
         # The display name is what the creator picked from; the name is what they typed after the @.
         # Both, when they differ, so neither reading of the mention is left guessing.
         name = b.display_name if b.display_name == b.name else f"{b.display_name} (`{b.name}`)"
         scope = f", scoped to `{b.scope}`" if b.scope else ""
-        app = wired.get(b.kind)
-        if not role or app is None:
-            said = "recorded as used by this app."
-        elif app.key == b.key:
-            said = role[0].upper() + role[1:] + "."
-        elif b.kind in _KIND_OTHERS:
-            # The exact string, because that is what the call takes and a display name is not it.
-            said = (f"Also {_KIND_OTHERS[b.kind]} — pass `alias: \"{b.name}\"` for the calls this "
-                    f"request means for it. The default stays **{app.display_name}**.")
-        else:
-            said = (f"recorded, but NOT {role} — that is **{app.display_name}**. Which one the app "
-                    f"uses is chosen in Sage, not in code, so do not rewire the app to this one; if "
-                    f"that is what the user wants, tell them to change it in the Resources rail.")
+        said = _what_the_app_does_with(b, first.get(b.kind))
         # The tables the creator reached for inside the Resource. Their columns are already in the
         # AGENTS.md data block, so this points rather than repeats — the block is re-read every turn,
         # and a second copy of the columns here would cost context to say what is already said.

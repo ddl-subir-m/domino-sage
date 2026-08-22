@@ -45,10 +45,13 @@ from ..resources.bindings import (
     parse_bindings,
 )
 from ..resources.bound_schema import (
+    LEGACY_SOURCE,
     SAMPLES_PATH,
     SCHEMA_PATH,
+    BoundSource,
     parse_samples,
     parse_schema,
+    recorded_scope,
     render_samples,
     render_schema,
 )
@@ -1346,13 +1349,11 @@ class Orchestrator:
             return ""
         recorded = parse_bindings(project.workspace.read_bindings())
         known = {b.key: b for b in recorded}
-        # Which Resource the recorded schema actually describes, and what it holds. Binding a second
-        # Data Source leaves the file describing the OTHER one (#33), so a table read out of it is
-        # not inside the Resource this mention names — and saying it is would be a false statement
-        # the agent has no way to check.
-        recorded_schema = self._read_json(project.workspace.path / SCHEMA_PATH)
-        described = str(recorded_schema.get("source") or "") if isinstance(recorded_schema, dict) else ""
-        in_schema = {c.table for c in parse_schema(recorded_schema)}
+        # The tables of each bound Data Source, keyed by the Binding they belong to — so a table
+        # mention is honored against the Resource it was offered under, and an app reading a
+        # warehouse and an app database can be pointed at either one's tables (#33).
+        in_schema = {rid: {c.table for c in columns} for rid, columns
+                     in parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH)).items()}
         # Grouped by Binding, in the order they were mentioned: "@Snowflake-Data-Warehouse and
         # @FCT_USAGE_DAILY" names one Resource once, not twice, and the tables belong on that line.
         order: list[tuple[str, str]] = []
@@ -1367,8 +1368,7 @@ class Orchestrator:
                 order.append(key)
                 tables[key] = []
             table = str(ref.get("table") or "")
-            if (table and table in in_schema and known[key].name == described
-                    and table not in tables[key]):
+            if table and table in in_schema.get(key[1], ()) and table not in tables[key]:
                 tables[key].append(table)
         return mention_note([Mention(known[k], tuple(tables[k])) for k in order], recorded)
 
@@ -3034,15 +3034,7 @@ class Orchestrator:
         # The schema BEFORE the record, because recording is what re-renders what the agent is told
         # and that render reads this file. One extra query at the end of a cascade the creator has
         # just spent three on, and the last one they wait for.
-        #
-        # Only for the Data Source the agent is DESCRIBED by, which is the first recorded one. This
-        # file holds a single source's tables while `_write_app_data` names the first Binding beside
-        # them, so writing a second source's tables here fuses the two into a sentence that is false
-        # in both halves (#33). A second Data Source is recorded and left undescribed instead — the
-        # app can still query it, since `serve.py` reads every Binding and each query names its own.
-        described = self._data_source_binding(self.project())
-        if described is None or described.id == source.id:
-            self._write_bound_schema(source, binding)
+        self._write_bound_schema(source, binding)
         return self._record(binding)
 
     def _write_bound_schema(self, source: DataSource, binding: Binding) -> None:
@@ -3066,34 +3058,81 @@ class Orchestrator:
                 log.info("bound schema: %s did not answer for columns — %s", source.name, e)
             except Exception:
                 log.exception("bound schema: could not read columns for %s", source.name)
-        self._write_generated(self.project().workspace.path / SCHEMA_PATH,
-                              render_schema(binding, columns))
+        self._write_schema_entries(self.project(), {binding.id: (binding, columns)})
+
+    def _write_schema_entries(self, project: Project, fresh: dict[str, tuple[Binding, list[Column]]],
+                              ) -> None:
+        """Re-render `.sage/schema.json` for every recorded Data Source, in Binding order (#33).
+
+        `fresh` carries the entries just read from a store; every other Binding keeps the columns
+        already on file. That is what makes a bind cost ONE query rather than one per bound source —
+        the others were read when they were bound and nothing about them has moved.
+
+        Bindings no longer recorded fall out by construction: the file is rebuilt from the manifest,
+        so an unbound Data Source cannot leave its tables behind for the agent to write queries
+        against.
+        """
+        recorded = [b for b in parse_bindings(project.workspace.read_bindings())
+                    if b.kind == KIND_DATA_SOURCE]
+        # A bind reads the store BEFORE it records the Binding, because recording is what re-renders
+        # what the agent is told and that render reads this file. So a freshly-read source may not be
+        # in the manifest yet — appended here, where `_record` is about to append it, or the entry is
+        # dropped and the next render asks the store a second time for what was just read.
+        recorded += [b for b, _ in fresh.values() if all(b.id != r.id for r in recorded)]
+        raw = self._read_json(project.workspace.path / SCHEMA_PATH)
+        on_file = parse_schema(raw)
+        entries: list[tuple[Binding, list[Column]]] = []
+        for b in recorded:
+            if b.id in fresh:
+                entries.append(fresh[b.id])
+                continue
+            # A pre-#33 file named one source and no id, and the Binding it described was the first
+            # one recorded — so its columns belong to whichever Binding is first here.
+            legacy = on_file.get(LEGACY_SOURCE) if b is recorded[0] else None
+            entries.append((b, on_file.get(b.id, legacy or [])))
+        self._write_generated(project.workspace.path / SCHEMA_PATH, render_schema(entries))
 
     # ---- Sample rows, only ever because someone asked (#16) ----
+
+    def recorded_tables(self) -> list[dict]:
+        """What the recorded schema holds, per bound Data Source, in Binding order (#33).
+
+        Read from `.sage/schema.json` rather than from any store, so asking costs nothing — every
+        table here was enumerated when its Scope was bound. Two callers want it and want it
+        differently: the sample picker offers one source's tables, the builder's `@` menu offers all
+        of them, each row labelled with the source it is inside.
+        """
+        project = self.project()
+        columns = parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH))
+        return [
+            {"id": b.id, "name": b.name, "display_name": b.display_name, "scope": b.scope,
+             "tables": list(dict.fromkeys(c.table for c in columns.get(b.id, [])))}
+            for b in parse_bindings(project.workspace.read_bindings()) if b.kind == KIND_DATA_SOURCE
+        ]
 
     def sample_candidates(self) -> dict:
         """The tables the creator could show the agent, and what is already shared.
 
-        The picker's data. Read from the recorded schema rather than the store, so opening the choice
-        costs nothing — the tables were enumerated when the Scope was bound.
+        The picker's data. Still one Data Source — the first — because sharing rows is a choice made
+        per source in the rail, and the picker is opened from a source's own row.
         """
         project = self.project()
         binding = self._data_source_binding(project)
+        sources = self.recorded_tables()
         if binding is None:
-            return {"bindable": False, "source": "", "tables": [], "shared": [], "sensitive": False}
-        recorded_raw = self._read_json(project.workspace.path / SCHEMA_PATH)
-        recorded = parse_schema(recorded_raw)
+            return {"bindable": False, "source": "", "tables": [], "shared": [], "sensitive": False,
+                    "sources": sources}
         sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
         return {
             "bindable": True,
             "scope": binding.scope,
-            # Which Resource these tables are actually from. Normally the Binding above — but the
-            # schema on disk describes the LAST Data Source bound, not the first (#33), so a caller
-            # that labels these tables has to be able to tell the two apart.
-            "source": str((recorded_raw or {}).get("source") or "") if isinstance(recorded_raw, dict) else "",
-            "tables": list(dict.fromkeys(c.table for c in recorded)),
+            "source": binding.name,
+            "tables": next((s["tables"] for s in sources if s["id"] == binding.id), []),
             "shared": [s.table for s in samples],
             "sensitive": sensitive,
+            # Every bound source, for the builder's `@` menu. Same file, same read — a second route
+            # would mean a second request on project open to answer from the manifest already here.
+            "sources": sources,
         }
 
     def share_sample_rows(self, tables: list[str], sensitive: bool, limit: int = 5) -> dict:
@@ -3811,28 +3850,44 @@ class Orchestrator:
         self._splice_agents(project, self._MODEL_API_BEGIN, self._MODEL_API_END,
                             model_api_agents_block(api))
 
-    def _reconcile_bound_schema(self, binding: Binding, schema_file: Path) -> None:
-        """Make the recorded schema describe the Binding the agent is told about, or hold none (#33).
+    def _reconcile_bound_schema(self, project: Project, bindings: list[Binding]) -> None:
+        """Give every recorded Data Source an entry read at the Scope it currently records (#33).
 
-        Binding a second Data Source and removing the first both move which Binding is described
-        without touching this file. The block below fuses the Binding's name and scope with whatever
-        tables the file holds, so a file left describing the other store tells the agent that one
-        warehouse contains another's tables — and instructs it to use those names exactly.
+        Three things move the file out of step without touching it: a Binding removed (its tables
+        must go), an app upgraded from the pre-#33 shape (one source, no id), and — the one that
+        costs — a Binding whose entry was never read, which is how a source bound while the store
+        was unreachable gets a second chance.
 
-        Re-derived when the store will answer, and dropped when it will not. Losing the columns costs
-        a re-pick of the Scope, which the block already has words for; keeping the wrong ones costs
-        queries written against tables that are not there.
+        Costs a query only for a source that has no entry at its recorded Scope. An entry that came
+        back EMPTY still counts as read, so a store that will not answer is asked once at bind time
+        rather than again at the end of every turn.
         """
-        if not schema_file.exists():
-            return   # nothing recorded yet: a bind writes it, and a Scope above a schema has none
-        recorded = self._read_json(schema_file)
-        if isinstance(recorded, dict) and str(recorded.get("source") or "") == binding.name:
+        raw = self._read_json(project.workspace.path / SCHEMA_PATH)
+        legacy = LEGACY_SOURCE in parse_schema(raw)
+        missing = [b for b in bindings if recorded_scope(raw, b.id) != b.scope]
+        # The first Binding of a pre-#33 file already has its columns; moving them onto its id is
+        # what `_write_schema_entries` does, and it costs nothing.
+        if legacy and bindings and missing and missing[0] is bindings[0]:
+            missing = missing[1:]
+        if not missing and not legacy and len(parse_schema(raw)) == len(bindings):
             return
-        try:
-            self._write_bound_schema(self._data_source(binding.id), binding)
-        except (LookupError, ResourceUnavailable):
-            log.info("bound schema: could not re-read %s, dropping the stale columns", binding.name)
-            schema_file.unlink(missing_ok=True)
+        fresh: dict[str, tuple[Binding, list[Column]]] = {}
+        for b in missing:
+            try:
+                self._read_columns_into(fresh, b)
+            except (LookupError, ResourceUnavailable) as e:
+                log.info("bound schema: could not read %s — %s", b.name, e)
+                fresh[b.id] = (b, [])
+        self._write_schema_entries(project, fresh)
+
+    def _read_columns_into(self, fresh: dict, binding: Binding) -> None:
+        """One source's columns, straight into the map `_write_schema_entries` takes."""
+        source = self._data_source(binding.id)
+        columns: list[Column] = []
+        if binding.schema:
+            columns = self._resources.list_columns(
+                source, binding.database or "", binding.schema, binding.table or "")
+        fresh[binding.id] = (binding, columns)
 
     _DATA_BEGIN = "<!-- sage:app-data:begin -->"
     _DATA_END = "<!-- sage:app-data:end -->"
@@ -3849,22 +3904,21 @@ class Orchestrator:
         and which queries the app will refuse — come from the Built App's own `serve.py`, so Sage
         cannot promise something the published app then rejects.
         """
-        bindings = parse_bindings(project.workspace.read_bindings())
-        binding = next((b for b in bindings if b.kind == KIND_DATA_SOURCE), None)
+        bindings = [b for b in parse_bindings(project.workspace.read_bindings())
+                    if b.kind == KIND_DATA_SOURCE]
         schema_file = project.workspace.path / SCHEMA_PATH
-        if binding is None:
+        if not bindings:
             # An unbound Data Source leaves no columns behind. A schema describing a store this app no
             # longer records would go on telling the agent to write queries against it.
             schema_file.unlink(missing_ok=True)
         else:
             self._wm.ensure_query_helper()
-            self._reconcile_bound_schema(binding, schema_file)
+            self._reconcile_bound_schema(project, bindings)
         template = self._wm.template
         module = serve_module(template)
+        columns = parse_schema(self._read_json(schema_file))
         block = data_agents_block(
-            binding,
-            parse_schema(self._read_json(schema_file)),
-            stranded_levels(template, binding) if binding is not None else None,
+            [BoundSource(b, columns.get(b.id, []), stranded_levels(template, b)) for b in bindings],
             catalog_problems(template, project.workspace.path),
             getattr(module, "_DEFAULT_MAX_ROWS", 5000),
             samples=self._shared_samples(project),

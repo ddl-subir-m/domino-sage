@@ -1824,14 +1824,10 @@ function sharedSampleTables() {
 // without a fetch. Refreshed by every call that changes it.
 let sharedSamplesCache = [];
 let sharedSamplesSensitive = false;
-// Every table inside the bound Scope, for the @ menu (#31). Enumerated when the Scope was bound and
-// read back out of `.sage/schema.json`, so the list costs no warehouse query — the same request the
-// rail already makes for shared samples carries it.
-let boundTablesCache = [];
-// The Resource those tables came out of. Normally the bound Data Source — but the schema on disk
-// describes the LAST source bound, not the first (#33), so the menu compares the two and offers no
-// table rows when they disagree, rather than labelling one source's tables with another's name.
-let boundTablesSource = '';
+// Every bound Data Source and the tables inside its Scope, for the @ menu (#31, #33). Enumerated
+// when each Scope was bound and read back out of `.sage/schema.json`, so the list costs no warehouse
+// query — the same request the rail already makes for shared samples carries it.
+let boundSourcesCache = [];   // [{ id, name, display_name, scope, tables: [] }]
 
 function sampleControl(d) {
   const wrap = document.createElement('div');
@@ -2134,16 +2130,14 @@ async function loadSharedSamples() {
   if (!(bindingsCache || []).some(b => b.kind === 'data_source')) {
     sharedSamplesCache = [];
     sharedSamplesSensitive = false;
-    boundTablesCache = [];
-    boundTablesSource = '';
+    boundSourcesCache = [];
     return;
   }
   const { ok, body } = await api('/api/project/samples');
   if (!ok) return;   // could not ask is not evidence nothing is shared; leave the row as it was
   sharedSamplesCache = body.shared || [];
   sharedSamplesSensitive = Boolean(body.sensitive);
-  boundTablesCache = body.tables || [];
-  boundTablesSource = body.source || '';
+  boundSourcesCache = body.sources || [];
   renderDataSources();
 }
 
@@ -4100,18 +4094,18 @@ function mentionCandidates() {
       ref: { kind: b.kind, id: b.id },
     };
   });
-  // One level deeper, and only this one: the tables inside the bound Scope. Flat rows rather than a
+  // One level deeper, and only this one: the tables inside each bound Scope. Flat rows rather than a
   // drill-down, because the menu has no modes — you type, it narrows — and a level to descend into
   // would mean Escape backs out instead of closing, and a filter that knows which level it is on.
-  // Nothing ABOVE the Scope is offered: those levels are not on disk, and reading them would cost a
+  // Nothing ABOVE a Scope is offered: those levels are not on disk, and reading them would cost a
   // warehouse query per keystroke for Resources this app has no schema for.
-  const source = (bindingsCache || []).find(b => b.kind === 'data_source');
-  const mine = source && source.name === boundTablesSource;   // see boundTablesSource (#33)
-  const tables = mine ? boundTablesCache.map(t => ({
-    token: t, label: `Table \u00b7 ${source.display_name}`,
-    title: `${t} \u2014 inside ${source.display_name}`,
-    ref: { kind: source.kind, id: source.id, table: t },
-  })) : [];
+  // Labelled by the source it is inside, since two stores in one app can hold a table of one name
+  // and the whole job of the row is to say which store this one is.
+  const tables = boundSourcesCache.flatMap(s => (s.tables || []).map(t => ({
+    token: t, label: `Table \u00b7 ${s.display_name}`,
+    title: `${t} \u2014 inside ${s.display_name}`,
+    ref: { kind: 'data_source', id: s.id, table: t },
+  })));
   return files.concat(resources, tables);
 }
 
@@ -4174,9 +4168,15 @@ function selectMention(idx) {
 
 // Is "@<name>" still standing in the prompt? One rule for both kinds of token, so a file and a
 // Resource can never disagree about what counts as a mention.
+//
+// A mention may END on punctuation, not only on a space: "summarise with @sonnet, then cluster with
+// @gpt-5.4." is how the sentence is actually written, and a comma that swallowed the reference would
+// drop it silently — the agent gets the word and not the Resource, which is the whole failure this
+// exists to remove. The name itself is still matched whole, so a longer token starting with a
+// shorter one's name does not match the shorter one.
 function mentionedIn(text, name) {
-  const re = new RegExp('(^|\\s)@' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?=\\s|$)');
-  return re.test(text);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('(^|\\s)@' + escaped + '(?=[\\s,.;:!?)\\]}\'"]|$)').test(text);
 }
 
 // Map "@<filename>" tokens still present in the prompt back to attached-file workspace paths.

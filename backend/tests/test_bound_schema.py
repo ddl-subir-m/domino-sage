@@ -23,6 +23,7 @@ from sage.resources.bound_schema import (
     INLINE_COLUMN_LIMIT,
     SAMPLES_PATH,
     SCHEMA_PATH,
+    BoundSource,
     agents_block,
     parse_samples,
     parse_schema,
@@ -52,9 +53,10 @@ def block_for(binding=SNOWFLAKE, columns=None, stranded=(), problems=(), max_row
     # `stranded` and `problems` pass through as None when that is what they are: None means "Sage
     # could not check", which renders differently from an empty list, so the helper must not flatten
     # the two into each other.
-    return agents_block(binding, list(columns or []),
-                        None if stranded is None else list(stranded),
-                        None if problems is None else list(problems), max_rows, samples=samples)
+    source = BoundSource(binding, list(columns or []),
+                         None if stranded is None else list(stranded))
+    return agents_block([source], None if problems is None else list(problems),
+                        max_rows, samples=samples)
 
 
 # ---- reading the columns, through the fake provider ----------------------------------------------
@@ -123,20 +125,21 @@ def test_the_columns_statement_asks_one_question_for_a_whole_schema():
 def test_the_recorded_schema_round_trips():
     columns = [Column("orders", "id", "int"), Column("orders", "total", "decimal"),
                Column("customers", "id", "int")]
-    written = render_schema(SNOWFLAKE, columns)
-    assert parse_schema(json.loads(written)) == columns
+    written = render_schema([(SNOWFLAKE, columns)])
+    assert parse_schema(json.loads(written)) == {SNOWFLAKE.id: columns}
 
 
 def test_the_record_carries_no_timestamp():
     # It is committed to the creator's own app repo, so a "read at" field would make every re-bind a
     # diff in a file whose content had not changed.
-    body = json.loads(render_schema(SNOWFLAKE, [Column("orders", "id", "int")]))
-    assert set(body) == {"source", "scope", "connector_type", "tables"}
+    body = json.loads(render_schema([(SNOWFLAKE, [Column("orders", "id", "int")])]))
+    assert set(body) == {"sources"}
+    assert set(body["sources"][0]) == {"id", "source", "scope", "connector_type", "tables"}
 
 
 def test_an_unreadable_record_is_no_schema_rather_than_a_guess():
-    assert parse_schema("{not json") == []
-    assert parse_schema(None) == []
+    assert parse_schema("{not json") == {}
+    assert parse_schema(None) == {}
 
 
 # ---- what the agent reads --------------------------------------------------------------------------
@@ -145,7 +148,7 @@ def test_an_unreadable_record_is_no_schema_rather_than_a_guess():
 def test_no_data_source_means_no_region_at_all():
     # Machinery for a store that is not there costs context every turn and invites an app built
     # around data it cannot reach.
-    assert agents_block(None, [], None, None, 5000) == ""
+    assert agents_block([], None, 5000) == ""
 
 
 def test_a_small_schema_is_written_out_in_full():
@@ -321,6 +324,12 @@ def orchestrator_on(tmp_path: Path):
     return orchestrator(tmp_path)
 
 
+def _entry(orch, binding_id: str) -> dict:
+    """One Data Source's entry in the recorded schema. The file holds one per bound source (#33)."""
+    body = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
+    return next(e for e in body["sources"] if e["id"] == binding_id)
+
+
 def workspace_of(orch) -> Path:
     return orch.project(start_preview=False).workspace.path
 
@@ -328,7 +337,7 @@ def workspace_of(orch) -> Path:
 def test_binding_a_scope_records_what_its_tables_hold(tmp_path: Path):
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS", "FCT_USAGE_DAILY")
-    recorded = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
+    recorded = _entry(orch, "ds-dwh")
     assert recorded["scope"] == "DWH.MARTS.FCT_USAGE_DAILY"
     assert [t["name"] for t in recorded["tables"]] == ["FCT_USAGE_DAILY"]
     assert {c["name"] for c in recorded["tables"][0]["columns"]} == {
@@ -363,8 +372,8 @@ def test_rebinding_to_another_schema_replaces_the_recorded_columns(tmp_path: Pat
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     orch.bind_data_source("ds-dwh", "DWH", "REPORTING")
-    recorded = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
-    assert [t["name"] for t in recorded["tables"]] == ["V_ARR_WATERFALL", "V_CUSTOMER_HEALTH"]
+    assert [t["name"] for t in _entry(orch, "ds-dwh")["tables"]] == ["V_ARR_WATERFALL",
+                                                                    "V_CUSTOMER_HEALTH"]
 
 
 def test_unbinding_takes_the_recorded_columns_with_it(tmp_path: Path):
@@ -386,7 +395,7 @@ def test_a_store_that_will_not_answer_still_records_the_binding(tmp_path: Path):
     orch._resources.list_columns = refuse
     entries = orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     assert [e["id"] for e in entries if e["kind"] == KIND_DATA_SOURCE] == ["ds-dwh"]
-    assert json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())["tables"] == []
+    assert _entry(orch, "ds-dwh")["tables"] == []
     assert "could not read" in (workspace_of(orch) / "AGENTS.md").read_text()
 
 
@@ -581,7 +590,7 @@ def test_the_picker_offers_the_tables_the_scope_recorded(tmp_path: Path):
 def test_an_app_with_no_data_source_has_nothing_to_offer(tmp_path: Path):
     orch = orchestrator(tmp_path)
     assert orch.sample_candidates() == {"bindable": False, "source": "", "tables": [], "shared": [],
-                                        "sensitive": False}
+                                        "sensitive": False, "sources": []}
 
 
 def test_a_reopened_session_relocks_for_rows_that_are_still_there(tmp_path: Path):
@@ -707,7 +716,7 @@ def test_an_app_with_no_data_source_is_told_none_of_this():
     # The region exists only for an app that reads a store. Describing an unreachable store to an app
     # that has none costs context on every turn and invites a screen built around data it cannot
     # reach — the same reason the rest of this block is conditional.
-    assert agents_block(None, [], None, None, 5000) == ""
+    assert agents_block([], None, 5000) == ""
 
 
 # ---- several Data Sources bound at once (#33) ---------------------------------------------------
@@ -722,53 +731,74 @@ def data_block(workspace: Path) -> str:
     return agents[b:e] if b != -1 and e != -1 else ""
 
 
-def test_a_second_data_source_does_not_take_over_the_recorded_schema(tmp_path: Path):
-    """The file holds one source's tables while the block names the FIRST Binding beside them. Let
-    the second source write it and the two fuse: the agent is told that Snowflake's `DWH.MARTS`
-    contains an MSSQL app's tables, and instructed to use those names exactly."""
+def test_every_bound_data_source_is_described_with_its_own_tables(tmp_path: Path):
+    """The point of binding two (#33): "one tab from @snowflake and another from @redshift" needs the
+    agent to know both stores. Each entry is keyed by the Binding id a query has to carry, so which
+    store a table is in survives into `.sage/queries.json`."""
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     orch.bind_data_source("ds-mssql", "underwriting", "dbo")
 
-    recorded = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
-    assert recorded["source"] == "Snowflake-Data-Warehouse"          # still the described one
-    assert [t["name"] for t in recorded["tables"]] == ["DIM_ACCOUNT", "DIM_DATE",
-                                                      "FCT_USAGE_DAILY", "FCT_SUBSCRIPTION_REVENUE"]
+    assert [t["name"] for t in _entry(orch, "ds-dwh")["tables"]] == [
+        "DIM_ACCOUNT", "DIM_DATE", "FCT_USAGE_DAILY", "FCT_SUBSCRIPTION_REVENUE"]
+    assert [t["name"] for t in _entry(orch, "ds-mssql")["tables"]] == ["policies", "claims", "quotes"]
+
     block = data_block(workspace_of(orch))
-    assert "Snowflake-Data-Warehouse" in block
-    assert "`claims`" not in block and "`policies`" not in block      # the other store's tables
+    assert '### Snowflake-Data-Warehouse — `"binding": "ds-dwh"`' in block
+    assert '### AWS_MSSQL — `"binding": "ds-mssql"`' in block
+    # The mistake that replaces "which columns" once there are two stores is "which store".
+    assert '`"ds-dwh"` for Snowflake-Data-Warehouse, `"ds-mssql"` for AWS_MSSQL' in block
 
 
-def test_removing_the_described_source_re_reads_the_one_promoted_behind_it(tmp_path: Path):
-    # The Binding the agent is told about moved without this file being touched. Left alone it would
-    # go on describing a store the app no longer records.
+def test_one_data_source_is_described_without_the_per_store_headings(tmp_path: Path):
+    # A heading per store, when there is one store, is structure that says nothing — and this block
+    # is re-read whole on every turn.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    block = data_block(workspace_of(orch))
+    assert "### Snowflake-Data-Warehouse" not in block
+    assert '- `binding` must be `"ds-dwh"`. That is this app\'s Data Source.' in block
+
+
+def test_removing_one_source_leaves_the_others_described(tmp_path: Path):
+    # Rebuilt from the manifest, so an unbound store cannot leave its tables behind — and the store
+    # that stays is not re-read for it, because nothing about that store moved.
     orch = orchestrator(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     orch.bind_data_source("ds-mssql", "underwriting", "dbo")
 
     orch.unbind("data_source", "ds-dwh")
 
-    recorded = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
-    assert recorded["source"] == "AWS_MSSQL"
-    assert [t["name"] for t in recorded["tables"]] == ["policies", "claims", "quotes"]
-    assert "underwriting.dbo" in data_block(workspace_of(orch))
-
-
-def test_a_store_that_will_not_answer_loses_its_columns_rather_than_keeping_the_wrong_ones(
-        tmp_path: Path, monkeypatch):
-    # Re-reading is what keeps the file honest, so a store that will not answer has to leave it with
-    # nothing. The block already has words for columns it does not know; it has none for wrong ones.
-    orch = orchestrator(tmp_path)
-    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.bind_data_source("ds-mssql", "underwriting", "dbo")
-
-    def gone(_source_id):
-        raise ResourceUnavailable("the listing did not answer")
-
-    monkeypatch.setattr(orch, "_data_source", gone)
-    orch.unbind("data_source", "ds-dwh")
-
-    assert not (workspace_of(orch) / SCHEMA_PATH).exists()
+    body = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
+    assert [e["id"] for e in body["sources"]] == ["ds-mssql"]
     block = data_block(workspace_of(orch))
-    assert "AWS_MSSQL" in block                 # the Binding still stands
-    assert "`FCT_USAGE_DAILY`" not in block     # the removed store's tables do not
+    assert "AWS_MSSQL" in block
+    assert "`FCT_USAGE_DAILY`" not in block
+
+
+def test_a_source_bound_while_its_store_was_down_is_asked_again_but_only_once(tmp_path: Path):
+    """An entry that came back EMPTY still counts as read. Without that, `_write_app_data` runs at
+    the end of every turn and would re-ask a store that is down on each one — turning an unreachable
+    warehouse into a tax on every build."""
+    orch = orchestrator(tmp_path)
+    calls = []
+    real = orch._resources.list_columns
+
+    def counted(*args, **kwargs):
+        calls.append(args[0].id)
+        raise ResourceUnavailable("did not answer: timeout")
+
+    orch._resources.list_columns = counted
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    assert _entry(orch, "ds-dwh")["tables"] == []
+    assert len(calls) == 1
+
+    orch._write_app_data(orch.project())      # what the end of every turn does
+    orch._write_app_data(orch.project())
+    assert len(calls) == 1                     # asked once, not once a turn
+
+    # And a Scope that MOVES is a different question, so it is asked again.
+    orch._resources.list_columns = real
+    orch.bind_data_source("ds-dwh", "DWH", "REPORTING")
+    assert [t["name"] for t in _entry(orch, "ds-dwh")["tables"]] == ["V_ARR_WATERFALL",
+                                                                    "V_CUSTOMER_HEALTH"]

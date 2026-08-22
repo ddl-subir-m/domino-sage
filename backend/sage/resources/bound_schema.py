@@ -20,6 +20,7 @@ so the rendering is testable apart from the I/O and the store.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 from .bindings import Binding
 from .provider import Column, SampleRows
@@ -41,31 +42,94 @@ INLINE_COLUMN_LIMIT = 80
 TABLE_NAME_LIMIT = 60
 
 
-def render_schema(binding: Binding, columns: list[Column]) -> str:
-    """`.sage/schema.json` — the record of what was read, in table order.
+@dataclass(frozen=True)
+class BoundSource:
+    """One Data Source this app reads, as the agent is told about it (#33).
+
+    Several, since a creator binds a warehouse and an app database because the app has a screen for
+    each — and `serve.py` was built for that: it loads every Binding and each query names the one it
+    reads. `stranded` is per source because whether a Scope travels as configuration is decided by
+    the connector, so two sources in one app can need differently-written SQL.
+    """
+
+    binding: Binding
+    columns: list[Column]
+    stranded: list[tuple[str, str]] | None = None
+
+
+def render_schema(sources: list[tuple[Binding, list[Column]]]) -> str:
+    """`.sage/schema.json` — what each bound Data Source holds, in Binding order.
 
     No timestamp, deliberately. This file is committed to the creator's own app repo, and a "read at"
     field would make every re-bind a diff in a file whose content had not changed.
+
+    Keyed by Binding id rather than by source name: an id is what a query's `binding` field carries,
+    and it is what survives a Data Source being renamed in Domino.
     """
-    tables: dict[str, list[dict]] = {}
-    for column in columns:
-        tables.setdefault(column.table, []).append({"name": column.name, "type": column.type})
-    body = {
-        "source": binding.name,
-        "scope": binding.scope,
-        "connector_type": binding.connector_type,
-        "tables": [{"name": name, "columns": cols} for name, cols in tables.items()],
-    }
+    body = {"sources": [
+        {
+            "id": binding.id,
+            "source": binding.name,
+            "scope": binding.scope,
+            "connector_type": binding.connector_type,
+            "tables": [{"name": name, "columns": [{"name": c.name, "type": c.type} for c in cols]}
+                       for name, cols in _by_table(columns).items()],
+        }
+        for binding, columns in sources
+    ]}
     return json.dumps(body, indent=2) + "\n"
 
 
-def parse_schema(raw: object) -> list[Column]:
-    """The recorded schema back as columns, in file order. Anything unreadable is no schema, which
-    renders as a region that says the columns are not known rather than one that invents them."""
+def _by_table(columns: list[Column]) -> dict[str, list[Column]]:
+    out: dict[str, list[Column]] = {}
+    for column in columns:
+        out.setdefault(column.table, []).append(column)
+    return out
+
+
+# Where the columns of a pre-#33 schema land. That file named one source and no id, and the Binding
+# it described was the first one recorded — so the caller, which knows the Bindings, moves them onto
+# that id. Keyed apart rather than guessed at here, because this function has no Binding list.
+LEGACY_SOURCE = ""
+
+
+def parse_schema(raw: object) -> dict[str, list[Column]]:
+    """The recorded schema back as columns per Binding id, in file order.
+
+    Anything unreadable is no schema at all, and the region then says the columns are not known
+    rather than inventing them. The pre-#33 shape — one source, no id — reads back under
+    `LEGACY_SOURCE`, since an app written by an older Sage must not lose its columns on upgrade.
+    """
     if not isinstance(raw, dict):
-        return []
+        return {}
+    if "sources" not in raw:
+        columns = _columns_of(raw)
+        return {LEGACY_SOURCE: columns} if columns else {}
+    out: dict[str, list[Column]] = {}
+    for entry in raw.get("sources") or []:
+        if isinstance(entry, dict) and str(entry.get("id") or ""):
+            out[str(entry["id"])] = _columns_of(entry)
+    return out
+
+
+def recorded_scope(raw: object, binding_id: str) -> str | None:
+    """The Scope the recorded schema was read at for one Binding, or None when it holds no entry.
+
+    What tells a schema that is merely old from one that is missing: a Binding whose Scope has moved
+    has an entry describing the wrong part of the store, and re-reading it costs a query, so the
+    caller has to be able to tell the two apart without one.
+    """
+    if not isinstance(raw, dict) or "sources" not in raw:
+        return None
+    for entry in raw.get("sources") or []:
+        if isinstance(entry, dict) and str(entry.get("id") or "") == binding_id:
+            return str(entry.get("scope") or "")
+    return None
+
+
+def _columns_of(entry: dict) -> list[Column]:
     out: list[Column] = []
-    for table in raw.get("tables") or []:
+    for table in entry.get("tables") or []:
         if not isinstance(table, dict):
             continue
         name = str(table.get("name") or "")
@@ -104,8 +168,7 @@ def parse_samples(raw: object) -> tuple[bool, list[SampleRows]]:
     return bool(raw.get("sensitive")), out
 
 
-def agents_block(binding: Binding | None, columns: list[Column],
-                 stranded: list[tuple[str, str]] | None, problems: list[str] | None,
+def agents_block(sources: list[BoundSource], problems: list[str] | None,
                  max_rows: int, *, samples: tuple[bool, list[str]] = (False, ())) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
@@ -117,17 +180,36 @@ def agents_block(binding: Binding | None, columns: list[Column],
     qualifies — or fails to qualify — table names without knowing which the connector needs. It sees
     the preview 404 and "fixes" a query that was correct. And it reaches for the store directly to
     see what is in a table, which is the one thing the creator has not agreed to.
+
+    Several sources get a section each, headed by the id a query has to carry, because the mistake
+    that replaces "which columns" once there are two stores is "which store" — and a query naming
+    the wrong Binding is refused at startup with a sentence about a Data Source the creator did pick.
+    One source reads exactly as it did before: a heading per store, when there is one store, is a
+    structure that says nothing and is re-read every turn.
     """
-    if binding is None:
+    if not sources:
         return ""
-    lines = [
-        "## The app's data", "",
-        _scope_sentence(binding), "",
-    ]
-    lines += _tables_section(columns)
+    lines = ["## The app's data", ""]
+    if len(sources) == 1:
+        one = sources[0]
+        lines += [_scope_sentence(one.binding), ""]
+        lines += _tables_section(one.columns)
+    else:
+        lines += [
+            (f"This app reads {len(sources)} Data Sources. Every query names the one it reads, so "
+             "the first thing to settle for any question is WHICH of these holds the answer:"), "",
+        ]
+        for source in sources:
+            lines += [
+                f"### {source.binding.display_name} — `\"binding\": \"{source.binding.id}\"`", "",
+                _scope_sentence(source.binding), "",
+            ]
+            lines += _tables_section(source.columns)
+            lines += [_scope_rule(source.binding, source.stranded,
+                                  source.columns[0].table if source.columns else "usage"), ""]
     # The example names one of this app's own tables. A generic `usage` reads as a placeholder the
     # agent has to translate, and the translation is exactly the step this block exists to remove.
-    lines += _how_to_ask(binding, stranded, max_rows, columns[0].table if columns else "usage")
+    lines += _how_to_ask(sources, max_rows)
     lines += _samples_section(*samples)
     lines += _problems_section(problems)
     return "\n".join(lines)
@@ -172,8 +254,19 @@ def _tables_section(columns: list[Column]) -> list[str]:
     return out
 
 
-def _how_to_ask(binding: Binding, stranded: list[tuple[str, str]] | None, max_rows: int,
-                table: str) -> list[str]:
+def _how_to_ask(sources: list[BoundSource], max_rows: int) -> list[str]:
+    first = sources[0]
+    table = first.columns[0].table if first.columns else "usage"
+    # Which store a query reads is per query, so with several it is a rule of its own rather than a
+    # constant to copy. The ids are repeated here beside the example even though each section above
+    # is headed by one: this is where the agent is looking while it writes the entry.
+    if len(sources) == 1:
+        which = [f'- `binding` must be `"{first.binding.id}"`. That is this app\'s Data Source.',
+                 _scope_rule(first.binding, first.stranded, table)]
+    else:
+        which = ["- `binding` says WHICH of this app's Data Sources the query reads: "
+                 + ", ".join(f'`"{s.binding.id}"` for {s.binding.display_name}' for s in sources)
+                 + ". Getting it wrong is not a slow query, it is a query the app refuses to run."]
     return [
         "### How this app asks for data", "",
         ("The app never sends SQL. It calls a query by NAME, and the statement lives in "
@@ -182,19 +275,18 @@ def _how_to_ask(binding: Binding, stranded: list[tuple[str, str]] | None, max_ro
         "[",
         "  {",
         '    "name": "usage_by_account",',
-        f'    "binding": "{binding.id}",',
-        (f'    "sql": "SELECT ... FROM {_qualified(table, stranded)} WHERE ... >= :since",'),
+        f'    "binding": "{first.binding.id}",',
+        (f'    "sql": "SELECT ... FROM {_qualified(table, first.stranded)} WHERE ... >= :since",'),
         '    "params": [{ "name": "since", "type": "date" }]',
         "  }",
         "]",
         "```", "",
-        f'- `binding` must be `"{binding.id}"`. That is this app\'s Data Source.',
+        *which,
         ("- Placeholders are `:name`. Every placeholder must be declared in `params`, and every "
          "declared parameter must appear in the statement — a mismatch makes the query unusable."),
         ("- A parameter's `type` is one of `string`, `int`, `float`, `bool`, `date`. A date value is "
          'written `YYYY-MM-DD`. Add `"enum": [...]` when the values are a fixed set, which is worth '
          "doing whenever they are."),
-        _scope_rule(binding, stranded, table),
         f"- One query answers at most {max_rows} rows. Aggregate in SQL rather than in the browser.",
         ("- **`.sage/queries.json` is yours to write** — the one file under `.sage/` that is. Keep it "
          "valid JSON; a catalog that will not parse leaves the app with no queries at all."), "",
@@ -225,8 +317,8 @@ def _how_to_ask(binding: Binding, stranded: list[tuple[str, str]] | None, max_ro
         ("- **Do not read the Data Source yourself.** No scripts, no SQL anywhere except "
          "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "
          "above is what you have; if it is not enough, ask the user."),
-        ("- **Do not edit or re-create `src/sageQuery.ts`.** Sage owns it, and which Data Source this "
-         "app reads is chosen in Sage, not in code."), "",
+        ("- **Do not edit or re-create `src/sageQuery.ts`.** Sage owns it, and which Data Sources "
+         "this app reads is chosen in Sage, not in code."), "",
     ]
 
 
