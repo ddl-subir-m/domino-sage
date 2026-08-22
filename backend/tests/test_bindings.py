@@ -482,16 +482,15 @@ def test_a_mention_of_an_alias_that_is_not_the_default_says_how_to_call_it():
     assert "do not rewire" not in note
 
 
-def test_a_mention_of_a_resource_the_app_is_not_wired_to_says_so():
-    # Still true of a Model API, which is one url and one token in the app's source (#34). Told
-    # nothing, the agent points the app at the mentioned one — a change Sage overwrites on the next
-    # Binding change, so the screen breaks later rather than now.
-    wired = Binding(KIND_MODEL_API, "id-churn", "churn-risk", "churn-risk")
+def test_a_mention_of_a_model_api_that_is_not_the_default_says_how_to_call_it():
+    # "score the rows in table xyz using @model-api-1 and rows in table abc using @model-api-2" is
+    # one request naming two models for two jobs (#34).
+    default = Binding(KIND_MODEL_API, "id-churn", "churn-risk", "churn-risk")
     other = Binding(KIND_MODEL_API, "id-fraud", "fraud-scorer", "fraud-scorer")
-    note = mention_note([Mention(other)], [wired, other])
-    assert "NOT the Model API this app calls" in note
-    assert "**churn-risk**" in note                 # names the one it IS wired to
-    assert "do not rewire it to this one" in note
+    note = mention_note([Mention(other)], [default, other])
+    assert 'pass `model: "fraud-scorer"`' in note
+    assert "The default stays **churn-risk**." in note
+    assert "do not rewire" not in note
 
 
 def test_a_kind_this_sage_does_not_know_is_still_mentionable():

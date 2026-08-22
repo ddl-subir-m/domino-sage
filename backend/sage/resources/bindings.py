@@ -165,10 +165,9 @@ def _what_the_app_does_with(b: Binding, first: Binding | None) -> str:
         return f'Queries read it by naming `"binding": "{b.id}"`.'
     if b.kind == KIND_MODEL_API:
         if first is None or first.key == b.key:
-            return "The Model API this app calls."
-        return (f"recorded, but NOT the Model API this app calls — that is **{first.display_name}**. "
-                f"The app holds one Model API's url and token, so do not rewire it to this one; if "
-                f"that is what the user wants, tell them to change it in the Resources rail.")
+            return "This app's default Model API — the one a call that names no model reaches."
+        return (f'Also callable by name — pass `model: "{b.display_name}"` for the predictions this '
+                f"request means for it. The default stays **{first.display_name}**.")
     return "recorded as used by this app."
 
 

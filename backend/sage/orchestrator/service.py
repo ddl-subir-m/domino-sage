@@ -67,7 +67,7 @@ from ..resources.model_api_snippet import parse_snippet
 from ..resources.pinned_model import CONFIG_PATH, agents_block, bound_aliases, render_config
 from ..resources.pinned_model_api import CONFIG_PATH as MODEL_API_CONFIG_PATH
 from ..resources.pinned_model_api import agents_block as model_api_agents_block
-from ..resources.pinned_model_api import pinned_model_api
+from ..resources.pinned_model_api import bound_model_apis
 from ..resources.pinned_model_api import render_config as render_model_api_config
 from ..resources.preflight import (
     SLOTS,
@@ -3840,15 +3840,15 @@ class Orchestrator:
         a function of what is on disk. A Binding whose credential has gone renders as no Model API,
         which is what `render_config` documents and what bind refuses to create in the first place.
         """
-        bindings = parse_bindings(project.workspace.read_bindings())
-        api = pinned_model_api(bindings)
-        credential = self._credentials(project).get(api.id) if api is not None else None
-        if api is not None:
+        apis = bound_model_apis(parse_bindings(project.workspace.read_bindings()))
+        store = self._credentials(project)
+        credentials = {a.id: c for a in apis if (c := store.get(a.id)) is not None}
+        if apis:
             self._wm.ensure_model_api_helper()
         self._write_generated(project.workspace.path / MODEL_API_CONFIG_PATH,
-                              render_model_api_config(api, credential))
+                              render_model_api_config(apis, credentials))
         self._splice_agents(project, self._MODEL_API_BEGIN, self._MODEL_API_END,
-                            model_api_agents_block(api))
+                            model_api_agents_block(apis, credentials))
 
     def _reconcile_bound_schema(self, project: Project, bindings: list[Binding]) -> None:
         """Give every recorded Data Source an entry read at the Scope it currently records (#33).

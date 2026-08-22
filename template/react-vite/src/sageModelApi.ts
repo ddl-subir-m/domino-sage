@@ -20,15 +20,46 @@
 // whenever the app's Resources change, and an edit here is overwritten.
 import { sageModelApiConfig } from "./sageModelApi.config";
 
-type Config = { name: string | null; url: string | null; token: string | null };
+type ModelApi = { name: string; url: string; token: string };
+type Config = {
+  name: string | null;
+  url: string | null;
+  token: string | null;
+  models?: ModelApi[];
+};
 
 // Widened on purpose, for the reason sageLlm.ts widens its own: the generated config annotates
 // nothing, so `url: null` would otherwise have type `null` and every comparison read as dead code.
 const config: Config = sageModelApiConfig;
 
+/** Every Model API this app may call, the first being its default. `name`/`url`/`token` repeat that
+ * first entry so a config written by a newer Sage still reads in an app whose helper predates the
+ * list — and so this helper reads a config written by an older one.
+ *
+ * Each entry carries its OWN token, and every one of them is in this bundle. Two models bound means
+ * two readable tokens: the same trade the file header describes, taken once per model. */
+const models: ModelApi[] = config.models?.length
+  ? config.models
+  : config.url && config.token
+    ? [{ name: config.name || "The model", url: config.url, token: config.token }]
+    : [];
+
 const NO_MODEL_API =
   "This app has no Model API yet. Whoever built it can add one in Sage: open the Resources panel " +
   "and choose Use on a Model API.";
+
+/** The Model API a call means, or null when it names one this app does not use. */
+function pick(name?: string): ModelApi | null {
+  if (!name) return models[0] || null;
+  return models.find((m) => m.name === name) || null;
+}
+
+function unknownModelApi(name: string): string {
+  const known = models.map((m) => m.name).join(", ");
+  return known
+    ? `This app is not set up to call the Model API ${name}. It calls: ${known}.`
+    : NO_MODEL_API;
+}
 
 /**
  * A failed prediction, with a `message` written for the viewer.
@@ -107,19 +138,30 @@ async function detailOf(res: Response): Promise<string | null> {
  *
  *     const result = await callModelApi({ score: 0.9 });
  *
+ * Pass `model` when this app uses more than one Model API and this call is for a particular one —
+ * the names are in `models` in `./sageModelApi.config`:
+ *
+ *     const risk = await callModelApi({ score: 0.9 }, { model: "fraud-scorer" });
+ *
+ * A name this app does not use is refused rather than sent to the default: two models take
+ * different inputs and mean different things, so a prediction from the wrong one is a wrong answer
+ * rendered as a right one.
+ *
  * Rejects with a `ModelApiError`. Show `error.message` to the viewer as it is, and `error.detail`
  * beneath it in monospace when it is set.
  */
 export async function callModelApi<T = unknown>(
   input: unknown,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; model?: string } = {},
 ): Promise<T> {
-  if (!config.url || !config.token) throw new ModelApiError(NO_MODEL_API);
-  const name = config.name || "The model";
+  if (!models.length) throw new ModelApiError(NO_MODEL_API);
+  const target = pick(opts.model);
+  if (!target) throw new ModelApiError(unknownModelApi(opts.model as string));
+  const name = target.name;
 
   let res: Response;
   try {
-    res = await fetch(config.url, {
+    res = await fetch(target.url, {
       method: "POST",
       // Explicit, and load-bearing: the model ingress answers `Allow-Origin: *` with no
       // `Allow-Credentials`, so a credentialed cross-origin request is refused by the browser
@@ -128,7 +170,7 @@ export async function callModelApi<T = unknown>(
       signal: opts.signal,
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Basic " + btoa(`${config.token}:${config.token}`),
+        Authorization: "Basic " + btoa(`${target.token}:${target.token}`),
       },
       body: JSON.stringify({ data: input }),
     });

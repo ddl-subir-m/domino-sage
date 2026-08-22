@@ -1347,7 +1347,7 @@ function modelApiUseButton(m) {
   // it again would do nothing, and a control that does nothing reads as broken.
   b.disabled = used || asking;
   b.title = used
-    ? 'This app already uses this Model API. To undo it, use Remove under “Used by this app” above.'
+    ? 'This app already uses this Model API. A build can call it by name — say which parts of the app should. To undo it, use Remove under “Used by this app” above.'
     : asking
       ? 'Paste the sample request below to finish adding this Model API.'
       : known
@@ -2199,13 +2199,13 @@ function bindingRow(b) {
   // to tell which one their app talks to, and the answer is not visible anywhere else in the product.
   const p = b.kind === 'model_api' ? pinnedModelApi() : pinnedAlias();
   const isPinned = !!p && p.kind === b.kind && p.id === b.id;
-  // Both pins are "the one the app calls", but they are called in different ways and a creator
-  // reading the row needs the difference: an Alias spends each viewer's own grant, a Model API is
-  // called with one shared token that ships inside the app.
+  // Both defaults are "the one a call that names no other reaches", but the two kinds are called in
+  // different ways and a creator reading the row needs the difference: an Alias spends each viewer's
+  // own grant, a Model API is called with one shared token that ships inside the app.
   const pin = !isPinned
     ? ''
     : b.kind === 'model_api'
-      ? `<span class="a-chip" title="The app sends its prediction requests to this Model API, using the access token you pasted. That token is built into the published app, so anyone who opens it can read it.">App’s Model API</span>`
+      ? `<span class="a-chip" title="The Model API a prediction reaches when it names no other. The app can call any Model API in this list — which one, where, is decided when you build. Each is called with the access token you pasted, and every one of those tokens is built into the published app, so anyone who opens it can read them.">App’s default Model API</span>`
       : `<span class="a-chip" title="The model a call reaches when it names no other. The app can call any LLM Alias in this list — which one, where, is decided when you build. Every call goes straight from each viewer’s browser under their own Domino identity.">App’s default model</span>`;
   // The label is the only part of the row that can shrink, so a chip beside it costs display-name
   // characters — enough that a stale Resource, the one a creator most needs to identify, is the row
@@ -2228,9 +2228,9 @@ function bindingRow(b) {
   btn.title = !isPinned
     ? 'Stop recording this app as using this Resource. Nothing else changes.'
     : b.kind === 'model_api'
-      ? 'Stop using this Model API. Its access token is taken out of the app, and calls to it start '
-        + 'failing with an explanation; the screens built around it stay. Sage keeps the token, so '
-        + 'adding this Model API back does not ask for it again.'
+      ? 'Stop using this Model API. Its access token is taken out of the app, and any call the app '
+        + 'makes to it starts failing with an explanation; the screens built around it stay. Sage '
+        + 'keeps the token, so adding this Model API back does not ask for it again.'
       : 'Stop using this LLM Alias. Any call the app makes to it starts failing with an explanation; the screens built around it stay.';
   btn.onclick = () => unbindResource(b.kind, b.id);
   row.appendChild(btn);

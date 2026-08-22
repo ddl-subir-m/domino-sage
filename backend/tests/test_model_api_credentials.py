@@ -28,7 +28,13 @@ from sage.resources.model_api_credentials import (
     verify_credential,
 )
 from sage.resources.model_api_snippet import parse_snippet
-from sage.resources.pinned_model_api import CONFIG_PATH, agents_block, pinned_model_api, render_config
+from sage.resources.pinned_model_api import (
+    CONFIG_PATH,
+    agents_block,
+    bound_model_apis,
+    pinned_model_api,
+    render_config,
+)
 from sage.resources.provider import FakeResourceProvider, LlmAlias, ModelApi
 from sage.router.models import ModelCatalog
 
@@ -237,29 +243,45 @@ def test_unreadable_json_reads_as_empty_rather_than_raising(tmp_path: Path):
 
 
 def test_the_generated_config_carries_the_url_and_token_and_warns_about_the_bundle():
-    text = render_config(Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk"), Credential(URL, TOKEN))
+    api = Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk")
+    text = render_config([api], {MODEL_ID: Credential(URL, TOKEN)})
     assert f'"{URL}"' in text and f'"{TOKEN}"' in text
     # The exposure is the whole reason this file is different from sageLlm.config.ts. Whoever opens
     # it later must not have to reconstruct why a secret is sitting in a committed file.
-    assert "CAN READ IT" in text
+    assert "CAN READ THEM" in text
 
 
 def test_a_binding_whose_credential_has_gone_renders_as_no_model_api():
-    text = render_config(Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk"), None)
+    # Dropped rather than listed with a null token: a call naming it would fail with nothing to say,
+    # while an app that does not list it at all sends the creator back to Sage, where the fix is.
+    text = render_config([Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk")], {})
     assert "name: null" in text and "url: null" in text and "token: null" in text
+    assert "models: []" in text
 
 
-def test_the_first_model_api_binding_wins_like_the_alias_pin():
+def test_the_first_model_api_binding_is_the_default_and_the_rest_are_callable():
+    """Both halves of #34, the Model API twin of the Alias rule: the app gains every model it is
+    bound to, while a call that names none goes on reaching the one it always did."""
     bindings = [
         Binding(KIND_MODEL_API, "first", "a", "a"),
         Binding(KIND_MODEL_API, "second", "b", "b"),
     ]
     assert pinned_model_api(bindings).id == "first"
+    assert [b.id for b in bound_model_apis(bindings)] == ["first", "second"]
+
+    text = render_config(bindings, {"first": Credential(URL, TOKEN), "second": Credential(URL, TOKEN)})
+    assert 'name: "a"' in text                               # the default did not move
+    assert text.count("token: ") == 3                        # one scalar + one per model
+    block = agents_block(bindings, {"first": Credential(URL, TOKEN), "second": Credential(URL, TOKEN)})
+    assert 'model: "b"' in block
+    assert "a prediction from the wrong one is a wrong answer rendered as a right one" in block
 
 
 def test_the_agents_block_is_empty_with_nothing_pinned_and_names_the_model_otherwise():
-    assert agents_block(None) == ""
-    block = agents_block(Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk"))
+    api = Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk")
+    assert agents_block([], {}) == ""
+    assert agents_block([api], {}) == ""      # bound, but its token has gone
+    block = agents_block([api], {MODEL_ID: Credential(URL, TOKEN)})
     assert "churn-risk" in block and "callModelApi" in block
     # The agent's two failure modes: writing its own fetch, and guessing an input shape no Model API
     # publishes. Both are addressed explicitly, so a regression in the wording is worth catching.
