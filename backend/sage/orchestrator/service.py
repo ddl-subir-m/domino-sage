@@ -61,7 +61,7 @@ from ..resources.model_api_credentials import (
     verify_credential,
 )
 from ..resources.model_api_snippet import parse_snippet
-from ..resources.pinned_model import CONFIG_PATH, agents_block, pinned_alias, render_config
+from ..resources.pinned_model import CONFIG_PATH, agents_block, bound_aliases, render_config
 from ..resources.pinned_model_api import CONFIG_PATH as MODEL_API_CONFIG_PATH
 from ..resources.pinned_model_api import agents_block as model_api_agents_block
 from ..resources.pinned_model_api import pinned_model_api
@@ -3784,12 +3784,12 @@ class Orchestrator:
         rewrite with identical content would still show up as a dirty file in the turn's tree
         comparison and in their git history.
         """
-        alias = pinned_alias(parse_bindings(project.workspace.read_bindings()))
-        if alias is not None:
+        aliases = bound_aliases(parse_bindings(project.workspace.read_bindings()))
+        if aliases:
             self._wm.ensure_llm_helper()
         self._write_generated(project.workspace.path / CONFIG_PATH,
-                              render_config(alias, self._browser_gateway_base, self._cost_project_label))
-        self._splice_agents(project, self._MODEL_BEGIN, self._MODEL_END, agents_block(alias))
+                              render_config(aliases, self._browser_gateway_base, self._cost_project_label))
+        self._splice_agents(project, self._MODEL_BEGIN, self._MODEL_END, agents_block(aliases))
 
     def _write_app_model_api(self, project: Project) -> None:
         """Pin the app's Model API into its own source, and tell the agent it is there (#9).

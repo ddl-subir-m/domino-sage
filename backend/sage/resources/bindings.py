@@ -143,9 +143,17 @@ def _scope_part(entry: dict, key: str) -> str | None:
 # others is a real request, but the agent has to be told the app is not wired to it: AGENTS.md
 # describes the wired one alone, so nothing else would say so.
 _KIND_TEXT = {
-    KIND_LLM_ALIAS: ("LLM Alias", "the model this app calls"),
+    KIND_LLM_ALIAS: ("LLM Alias", "this app's default model"),
     KIND_MODEL_API: ("Model API", "the Model API this app calls"),
     KIND_DATA_SOURCE: ("Data Source", "the Data Source this app queries"),
+}
+
+# What to say about a Binding of this kind that is not the first. An LLM Alias is callable by name
+# since #34, so naming one is a request the agent can act on and the note says how. The other two
+# still describe one Resource each, so naming another is a request the app cannot yet carry — and an
+# agent not told that writes a call with no config or no columns behind it.
+_KIND_OTHERS = {
+    KIND_LLM_ALIAS: "callable by name",
 }
 
 
@@ -180,6 +188,10 @@ def mention_note(mentions: list[Mention], recorded: list[Binding]) -> str:
             said = "recorded as used by this app."
         elif app.key == b.key:
             said = role[0].upper() + role[1:] + "."
+        elif b.kind in _KIND_OTHERS:
+            # The exact string, because that is what the call takes and a display name is not it.
+            said = (f"Also {_KIND_OTHERS[b.kind]} — pass `alias: \"{b.name}\"` for the calls this "
+                    f"request means for it. The default stays **{app.display_name}**.")
         else:
             said = (f"recorded, but NOT {role} — that is **{app.display_name}**. Which one the app "
                     f"uses is chosen in Sage, not in code, so do not rewire the app to this one; if "

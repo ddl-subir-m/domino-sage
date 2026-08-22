@@ -33,17 +33,57 @@ export type AskOptions = {
   temperature?: number;
   /** Abort the request — pass `AbortController.signal` to cancel on unmount. */
   signal?: AbortSignal;
+  /**
+   * Which model to ask, by Alias name — one of `models` in `./sageLlm.config`. Omit it and the
+   * app's default model answers, so a call written before this app used a second model is
+   * unchanged. An Alias this app is not recorded as using is refused rather than quietly swapped
+   * for the default: a summary that silently came from another model is a wrong answer nobody sees.
+   */
+  alias?: string;
 };
 
-type Config = { alias: string | null; displayName: string | null; base: string | null; project: string | null };
+type Model = { alias: string; displayName: string | null };
+type Config = {
+  alias: string | null;
+  displayName: string | null;
+  base: string | null;
+  project: string | null;
+  models?: Model[];
+};
 
 // Widened on purpose: the generated config annotates nothing, so `alias: null` would otherwise be
 // of type `null` and every comparison against a string would read as dead code.
 const config: Config = sageLlmConfig;
 
+/** Every Alias this app may call, the first being its default. `alias`/`displayName` are the same
+ * first entry, kept beside the list so a config written by a newer Sage still reads in an app whose
+ * helper predates the list — and so this helper reads a config written by an older one. */
+const models: Model[] = config.models?.length
+  ? config.models
+  : config.alias
+    ? [{ alias: config.alias, displayName: config.displayName }]
+    : [];
+
 const NO_MODEL =
   "This app has no language model yet. Whoever built it can add one in Sage: open the Resources " +
   "panel and choose Use on an LLM Alias.";
+
+/** The model a call means, or null when it names one this app does not use. */
+function pick(alias?: string): Model | null {
+  if (!alias) return models[0] || null;
+  return models.find((m) => m.alias === alias) || null;
+}
+
+function unknownModel(alias: string): string {
+  const known = models.map((m) => m.alias).join(", ");
+  return known
+    ? `This app is not set up to use the model ${alias}. It uses: ${known}.`
+    : NO_MODEL;
+}
+
+function labelOf(model: Model | null): string {
+  return model ? model.displayName || model.alias : "this app's model";
+}
 
 /** Cost attribution. All keys are `sage-`-namespaced because the gateway silently DROPS its
  * reserved ones (`user`, `model`, `alias`, `project`, `cost`, …) rather than rejecting them, so a
@@ -68,8 +108,8 @@ const CREDENTIALS: RequestCredentials = "include";
 /** One sentence for the viewer, per failure. A model call can fail for reasons that need opposite
  * responses — sign in again, ask for access, wait and retry — and "something went wrong" sends
  * everyone down the wrong one. */
-function httpMessage(status: number): string {
-  const model = config.displayName || config.alias || "this app's model";
+function httpMessage(status: number, called: Model | null = models[0] || null): string {
+  const model = labelOf(called);
   if (status === 401) return "Your Domino session has expired. Reload the page to sign in again.";
   if (status === 403) {
     return `Your Domino account cannot use ${model}. Ask a Domino administrator for access to it.`;
@@ -92,15 +132,17 @@ function httpMessage(status: number): string {
  * Resolved against `/v1/models`, the permission-filtered list the gateway resolves a call against,
  * so an Alias missing from it is one that will fail at request time.
  */
-export async function checkModel(): Promise<ModelStatus> {
-  if (!config.alias || !config.base) return { ok: false, message: NO_MODEL };
+export async function checkModel(alias?: string): Promise<ModelStatus> {
+  if (!config.base || !models.length) return { ok: false, message: NO_MODEL };
+  const model = pick(alias);
+  if (!model) return { ok: false, message: unknownModel(alias as string) };
   let res: Response;
   try {
     res = await fetch(endpoint("/models"), { credentials: CREDENTIALS });
   } catch {
     return { ok: false, message: "Domino's LLM Gateway is not answering. Check your connection and reload the page." };
   }
-  if (!res.ok) return { ok: false, message: httpMessage(res.status) };
+  if (!res.ok) return { ok: false, message: httpMessage(res.status, model) };
   let ids: string[];
   try {
     const body = await res.json();
@@ -111,12 +153,12 @@ export async function checkModel(): Promise<ModelStatus> {
     // means the session, not the gateway.
     return { ok: false, message: "Your Domino session has expired. Reload the page to sign in again." };
   }
-  if (!ids.includes(config.alias)) return { ok: false, message: httpMessage(403) };
-  return { ok: true, alias: config.alias, displayName: config.displayName || config.alias };
+  if (!ids.includes(model.alias)) return { ok: false, message: httpMessage(403, model) };
+  return { ok: true, alias: model.alias, displayName: labelOf(model) };
 }
 
 /**
- * Ask the app's model a question, and resolve with its whole answer.
+ * Ask one of this app's models a question, and resolve with its whole answer.
  *
  * Rejects with an `Error` whose `message` is written for the viewer — show it as-is.
  *
@@ -126,11 +168,18 @@ export async function checkModel(): Promise<ModelStatus> {
  *
  *     await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });
  *
+ * Pass `alias` when this app uses more than one model and this call is for a particular one —
+ * the names are in `models` in `./sageLlm.config`:
+ *
+ *     await askModel(messages, { alias: "gpt-5.4" });
+ *
  * Streaming is off unless `onToken` is given, because not every Alias offers it — the capability is
  * per-Alias in the gateway, and asking for a stream from one that has none fails the whole call.
  */
 export async function askModel(messages: ChatMessage[], opts: AskOptions = {}): Promise<string> {
-  if (!config.alias || !config.base) throw new Error(NO_MODEL);
+  if (!config.base || !models.length) throw new Error(NO_MODEL);
+  const model = pick(opts.alias);
+  if (!model) throw new Error(unknownModel(opts.alias as string));
   const stream = typeof opts.onToken === "function";
   let res: Response;
   try {
@@ -140,7 +189,7 @@ export async function askModel(messages: ChatMessage[], opts: AskOptions = {}): 
       signal: opts.signal,
       headers: { "Content-Type": "application/json", ...tagHeaders() },
       body: JSON.stringify({
-        model: config.alias,
+        model: model.alias,
         messages,
         stream,
         ...(opts.maxTokens === undefined ? {} : { max_tokens: opts.maxTokens }),
@@ -152,7 +201,7 @@ export async function askModel(messages: ChatMessage[], opts: AskOptions = {}): 
     if ((e as { name?: string })?.name === "AbortError") throw e;
     throw new Error("Domino's LLM Gateway is not answering. Check your connection and try again.");
   }
-  if (!res.ok) throw new Error(httpMessage(res.status));
+  if (!res.ok) throw new Error(httpMessage(res.status, model));
   return stream ? readStream(res, opts.onToken!) : readWhole(res);
 }
 

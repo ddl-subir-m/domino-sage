@@ -46,7 +46,7 @@ def _template(tmp: Path) -> Path:
     (t / "src").mkdir(parents=True, exist_ok=True)
     (t / "src" / "App.tsx").write_text("placeholder")
     (t / HELPER_PATH).write_text("// stub helper\n")
-    (t / CONFIG_PATH).write_text(render_config(None, None, None))
+    (t / CONFIG_PATH).write_text(render_config([], None, None))
     (t / "package.json").write_text("{}")
     (t / "AGENTS.md").write_text("# Template rules\n")
     return t
@@ -101,7 +101,7 @@ def test_a_binding_of_another_kind_is_skipped_rather_than_pinned():
 def test_the_config_pins_the_alias_name_not_its_id():
     # `name` is what a request's `model` field carries. Pinning the gateway's internal id would
     # compile fine and 404 on the viewer's first question.
-    text = render_config(_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6"), BASE, "my-app")
+    text = render_config([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], BASE, "my-app")
     assert 'alias: "sonnet"' in text
     assert 'displayName: "Claude Sonnet 4.6"' in text
     assert f'base: "{BASE}"' in text
@@ -110,7 +110,7 @@ def test_the_config_pins_the_alias_name_not_its_id():
 
 def test_no_alias_nulls_the_base_and_the_project_too():
     # A base with no alias would let the helper build a URL for a model that was never chosen.
-    text = render_config(None, BASE, "my-app")
+    text = render_config([], BASE, "my-app")
     for field in ("alias", "displayName", "base", "project"):
         assert f"{field}: null" in text
     assert BASE not in text and "my-app" not in text
@@ -119,7 +119,7 @@ def test_no_alias_nulls_the_base_and_the_project_too():
 def test_an_alias_named_with_a_quote_cannot_end_the_literal_early():
     # These strings come from a gateway's registration records, not from us.
     alias = _binding('weird"id', 'say "hi"', "back\\slash")
-    text = render_config(alias, BASE, "my-app")
+    text = render_config([alias], BASE, "my-app")
     assert r'alias: "say \"hi\""' in text
     assert r'displayName: "back\\slash"' in text
 
@@ -128,7 +128,7 @@ def test_the_no_model_config_is_byte_identical_to_the_one_shipped_in_the_templat
     # The template's copy is what a fresh app is born with, and this function is what every later
     # write produces. If they differ, seeding a project and then binding-and-unbinding an Alias
     # leaves a diff in the user's repo that nobody asked for.
-    assert render_config(None, None, None) == (REPO_TEMPLATE / CONFIG_PATH).read_text()
+    assert render_config([], None, None) == (REPO_TEMPLATE / CONFIG_PATH).read_text()
 
 
 # ---- what the agent is told -----------------------------------------------------------------------
@@ -136,11 +136,11 @@ def test_the_no_model_config_is_byte_identical_to_the_one_shipped_in_the_templat
 
 def test_the_agent_is_told_nothing_when_no_model_is_pinned():
     # An agent told about a model that is not there writes a call that cannot run.
-    assert agents_block(None) == ""
+    assert agents_block([]) == ""
 
 
 def test_the_agent_is_given_the_import_the_display_name_and_the_load_check():
-    block = agents_block(_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6"))
+    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")])
     assert "Claude Sonnet 4.6" in block
     assert 'from "./sageLlm"' in block
     assert "checkModel" in block          # the check whose absence only breaks for OTHER people
@@ -153,7 +153,7 @@ def test_the_agent_is_given_the_import_the_display_name_and_the_load_check():
 
 def test_a_fresh_project_starts_with_no_model_pinned(tmp_path):
     orch = _orch(tmp_path)
-    assert _config(orch) == render_config(None, None, None)
+    assert _config(orch) == render_config([], None, None)
     assert "sage:app-model" not in _agents(orch)
 
 
@@ -172,7 +172,7 @@ def test_unbinding_puts_the_app_back_to_having_no_model(tmp_path):
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-sonnet")
     orch.unbind("llm_alias", "id-sonnet")
-    assert _config(orch) == render_config(None, None, None)
+    assert _config(orch) == render_config([], None, None)
     assert "sage:app-model" not in _agents(orch)
 
 
@@ -185,13 +185,29 @@ def test_the_agents_block_is_replaced_not_repeated(tmp_path):
     assert "Claude Sonnet 4.6" not in _agents(orch)
 
 
-def test_adding_a_second_alias_does_not_change_what_the_app_calls(tmp_path):
-    # The rail disables Use on a bound row, but the endpoint is still callable, and a creator
-    # recording a second dependency must not have their working app repointed under them.
+def test_a_second_alias_becomes_callable_without_moving_the_default(tmp_path):
+    """Both halves of #34. The app gains the second model — the whole point of binding it — while
+    every call already written, which names no model, goes on reaching the one it always did."""
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-sonnet")
     orch.bind_llm_alias("id-qwen")
-    assert 'alias: "sonnet"' in _config(orch)
+    text = _config(orch)
+    assert 'alias: "sonnet"' in text                       # the default did not move
+    assert '{ alias: "sonnet", displayName: "Claude Sonnet 4.6" }' in text
+    assert '{ alias: "qwen-2-5", displayName: "Qwen 2.5 (Domino-hosted)" }' in text
+    block = _agents(orch)
+    assert 'alias: "qwen-2-5"' in block                    # the exact string a call takes
+    assert "the default, used by any call that names no model" in block
+
+
+def test_one_alias_is_described_without_the_selector(tmp_path):
+    # An app with one model gains nothing from a paragraph about choosing between models, and pays
+    # for it on every turn — this block is re-read whole each time.
+    orch = _orch(tmp_path)
+    orch.bind_llm_alias("id-sonnet")
+    block = _agents(orch)
+    assert "## The app's language model\n" in block
+    assert "Use only the Alias names listed above" not in block
 
 
 def test_re_binding_the_alias_already_in_use_is_a_no_op(tmp_path):

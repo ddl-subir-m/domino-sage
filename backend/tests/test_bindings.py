@@ -465,18 +465,31 @@ def test_a_mention_carries_the_kind_and_the_scope_not_just_the_name():
     note = mention_note([Mention(alias), Mention(source)], [alias, source])
     assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in note
     assert "Data Source **Snowflake-Data-Warehouse**, scoped to `DWH.MARTS.FCT_USAGE_DAILY`" in note
-    assert "The model this app calls" in note and "The Data Source this app queries" in note
+    assert "This app's default model" in note and "The Data Source this app queries" in note
+
+
+def test_a_mention_of_an_alias_that_is_not_the_default_says_how_to_call_it():
+    """The whole point of binding a second Alias (#34): "summarise with @sonnet, cluster with
+    @gpt5.4" is one prompt naming two models for two jobs. The note carries the exact string the
+    call takes, since a display name is not it — and says the default is unmoved, so every call the
+    request does NOT single out keeps meaning what it meant."""
+    default = Binding(KIND_LLM_ALIAS, "id-sonnet", "sonnet", "Claude Sonnet 4.6")
+    other = Binding(KIND_LLM_ALIAS, "id-gpt", "gpt-5.4", "gpt-5.4")
+    note = mention_note([Mention(other)], [default, other])
+    assert 'pass `alias: "gpt-5.4"`' in note
+    assert "The default stays **Claude Sonnet 4.6**." in note
+    assert "do not rewire" not in note
 
 
 def test_a_mention_of_a_resource_the_app_is_not_wired_to_says_so():
-    # A creator holding two Aliases can ask about either, but only the first is written into the
-    # app's source. Told nothing, the agent points the app at the mentioned one — a change AGENTS.md
-    # forbids and Sage would overwrite on the next Binding change.
-    wired = Binding(KIND_LLM_ALIAS, "id-sonnet", "sonnet", "Claude Sonnet 4.6")
-    other = Binding(KIND_LLM_ALIAS, "id-haiku", "haiku", "Claude Haiku 4.5")
+    # Still true of a Model API, which is one url and one token in the app's source (#34). Told
+    # nothing, the agent points the app at the mentioned one — a change Sage overwrites on the next
+    # Binding change, so the screen breaks later rather than now.
+    wired = Binding(KIND_MODEL_API, "id-churn", "churn-risk", "churn-risk")
+    other = Binding(KIND_MODEL_API, "id-fraud", "fraud-scorer", "fraud-scorer")
     note = mention_note([Mention(other)], [wired, other])
-    assert "NOT the model this app calls" in note
-    assert "**Claude Sonnet 4.6**" in note          # names the one it IS wired to
+    assert "NOT the Model API this app calls" in note
+    assert "**churn-risk**" in note                 # names the one it IS wired to
     assert "do not rewire the app to this one" in note
 
 

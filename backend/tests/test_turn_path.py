@@ -334,7 +334,7 @@ def test_a_mentioned_resource_reaches_the_agent_as_a_binding_not_a_word(tmp_path
 
     sent = oc.prompts[0]["text"]
     assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in sent
-    assert "The model this app calls" in sent
+    assert "This app's default model" in sent
     # After the request, not before it: the gate wraps the prompt in its own preamble, and a block
     # that landed in the middle would read as part of the instructions rather than as the reference.
     assert sent.index("@sonnet to summarise") < sent.index("LLM Alias")
