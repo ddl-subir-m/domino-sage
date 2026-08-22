@@ -3034,7 +3034,15 @@ class Orchestrator:
         # The schema BEFORE the record, because recording is what re-renders what the agent is told
         # and that render reads this file. One extra query at the end of a cascade the creator has
         # just spent three on, and the last one they wait for.
-        self._write_bound_schema(source, binding)
+        #
+        # Only for the Data Source the agent is DESCRIBED by, which is the first recorded one. This
+        # file holds a single source's tables while `_write_app_data` names the first Binding beside
+        # them, so writing a second source's tables here fuses the two into a sentence that is false
+        # in both halves (#33). A second Data Source is recorded and left undescribed instead — the
+        # app can still query it, since `serve.py` reads every Binding and each query names its own.
+        described = self._data_source_binding(self.project())
+        if described is None or described.id == source.id:
+            self._write_bound_schema(source, binding)
         return self._record(binding)
 
     def _write_bound_schema(self, source: DataSource, binding: Binding) -> None:
@@ -3803,6 +3811,29 @@ class Orchestrator:
         self._splice_agents(project, self._MODEL_API_BEGIN, self._MODEL_API_END,
                             model_api_agents_block(api))
 
+    def _reconcile_bound_schema(self, binding: Binding, schema_file: Path) -> None:
+        """Make the recorded schema describe the Binding the agent is told about, or hold none (#33).
+
+        Binding a second Data Source and removing the first both move which Binding is described
+        without touching this file. The block below fuses the Binding's name and scope with whatever
+        tables the file holds, so a file left describing the other store tells the agent that one
+        warehouse contains another's tables — and instructs it to use those names exactly.
+
+        Re-derived when the store will answer, and dropped when it will not. Losing the columns costs
+        a re-pick of the Scope, which the block already has words for; keeping the wrong ones costs
+        queries written against tables that are not there.
+        """
+        if not schema_file.exists():
+            return   # nothing recorded yet: a bind writes it, and a Scope above a schema has none
+        recorded = self._read_json(schema_file)
+        if isinstance(recorded, dict) and str(recorded.get("source") or "") == binding.name:
+            return
+        try:
+            self._write_bound_schema(self._data_source(binding.id), binding)
+        except (LookupError, ResourceUnavailable):
+            log.info("bound schema: could not re-read %s, dropping the stale columns", binding.name)
+            schema_file.unlink(missing_ok=True)
+
     _DATA_BEGIN = "<!-- sage:app-data:begin -->"
     _DATA_END = "<!-- sage:app-data:end -->"
 
@@ -3827,6 +3858,7 @@ class Orchestrator:
             schema_file.unlink(missing_ok=True)
         else:
             self._wm.ensure_query_helper()
+            self._reconcile_bound_schema(binding, schema_file)
         template = self._wm.template
         module = serve_module(template)
         block = data_agents_block(

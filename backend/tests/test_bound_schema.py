@@ -708,3 +708,67 @@ def test_an_app_with_no_data_source_is_told_none_of_this():
     # that has none costs context on every turn and invites a screen built around data it cannot
     # reach — the same reason the rest of this block is conditional.
     assert agents_block(None, [], None, None, 5000) == ""
+
+
+# ---- several Data Sources bound at once (#33) ---------------------------------------------------
+
+
+def data_block(workspace: Path) -> str:
+    """Sage's managed data region of AGENTS.md, alone. The rest of the file is the template's own
+    prose, which carries English words that a bare substring search mistakes for table names."""
+    agents = (workspace / "AGENTS.md").read_text()
+    begin, end = "<!-- sage:app-data:begin -->", "<!-- sage:app-data:end -->"
+    b, e = agents.find(begin), agents.find(end)
+    return agents[b:e] if b != -1 and e != -1 else ""
+
+
+def test_a_second_data_source_does_not_take_over_the_recorded_schema(tmp_path: Path):
+    """The file holds one source's tables while the block names the FIRST Binding beside them. Let
+    the second source write it and the two fuse: the agent is told that Snowflake's `DWH.MARTS`
+    contains an MSSQL app's tables, and instructed to use those names exactly."""
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.bind_data_source("ds-mssql", "underwriting", "dbo")
+
+    recorded = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
+    assert recorded["source"] == "Snowflake-Data-Warehouse"          # still the described one
+    assert [t["name"] for t in recorded["tables"]] == ["DIM_ACCOUNT", "DIM_DATE",
+                                                      "FCT_USAGE_DAILY", "FCT_SUBSCRIPTION_REVENUE"]
+    block = data_block(workspace_of(orch))
+    assert "Snowflake-Data-Warehouse" in block
+    assert "`claims`" not in block and "`policies`" not in block      # the other store's tables
+
+
+def test_removing_the_described_source_re_reads_the_one_promoted_behind_it(tmp_path: Path):
+    # The Binding the agent is told about moved without this file being touched. Left alone it would
+    # go on describing a store the app no longer records.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.bind_data_source("ds-mssql", "underwriting", "dbo")
+
+    orch.unbind("data_source", "ds-dwh")
+
+    recorded = json.loads((workspace_of(orch) / SCHEMA_PATH).read_text())
+    assert recorded["source"] == "AWS_MSSQL"
+    assert [t["name"] for t in recorded["tables"]] == ["policies", "claims", "quotes"]
+    assert "underwriting.dbo" in data_block(workspace_of(orch))
+
+
+def test_a_store_that_will_not_answer_loses_its_columns_rather_than_keeping_the_wrong_ones(
+        tmp_path: Path, monkeypatch):
+    # Re-reading is what keeps the file honest, so a store that will not answer has to leave it with
+    # nothing. The block already has words for columns it does not know; it has none for wrong ones.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.bind_data_source("ds-mssql", "underwriting", "dbo")
+
+    def gone(_source_id):
+        raise ResourceUnavailable("the listing did not answer")
+
+    monkeypatch.setattr(orch, "_data_source", gone)
+    orch.unbind("data_source", "ds-dwh")
+
+    assert not (workspace_of(orch) / SCHEMA_PATH).exists()
+    block = data_block(workspace_of(orch))
+    assert "AWS_MSSQL" in block                 # the Binding still stands
+    assert "`FCT_USAGE_DAILY`" not in block     # the removed store's tables do not
