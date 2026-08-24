@@ -340,6 +340,30 @@ _INFO_ASK = re.compile(
     r"tradeoffs?|trade[\s-]offs?)\b",
 )
 
+# Conversational openers that carry no request of their own. Stripped before the lead rules read the
+# prompt, because every one of those rules looks at the FIRST word or anchors at ^ — so a single "ok"
+# in front pushed the real lead out of view. Observed live 2026-08-24: "ok what data is there in
+# @BigQuery_Demo" has no question mark and leads with "ok", so it was classified a build, gated, and
+# the answer was written into the user's app instead of said to them — #29's failure, another door.
+#
+# Curated, like the lead sets themselves. No entry here is a build verb or an interrogative lead, so
+# stripping can only expose a lead that was already in the sentence; it can never invent one. Only the
+# strict rules read the stripped text (_INFO_LEAD, _INFO_ASK, _PLAN_FIRST) — _looks_like_question's own
+# weak fallback still reads the raw prompt, so "ok do that" stays a build rather than becoming a
+# question on the strength of "do". Affirmatives are safe to list because a bare approval typed while a
+# plan is pending is caught by _looks_like_approval before any of this runs (see build_stream).
+_LEAD_FILLER = re.compile(
+    r"^(?:(?:ok(?:ay)?|so|now|well|alright|all\s+right|right|anyway|actually|also|and|but|"
+    r"hey|hi|hello|yes|yeah|yep|sure|cool|great|thanks|thank\s+you|"
+    r"btw|by\s+the\s+way|quick\s+question)[\s,.:;!-]+)+",
+    re.IGNORECASE,
+)
+
+
+def _strip_lead_filler(text: str) -> str:
+    """Drop conversational openers so the lead rules see the first REAL word of the prompt."""
+    return _LEAD_FILLER.sub("", text.strip())
+
 
 def _asks_about_a_change(prompt: str) -> bool:
     """True when a prompt asks us to DESCRIBE work rather than do it — "give me an architecture to add
@@ -348,7 +372,7 @@ def _asks_about_a_change(prompt: str) -> bool:
 
     Without this, a build verb anywhere in the sentence wins, so Ask mode refused the single most
     natural thing to type into it: a design question that happens to name the change it's about."""
-    text = prompt.strip().lower()
+    text = _strip_lead_filler(prompt.lower())
     words = re.findall(r"[a-z']+", text)
     # Apostrophes stripped so "what's the best way to add caching" leads with "whats", like "what".
     return bool(words) and (words[0].replace("'", "") in _INFO_LEAD
@@ -469,7 +493,7 @@ def _wants_plan(prompt: str) -> bool:
     flow" names no verb and is answered as prose rather than re-planning a feature that already exists.
     Erring toward the lighter deliverable is the right way to be wrong, and it is what stops a question
     about existing code from turning into a plan card nobody asked for."""
-    if _PLAN_FIRST.match((prompt or "").strip()):
+    if _PLAN_FIRST.match(_strip_lead_filler(prompt or "")):
         return True
     words = re.findall(r"[a-z']+", (prompt or "").lower())
     return (_asks_about_a_change(prompt)

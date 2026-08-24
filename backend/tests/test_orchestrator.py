@@ -649,6 +649,41 @@ def test_an_info_clause_after_a_build_verb_is_still_a_build(prompt):
     assert _looks_like_change_request(prompt) is True
 
 
+# A conversational opener pushed the real lead out of first position, and the lead rules only ever
+# looked at word zero. The first prompt is the live one from 2026-08-24, verbatim: it drew a plan card,
+# and the approved plan wrote the answer into the user's app as three read-only screens.
+@pytest.mark.parametrize("prompt", [
+    "ok what data is there in @BigQuery_Demo",
+    "so what columns does the orders table have",
+    "hey, how does the upload flow work",
+    "alright what is in this dataset",
+])
+def test_a_filler_opener_does_not_hide_the_question(prompt):
+    assert _looks_like_question(prompt) is True
+    assert _looks_like_change_request(prompt) is False  # still complementary
+
+
+# Stripping the opener must expose a lead, never invent one. "do" is a question lead but not an
+# information lead, so the weak fallback still reads the raw prompt and "ok do that" stays a build —
+# the conservative half of the rule is what keeps an ambiguous prompt in the gate.
+@pytest.mark.parametrize("prompt", [
+    "ok do that",
+    "ok build me a dashboard",
+    "so add a severity filter",
+    "right align the header",
+])
+def test_a_filler_opener_does_not_invent_a_question(prompt):
+    assert _looks_like_question(prompt) is False
+
+
+# The same blindness sat in front of the plan and architecture cards, which anchor at ^ for the same
+# reason: a leading "plan" IS the request.
+def test_a_filler_opener_does_not_hide_a_plan_or_architecture_request():
+    assert _wants_plan("ok plan this first") is True
+    assert _wants_plan("so, show me a step-by-step plan to add auth") is True
+    assert _wants_architecture("ok what's the architecture to add a real time queue") is True
+
+
 def test_approve_prompt_includes_plan_and_answers():
     p = _approve_prompt("## Plan\n1. do it", "cols: id, amount")
     assert "## Approved plan" in p and "1. do it" in p
