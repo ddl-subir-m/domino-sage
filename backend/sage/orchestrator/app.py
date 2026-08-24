@@ -54,7 +54,7 @@ from ..resources.provider import (
 from ..resources.publish_guard import PublishRefused
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
-from .service import AttachTooLarge, DataReferenced, Orchestrator, UploadUnavailable
+from .service import AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, UploadUnavailable
 
 _feedback = FeedbackRunner()
 
@@ -706,6 +706,17 @@ async def write_instructions(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "content must be a string"})
     orchestrator.write_instructions(project, content)
     return JSONResponse(content={"ok": True, "content": orchestrator.read_instructions(project)})
+
+
+@control_app.post("/api/project/reset")
+def reset_app() -> JSONResponse:
+    """Put the app code back to the starter template (#36). The user's attachments, Resources,
+    transcript and project instructions all survive — see Orchestrator.reset_app."""
+    try:
+        return JSONResponse(content=orchestrator.reset_app())
+    except ResetBusy:
+        return JSONResponse(status_code=409, content={
+            "error": "A build is running. Wait for it to finish or stop it, then reset."})
 
 
 @control_app.get("/api/assets")

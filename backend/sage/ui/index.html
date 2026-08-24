@@ -490,6 +490,11 @@
   .upload-btn { width: 100%; padding: 9px; border-radius: 9px; border: 0; background: var(--primary); color: #fff; font-weight: 600; font-size: 13px; }
   .upload-btn:hover:not(:disabled) { background: var(--primary-hover); }
   .upload-btn:disabled { opacity: .5; cursor: default; }
+  /* Destructive, so it does not wear the primary fill Upload wears — outlined in the lock colour,
+     which already means "this one is serious" everywhere else in the rail. */
+  .reset-btn { width: 100%; padding: 9px; border-radius: 9px; font-size: 13px; font-weight: 600; color: var(--lock); background: transparent; border: 1px solid color-mix(in srgb, var(--lock) 40%, var(--border)); }
+  .reset-btn:hover:not(:disabled) { border-color: var(--lock); background: color-mix(in srgb, var(--lock) 8%, transparent); }
+  .reset-btn:disabled { opacity: .5; cursor: default; }
   /* uploaded chip: flashes once on the just-uploaded row, then fades — not a permanent label */
   .a-chip.fresh { animation: chipfade 4s ease forwards; }
   @keyframes chipfade { 0%,70% { opacity: 1; } 100% { opacity: 0; } }
@@ -672,6 +677,11 @@
         <input id="asset-search" class="asset-search" type="search" placeholder="Search datasets & files…" oninput="onAssetSearch()" autocomplete="off" />
         <div id="assets" class="asset-list"><div class="hint">Loading datasets…</div></div>
         <div class="hint">Files are saved to your project and given to the agent at <code>public/data/…</code>. Deleting an upload removes its data; detaching a dataset file doesn't.</div>
+        <!-- Last in the rail on purpose: it is the one control here that throws work away, and it
+             should not sit where a hand reaching for Upload can find it (#36). -->
+        <div class="asset-group">Start over</div>
+        <button id="reset-btn" class="reset-btn" onclick="resetApp()">Reset app</button>
+        <div class="hint">Puts the code back to the starter template. Your attached files, Resources, and this conversation stay.</div>
       </div>
     </div>
   </aside>
@@ -2614,6 +2624,25 @@ async function uploadFile() {
   } finally { btn.disabled = false; btn.textContent = 'Upload file'; }
 }
 
+// Start over (#36). The one control in the rail that throws work away, so it confirms first and says
+// in the same breath what it does NOT take — the fear when you click this is losing the attachments
+// and the conversation, and both survive.
+async function resetApp() {
+  if (!active) return;
+  if (!confirm('Reset the app to the starter template?\n\nThe code you have built is removed and '
+             + 'can’t be recovered. Your attached files, Resources, and this conversation stay.')) return;
+  const btn = document.getElementById('reset-btn');
+  btn.disabled = true; btn.textContent = 'Resetting…';
+  const r = await api('/api/project/reset', { method: 'POST' });
+  btn.disabled = false; btn.textContent = 'Reset app';
+  if (!r.ok) { addStatus('err', '⚠️', esc(r.body.error || 'Could not reset the app')); return; }
+  addStatus('ok', '↺', 'App reset to the starter template. Your attachments, Resources and this '
+    + 'conversation are unchanged — describe what you want next and Sage will plan it.');
+  toggleRail();
+  refreshStatus();
+  loadFileTree();
+}
+
 async function deleteFile(destPath) {
   if (!active) return;
   if (!confirm('Delete this file? This removes it from your project data and can’t be undone.')) return;
@@ -3604,6 +3633,10 @@ function replayEvent(ev) {
   // in silence: the pill reappearing on its own is the kind of thing you have to be told about once,
   // or the next time a file goes missing you have no idea whether Sage is covering for it.
   else if (ev.type === 'attachments-restored') addStatus('warn', '⚠', restoredMsg(ev));
+  // "Start over" was asked for in the composer (#36). Replayed without a button, like ask-blocked
+  // above: an old message must not be able to reset the app on a reload nobody connected it to.
+  else if (ev.type === 'reset-offer') addStatus('warn', '⚠', esc(ev.message));
+  else if (ev.type === 'app-reset') addStatus('ok', '↺', 'App reset to the starter template.');
   // Replay renders the refusal without its Build-in-Auto button: the button starts a real build, and
   // an old message shouldn't be able to do that on a reload the user didn't connect it to.
   else if (ev.type === 'ask-blocked' || ev.type === 'ask-active') addStatus('warn', '⚠', esc(ev.message));
@@ -3621,6 +3654,14 @@ function replayEvent(ev) {
 // A change request typed in Ask mode, refused by the backend before it ran (see _ask_mode_refusal).
 // The refusal is only half the fix — the other half is running the thing the user actually asked for,
 // so the button switches to Auto and resends their exact words as a normal build turn.
+// The composer asked to start over (#36). Same shape as askBlocked: the message, plus the one-click
+// way to actually do it — the button runs the real reset, which confirms for itself before it acts.
+function resetOffered(ev) {
+  const s = addStatus('warn', '⚠', `${esc(ev.message)} <button class="link-btn">Reset app</button>`);
+  const b = s && s.querySelector('.link-btn');
+  if (b) b.onclick = () => { b.disabled = true; resetApp().finally(() => { b.disabled = false; }); };
+}
+
 function askBlocked(ev) {
   const s = addStatus('warn', '⚠', `${esc(ev.message)} <button class="link-btn">Build it in Auto</button>`);
   const b = s && s.querySelector('.link-btn');
@@ -3755,6 +3796,7 @@ function renderEvent(ev, turnStart) {
   else if (ev.type === 'done') { stopWorking(); settlePhases(ev.ok); previewNote(''); if (!GATE_DECISIONS.has(ev.decision)) addDivider(ev.ok ? '' : 'err', ev.decision === 'answered' ? 'Answered' : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`)); refreshPreview(); }
   else if (ev.type === 'data-leak') { addStatus('warn', '⚠', leakMsg(ev)); trail(); }
   else if (ev.type === 'ask-blocked') { stopWorking(); askBlocked(ev); trail(); }
+  else if (ev.type === 'reset-offer') { stopWorking(); resetOffered(ev); trail(); }
   else if (ev.type === 'ask-active') { addStatus('warn', '⚠', esc(ev.message)); trail(); }
   else if (ev.type === 'saved') { renderSaved(ev); }
   else if (ev.type === 'phase') { buildPhase = ev.phase; if (working) setWorking(workLabel()); refreshStatus(); }

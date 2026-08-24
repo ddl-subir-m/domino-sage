@@ -131,6 +131,7 @@ _MODE_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan", Mode.IMPLEMENT: "sa
 _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
+    "reset-offer", "app-reset",
 })
 
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
@@ -143,6 +144,12 @@ _SERVER_SCRIPT = "serve.py"
 # case-insensitively; anything else means the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
 _FAILED_STATES = frozenset({"failed", "error"})
+
+
+class ResetBusy(Exception):
+    """A reset was asked for while a turn was already streaming. Same rule as a build: one operation
+    owns the working tree at a time, and a reset under a live turn would pull the files out from
+    under it."""
 
 
 class AttachTooLarge(Exception):
@@ -520,6 +527,33 @@ def _looks_like_question(prompt: str) -> bool:
     if any(w in _BUILD_VERB for w in words):
         return False
     return words[0] in _QUESTION_LEAD or text.endswith("?")
+
+
+# Asking to throw the app away and start over (#36). Two shapes, both requiring the WHOLE app as the
+# object: "start over"/"start from scratch" as a standalone phrase, or a removal verb reaching a
+# whole-app noun ("delete everything", "wipe the app", "remove everything you have built").
+#
+# The match does NOT reset anything. It replies with the control and stops the turn, because a reset
+# is destructive and a heuristic is the wrong thing to put in front of one — that is the shape of #29,
+# where a misread prompt wrote an answer into the user's app. Erring wide is therefore cheap here: the
+# worst a false positive costs is one turn that says "there's a button for this", which is a sentence,
+# not a deleted app. A false NEGATIVE costs nothing new either — the request falls through and builds
+# exactly as it did before this existed.
+_RESET_PHRASE = re.compile(
+    r"\bstart(?:ing)?\s+(?:over|again|from\s+scratch)\b"
+    r"|\b(?:rebuild|build|redo|start|do)\s+(?:it|this|the\s+app|everything)?\s*"
+    r"(?:over\s+)?from\s+scratch\b"
+    r"|\b(?:delete|remove|clear|wipe|scrap|throw\s+away|get\s+rid\s+of)\s+"
+    r"(?:all\s+of\s+)?(?:the\s+|this\s+|my\s+|your\s+)?"
+    r"(?:everything|the\s+whole\s+app|the\s+entire\s+app|the\s+app|it\s+all|all\s+of\s+it)\b"
+    r"|\breset\s+(?:the\s+|this\s+|my\s+)?app\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_to_reset(prompt: str) -> bool:
+    """True when the prompt asks for the app to be thrown away and started over."""
+    return bool(_RESET_PHRASE.search(_strip_lead_filler(prompt or "")))
 
 
 def _looks_like_change_request(prompt: str) -> bool:
@@ -1433,6 +1467,12 @@ class Orchestrator:
                 yield {"type": "plan-stale", "note": "Approved in chat — building this plan."}
                 yield from self._approve_locked(user_text=prompt)
                 return
+            # Before the Ask check and the gate: "remove everything you have built" is a change
+            # request and a build request by every rule below, which is exactly how it used to reach
+            # the build agent and come back as a page ABOUT starting over.
+            if _asks_to_reset(prompt):
+                yield from self._reset_offer(prompt)
+                return
             if (self.project().control.snapshot().mode is Mode.ASK
                     and _looks_like_change_request(prompt)):
                 yield from self._ask_mode_refusal(prompt)
@@ -1460,6 +1500,37 @@ class Orchestrator:
             self._write_app_data(self.project())
         except Exception:
             log.exception("app data: could not re-check the query catalog")
+
+    def reset_app(self) -> dict:
+        """Put the app code back to the starter template, keeping the user's setup (#36).
+
+        Serialized on the turn lock like any build: this rewrites the working tree, and doing that
+        under a streaming turn would pull the files out from under it.
+
+        Everything the user set up survives — attachments, Bindings, the transcript, and their project
+        instructions, which are re-spliced because AGENTS.md itself is re-seeded from the template.
+        The `built` flag is cleared with it, so the next build request is gated and planned the way a
+        first build is: the app really is new again, and approving a plan for it is the point.
+
+        The transcript survives on purpose (that was the call), so it gets a line saying the reset
+        happened. Without one, the history the agent greps still describes an app that is gone, and
+        the next turn would build from a record of code it can no longer read."""
+        if not self._turn_lock.acquire(blocking=False):
+            raise ResetBusy()
+        try:
+            project = self.project()
+            instructions = self.read_instructions(project)
+            self._wm.reset()
+            self.write_instructions(project, instructions)
+            self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
+            settings = project.workspace.read_settings()
+            settings.pop("built", None)
+            project.workspace.write_settings(settings)
+            project.workspace.append_history({"type": "app-reset"})
+            project.workspace.render_history_md()
+            return {"ok": True, "status": project.status()}
+        finally:
+            self._turn_lock.release()
 
     def _restore_attachments(self) -> None:
         """Put back any attachment the turn just deleted (#37).
@@ -1554,6 +1625,29 @@ class Orchestrator:
                    {"type": "done", "ok": False, "decision": "ask mode (read-only)"}):
             project.workspace.append_history(ev)
             if ev["type"] != "user":  # the composer already rendered the user's own bubble
+                yield ev
+
+    def _reset_offer(self, prompt: str):
+        """Events for "start over" — the control, not the reset (#36).
+
+        Deliberately does not act. A reset throws the app away, and putting a destructive action
+        behind a phrase heuristic is the shape of #29: one misread prompt and the user loses work they
+        never asked to lose. So the turn stops before any inference and hands back the button, which
+        confirms before it runs.
+
+        Stopping it here is already most of the fix. This request used to reach the build agent, and a
+        build agent builds — asked to remove everything it had built, it wrote a landing page saying
+        "Ready to rebuild from scratch", which is the most literal thing those words describe."""
+        project = self.project()
+        message = ("Starting over is its own action, not a build — a build agent asked to remove "
+                   "everything writes you a page about removing everything. Use Reset app under + to "
+                   "put the code back to the starter template. Your attached files, Resources, and "
+                   "this conversation all stay.")
+        for ev in ({"type": "user", "text": prompt},
+                   {"type": "reset-offer", "prompt": prompt, "message": message},
+                   {"type": "done", "ok": False, "decision": "reset offered"}):
+            project.workspace.append_history(ev)
+            if ev["type"] != "user":
                 yield ev
 
     def _busy_refusal(self):

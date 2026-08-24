@@ -24,6 +24,18 @@ from pathlib import Path
 _IGNORE = shutil.ignore_patterns("node_modules", "dist", ".git", ".DS_Store", "__pycache__")
 # Top-level template entries skipped when seeding (linked or repo-owned, not template content).
 _SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store", "__pycache__"}
+# Reset (#36) keeps what the user set up and replaces what a build produced. Top-level entries that
+# are not the app: Sage's own record, the project's real git history, and the warm dependency link.
+_RESET_KEEP = {".git", ".sage", "node_modules"}
+# Kept by path rather than by top-level name: `public/` is template content, but `public/data/` holds
+# the files the user attached, and taking those would put them back in the builder attaching again.
+_RESET_KEEP_NESTED = (Path("public") / "data",)
+# Sage metadata that belongs to the APP, so it goes when the app does. queries.json is the app's SQL;
+# plan.md and architecture.md both describe the code being removed, and AGENTS.md tells the agent
+# plan.md is the live plan — a stale one would aim the next turn at an app that is gone.
+_RESET_CLEAR = (Path(".sage") / "queries.json",
+                Path(".sage") / "plan.md",
+                Path(".sage") / "architecture.md")
 # Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
 _DEPS_SENTINEL = Path(".bin") / "vite"
 # What Domino runs to serve a published App: the entry script, and the Python server it execs
@@ -367,6 +379,60 @@ class WorkspaceManager:
     @property
     def path(self) -> Path:
         return self._dir
+
+    def reset(self) -> None:
+        """Put the app code back to the starter template, keeping everything that is the user's (#36).
+
+        `ensure` cannot do this: it is get-or-seed and skips every entry that already exists, so on a
+        built workspace it is a no-op. Starting over needed its own operation, and until it had one
+        "rebuild this from scratch" was only a sentence handed to the build agent — which built the
+        most literal thing those words describe, a page about rebuilding.
+
+        What survives is what the user set up rather than what a build produced: `.sage/` (history,
+        settings, the attachment and Binding manifests), `public/data/` (the files they attached), the
+        project's own `.git`, and the warm `node_modules` link. What goes is the app: every other
+        top-level entry, re-seeded from the template.
+
+        `.sage/queries.json` goes with it — it is the app's SQL, written by the agent, and an app that
+        no longer exists has no queries. So do `plan.md` and `architecture.md`: both describe the app
+        that was just removed, and AGENTS.md tells the agent plan.md is the LIVE plan, so leaving one
+        behind would point the next turn at a design for code that is gone.
+
+        AGENTS.md is re-seeded like any other template file, so the caller is responsible for
+        splicing the user's project instructions back into it (see Orchestrator.reset_app)."""
+        keep = _RESET_KEEP | {p.parts[0] for p in _RESET_KEEP_NESTED}
+        for item in self._dir.iterdir():
+            if item.name in keep:
+                continue
+            if item.is_dir() and not item.is_symlink():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink(missing_ok=True)
+        # A kept top-level dir is emptied of everything but the nested path that earned it its place:
+        # `public/` is template content, `public/data/` is the user's attachments living inside it.
+        for nested in _RESET_KEEP_NESTED:
+            root = self._dir / nested.parts[0]
+            if not root.is_dir():
+                continue
+            for item in root.iterdir():
+                if item.name == nested.parts[1]:
+                    continue
+                if item.is_dir() and not item.is_symlink():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+        for rel in _RESET_CLEAR:
+            (self._dir / rel).unlink(missing_ok=True)
+        for item in self._template.iterdir():
+            if item.name in _SEED_SKIP:
+                continue
+            dest = self._dir / item.name
+            if item.is_dir():
+                # dirs_exist_ok: `public/` is still standing because it holds the attachments.
+                shutil.copytree(item, dest, ignore=_IGNORE, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, dest)
+        self.link_warm_deps()
 
     def ensure(self, project_id: str) -> Workspace:
         """Get-or-seed the bound workspace. Idempotent: seeds the template in place only when the
