@@ -1,6 +1,9 @@
 """Feedback runner parsing + circuit breaker logic (Step 5)."""
+import json
+from pathlib import Path
+
 from sage.feedback.circuit_breaker import CircuitBreaker
-from sage.feedback.runner import FeedbackError, FeedbackReport, parse_tsc
+from sage.feedback.runner import FeedbackError, FeedbackReport, FeedbackRunner, parse_tsc
 
 
 def test_parse_tsc_extracts_errors():
@@ -45,3 +48,19 @@ def test_breaker_time_budget():
     assert b.record("a", resolved=False).action == "continue"
     t[0] = 11.0
     assert b.record("b", resolved=False).action == "stop"
+
+
+def test_implement_prompt_names_the_config_the_gate_checks():
+    """The agent's own typecheck has to check what Sage checks (#41).
+
+    The template's root `tsconfig.json` is a references-only stub with no inputs of its own, so
+    `tsc -p tsconfig.json` compiles zero files and exits 0 however broken the app is. The implement
+    prompt tells the agent to verify its edits; left without a config name the agent reaches for
+    that root file, believes a vacuous pass, and ends the turn on code the gate then rejects —
+    costing the extra turn `run_feedback_loop` spends feeding the errors back.
+
+    Pinned to `FeedbackRunner`'s own default so the two cannot drift apart again.
+    """
+    config = json.loads((Path(__file__).resolve().parents[2] / "opencode.json").read_text())
+    prompt = config["agent"]["sage-implement"]["prompt"]
+    assert FeedbackRunner()._tsconfig in prompt
