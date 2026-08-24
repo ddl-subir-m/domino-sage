@@ -15,10 +15,12 @@ keepalive that never left the process.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 import pytest
@@ -108,8 +110,9 @@ def test_the_turns_own_events_still_arrive_in_order():
 
 
 def test_a_keepalive_is_a_comment_and_not_an_event():
-    # `: ` prefixed lines are ignored by every SSE parser, which is why this can be added without the
-    # UI's renderEvent learning anything. A `data:` frame would reach it as an unknown event type.
+    # `: ` prefixed lines are what every SSE parser ignores, so renderEvent never sees one. That is
+    # the parser's job, not a free pass: runStream hand-rolls its own and had to be taught to skip
+    # them (see below). A `data:` frame would reach renderEvent as an unknown event type.
     def events():
         yield {"type": "done", "ok": True}
 
@@ -132,3 +135,45 @@ def test_a_turn_that_raises_still_reports_the_error():
 
     assert '"type": "error"' in body
     assert "RuntimeError: opencode fell over" in body
+
+
+# ---- The other end of the wire ---------------------------------------------------------------
+
+UI = (Path(__file__).resolve().parents[1] / "sage" / "ui" / "index.html").read_text()
+
+
+def _frames(raw: str) -> list[str]:
+    """Split a stream the way runStream does, so a frame here is a frame there."""
+    frames = raw.split("\n\n")
+    frames.pop()          # the incomplete tail runStream keeps buffered
+    return frames
+
+
+def test_the_browser_skips_a_keepalive_instead_of_reading_it_as_an_event():
+    """Adding the keepalives made the very symptom they were added to cure, for a week.
+
+    runStream fed every frame to JSON.parse. A `: keepalive` is not JSON, so it threw — and the only
+    catch around that loop treats anything thrown as the socket dying, which is what prints "Lost the
+    connection to this build — it's still running". So a build went perfectly quiet for 15s, got a
+    keepalive, and reported itself lost. Refreshing showed the finished app, because nothing was ever
+    actually wrong (live, 2026-08-24).
+
+    This asserts the two halves agree rather than either alone: what `_turn_sse` puts on the wire, and
+    the rule runStream uses to decide a frame is readable.
+    """
+    frame = _frames(ka.KEEPALIVE.decode())[0]
+    assert not frame.startswith("data: "), (
+        "the keepalive now looks like an event frame, so the browser will try to parse it")
+
+    loop = UI[UI.index("const frames = buf.split"):UI.index("renderEvent(ev, turnStart)")]
+    assert "if (!f.startsWith('data: ')) continue;" in loop, (
+        "runStream parses frames it wasn't handed as data — a keepalive will reach JSON.parse")
+
+
+def test_a_real_event_survives_the_skip():
+    # The guard has to let events through, and it is the same one-line rule that could exclude them
+    # all: a `data:` written without the space, or a trim before the check, and the build renders
+    # nothing at all while looking perfectly healthy.
+    frame = _frames('data: {"type": "done", "ok": true}\n\n')[0]
+    assert frame.startswith("data: ")
+    assert json.loads(frame[len("data: "):]) == {"type": "done", "ok": True}
