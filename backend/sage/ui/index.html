@@ -205,6 +205,9 @@
   .pill.sensitive { border-color: color-mix(in srgb, var(--lock) 35%, var(--border)); }
   .pill .px { border: 0; background: transparent; color: var(--faint); cursor: pointer; font-size: 13px; line-height: 1; padding: 1px 3px; border-radius: 5px; }
   .pill .px:hover { color: var(--text); background: var(--border); }
+  /* A bound Resource, not an attached file: tinted, and with no "×" — it is unbound in the rail. */
+  .pill.resource { padding-right: 9px; border-color: color-mix(in srgb, var(--primary) 30%, var(--border)); background: color-mix(in srgb, var(--primary) 6%, var(--surface-2)); }
+  .pill .pkind { flex: 0 0 auto; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
   .composer-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px 10px; }
   .bar-left, .bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .bar-right { margin-left: auto; }
@@ -262,7 +265,10 @@
   .mm-item {
     display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-radius: 7px; cursor: pointer;
   }
-  .mm-item.active, .mm-item:hover { background: var(--surface-2); }
+  .mm-item:hover { background: var(--surface-2); }
+  /* The keyboard highlight must not look like the pointer highlight. They shared one rule, so an
+     arrow key that HAD moved the selection still read as nothing happening. */
+  .mm-item.active { background: color-mix(in srgb, var(--primary) 12%, var(--surface-2)); box-shadow: inset 2px 0 0 var(--primary); }
   .mm-item .mm-name { font-size: 13px; color: var(--text); font-weight: 500; }
   .mm-item .mm-src { font-size: 11px; color: var(--faint); margin-left: auto; }
   .mm-item .mm-lock { font-size: 11px; color: var(--lock); }
@@ -742,7 +748,7 @@
 
         <div class="attach-pills" id="attach-pills"></div>
         <textarea id="prompt" rows="1" placeholder="Describe your app, or a change to make…"
-                  oninput="autogrow(this); updateMentionMenu()" onkeydown="composerKey(event)"
+                  oninput="autogrow(this); updateMentionMenu(event)" onkeydown="composerKey(event)"
                   onblur="setTimeout(hideMentionMenu, 120)"></textarea>
         <div class="composer-bar">
           <div class="bar-left">
@@ -2271,6 +2277,7 @@ function bindingRow(b) {
 }
 
 function renderBindings() {
+  renderAttachPills();   // the composer row carries these too, so bind/unbind has to move both
   const el = document.getElementById('bindings');
   if (!el) return;
   const n = (bindingsCache || []).length;
@@ -2644,6 +2651,23 @@ function renderAttachPills() {
     const unseen = isUnseenImage(e) ? `<span class="unseen" title="${esc(UNSEEN_IMAGE_TITLE)}">⚠️</span>` : '';
     pill.innerHTML = lock + unseen + `<span class="pname" title="${esc(e.path)}">${esc(name)}</span><button class="px" aria-label="Remove ${esc(name)}">×</button>`;
     pill.querySelector('.px').onclick = () => detachFile(e.path);
+    box.appendChild(pill);
+  }
+  // Bound Resources sit in the same row, after the files. They are context for the turn exactly as an
+  // attached file is, and @ already offers both (mentionCandidates reads both lists) — but only the
+  // files had a pill, so the row said an app with two Data Sources and a Model API had nothing
+  // attached. No "×": a Binding is removed in the rail, where unbinding can say what it costs, and a
+  // × here would read like the file one and quietly detach a Resource the app's code still queries.
+  for (const b of (bindingsCache || [])) {
+    const kind = KIND_LABELS[b.kind] || b.kind;
+    const scope = b.kind === 'data_source' ? bindingScope(b) : '';
+    const pill = document.createElement('span');
+    pill.className = 'pill resource';
+    // The @token is the NAME, so the pill shows the name — the display name goes in the tooltip with
+    // the kind, which is what tells an Alias and a Model API of one name apart.
+    pill.title = `${b.display_name === b.name ? b.name : b.display_name + ' · ' + b.name}`
+      + ` — ${kind}${scope ? ' · ' + scope : ''}. Manage it under +.`;
+    pill.innerHTML = `<span class="pkind">${esc(kind)}</span><span class="pname">${esc(b.name)}</span>`;
     box.appendChild(pill);
   }
 }
@@ -4143,8 +4167,15 @@ function mentionCandidates() {
   return files.concat(resources, tables);
 }
 
-function updateMentionMenu() {
+// `ev` is the input event, and only its inputType is read: a DELETION may narrow a menu that is
+// already open, but must never open a closed one. Without that rule, backspacing over a finished
+// mention re-opened the menu on every keystroke — the caret lands just after "@BigQuery_Dem", which
+// still matches the token regex below. The user was deleting, and got a picker; worse, the open menu
+// then took the next Enter for its own row selection instead of sending the message.
+function updateMentionMenu(ev) {
   const ta = document.getElementById('prompt');
+  const deleting = !!(ev && ev.inputType && ev.inputType.startsWith('delete'));
+  if (deleting && !mentionState) return;
   const before = ta.value.slice(0, ta.selectionStart);
   const m = before.match(/(^|\s)@([^\s@]*)$/);       // an @token being typed, at the caret
   if (!m) return hideMentionMenu();
@@ -4161,15 +4192,27 @@ function renderMentionMenu() {
   menu.innerHTML = '';
   mentionState.items.forEach((e, i) => {
     const row = document.createElement('div');
-    row.className = 'mm-item' + (i === mentionState.active ? ' active' : '');
+    row.className = 'mm-item';
     const lock = e.sensitive ? `<span class="mm-lock" title="Sensitive — the sovereign model is locked">🔒</span>` : '';
     row.innerHTML = `<span class="mm-name" title="${esc(e.title)}">${esc(e.token)}</span>${lock}`
       + `<span class="mm-src">${esc(e.label)}</span>`;
     row.onmousedown = ev => { ev.preventDefault(); selectMention(i); };  // mousedown beats the textarea blur
-    row.onmouseenter = () => { mentionState.active = i; renderMentionMenu(); };
+    row.onmouseenter = () => { mentionState.active = i; paintMentionActive(); };
     menu.appendChild(row);
   });
+  paintMentionActive();
   menu.classList.add('open');
+}
+
+// Moving the highlight only moves the CLASS. It used to rebuild every row, which is why the arrow
+// keys looked dead: the menu sits over the composer, so the pointer is usually resting on it, and a
+// freshly inserted row under a still pointer fires mouseenter — handing `active` straight back to
+// the hovered row. Rebuilding also lost the scroll position, and eight rows do not fit the menu.
+function paintMentionActive() {
+  const rows = document.getElementById('mention-menu').children;
+  for (let i = 0; i < rows.length; i++) rows[i].classList.toggle('active', i === mentionState.active);
+  const row = rows[mentionState.active];
+  if (row) row.scrollIntoView({ block: 'nearest' });
 }
 
 function hideMentionMenu() {
@@ -4181,7 +4224,7 @@ function moveMention(d) {
   if (!mentionState) return;
   const n = mentionState.items.length;
   mentionState.active = (mentionState.active + d + n) % n;
-  renderMentionMenu();
+  paintMentionActive();
 }
 
 function selectMention(idx) {

@@ -838,7 +838,9 @@ def test_approve_builds_in_implement_mode_from_a_read_only_mode(tmp_path: Path, 
     # disk ("wrote nothing") and then looped until it gave up. The approve turn must RUN as Implement
     # — pinned for that turn only (mode=), never by moving the user's own picker.
     orch = _orch(tmp_path)
-    control = orch.project(start_preview=False).control
+    project = orch.project(start_preview=False)
+    project.workspace.write_plan("## Plan\n1. Add a filter.")
+    control = project.control
     control.set_mode(prior)
     seen = []
     orch._build_stream = lambda *a, **k: (seen.append(k.get("mode")), iter([]))[1]  # type: ignore[method-assign]
@@ -852,6 +854,7 @@ def test_approve_from_ask_warns_the_mode_is_still_read_only(tmp_path: Path):
     # write an app, so the next change they type looks like it will build too — say otherwise.
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.workspace.write_plan("## Plan\n1. Add a filter.")
     project.control.set_mode(Mode.ASK)
     orch._build_stream = lambda *a, **k: iter([])  # type: ignore[method-assign]
     kinds = [e["type"] for e in orch.approve_stream()]
@@ -861,9 +864,30 @@ def test_approve_from_ask_warns_the_mode_is_still_read_only(tmp_path: Path):
 
 def test_approve_from_a_building_mode_says_nothing_about_ask(tmp_path: Path):
     orch = _orch(tmp_path)
-    orch.project(start_preview=False).control.set_mode(Mode.PLAN)
+    project = orch.project(start_preview=False)
+    project.workspace.write_plan("## Plan\n1. Add a filter.")
+    project.control.set_mode(Mode.PLAN)
     orch._build_stream = lambda *a, **k: iter([])  # type: ignore[method-assign]
     assert not any(e["type"] == "ask-active" for e in orch.approve_stream())
+
+
+def test_approve_with_no_live_plan_refuses_instead_of_building_an_empty_one(tmp_path: Path):
+    # A plan is a one-shot handoff: approving archives it. A second click on the card that already
+    # built used to send the agent an approve prompt with nothing under the "## Approved plan"
+    # heading, and it answered "there isn't a real change described in that approved plan yet" —
+    # a turn of inference, and a plan card in the transcript nobody can act on. Observed live
+    # 2026-08-24. The chat-approval path in build_stream has always required a non-empty plan.
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.workspace.write_plan("## Plan\n1. Add a filter.")
+    built = []
+    orch._build_stream = lambda *a, **k: (built.append(1), iter([]))[1]  # type: ignore[method-assign]
+    list(orch.approve_stream())          # first approve consumes and archives the plan
+    assert built == [1]
+    events = list(orch.approve_stream())  # second approve has nothing left to build
+    assert built == [1]                   # no second build turn
+    assert [e["type"] for e in events] == ["error", "done"]
+    assert events[-1]["decision"] == "no plan to approve"
 
 
 @pytest.mark.parametrize("prompt", [

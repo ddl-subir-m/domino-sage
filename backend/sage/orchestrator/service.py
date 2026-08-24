@@ -2378,6 +2378,18 @@ class Orchestrator:
         # .sage/architecture.md (it isn't a one-shot handoff and must survive the build), so its card's
         # Build button would otherwise approve an empty plan and build nothing.
         plan_md = project.workspace.read_plan() or project.workspace.read_architecture() or ""
+        # Nothing live to approve. A plan is a one-shot handoff — the `finally` below archives it the
+        # moment a build consumes it — so a second click on a card that already built finds an empty
+        # string here. Before this guard that string still went out as an approve prompt, and the
+        # agent answered the only way it could: "there isn't a real change described in that approved
+        # plan yet". A turn's worth of inference to be told the plan is blank, and a plan card in the
+        # transcript that nobody can act on. build_stream's chat-approval path has always checked this
+        # (it requires a non-empty read_plan before it approves); the Approve button never did.
+        if not plan_md.strip():
+            yield {"type": "error", "message": (
+                "That plan was already built. Type the next change you want and Sage will plan it.")}
+            yield {"type": "done", "ok": False, "decision": "no plan to approve"}
+            return
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
         # pinned to this turn only (see arm_turn_mode), never written to the user's picker. The

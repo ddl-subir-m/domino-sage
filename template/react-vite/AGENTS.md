@@ -80,6 +80,14 @@ for, what you proposed, which steps ran.
   progress. Change a file, let that change land, then make the next one. Editing *different*
   files at once is fine and still worth doing.
 - **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, history, settings) as the current app spec or state — the code in `src/` is the source of truth. The one exception is `.sage/queries.json`, which you write when this app reads a Data Source: it holds the app's SQL, and there is a section below about it whenever there is a Data Source to write it for.
+- **Never delete anything under `.sage/` or `public/data/`, whatever the request.** These are not
+  yours and they are not "what you built": `.sage/` is Sage's own record of the project, and
+  `public/data/` holds the files the user attached — each one a link the user made in the builder,
+  with a manifest behind it. A request to start over, reset, or "remove everything you have built"
+  means the app's own code (`src/`, and the app files you added), never these. Deleting one takes the
+  user's attachment out of the builder: the `@` menu stops offering it, and they have to find and
+  attach the file again to say the same sentence. Rewrite `src/App.tsx` instead, and leave the
+  attachments where they are — the next turn almost always still wants them.
 - TypeScript everywhere. Small, typed components. Plain React + CSS is the default, and the
   installed packages are the whole toolbox — there is no adding to it mid-build.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse
