@@ -1232,3 +1232,30 @@ Two consequences worth stating:
 SHAPE of the data — a value cut at that length still says "this is an email address" or "this is a
 currency code", which is the whole reason for showing it, while a base64 blob in full just spends
 context.
+
+---
+
+## Addendum 7 — the live Snowflake run (#25, 2026-08-24)
+
+The three claims #25 was opened to settle were checked against a live warehouse on a Domino tenant
+and held. This addendum records the status change; it does not restate the mechanics, which are in
+Addenda 5 and 6.
+
+**One correction to Addendum 6.** Its line "only Snowflake has been run live" read as though the
+`sample` statement itself had been exercised on Snowflake. It had not. Only `sample`'s `tables`
+sibling had ever run for real, and `SELECT * … LIMIT n` was as unverified as the twelve dialects
+around it — it just happened to sit under a connector whose other statements were proven. That is now
+resolved the honest way rather than by rewording: the statement has been run.
+
+| Claim | Where it was written | Status |
+|---|---|---|
+| `sample` returns rows on a live Snowflake table | Addendum 6, three-level row | **Verified live** 2026-08-24 |
+| Marking shared rows sensitive locks the session to sovereign models, and the lock survives an orchestrator restart — re-fired from the gitignored file by `_relock_for_samples`, not from a committed manifest | Addendum 6, "the sovereign lock is in-memory" | **Verified live** 2026-08-24 |
+| `.sage/samples.json` appears in neither the app's git status nor the published app's container | Addendum 6, "where the rows may live" | **Verified live** 2026-08-24 |
+
+**What is still not verified, and by design.** The other twelve dialects remain honest guesses (#11).
+One live connector proves the machinery — the three spellings, the gitignore boundary, the in-memory
+lock and its re-fire — and proves nothing about whether Redshift spells its `information_schema` the
+way this table assumes. That was the deliberate trade when the table was written, and this run does
+not change it. The `columns` statement in Addendum 5 keeps the same standing: proven on Snowflake,
+guessed elsewhere.
