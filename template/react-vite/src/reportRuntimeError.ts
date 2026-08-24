@@ -6,7 +6,26 @@
 // DEV-only: a published Domino App has no Sage backend to report to. The endpoint is derived from
 // Vite's base (`<prefix>/preview/` in dev) by swapping the trailing `preview/` for the control
 // app's `api/preview/runtime-error`; both are same-origin behind the one proxy.
-const ENDPOINT = import.meta.env.BASE_URL.replace(/preview\/?$/, "") + "api/preview/runtime-error";
+const API = import.meta.env.BASE_URL.replace(/preview\/?$/, "") + "api/";
+const ENDPOINT = API + "preview/runtime-error";
+
+// Is the agent editing these files right now? The error boundary asks so it can tell a crash Sage is
+// already part-way through fixing from one the creator has to deal with themselves.
+//
+// Best-effort by design: every failure path answers "no", which yields the blunt crash card. That is
+// the safe direction to be wrong in — claiming a fix is coming when none is would be the damaging
+// one. DEV-only for the same reason the reporter is: a published Domino App has no builder to ask.
+export async function buildIsRunning(): Promise<boolean> {
+  if (!import.meta.env.DEV) return false;
+  try {
+    const res = await fetch(API + "project/build/state");
+    if (!res.ok) return false;
+    const body: unknown = await res.json();
+    return !!(body as { running?: boolean }).running;
+  } catch {
+    return false;
+  }
+}
 
 let last = "";
 
