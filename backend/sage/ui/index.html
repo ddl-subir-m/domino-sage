@@ -983,9 +983,9 @@ async function publishApp() {
   // otherwise leave a live button that does nothing, and a second click a second banner.
   const btn = document.getElementById('publish-btn');
   btn.disabled = true;
-  let broken;
-  try { broken = await brokenQueries(); } finally { btn.disabled = false; }
-  if (broken.length) { showQueryWarning(broken); return; }
+  let check;
+  try { check = await publishCheck(); } finally { btn.disabled = false; }
+  if (check.queries.length || check.models) { showPublishWarning(check); return; }
   if (!confirm('Publish this app as a live Domino App?\n\nThis deploys the latest saved (committed) code. Any in-progress edits are saved first.')) return;
   await doPublish();
 }
@@ -993,25 +993,38 @@ async function publishApp() {
 // The sentences the published app would put in front of a viewer, or [] for "nothing to say" —
 // which covers a clean catalog, an app with no queries, and a check that failed, because none of
 // the three is a reason to interrupt someone who is publishing.
-async function brokenQueries() {
+async function publishCheck() {
   try {
     const { ok, body } = await api('/api/publish-check');
-    return ok && Array.isArray(body.queries) ? body.queries : [];
-  } catch { return []; }
+    if (!ok) return { queries: [], models: null };
+    return { queries: Array.isArray(body.queries) ? body.queries : [],
+             models: typeof body.models === 'string' ? body.models : null };
+  } catch { return { queries: [], models: null }; }
 }
 
 // Some of this app's named queries will not answer once it is deployed (#26). Shown in the app's own
 // words — this is verbatim what the first viewer would have read out of a 503 after a cold start.
 // Amber and not red, and the button publishes: unlike the refusal below, nothing here is unsafe, so
 // the creator gets the fact and the decision. Same `preflight` class, same reason.
-function showQueryWarning(problems) {
+function showPublishWarning(check) {
   const d = document.createElement('div');
   d.className = 'guard-banner warn preflight';
-  d.innerHTML = `<div class="gb-head"><span>⚠</span><span>Some of this app's queries won’t answer</span></div>`
-    + problems.map(p => `<div class="gb-item">${esc(p)}</div>`).join('')
-    + `<div class="gb-item">Sage has already told the agent about these, so asking it to fix them takes one message. `
-    + `Publishing now deploys the app with them still broken.</div>`
-    + `<div class="gb-foot"><button class="link-btn">Publish anyway</button></div>`;
+  let html = '';
+  if (check.queries.length) {
+    html += `<div class="gb-head"><span>⚠</span><span>Some of this app's queries won’t answer</span></div>`
+      + check.queries.map(p => `<div class="gb-item">${esc(p)}</div>`).join('')
+      + `<div class="gb-item">Sage has already told the agent about these, so asking it to fix them takes one message. `
+      + `Publishing now deploys the app with them still broken.</div>`;
+  }
+  // Where the rows go (#35). A second heading rather than a second banner: both are the same kind of
+  // thing — a fact the creator should have before they deploy, not a refusal — and two stacked
+  // banners with two "Publish anyway" buttons would read as two decisions when there is one.
+  if (check.models) {
+    html += `<div class="gb-head"><span>⚠</span><span>This app sends what it reads outside Domino</span></div>`
+      + `<div class="gb-item">${esc(check.models)}</div>`;
+  }
+  html += `<div class="gb-foot"><button class="link-btn">Publish anyway</button></div>`;
+  d.innerHTML = html;
   const go = d.querySelector('.link-btn');
   go.onclick = () => { go.disabled = true; doPublish(); };
   append(d);

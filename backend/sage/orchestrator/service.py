@@ -84,6 +84,7 @@ from ..resources.provider import (
     Column,
     DataSource,
     FakeResourceProvider,
+    LlmAlias,
     ResourceProvider,
     ResourceUnavailable,
     cascade_levels,
@@ -93,6 +94,8 @@ from ..resources.publish_guard import (
     PublishRefused,
     data_source_bindings,
     publish_problems,
+    vendor_model_problems,
+    vendor_model_warning,
 )
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
@@ -2727,7 +2730,23 @@ class Orchestrator:
         """
         project = self.project()
         problems = catalog_problems(self._wm.template, project.workspace.path)
-        return {"checked": problems is not None, "queries": problems or []}
+        return {"checked": problems is not None, "queries": problems or [],
+                "models": self._vendor_model_warning(project)}
+
+    def _vendor_model_warning(self, project: Project) -> str | None:
+        """Where this app's rows go, for a creator nothing has refused (#35). None when silent.
+
+        Fails open at every step, unlike the guard beside it. This is a hint, and a hint that costs a
+        publish flow an exception is worse than a hint nobody read.
+        """
+        try:
+            recorded = parse_bindings(project.workspace.read_bindings())
+            if not any(b.kind == KIND_LLM_ALIAS for b in recorded):
+                return None
+            return vendor_model_warning(recorded, self._resources.list_llm_aliases())
+        except Exception:
+            log.exception("publish check: couldn't work out where this app's rows would go")
+            return None
 
     def publish_status(self, app_id: str) -> dict:
         """Deploy status of a published app so the UI can poll after Publish. Maps the raw instance
@@ -2759,7 +2778,8 @@ class Orchestrator:
         is `publish_problems`'s decision, and the two differ (a missing listing refuses, an
         unreadable visibility does not).
         """
-        bindings = data_source_bindings(parse_bindings(project.workspace.read_bindings()))
+        recorded = parse_bindings(project.workspace.read_bindings())
+        bindings = data_source_bindings(recorded)
         if not bindings:
             return
         try:
@@ -2774,9 +2794,25 @@ class Orchestrator:
             except Exception:
                 log.exception("publish: couldn't read the app's visibility")
                 visibility = None
-        problems = publish_problems(bindings, sources, visibility)
+        problems = publish_problems(bindings, sources, visibility) + \
+            vendor_model_problems(recorded, self._aliases_for_guard(recorded))
         if problems:
             raise PublishRefused(problems)
+
+    def _aliases_for_guard(self, recorded: list[Binding]) -> list[LlmAlias] | None:
+        """The Alias listing the vendor-model guard needs, or None when it could not be fetched.
+
+        Fetched only when there is a sensitive store to ask about, so an app that reads nothing
+        sensitive costs no gateway call and cannot be blocked by a gateway that is having a bad
+        minute. `vendor_model_problems` decides what None MEANS; this only decides whether to ask.
+        """
+        if not any(b.kind == KIND_DATA_SOURCE and b.sensitive for b in recorded):
+            return []
+        try:
+            return self._resources.list_llm_aliases()
+        except Exception:
+            log.exception("publish: couldn't list LLM Aliases to check where sensitive rows would go")
+            return None
 
     def stop(self) -> dict:
         """Stop THIS builder's workspace so it stops consuming compute. Saves in-progress work first
@@ -3180,6 +3216,7 @@ class Orchestrator:
         kept = [s for s in self._shared(project) if s.binding != binding.id]
         self._ensure_gitignored(project.workspace, SAMPLES_PATH)
         self._write_generated(project.workspace.path / SAMPLES_PATH, render_samples(kept + fresh))
+        self._stamp_sensitivity(project)
         if sensitive:
             project.control.on_assets_changed([True])   # the same sticky lock a sensitive upload fires
         self._write_app_data(project)
@@ -3205,6 +3242,7 @@ class Orchestrator:
             self._write_generated(path, render_samples(kept))
         else:
             path.unlink(missing_ok=True)
+        self._stamp_sensitivity(project)
         self._write_app_data(project)
         self._rebaseline_turn(project)
         return {"shared": [s.rows.table for s in kept],
@@ -3213,6 +3251,40 @@ class Orchestrator:
     def _data_source_binding(self, project: Project) -> Binding | None:
         recorded = parse_bindings(project.workspace.read_bindings())
         return next((b for b in recorded if b.kind == KIND_DATA_SOURCE), None)
+
+    def _stamp_sensitivity(self, project: Project) -> None:
+        """Record on each Data Source Binding whether its rows are currently marked sensitive (#35).
+
+        The rows live in `.sage/samples.json`, gitignored on purpose. The hub publishes from the repo
+        and never sees a workspace, so without this it is the one route that cannot ask the question
+        the builder refuses on — a door beside a lock, which is the mistake #12 was careful not to
+        make. The judgement is one bool and belongs in the committed manifest; the rows do not, and
+        stay where they are.
+
+        Runs after every write to the samples file, so the flag tracks the current choice rather than
+        latching. Re-sharing without the tick clears it, which is a creator's only way to correct a
+        mis-click, and it is what the sovereign lock already does across a restart.
+
+        Edits the raw entries rather than round-tripping them through `Binding`, which would drop any
+        field a newer Sage wrote — the same reason `parse_bindings` keeps a kind it cannot render.
+        """
+        marked = {s.binding for s in self._shared(project) if s.sensitive}
+
+        def change(entries: list[dict]) -> list[dict]:
+            out = []
+            for entry in entries:
+                if isinstance(entry, dict) and str(entry.get("kind") or "") == KIND_DATA_SOURCE:
+                    entry = dict(entry)
+                    if str(entry.get("id") or "") in marked:
+                        entry["sensitive"] = True
+                    else:
+                        # Removed rather than written False, so an app whose rows were never
+                        # sensitive keeps the manifest it already had and shows no diff.
+                        entry.pop("sensitive", None)
+                out.append(entry)
+            return out
+
+        project.workspace.update_bindings(change)
 
     def _shared(self, project: Project) -> list[SharedSample]:
         """The rows currently shared, with every entry attributed to a Data Source Binding.

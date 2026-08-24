@@ -200,14 +200,24 @@
     // the published app's own, verbatim — the same ones the builder rail shows and the same ones a
     // viewer would eventually read out of its 503, so the creator fixes the thing the app is going to
     // complain about. Amber, and the button publishes anyway: this informs, it does not refuse.
-    function queryWarning(problems, id, btn) {
+    function publishWarning(check, id, btn) {
       const b = $('banner');
       b.className = 'banner warn';
-      b.innerHTML = '<strong>⚠ Some of this app\u2019s queries won\u2019t answer</strong>'
-        + problems.map(p => `<div class="gb-item">${esc(p)}</div>`).join('')
-        + '<div class="gb-item">Open the app in the builder and ask the agent to fix them, or publish '
-        + 'now and deploy the app with them still broken.</div>'
-        + '<div class="gb-foot"><button type="button">Publish anyway</button></div>';
+      let html = '';
+      if (check.queries.length) {
+        html += '<strong>⚠ Some of this app\u2019s queries won\u2019t answer</strong>'
+          + check.queries.map(p => `<div class="gb-item">${esc(p)}</div>`).join('')
+          + '<div class="gb-item">Open the app in the builder and ask the agent to fix them, or publish '
+          + 'now and deploy the app with them still broken.</div>';
+      }
+      // Where the rows go (#35) — the same sentence the rail shows, for the creator who never opened
+      // the builder. One banner and one "Publish anyway", because there is one decision to make.
+      if (check.models) {
+        html += '<strong>⚠ This app sends what it reads outside Domino</strong>'
+          + `<div class="gb-item">${esc(check.models)}</div>`;
+      }
+      html += '<div class="gb-foot"><button type="button">Publish anyway</button></div>';
+      b.innerHTML = html;
       const go = b.querySelector('.gb-foot button');
       go.onclick = () => { go.disabled = true; doPublish(id, btn); };
     }
@@ -215,12 +225,14 @@
     // The sentences the published app would put in front of a viewer, or [] for "nothing to say" —
     // which covers a clean catalog, an app with no queries, and a check that could not run, because
     // none of the three is a reason to interrupt someone who is publishing.
-    async function brokenQueries(id) {
+    async function publishCheck(id) {
       try {
         const r = await fetch(api(`/api/apps/${id}/publish-check`));
         const d = await r.json();
-        return (r.ok && Array.isArray(d.queries)) ? d.queries : [];
-      } catch { return []; }
+        if (!r.ok) return { queries: [], models: null };
+        return { queries: Array.isArray(d.queries) ? d.queries : [],
+                 models: typeof d.models === 'string' ? d.models : null };
+      } catch { return { queries: [], models: null }; }
     }
 
     // Success notice, optionally with one or more pre-built link elements (HTML strings).
@@ -395,10 +407,10 @@
       // The check runs before the confirm, not after it: a broken catalog deserves the app's own
       // sentences, and a yes/no dialog has nowhere to put them (#27). An app with nothing to warn
       // about goes straight to the confirm it always had, and gains no step.
-      let broken = [];
+      let check = { queries: [], models: null };
       btn.disabled = true;
-      try { broken = await brokenQueries(id); } finally { btn.disabled = false; }
-      if (broken.length) { queryWarning(broken, id, btn); return; }
+      try { check = await publishCheck(id); } finally { btn.disabled = false; }
+      if (check.queries.length || check.models) { publishWarning(check, id, btn); return; }
       if (!confirm(`Publish “${name}” as a live Domino App?\n\nThis deploys the latest saved (committed) code as a shareable Domino App. If you've just made changes, run a build or stop the builder first so they're saved.`)) return;
       await doPublish(id, btn);
     }

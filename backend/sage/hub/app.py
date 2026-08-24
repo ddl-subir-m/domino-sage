@@ -281,7 +281,7 @@ async def publish_check(project_id: str) -> JSONResponse:
         # Never blocks the publish it precedes: the UI reads an error the same way it reads a clean
         # catalog, which is "nothing to say".
         log.exception("publish_check failed")
-        return JSONResponse({"checked": False, "queries": []})
+        return JSONResponse({"checked": False, "queries": [], "models": None})
     return JSONResponse(result)
 
 

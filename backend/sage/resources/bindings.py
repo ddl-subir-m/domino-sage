@@ -54,6 +54,16 @@ class Binding:
     # still say which of its queries are honest. Recorded rather than asked at query time for the same
     # reason `display_name` is: the record has to read when the network does not.
     connector_type: str = ""
+    # Whether the creator called this store's rows sensitive when they shared samples with the agent
+    # (#16). The rows themselves stay OUT of git — `.sage/samples.json` is the one gitignored manifest
+    # here — but the judgement travels, because the hub publishes from the repo and would otherwise be
+    # the one route that cannot ask the question the builder refuses on (#35).
+    #
+    # Tracks the current choice rather than latching. Re-sharing without the tick clears it, which is
+    # the only way a creator can correct a mis-click, and it is already what the sovereign lock does
+    # across a restart: the lock re-fires from `.sage/samples.json`, so a file that no longer says
+    # sensitive no longer locks.
+    sensitive: bool = False
 
     @property
     def key(self) -> tuple[str, str]:
@@ -84,7 +94,8 @@ class Binding:
         """
         out = {"kind": self.kind, "id": self.id, "name": self.name, "display_name": self.display_name}
         for key, value in (("database", self.database), ("schema", self.schema),
-                           ("table", self.table), ("connector_type", self.connector_type)):
+                           ("table", self.table), ("connector_type", self.connector_type),
+                           ("sensitive", self.sensitive)):
             if value:
                 out[key] = value
         return out
@@ -122,7 +133,8 @@ def parse_bindings(raw: object) -> list[Binding]:
         name = str(e.get("name") or rid)
         out.append(Binding(kind, rid, name, str(e.get("display_name") or name),
                            _scope_part(e, "database"), _scope_part(e, "schema"),
-                           _scope_part(e, "table"), str(e.get("connector_type") or "")))
+                           _scope_part(e, "table"), str(e.get("connector_type") or ""),
+                           bool(e.get("sensitive"))))
     return out
 
 

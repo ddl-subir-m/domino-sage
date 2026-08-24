@@ -828,3 +828,69 @@ def test_a_source_bound_while_its_store_was_down_is_asked_again_but_only_once(tm
     orch.bind_data_source("ds-dwh", "DWH", "REPORTING")
     assert [t["name"] for t in _entry(orch, "ds-dwh")["tables"]] == ["V_ARR_WATERFALL",
                                                                     "V_CUSTOMER_HEALTH"]
+
+
+# --- The judgement travels, the rows do not (#35) ---------------------------------------------
+#
+# `.sage/samples.json` is gitignored, so the hub — which publishes from the repo and never sees a
+# workspace — cannot read the creator's sensitivity choice from it. One bool rides in the committed
+# Bindings manifest instead, which is what lets both publish routes ask the same question.
+
+
+def _binding_entry(orch, source_id: str) -> dict:
+    raw = json.loads((workspace_of(orch) / ".sage" / "bindings.json").read_text())
+    return next(e for e in raw if e["id"] == source_id)
+
+
+def test_a_sensitive_share_stamps_the_binding_and_still_keeps_the_rows_out_of_git(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=True)
+
+    assert _binding_entry(orch, "ds-dwh")["sensitive"] is True
+    # The flag is the only thing that travels. The rows stay exactly where they were.
+    assert SAMPLES_PATH in (workspace_of(orch) / ".gitignore").read_text().split()
+
+
+def test_a_share_nobody_called_sensitive_leaves_the_manifest_alone(tmp_path: Path):
+    # Written as absent rather than as False: an app whose rows were never sensitive must show no
+    # diff in a manifest committed to the creator's own repo.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=False)
+
+    assert "sensitive" not in _binding_entry(orch, "ds-dwh")
+
+
+def test_re_sharing_without_the_tick_clears_the_stamp(tmp_path: Path):
+    # A creator's only way back from a mis-click, and the same thing the sovereign lock does across a
+    # restart: the lock re-fires from the samples file, so a file that no longer says sensitive no
+    # longer locks. The stamp has to agree with it or publishing would refuse forever.
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=True)
+    assert _binding_entry(orch, "ds-dwh")["sensitive"] is True
+
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=False)
+
+    assert "sensitive" not in _binding_entry(orch, "ds-dwh")
+
+
+def test_clearing_the_shared_rows_clears_the_stamp(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=True)
+
+    orch.clear_sample_rows("ds-dwh")
+
+    assert "sensitive" not in _binding_entry(orch, "ds-dwh")
+
+
+def test_one_store_marked_sensitive_does_not_stamp_the_store_beside_it(tmp_path: Path):
+    orch = orchestrator(tmp_path)
+    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
+    orch.bind_data_source("ds-mssql", "underwriting", "dbo")
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=True)
+
+    assert _binding_entry(orch, "ds-dwh")["sensitive"] is True
+    assert "sensitive" not in _binding_entry(orch, "ds-mssql")
