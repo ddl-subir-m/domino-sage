@@ -205,8 +205,9 @@
   .pill.sensitive { border-color: color-mix(in srgb, var(--lock) 35%, var(--border)); }
   .pill .px { border: 0; background: transparent; color: var(--faint); cursor: pointer; font-size: 13px; line-height: 1; padding: 1px 3px; border-radius: 5px; }
   .pill .px:hover { color: var(--text); background: var(--border); }
-  /* A bound Resource, not an attached file: tinted, and with no "×" — it is unbound in the rail. */
-  .pill.resource { padding-right: 9px; border-color: color-mix(in srgb, var(--primary) 30%, var(--border)); background: color-mix(in srgb, var(--primary) 6%, var(--surface-2)); }
+  /* A bound Resource, not an attached file: tinted. Same padding as a file pill, because it carries
+     the same "×" — the tint is what tells them apart, not the presence of the control. */
+  .pill.resource { border-color: color-mix(in srgb, var(--primary) 30%, var(--border)); background: color-mix(in srgb, var(--primary) 6%, var(--surface-2)); }
   .pill .pkind { flex: 0 0 auto; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
   .composer-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px 10px; }
   .bar-left, .bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -2223,6 +2224,47 @@ async function unbindResource(kind, id) {
   const res = await api(`/api/bindings/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
   staleBindings.delete(`${kind} ${id}`);   // removed is removed; it must not come back as a badge
   applyBindings(res, 'Sage could not remove that Resource.');
+  if (res.ok) warnResourceStillUsed(res.body || {});
+}
+
+// The app's code still uses the Resource that just left. Same shape as the detach warning: say
+// what will now fail, name the files, and offer the cleanup — never run it, because stripping a
+// model call out of a screen is a real edit to the app's logic and the creator may want the code to
+// stay while they bind a different Resource to it.
+function warnResourceStillUsed(body) {
+  const refs = body.refs || [];
+  if (!refs.length) return;
+  const name = body.name || 'that Resource';
+  const files = refs.slice(0, 3).map(esc).join(', ') + (refs.length > 3 ? '…' : '');
+  // A Data Source is not named in the app's code — its queries are. So the sentence has to be about
+  // the queries, or it points the creator at files that never mention the thing they removed.
+  const what = body.kind === 'data_source'
+    ? `the app still runs queries against it (${files}) — those queries will fail`
+    : `the app's code still calls it (${files}) — those calls will fail`;
+  const s = addStatus('warn', '⚠️', `Removed <b>${esc(name)}</b>, but ${what}. `
+    + `<button class="link-btn">Remove from app</button>`);
+  const btn = s && s.querySelector('.link-btn');
+  if (btn) btn.onclick = () => { btn.disabled = true; removeResourceFromApp(body); };
+}
+
+// Agent cleanup after an unbind left dangling calls. Mirrors removeDataFromApp: an ordinary build
+// turn through the normal sovereign path, with the refs named so the agent does not have to hunt.
+function removeResourceFromApp(body) {
+  if (!active) return;
+  const refs = body.refs || [];
+  const name = body.name || '';
+  const where = refs.length ? ` It's referenced in: ${refs.join(', ')}.` : '';
+  const prompt = body.kind === 'data_source'
+    ? `The Data Source "${name}" was removed from this app and can no longer be queried. Remove it `
+      + `from the app: delete its entries from .sage/queries.json, delete the code that calls those `
+      + `queries by name, and remove or update any UI that depended on them (show an appropriate `
+      + `empty state if a view still needs data).${where} Do not re-create or re-add the queries.`
+    : `The ${body.kind === 'model_api' ? 'Model API' : 'model'} "${name}" was removed from this app `
+      + `and can no longer be called. Remove it from the app: delete the code that calls it, and `
+      + `remove or update any UI built around it (buttons, panels and status text that only exist to `
+      + `run it).${where} Do not re-create the calls, and do not swap in another model — if a screen `
+      + `has nothing left to do, say so plainly rather than leaving a control that does nothing.`;
+  runPrompt(prompt);
 }
 
 function bindingRow(b) {
@@ -2685,8 +2727,14 @@ function renderAttachPills() {
   // Bound Resources sit in the same row, after the files. They are context for the turn exactly as an
   // attached file is, and @ already offers both (mentionCandidates reads both lists) — but only the
   // files had a pill, so the row said an app with two Data Sources and a Model API had nothing
-  // attached. No "×": a Binding is removed in the rail, where unbinding can say what it costs, and a
-  // × here would read like the file one and quietly detach a Resource the app's code still queries.
+  // attached.
+  //
+  // These carry a "×" too. They did not, on the reasoning that a Binding should only be removed in
+  // the rail where the cost can be stated first — but the file × runs the same risk and answers it
+  // the other way round, by removing and THEN saying what the app still needs (see detachFile). Two
+  // pills that look identical and take different gestures is the worse failure, so both now detach
+  // and both report what they left behind; unbindResource carries the warning for the rail's own
+  // Remove button as well.
   for (const b of (bindingsCache || [])) {
     const kind = KIND_LABELS[b.kind] || b.kind;
     const scope = b.kind === 'data_source' ? bindingScope(b) : '';
@@ -2696,7 +2744,9 @@ function renderAttachPills() {
     // the kind, which is what tells an Alias and a Model API of one name apart.
     pill.title = `${b.display_name === b.name ? b.name : b.display_name + ' · ' + b.name}`
       + ` — ${kind}${scope ? ' · ' + scope : ''}. Manage it under +.`;
-    pill.innerHTML = `<span class="pkind">${esc(kind)}</span><span class="pname">${esc(b.name)}</span>`;
+    pill.innerHTML = `<span class="pkind">${esc(kind)}</span><span class="pname">${esc(b.name)}</span>`
+      + `<button class="px" aria-label="Remove ${esc(b.name)}">×</button>`;
+    pill.querySelector('.px').onclick = () => unbindResource(b.kind, b.id);
     box.appendChild(pill);
   }
 }

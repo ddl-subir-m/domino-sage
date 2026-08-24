@@ -262,11 +262,12 @@ def test_classifying_without_a_root_still_works(tmp_path):
 
 def test_the_classifier_runs_only_where_it_can_change_the_outcome():
     applies = {"mode": Mode.AUTO, "has_built": True, "gate": False, "answer_only": False,
-               "skip_planning": False}
+               "is_approval": False, "skip_planning": False}
     assert _scope_gate_applies(**applies) is True
     # Already gating, so there is nothing to ask.
     assert _scope_gate_applies(**{**applies, "gate": True}) is False
-    # Answers and stops — covers questions and approvals, which never gate anyway.
+    # Answers and stops, so there is no build to gate. This used to be documented as covering
+    # approvals as well; it does not, which is what the next test is about.
     assert _scope_gate_applies(**{**applies, "answer_only": True}) is False
     # The first-build gate already has this turn; the hole opens only after it.
     assert _scope_gate_applies(**{**applies, "has_built": False}) is False
@@ -274,9 +275,30 @@ def test_the_classifier_runs_only_where_it_can_change_the_outcome():
     assert _scope_gate_applies(**{**applies, "skip_planning": True}) is False
 
 
+def test_an_approved_plan_is_never_sent_back_to_the_classifier():
+    """The live failure on 2026-08-24, and the reason this condition is its own argument.
+
+    The user has already seen a plan and pressed the button, so there is nothing left to infer. The
+    cost of asking anyway is not a wasted model call — a gated approval runs on `sage-plan`, which is
+    read-only. The approved build reads its way through the turn, writes nothing, and then, being a
+    gated turn that wrote nothing, answers with a SECOND plan for the work it was just told to do.
+    The transcript showed nineteen tool calls without a single write, and a fresh plan card at the
+    end of them.
+
+    It was believed to be covered by `answer_only`. It never was: _is_answer_only returns False for
+    an approval deliberately — "an approval is the user asking to build, never an answer" — so the
+    exclusion the docstring claimed had no code behind it, and every approval on a built project in
+    Auto went to the classifier. The first build of a session survived on the classifier happening to
+    answer BUILD; the second one got an unreadable verdict, which gates.
+    """
+    approving = {"mode": Mode.AUTO, "has_built": True, "gate": False, "answer_only": False,
+                 "is_approval": True, "skip_planning": False}
+    assert _scope_gate_applies(**approving) is False
+
+
 @pytest.mark.parametrize("mode", [Mode.PLAN, Mode.IMPLEMENT, Mode.ASK])
 def test_an_explicit_mode_is_never_second_guessed(mode: Mode):
     # Plan gates every turn already, Implement is "just build it", Ask never builds. Auto is the only
     # mode carrying no explicit instruction, which is why it's the only one that needs one inferred.
     assert _scope_gate_applies(mode=mode, has_built=True, gate=False, answer_only=False,
-                               skip_planning=False) is False
+                               is_approval=False, skip_planning=False) is False

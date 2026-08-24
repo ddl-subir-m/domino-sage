@@ -128,18 +128,19 @@ def test_remove_drops_only_that_binding(tmp_path: Path):
     orch.bind_llm_alias("id-sonnet")
     orch.bind_llm_alias("id-embed")
     left = orch.unbind(KIND_LLM_ALIAS, "id-sonnet")
-    assert [b["id"] for b in left] == ["id-embed"]
+    assert [b["id"] for b in left["bindings"]] == ["id-embed"]
 
 
 def test_removing_something_already_gone_is_not_an_error(tmp_path: Path):
     orch = _orch(tmp_path)
-    assert orch.unbind(KIND_LLM_ALIAS, "id-sonnet") == []
+    assert orch.unbind(KIND_LLM_ALIAS, "id-sonnet")["bindings"] == []
 
 
 def test_an_id_is_only_unique_within_its_kind(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-sonnet")
-    assert len(orch.unbind("data_source", "id-sonnet")) == 1  # same id, different kind: untouched
+    # same id, different kind: untouched
+    assert len(orch.unbind("data_source", "id-sonnet")["bindings"]) == 1
 
 
 # ---- Model APIs (#9) ----------------------------------------------------------------------------
@@ -300,7 +301,10 @@ def test_the_routes_create_list_and_remove(tmp_path: Path, monkeypatch):
     assert client.get("/api/bindings").json()["bindings"] == made.json()["bindings"]
 
     gone = client.delete(f"/api/bindings/{KIND_LLM_ALIAS}/id-sonnet")
-    assert gone.status_code == 200 and gone.json() == {"bindings": []}
+    # `refs` rides along so the rail and the composer pill can offer the cleanup; `bindings` is
+    # what every binding route answers with, and applyBindings still reads it off this same body.
+    assert gone.status_code == 200
+    assert gone.json()["bindings"] == [] and gone.json()["refs"] == []
 
 
 def test_the_route_refuses_an_alias_you_cannot_use_and_an_unknown_kind(tmp_path: Path, monkeypatch):
@@ -340,7 +344,8 @@ def test_the_routes_record_and_remove_a_model_api(tmp_path: Path, monkeypatch):
     assert made.json()["bindings"][0]["display_name"] == "churn-risk"
 
     gone = client.delete(f"/api/bindings/{KIND_MODEL_API}/id-churn")
-    assert gone.status_code == 200 and gone.json() == {"bindings": []}
+    assert gone.status_code == 200
+    assert gone.json()["bindings"] == [] and gone.json()["refs"] == []
 
 
 def test_the_route_reports_a_domino_api_that_will_not_answer(tmp_path: Path, monkeypatch):

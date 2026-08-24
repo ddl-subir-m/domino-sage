@@ -13,22 +13,45 @@ the only thing between the previewed page and a server, so `/api/queries/*` is i
 way past and answered by `serve.py` itself rather than 404'd by Vite, which has never served an
 app's data (#24). Also a callable, and for the same reason: the project it belongs to is attached
 lazily on the first request.
+
+`get_llm()` returns `(gateway_v1_base, bearer)` for the app's own model calls, or None. Same
+reasoning one step further: a published app calls Domino's LLM Gateway straight from the viewer's
+browser, which works only because both are served from `apps.<domino-host>` and the call is
+therefore same-origin. The preview is served from the builder's origin, so that same call is
+cross-origin and the browser blocks it — an app with a model was untestable until it shipped. So
+`/api/llm/*` is intercepted here too and made server-side (#7).
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 import httpx
 import websockets
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
+
+log = logging.getLogger(__name__)
 
 # Hop-by-hop headers must not be forwarded across a proxy.
 _HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer", "proxy-authorization", "proxy-authenticate"}
 
 # What `sageQuery.ts` asks for, minus the leading slash this app's paths arrive without.
 _QUERY_PREFIX = "api/queries/"
+
+# What `sageLlm.ts` asks for in the preview only — the published build calls the gateway directly.
+_LLM_PREFIX = "api/llm/"
+
+# Headers the app sets that must survive the hop. The tag headers are how spend is attributed to the
+# app (see `tagHeaders` in sageLlm.ts); dropping them would put preview traffic in "unknown".
+_LLM_FORWARD = ("content-type", "accept")
+
+# No read timeout, on purpose. A scalar httpx timeout becomes the INTER-CHUNK read timeout on a
+# stream, so a model that thinks for longer than it between two tokens kills a working response —
+# the same failure that took builds down mid-stream. The connect budget still bounds a dead gateway.
+_LLM_TIMEOUT = httpx.Timeout(15.0, read=None)
 
 # A warehouse query is seconds, not milliseconds — the live baseline is 2.0-3.9s and a first scan of
 # a cold table is slower. Generous, but bounded: a Flight call that never returns would otherwise
@@ -71,8 +94,76 @@ async def _answer_query(request: Request, path: str, queries) -> Response | None
                     media_type=answer.headers.get("content-type", "application/json"))
 
 
+async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
+    """One LLM Gateway call from the previewed app, made server-side. None when there is no gateway.
+
+    Why it cannot just go to the gateway like the published app's does: `sageLlm.ts` is built around
+    the call being SAME-ORIGIN. A published app is served from `apps.<domino-host>` and so is the
+    gateway, so the viewer's own Domino cookie authenticates it with no key on the page and no server
+    hop — which is the whole design, and it is worth keeping. The preview is served from the
+    builder's origin instead, so the identical call is cross-origin, and a credentialed cross-origin
+    fetch needs `Access-Control-Allow-Origin` naming that exact origin plus `Allow-Credentials`,
+    which the gateway does not send. The fetch throws, and the app reports the gateway as not
+    answering when the gateway is fine. So an app with a model could not be tried until it shipped.
+
+    One difference from the published path is real and deliberate: this spends SAGE's credential, so
+    preview traffic is attributed to whoever is building, and it does not exercise a viewer's own
+    grant on the Alias. Both are correct here — in the preview the viewer IS the builder — and the
+    per-viewer check is `checkModel`'s job in the published app, where each viewer really does call
+    under their own identity.
+    """
+    if get_llm is None:
+        return None
+    try:
+        resolved = await run_in_threadpool(get_llm)
+    except Exception as e:
+        # The sidecar mints these per request and is on loopback, so a failure here is Sage's
+        # problem, not something the creator can act on. Say which.
+        log.warning("preview llm: could not resolve a gateway token: %s", e)
+        return JSONResponse(status_code=502, content={"error": {"message": (
+            "Sage could not get a token for Domino's LLM Gateway, so the preview cannot make this "
+            "app's model calls. The published app is unaffected — it calls the gateway directly."
+        )}})
+    if resolved is None:
+        return None    # no Domino gateway configured; fall through to Vite, which 404s
+    base, token = resolved
+
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() in _LLM_FORWARD or k.lower().startswith("x-llm-tag-")}
+    headers["authorization"] = f"Bearer {token}"
+    url = f"{base}/{path[len(_LLM_PREFIX):].lstrip('/')}"
+    client = httpx.AsyncClient(timeout=_LLM_TIMEOUT)
+    try:
+        upstream = await client.send(
+            client.build_request(request.method, url, content=await request.body(), headers=headers),
+            stream=True,
+        )
+    except (httpx.HTTPError, OSError) as e:
+        await client.aclose()
+        log.warning("preview llm: %s %s failed: %s", request.method, url, e)
+        return JSONResponse(status_code=502, content={"error": {"message": (
+            "The preview could not reach Domino's LLM Gateway."
+        )}})
+
+    # Streamed rather than read whole: `askModel` turns on `stream: true` whenever the app passes
+    # `onToken`, and buffering the response here would deliver a "streaming" answer in one lump —
+    # the app would look like it works and feel like it does not.
+    async def body():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    passthrough = {k: v for k, v in upstream.headers.items()
+                   if k.lower() not in _HOP and k.lower() != "content-length"}
+    return StreamingResponse(body(), status_code=upstream.status_code, headers=passthrough)
+
+
 def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
-                     get_queries: Callable[[], object | None] | None = None) -> FastAPI:
+                     get_queries: Callable[[], object | None] | None = None,
+                     get_llm: Callable[[], tuple[str, str] | None] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
     Vite bakes `base = <base_prefix>/preview/` into the HTML/JS it serves, so it only responds at
@@ -141,6 +232,13 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                 return answered
             # Fall through when there is no query server: Vite 404s, and `sageQuery.ts` already has
             # the right sentence for that — "only available once it is published". Which is true.
+        if path.startswith(_LLM_PREFIX):
+            # Same shape, one line up the stack: the previewed page cannot make this call itself
+            # (cross-origin), so the proxy makes it. Falls through to Vite when no gateway is
+            # configured, and `sageLlm.ts` reads that 404 as "this app has no model", as it should.
+            forwarded = await _forward_llm(request, path, get_llm)
+            if forwarded is not None:
+                return forwarded
         try:
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
         except Exception as e:

@@ -184,6 +184,15 @@ Import these directly. They are already installed; nothing else is, and nothing 
 | `date-fns` | Formatting, parsing and date ranges. Import per function (`import { format } from 'date-fns'`). |
 | `lucide-react` | Icons. Size them in `em` so they scale with their text. |
 
+**Import from the package root, never from a path inside it.** `import { format } from 'date-fns'`,
+not `from 'date-fns/format'`. Every package above is pre-bundled for the preview before you start; a
+path inside one is not, so the first import of it makes the dev server rebuild its dependencies and
+swap the running module graph underneath the open page. What you get back is a burst of
+`ReferenceError: X is not defined` and `Invalid hook call` pointing at code that is perfectly
+correct — the page recovers on its own a moment later, but the errors reach you first and describe a
+bug that does not exist. If you ever see those two together and the file reads fine, that is what
+happened: reload the preview rather than editing anything.
+
 ### Routing: the basename is not optional
 A published app is served under a path that its own code cannot know at build time. `src/sageBase.ts`
 works it out at runtime, so pass it to the router:

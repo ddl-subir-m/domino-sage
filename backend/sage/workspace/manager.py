@@ -521,17 +521,39 @@ class WorkspaceManager:
             changed = True
         return changed
 
-    def ensure_llm_helper(self) -> bool:
-        """Put the Sage-owned model helper in the workspace if it is absent. True if it was copied.
+    def refresh_preview_config(self) -> bool:
+        """Bring `vite.config.ts` back in line with the template. True if it changed.
 
-        `src/sageLlm.ts` ships in the template, so every project seeded after #7 already has it. This
-        is for the ones seeded before: their repo has no helper, and writing the config file next to a
-        missing module would leave an app that cannot build. Missing-only, unlike
-        refresh_entry_script, because this file is imported by app code the agent wrote — replacing a
-        working copy under a build is a bigger risk than a stale copy, and the config beside it is
-        what actually changes.
+        The preview twin of refresh_entry_script, and it exists for the same reason that one does: the
+        file is committed when the project is seeded, so an app keeps whatever copy it was born with,
+        and a fix to the template reaches only new apps while every existing one goes on hitting the
+        bug we already fixed. AGENTS.md already tells the agent not to touch this file, so there is
+        nothing of theirs in it to lose.
+
+        Refreshed at ATTACH rather than at publish, unlike the deploy files: what it configures is the
+        preview, so by publish time the damage it prevents has already been done. It has to land
+        before ViteSupervisor.start(), because the dev server reads this file once at boot.
         """
-        return self._ensure_helper(_LLM_HELPER)
+        return self._ensure_helper("vite.config.ts", refresh=True)
+
+    def ensure_llm_helper(self) -> bool:
+        """Put the Sage-owned model helper in the workspace, replacing a stale copy. True if written.
+
+        `src/sageLlm.ts` ships in the template, so every project seeded after #7 already has it. The
+        absent case is for the ones seeded before: their repo has no helper, and writing the config
+        file next to a missing module would leave an app that cannot build.
+
+        This one REFRESHES where the other two only fill a gap, and the difference earned itself.
+        Missing-only meant a fix to the helper reached new projects and never existing ones: an app
+        that could not call its model in the preview (#7) stayed that way through the whole session
+        that reported it, and the only routes to the fix were Reset app — which throws the app
+        away — or a new project. The stated risk of refreshing was replacing a copy the app's code
+        imports, and it is bounded by what this file actually is: Sage owns it, AGENTS.md forbids the
+        agent to edit or re-create it, and its exported surface (`askModel`, `checkModel`, the types)
+        is what apps import and does not change. A helper that reads an older config keeps working
+        for the same reason it always did — `render_config`'s two shapes are both handled here.
+        """
+        return self._ensure_helper(_LLM_HELPER, refresh=True)
 
     def ensure_model_api_helper(self) -> bool:
         """The same, for `src/sageModelApi.ts` (#9), and for projects seeded before it shipped."""
@@ -541,10 +563,14 @@ class WorkspaceManager:
         """The same, for `src/sageQuery.ts` (#15)."""
         return self._ensure_helper(_QUERY_HELPER)
 
-    def _ensure_helper(self, rel: str) -> bool:
+    def _ensure_helper(self, rel: str, *, refresh: bool = False) -> bool:
+        """Copy one Sage-owned helper in. `refresh` also replaces a copy that differs from the
+        template's; without it an existing file is left alone whatever it holds."""
         src = self._template / rel
         dst = self._dir / rel
-        if not src.is_file() or dst.is_file():
+        if not src.is_file():
+            return False
+        if dst.is_file() and (not refresh or dst.read_bytes() == src.read_bytes()):
             return False
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)

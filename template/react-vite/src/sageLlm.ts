@@ -97,7 +97,25 @@ function tagHeaders(): Record<string, string> {
   return headers;
 }
 
+// Where the call actually goes. The published app calls the gateway directly, which is the whole
+// design above — same origin, the viewer's own cookie, no key and no server hop.
+//
+// The PREVIEW cannot. It is served from Sage's own origin, so the identical request is cross-origin,
+// and a credentialed cross-origin fetch needs CORS headers the gateway does not send: the fetch
+// throws before it leaves the page, and the app reports the gateway as not answering when nothing is
+// wrong with the gateway. Sage's preview proxy therefore makes the call server-side and this points
+// at it — so an app with a model can be tried while it is being built, not only after it ships.
+//
+// `import.meta.env.DEV` rather than a runtime sniff: Vite replaces it at build time, so the
+// published bundle contains only the direct call and cannot take this branch by accident.
+//
+// `BASE_URL` rather than importing `./sageBase`: in the dev server the two are the same string —
+// `sageBase` only prefers `window.__SAGE_BASE__`, which `serve.py` stamps and which therefore never
+// exists here — and this file has to be droppable into an app built before `sageBase.ts` shipped.
 function endpoint(path: string): string {
+  if (import.meta.env.DEV) {
+    return `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/llm${path}`;
+  }
   return `${(config.base || "").replace(/\/$/, "")}${path}`;
 }
 

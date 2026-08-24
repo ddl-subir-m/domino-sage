@@ -274,3 +274,70 @@ def test_the_proxy_falls_through_when_there_is_no_query_server(tmp_path: Path):
 
     assert r.status_code == 502
     assert "vite" in r.json()["preview"].lower()
+
+
+# ---- why a query failed has to reach somebody -------------------------------------------------
+
+
+def test_a_failing_query_says_why_in_a_log_the_creator_can_open(caplog):
+    """The preview's only readable log is /api/diag/log, and it reads `logging`, not stdout.
+
+    `serve.py` prints its reason, which is right for a published App — that IS its log, and the page
+    it renders tells the viewer to go and read it. In the preview there is no App and no log a
+    creator can open, so a Data Source that stopped answering produced a page pointing at a log that
+    does not exist and a reason that reached nobody. Live on 2026-08-24: a BigQuery source stopped
+    answering and neither the creator nor Sage could see the cause.
+    """
+    class Boom:
+        def __call__(self, query, params):
+            raise RuntimeError("sanitised sentence for the viewer") from OSError("Flight: UNAUTHENTICATED")
+
+    executor = CachingExecutor(Boom(), 30.0, lambda exc: f"{type(exc).__name__}: {exc}")
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        executor(_Query("usage"), {})
+
+    logged = " ".join(r.message for r in caplog.records)
+    assert "usage" in logged
+    # The CAUSE, not the sanitised sentence: the viewer's message is written to be uninformative on
+    # purpose, and it is the cause that names the credential or the table.
+    assert "UNAUTHENTICATED" in logged
+
+
+def test_a_failure_is_not_cached(caplog):
+    # Only successes are kept (see the class docstring). A failure replayed from cache after the
+    # creator fixed it would be its own bug — and would also swallow the log line above.
+    calls = []
+
+    class Boom:
+        def __call__(self, query, params):
+            calls.append(1)
+            raise RuntimeError("nope")
+
+    executor = CachingExecutor(Boom(), 30.0)
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            executor(_Query("usage"), {})
+
+    assert len(calls) == 2
+
+
+def test_a_redactor_is_used_when_one_is_available():
+    # serve.py's `_readable` exists because the SDK client prints its api_key in __repr__. The
+    # preview must not be the one place that rule is missing.
+    seen = []
+    executor = CachingExecutor(_Raiser(), 30.0, lambda exc: seen.append(exc) or "[redacted]")
+    with pytest.raises(RuntimeError):
+        executor(_Query("usage"), {})
+    assert seen, "the redactor was bypassed"
+
+
+class _Query:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.sql = "SELECT 1"
+
+
+class _Raiser:
+    def __call__(self, query, params):
+        raise RuntimeError("boom")

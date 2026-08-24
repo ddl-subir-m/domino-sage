@@ -77,6 +77,64 @@ def test_reset_refuses_while_a_turn_is_streaming(tmp_path: Path):
         orch._turn_lock.release()
 
 
+def test_a_build_nobody_stopped_still_fails_at_once(tmp_path: Path):
+    # The wait below is for a turn that is already unwinding. Waiting on one that is simply running
+    # would be a slower way to say the same sentence, and the sentence is the useful part.
+    import time as _time
+
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+    assert orch._turn_lock.acquire(blocking=False)
+    try:
+        started = _time.monotonic()
+        with pytest.raises(ResetBusy):
+            orch.reset_app()
+        assert _time.monotonic() - started < 1.0
+    finally:
+        orch._turn_lock.release()
+
+
+def test_reset_waits_out_a_stop_that_is_still_unwinding(tmp_path: Path):
+    """The live failure on 2026-08-24: Stop, then Reset, then "a build is running — stop it".
+
+    stop_build() sets the flag, interrupts the session and returns; the turn releases the lock
+    seconds later, after it reverts the files and finishes its git work. Reset used to fail instantly
+    in that window, telling the user to do the thing they had just done.
+    """
+    import threading
+    import time as _time
+
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    assert orch._turn_lock.acquire(blocking=False)
+    project.stop_requested = True          # what stop_build sets before it returns
+
+    def unwind() -> None:
+        # The real ordering, and the whole trap: handle_stop clears the flag FIRST, then the turn
+        # reverts the files and finishes its git work, and only then is the lock released. A wait
+        # that polled `stop_requested` as its loop condition would give up in that gap — which is
+        # what a first cut of this did, and what made it flaky under load rather than plainly wrong.
+        _time.sleep(0.2)
+        project.stop_requested = False     # cleared by the turn's own handle_stop
+        _time.sleep(0.4)                   # reverting, committing — still holding the lock
+        orch._turn_lock.release()
+
+    threading.Thread(target=unwind, daemon=True).start()
+    assert orch.reset_app()["ok"] is True
+
+
+def test_a_turn_that_never_unwinds_still_gives_up(tmp_path: Path):
+    # Bounded, so a wedged turn cannot hold the button open forever with no explanation.
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    assert orch._turn_lock.acquire(blocking=False)
+    project.stop_requested = True
+    try:
+        assert orch._acquire_for_reset(wait=0.3) is False
+    finally:
+        orch._turn_lock.release()
+
+
 @pytest.mark.parametrize("prompt", [
     "lets rebuild this app from scratch again remove everything you have built",
     "start over",
@@ -98,6 +156,35 @@ def test_a_request_to_start_over_is_recognised(prompt):
 ])
 def test_an_ordinary_change_is_not_a_reset(prompt):
     assert _asks_to_reset(prompt) is False
+
+
+@pytest.mark.parametrize("prompt", [
+    # The live false positive on 2026-08-24, verbatim. They had just used the button, said so, and
+    # asked for the app back — and were handed the button again.
+    "i reset the app build me the dashboard with @synthetic_adverse_events.csv again",
+    "i just reset the app, now build a dashboard",
+    "i've reset the app already, build the tickets view again",
+    "we already reset the app - please rebuild it",
+])
+def test_reporting_a_reset_you_already_did_is_not_asking_for_one(prompt):
+    assert _asks_to_reset(prompt) is False
+
+
+@pytest.mark.parametrize("prompt", [
+    # A first-person subject is what separates a report from a request, and these are requests:
+    # nothing here puts "i" directly in front of the verb.
+    "i want to reset the app",
+    "i'd like to reset the app please",
+    "can you reset the app",
+])
+def test_asking_for_a_reset_in_the_first_person_is_still_a_request(prompt):
+    assert _asks_to_reset(prompt) is True
+
+
+def test_a_prompt_can_report_one_reset_and_ask_for_another():
+    # Only the reported clause is cut out, not the whole prompt — otherwise naming the button once
+    # would buy a free pass for everything after it.
+    assert _asks_to_reset("i reset the app but now delete everything") is True
 
 
 def test_a_reset_request_offers_the_control_and_never_resets(tmp_path: Path):

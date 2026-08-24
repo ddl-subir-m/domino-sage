@@ -171,6 +171,13 @@ def agents_block(aliases: list[Binding]) -> str:
          "show that message as it is; do not replace it with your own wording."),
         ("- The call goes from the viewer's browser to Domino's LLM Gateway under the viewer's own "
          "Domino identity. There is no key to add, no server to write, and no CORS to configure."),
+        # Said for the same reason the query block says it (#7). A model call used to fail in the
+        # preview whatever the app did — cross-origin — so an agent that saw it fail could reasonably
+        # build a screen around the model being unreachable. Now that it answers, a failure is a real
+        # one, and designing around it would hide a bug instead of reporting it.
+        ("- **The model answers in the preview too**, so a call that fails while you are building is "
+         "a real failure worth fixing now. Do not design a screen around the model being "
+         "unavailable, and do not treat an empty answer as the normal state."),
         ("- **Do not edit or re-create `src/sageLlm.ts` or `src/sageLlm.config.ts`.** Sage owns both, "
          "rewrites them, and which models this app uses is chosen in Sage, not in code."), "",
     ]

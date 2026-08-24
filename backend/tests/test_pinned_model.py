@@ -248,11 +248,47 @@ def test_a_project_seeded_before_this_feature_gets_the_helper_it_lacks(tmp_path)
     assert helper.read_text() == "// stub helper\n"
 
 
-def test_a_helper_the_app_already_has_is_left_alone(tmp_path):
-    # Missing-only: this file is imported by code the agent wrote, so replacing a working copy
-    # under a running build is the bigger risk. The config beside it is what actually changes.
+def test_a_stale_helper_is_replaced_with_the_template_s(tmp_path):
+    """This was missing-only, and the reasoning has been reversed on purpose.
+
+    The old rule was that replacing a copy the app's code imports is riskier than leaving a stale
+    one. What it actually bought was a fix to this file reaching new projects and never existing
+    ones: an app that could not call its model in the preview (#7) stayed broken for the whole
+    session that reported it, and the only ways out were Reset app — which throws the app away — or
+    starting a new project.
+
+    The risk it was guarding against is bounded by what the file is. Sage owns it, AGENTS.md forbids
+    the agent to edit or re-create it, and the surface apps import (`askModel`, `checkModel`, the
+    types) is stable; only the internals move. So it is refreshed, and an edit to it does not
+    survive — which is what "Sage owns this file" has to mean to be worth writing down.
+    """
     orch = _orch(tmp_path)
     helper = orch.project().workspace.path / HELPER_PATH
     helper.write_text("// edited by someone\n")
     orch.bind_llm_alias("id-sonnet")
-    assert helper.read_text() == "// edited by someone\n"
+    assert helper.read_text() == "// stub helper\n"
+
+
+def test_the_helper_is_refreshed_when_the_project_is_opened(tmp_path):
+    # Not only when a Resource changes. Binding is the one thing a creator with a working app has no
+    # reason to do, so a helper fix that waited for it would never arrive.
+    orch = _orch(tmp_path)
+    helper = orch.project().workspace.path / HELPER_PATH
+    helper.write_text("// an older Sage wrote this\n")
+
+    orch._project = None                      # the next call re-attaches, as a restart would
+    orch.project(start_preview=False)
+
+    assert helper.read_text() == "// stub helper\n"
+
+
+def test_an_unchanged_helper_is_not_rewritten(tmp_path):
+    # This file is committed to the app's repo. Rewriting identical content would still show up as a
+    # dirty file in the turn's tree comparison and in git history, for no change at all.
+    orch = _orch(tmp_path)
+    helper = orch.project().workspace.path / HELPER_PATH
+    before = helper.stat().st_mtime_ns
+
+    orch.bind_llm_alias("id-sonnet")
+
+    assert helper.stat().st_mtime_ns == before

@@ -551,9 +551,29 @@ _RESET_PHRASE = re.compile(
 )
 
 
+# The same words REPORTING a reset that already happened, which is not a request for another one.
+# "i reset the app, build me the dashboard again" is a build request whose first clause happens to
+# name the button — and it arrives at the one moment the user is most likely to type those words,
+# immediately after using it. Erring wide is cheap in general (see above) but not here: this fires
+# exactly when they have already lost the app once and are asking for it back.
+#
+# The subject is what separates the two. A request is imperative or modal — "reset the app", "can
+# you reset the app", "i want to reset the app" — and none of those put a first-person subject
+# directly in front of the verb. A report does: "i reset", "i've reset", "we already reset".
+_RESET_REPORT = re.compile(
+    r"\b(?:i|we)(?:'ve|'d)?\s+(?:have\s+|had\s+|just\s+|already\s+|then\s+)*"
+    r"reset\s+(?:the\s+|this\s+|my\s+)?app\b",
+    re.IGNORECASE,
+)
+
+
 def _asks_to_reset(prompt: str) -> bool:
-    """True when the prompt asks for the app to be thrown away and started over."""
-    return bool(_RESET_PHRASE.search(_strip_lead_filler(prompt or "")))
+    """True when the prompt asks for the app to be thrown away and started over.
+
+    The reported clause is cut out rather than the whole prompt being waved through, so a prompt that
+    reports one reset AND asks for another ("i reset the app, now delete everything") still matches
+    on the part that is actually a request."""
+    return bool(_RESET_PHRASE.search(_RESET_REPORT.sub(" ", _strip_lead_filler(prompt or ""))))
 
 
 def _looks_like_change_request(prompt: str) -> bool:
@@ -655,22 +675,31 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
 
 
 def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only: bool,
-                        skip_planning: bool) -> bool:
+                        is_approval: bool, skip_planning: bool) -> bool:
     """Whether to spend a model call asking scope.wants_a_plan about this turn.
 
     Every deterministic signal gets to decide first and for free — this only runs when none of them
     did. The conditions are all "the classifier could change the outcome":
 
       * `gate` already True — the turn plans regardless, so there is nothing to ask.
-      * `answer_only` — the turn answers and stops. It covers approvals and questions too, both of
-        which are already excluded from gating upstream.
+      * `answer_only` — the turn answers and stops, so there is no build to gate.
+      * `is_approval` — the user has ALREADY seen a plan and pressed the button. There is nothing
+        left to infer, and inferring anyway is not a wasted call, it is a broken one: a gated
+        approval runs on `sage-plan`, which is read-only, so the approved build reads its way
+        through the turn, writes nothing, and — being a gated turn that wrote nothing — answers with
+        a SECOND plan for the work it was just told to do. Live on 2026-08-24: an approval logged
+        `agent=sage-plan gate=True`, made nineteen tool calls without a single write, and came back
+        with a fresh plan card. This condition used to be folded into `answer_only`, which does not
+        hold it — _is_answer_only returns False for an approval on purpose ("an approval is the user
+        asking to build, never an answer"), so the exclusion documented here never actually ran.
       * not `has_built` — the first-build gate has this turn; the hole opens only after it.
       * `skip_planning` — the project opted out of the automatic gate, and this IS the automatic
         gate, one turn later. Honouring the flag here is the same promise.
       * Auto only. Plan gates every turn already; Implement is the user saying "just build it", and
         Ask never builds. Auto is the mode that carries no explicit instruction, which is the whole
         reason it needs one inferred."""
-    return (mode is Mode.AUTO and has_built and not gate and not answer_only and not skip_planning)
+    return (mode is Mode.AUTO and has_built and not gate and not answer_only
+            and not is_approval and not skip_planning)
 
 
 def _failure_gate_applies(*, mode: Mode, is_approval: bool, is_question: bool, skip_planning: bool,
@@ -956,6 +985,15 @@ _COPY_SCAN_MAX = 512 * 1024
 # verbatim; requiring a multi-line contiguous run keeps false positives on ordinary code negligible.
 _SAMPLE_MATCH_ROWS = 6
 _SAMPLE_MATCH_MIN_BYTES = 64
+# Sage's own files inside the app tree. They name every bound Resource by definition, and Sage
+# rewrites them itself whenever the Bindings change (_write_app_resources), so a Binding found in one
+# is not a dangling reference anybody has to act on. Excluded from _resource_usage for that reason:
+# reporting them would send the creator to edit files AGENTS.md tells the agent never to touch.
+_SAGE_OWNED_SOURCES = frozenset({
+    "src/sageLlm.ts", "src/sageLlm.config.ts",
+    "src/sageModelApi.ts", "src/sageModelApi.config.ts",
+    "src/sageQuery.ts",
+})
 
 
 def _is_inlined_copy(raw: bytes, text: str) -> bool:
@@ -1181,6 +1219,12 @@ class Orchestrator:
         if self._project is not None:
             return self._project
         workspace = self._wm.ensure(self._project_id)
+        # Sage's own files in the app's repo, brought up to date before anything reads them. An app
+        # keeps the copies it was seeded with, so without this a fix to the template reaches new
+        # projects and never existing ones — the lesson refresh_entry_script already records. The
+        # preview config has to land before ViteSupervisor.start() below, which reads it once at boot.
+        self._wm.refresh_preview_config()
+        self._wm.ensure_llm_helper()
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway,
                                project_name=self._cost_project_label)
@@ -1501,6 +1545,31 @@ class Orchestrator:
         except Exception:
             log.exception("app data: could not re-check the query catalog")
 
+    def _acquire_for_reset(self, wait: float = 15.0) -> bool:
+        """Take the turn lock for a reset, waiting only while a Stop is still unwinding the turn.
+
+        Stop is asynchronous and reset was not, which is the whole bug. stop_build() sets the flag,
+        interrupts the session and returns immediately; the turn releases this lock several seconds
+        later, after its poll loop notices, reverts the files and finishes its git work. A reset that
+        failed instantly in that window answered "a build is running — stop it, then reset" to
+        someone who had just pressed Stop and watched it take effect.
+
+        `stop_requested` is what makes the wait bounded and honest: it is set by stop_build and
+        cleared by the turn's own handle_stop, so it is true for exactly the window where the lock is
+        about to free itself. A build nobody stopped still fails at once, with the sentence that
+        tells them what to do about it — waiting there would only be a slower way to say the same
+        thing. A turn that never unwinds falls out at the deadline and fails the same way.
+        """
+        if self._turn_lock.acquire(blocking=False):
+            return True
+        if self._project is None or not self._project.stop_requested:
+            return False
+        # Read once, as a decision, then wait on the LOCK — not polled as a loop condition. The turn
+        # clears this flag in handle_stop and only releases the lock afterwards, once it has reverted
+        # the files and finished its git work, so a loop that re-checked it would give up inside the
+        # very window it exists to cover.
+        return self._turn_lock.acquire(timeout=wait)
+
     def reset_app(self) -> dict:
         """Put the app code back to the starter template, keeping the user's setup (#36).
 
@@ -1515,7 +1584,7 @@ class Orchestrator:
         The transcript survives on purpose (that was the call), so it gets a line saying the reset
         happened. Without one, the history the agent greps still describes an app that is gone, and
         the next turn would build from a record of code it can no longer read."""
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_reset():
             raise ResetBusy()
         try:
             project = self.project()
@@ -1840,7 +1909,8 @@ class Orchestrator:
         answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
                                       is_approval=is_approval, arch=arch, wants_plan=wants_plan)
         if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
-                               answer_only=answer_only, skip_planning=skip_planning):
+                               answer_only=answer_only, is_approval=is_approval,
+                               skip_planning=skip_planning):
             gate = scope.wants_a_plan(
                 prompt,
                 gateway=project.shim.gateway,
@@ -3573,14 +3643,23 @@ class Orchestrator:
         self._write_app_resources(self.project())
         return entries
 
-    def unbind(self, kind: str, resource_id: str) -> list[dict]:
+    def unbind(self, kind: str, resource_id: str) -> dict:
         """Drop one Binding. Removing a record that is already gone is not an error: the creator
-        wanted it gone, and it is."""
+        wanted it gone, and it is.
+
+        Reports the app source that still uses it as `refs`, exactly as detach_file does, so the UI
+        can offer the cleanup instead of leaving a dead button to be found later in the preview.
+        Read BEFORE the record goes: a Data Source's queries are found THROUGH the record, and
+        _write_app_resources rewrites Sage's own files on the way out."""
+        current = parse_bindings(self.project().workspace.read_bindings())
+        gone = next((b for b in current if b.key == (kind, resource_id)), None)
+        refs = self._resource_usage(self.project(), gone) if gone else []
         def change(entries: list[dict]) -> list[dict]:
             return [b.to_dict() for b in parse_bindings(entries) if b.key != (kind, resource_id)]
         entries = self.project().workspace.update_bindings(change)
         self._write_app_resources(self.project())
-        return entries
+        return {"bindings": entries, "refs": refs, "kind": kind,
+                "name": gone.name if gone else resource_id}
 
     # ---- Preflight: what a build will need, checked before it needs it (#17) ----
 
@@ -4047,6 +4126,55 @@ class Orchestrator:
             elif served in text or name in text:
                 refs.append(rel)
         return {"refs": refs, "copies": copies}
+
+    def _resource_usage(self, project: Project, binding: Binding,
+                        sources: list[tuple[str, str | None]] | None = None) -> list[str]:
+        """App source that still uses a Binding, so unbind can offer to clean up after itself.
+
+        The affordance an attached file already has, for the other half of the composer row.
+        Removing the record is not removing the code: an app whose Summarise button calls an Alias
+        the app no longer has keeps the button, and the creator finds out in the preview with
+        nothing on screen saying which removal did it.
+
+        What identifies a Binding in code differs by kind, which is why this cannot be one scan. An
+        Alias and a Model API are named directly — `askModel(msgs, { alias: "mimo-v2.5" })` — so the
+        name is the token. A Data Source is never named in the app at all: the app calls queries by
+        name and the SQL lives in `.sage/queries.json`, so the tokens are the names of the queries
+        recorded against THIS Data Source, and the catalog itself is reported alongside them.
+        """
+        if sources is None:
+            sources = self._scan_app_sources(project)
+        if binding.kind == KIND_DATA_SOURCE:
+            names = self._query_names_for(project, binding.id)
+            # The catalog is a ref in its own right: its statements now run against a store this app
+            # no longer records, and the agent owns that file, so the cleanup can actually fix it.
+            catalog = [".sage/queries.json"] if names else []
+        else:
+            names, catalog = [binding.name], []
+        tokens = [t for t in names if t]
+        if not tokens:
+            return []
+        refs = [rel for rel, text in sources
+                if text is not None and rel not in _SAGE_OWNED_SOURCES
+                and any(t in text for t in tokens)]
+        return catalog + sorted(set(refs))
+
+    def _query_names_for(self, project: Project, resource_id: str) -> list[str]:
+        """Names of the queries in `.sage/queries.json` recorded against one Data Source.
+
+        Best-effort. The agent writes this file, and a catalog that will not parse already has its
+        own check (_recheck_app_data); here it only means we cannot name the queries, and an unbind
+        that warns about nothing is a better outcome than one that fails."""
+        try:
+            catalog = json.loads((project.workspace.path / ".sage" / "queries.json")
+                                 .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(catalog, list):
+            return []
+        return [q["name"] for q in catalog
+                if isinstance(q, dict) and q.get("binding") == resource_id
+                and isinstance(q.get("name"), str) and q["name"]]
 
     def _detect_leaks(self, project: Project) -> list[tuple[str, list[str]]]:
         """(attachment name, [source files that copy it]) for every attached file whose bytes were

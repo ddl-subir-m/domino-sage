@@ -64,13 +64,18 @@ class CachingExecutor:
     from a cache after they have fixed it would be its own bug.
     """
 
-    def __init__(self, inner: Any, ttl_s: float = CACHE_TTL_S) -> None:
+    def __init__(self, inner: Any, ttl_s: float = CACHE_TTL_S, redact: Any = None) -> None:
         self._inner = inner
         self._ttl = ttl_s
         self._entries: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
+        # `serve.py`'s own one-line redactor, passed in rather than reimplemented: the SDK's client
+        # prints its api_key in `__repr__`, so an exception carrying the client carries the key, and
+        # there must be exactly one rule about that. Falls back to the type name alone, which is the
+        # safe thing to say when we cannot be sure what a message holds.
+        self._redact = redact or (lambda exc: type(exc).__name__)
 
     def __call__(self, query: Any, params: dict) -> dict:
         key = self._key(query, params)
@@ -84,7 +89,23 @@ class CachingExecutor:
         # across it would serialise every screen on the slowest one. Two callers racing the same cold
         # key both run it and the second overwrites — one wasted scan, against a deadlock risk and a
         # stalled preview if this were made exact.
-        result = self._inner(query, params)
+        try:
+            result = self._inner(query, params)
+        except Exception as exc:
+            # Why a failing query said nothing anybody could read. `serve.py` prints its reason to
+            # stdout, which is right for a published App — that IS its log, and the page tells the
+            # viewer to go and look at it. The preview has no App and no log a creator can open:
+            # /api/diag/log is the only one they have, and it reads the `logging` hierarchy, not
+            # stdout. So a Data Source that stopped answering produced a page saying "whoever
+            # published this app can see the reason in the App's log", a creator who has published
+            # nothing, and a reason that reached nobody (live, 2026-08-24).
+            #
+            # `__cause__` because serve.py converts the real failure into a sanitised QueryProblem
+            # and chains the original to it — the sentence is for the viewer, the cause is the part
+            # that says which credential or table is the problem.
+            log.warning("preview queries: %s failed — %s", getattr(query, "name", "?"),
+                        self._redact(exc.__cause__ or exc))
+            raise
         with self._lock:
             self._entries[key] = (now, result)
             self.misses += 1
@@ -190,6 +211,7 @@ class PreviewQueries:
             self._module.FlightExecutor(self._module.load_sources(self._workspace),
                                         getattr(self._module, "_DEFAULT_MAX_ROWS", 5000)),
             self._ttl,
+            getattr(self._module, "_readable", None),
         )
 
     def stop(self) -> None:

@@ -55,7 +55,27 @@ def test_bound_resources_get_a_pill_like_attached_files_do():
     pills = _body("renderAttachPills")
     assert "bindingsCache" in pills
     assert "pill resource" in pills
-    # No "×" on a Resource: it is unbound in the rail, where that can say what it costs.
-    assert pills.count("class=\"px\"") == 1
+    # Both pills carry a "×". A Resource pill used to have none, on the reasoning that unbinding
+    # belongs in the rail where the cost can be stated first — but two pills that look the same and
+    # take different gestures is the worse failure, and the file × already answers that risk the
+    # other way round, by removing and then reporting what the app still needs.
+    assert pills.count("class=\"px\"") == 2
+    assert "unbindResource(b.kind, b.id)" in pills
     # Bind and unbind have to move the composer row too, not just the rail.
     assert "renderAttachPills()" in _body("renderBindings")
+
+
+def test_removing_a_resource_says_what_the_app_still_needs():
+    # The pill × and the rail's Remove are one call, so the warning lives there and both get it.
+    # Without it, unbinding an Alias leaves every button that called it in place and failing, and
+    # nothing on screen connects the dead button to the removal that caused it.
+    unbind = _body("unbindResource")
+    assert "warnResourceStillUsed" in unbind
+    warn = _body("warnResourceStillUsed")
+    assert "body.refs" in warn
+    assert "Remove from app" in warn
+    # Offered, never automatic: stripping a model call out of a screen is a real edit to the app's
+    # logic, and the creator may be about to bind a different Resource to the same code.
+    assert "removeResourceFromApp" in warn
+    # A Data Source is not named in app code — its queries are — so it cannot share the sentence.
+    assert "data_source" in warn

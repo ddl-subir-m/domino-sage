@@ -894,7 +894,10 @@ async def add_model_api_credential(request: Request) -> JSONResponse:
 
 @control_app.delete("/api/bindings/{kind}/{resource_id}")
 def remove_binding(kind: str, resource_id: str) -> JSONResponse:
-    return JSONResponse(content={"bindings": orchestrator.unbind(kind, resource_id)})
+    """Drop a Binding. The body carries `bindings` (the list, as every binding route does) plus
+    `refs` — app source that still uses what was just removed, so the rail and the composer pill can
+    both offer the cleanup the way detaching a file does."""
+    return JSONResponse(content=orchestrator.unbind(kind, resource_id))
 
 
 @control_app.get("/api/project/samples")
@@ -1049,11 +1052,61 @@ async def delete_file(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "invalid path"})
 
 
+def _pump_events(events, q: queue.Queue) -> None:
+    """Drain a turn's event generator into a queue on a worker thread, so the response side can
+    interleave keepalives during the gaps. The bytes twin of this is `sage.shim.keepalive.pump`."""
+    try:
+        for evt in events:
+            q.put(evt)
+        q.put(ka.DONE)
+    except BaseException as e:
+        q.put(("error", e))
+
+
+def _turn_sse(events, what: str):
+    """One turn's events as SSE, with the connection kept warm through its silent gaps.
+
+    The same treatment the shim's /v1 stream has had since it was losing OpenCode's requests to a
+    "TypeError: network error", applied to the stream the BROWSER reads — the one place it was
+    missing. A turn goes quiet whenever the agent is thinking rather than calling a tool, and on a
+    built project a plan turn spends half a minute there routinely (30s+ gaps between tool calls,
+    live on 2026-08-24). An idle response is what an intermediary times out, and when it did, the
+    browser saw the stream die while the turn ran on server-side — which is the "Lost the connection
+    to this build — it's still running" the UI then falls back to.
+
+    A comment frame is the right filler: every SSE parser ignores it, so no consumer has to know it
+    happened, and it resets each read timer between here and the browser.
+
+    Running the generator on our own thread also settles what a disconnect means, and settles it the
+    way the UI already assumes: the turn is not cancelled, it runs to completion, and the browser
+    rejoins it by polling the transcript (see resumeRunningTurn). It also keeps the event loop free
+    to serve the /v1 model calls the turn makes, which is what the threadpooled sync generator did
+    before.
+    """
+    import json as _json
+
+    q: queue.Queue = queue.Queue()
+    threading.Thread(target=_pump_events, args=(events, q),
+                     name=f"sage-{what}", daemon=True).start()
+    while True:
+        item = ka.get(q, ka.KEEPALIVE_INTERVAL_S)
+        if item is ka.EMPTY:
+            yield ka.KEEPALIVE.decode()
+            continue
+        if item is ka.DONE:
+            return
+        if ka.is_error(item):
+            e = item[1]
+            log.exception("%s failed", what, exc_info=e)
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
+            return
+        yield f"data: {_json.dumps(item)}\n\n"
+
+
 @control_app.post("/api/project/build/stream")
 def build_stream(body: dict) -> StreamingResponse:
     """Streaming build: SSE of progress events (agent text/tool, typecheck, done). Follow-up
-    prompts reuse the session (modify/add features). Sync generator -> Starlette threadpools it,
-    so the loop stays free to serve the /v1 model calls the turn makes."""
+    prompts reuse the session (modify/add features)."""
     import json as _json
 
     prompt = (body or {}).get("prompt", "")
@@ -1062,37 +1115,25 @@ def build_stream(body: dict) -> StreamingResponse:
     # than more entries in `mentions`: a Resource has no path, so nothing here resolves to a file.
     resources = (body or {}).get("resources") or None
 
-    def sse():
-        if not prompt:
+    if not prompt:
+        def refuse():
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
-            return
-        try:
-            for evt in orchestrator.build_stream(prompt, mentions, resources):
-                yield f"data: {_json.dumps(evt)}\n\n"
-        except Exception as e:
-            log.exception("build_stream failed")
-            yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
+        return StreamingResponse(refuse(), media_type="text/event-stream")
 
-    return StreamingResponse(sse(), media_type="text/event-stream")
+    return StreamingResponse(
+        _turn_sse(orchestrator.build_stream(prompt, mentions, resources), "build_stream"),
+        media_type="text/event-stream")
 
 
 @control_app.post("/api/project/build/approve")
 def build_approve(body: dict) -> StreamingResponse:
     """Approve a gated plan (SPEC P6) and stream the resulting build. Body: {answers?, plan_edits?}."""
-    import json as _json
-
     answers = (body or {}).get("answers", "") or ""
     plan_edits = (body or {}).get("plan_edits")  # None = approve the plan as proposed
 
-    def sse():
-        try:
-            for evt in orchestrator.approve_stream(answers, plan_edits):
-                yield f"data: {_json.dumps(evt)}\n\n"
-        except Exception as e:
-            log.exception("approve_stream failed")
-            yield f"data: {_json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
-
-    return StreamingResponse(sse(), media_type="text/event-stream")
+    return StreamingResponse(
+        _turn_sse(orchestrator.approve_stream(answers, plan_edits), "approve_stream"),
+        media_type="text/event-stream")
 
 
 @control_app.get("/api/project/settings")
@@ -1265,7 +1306,29 @@ def _preview_queries():
     return orchestrator._project.queries if orchestrator._project is not None else None
 
 
-control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries))
+# The previewed app's own model calls (#7). A published app calls the gateway straight from the
+# viewer's browser because both sit on `apps.<domino-host>` — same origin. The preview is served from
+# here instead, so that call is cross-origin and the browser blocks it; the proxy makes it instead.
+# Returns a FRESH token per call: sidecar tokens are short-lived, so one resolved at boot would work
+# for the first few minutes of a session and then quietly stop.
+def _preview_llm() -> tuple[str, str] | None:
+    """`(gateway /v1 base, bearer)`, or None when there is no Domino gateway to forward to.
+
+    Gated on GATEWAY_MODE exactly as `_browser_gateway_base` is, and for the same reason: in `openai`
+    mode each model routes to its own vendor behind a key, and in `fake` mode there is no gateway at
+    all. In both, the app was never given a gateway to call, so there is nothing to forward.
+    """
+    base = os.environ.get("GATEWAY_BASE_URL", "").strip()
+    if GATEWAY_MODE != "domino" or not base:
+        return None
+    key = os.environ.get("GATEWAY_API_KEY", "")
+    provider = static_token(key) if key else sidecar_token(
+        os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/v1", provider()
+
+
+control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
+                                               _preview_llm))
 
 
 def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:

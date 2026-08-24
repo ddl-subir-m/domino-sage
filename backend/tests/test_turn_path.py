@@ -357,3 +357,39 @@ def test_a_mention_rides_the_user_turn_only(tmp_path: Path):
     user_turn, nudge = oc.prompts[2]["text"], oc.prompts[3]["text"]
     assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in user_turn
     assert "LLM Alias" not in nudge
+
+
+def test_an_approved_plan_builds_even_when_the_classifier_would_gate(tmp_path: Path):
+    """An approval must reach the build agent. Live regression, 2026-08-24.
+
+    The scope classifier used to be asked about approvals as well — the exclusion was documented as
+    coming from `answer_only`, which does not hold it. When it answered PLAN (or answered
+    unreadably, which gates), the approved build ran on `sage-plan`. That agent is read-only, so the
+    turn read its way through, wrote nothing, and — being a gated turn that wrote nothing — came back
+    with a SECOND plan for the work the user had just approved. From the outside it looked like the
+    builder spinning and never building.
+
+    Scripted with the classifier saying PLAN as loudly as it can, because the point is that nobody
+    asks it.
+    """
+    orch, oc, gateway = _build(tmp_path, [
+        Turn(text="a plan for the dashboard"),
+        Turn(writes={"src/App.tsx": "export default function App() { return <div>one</div> }\n"}),
+        Turn(text="a plan for the second tab"),
+        Turn(writes={"src/Tab.tsx": "export function Tab() { return <div>two</div> }\n"}),
+    ], verdict="PLAN")
+    _get_built(orch)
+
+    gated = _run(orch, "add another tab using the attached csv")
+    assert "plan-proposed" in _kinds(gated), "the request itself should still be gated"
+    calls_before = gateway.calls
+
+    events = list(orch.approve_stream())
+
+    # Nobody asked the classifier about a plan the user had already approved.
+    assert gateway.calls == calls_before
+    # And the turn ran on the build agent, so it could actually write.
+    assert oc.prompts[-1]["agent"] != "sage-plan"
+    assert (orch.project(start_preview=False).workspace.path / "src" / "Tab.tsx").exists()
+    # The failure's signature: an approval answering with another plan card.
+    assert "plan-proposed" not in _kinds(events)
