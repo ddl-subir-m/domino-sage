@@ -130,7 +130,7 @@ _MODE_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan", Mode.IMPLEMENT: "sa
 # F5 reads as lost work.
 _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
-    "build-plan", "step-start", "step-done",
+    "build-plan", "step-start", "step-done", "attachments-restored",
 })
 
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
@@ -1439,6 +1439,7 @@ class Orchestrator:
                 return
             yield from self._build_stream(prompt, mentions, resources)
         finally:
+            self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
             self._recheck_app_data()
             self._clear_turn_baseline()
             self._turn_lock.release()
@@ -1459,6 +1460,68 @@ class Orchestrator:
             self._write_app_data(self.project())
         except Exception:
             log.exception("app data: could not re-check the query catalog")
+
+    def _restore_attachments(self) -> None:
+        """Put back any attachment the turn just deleted (#37).
+
+        Told to "remove everything you have built", a live agent took the user's uploaded CSV with it:
+        the file left the @ menu and they had to attach it again to say the same sentence. AGENTS.md
+        now says not to, but an instruction is not a guarantee, and neither of the two obvious
+        enforcement points can carry this one:
+
+        - The shim gates by tool NAME (READ_ONLY_DENIED, WEB_TOOLS strip a tool out of the request).
+          It never reads arguments, and it is an LLM proxy — the tool runs in OpenCode, not through
+          it. A `rm` in a bash call would never look like a write tool in the first place.
+        - The turn snapshot cannot restore these either: commit_before_turn stages with `add -A`,
+          which honours the workspace .gitignore, and attach_file puts `public/data/` there
+          (_ensure_gitignored) so those symlinks were never in the snapshot at all.
+
+        What the agent cannot reach is process memory. `project.attached` is the live list and no tool
+        touches it, so it is the thing to rebuild from: rewrite the manifest it should have produced,
+        and re-link anything whose symlink went missing. Both attach paths write the same entry shape
+        (see attach_file and the upload path), so one re-link covers a dataset file and an upload.
+
+        Best-effort and end-of-turn, like _recheck_app_data beside it: this must never be the thing
+        that fails a build that otherwise worked."""
+        try:
+            project = self.project()
+        except Exception:
+            return
+        restored: list[str] = []
+        for entry in list(project.attached):
+            try:
+                dest = _safe_join(project.workspace.path, entry["path"])
+                if dest.is_symlink() or dest.exists():
+                    continue
+                # Raises LookupError for a rehydrated entry with no dataset_id, which the except
+                # below treats like any other unrestorable one.
+                asset = self._find_asset(entry.get("dataset_id"))
+                if not asset.mount_path:
+                    continue        # the mount is gone; nothing to point at, and saying so is the
+                                    # describe path's job, not this one's
+                src = _safe_join(Path(asset.mount_path),
+                                 entry.get("dataset_rel_path") or entry.get("file") or "")
+                if not src.is_file():
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.symlink_to(src)
+                restored.append(entry["path"])
+            except (ValueError, OSError, LookupError):
+                continue            # one unrestorable attachment must not strand the others
+        try:
+            # Unconditional, not only when `restored` is non-empty: the entry can survive on disk
+            # while the manifest that carries it into the next session does not, and rewriting a
+            # file that already says this is free.
+            project.workspace.write_attachments(project.attached)
+        except OSError:
+            log.exception("attachments: could not rewrite the manifest")
+        if restored:
+            log.warning("attachments: the turn deleted %d attachment(s); restored %s",
+                        len(restored), ", ".join(restored))
+            try:
+                project.workspace.append_history({"type": "attachments-restored", "paths": restored})
+            except OSError:
+                pass
 
     def _clear_turn_baseline(self) -> None:
         """Mark "no turn running" so _rebaseline_turn stops touching the baseline once the turn that
@@ -2364,6 +2427,7 @@ class Orchestrator:
         try:
             yield from self._approve_locked(answers, plan_edits)
         finally:
+            self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
             self._recheck_app_data()
             self._clear_turn_baseline()
             self._turn_lock.release()

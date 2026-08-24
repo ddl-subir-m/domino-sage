@@ -3600,6 +3600,10 @@ function replayEvent(ev) {
   else if (ev.type === 'agent' && ev.kind === 'text') addAgent(ev.text);
   else if (ev.type === 'typecheck') addStatus(ev.ok ? 'ok' : 'err', ev.ok ? '✓' : '✕', ev.ok ? 'Typecheck passed' : `Typecheck: <b>${ev.errors}</b> error(s)`);
   else if (ev.type === 'data-leak') addStatus('warn', '⚠', leakMsg(ev));
+  // The turn deleted an attached file and Sage put it back (#37). Said out loud rather than repaired
+  // in silence: the pill reappearing on its own is the kind of thing you have to be told about once,
+  // or the next time a file goes missing you have no idea whether Sage is covering for it.
+  else if (ev.type === 'attachments-restored') addStatus('warn', '⚠', restoredMsg(ev));
   // Replay renders the refusal without its Build-in-Auto button: the button starts a real build, and
   // an old message shouldn't be able to do that on a reload the user didn't connect it to.
   else if (ev.type === 'ask-blocked' || ev.type === 'ask-active') addStatus('warn', '⚠', esc(ev.message));
@@ -3715,6 +3719,15 @@ function leakMsg(ev) {
   return `<b>${esc(ev.file)}</b> was copied into your app code${where ? ` (${where})` : ''}. `
     + `Attached data should be read from <code>data/…</code> at runtime, not copied into source — `
     + `copies get committed to git.`;
+}
+
+function restoredMsg(ev) {
+  const names = (ev.paths || []).map(p => `<b>${esc(String(p).split('/').pop())}</b>`);
+  const list = names.join(', ');
+  return `That turn deleted ${names.length === 1 ? 'an attached file' : 'attached files'} `
+    + `(${list}). Sage put ${names.length === 1 ? 'it' : 'them'} back — attachments are yours, and a `
+    + `build is never meant to remove one. Detach ${names.length === 1 ? 'it' : 'them'} from the pill `
+    + `above the message box if you no longer want ${names.length === 1 ? 'it' : 'them'} here.`;
 }
 
 function renderEvent(ev, turnStart) {

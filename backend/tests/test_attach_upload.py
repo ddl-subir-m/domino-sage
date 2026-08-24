@@ -611,3 +611,39 @@ def test_upload_outside_a_turn_leaves_the_baseline_alone(tmp_path: Path):
     orch.upload_file("idle.csv", b"a,b\n1,2\n", sensitive=False)
 
     assert project.turn_tree_baseline == ""
+
+
+def test_a_turn_that_deletes_an_attachment_gets_it_put_back(tmp_path: Path):
+    # #37, live 2026-08-24: told to "remove everything you have built", the agent took the user's
+    # uploaded CSV with it. The file left the @ menu and they had to attach it again to say the same
+    # sentence. Neither obvious enforcement point can carry this — the shim gates by tool NAME and a
+    # bash `rm` is not a write tool, and the turn snapshot stages with `add -A`, which honours the
+    # .gitignore attach_file writes `public/data/` into. project.attached is process memory, which no
+    # tool reaches, so that is what the repair rebuilds from.
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("q3.csv", b"region,revenue\nwest,10\neast,20\n")
+    link = project.workspace.path / project.attached[0]["path"]
+    assert link.is_symlink()
+
+    link.unlink()                        # what the turn did
+    project.workspace.attachments_path.unlink()
+    orch._restore_attachments()
+
+    assert link.is_symlink()             # the file is back in the @ menu
+    assert link.read_bytes() == b"region,revenue\nwest,10\neast,20\n"   # and points at the real rows
+    assert [e["path"] for e in _manifest(project.workspace.path)] == [project.attached[0]["path"]]
+    ev = [e for e in project.workspace.read_history() if e["type"] == "attachments-restored"]
+    assert len(ev) == 1 and ev[0]["paths"] == [project.attached[0]["path"]]   # said out loud, not silent
+
+
+def test_a_turn_that_deletes_nothing_restores_nothing_and_says_nothing(tmp_path: Path):
+    # The repair runs at the end of EVERY turn, so a quiet turn must stay quiet: no warning card for
+    # a build that behaved.
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    project = orch.project(start_preview=False)
+    orch.upload_file("q3.csv", b"region,revenue\nwest,10\neast,20\n")
+
+    orch._restore_attachments()
+
+    assert not [e for e in project.workspace.read_history() if e["type"] == "attachments-restored"]
