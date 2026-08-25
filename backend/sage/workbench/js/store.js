@@ -81,6 +81,9 @@ window.SW = window.SW || {};
 
     // Composer
     model: 'auto',
+    reasoningEffort: null,
+    sensitivityLocked: false,
+    catalog: null,
     phase: 'planning',
     // Build agent mode (Auto / Ask / Plan / Implement). Distinct from the
     // prototype model picker above. `buildMode` is the picker's standing
@@ -112,10 +115,16 @@ window.SW = window.SW || {};
   }
 
   function applyModelStatus(status) {
-    const m = status && status.model;
+    const m = (status && status.model) || status;
     if (!m) return;
     state.buildMode = m.selected_mode || m.mode || state.buildMode;
     state.buildTurnMode = m.mode || state.buildTurnMode;
+    if ('chat_model' in m || m.chat_model === null) {
+      state.model = m.chat_model || 'auto';
+    }
+    if ('reasoning_effort' in m) state.reasoningEffort = m.reasoning_effort || null;
+    if ('sensitivity_locked' in m) state.sensitivityLocked = !!m.sensitivity_locked;
+    if (m.catalog) state.catalog = m.catalog;
   }
 
   function indexResources(groups) {
@@ -520,6 +529,19 @@ window.SW = window.SW || {};
       }
     },
 
+    async setChatModel(alias, effort) {
+      state.model = alias || 'auto';
+      state.reasoningEffort = effort || null;
+      notify();
+      try {
+        const status = await SW.api.setChatModel(alias, effort);
+        applyModelStatus(status);
+        notify();
+      } catch (err) {
+        antd.message.error(String((err && err.message) || err));
+      }
+    },
+
     async init() {
       const [me, projects, charts, starters, notifications] = await Promise.all([
         SW.api.me(),
@@ -531,6 +553,7 @@ window.SW = window.SW || {};
       state.me = me;
       state.projects = projects;
       state.scope = projects[0] || state.scope;
+      applyModelStatus(projects[0]);
       state.charts = charts;
       state.starters = starters;
       state.notifications = notifications;

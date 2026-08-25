@@ -65,3 +65,31 @@ def test_sensitivity_is_only_locked_decision():
     ]:
         assert resolve(state, CATALOG).locked is False
     assert resolve(SessionState(True, Mode.AUTO, Phase.PLAN), CATALOG).locked is True
+
+
+def test_chat_turn_does_not_inherit_build_mode():
+    # Build left on Ask would otherwise pin Chat to catalog.ask.
+    state = SessionState(False, Mode.ASK, Phase.PLAN, chat_thread_id="thr")
+    decision = resolve(state, CATALOG)
+    assert decision.model == "strong-vendor"
+    assert decision.reason is Reason.CHAT_AUTO
+
+
+def test_chat_pick_overrides_auto():
+    state = SessionState(
+        False, Mode.AUTO, Phase.PLAN, chat_thread_id="thr", chat_model="sonnet",
+    )
+    decision = resolve(state, CATALOG)
+    assert decision.model == "sonnet"
+    assert decision.reason is Reason.CHAT_OVERRIDE
+
+
+def test_chat_lock_keeps_a_sovereign_pick_and_drops_a_vendor_one():
+    kept = resolve(SessionState(
+        True, Mode.AUTO, Phase.PLAN, chat_thread_id="thr", chat_model="sovereign-ask-8b",
+    ), CATALOG)
+    assert kept.model == "sovereign-ask-8b" and kept.locked is True
+    dropped = resolve(SessionState(
+        True, Mode.AUTO, Phase.PLAN, chat_thread_id="thr", chat_model="sonnet",
+    ), CATALOG)
+    assert dropped.model == "sovereign-ask-8b" and dropped.locked is True

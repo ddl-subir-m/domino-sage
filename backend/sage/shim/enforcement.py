@@ -184,7 +184,7 @@ class EnforcementShim:
         # lock still wins in resolve(), so skip classifying when locked. Reflect the phase back to
         # the control so the UI's live indicator matches what actually routed.
         signals = None
-        if state.mode is Mode.AUTO and not state.sensitivity_locked:
+        if state.chat_thread_id is None and state.mode is Mode.AUTO and not state.sensitivity_locked:
             # assess() scores BOTH directions: the write-flip down to the cheap model, and a rescue
             # back up to PLAN when the turn starts failing (see phase_classifier). `signals.phase`
             # is the resolved answer; `base_phase` is the write-flip rule alone, kept for the log.
@@ -239,6 +239,17 @@ class EnforcementShim:
         # everything ran on whatever opencode.json named. See _ensure_session, which has always
         # documented this as the contract: no session-level model, the shim decides per request.
         request = {**request, "model": decision.model}
+
+        # Chat-only: the user picked an effort for THIS alias. Do not send it when the lock (or
+        # Auto) routed somewhere else — qwen-2-5 400s on unknown fields, and a locked turn must
+        # stay sovereign rather than fail open.
+        if (
+            state.chat_thread_id
+            and state.reasoning_effort
+            and state.chat_model
+            and request["model"] == state.chat_model
+        ):
+            request = {**request, "reasoning_effort": state.reasoning_effort}
 
         # Handoff note. A rescued step lands on a different model mid-turn with the transcript but
         # no account of why it was called in — so it re-attempts the edit that just failed. Appended

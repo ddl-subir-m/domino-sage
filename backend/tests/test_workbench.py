@@ -22,6 +22,7 @@ def test_workbench_is_the_default_ui():
     assert b"/project/history" in js.content
     assert b"/project/build/stop" in js.content
     assert b"./api" in js.content
+    assert b"chat_model" in js.content
 
     build = client.get("/js/modes/builder.js")
     assert build.status_code == 200
@@ -46,6 +47,10 @@ def test_workbench_is_the_default_ui():
     assert b"'ask'" in composer.content
     assert b"'plan'" in composer.content
     assert b"'implement'" in composer.content
+    assert b"setChatModel" in composer.content
+    assert b"reasoning_efforts" in composer.content
+    assert b"Best for reasoning" not in composer.content
+    assert b"chatAliases" in composer.content
 
     assert b"showMode: true" in build.content
     assert b"hidePhase" not in build.content

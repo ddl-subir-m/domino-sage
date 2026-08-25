@@ -500,6 +500,11 @@ async def set_model(request: Request) -> JSONResponse:
         project.control.set_phase(Phase(body["phase"]))
     if "pick" in body:
         project.control.pick(body["pick"])
+    if "chat_model" in body:
+        try:
+            orchestrator.set_chat_pick(body.get("chat_model"), body.get("reasoning_effort"))
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
     if "catalog" in body:
         orchestrator.set_catalog(**(body.get("catalog") or {}))
     if "lock" in body:

@@ -76,6 +76,7 @@ SW.api = {
       memberCount: 1,
       appCount: 1,
       planCount: 0,
+      model: p.model,
     }];
   },
   createProject: async () => {
@@ -101,7 +102,10 @@ SW.api = {
       model_llm: (res.llm_aliases || []).map((a) => ({
         id: `llm_alias:${a.id}`,
         name: a.display_name || a.name,
+        alias: a.name,
         kind: 'model_llm',
+        capabilities: a.capabilities || [],
+        reasoning_efforts: a.reasoning_efforts || [],
         bindingKey: ['llm_alias', a.id],
       })),
       model_predictive: (res.model_apis || []).map((m) => ({
@@ -221,6 +225,8 @@ SW.api = {
   bindings: () => request('/bindings'),
   buildState: () => request('/project/build/state'),
   setBuildMode: (mode) => post('/project/model', { mode }),
+  setChatModel: (chat_model, reasoning_effort) =>
+    post('/project/model', { chat_model: chat_model || 'auto', reasoning_effort: reasoning_effort || null }),
   cancelPlan: () => post('/project/plan/cancel'),
   stopBuild: () => post('/project/build/stop'),
 

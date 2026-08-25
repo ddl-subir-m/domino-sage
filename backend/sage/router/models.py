@@ -32,6 +32,8 @@ class Reason(str, Enum):
     PLAN_OVERRIDE = "plan-override"
     IMPLEMENT_PINNED = "implement-pinned"
     IMPLEMENT_OVERRIDE = "implement-override"
+    CHAT_AUTO = "chat-auto"
+    CHAT_OVERRIDE = "chat-override"
 
 
 # Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified by
@@ -54,9 +56,24 @@ def supports_vision(model: ModelId) -> bool:
 # it. TEMPORARY: delete this and its use once the gateway's Bedrock adapter groups tool results.
 BEDROCK_SERVED = frozenset({"bedrock-qwen3-coder", "nova"})
 
+# OpenAI-style reasoning_effort values. Used when the gateway alias record does not list them.
+_REASONING_EFFORTS = ("low", "medium", "high")
+
 
 def is_bedrock(model: ModelId) -> bool:
     return model.rsplit("/", 1)[-1] in BEDROCK_SERVED
+
+
+def reasoning_efforts_for(model: ModelId) -> tuple[str, ...]:
+    """Heuristic: GPT-5 and the o-series accept `reasoning_effort` on chat/completions.
+
+    Alias metadata (`inference_params`) is the authority when present; this is the fallback so a
+    picker can still offer Low/Medium/High for gpt-5.4 when the gateway omits the enum.
+    """
+    bare = model.rsplit("/", 1)[-1].lower()
+    if "gpt-5" in bare or bare.startswith(("o1", "o3", "o4")):
+        return _REASONING_EFFORTS
+    return ()
 
 
 @dataclass(frozen=True)
@@ -96,6 +113,10 @@ class SessionState:
     # A Chat turn (docs/workbench/chat.md). When set, the shim keeps write/bash tools (Chat writes
     # Artifacts) and only allows writes under that Thread's examples/ and .sage/threads/ dirs.
     chat_thread_id: str | None = None
+    # Standing Chat pick. Ignored on Build turns. None means Auto (catalog.plan).
+    chat_model: ModelId | None = None
+    # OpenAI-style reasoning_effort for Chat, when the picked alias supports it. None omits the field.
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)

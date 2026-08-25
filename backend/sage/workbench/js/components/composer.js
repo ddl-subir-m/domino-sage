@@ -5,15 +5,6 @@ window.SW = window.SW || {};
   const { Input, Button, Dropdown, Tag, Tooltip, Space } = antd;
   const { PlusOutlined, ArrowUpOutlined, DownOutlined, CloseOutlined } = icons;
 
-  // Options read as capabilities, not model aliases. Expanding a row reveals
-  // the model name for the people who care.
-  const MODELS = [
-    { id: 'auto', label: 'Auto (recommended)', detail: 'Sage picks per task', sovereign: false },
-    { id: 'reasoning', label: 'Best for reasoning', detail: 'Claude Sonnet 4.5', sovereign: false },
-    { id: 'fastest', label: 'Fastest', detail: 'GPT-5.2', sovereign: false },
-    { id: 'sovereign', label: 'Runs in your environment', detail: 'Llama 3.3 70B', sovereign: true },
-  ];
-
   const BUILD_MODES = [
     { id: 'auto', label: 'Auto', detail: 'Sage picks plan or build per turn', key: '1' },
     { id: 'ask', label: 'Ask', detail: 'Answers questions, never changes files', key: '2' },
@@ -22,6 +13,23 @@ window.SW = window.SW || {};
   ];
   const BUILD_MODE_LABEL = { auto: 'Auto', ask: 'Ask · read-only', plan: 'Plan', implement: 'Implement' };
   const PROJECT_MENTION_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive'];
+
+  function chatAliases(resourceGroups, locked, catalog) {
+    const rows = (resourceGroups.model_llm || []).filter((r) => {
+      const caps = r.capabilities || [];
+      return !(caps.includes('embeddings') && !caps.includes('chat'));
+    });
+    if (!locked || !catalog) return rows;
+    const sovereign = new Set(
+      [catalog.sovereign_plan, catalog.sovereign_implement, catalog.sovereign_ask].filter(Boolean)
+    );
+    return rows.filter((r) => sovereign.has(r.alias));
+  }
+
+  function effortLabel(value) {
+    if (!value) return 'Default';
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  }
 
   // Session context, then project Resources, then files — never a flat A–Z dump.
   function mentionCandidates(attachments, resourceGroups, query) {
@@ -84,8 +92,8 @@ window.SW = window.SW || {};
     compact,
   }) {
     const {
-      model, attachments, scope, resourceIndex, resourceGroups,
-      buildMode, buildTurnMode, buildRunning,
+      model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
+      buildMode, buildTurnMode, buildRunning, sensitivityLocked, catalog,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -95,9 +103,13 @@ window.SW = window.SW || {};
     const [modeOpen, setModeOpen] = useState(false);
     const fileRef = useRef(null);
 
-    const lock = SW.util.modelLockFor(attachments);
-    const available = MODELS.filter((m) => !lock || m.sovereign || m.id === 'auto');
-    const activeModel = MODELS.find((m) => m.id === model) || MODELS[0];
+    const lock = SW.util.modelLockFor(attachments) || (sensitivityLocked ? {
+      message: 'Only models that run inside your environment can be used with this data.',
+    } : null);
+    const aliases = chatAliases(resourceGroups, !!(lock || sensitivityLocked), catalog);
+    const activeAlias = aliases.find((a) => a.alias === model);
+    const modelLabel = activeAlias ? (activeAlias.name || activeAlias.alias) : 'Auto';
+    const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
     const suggestions = mention ? mentionCandidates(attachments, resourceGroups, mention.query) : [];
@@ -167,16 +179,43 @@ window.SW = window.SW || {};
     };
 
     const modelMenu = {
-      items: available.map((option) => ({
-        key: option.id,
-        label: h(
-          'div',
-          { style: { minWidth: 200 } },
-          h('div', { className: 'sw-model-option-name' }, option.label),
-          h('div', { className: 'sw-model-option-detail' }, option.detail)
-        ),
-      })),
-      onClick: ({ key }) => SW.store.set({ model: key }),
+      items: [
+        {
+          key: 'auto',
+          label: h(
+            'div',
+            { style: { minWidth: 200 } },
+            h('div', { className: 'sw-model-option-name' }, 'Auto'),
+            h('div', { className: 'sw-model-option-detail' }, 'Sage picks from your gateway models')
+          ),
+        },
+        ...aliases.map((option) => ({
+          key: option.alias,
+          label: h(
+            'div',
+            { style: { minWidth: 200 } },
+            h('div', { className: 'sw-model-option-name' }, option.name || option.alias),
+            h('div', { className: 'sw-model-option-detail' }, option.alias)
+          ),
+        })),
+      ],
+      onClick: ({ key }) => {
+        const next = aliases.find((a) => a.alias === key);
+        const keep = next && (next.reasoning_efforts || []).includes(reasoningEffort)
+          ? reasoningEffort
+          : null;
+        SW.store.setChatModel(key === 'auto' ? 'auto' : key, keep);
+      },
+    };
+
+    const effortMenu = {
+      items: [
+        { key: 'default', label: 'Default' },
+        ...efforts.map((value) => ({ key: value, label: effortLabel(value) })),
+      ],
+      onClick: ({ key }) => {
+        SW.store.setChatModel(model, key === 'default' ? null : key);
+      },
     };
 
     const modeMenu = {
@@ -347,16 +386,27 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-composer-bar' },
-          h(
-            Dropdown,
-            { menu: modelMenu, trigger: ['click'], placement: 'topLeft' },
+          !showMode &&
             h(
-              Button,
-              { size: 'small' },
-              h(Space, { size: 4 }, activeModel.label === 'Auto (recommended)' ? 'Auto' : activeModel.label,
-                h(DownOutlined, { style: { fontSize: 9 } }))
-            )
-          ),
+              Dropdown,
+              { menu: modelMenu, trigger: ['click'], placement: 'topLeft' },
+              h(
+                Button,
+                { size: 'small' },
+                h(Space, { size: 4 }, modelLabel, h(DownOutlined, { style: { fontSize: 9 } }))
+              )
+            ),
+          !showMode &&
+            efforts.length > 0 &&
+            h(
+              Dropdown,
+              { menu: effortMenu, trigger: ['click'], placement: 'topLeft' },
+              h(
+                Button,
+                { size: 'small' },
+                h(Space, { size: 4 }, effortLabel(reasoningEffort), h(DownOutlined, { style: { fontSize: 9 } }))
+              )
+            ),
           h(
             Dropdown,
             { menu: attachMenu, trigger: ['click'], placement: 'topLeft' },

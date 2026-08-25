@@ -56,6 +56,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
+from ..router.models import reasoning_efforts_for as name_reasoning_efforts
+
 
 class ResourceUnavailable(RuntimeError):
     """A Resource listing could not be produced. The message reaches the user unchanged, so it says
@@ -92,6 +94,8 @@ class LlmAlias:
     # status is what says the model will actually answer (#21): `/v1/models` filters on permission
     # alone, so a granted alias whose endpoint is stopped is still offered.
     endpoint_url: str | None = None
+    # OpenAI-style reasoning_effort values this alias accepts. Empty means the picker hides effort.
+    reasoning_efforts: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -618,6 +622,32 @@ def parse_costs(raw: Any) -> dict[str, float]:
     }
 
 
+_EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+
+
+def parse_reasoning_efforts(raw: Any) -> list[str]:
+    """`inference_params.reasoning_effort` as a list of allowed values, if the alias advertised any."""
+    if not isinstance(raw, dict):
+        return []
+    value = raw.get("reasoning_effort") or raw.get("reasoning")
+    options: Any
+    if isinstance(value, list):
+        options = value
+    elif isinstance(value, dict):
+        options = value.get("enum") or value.get("options") or value.get("values") or []
+    else:
+        return []
+    if not isinstance(options, list):
+        return []
+    return [str(v) for v in options if str(v) in _EFFORT_VALUES]
+
+
+def alias_reasoning_efforts(name: str, inference_params: Any = None) -> list[str]:
+    """Gateway enum if present, else the GPT-5 / o-series heuristic."""
+    listed = parse_reasoning_efforts(inference_params)
+    return listed or list(name_reasoning_efforts(name))
+
+
 def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
     """Intersect the accessible model ids with the alias metadata records.
 
@@ -647,10 +677,14 @@ def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
                 capabilities=parse_capabilities(rec.get("capabilities")),
                 costs=parse_costs(rec.get("effective_costs")),
                 endpoint_url=str(rec["endpoint_url"]) if rec.get("endpoint_url") else None,
+                reasoning_efforts=alias_reasoning_efforts(name or rid, rec.get("inference_params")),
             )
         )
     for extra in sorted(accessible - claimed):
-        out.append(LlmAlias(id=extra, name=extra, display_name=extra))
+        out.append(LlmAlias(
+            id=extra, name=extra, display_name=extra,
+            reasoning_efforts=alias_reasoning_efforts(extra),
+        ))
     return out
 
 

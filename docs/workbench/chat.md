@@ -201,7 +201,7 @@ Minimum Chat chrome that must work (the rest of the mock can wait):
 - Scope chip (Untitled + named projects)
 - Chat / Build tabs (Build is the existing builder, restyled into the shell)
 - Conversation rail of Threads in the current project
-- Composer with chips, `@`, attach, model picker (existing Auto control)
+- Composer with chips, `@`, attach, model picker (gateway aliases this caller can use; reasoning effort when the alias supports it)
 - Message list with Artifact blocks
 - Resource panel (IN CONTEXT / PROJECT RESOURCES)
 - The plan-suggestion callout and Open in Build — specified in [handoff.md](handoff.md)

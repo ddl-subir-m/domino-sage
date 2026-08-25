@@ -37,6 +37,7 @@ from sage.resources.provider import (
     parse_data_sources,
     parse_endpoints,
     parse_model_apis,
+    parse_reasoning_efforts,
     readable_error,
     records_of,
     safe_identifier,
@@ -117,6 +118,25 @@ def test_capabilities_survive_a_shape_that_is_not_a_list():
     # A bare string would iterate into one chip per character.
     assert parse_capabilities("chat") == []
     assert parse_capabilities(None) == []
+
+
+def test_gpt54_advertises_reasoning_effort_when_the_alias_record_is_silent():
+    (a,) = join_aliases({"gpt-5.4"}, [])
+    assert a.reasoning_efforts == ["low", "medium", "high"]
+    (nano,) = join_aliases({"gpt-5.4-nano"}, REGISTERED)
+    assert nano.reasoning_efforts == ["low", "medium", "high"]
+    (sonnet,) = join_aliases({"sonnet"}, REGISTERED)
+    assert sonnet.reasoning_efforts == []
+
+
+def test_inference_params_win_over_the_name_heuristic():
+    rec = {
+        "id": "x", "name": "gpt-5.4", "display_name": "GPT",
+        "inference_params": {"reasoning_effort": ["low", "high"]},
+    }
+    (a,) = join_aliases({"gpt-5.4"}, [rec])
+    assert a.reasoning_efforts == ["low", "high"]
+    assert parse_reasoning_efforts({"reasoning_effort": {"enum": ["low", "medium"]}}) == ["low", "medium"]
 
 
 def test_costs_keep_the_numbers_and_invent_nothing():
@@ -706,12 +726,17 @@ def test_the_orchestrator_lists_aliases_from_the_injected_provider(tmp_path: Pat
     assert rows == [{
         "id": "x", "name": "sonnet", "display_name": "Claude Sonnet 4.6",
         "description": "desc", "capabilities": ["chat"], "costs": {"input": 3.0},
+        "reasoning_efforts": [],
     }]
 
 
 def test_the_default_provider_is_the_fake_so_a_local_run_lists_something(tmp_path: Path):
     rows = _orch(tmp_path).list_llm_aliases()
     assert rows and all(r["display_name"] and r["capabilities"] for r in rows)
+    gpt = next(r for r in rows if r["name"] == "gpt-5.4")
+    assert gpt["reasoning_efforts"] == ["low", "medium", "high"]
+    embed = next(r for r in rows if "embed" in r["name"])
+    assert embed["reasoning_efforts"] == []
 
 
 def test_the_orchestrator_hands_its_own_project_down_as_the_home_of_the_listing(tmp_path: Path):

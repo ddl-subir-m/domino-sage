@@ -18,6 +18,8 @@ class ModelControl:
         self._mode = mode
         self._phase = phase
         self._picked_model: ModelId | None = None
+        self._chat_model: ModelId | None = None
+        self._reasoning_effort: str | None = None
         self._asset_locked = False   # sticky once True: set by an attached sensitivity-tagged asset
         self._manual_locked = False  # user-toggled via the "Force sovereign" button; freely reversible
         # Read-only guarantee is scoped to the turn that armed it, not a shared on/off flag. arm_
@@ -65,6 +67,11 @@ class ModelControl:
 
     def pick(self, model: ModelId | None) -> None:
         self._picked_model = model
+
+    def pick_chat(self, model: ModelId | None, effort: str | None = None) -> None:
+        """Standing Chat alias + optional reasoning_effort. None model is Auto."""
+        self._chat_model = model
+        self._reasoning_effort = effort if model else None
 
     def on_assets_changed(self, asset_sensitivity_tags: Iterable[bool]) -> None:
         """Recompute the asset-driven lock from currently-attached assets. Sticky: attaching a
@@ -184,4 +191,6 @@ class ModelControl:
             read_only_turn=self._read_only_token is not None,
             read_only_reason=self._read_only_reason,
             chat_thread_id=self._chat_thread_id if self._chat_token is not None else None,
+            chat_model=self._chat_model,
+            reasoning_effort=self._reasoning_effort,
         )

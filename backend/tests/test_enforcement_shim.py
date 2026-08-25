@@ -492,6 +492,51 @@ def test_vision_capability_is_a_closed_list_with_unknown_models_failing_safe():
     assert not supports_vision("some-future-model")    # unknown -> no images
 
 
+def test_chat_pick_and_effort_go_to_the_gateway():
+    control = ModelControl()
+    control.pick_chat("gpt-5.4", "high")
+    token = control.arm_chat("thr_1")
+    gw = FakeGatewayClient()
+    list(_shim(control, gw).handle({"model": "opencode-default", "messages": []}, project="p"))
+    sent = gw.seen[-1][0]
+    assert sent["model"] == "gpt-5.4"
+    assert sent["reasoning_effort"] == "high"
+    control.disarm_chat(token)
+
+
+def test_chat_effort_is_dropped_when_the_lock_reroutes():
+    control = ModelControl()
+    control.pick_chat("gpt-5.4", "high")
+    control.on_assets_changed([True])
+    token = control.arm_chat("thr_1")
+    gw = FakeGatewayClient()
+    list(_shim(control, gw).handle({"model": "gpt-5.4", "messages": []}, project="p"))
+    sent = gw.seen[-1][0]
+    assert sent["model"] == "sovereign-8b"
+    assert "reasoning_effort" not in sent
+    control.disarm_chat(token)
+
+
+def test_chat_auto_uses_the_plan_model_not_the_build_mode():
+    control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
+    token = control.arm_chat("thr_1")
+    gw = FakeGatewayClient()
+    list(_shim(control, gw).handle({"model": "ask-vendor", "messages": []}, project="p"))
+    assert gw.seen[-1][0]["model"] == "strong-vendor"
+    control.disarm_chat(token)
+
+
+def test_chat_auto_does_not_run_the_build_phase_classifier():
+    # The same edit-tool tail that flips Build Auto to catalog.implement must stay on catalog.plan.
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    token = control.arm_chat("thr_1")
+    gw = FakeGatewayClient()
+    messages = [{"role": "assistant", "tool_calls": [{"function": {"name": "edit"}}]}]
+    list(_shim(control, gw).handle({"messages": messages}, project="p"))
+    assert gw.seen[-1][0]["model"] == "strong-vendor"
+    control.disarm_chat(token)
+
+
 def test_ask_mode_respects_locked_sovereign_ask():
     control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
     control.on_assets_changed([True])  # sensitivity-tagged asset attached

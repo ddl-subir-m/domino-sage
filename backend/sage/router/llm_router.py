@@ -14,6 +14,9 @@ Precedence (highest first), per SPEC.md Component 3:
     4. plan mode         -> user's picked model if set, else catalog.plan
     5. implement mode    -> user's picked model if set, else catalog.implement
 
+A Chat turn (chat_thread_id set) is separate: lock still wins, else the Chat pick, else catalog.plan.
+Build Auto/Ask/Plan/Implement does not apply.
+
 This is the single highest-value unit under test: pure inputs, pure output, zero mocks.
 """
 from __future__ import annotations
@@ -22,6 +25,11 @@ from .models import Mode, ModelCatalog, ModelDecision, Phase, Reason, SessionSta
 
 
 def resolve(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
+    # Chat is a Workbench mode, not a ModelControl mode. A Chat turn still has to pick a real
+    # gateway alias; the standing Build Auto/Ask/Plan/Implement choice must not leak into it.
+    if state.chat_thread_id:
+        return _resolve_chat(state, catalog)
+
     # 1. Sensitivity lock wins over everything and is non-overridable by any vendor model.
     # Only the sovereign models are ever selectable while locked.
     if state.sensitivity_locked:
@@ -56,3 +64,14 @@ def resolve(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     if state.picked_model is not None:
         return ModelDecision(model=state.picked_model, reason=Reason.IMPLEMENT_OVERRIDE, locked=False)
     return ModelDecision(model=catalog.implement, reason=Reason.IMPLEMENT_PINNED, locked=False)
+
+
+def _resolve_chat(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
+    sovereign_options = (catalog.sovereign_plan, catalog.sovereign_implement, catalog.sovereign_ask)
+    if state.sensitivity_locked:
+        if state.chat_model in sovereign_options:
+            return ModelDecision(model=state.chat_model, reason=Reason.SENSITIVITY, locked=True)
+        return ModelDecision(model=catalog.sovereign_ask, reason=Reason.SENSITIVITY, locked=True)
+    if state.chat_model:
+        return ModelDecision(model=state.chat_model, reason=Reason.CHAT_OVERRIDE, locked=False)
+    return ModelDecision(model=catalog.plan, reason=Reason.CHAT_AUTO, locked=False)

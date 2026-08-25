@@ -1208,3 +1208,27 @@ def test_status_reports_the_pinned_mode_and_the_users_own_choice_separately(tmp_
     project.control.disarm_turn_mode(token)
     m = project.status()["model"]
     assert m["mode"] == "ask" and m["selected_mode"] == "ask"
+
+
+def test_chat_pick_is_a_standing_choice_on_status(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.set_chat_pick("gpt-5.4", "medium")
+    m = orch.project(start_preview=False).status()["model"]
+    assert m["chat_model"] == "gpt-5.4"
+    assert m["reasoning_effort"] == "medium"
+    orch.set_chat_pick("auto", None)
+    m = orch.project(start_preview=False).status()["model"]
+    assert m["chat_model"] is None
+    assert m["reasoning_effort"] is None
+
+
+def test_chat_pick_rejects_unknown_embeddings_and_invalid_effort(tmp_path: Path):
+    orch = _orch(tmp_path)
+    with pytest.raises(ValueError, match="unknown model"):
+        orch.set_chat_pick("not-a-model", None)
+    with pytest.raises(ValueError, match="not a chat model"):
+        orch.set_chat_pick("text-embedding-3-small", None)
+    with pytest.raises(ValueError, match="invalid reasoning_effort"):
+        orch.set_chat_pick("gpt-5.4", "ludicrous")
+    with pytest.raises(ValueError, match="invalid reasoning_effort"):
+        orch.set_chat_pick("sonnet", "high")

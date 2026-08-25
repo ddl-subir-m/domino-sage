@@ -88,6 +88,7 @@ from ..resources.provider import (
     LlmAlias,
     ResourceProvider,
     ResourceUnavailable,
+    alias_reasoning_efforts,
     cascade_levels,
     safe_identifier,
 )
@@ -1118,6 +1119,8 @@ class Project:
                 "selected_mode": self.control.selected_mode.value,
                 "phase": s.phase.value,
                 "picked_model": s.picked_model,
+                "chat_model": s.chat_model,
+                "reasoning_effort": s.reasoning_effort,
                 "sensitivity_locked": s.sensitivity_locked,
                 "asset_locked": self.control.asset_locked,
                 "manual_locked": self.control.manual_locked,
@@ -1257,6 +1260,30 @@ class Orchestrator:
         self._rehydrate_attached(self._project)
         self._relock_for_samples(self._project)
         return self._project
+
+    def set_chat_pick(self, model: str | None, effort: str | None) -> None:
+        """Standing Chat alias + reasoning_effort. `auto`/empty is Sage's default (catalog.plan)."""
+        project = self.project(start_preview=False)
+        if model in (None, "", "auto"):
+            project.control.pick_chat(None, None)
+            return
+        alias = next((a for a in self.list_llm_aliases() if a["name"] == model), None)
+        if alias is None:
+            raise ValueError(f"unknown model {model!r}")
+        caps = alias.get("capabilities") or []
+        if caps and "embeddings" in caps and "chat" not in caps:
+            raise ValueError(f"{model!r} is not a chat model")
+        if project.control.locked:
+            cat = project.shim.catalog
+            sovereign = {cat.sovereign_plan, cat.sovereign_implement, cat.sovereign_ask}
+            if model not in sovereign:
+                raise ValueError("sensitivity lock: pick a sovereign model")
+        efforts = alias.get("reasoning_efforts") or []
+        if effort in ("", None, "default"):
+            effort = None
+        elif effort not in efforts:
+            raise ValueError(f"invalid reasoning_effort {effort!r}")
+        project.control.pick_chat(model, effort)
 
     def _hydrate_untitled(self, workspace: Workspace) -> None:
         """First boot of a scratch project: set untitled so the chip can lie. Once settings
@@ -3660,6 +3687,7 @@ class Orchestrator:
                 "description": a.description,
                 "capabilities": a.capabilities,
                 "costs": a.costs,
+                "reasoning_efforts": a.reasoning_efforts or alias_reasoning_efforts(a.name),
             }
             for a in self._resources.list_llm_aliases()
         ]
