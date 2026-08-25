@@ -82,6 +82,16 @@ window.SW = window.SW || {};
     // Composer
     model: 'auto',
     phase: 'planning',
+
+    // Build is the project's history.jsonl, not the Chat Thread. Chat ↔ Build
+    // is turning your head: the Thread stays selected, this transcript is the app's.
+    buildHistory: [],
+    buildMessages: [],
+    buildTyping: null,
+    buildRunning: false,
+    bindings: [],
+    previewSrc: './preview/',
+    previewStatus: 'idle',
   };
 
   const listeners = new Set();
@@ -268,6 +278,135 @@ window.SW = window.SW || {};
         }
       }
     }
+  }
+
+  const GATE_DECISIONS = { 'awaiting approval': true, 'architecture ready': true };
+
+  function buildHistoryToMessages(history) {
+    const messages = [];
+    let assistant = null;
+    let pendingPlan = null;
+    const ensureAssistant = () => {
+      if (!assistant) {
+        assistant = { id: `ba_${messages.length}`, role: 'assistant', at: new Date().toISOString(), blocks: [] };
+        messages.push(assistant);
+      }
+      return assistant;
+    };
+    for (const ev of history || []) {
+      if (ev.type === 'user') {
+        assistant = null;
+        messages.push({
+          id: `bu_${messages.length}`,
+          role: 'user',
+          at: ev.at,
+          blocks: [{ type: 'text', value: ev.text || '' }],
+        });
+      } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
+        ensureAssistant().blocks.push({ type: 'text', value: ev.text });
+      } else if (ev.type === 'agent' && ev.kind === 'tool') {
+        ensureAssistant().blocks.push({
+          type: 'sandbox_run',
+          label: ev.tool === 'bash' ? 'Ran a command' : `Ran ${ev.tool || 'tool'}`,
+          durationMs: 0,
+          code: ev.detail || '',
+        });
+      } else if (ev.type === 'plan-proposed') {
+        assistant = null;
+        if (pendingPlan) pendingPlan.pending = false;
+        const block = {
+          type: 'build_plan',
+          plan: ev.plan || '',
+          kind: ev.kind || 'plan',
+          steps: ev.steps || 0,
+          pending: true,
+        };
+        pendingPlan = block;
+        messages.push({
+          id: `bp_${messages.length}`,
+          role: 'assistant',
+          blocks: [block],
+        });
+      } else if (ev.type === 'plan-stale') {
+        if (pendingPlan) pendingPlan.pending = false;
+      } else if (ev.type === 'typecheck') {
+        ensureAssistant().blocks.push({
+          type: 'status',
+          ok: ev.ok,
+          value: ev.ok ? 'Typecheck passed' : `Typecheck: ${ev.errors} error(s)`,
+        });
+      } else if (ev.type === 'done') {
+        if (!GATE_DECISIONS[ev.decision]) {
+          if (pendingPlan) pendingPlan.pending = false;
+          ensureAssistant().blocks.push({
+            type: 'status',
+            ok: ev.ok,
+            value: ev.decision === 'answered'
+              ? 'Answered'
+              : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),
+          });
+        }
+      } else if (ev.type === 'error' && ev.message) {
+        ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'saved') {
+        const value = ev.ok
+          ? (ev.pushed ? 'Saved and pushed' : `Saved${ev.detail ? ` — ${ev.detail}` : ''}`)
+          : `Couldn't save — ${ev.detail || 'git error'}`;
+        ensureAssistant().blocks.push({ type: 'status', ok: !!ev.ok, value });
+      } else if ((ev.type === 'ask-blocked' || ev.type === 'ask-active') && ev.message) {
+        ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      }
+    }
+    return messages;
+  }
+
+  function applyBuildEvent(ev) {
+    if (!ev || ev.busy || (ev.type === 'done' && ev.decision === 'busy')) {
+      if (ev && (ev.busy || ev.decision === 'busy')) {
+        state.buildTyping = 'Another build is still running…';
+      }
+      return;
+    }
+    if (ev.type === 'user') return;
+    if (ev.type === 'active' || (ev.type === 'agent' && ev.kind === 'tool')) {
+      const verb = ev.tool === 'bash' ? 'Running a command' : (ev.detail || ev.tool || 'Working');
+      state.buildTyping = verb;
+    } else if (ev.type === 'typecheck-start') {
+      state.buildTyping = 'Typechecking…';
+    } else if (ev.type === 'iterate') {
+      state.buildTyping = ev.reason || 'Fixing errors…';
+    } else if (ev.type === 'agent' && ev.kind === 'text') {
+      state.buildTyping = null;
+    } else if (ev.type === 'plan-proposed' || ev.type === 'done' || ev.type === 'error' || ev.type === 'stopped') {
+      state.buildTyping = null;
+    }
+    if (ev.type === 'stopped') return;
+    if (ev.type === 'active' || ev.type === 'phase' || ev.type === 'typecheck-start' || ev.type === 'iterate') return;
+    state.buildHistory = state.buildHistory.concat([ev]);
+    state.buildMessages = buildHistoryToMessages(state.buildHistory);
+  }
+
+  async function refreshBindings() {
+    const body = await SW.api.bindings().catch(() => ({ bindings: [] }));
+    state.bindings = body.bindings || [];
+  }
+
+  async function probePreview() {
+    const url = `./preview/?t=${Date.now()}`;
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (res.ok) {
+        state.previewSrc = url;
+        state.previewStatus = 'ok';
+      } else if (res.status === 502) {
+        state.previewStatus = 'starting';
+      } else {
+        state.previewStatus = 'err';
+      }
+    } catch (err) {
+      state.previewStatus = 'starting';
+    }
+    notify();
   }
 
   async function deliverTurn(turn, meta = {}, values = {}) {
@@ -752,70 +891,139 @@ window.SW = window.SW || {};
       return summary;
     },
 
-    // Changes asked for inside Build belong to the conversation like anything
-    // else — the builder used to keep them in local state, where they died on
-    // navigation.
-    //
-    // A turn can land on more than one app, because a project is one file tree
-    // and apps in it share code. Every app that changed gets its own entry in
-    // the transcript, so the one in the preview is not the only one you can see
-    // or act on. "I changed something else too, go and look" is not an
-    // acceptable substitute for showing it.
-    async sendBuildMessage(text, options = {}) {
-      if (!text.trim()) return null;
-      let thread = state.thread;
-      if (!thread) {
-        thread = await store.newThread({
-          appId: options.appId,
-          title: summarise(text),
+    // Changes asked for in Build belong to the project's Build session, not
+    // the Chat Thread. History is `.sage/history.jsonl`.
+    async sendBuildPrompt(text) {
+      if (!text.trim() || state.buildRunning) return null;
+      state.buildHistory = state.buildHistory.concat([{ type: 'user', text }]);
+      state.buildMessages = buildHistoryToMessages(state.buildHistory);
+      state.buildRunning = true;
+      state.buildTyping = 'Working…';
+      notify();
+      try {
+        const res = await fetch('./api/project/build/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: text }),
+        });
+        if (!res.ok) {
+          const payload = await res.json().catch(() => ({}));
+          throw new Error(payload.error || payload.message || res.statusText);
+        }
+        let stopped = false;
+        await readSSE(res, (ev) => {
+          if (!ev) return;
+          if (ev.type === 'stopped') stopped = true;
+          applyBuildEvent(ev);
+          notify();
+        });
+        if (stopped) await store.loadBuild({ keepPreview: true });
+      } catch (err) {
+        applyBuildEvent({ type: 'error', message: String(err.message || err) });
+      } finally {
+        state.buildRunning = false;
+        state.buildTyping = null;
+        notify();
+        await Promise.all([probePreview(), refreshBindings()]);
+        notify();
+      }
+    },
+
+    async approveBuild(answers, planEdits) {
+      if (state.buildRunning) return null;
+      state.buildHistory = state.buildHistory.concat([{ type: 'user', text: 'Approved the plan.' }]);
+      state.buildMessages = buildHistoryToMessages(state.buildHistory);
+      state.buildRunning = true;
+      state.buildTyping = 'Building…';
+      notify();
+      try {
+        const payload = { answers: answers || '' };
+        if (planEdits) payload.plan_edits = planEdits;
+        const res = await fetch('./api/project/build/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || body.message || res.statusText);
+        }
+        let stopped = false;
+        await readSSE(res, (ev) => {
+          if (!ev) return;
+          if (ev.type === 'stopped') stopped = true;
+          applyBuildEvent(ev);
+          notify();
+        });
+        if (stopped) await store.loadBuild({ keepPreview: true });
+      } catch (err) {
+        applyBuildEvent({ type: 'error', message: String(err.message || err) });
+      } finally {
+        state.buildRunning = false;
+        state.buildTyping = null;
+        notify();
+        await Promise.all([probePreview(), refreshBindings(), loadThreadList()]);
+        notify();
+      }
+    },
+
+    async cancelBuildPlan() {
+      await SW.api.cancelPlan();
+      for (const msg of state.buildMessages) {
+        (msg.blocks || []).forEach((b) => {
+          if (b.type === 'build_plan') b.pending = false;
         });
       }
-
-      const userBlocks = [{ type: 'text', value: text }];
-      pushMessage({ id: `u_${Date.now()}`, role: 'user', at: new Date().toISOString(), blocks: userBlocks });
-      SW.api.appendMessage(thread.id, userBlocks, 'user').catch(() => {});
-
-      state.typing = 'Working out the change…';
       notify();
-      await SW.util.sleep(600);
-      state.typing = null;
+    },
 
-      // The previewed app always changes. Naming another app in the project is
-      // taken as asking for it too, which is how the multi-app case is reachable
-      // without pretending to infer shared code.
-      const needle = text.toLowerCase();
-      const alsoNamed = (options.apps || []).filter(
-        (a) => a.id !== options.appId && needle.includes(a.name.toLowerCase())
-      );
-      const targets = [
-        ...(options.appId ? [{ id: options.appId, name: options.appName }] : []),
-        ...alsoNamed,
-      ];
+    async stopBuild() {
+      await SW.api.stopBuild();
+      state.buildRunning = false;
+      state.buildTyping = null;
+      await store.loadBuild({ keepPreview: true });
+    },
 
-      const blocks = [
-        {
-          type: 'text',
-          value:
-            targets.length > 1
-              ? `That lands on ${targets.length} apps in this project. Both are below — review them separately, because publishing one does not publish the other.`
-              : state.activePlanId
-              ? `Making that change now — I'll update the plan's **Done when** list to match, then rebuild the affected screen.`
-              : `Making that change now — I'll rebuild the affected screen. This app has no plan, so I'll note the decision on the app instead.`,
-        },
-        ...targets.map((target) => ({
-          type: 'app_change',
-          appId: target.id,
-          summary: summarise(text),
-        })),
-      ];
-      pushMessage({ id: `a_${Date.now()}`, role: 'assistant', at: new Date().toISOString(), blocks });
-      SW.api.appendMessage(thread.id, blocks, 'assistant').catch(() => {});
+    async loadBuild(options = {}) {
+      await SW.api.project().catch(() => ({}));
+      const [hist, running] = await Promise.all([
+        SW.api.history().catch(() => ({ history: [] })),
+        SW.api.buildState().catch(() => ({ running: false })),
+        refreshBindings(),
+      ]);
+      state.buildHistory = hist.history || [];
+      state.buildMessages = buildHistoryToMessages(state.buildHistory);
+      state.buildRunning = !!running.running;
+      state.buildTyping = state.buildRunning ? 'Working…' : null;
+      if (!options.keepPreview) state.previewStatus = 'starting';
+      notify();
+      await probePreview();
+      if (state.buildRunning) store._watchBuild();
+    },
 
-      for (const target of targets) {
-        await store.recordChange(target.id, 'changed');
-      }
-      await loadThreadList();
-      return targets;
+    async refreshPreview() {
+      state.previewStatus = 'starting';
+      notify();
+      await probePreview();
+    },
+
+    _watchBuild() {
+      if (store._watchTimer) return;
+      const tick = async () => {
+        const running = await SW.api.buildState().catch(() => ({ running: true }));
+        const hist = await SW.api.history().catch(() => ({ history: [] }));
+        state.buildHistory = hist.history || [];
+        state.buildMessages = buildHistoryToMessages(state.buildHistory);
+        state.buildRunning = !!running.running;
+        if (!state.buildRunning) {
+          state.buildTyping = null;
+          clearInterval(store._watchTimer);
+          store._watchTimer = null;
+          await Promise.all([probePreview(), refreshBindings()]);
+        }
+        notify();
+      };
+      store._watchTimer = setInterval(tick, 2000);
     },
 
     async sendMessage(text) {

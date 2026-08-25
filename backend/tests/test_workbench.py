@@ -20,4 +20,13 @@ def test_workbench_is_the_default_ui():
     assert b"/threads" in js.content
     assert b"/threads/save" in js.content
     assert b"/handoff/plan" in js.content
+    assert b"/project/history" in js.content
+    assert b"/project/build/stop" in js.content
     assert b"./api" in js.content
+
+    build = client.get("/js/modes/builder.js")
+    assert build.status_code == 200
+    assert b"SW.BuildMode" in build.content
+    assert b"./api/project/build/stream" in build.content or b"sendBuildPrompt" in build.content
+    assert b"src: './builder'" not in build.content
+    assert b'src: "./builder"' not in build.content

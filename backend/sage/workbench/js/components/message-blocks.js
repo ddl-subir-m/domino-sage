@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Button, Table, Tooltip, Tag, Space } = antd;
+  const { Button, Table, Tooltip, Tag, Space, Input } = antd;
   const {
     CopyOutlined, RightOutlined, DownOutlined, PushpinOutlined, ReloadOutlined,
     ExportOutlined, DownloadOutlined, ThunderboltOutlined,
@@ -196,6 +196,73 @@ window.SW = window.SW || {};
     );
   }
 
+  function BuildPlanCard({ block }) {
+    const { buildRunning } = SW.store.get();
+    const [answers, setAnswers] = useState('');
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState(block.plan || '');
+    const asks = /^#{1,6}\s*open questions\b/mi.test(block.plan || '');
+    const pending = block.pending && !buildRunning;
+
+    return h(
+      'div',
+      { className: 'sw-plan-card' },
+      h(
+        'div',
+        { className: 'sw-plan-card-head' },
+        h(
+          'div',
+          { className: 'sw-plan-card-title' },
+          block.kind === 'architecture' ? 'Architecture' : 'Review the plan before building'
+        )
+      ),
+      editing
+        ? h(Input.TextArea, {
+            value: draft,
+            autoSize: { minRows: 8, maxRows: 20 },
+            onChange: (e) => setDraft(e.target.value),
+          })
+        : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(block.plan || '')),
+      pending &&
+        h(Input.TextArea, {
+          value: answers,
+          rows: 2,
+          placeholder: asks
+            ? 'Answer the open questions or add notes (optional)'
+            : 'Add a note for the build (optional)',
+          onChange: (e) => setAnswers(e.target.value),
+          style: { marginTop: 8 },
+        }),
+      pending &&
+        h(
+          'div',
+          { className: 'sw-plan-card-actions', style: { marginTop: 10 } },
+          h(
+            Button,
+            {
+              type: 'primary',
+              size: 'small',
+              onClick: () =>
+                SW.store.approveBuild(answers, draft !== (block.plan || '') ? draft : undefined),
+            },
+            block.kind === 'architecture'
+              ? 'Build this'
+              : (block.steps ? `Approve & build (${block.steps} phases)` : 'Approve & build')
+          ),
+          h(
+            Button,
+            { size: 'small', onClick: () => setEditing(!editing) },
+            editing ? 'Preview' : (block.kind === 'architecture' ? 'Edit design' : 'Edit plan')
+          ),
+          h(
+            Button,
+            { type: 'text', size: 'small', onClick: () => SW.store.cancelBuildPlan() },
+            block.kind === 'architecture' ? 'Dismiss' : 'Cancel'
+          )
+        )
+    );
+  }
+
   function GraduationNudge({ onSave }) {
     const { thread, resourceGroups } = SW.store.get();
     const files = (resourceGroups.file || []).filter((f) => f.sandbox);
@@ -348,6 +415,14 @@ window.SW = window.SW || {};
         return h(AppChange, { block });
       case 'plan_card':
         return h(SW.PlanCard, { planId: block.planId });
+      case 'build_plan':
+        return h(BuildPlanCard, { block });
+      case 'status':
+        return h(
+          'div',
+          { className: `sw-status-line${block.ok === false ? ' is-err' : ''}` },
+          block.value
+        );
       case 'plan_suggestion':
         return h(PlanSuggestion, null);
       case 'graduation_nudge':

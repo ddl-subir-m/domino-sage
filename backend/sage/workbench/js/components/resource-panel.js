@@ -191,7 +191,7 @@ window.SW = window.SW || {};
   };
 
   SW.ResourcePanel = function ResourcePanel() {
-    const { resourceGroups, requires, activeApp, panelFilter, activePlanId } = SW.store.get();
+    const { resourceGroups, requires, activeApp, panelFilter, activePlanId, bindings } = SW.store.get();
     const [query, setQuery] = useState('');
     const [collapsed, setCollapsed] = useState({});
     const [filesOpen, setFilesOpen] = useState(false);
@@ -210,6 +210,16 @@ window.SW = window.SW || {};
     // most recently touched one.
     const plans = resourceGroups.plan || [];
     const pinned = plans.find((p) => p.id === activePlanId) || plans[0] || null;
+    const inBuild = SW.router.get().mode === 'build';
+    const needle = query.trim().toLowerCase();
+    const kindForBinding = (kind) =>
+      kind === 'data_source' ? 'datasource'
+        : kind === 'llm_alias' ? 'model_llm'
+        : kind === 'model_api' ? 'model_predictive'
+        : kind;
+    const inApp = (bindings || []).filter((b) =>
+      !needle || (b.display_name || b.name || '').toLowerCase().includes(needle)
+    );
 
     const openResource = (resource) =>
       resource.kind === 'plan'
@@ -249,6 +259,35 @@ window.SW = window.SW || {};
       { className: 'sw-panel' },
 
       h(PlanCard, { plan: pinned, blessed: Boolean(pinned && pinned.id === activePlanId) }),
+
+      inBuild &&
+        h(
+          'div',
+          { className: 'sw-panel-section-head' },
+          h('span', { className: 'sw-panel-section-title' }, 'In this app'),
+          h('span', { className: 'sw-panel-section-count' }, inApp.length)
+        ),
+      inBuild &&
+        h(
+          'div',
+          { className: 'sw-in-app' },
+          inApp.length === 0
+            ? h('div', { className: 'sw-caption' }, 'Nothing recorded yet. Bindings from Chat land here after Open Builder.')
+            : inApp.map((b) =>
+                h(SW.ResourceRow, {
+                  key: `${b.kind}:${b.id}`,
+                  resource: {
+                    id: `${b.kind}:${b.id}`,
+                    name: b.display_name || b.name,
+                    kind: kindForBinding(b.kind),
+                    subtitle: (b.kind || '').replace(/_/g, ' '),
+                  },
+                  required: true,
+                  app: { name: 'this app' },
+                  onOpen: () => {},
+                })
+              )
+        ),
 
       h(
         'div',

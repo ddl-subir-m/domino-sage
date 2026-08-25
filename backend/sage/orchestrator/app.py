@@ -356,7 +356,7 @@ def ui() -> FileResponse:
 
 @control_app.get("/builder")
 def builder_ui() -> FileResponse:
-    """The existing builder page, embedded by Build mode until that mode is wired through the shell."""
+    """The vanilla builder page. Workbench Build no longer embeds it; kept as a debug escape hatch."""
     return FileResponse(_BUILDER_UI, headers={"Cache-Control": "no-store"})
 
 

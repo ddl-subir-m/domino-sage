@@ -155,8 +155,18 @@ window.SW = window.SW || {};
       const blocks = String(text).split(/\n\n+/);
       return blocks.map((block, blockIndex) => {
         const lines = block.split('\n');
-        const isOrdered = lines.every((l) => /^\s*\d+\.\s/.test(l));
-        const isBullet = lines.every((l) => /^\s*[-*]\s/.test(l));
+        if (/^#{1,6}\s/.test(lines[0])) {
+          const title = h(
+            'p',
+            { key: `${blockIndex}-h`, style: { fontWeight: 600, margin: '8px 0 4px' } },
+            SW.util.inline(lines[0].replace(/^#{1,6}\s+/, ''))
+          );
+          const rest = lines.slice(1).join('\n').trim();
+          if (!rest) return title;
+          return h('div', { key: blockIndex }, title, SW.util.markdown(rest));
+        }
+        const isOrdered = lines.length > 0 && lines.every((l) => /^\s*\d+\.\s/.test(l));
+        const isBullet = lines.length > 0 && lines.every((l) => /^\s*[-*]\s/.test(l));
 
         if (isOrdered || isBullet) {
           const tag = isOrdered ? 'ol' : 'ul';

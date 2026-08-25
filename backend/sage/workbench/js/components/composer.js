@@ -49,6 +49,7 @@ window.SW = window.SW || {};
     placeholder,
     onSend,
     showPhase,
+    hidePhase,
     autoFocus,
     disabled,
     compact,
@@ -302,7 +303,9 @@ window.SW = window.SW || {};
           ),
           h('span', { className: 'sw-composer-bar-spacer' }),
 
-          showPhase
+          hidePhase
+            ? null
+            : showPhase
             ? h(
                 Dropdown,
                 { menu: phaseMenu, trigger: ['click'], placement: 'topRight' },

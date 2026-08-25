@@ -218,6 +218,12 @@ SW.api = {
   holdBuild: async () => ({}),
   releaseBuild: async () => ({}),
 
+  history: () => request('/project/history'),
+  bindings: () => request('/bindings'),
+  buildState: () => request('/project/build/state'),
+  cancelPlan: () => post('/project/plan/cancel'),
+  stopBuild: () => post('/project/build/stop'),
+
   buildSteps: () => empty(),
   buildRuns: () => empty(),
   buildRun: async () => ({}),
