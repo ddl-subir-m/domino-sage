@@ -10,15 +10,15 @@ A person who is comfortable with data and does not want to manage projects, git,
 
 ## 2. Untitled provision
 
-On first Workbench open, if the caller has no project with `settings.untitled === true`:
+On first Workbench open, if the caller has no scratch project:
 
-1. Run the existing hub pipeline (`provision/service.py`) with display name `Untitled`.
-2. Write `.sage/settings.json` `{ "untitled": true }` after seed (seed must not wipe this).
-3. Open Chat on a new Thread in that project.
+1. Run the existing hub pipeline (`provision/service.py`) with a unique Domino + git name `sage-<user-slug>-<id>` derived from the caller’s username and Domino user id. Do **not** name the Domino project `Untitled` — that collides across users and is a bad URL slug.
+2. Write `.sage/settings.json` `{ "untitled": true }` on first builder boot (seed must not wipe this).
+3. The scope chip shows **Untitled** (Sage overlay). Open Chat on a new Thread in that project.
 
-If the Untitled project already exists, reuse it. Never provision a second Untitled for the same user; collisions on the git name (`sage-untitled-2`) are for *other users' Untitleds*, not a second one for this caller.
+If that scratch project already exists (same `sage-<user>-<id>`, including a `-N` collision suffix, or a legacy project still named Untitled), reuse it. Never provision a second scratch project for the same user.
 
-Rename (scope chip, or the first time a handoff names the app) PATCHes the Domino project display name and sets `untitled: false`. The project id, repo, and Threads do not move.
+Rename (the first time a handoff names the app) writes `displayName` into `.sage/settings.json` and sets `untitled: false`. Domino’s project name, id, repo, and Threads do not move — there is no Control Plane rename API.
 
 **New conversation** creates a Thread in the current project. It does not call provision.
 
@@ -220,7 +220,7 @@ Minimum Chat chrome that must work (the rest of the mock can wait):
 
 An implementer is done when all of these pass:
 
-1. First Workbench open as a user with no Untitled provisions one Domino project named Untitled and lands in Chat with an empty Thread. Second open reuses it. "New conversation" does not provision.
+1. First Workbench open as a user with no scratch project provisions one Domino project named `sage-<user>-<id>` and lands in Chat with an empty Thread; the chip says Untitled. Second open reuses it. "New conversation" does not provision.
 2. A Chat turn with "what's in this CSV?" on an attached file writes a PNG and/or a `.table.json` under `examples/<threadId>/`, appends the manifest, and the Thread shows the Artifact after reload. `src/` is untouched (git diff).
 3. A `sage-chat` attempt to edit `src/App.tsx` is stripped by the shim; the user-visible reply does not mention tools or permissions.
 4. Removing a chip drops that Resource from the next turn's prompt context and from IN CONTEXT. The previous user message still shows the chip it was sent with.

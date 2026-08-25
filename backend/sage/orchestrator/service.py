@@ -35,6 +35,7 @@ from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix
 from ..preview.queries import PreviewQueries
 from ..preview.supervisor import ViteSupervisor
+from ..provision import naming
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
     KIND_LLM_ALIAS,
@@ -1103,7 +1104,7 @@ class Project:
             upstream = None
         return {
             "id": self.id,
-            "name": self.id,
+            "name": self.workspace.display_name() or self.id,
             "untitled": self.workspace.is_untitled(),
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
@@ -1230,11 +1231,7 @@ class Orchestrator:
         if self._project is not None:
             return self._project
         workspace = self._wm.ensure(self._project_id)
-        if (
-            self._project_id == "Untitled"
-            or os.environ.get("DOMINO_PROJECT_NAME") == "Untitled"
-        ) and "untitled" not in workspace.read_settings():
-            workspace.mark_untitled(True)
+        self._hydrate_untitled(workspace)
         # Sage's own files in the app's repo, brought up to date before anything reads them. An app
         # keeps the copies it was seeded with, so without this a fix to the template reaches new
         # projects and never existing ones — the lesson refresh_entry_script already records. The
@@ -1260,6 +1257,29 @@ class Orchestrator:
         self._rehydrate_attached(self._project)
         self._relock_for_samples(self._project)
         return self._project
+
+    def _hydrate_untitled(self, workspace: Workspace) -> None:
+        """First boot of a scratch project: set untitled so the chip can lie. Once settings
+        already has the key (true or false), never flip it from the Domino slug."""
+        if "untitled" in workspace.read_settings():
+            return
+        name = (
+            self._domino_project_name
+            or self._project_id
+            or os.environ.get("DOMINO_PROJECT_NAME")
+        )
+        if name == naming.UNTITLED_DISPLAY:
+            workspace.mark_untitled(True)
+            return
+        username = (
+            os.environ.get("DOMINO_USER_NAME")
+            or os.environ.get("DOMINO_STARTING_USERNAME")
+            or ""
+        )
+        user_id = os.environ.get("DOMINO_USER_ID") or ""
+        expected = naming.untitled_project_name(username, user_id)
+        if naming.is_scratch_name(name, expected):
+            workspace.mark_untitled(True)
 
     def _relock_for_samples(self, project: Project) -> None:
         """Re-fire the sovereign lock for shared sample rows, the way `_rehydrate_attached` does for a
@@ -1829,6 +1849,8 @@ class Orchestrator:
                 if binding is not None:
                     self._record(binding)
         if project.workspace.is_untitled():
+            title = chat_handoff.plan_title(plan_md)
+            project.workspace.set_display_name(title)
             project.workspace.mark_untitled(False)
         handoff = store.mark_handoff_bound(thread_id)
         self._flush_chat_save("handoff", holding_turn=True)

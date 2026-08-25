@@ -33,19 +33,34 @@ def test_create_app_provisions_repo_project_workspace(tmp_path, no_network_seed)
 
 
 def test_ensure_untitled_provisions_once_then_reuses(tmp_path, no_network_seed):
+    from sage.provision import naming
+
     cp, repo = FakeControlPlane(), FakeRepoProvider()
     hub = _hub(tmp_path, cp, repo, seed_calls=no_network_seed)
+    expected = naming.untitled_project_name("alice", "507f1f77bcf86cd799439011")
 
-    first = hub.ensure_untitled()
+    first = hub.ensure_untitled(username="alice", user_id="507f1f77bcf86cd799439011")
     assert first["created"] is True
-    assert first["name"] == "Untitled"
+    assert first["name"] == expected
     assert first["untitled"] is True
+    assert first["repo"] == f"test-owner/{expected}"
     assert len(no_network_seed) == 1
 
-    second = hub.ensure_untitled()
+    second = hub.ensure_untitled(username="alice", user_id="507f1f77bcf86cd799439011")
     assert second["created"] is False
     assert second["id"] == first["id"]
     assert len(no_network_seed) == 1  # did not provision again
+
+
+def test_ensure_untitled_reuses_legacy_project_named_untitled(tmp_path, no_network_seed):
+    cp = FakeControlPlane()
+    legacy = cp.create_project("Untitled", git_url="https://github.com/o/sage-untitled.git")
+    hub = _hub(tmp_path, cp, seed_calls=no_network_seed)
+
+    result = hub.ensure_untitled(username="alice", user_id="507f1f77bcf86cd799439011")
+    assert result["created"] is False
+    assert result["id"] == legacy.id
+    assert len(no_network_seed) == 0
 
 
 def test_create_app_resolves_repo_name_collision(tmp_path, no_network_seed):

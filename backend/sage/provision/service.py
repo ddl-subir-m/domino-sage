@@ -100,7 +100,7 @@ _DELETE_RETRY_DELAY = 5.0
 _ENTRY_POINT = "app.sh"  # the entry script Domino runs to serve a published app (repo root)
 _BINDINGS_PATH = ".sage/bindings.json"  # the app's committed Resource list, as the workspace writes it
 _QUERIES_PATH = ".sage/queries.json"    # the query catalog the creator's agent wrote (#15)
-UNTITLED_NAME = "Untitled"
+UNTITLED_NAME = naming.UNTITLED_DISPLAY
 
 
 def _repo_full_name(git_url: str | None) -> str | None:
@@ -164,8 +164,8 @@ class HubService:
     def list_apps(self) -> list[ProjectRef]:
         return self._cp.list_apps()
 
-    def _create_repo(self, display_name: str) -> RepoInfo:
-        base = naming.repo_base(display_name)
+    def _create_repo(self, display_name: str, *, repo_base: str | None = None) -> RepoInfo:
+        base = repo_base or naming.repo_base(display_name)
         last: Exception | None = None
         for name in naming.candidates(base, self._name_limit):
             try:
@@ -183,12 +183,14 @@ class HubService:
         except Exception:
             log.warning("couldn't roll back repo %s (delete it manually)", repo.full_name, exc_info=True)
 
-    def create_app(self, display_name: str) -> AppCreated:
+    def create_app(self, display_name: str, *, project_name: str | None = None) -> AppCreated:
         display_name = display_name.strip()
         if not display_name:
             raise ValueError("app name is required")
+        domino_name = (project_name or "").strip() or display_name
+        repo_base = (project_name or "").strip() or None
 
-        repo = self._create_repo(display_name)
+        repo = self._create_repo(display_name, repo_base=repo_base)
         # Roll back the repo if we fail before the project exists — otherwise it's an orphan. Once
         # the project is created the app is real, so a later (workspace) failure must NOT delete it.
         try:
@@ -196,10 +198,10 @@ class HubService:
                 repo.clone_url, self._template, branch=self._branch,
                 token_provider=self._push_token_provider,
             )
-            # Project keeps the human name; fall back to the (unique) repo name if Domino rejects it
-            # (e.g. a duplicate project name).
+            # Project keeps the human name (or the unique scratch slug); fall back to the (unique)
+            # repo name if Domino rejects it (e.g. a duplicate project name).
             try:
-                project = self._cp.create_project(display_name, git_url=repo.clone_url, branch=self._branch)
+                project = self._cp.create_project(domino_name, git_url=repo.clone_url, branch=self._branch)
             except Exception:
                 fallback = repo.full_name.split("/", 1)[-1]
                 project = self._cp.create_project(fallback, git_url=repo.clone_url, branch=self._branch)
@@ -210,10 +212,12 @@ class HubService:
         ws = self._cp.create_workspace(project.id, branch=self._branch)
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
 
-    def ensure_untitled(self) -> dict[str, Any]:
-        """The caller's one Untitled project: reuse it if a project is still named Untitled,
-        otherwise provision one. New conversation is a Thread inside it, not this method."""
-        existing = next((a for a in self.list_apps() if a.name == UNTITLED_NAME), None)
+    def ensure_untitled(self, *, username: str = "", user_id: str = "") -> dict[str, Any]:
+        """The caller's one Untitled project: reuse the unique sage-<user>-<id> project (or a
+        legacy project still named Untitled), otherwise provision one. New conversation is a
+        Thread inside it, not this method."""
+        expected = naming.untitled_project_name(username, user_id)
+        existing = self._find_untitled(expected)
         if existing:
             opened = self.open_app(existing.id)
             return {
@@ -223,7 +227,7 @@ class HubService:
                 "untitled": True,
                 **opened,
             }
-        created = self.create_app(UNTITLED_NAME)
+        created = self.create_app(UNTITLED_NAME, project_name=expected)
         return {
             "id": created.project.id,
             "name": created.project.name,
@@ -236,6 +240,20 @@ class HubService:
             "workspace_id": created.workspace.get("id") if isinstance(created.workspace, dict) else None,
             "running": workspace_is_running(created.workspace),
         }
+
+    def _find_untitled(self, expected: str) -> ProjectRef | None:
+        apps = self.list_apps()
+        for app in apps:
+            if naming.is_scratch_name(app.name, expected):
+                return app
+        for app in apps:
+            if app.name == UNTITLED_NAME:
+                return app
+        for app in apps:
+            repo = (_repo_full_name(app.git_url) or "").rsplit("/", 1)[-1]
+            if naming.is_scratch_name(repo, expected):
+                return app
+        return None
 
     def open_app(self, project_id: str) -> dict[str, Any]:
         """Return a runnable workspace for an existing app: reuse a running one, else restart a

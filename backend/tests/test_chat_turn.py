@@ -45,7 +45,7 @@ def _no_waiting(monkeypatch):
     handoff._health.reset()
 
 
-def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None):
+def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: str = "Sage"):
     template = tmp / "template"
     (template / "src").mkdir(parents=True)
     (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
@@ -53,7 +53,7 @@ def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None):
     ws = tmp / "mnt" / "code"
     oc = FakeOpenCode(ws, turns or [])
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=gateway or ScriptedGateway(),
-                        catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
+                        catalog=_catalog(), project_id=project_id, feedback=OkFeedback(),
                         opencode_client=oc)
     orch.project(start_preview=False)
     return orch, oc
@@ -390,6 +390,9 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     assert any(b.get("id") == "ds-trades" for b in bindings)
     assert src.read_text() == before
     assert ws.is_untitled() is False
+    assert result["untitled"] is False
+    assert result["title"] == "A desk exposure dashboard."
+    assert ws.display_name() == "A desk exposure dashboard."
 
     orch.confirm_handoff(tid, {"transcript": True})
     assert (ws.path / ".sage" / "handoff-transcript.md").exists()
@@ -402,3 +405,23 @@ def test_empty_plan_does_not_mark_planned(tmp_path: Path):
     with pytest.raises(ValueError, match="empty plan"):
         orch.draft_handoff_plan(tid)
     assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"
+
+
+def test_scratch_slug_hydrates_untitled_chip(tmp_path: Path, monkeypatch):
+    from sage.provision import naming
+
+    monkeypatch.setenv("DOMINO_USER_NAME", "alice")
+    monkeypatch.setenv("DOMINO_USER_ID", "507f1f77bcf86cd799439011")
+    slug = naming.untitled_project_name("alice", "507f1f77bcf86cd799439011")
+    orch, _ = _orch(tmp_path, project_id=slug)
+    project = orch.project(start_preview=False)
+    assert project.workspace.is_untitled() is True
+    assert project.status()["untitled"] is True
+    assert project.status()["name"] == "Untitled"
+
+
+def test_named_project_does_not_hydrate_untitled(tmp_path: Path):
+    orch, _ = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    assert project.workspace.is_untitled() is False
+    assert project.status()["name"] == "Sage"

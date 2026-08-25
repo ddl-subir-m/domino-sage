@@ -141,6 +141,22 @@ class Workspace:
         settings["untitled"] = untitled
         self.write_settings(settings)
 
+    def display_name(self) -> str:
+        """Sage overlay name for the scope chip. Domino's project name is the URL slug and does
+        not change; Untitled and the plan title live here."""
+        settings = self.read_settings()
+        stored = settings.get("displayName")
+        if isinstance(stored, str) and stored.strip():
+            return stored.strip()
+        if settings.get("untitled"):
+            return "Untitled"
+        return ""
+
+    def set_display_name(self, name: str) -> None:
+        settings = self.read_settings()
+        settings["displayName"] = name.strip()
+        self.write_settings(settings)
+
     def has_built(self) -> bool:
         """True once a code-writing build has completed here. Drives the first-BUILD plan gate
         (not first-turn): questions asked before the first build must not consume the gate, and the

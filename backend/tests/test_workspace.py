@@ -136,6 +136,18 @@ def test_untitled_flag_persists(tmp_path: Path):
     assert ws2.is_untitled() is False
 
 
+def test_display_name_untitled_then_named(tmp_path: Path):
+    tmpl = _fake_template(tmp_path)
+    ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("p")
+    assert ws.display_name() == ""
+    ws.mark_untitled(True)
+    assert ws.display_name() == "Untitled"
+    ws.set_display_name("Rates dashboard")
+    ws.mark_untitled(False)
+    assert ws.is_untitled() is False
+    assert ws.display_name() == "Rates dashboard"
+
+
 def test_mark_built_preserves_other_settings(tmp_path: Path):
     ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path)).ensure("p")
     ws.write_settings({"skip_planning": True})

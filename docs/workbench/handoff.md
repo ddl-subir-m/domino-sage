@@ -83,7 +83,7 @@ Checkboxes, matching the prototype:
 | Artifacts → stay in `examples/` | on | no — unchecking does not delete files; it omits them from `.sage/handoff.md` so implement does not treat them as required examples |
 | Transcript → `.sage/handoff-transcript.md` | off | no |
 
-If the current project is still Untitled, the sheet says the app will live in this project and the display name will become the plan title (slugified). Confirm does that rename (`untitled: false`). Do not block on "save to a project" — Untitled already is a project (ADR-0003).
+If the current project is still Untitled, the sheet says the app will live in this project and the Sage display name will become the plan title. Confirm writes that into `.sage/settings.json` (`untitled: false`, `displayName: <title>`). The Domino project name stays `sage-<user>-<id>`. Do not block on "save to a project" — Untitled already is a project (ADR-0003). Do not PATCH Domino.
 
 On confirm, in order:
 
@@ -136,6 +136,6 @@ Out of scope. "Ask about this app" from Build can wait. A user who wants Chat af
 3. Confirm with transcript unchecked writes `plan.md` and `handoff.md`, does not write `handoff-transcript.md`, upserts Bindings for Data Sources that were chips, leaves `src/` still untouched until Approve & build.
 4. After confirm, `#/build/<threadId>` shows the existing plan approval card, the preview pane, and IN THIS APP containing those Bindings. The Chat rail still has the Thread. Switching to Chat shows the same Thread, not a blank greeting.
 5. Approve & build on that card runs `sage-implement`, which reads `plan.md`, sees `handoff.md`, and edits `src/`. Typecheck loop runs. Chat's `examples/` files are still there.
-6. Untitled project is renamed to the plan title on confirm; `untitled` is false; same Domino project id.
+6. Untitled Sage display name becomes the plan title on confirm; `untitled` is false; same Domino project id and name.
 7. Classifier timeout or 5xx → no callout, turn otherwise succeeds. Three consecutive garbage verdicts trip a breaker and Chat stops calling it for this process (same pattern as `scope.py`).
 8. Tests: classifier bias (APP only on app-shaped last turn); sheet confirm file set; Bindings upsert from `context.json`; Thread URL survives the mode switch; `sage-chat` history.jsonl is not the file implement greps as `.sage/history.md`.

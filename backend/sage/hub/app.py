@@ -214,8 +214,16 @@ async def list_apps() -> JSONResponse:
 @app.post("/api/apps/untitled")
 async def ensure_untitled() -> JSONResponse:
     """Reuse the caller's Untitled Domino project, or provision one. Idempotent."""
+    username = (
+        os.environ.get("DOMINO_USER_NAME")
+        or os.environ.get("DOMINO_STARTING_USERNAME")
+        or "user"
+    )
+    user_id = os.environ.get("DOMINO_USER_ID") or ""
     try:
-        result = await run_in_threadpool(hub.ensure_untitled)
+        result = await run_in_threadpool(
+            hub.ensure_untitled, username=username, user_id=user_id
+        )
     except Exception as e:
         log.exception("ensure_untitled failed")
         return JSONResponse({"error": f"Couldn't open Untitled: {e}"}, status_code=502)

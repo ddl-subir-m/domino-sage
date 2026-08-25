@@ -106,9 +106,10 @@ _Avoid_: conversation, session (OpenCode already uses session for the harness ob
 (that is the mode)
 
 **Untitled**:
-The display name of the caller's single persistent personal Domino project, provisioned on
-first Workbench open, reused thereafter. `.sage/settings.json` carries `"untitled": true`
-until the user names it. Files are real; nothing is ephemeral.
+The Sage display name of the caller's single persistent personal Domino project, provisioned on
+first Workbench open, reused thereafter. The Domino/git name is `sage-<user-slug>-<id>`, not the
+word Untitled. `.sage/settings.json` carries `"untitled": true` until the user names it
+(`displayName`). Files are real; nothing is ephemeral.
 _Avoid_: Personal sandbox, ephemeral, temporary project
 
 **Artifact**:

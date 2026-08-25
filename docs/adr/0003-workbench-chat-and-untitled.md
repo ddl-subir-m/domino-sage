@@ -12,9 +12,12 @@ owned by a parallel branch; this slice ships the chrome and makes Chat and Build
 ## Decision 1 — One Untitled Domino project per user, Threads inside it
 
 The UI says **Untitled**. Behind it Sage immediately provisions a real git-based Domino project
-through the existing hub pipeline (`provision/service.py`), with display name `Untitled` and
-`.sage/settings.json` carrying `"untitled": true`. Persistence starts at message one. Rename
-clears the flag and is the only time the display name changes.
+through the existing hub pipeline (`provision/service.py`), named `sage-<user-slug>-<id>` (username
+plus a short token from the Domino user id) with `.sage/settings.json` carrying `"untitled": true`.
+The chip is a Sage overlay: it shows Untitled, then the plan title after handoff confirm. Domino’s
+project name does not change — there is no rename API, and renaming would break the workspace URL.
+Persistence starts at message one. Naming the app clears the flag and is the only time the Sage
+display name changes.
 
 A user has **at most one** Untitled project. Opening the Workbench reuses it. **New conversation**
 creates a Thread inside that project (a new OpenCode session + `.sage/threads/<id>/`), not a new
@@ -24,7 +27,7 @@ Domino project.
 
 **New Domino project per Thread** — closest to today's hub (one named app per create). Rejected:
 provisioning GitHub + project + workspace on every "New conversation" makes ChatGPT-like Chat
-unusable, and Untitled would multiply as `sage-untitled-2`, `-3`, …
+unusable, and scratch projects would multiply as colliding `Untitled` / `sage-untitled-2`, `-3`, …
 
 **Ephemeral Personal sandbox, graduate later** — the mock's Decision 2. Rejected: the product
 requirement is that Untitled work survives refresh, and we already have a persistence mechanism
