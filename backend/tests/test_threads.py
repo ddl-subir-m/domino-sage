@@ -63,3 +63,18 @@ def test_revert_denied_writes_restores_src(tmp_path: Path):
     assert "src/App.tsx" in reverted
     assert app.read_text() == "original"
     assert (tmp_path / "examples" / tid / "chart.png").read_bytes() == b"png"
+
+
+def test_handoff_suggested_once_and_suppress(tmp_path: Path):
+    store = ThreadStore(tmp_path)
+    row = store.create()
+    tid = row["id"]
+    assert store.read_handoff(tid) is None
+    first = store.mark_handoff_suggested(tid)
+    second = store.mark_handoff_suggested(tid)
+    assert first["suggestedAt"] == second["suggestedAt"]
+    assert first["status"] == "suggested"
+    suppressed = store.suppress_handoff(tid)
+    assert suppressed["suppressed"] is True
+    assert suppressed["status"] == "suppressed"
+    assert suppressed["suggestedAt"] == first["suggestedAt"]

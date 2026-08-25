@@ -103,6 +103,7 @@ from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import ThreadStore, new_artifact_paths, revert_denied_writes, snapshot_files, title_from_prompt
+from . import handoff as chat_handoff
 from . import scope
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
@@ -1558,10 +1559,15 @@ class Orchestrator:
             "history": store.read_history(thread_id),
             "context": store.read_context(thread_id),
             "artifacts": store.read_artifacts(thread_id),
+            "handoff": store.read_handoff(thread_id),
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
         store = ThreadStore(self.project(start_preview=False).workspace.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        if isinstance(body, dict) and body.get("handoff") == "suppress":
+            store.suppress_handoff(thread_id)
         row = store.update(
             thread_id,
             title=body.get("title") if isinstance(body, dict) else None,
@@ -1658,6 +1664,35 @@ class Orchestrator:
             return self._flush_chat_save(immediate, holding_turn=True)
         self._arm_chat_idle_save()
         return None
+
+    def _maybe_suggest_handoff(self, store: ThreadStore, project: Project,
+                               thread_id: str, prompt: str) -> dict | None:
+        """Detect once: persist handoff.json and emit a callout, or stay silent. Never raises."""
+        try:
+            existing = store.read_handoff(thread_id)
+            if not chat_handoff.should_classify(existing):
+                return None
+            if chat_handoff.looks_like_build_request(prompt):
+                store.mark_handoff_suggested(thread_id)
+                return {"type": "handoff-suggest", "reason": "explicit"}
+            thread = store.get(thread_id) or {}
+            hit = chat_handoff.wants_an_app(
+                title=thread.get("title") or "",
+                user=prompt,
+                assistant=chat_handoff.last_assistant_text(store.read_history(thread_id)),
+                gateway=project.shim.gateway,
+                catalog=project.shim.catalog,
+                locked=project.control.snapshot().sensitivity_locked,
+                session=project.session_id,
+                version=project.shim.version,
+            )
+            if not hit:
+                return None
+            store.mark_handoff_suggested(thread_id)
+            return {"type": "handoff-suggest", "reason": "classifier"}
+        except Exception:
+            log.exception("handoff: detect failed")
+            return None
 
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> str:
@@ -1783,6 +1818,10 @@ class Orchestrator:
                 done["artifacts"] = artifacts
             store.append_history(thread_id, done)
             yield done
+            suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
+            if suggestion:
+                store.append_history(thread_id, suggestion)
+                yield suggestion
         finally:
             project.control.disarm_chat(chat_token)
             saved = self._after_chat_turn(thread_id, immediate=immediate)

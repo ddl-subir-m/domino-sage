@@ -194,7 +194,7 @@ window.SW = window.SW || {};
     return blocks;
   }
 
-  async function historyToMessages(history) {
+  async function historyToMessages(history, handoff) {
     const messages = [];
     let assistant = null;
     const ensureAssistant = () => {
@@ -204,6 +204,8 @@ window.SW = window.SW || {};
       }
       return assistant;
     };
+    const hideSuggest = handoff && (handoff.suppressed || handoff.status === 'suppressed'
+      || handoff.status === 'bound' || handoff.status === 'planned');
     for (const ev of history || []) {
       if (ev.type === 'user') {
         assistant = null;
@@ -225,9 +227,26 @@ window.SW = window.SW || {};
         });
       } else if (ev.type === 'artifacts') {
         ensureAssistant().blocks.push(...(await blocksForArtifacts(ev.items)));
+      } else if (ev.type === 'handoff-suggest' && !hideSuggest) {
+        assistant = null;
+        messages.push({
+          id: `sug_${messages.length}`,
+          role: 'system',
+          blocks: [{ type: 'plan_suggestion' }],
+        });
       }
     }
-    return messages;
+    return withHandoffCallout(messages, handoff);
+  }
+
+  function withHandoffCallout(messages, handoff) {
+    if (!handoff || handoff.suppressed || handoff.status !== 'suggested') return messages;
+    if (messages.some((m) => (m.blocks || []).some((b) => b.type === 'plan_suggestion'))) return messages;
+    return messages.concat([{
+      id: 'handoff_suggest',
+      role: 'system',
+      blocks: [{ type: 'plan_suggestion' }],
+    }]);
   }
 
   async function readSSE(res, onEvent) {
@@ -675,7 +694,7 @@ window.SW = window.SW || {};
       const thread = await SW.api.thread(threadId);
       await store.adoptThreadScope(thread);
       state.thread = thread;
-      state.messages = await historyToMessages(thread.history || thread.messages || []);
+      state.messages = await historyToMessages(thread.history || thread.messages || [], thread.handoff);
       state.activePlanId = thread.planId || null;
       state.touched = thread.touched || [];
       state.assistantTurns = state.messages.filter((m) => m.role === 'assistant').length;
@@ -862,6 +881,14 @@ window.SW = window.SW || {};
           } else if (ev.type === 'done') {
             state.typing = null;
             notify();
+          } else if (ev.type === 'handoff-suggest') {
+            state.typing = null;
+            pushMessage({
+              id: `sug_${Date.now()}`,
+              role: 'system',
+              at: new Date().toISOString(),
+              blocks: [{ type: 'plan_suggestion' }],
+            });
           }
         });
       } catch (err) {
@@ -898,7 +925,10 @@ window.SW = window.SW || {};
       state.messages = state.messages.filter(
         (m) => !m.blocks.some((b) => b.type === 'plan_suggestion')
       );
-      if (state.thread) SW.api.patchThread(state.thread.id, { planSuggested: true }).catch(() => {});
+      if (state.thread) {
+        SW.api.patchThread(state.thread.id, { handoff: 'suppress' }).catch(() => {});
+        state.thread = { ...state.thread, handoff: { ...(state.thread.handoff || {}), suppressed: true, status: 'suppressed' } };
+      }
       notify();
     },
 

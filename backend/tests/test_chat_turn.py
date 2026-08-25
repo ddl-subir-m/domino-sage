@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import json
+
 import pytest
 
+from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
@@ -15,8 +18,16 @@ class OkFeedback:
 
 
 class ScriptedGateway:
+    """CHAT so existing Chat tests do not trip the fail-safe (unreadable → suggest)."""
+
+    def __init__(self, verdict: str = "CHAT"):
+        self.verdict = verdict
+        self.seen: list = []
+
     def route(self, request, labels):
-        yield b"data: [DONE]\n\n"
+        self.seen.append((request, labels))
+        body = json.dumps({"choices": [{"delta": {"content": self.verdict}}]})
+        yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
 def _catalog() -> ModelCatalog:
@@ -29,16 +40,19 @@ def _no_waiting(monkeypatch):
     import time
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    handoff._health.reset()
+    yield
+    handoff._health.reset()
 
 
-def _orch(tmp: Path, turns: list[Turn] | None = None):
+def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None):
     template = tmp / "template"
     (template / "src").mkdir(parents=True)
     (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
     (template / "package.json").write_text("{}")
     ws = tmp / "mnt" / "code"
     oc = FakeOpenCode(ws, turns or [])
-    orch = Orchestrator(workspace_dir=ws, template=template, gateway=ScriptedGateway(),
+    orch = Orchestrator(workspace_dir=ws, template=template, gateway=gateway or ScriptedGateway(),
                         catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
                         opencode_client=oc)
     orch.project(start_preview=False)
@@ -218,3 +232,76 @@ def test_flush_chat_save_and_shutdown_cancel_idle(tmp_path: Path):
     orch.shutdown()
     assert orch._chat_save_timer is None
     assert calls == ["save before stop"]
+
+
+def test_analysis_turns_do_not_suggest_handoff(tmp_path: Path):
+    gw = ScriptedGateway("CHAT")
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates."),
+        Turn(text="By region, APAC."),
+        Turn(text="Still Rates."),
+    ], gateway=gw)
+    tid = orch.create_thread()["id"]
+    for prompt in ("what's our gross exposure by desk?", "and by region?", "say more"):
+        events = list(orch.chat_stream(tid, prompt))
+        assert not any(e.get("type") == "handoff-suggest" for e in events)
+    assert orch.get_thread(tid)["handoff"] is None
+    assert len(gw.seen) == 3
+
+
+def test_app_shaped_turn_suggests_handoff_once(tmp_path: Path):
+    gw = ScriptedGateway("CHAT")
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates is the largest desk."),
+        Turn(text="I can sketch a dashboard."),
+        Turn(text="Colleagues could open that."),
+    ], gateway=gw)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what's our gross exposure by desk?"))
+    list(orch.chat_stream(tid, "and by region?"))
+    assert orch.get_thread(tid)["handoff"] is None
+
+    gw.verdict = "APP"
+    events = list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    suggest = next(e for e in events if e.get("type") == "handoff-suggest")
+    assert suggest["reason"] == "classifier"
+    row = orch.get_thread(tid)["handoff"]
+    assert row["status"] == "suggested"
+    assert row["suggestedAt"]
+    assert row["suppressed"] is False
+    calls_after_hit = len(gw.seen)
+
+    gw.verdict = "APP"
+    oc.turns.append(Turn(text="More numbers."))
+    later = list(orch.chat_stream(tid, "and by product?"))
+    assert not any(e.get("type") == "handoff-suggest" for e in later)
+    assert len(gw.seen) == calls_after_hit
+    assert orch.get_thread(tid)["handoff"]["suggestedAt"] == row["suggestedAt"]
+
+
+def test_explicit_build_request_skips_classifier(tmp_path: Path):
+    gw = ScriptedGateway("CHAT")
+    orch, _ = _orch(tmp_path, [Turn(text="Ok.")], gateway=gw)
+    tid = orch.create_thread()["id"]
+    events = list(orch.chat_stream(tid, "build me a dashboard"))
+    suggest = next(e for e in events if e.get("type") == "handoff-suggest")
+    assert suggest["reason"] == "explicit"
+    assert gw.seen == []
+    assert orch.get_thread(tid)["handoff"]["status"] == "suggested"
+
+
+def test_not_now_suppresses_and_classifier_does_not_run_again(tmp_path: Path):
+    gw = ScriptedGateway("APP")
+    orch, oc = _orch(tmp_path, [Turn(text="A dashboard."), Turn(text="More.")], gateway=gw)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    patched = orch.patch_thread(tid, {"handoff": "suppress"})
+    assert patched["id"] == tid
+    row = orch.get_thread(tid)["handoff"]
+    assert row["suppressed"] is True
+    assert row["status"] == "suppressed"
+    calls = len(gw.seen)
+    later = list(orch.chat_stream(tid, "and by region?"))
+    assert len(gw.seen) == calls
+    assert not any(e.get("type") == "handoff-suggest" for e in later)
+    assert orch.get_thread(tid)["handoff"]["status"] == "suppressed"

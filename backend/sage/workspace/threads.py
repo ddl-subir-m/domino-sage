@@ -216,6 +216,33 @@ class ThreadStore:
         self._write_json(self.thread_dir(thread_id) / "artifacts.json", {"items": items})
         return row
 
+    def read_handoff(self, thread_id: str) -> dict | None:
+        p = self.thread_dir(thread_id) / "handoff.json"
+        if not p.exists():
+            return None
+        try:
+            data = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def mark_handoff_suggested(self, thread_id: str) -> dict:
+        row = self.read_handoff(thread_id) or {}
+        if row.get("suggestedAt"):
+            return row
+        row = {**row, "suggestedAt": _now(), "suppressed": False, "status": "suggested"}
+        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        return row
+
+    def suppress_handoff(self, thread_id: str) -> dict:
+        row = self.read_handoff(thread_id) or {}
+        if not row.get("suggestedAt"):
+            row["suggestedAt"] = _now()
+        row["suppressed"] = True
+        row["status"] = "suppressed"
+        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        return row
+
     def _write_index(self, rows: list[dict]) -> None:
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_json(self.index_path, rows)
