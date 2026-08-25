@@ -840,7 +840,8 @@ async def add_binding(request: Request) -> JSONResponse:
         )
     elif kind == KIND_MODEL_API:
         bind, missing = orchestrator.bind_model_api, (
-            "That Model API is not one this project offers, so the app cannot depend on it."
+            "Domino would not describe that Model API to you, and Sage holds no access token for it, "
+            "so the app cannot depend on it. Paste its sample request to add it."
         )
     else:
         return JSONResponse(status_code=400, content={"error": f"unknown Resource kind: {kind}"})
@@ -882,9 +883,10 @@ async def add_model_api_credential(request: Request) -> JSONResponse:
     breaking rather than as an answer to render beside the box.
     """
     body = await request.json()
-    resource_id, snippet = body.get("id"), body.get("snippet")
-    if not resource_id:
-        return JSONResponse(status_code=400, content={"error": "id required"})
+    # No id is a legal request since #42: a Model API the rail could not list has no row to open the
+    # form under, so the snippet's own URL is what says which model this is. 400 stays for a body
+    # that is not shaped like a request at all.
+    resource_id, snippet = str(body.get("id") or ""), body.get("snippet")
     if not isinstance(snippet, str) or not snippet.strip():
         return JSONResponse(content={"ok": False, "error": (
             "Paste the sample request from the Model API's Overview page in Domino."

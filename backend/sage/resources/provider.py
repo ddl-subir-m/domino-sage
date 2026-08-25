@@ -59,7 +59,17 @@ from typing import Any, Protocol
 
 class ResourceUnavailable(RuntimeError):
     """A Resource listing could not be produced. The message reaches the user unchanged, so it says
-    what failed and what to do about it — and never carries a token or a response body."""
+    what failed and what to do about it — and never carries a token or a response body.
+
+    `status` is the HTTP status when Domino answered and refused, and None when it did not answer at
+    all. One place needs to tell those apart (`get_model_api`, #42): a 404 for a model is an ANSWER —
+    the creator cannot read it, and a token may still prove they can call it — while a Domino that is
+    down is a failure to report as one. The message cannot be asked, so the status travels beside it.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -115,6 +125,12 @@ class ModelApi:
     # boolean: "what could I compose?" is a different question from "would it answer right now",
     # and a creator reading "Stopped" knows which of the two they are looking at.
     status: str | None = None
+    #: The name of the project that deployed it, and EMPTY for the builder's own project (#42). The
+    #: listing spans projects now, so two rows can both read `churn-risk` and a creator would have to
+    #: click one to learn which is which. Blank for the home project rather than filled in: that is
+    #: the context every other row in the rail is already in, so naming it would be noise on the
+    #: majority of rows and would bury the one label that carries information.
+    project_name: str = ""
 
 
 # Connector types the rail offers, keyed on Domino's own `dataSourceType`. An ALLOWLIST rather than
@@ -517,8 +533,16 @@ class ResourceProvider(Protocol):
     def list_llm_aliases(self) -> list[LlmAlias]: ...
 
     # Takes the project explicitly, as the asset provider's list_datasets(project_id) does: the
-    # orchestrator owns which project this builder is bound to, and the provider stays a client.
+    # orchestrator owns which project this builder is bound to, and the provider stays a client. The
+    # argument is the builder's HOME project since #42, not the only one asked about: the listing
+    # spans every project the caller belongs to, and home is the one that sorts first and whose
+    # failure is fatal.
     def list_model_apis(self, project_id: str | None) -> list[ModelApi]: ...
+
+    # By id, and no project at all: reach is per model, not per project (#42). None means this caller
+    # cannot read the record — which is not the same as cannot call the model, so a caller holding a
+    # verified access token is entitled to ignore it.
+    def get_model_api(self, model_api_id: str) -> ModelApi | None: ...
 
     # No argument at all, and unscoped: the listing is deployment-wide and already filtered to what
     # this caller may see. Not a Resource anyone picks — preflight alone reads it, to say whether the
@@ -630,7 +654,7 @@ def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
     return out
 
 
-def parse_model_apis(payload: Any) -> list[ModelApi]:
+def parse_model_apis(payload: Any, project_name: str = "") -> list[ModelApi]:
     """Model API rows out of a `/api/modelServing/v1/modelApis` body.
 
     Archived ones are dropped rather than shown greyed out. Archiving in Domino is how a Model API is
@@ -655,6 +679,7 @@ def parse_model_apis(payload: Any) -> list[ModelApi]:
                 name=name,
                 description=str(rec["description"]) if rec.get("description") else None,
                 status=str(status) if status else None,
+                project_name=project_name,
             )
         )
     return out
@@ -808,6 +833,10 @@ class DominoResourceProvider:
 
     _PAGE = 100
     _MAX_PAGES = 50  # backstop against a non-terminating pager, as the asset provider has
+    # Projects the Model API listing fans out over, beyond the builder's own (#42). One HTTP call
+    # each, so this is a latency budget: 25 keeps the rail inside a couple of seconds on a slow
+    # deployment. The paste door covers anyone who works in more projects than this.
+    _MAX_FANOUT_PROJECTS = 25
 
     def __init__(
         self,
@@ -850,34 +879,155 @@ class DominoResourceProvider:
         )
         return parse_endpoints(payload)
 
-    def list_model_apis(self, project_id: str | None) -> list[ModelApi]:
-        """Model APIs deployed in ONE project. The scope is not a filter for convenience — the
-        unscoped listing is an admin surface and 403s for a normal user, so a call without a project
-        is a call that cannot succeed and is better refused here than sent."""
-        if not self._api_host or not project_id:
-            raise ResourceUnavailable(
-                "Sage lists Model APIs from the Domino project it runs in, and it is not running in "
-                "one, so it cannot tell whether this project has any."
-            )
-        path = "/api/modelServing/v1/modelApis"
+    def _domino_get(self, path: str, params: dict | None = None) -> Any:
+        """A GET against the Domino API with this adapter's own bearer. The three keyword arguments
+        below travel together on every Domino call, and the project fan-out makes several."""
+        return self._get(
+            path,
+            root=self._api_host,
+            service="The Domino API",
+            token_provider=self._api_token_provider,
+            params=params,
+        )
+
+    @staticmethod
+    def _is_member(record: dict, user_id: str) -> bool:
+        """Whether this caller owns the project or collaborates on it. Membership rather than
+        visibility, for the reason in `_member_projects`."""
+        if str(record.get("ownerId") or "") == user_id:
+            return True
+        return any(
+            isinstance(c, dict) and str(c.get("id") or "") == user_id
+            for c in record.get("collaborators") or []
+        )
+
+    def _member_projects(self, home_project_id: str) -> list[tuple[str, str]]:
+        """(id, name) for every project worth asking about Model APIs, the builder's own first.
+
+        Membership, not visibility. Domino's listing is "projects visible to user", and on a demo
+        deployment that can mean every public project on it — fanning out over those would be a slow
+        rail showing models the creator holds no token for. Owner or collaborator is the set they
+        actually work in, and it is the set whose models they can plausibly call.
+
+        Degrades rather than fails. If Domino will not say who the caller is, or will not list
+        projects, this answers with the builder's own project alone — which is exactly the behaviour
+        before #42, and a rail listing one project beats a rail listing an error.
+
+        Capped at `_MAX_FANOUT_PROJECTS` beyond the home project, sorted by name so the cap falls in
+        the same place twice running. A member of more projects than that reaches the rest through
+        the paste door, which is why that door exists.
+        """
+        home = (home_project_id, "")
+        try:
+            me = str(((self._domino_get("/api/users/v1/self") or {}).get("user") or {}).get("id") or "")
+        except ResourceUnavailable:
+            return [home]
+        if not me:
+            return [home]
+
+        mine: list[tuple[str, str]] = []
+        offset = 0
+        for _ in range(self._MAX_PAGES):
+            try:
+                payload = self._domino_get(
+                    "/api/projects/beta/projects", {"offset": offset, "limit": self._PAGE},
+                )
+            except ResourceUnavailable:
+                break
+            rows = payload.get("projects") if isinstance(payload, dict) else None
+            rows = rows if isinstance(rows, list) else []
+            for rec in rows:
+                if not isinstance(rec, dict):
+                    continue
+                pid = str(rec.get("id") or "")
+                if not pid or pid == home_project_id or not self._is_member(rec, me):
+                    continue
+                mine.append((pid, str(rec.get("name") or pid)))
+            meta = payload.get("metadata") if isinstance(payload, dict) else None
+            total = ((meta or {}).get("pagination") or {}).get("totalCount")
+            offset += self._PAGE
+            if not rows or (total is not None and offset >= total):
+                break
+        return [home, *sorted(mine, key=lambda p: p[1])[: self._MAX_FANOUT_PROJECTS]]
+
+    def _model_apis_in(self, project_id: str, project_name: str) -> list[ModelApi]:
+        """The Model APIs of one project — the whole of what this call used to be."""
         out: list[ModelApi] = []
         offset = 0
         for _ in range(self._MAX_PAGES):
-            payload = self._get(
-                path,
-                root=self._api_host,
-                service="The Domino API",
-                token_provider=self._api_token_provider,
-                params={"projectId": project_id, "offset": offset, "limit": self._PAGE},
+            payload = self._domino_get(
+                "/api/modelServing/v1/modelApis",
+                {"projectId": project_id, "offset": offset, "limit": self._PAGE},
             )
             page = records_of(payload)
-            out += parse_model_apis(page)
+            out += parse_model_apis(page, project_name)
             meta = payload.get("metadata") if isinstance(payload, dict) else None
             total = ((meta or {}).get("pagination") or {}).get("totalCount")
             offset += self._PAGE
             if not page or (total is not None and offset >= total):
                 break
         return out
+
+    def list_model_apis(self, project_id: str | None) -> list[ModelApi]:
+        """Model APIs this caller can compose with, across the projects they belong to (#42).
+
+        Asked once per project rather than once, because the scope cannot be dropped: unscoped,
+        Domino answers `403 "not authorized to view access configuration"` — that listing is
+        deployment-wide and wants an admin grant a normal Sage user does not have (verified,
+        DOMINO-PRIMITIVES.md). So "what can I use?" is one call per project the creator is a member
+        of, unioned by id.
+
+        The builder's own project is first and its failure is fatal, as it has always been: a creator
+        whose own project will not list is looking at something broken and should be told. Any OTHER
+        project's failure is skipped — one odd grant somewhere on the tenant must not empty a rail
+        that would otherwise have answered.
+        """
+        if not self._api_host or not project_id:
+            raise ResourceUnavailable(
+                "Sage lists Model APIs from the Domino project it runs in, and it is not running in "
+                "one, so it cannot tell whether this project has any."
+            )
+        out: list[ModelApi] = []
+        seen: set[str] = set()
+        for pid, pname in self._member_projects(project_id):
+            try:
+                rows = self._model_apis_in(pid, pname)
+            except ResourceUnavailable:
+                if pid == project_id:
+                    raise
+                continue
+            for m in rows:
+                if m.id not in seen:
+                    seen.add(m.id)
+                    out.append(m)
+        return out
+
+    def get_model_api(self, model_api_id: str) -> ModelApi | None:
+        """One Model API by id, or None when this caller cannot read it (#42).
+
+        The single-record route answers 200 wherever the caller has access, whatever project the
+        model belongs to (verified 2026-08-20, DOMINO-PRIMITIVES.md). That is the question binding
+        actually asks — "can this creator reach this model" — which the project listing only ever
+        approximated, and got wrong for every model deployed somewhere else.
+
+        None rather than an exception for every refusal, 403 and 404 alike. The caller has a second
+        way to establish reach (a verified access token) and it must be free to try it; a Domino that
+        will not describe a model is not a Domino that says the model is out of bounds.
+        """
+        if not self._api_host or not model_api_id:
+            return None
+        try:
+            record = self._domino_get(f"/api/modelServing/v1/modelApis/{model_api_id}")
+        except ResourceUnavailable as e:
+            # A refusal is an answer: no such model, or not one this caller may read. A Domino that
+            # did not answer at all is not, and is re-raised — reporting "that model is not yours"
+            # while the API is down would send the creator to look for a permission problem that is
+            # not there.
+            if e.status in (401, 403, 404):
+                return None
+            raise
+        rows = parse_model_apis([record] if isinstance(record, dict) else record)
+        return rows[0] if rows else None
 
     def list_data_sources(self) -> list[DataSource]:
         """Data Sources this caller has permission on, SQL kinds only, with readiness asked for.
@@ -1114,7 +1264,7 @@ class DominoResourceProvider:
                 "Resources will be listed once it responds."
             ) from e
         if r.status_code >= 400:
-            raise ResourceUnavailable(f"{service} answered {r.status_code} at {path}.")
+            raise ResourceUnavailable(f"{service} answered {r.status_code} at {path}.", r.status_code)
         # An unauthenticated call to the gateway returns 200 carrying a Keycloak LOGIN PAGE, so the
         # status is not proof of an answer (verified — DOMINO-PRIMITIVES.md). Inspect the body.
         try:
@@ -1286,6 +1436,11 @@ class FakeResourceProvider:
         """The project is ignored, not validated: this fake stands in for a Domino that answers, and
         a local run has no project ids for a test to be right or wrong about."""
         return list(self.model_apis)
+
+    def get_model_api(self, model_api_id: str) -> ModelApi | None:
+        """Answers from the same list the fan-out would have found it in. A fake that answered for
+        ids absent from its own listing would let a test pass on a model Domino never had."""
+        return next((m for m in self.model_apis if m.id == model_api_id), None)
 
     def list_data_sources(self) -> list[DataSource]:
         return list(self.data_sources)

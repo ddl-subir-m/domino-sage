@@ -3188,14 +3188,24 @@ class Orchestrator:
         ]
 
     def list_model_apis(self) -> list[dict]:
-        """Model APIs deployed in THIS project, shaped for the Resource Browser (#8).
+        """Model APIs this creator can compose with, shaped for the Resource Browser (#8, #42).
 
-        Scoped to the project Sage is bound to, which is the only scope a normal user can ask for:
-        the deployment-wide listing is an admin surface. `_domino_project_id` is the same id the
-        dataset listing already runs on, so nothing new has to be configured for this to work.
+        No longer only this project's. The deployment-wide listing is still an admin surface, so the
+        provider asks once per project the creator belongs to and unions the answers;
+        `_domino_project_id` is now the home project of that fan-out rather than the whole of it.
+
+        `project` is empty for a Model API deployed here, and names the project otherwise. The rail
+        renders it as a row's second line, so it has to be blank rather than "this project" — a label
+        repeated on every row would say nothing while hiding the rows where it says something.
         """
         return [
-            {"id": m.id, "name": m.name, "description": m.description, "status": m.status}
+            {
+                "id": m.id,
+                "name": m.name,
+                "description": m.description,
+                "status": m.status,
+                "project": m.project_name,
+            }
             for m in self._resources.list_model_apis(self._domino_project_id)
         ]
 
@@ -3282,26 +3292,41 @@ class Orchestrator:
     def bind_model_api(self, model_api_id: str) -> list[dict]:
         """Record that this app uses one Model API, and return the new Binding list (#9).
 
-        Validated against the project's own listing, for the reason the Alias is: a record naming
-        something the creator cannot reach is a dependency on a call that cannot run. The listing is
-        already scoped to this project and already permission-filtered by Domino, so anything absent
-        from it is not this app's to depend on.
+        Reach is established per model, not per project (#42). This used to look the id up in the
+        project's own listing, which made a model deployed in any other project impossible to bind —
+        and impossible to paste a token for either, since the paste form only ever opened under a row
+        the listing had drawn. A creator could call the model from a terminal and still had no way to
+        tell Sage about it.
 
-        A Model API has ONE name and no separate display name, so both fields carry it. That keeps
-        the manifest one shape across kinds, and the row renders the name once rather than twice.
+        Two ways to establish it, and either is enough:
+
+        - Domino describes the model. `get_model_api` answers wherever the caller has access,
+          whatever project it lives in, and its answer also carries the name.
+        - The creator holds a verified access token for it. `save_model_api_credential` calls the
+          model before it stores anything, so a stored credential IS a demonstrated call — a stronger
+          proof of reach than any listing, and the only one available for a model in a project the
+          creator is not a member of.
+
+        With neither, this is still a LookupError, and it still means what it meant: nothing Sage can
+        see says this model is yours to depend on.
+
+        A Model API has ONE name and no separate display name, so both fields carry it. When only the
+        token proved reach, the id stands in — an unlovely row, but a truthful one, and it stops
+        being unlovely the moment Domino will describe the model.
 
         Refuses without a stored credential, which is what makes a Model API Binding mean something
         an app can act on. Unlike an LLM Alias — where the viewer's own session is the credential —
         a Model API opens for nothing but its access token, so a Binding recorded without one would
-        pin a model the app cannot call and report it as a dependency that works. The rail asks for
-        the snippet before it gets here; this is the invariant behind that, not a second prompt.
+        pin a model the app cannot call and report it as a dependency that works.
         """
-        api = next((m for m in self.list_model_apis() if m["id"] == model_api_id), None)
-        if api is None:
+        found = self._resources.get_model_api(model_api_id)
+        credential = self._credentials(self.project()).get(model_api_id)
+        if found is None and credential is None:
             raise LookupError(model_api_id)
-        if self._credentials(self.project()).get(model_api_id) is None:
+        if credential is None:
             raise CredentialRequired(model_api_id)
-        return self._record(Binding(KIND_MODEL_API, api["id"], api["name"], api["name"]))
+        name = found.name if found else model_api_id
+        return self._record(Binding(KIND_MODEL_API, model_api_id, name, name))
 
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
@@ -3614,10 +3639,18 @@ class Orchestrator:
         The id in the pasted URL is checked against the Model API being bound. Two snippets look
         alike and a creator with several Overview tabs open can easily copy the wrong one; without
         this the app would call somebody else's model and report every mismatch as a bad body.
+
+        An EMPTY id means the paste did not come from a row (#42) — the creator is adding a Model API
+        the rail could not list, so the snippet's own URL is the only thing that says which model this
+        is. Nothing is relaxed by that. The mismatch check below is between two ids the creator
+        supplied, and with only one supplied there is no second one to disagree with; a paste naming
+        no model at all is already refused above, because the URL and the id come out of one match and
+        a snippet without the URL is not `complete`.
         """
         parsed = parse_snippet(snippet)
         if not parsed.complete:
             return {"ok": False, "error": parsed.missing()}
+        model_api_id = model_api_id or (parsed.model_id or "")
         if parsed.model_id and parsed.model_id != model_api_id:
             return {"ok": False, "error": (
                 "That snippet is for a different Model API. Copy the sample request from the "
@@ -3627,7 +3660,9 @@ class Orchestrator:
         if not result.ok:
             return {"ok": False, "error": result.message, "detail": result.detail}
         self._credentials(self.project()).put(model_api_id, Credential(parsed.url, parsed.token))
-        return {"ok": True, "url": parsed.url}
+        # The id goes back because the caller may not have had one to send: a paste that did not come
+        # from a row learns which Model API it just added only from here, and it has to bind next.
+        return {"ok": True, "url": parsed.url, "id": model_api_id}
 
     def _record(self, new: Binding) -> list[dict]:
         """Write one Binding into the manifest, and re-derive what the app's source says about it."""

@@ -323,7 +323,9 @@ def test_a_verified_paste_is_remembered_and_binding_then_writes_the_app_config(t
     _answers(monkeypatch, _Response(400, "predict() missing 1 required argument"))
     orch = _orch(tmp_path)
 
-    assert orch.save_model_api_credential(MODEL_ID, JQUERY) == {"ok": True, "url": URL}
+    # The id comes back as well as the url: a paste that did not come from a row (#42) learns which
+    # Model API it just added only from this answer, and has to bind it next.
+    assert orch.save_model_api_credential(MODEL_ID, JQUERY) == {"ok": True, "url": URL, "id": MODEL_ID}
     assert orch.model_api_credential_ids() == [MODEL_ID]
 
     orch.bind_model_api(MODEL_ID)

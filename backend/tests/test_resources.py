@@ -253,15 +253,38 @@ def test_model_apis_are_unlistable_rather_than_empty_when_there_is_no_project_to
 
 
 @contextmanager
-def stub_domino_api(pages: list[object]):
+def stub_domino_api(pages: list[object], *, user: object = None, projects: object = None):
     """A Domino API that answers the Model API listing, handing out `pages` in order and recording
-    every path it was asked for (query string included)."""
+    every path it was asked for (query string included).
+
+    `pages` are for the LISTING only, and are consumed in listing order however many other calls the
+    provider makes around them. The project fan-out (#42) asks two more questions first — who is
+    calling, and which projects do they belong to — and those are answered from `user` and
+    `projects`. Both default to a 404, which is a Domino that will not say: the fan-out then collapses
+    to the builder's own project, which is the shape every test written before #42 assumes.
+
+    Answering by path rather than by call order for exactly that reason. Order made the stub read as
+    a script of the provider's internals, so adding one call to the provider rewrote every test that
+    never cared about it.
+    """
     seen: list[str] = []
+    listings: list[str] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             seen.append(self.path)
-            payload = pages[min(len(seen) - 1, len(pages) - 1)]
+            if self.path.startswith("/api/users/v1/self"):
+                payload = user
+            elif self.path.startswith("/api/projects/beta/projects"):
+                payload = projects
+            else:
+                listings.append(self.path)
+                payload = pages[min(len(listings) - 1, len(pages) - 1)] if pages else None
+            if payload is None:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             body = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -276,7 +299,7 @@ def stub_domino_api(pages: list[object]):
     t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
-        yield f"http://127.0.0.1:{srv.server_address[1]}", seen
+        yield f"http://127.0.0.1:{srv.server_address[1]}", listings
     finally:
         srv.shutdown()
         srv.server_close()
@@ -304,6 +327,150 @@ def test_a_project_with_more_model_apis_than_one_page_is_listed_whole():
         p._PAGE = 1
         assert [m.name for m in p.list_model_apis("proj-1")] == ["a", "b"]
     assert "offset=1" in seen[1]
+
+
+# ---- the project fan-out (#42) -----------------------------------------------------------------
+# A Model API deployed in another project used to be invisible AND unbindable, so a creator who could
+# call the model from a terminal had no way to tell Sage about it. The listing now asks once per
+# project the caller belongs to, and binding stopped consulting the listing at all.
+
+_ME = {"user": {"id": "u-me", "userName": "subir"}}
+
+
+def _projects(*records: dict) -> dict:
+    return {"projects": list(records),
+            "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": len(records)}}}
+
+
+def _model_apis(*names: str) -> dict:
+    # `totalCount` so the pager stops after one page. The stub repeats its last response forever, so
+    # a payload without it would spin to `_MAX_PAGES` and hide what the test is measuring.
+    return {"items": [{"id": n, "name": n} for n in names],
+            "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": len(names)}}}
+
+
+def test_the_listing_spans_the_projects_this_caller_belongs_to_and_names_each_row():
+    projects = _projects(
+        {"id": "proj-1", "name": "test-ds", "ownerId": "u-me"},
+        {"id": "proj-2", "name": "Sage", "ownerId": "u-else",
+         "collaborators": [{"id": "u-me", "role": "Contributor"}]},
+    )
+    with stub_domino_api([_model_apis("churn"), _model_apis("priority")],
+                         user=_ME, projects=projects) as (api_host, listings):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+
+    # Home first, and blank — the rail is already in that project's context.
+    assert [(m.name, m.project_name) for m in out] == [("churn", ""), ("priority", "Sage")]
+    assert "projectId=proj-1" in listings[0] and "projectId=proj-2" in listings[1]
+
+
+def test_a_project_the_caller_only_has_visibility_on_is_never_asked_about():
+    # "Projects visible to user" can mean every public project on a demo deployment. Fanning out over
+    # those would be a slow rail full of models the creator holds no token for.
+    projects = _projects(
+        {"id": "proj-1", "name": "test-ds", "ownerId": "u-me"},
+        {"id": "proj-public", "name": "Somebody else's", "ownerId": "u-else",
+         "collaborators": [{"id": "u-other", "role": "Owner"}]},
+    )
+    with stub_domino_api([_model_apis("churn")], user=_ME, projects=projects) as (api_host, listings):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+
+    assert [m.name for m in out] == ["churn"]
+    assert len(listings) == 1 and "projectId=proj-1" in listings[0]
+
+
+def test_one_model_bound_into_two_projects_is_offered_once():
+    projects = _projects(
+        {"id": "proj-1", "name": "test-ds", "ownerId": "u-me"},
+        {"id": "proj-2", "name": "Sage", "ownerId": "u-me"},
+    )
+    with stub_domino_api([_model_apis("churn"), _model_apis("churn")],
+                         user=_ME, projects=projects) as (api_host, _):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+
+    # First writer wins, so the row keeps the home project's blank label rather than gaining one.
+    assert [(m.id, m.project_name) for m in out] == [("churn", "")]
+
+
+def test_a_domino_that_will_not_say_who_is_calling_still_lists_the_builders_own_project():
+    # Degrading to the pre-#42 answer, not to an error: a rail listing one project beats a rail
+    # listing a failure, and the fan-out is an improvement on that answer rather than a condition of
+    # it. `user` defaults to a 404 here.
+    with stub_domino_api([_model_apis("churn")]) as (api_host, listings):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+
+    assert [m.name for m in out] == ["churn"]
+    assert len(listings) == 1
+
+
+def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
+    # Asymmetric on purpose. A creator whose own project will not list is looking at something broken
+    # and has to be told; one odd grant elsewhere on the tenant must not empty a rail that would
+    # otherwise have answered.
+    projects = _projects(
+        {"id": "proj-1", "name": "test-ds", "ownerId": "u-me"},
+        {"id": "proj-2", "name": "Sage", "ownerId": "u-me"},
+    )
+    calls: list[str] = []
+
+    class Provider(DominoResourceProvider):
+        def _model_apis_in(self, project_id, project_name):
+            calls.append(project_id)
+            if project_id == "proj-2":
+                raise ResourceUnavailable("The Domino API answered 503.", 503)
+            return super()._model_apis_in(project_id, project_name)
+
+    with stub_domino_api([_model_apis("churn")], user=_ME, projects=projects) as (api_host, _):
+        p = Provider("http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        assert [m.name for m in p.list_model_apis("proj-1")] == ["churn"]
+        assert calls == ["proj-1", "proj-2"]
+
+        class HomeBroken(Provider):
+            def _model_apis_in(self, project_id, project_name):
+                raise ResourceUnavailable("The Domino API answered 503.", 503)
+
+        broken = HomeBroken(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        with pytest.raises(ResourceUnavailable):
+            broken.list_model_apis("proj-1")
+
+
+def test_one_model_is_readable_by_id_whatever_project_it_lives_in():
+    # The question binding actually asks. The project listing only ever approximated it, and got it
+    # wrong for every model deployed somewhere else.
+    with stub_domino_api([{"id": "m-x", "name": "churn", "activeVersion": {"deployment": {
+        "status": "Running"}}}]) as (api_host, listings):
+        found = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).get_model_api("m-x")
+
+    assert found is not None and (found.name, found.status) == ("churn", "Running")
+    assert listings[0] == "/api/modelServing/v1/modelApis/m-x"
+
+
+def test_a_model_domino_refuses_to_describe_is_none_but_a_domino_that_is_down_is_raised():
+    # A refusal is an answer — the creator cannot read it, and an access token may still prove they
+    # can call it. A 503 is not, and saying "that model is not yours" would send them to look for a
+    # permission problem that is not there.
+    with stub_domino_api([]) as (api_host, _):   # every path 404s
+        p = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        assert p.get_model_api("m-gone") is None
+
+    class Down(DominoResourceProvider):
+        def _domino_get(self, path, params=None):
+            raise ResourceUnavailable("The Domino API answered 503.", 503)
+
+    with pytest.raises(ResourceUnavailable):
+        Down("http://gw/v1", lambda: "t", api_host="http://api").get_model_api("m-x")
 
 
 # ---- Data Sources: the allowlist, and readiness asked rather than inferred (#10) -----------------
@@ -547,21 +714,30 @@ def test_the_default_provider_is_the_fake_so_a_local_run_lists_something(tmp_pat
     assert rows and all(r["display_name"] and r["capabilities"] for r in rows)
 
 
-def test_the_orchestrator_lists_model_apis_scoped_to_its_own_project(tmp_path: Path):
+def test_the_orchestrator_hands_its_own_project_down_as_the_home_of_the_listing(tmp_path: Path):
     asked: list[str | None] = []
 
     class Recording(FakeResourceProvider):
         def list_model_apis(self, project_id):
             asked.append(project_id)
-            return [ModelApi("m1", "churn-risk", "Scores cancellation risk.", "Running")]
+            return [
+                ModelApi("m1", "churn-risk", "Scores cancellation risk.", "Running"),
+                ModelApi("m2", "churn-risk", None, "Running", project_name="Underwriting"),
+            ]
 
     orch = _orch(tmp_path, Recording())
     orch._domino_project_id = "proj-1"
+    # Two rows reading `churn-risk`, told apart by the project — the whole reason the field is
+    # carried (#42). Blank on the home one: a label every row wears says nothing, and would bury the
+    # one row where it says something.
     assert orch.list_model_apis() == [
-        {"id": "m1", "name": "churn-risk", "description": "Scores cancellation risk.", "status": "Running"}
+        {"id": "m1", "name": "churn-risk", "description": "Scores cancellation risk.",
+         "status": "Running", "project": ""},
+        {"id": "m2", "name": "churn-risk", "description": None, "status": "Running",
+         "project": "Underwriting"},
     ]
-    # The project is not optional: the deployment-wide listing needs an admin role a Sage user has not
-    # got, so the orchestrator has to hand its own project down rather than let the call go unscoped.
+    # The project is still not optional: the deployment-wide listing needs an admin role a Sage user
+    # has not got, so the fan-out needs a project to start from rather than a call it can skip.
     assert asked == ["proj-1"]
 
 

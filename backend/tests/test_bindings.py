@@ -177,9 +177,11 @@ def test_a_stopped_model_api_can_still_be_recorded(tmp_path: Path):
     assert [b["name"] for b in orch.bind_model_api("id-demand")] == ["demand-forecast"]
 
 
-def test_a_model_api_this_project_does_not_offer_is_refused(tmp_path: Path):
-    # The listing is already scoped to this project and already permission-filtered by Domino, so
-    # anything absent from it is not this app's to depend on.
+def test_a_model_api_nothing_can_vouch_for_is_refused(tmp_path: Path):
+    # Both doors shut (#42): Domino will not describe the model, and Sage holds no verified token for
+    # it. Either alone would be enough, so this refusal means neither happened — and it has to stay a
+    # refusal, or a typo in an id would be recorded as a dependency and fail for the first person to
+    # open the published app.
     orch = _orch(tmp_path)
     try:
         orch.bind_model_api("id-someone-elses")
@@ -319,9 +321,11 @@ def test_the_route_refuses_an_alias_you_cannot_use_and_an_unknown_kind(tmp_path:
     assert nope.status_code == 404 and "not one you can use" in nope.json()["error"]
 
     # A different sentence for the other kind: "ask an admin for a grant" is the wrong advice for a
-    # Model API that is simply not deployed in this project.
+    # Model API, and since #42 neither is "this project does not offer it" — the project stopped
+    # being the boundary. What is left is that nothing Sage can see says the model is reachable, and
+    # the sentence names the door that would settle it.
     no_api = client.post("/api/bindings", json={"kind": KIND_MODEL_API, "id": "id-someone-elses"})
-    assert no_api.status_code == 404 and "not one this project offers" in no_api.json()["error"]
+    assert no_api.status_code == 404 and "Paste its sample request" in no_api.json()["error"]
 
     bad_kind = client.post("/api/bindings", json={"kind": "sandwich", "id": "x"})
     assert bad_kind.status_code == 400 and "sandwich" in bad_kind.json()["error"]
@@ -348,6 +352,45 @@ def test_the_routes_record_and_remove_a_model_api(tmp_path: Path, monkeypatch):
     assert gone.json()["bindings"] == [] and gone.json()["refs"] == []
 
 
+def test_a_model_api_no_listing_offers_binds_on_a_verified_token_alone(tmp_path: Path):
+    # The #42 case, and the reason the paste door exists. A model in a project the creator is not a
+    # member of reaches no listing the fan-out can run — but `save_model_api_credential` CALLS the
+    # model before it stores anything, so a stored credential is a demonstrated call. That is a
+    # stronger proof of reach than a listing, and the only one available here.
+    orch = _orch(tmp_path)
+    _credential(orch, "id-elsewhere")
+
+    assert orch._resources.get_model_api("id-elsewhere") is None
+    bindings = orch.bind_model_api("id-elsewhere")
+
+    row = next(b for b in bindings if b["id"] == "id-elsewhere")
+    # The id stands in for the name Domino would not give — unlovely, and truthful. It stops being
+    # unlovely the moment Domino will describe the model.
+    assert row["name"] == "id-elsewhere" and row["kind"] == KIND_MODEL_API
+
+
+def test_a_pasted_snippet_can_name_its_own_model_when_there_was_no_row_to_click(tmp_path: Path,
+                                                                                monkeypatch):
+    # A Model API the rail could not list has no row, so the form opens with no id and the snippet's
+    # own URL is the only thing that says which model this is.
+    import sage.resources.model_api_credentials as credmod
+    from sage.resources.model_api_credentials import VerifyResult
+
+    monkeypatch.setattr(credmod, "verify_credential", lambda url, token: VerifyResult(True, 200))
+    monkeypatch.setattr(
+        "sage.orchestrator.service.verify_credential", lambda url, token: VerifyResult(True, 200),
+    )
+    orch = _orch(tmp_path)
+    mid = "6a8dc43f05200022d81c743a"
+    snippet = (f'url: "https://se-demo.example/models/{mid}/latest/model",\n'
+               f'var accessToken = "{"t" * 64}";')
+
+    answer = orch.save_model_api_credential("", snippet)
+
+    assert answer["ok"] and answer["id"] == mid
+    assert mid in orch.model_api_credential_ids()
+
+
 def test_the_route_reports_a_domino_api_that_will_not_answer(tmp_path: Path, monkeypatch):
     # Model APIs come off the Domino API, not the gateway. It being down is not "you cannot use that
     # one" — a 404 would send the creator to go and check a permission that is fine.
@@ -358,6 +401,12 @@ def test_the_route_reports_a_domino_api_that_will_not_answer(tmp_path: Path, mon
 
     class Broken(FakeResourceProvider):
         def list_model_apis(self, project_id):
+            raise ResourceUnavailable("The Domino API answered 503 at /api/modelServing/v1/modelApis.")
+
+        # Binding reads the single model since #42, so breaking the listing alone would leave this
+        # test passing for the wrong reason. A 503 is re-raised there rather than read as "no such
+        # model", which is the distinction `ResourceUnavailable.status` exists for.
+        def get_model_api(self, model_api_id):
             raise ResourceUnavailable("The Domino API answered 503 at /api/modelServing/v1/modelApis.")
 
     orch = _orch(tmp_path)

@@ -1336,6 +1336,31 @@ async function loadModelApiCredentials() {
   if (ok) modelApiCredentialIds = new Set(body.ids || []);
 }
 
+// The listing spans the projects the creator BELONGS to (#42), which is not everything they can
+// call: a model in somebody else's project answers for anyone holding its access token. That model
+// reaches no listing, so it needs a door that does not start from a row. The snippet carries the
+// model's id in its URL, so the paste alone says which model this is — and Sage calls the model
+// before storing anything, which proves the reach the listing could not.
+const UNLISTED = '\u0000unlisted';
+
+function unlistedModelApi() {
+  const wrap = document.createElement('div');
+  if (credentialFormFor === UNLISTED) {
+    wrap.appendChild(credentialForm({ id: UNLISTED, name: '' }));
+    return wrap;
+  }
+  const h = hintEl('Using a Model API from a project you are not a member of? '
+    + '<button class="link-btn">Add it by pasting its sample request</button>.');
+  wrap.appendChild(h);
+  h.querySelector('.link-btn').onclick = () => {
+    credentialFormFor = UNLISTED;
+    credentialFormText = '';
+    credentialFormError = null;
+    renderModelApis();
+  };
+  return wrap;
+}
+
 function modelApiRow(m) {
   const row = document.createElement('div');
   row.className = 'res-row';
@@ -1352,7 +1377,12 @@ function modelApiRow(m) {
   const chip = `<span class="a-chip ${running ? 'ok' : 'cap'}" title="${esc(title)}">${esc(label)}</span>`;
   // Descriptions are usually empty on real Model APIs, so the line only appears when it says
   // something — an empty second line would suggest the row failed to load.
-  const desc = m.description ? `<div class="res-desc">${esc(m.description)}</div>` : '';
+  // The project joins that line since the listing stopped being one project's (#42). It is blank for
+  // a model deployed here, so it shows only where it tells the creator something they do not already
+  // know — which is also what makes two rows both reading `churn-risk` tellable apart.
+  const sub = [m.project ? `In ${esc(m.project)}` : '', m.description ? esc(m.description) : '']
+    .filter(Boolean).join(' — ');
+  const desc = sub ? `<div class="res-desc">${sub}</div>` : '';
   row.innerHTML =
     `<div class="res-head"><div class="res-name" title="${esc(m.name)}">${esc(m.name)}</div>${chip}</div>` + desc;
   row.querySelector('.res-head').appendChild(modelApiUseButton(m));
@@ -1414,9 +1444,13 @@ function credentialForm(m) {
   const wrap = document.createElement('div');
   wrap.className = 'tok-form';
   wrap.innerHTML =
-    `<div class="tok-lbl">Open <b>${esc(m.name)}</b> in Domino, go to its Overview page, and copy the `
-      + 'sample request from any language tab. Sage checks it against the model, then remembers it for '
-      + 'this Model API and will not ask again.</div>'
+    (m.id === UNLISTED
+      ? '<div class="tok-lbl">Open the Model API in Domino, go to its Overview page, and copy the '
+        + 'sample request from any language tab. It names the model as well as the token, so Sage '
+        + 'learns which one you mean from the paste itself.</div>'
+      : `<div class="tok-lbl">Open <b>${esc(m.name)}</b> in Domino, go to its Overview page, and copy the `
+        + 'sample request from any language tab. Sage checks it against the model, then remembers it for '
+        + 'this Model API and will not ask again.</div>')
     + '<textarea spellcheck="false" placeholder="var accessToken = &quot;…&quot;;&#10;$.ajax({&#10;'
       + '  url: &quot;https://…/models/…/latest/model&quot;,&#10;  …"></textarea>'
     // Directly under the box the paste went into, above everything else: a refusal is about what was
@@ -1456,9 +1490,10 @@ function credentialForm(m) {
 async function saveCredential(id, btn) {
   btn.disabled = true;
   btn.textContent = 'Checking…';
+  const unlisted = id === UNLISTED;
   const res = await api('/api/model-api-credentials', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id, snippet: credentialFormText }),
+    body: JSON.stringify({ id: unlisted ? '' : id, snippet: credentialFormText }),
   });
   const body = res.body || {};
   if (!res.ok || !body.ok) {
@@ -1469,6 +1504,9 @@ async function saveCredential(id, btn) {
     renderModelApis();   // rebuilds the row with the reason under the box the paste went into
     return;
   }
+  // Which model this was is the server's answer when the paste did not come from a row: the id came
+  // out of the snippet's own URL, and the client never had it to send.
+  if (unlisted) id = body.id;
   modelApiCredentialIds.add(id);
   credentialFormFor = null;
   credentialFormText = '';
@@ -1493,15 +1531,16 @@ function renderModelApis() {
     return;
   }
   if (!modelApisCache.length) {
-    const h = hintEl('This project has no Model APIs. A Model API is a model your team has already '
-      + 'deployed, which an app can send prediction requests to. Deploy one from this project in '
-      + 'Domino, or ask whoever owns the model to deploy it here — then '
+    const h = hintEl('None of your projects has a Model API. A Model API is a model your team has '
+      + 'already deployed, which an app can send prediction requests to. Deploy one in Domino, or '
       + '<button class="link-btn">Try again</button>.');
     el.appendChild(h);
     h.querySelector('.link-btn').onclick = retryResources;
+    el.appendChild(unlistedModelApi());
     return;
   }
   for (const m of modelApisCache) el.appendChild(modelApiRow(m));
+  el.appendChild(unlistedModelApi());
 }
 
 // ---------- Data Sources (Resources rail, #10, #11) ----------
