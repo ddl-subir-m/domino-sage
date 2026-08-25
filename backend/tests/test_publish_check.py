@@ -162,14 +162,14 @@ def test_a_catalog_that_holds_together_says_nothing(tmp_path: Path):
     orch = _orch(tmp_path)
     _write_queries(orch, [SOUND])
 
-    assert orch.publish_check() == {"checked": True, "queries": [], "models": None}
+    assert orch.publish_check() == {"checked": True, "queries": []}
 
 
 def test_an_app_with_no_queries_says_nothing(tmp_path: Path):
     # Every app Sage built before #13, and most of them since. Nothing is added to their publish.
     orch = _orch(tmp_path)
 
-    assert orch.publish_check() == {"checked": True, "queries": [], "models": None}
+    assert orch.publish_check() == {"checked": True, "queries": []}
 
 
 def test_an_app_sage_cannot_check_does_not_report_a_clean_bill(tmp_path: Path):
@@ -179,7 +179,7 @@ def test_an_app_sage_cannot_check_does_not_report_a_clean_bill(tmp_path: Path):
     orch = _orch(tmp_path, with_serve=False)
     _write_queries(orch, [UNDECLARED])
 
-    assert orch.publish_check() == {"checked": False, "queries": [], "models": None}
+    assert orch.publish_check() == {"checked": False, "queries": []}
 
 
 # ---- over the route -------------------------------------------------------------------------------
@@ -304,7 +304,7 @@ def test_the_hub_says_nothing_about_a_catalog_that_holds_together(tmp_path: Path
     ref = cp.create_project("Sales App", git_url=_GIT_URL)
     repo = _repo_carrying(_orch(tmp_path / "b"), [SOUND])
 
-    assert _hub_for(tmp_path, cp, repo).publish_check(ref.id) == {"checked": True, "queries": [], "models": None}
+    assert _hub_for(tmp_path, cp, repo).publish_check(ref.id) == {"checked": True, "queries": []}
 
 
 def test_an_app_with_no_catalog_costs_the_hub_publish_nothing(tmp_path: Path):
@@ -314,7 +314,7 @@ def test_an_app_with_no_catalog_costs_the_hub_publish_nothing(tmp_path: Path):
     ref = cp.create_project("Sales App", git_url=_GIT_URL)
 
     assert _hub_for(tmp_path, cp, FakeRepoProvider()).publish_check(ref.id) == {
-        "checked": True, "queries": [], "models": None}
+        "checked": True, "queries": []}
 
 
 def test_a_repo_the_hub_could_not_read_does_not_report_a_clean_bill(tmp_path: Path):
@@ -327,7 +327,7 @@ def test_a_repo_the_hub_could_not_read_does_not_report_a_clean_bill(tmp_path: Pa
     cp = FakeControlPlane()
     ref = cp.create_project("Sales App", git_url=_GIT_URL)
 
-    assert _hub_for(tmp_path, cp, _DeadRepo()).publish_check(ref.id) == {"checked": False, "queries": [], "models": None}
+    assert _hub_for(tmp_path, cp, _DeadRepo()).publish_check(ref.id) == {"checked": False, "queries": []}
 
 
 def test_an_app_with_no_repo_is_not_reported_as_clean(tmp_path: Path):
@@ -335,7 +335,7 @@ def test_an_app_with_no_repo_is_not_reported_as_clean(tmp_path: Path):
     ref = cp.create_project("Sales App", git_url="")
 
     assert _hub_for(tmp_path, cp, FakeRepoProvider()).publish_check(ref.id) == {
-        "checked": False, "queries": [], "models": None}
+        "checked": False, "queries": []}
 
 
 def test_a_template_the_hub_cannot_read_does_not_report_a_clean_bill(tmp_path: Path):
@@ -346,7 +346,7 @@ def test_a_template_the_hub_cannot_read_does_not_report_a_clean_bill(tmp_path: P
 
     result = _hub_for(tmp_path, cp, repo, with_serve=False).publish_check(ref.id)
 
-    assert result == {"checked": False, "queries": [], "models": None}
+    assert result == {"checked": False, "queries": []}
 
 
 def test_a_catalog_whose_bindings_manifest_is_missing_is_judged_as_the_app_would(tmp_path: Path):
@@ -421,7 +421,7 @@ def test_the_hub_route_never_fails_the_request_it_precedes(tmp_path: Path, monke
     r = TestClient(hubmod.app, raise_server_exceptions=False).get(f"/api/apps/{ref.id}/publish-check")
 
     assert r.status_code == 200
-    assert r.json() == {"checked": False, "queries": [], "models": None}
+    assert r.json() == {"checked": False, "queries": []}
 
 
 def test_a_repo_that_404s_reads_as_no_catalog_rather_than_as_a_failure(tmp_path: Path):
@@ -440,31 +440,4 @@ def test_a_repo_that_404s_reads_as_no_catalog_rather_than_as_a_failure(tmp_path:
     cp = FakeControlPlane()
     ref = cp.create_project("Sales App", git_url=_GIT_URL)
 
-    assert _hub_for(tmp_path, cp, _Missing()).publish_check(ref.id) == {"checked": True, "queries": [], "models": None}
-
-
-def test_the_two_routes_say_the_same_thing_about_where_the_rows_go(tmp_path: Path):
-    # #35's warning rides the route #26 built, so it inherits #26's criterion: the same sentence from
-    # both, not a paraphrase. The hub can answer at all only because the Bindings manifest is
-    # committed — which is the same reason this fixture takes its bytes off the workspace.
-    orch = _orch(tmp_path / "b")
-    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-    orch.bind_llm_alias("f-gpt54")
-    repo = _repo_carrying(orch, [SOUND])
-    cp = FakeControlPlane()
-    ref = cp.create_project("Sales App", git_url=_GIT_URL)
-
-    from_the_rail = orch.publish_check()
-    from_the_hub = _hub_for(tmp_path, cp, repo).publish_check(ref.id)
-
-    assert from_the_hub == from_the_rail
-    assert "outside Domino" in from_the_hub["models"]
-    # And it stays a warning: the app publishes past it.
-    assert not from_the_hub["queries"]
-
-
-def test_an_app_that_reads_a_store_and_calls_no_model_says_nothing_about_models(tmp_path: Path):
-    orch = _orch(tmp_path / "b")
-    orch.bind_data_source("ds-dwh", "DWH", "MARTS")
-
-    assert orch.publish_check()["models"] is None
+    assert _hub_for(tmp_path, cp, _Missing()).publish_check(ref.id) == {"checked": True, "queries": []}

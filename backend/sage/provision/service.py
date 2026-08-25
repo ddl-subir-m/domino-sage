@@ -21,14 +21,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-from ..resources.bindings import KIND_LLM_ALIAS, parse_bindings
+from ..resources.bindings import parse_bindings
 from ..resources.builtapp import catalog_problems
 from ..resources.provider import DataSource, FakeResourceProvider, ResourceProvider
 from ..resources.publish_guard import (
     PublishRefused,
     data_source_bindings,
     publish_problems,
-    vendor_model_warning,
 )
 from . import naming
 from .domino import BUILDER_WORKSPACE_NAME, ControlPlane, ProjectRef, PublishedApp
@@ -451,17 +450,17 @@ class HubService:
         ref = next((a for a in self._cp.list_apps() if a.id == project_id), None)
         full = _repo_full_name(ref.git_url) if ref else None
         if not full:
-            return {"checked": False, "queries": [], "models": None}
+            return {"checked": False, "queries": []}
         try:
             queries = self._repo.read_file(full, _QUERIES_PATH, self._branch)
             # `read_file` answers None for a file that is not there and raises for a repo it could
             # not reach, so the two stay tellable apart here even though they look the same later.
             if queries is None:
-                return {"checked": True, "queries": [], "models": self._vendor_model_warning(full)}
+                return {"checked": True, "queries": []}
             bindings = self._repo.read_file(full, _BINDINGS_PATH, self._branch)
         except Exception:
             log.exception("publish-check: couldn't read the manifests from %s", full)
-            return {"checked": False, "queries": [], "models": None}
+            return {"checked": False, "queries": []}
         with tempfile.TemporaryDirectory(prefix="sage-publish-check-") as tmp:
             root = Path(tmp)
             (root / _QUERIES_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -472,24 +471,7 @@ class HubService:
             if bindings is not None:
                 (root / _BINDINGS_PATH).write_text(bindings, encoding="utf-8")
             problems = catalog_problems(self._template, root)
-        return {"checked": problems is not None, "queries": problems or [],
-                "models": self._vendor_model_warning(full)}
-
-    def _vendor_model_warning(self, full_name: str | None) -> str | None:
-        """Where this app's rows go, for a creator who never opened the builder (#35). None when silent.
-
-        The same sentence `Orchestrator._vendor_model_warning` produces, from the repo rather than
-        from a workspace — the #27 rule that both routes say the same words, not a paraphrase.
-        Fails open at every step, as everything on this route does.
-        """
-        try:
-            recorded = parse_bindings(self._read_bindings(full_name))
-            if not any(b.kind == KIND_LLM_ALIAS for b in recorded):
-                return None
-            return vendor_model_warning(recorded, self._resources.list_llm_aliases())
-        except Exception:
-            log.exception("publish check: couldn't work out where this app's rows would go")
-            return None
+        return {"checked": problems is not None, "queries": problems or []}
 
     def _read_bindings(self, full_name: str | None) -> list[dict]:
         """The app's committed Resource list, or [] when there isn't one to read."""

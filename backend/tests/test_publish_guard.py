@@ -33,7 +33,6 @@ from sage.resources.publish_guard import (
     UNLISTED_SOURCE,
     PublishRefused,
     publish_problems,
-    vendor_model_warning,
 )
 from sage.router.models import ModelCatalog
 
@@ -308,41 +307,8 @@ def test_the_hub_leaves_an_llm_alias_binding_alone(tmp_path: Path):
     assert _hub(tmp_path, cp, repo).publish_app(ref.id)["published"] is True
 
 
-# --- Where the rows go -------------------------------------------------------------------------
-#
-# A published app can read a store and call a model in one page load, and the model may be a vendor's
-# rather than one hosted in Domino. That combination warns on publish_check and does not refuse.
-
-HOSTED = LlmAlias("f-qwen25", "qwen-2-5", "Qwen 2.5 (Domino-hosted)",
-                  endpoint_url="https://apps.example.domino.tech/qwen/v1")
 VENDOR = LlmAlias("f-gpt54", "gpt-5.4", "gpt-5.4")
-ALIASES = [VENDOR, HOSTED]
-
-VENDOR_BINDING = Binding(KIND_LLM_ALIAS, "f-gpt54", "gpt-5.4", "gpt-5.4")
-HOSTED_BINDING = Binding(KIND_LLM_ALIAS, "f-qwen25", "qwen-2-5", "Qwen 2.5 (Domino-hosted)")
-
-
-def test_a_store_and_a_vendor_model_warn_and_do_not_refuse():
-    bindings = [SHARED_BINDING, VENDOR_BINDING]
-
-    warning = vendor_model_warning(bindings, ALIASES)
-    assert warning and "gpt-5.4" in warning and "outside Domino" in warning
-    assert "mark them sensitive" not in warning
-
-
-def test_a_store_and_a_domino_hosted_model_say_nothing():
-    assert vendor_model_warning([SHARED_BINDING, HOSTED_BINDING], ALIASES) is None
-
-
-def test_an_alias_listing_sage_could_not_read_says_nothing():
-    # Fails OPEN: this is a hint, not a guard.
-    assert vendor_model_warning([SHARED_BINDING, VENDOR_BINDING], None) is None
-
-
-def test_an_app_that_calls_a_vendor_model_and_reads_no_store_gains_nothing():
-    # The line #12 already draws. A model call that reads nothing re-exports nothing, so binding an
-    # Alias on its own must cost a publish exactly what it cost before.
-    assert vendor_model_warning([VENDOR_BINDING], ALIASES) is None
+ALIASES = [VENDOR]
 
 
 def test_the_builder_publishes_a_store_bound_to_a_vendor_model(tmp_path: Path):
@@ -374,9 +340,8 @@ def test_the_hub_publishes_the_same_app_the_builder_publishes(tmp_path: Path):
 
 
 def test_publish_never_asks_the_gateway_for_aliases(tmp_path: Path):
-    # Publish itself only asks the Data Source listing. The vendor-model hint lives on
-    # publish_check, so an ordinary publish cannot be blocked by a gateway that is having a bad
-    # minute.
+    # Publish only asks the Data Source listing. An ordinary publish cannot be blocked by a gateway
+    # that is having a bad minute.
     class NoAliases(FakeResourceProvider):
         def list_llm_aliases(self):
             raise AssertionError("publish asked for the Alias listing")

@@ -213,12 +213,6 @@
           + '<div class="gb-item">Open the app in the builder and ask the agent to fix them, or publish '
           + 'now and deploy the app with them still broken.</div>';
       }
-      // Where the rows go (#35) — the same sentence the rail shows, for the creator who never opened
-      // the builder. One banner and one "Publish anyway", because there is one decision to make.
-      if (check.models) {
-        html += '<strong>⚠ This app sends what it reads outside Domino</strong>'
-          + `<div class="gb-item">${esc(check.models)}</div>`;
-      }
       html += '<div class="gb-foot"><button type="button">Publish anyway</button></div>';
       b.innerHTML = html;
       const go = b.querySelector('.gb-foot button');
@@ -232,10 +226,9 @@
       try {
         const r = await fetch(api(`/api/apps/${id}/publish-check`));
         const d = await r.json();
-        if (!r.ok) return { queries: [], models: null };
-        return { queries: Array.isArray(d.queries) ? d.queries : [],
-                 models: typeof d.models === 'string' ? d.models : null };
-      } catch { return { queries: [], models: null }; }
+        if (!r.ok) return { queries: [] };
+        return { queries: Array.isArray(d.queries) ? d.queries : [] };
+      } catch { return { queries: [] }; }
     }
 
     // Success notice, optionally with one or more pre-built link elements (HTML strings).
@@ -433,10 +426,10 @@
       // The check runs before the confirm, not after it: a broken catalog deserves the app's own
       // sentences, and a yes/no dialog has nowhere to put them (#27). An app with nothing to warn
       // about goes straight to the confirm it always had, and gains no step.
-      let check = { queries: [], models: null };
+      let check = { queries: [] };
       btn.disabled = true;
       try { check = await publishCheck(id); } finally { btn.disabled = false; }
-      if (check.queries.length || check.models) { publishWarning(check, id, btn); return; }
+      if (check.queries.length) { publishWarning(check, id, btn); return; }
       if (!confirm(`Publish “${name}” as a live Domino App?\n\nThis deploys the latest saved (committed) code as a shareable Domino App. If you've just made changes, run a build or stop the builder first so they're saved.`)) return;
       await doPublish(id, btn);
     }

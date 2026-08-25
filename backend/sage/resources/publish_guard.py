@@ -23,8 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, Binding
-from .provider import DataSource, LlmAlias
+from .bindings import KIND_DATA_SOURCE, Binding
+from .provider import DataSource
 
 # The credential kind a published app may read a store with: one belonging to a service account,
 # so every viewer reaches the store as the same principal the creator already saw named on the row.
@@ -212,56 +212,3 @@ def _names(bindings: list[Binding]) -> str:
     if len(names) == 1:
         return f"the Data Source {names[0]}"
     return f"the Data Sources {', '.join(names[:-1])} and {names[-1]}"
-
-
-# ---------------------------------------------------------------------------------------------
-# Where the rows go
-#
-# A published app can read a store and call a language model in the same page load. The Alias it
-# calls may be a Hosted GenAI Endpoint inside Domino, or a vendor model outside it. This does not
-# refuse that combination — the creator can publish past it — but `publish_check` says so, because
-# every viewer's page load sends what the app reads to that vendor.
-#
-# Silent for an app that binds an Alias and no store: a model call that reads nothing re-exports
-# nothing, which is the same line #12 draws.
-
-
-def vendor_model_warning(bindings: list[Binding], aliases: list[LlmAlias] | None) -> str | None:
-    """The sentence for a creator whose app sends store rows to a vendor model. `None` when there
-    is nothing to say.
-
-    Informs rather than refuses, and is therefore shaped like the broken-query check (#26, #27)
-    rather than like a guard: it goes out on `publish_check`, and the creator publishes past it.
-
-    Fails open in every direction — no Alias listing, no sentence. A hint one route skips is a
-    missed nudge.
-    """
-    stores = [b for b in bindings if b.kind == KIND_DATA_SOURCE]
-    if not stores or aliases is None:
-        return None
-    outside = [b for b in bindings if b.kind == KIND_LLM_ALIAS and _is_vendor(b, aliases)]
-    if not outside:
-        return None
-    return (
-        f"This app reads {_names(stores)} and sends what it reads to {_alias_names(outside)}, which "
-        f"runs outside Domino. Every viewer's page load does it. Bind an Alias whose model is hosted "
-        f"in Domino if those rows shouldn't leave."
-    )
-
-
-def _is_vendor(b: Binding, aliases: list[LlmAlias]) -> bool:
-    """Whether this Alias Binding names a model with nothing on Domino behind it.
-
-    `endpoint_url` is the discriminator `preflight.endpoint_status` already reads: an Alias without
-    one is a vendor model. An Alias missing from the listing is NOT counted here — the warning path
-    fails open.
-    """
-    alias = next((a for a in aliases if a.id == b.id), None) or next((a for a in aliases if a.name == b.name), None)
-    return alias is not None and not alias.endpoint_url
-
-
-def _alias_names(bindings: list[Binding]) -> str:
-    names = [b.display_name for b in bindings]
-    if len(names) == 1:
-        return names[0]
-    return f"{', '.join(names[:-1])} and {names[-1]}"

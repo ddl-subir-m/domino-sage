@@ -95,7 +95,6 @@ from ..resources.publish_guard import (
     PublishRefused,
     data_source_bindings,
     publish_problems,
-    vendor_model_warning,
 )
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
@@ -3460,23 +3459,7 @@ class Orchestrator:
         """
         project = self.project()
         problems = catalog_problems(self._wm.template, project.workspace.path)
-        return {"checked": problems is not None, "queries": problems or [],
-                "models": self._vendor_model_warning(project)}
-
-    def _vendor_model_warning(self, project: Project) -> str | None:
-        """Where this app's rows go, for a creator nothing has refused (#35). None when silent.
-
-        Fails open at every step, unlike the guard beside it. This is a hint, and a hint that costs a
-        publish flow an exception is worse than a hint nobody read.
-        """
-        try:
-            recorded = parse_bindings(project.workspace.read_bindings())
-            if not any(b.kind == KIND_LLM_ALIAS for b in recorded):
-                return None
-            return vendor_model_warning(recorded, self._resources.list_llm_aliases())
-        except Exception:
-            log.exception("publish check: couldn't work out where this app's rows would go")
-            return None
+        return {"checked": problems is not None, "queries": problems or []}
 
     def publish_status(self, app_id: str) -> dict:
         """Deploy status of a published app so the UI can poll after Publish. Maps the raw instance
