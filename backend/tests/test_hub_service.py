@@ -32,6 +32,22 @@ def test_create_app_provisions_repo_project_workspace(tmp_path, no_network_seed)
     assert no_network_seed and no_network_seed[0][0] == created.repo.clone_url
 
 
+def test_ensure_untitled_provisions_once_then_reuses(tmp_path, no_network_seed):
+    cp, repo = FakeControlPlane(), FakeRepoProvider()
+    hub = _hub(tmp_path, cp, repo, seed_calls=no_network_seed)
+
+    first = hub.ensure_untitled()
+    assert first["created"] is True
+    assert first["name"] == "Untitled"
+    assert first["untitled"] is True
+    assert len(no_network_seed) == 1
+
+    second = hub.ensure_untitled()
+    assert second["created"] is False
+    assert second["id"] == first["id"]
+    assert len(no_network_seed) == 1  # did not provision again
+
+
 def test_create_app_resolves_repo_name_collision(tmp_path, no_network_seed):
     repo = FakeRepoProvider()
     repo.create_repo("sage-my-app")  # occupy the base name

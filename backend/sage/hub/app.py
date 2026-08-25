@@ -211,6 +211,17 @@ async def list_apps() -> JSONResponse:
     return JSONResponse([{"id": a.id, "name": a.name, "git_url": a.git_url} for a in apps])
 
 
+@app.post("/api/apps/untitled")
+async def ensure_untitled() -> JSONResponse:
+    """Reuse the caller's Untitled Domino project, or provision one. Idempotent."""
+    try:
+        result = await run_in_threadpool(hub.ensure_untitled)
+    except Exception as e:
+        log.exception("ensure_untitled failed")
+        return JSONResponse({"error": f"Couldn't open Untitled: {e}"}, status_code=502)
+    return JSONResponse(result)
+
+
 @app.post("/api/apps")
 async def create_app(request: Request) -> JSONResponse:
     body = await request.json()

@@ -81,3 +81,8 @@ Canonical vocabulary, unchanged: `needs-triage`, `needs-info`, `ready-for-agent`
 ### Domain docs
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Workbench (Chat + Build)
+
+Chat mode, Untitled, artifacts, and Chat→Build handoff: `docs/workbench/` and ADR-0003.
+Do not invent a second harness or a chart DSL — OpenCode `sage-chat` writes files.

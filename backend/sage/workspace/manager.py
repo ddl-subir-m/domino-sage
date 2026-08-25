@@ -131,6 +131,16 @@ class Workspace:
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings_path.write_text(json.dumps(settings, indent=2))
 
+    def is_untitled(self) -> bool:
+        return bool(self.read_settings().get("untitled"))
+
+    def mark_untitled(self, untitled: bool = True) -> None:
+        settings = self.read_settings()
+        if bool(settings.get("untitled")) == untitled:
+            return
+        settings["untitled"] = untitled
+        self.write_settings(settings)
+
     def has_built(self) -> bool:
         """True once a code-writing build has completed here. Drives the first-BUILD plan gate
         (not first-turn): questions asked before the first build must not consume the gate, and the

@@ -89,6 +89,40 @@ _Avoid_: upload, mount, bundled file
 The app Sage produces for a user and publishes on Domino, as distinct from Sage itself.
 _Avoid_: child app, generated app, output
 
+**Workbench**:
+The shell that hosts Chat and Build as modes over one Domino project. Code and Manage are
+tabs in the same chrome and are owned by a parallel branch.
+_Avoid_: workspace (that word already means the Domino builder session), studio, platform
+
+**Chat**:
+The Workbench mode for open-ended questions and analysis. It produces Artifacts. It does not
+edit `src/`. Driven by the OpenCode agent `sage-chat`.
+_Avoid_: ask mode, assistant, sandbox, Jupyter, notebook
+
+**Thread**:
+One conversation inside a project. A project has many Threads; Untitled is one project, not
+one Thread. Each Thread has its own OpenCode session and its own history.
+_Avoid_: conversation, session (OpenCode already uses session for the harness object), chat
+(that is the mode)
+
+**Untitled**:
+The display name of the caller's single persistent personal Domino project, provisioned on
+first Workbench open, reused thereafter. `.sage/settings.json` carries `"untitled": true`
+until the user names it. Files are real; nothing is ephemeral.
+_Avoid_: Personal sandbox, ephemeral, temporary project
+
+**Artifact**:
+A file the chat agent wrote under `examples/<threadId>/` and indexed in that Thread's
+manifest — a PNG chart, a table JSON, a query, a note. Handoff copies Artifacts; it does not
+replay a chart object from memory.
+_Avoid_: card, chart DSL, canvas, output, widget
+
+**Session context**:
+The Resources and Artifacts in scope for this Thread right now, shown as chips on the
+composer. Distinct from a Binding, which is what the Built App will need to run. A chip is
+the Session context row the user can see and remove.
+_Avoid_: attachment (that is a file in the Built App), binding (durable app dependency)
+
 ### Handling rules
 
 **Shared credential**:

@@ -143,6 +143,42 @@ def test_ask_mode_strips_shell_tools_too():
     assert "grep" in tool_names
 
 
+def test_chat_turn_keeps_write_and_bash_tools():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.arm_chat("thr_01abc")
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "write"}},
+        {"type": "function", "function": {"name": "bash"}},
+        {"type": "function", "function": {"name": "edit"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    tool_names = [t["function"]["name"] for t in sent_request["tools"]]
+    assert set(tool_names) == {"write", "bash", "edit", "read"}
+
+
+def test_chat_turn_strips_src_writes_from_messages():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.arm_chat("thr_01abc")
+    gw = FakeGatewayClient()
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [{
+            "id": "w1",
+            "function": {"name": "write", "arguments": '{"filePath": "src/App.tsx"}'},
+        }],
+    }]
+
+    list(_shim(control, gw).handle({"messages": messages, "tools": []}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert sent_request["messages"] == []
+
+
 def test_gated_plan_turn_strips_tools_even_outside_ask_mode():
     """The plan gate fires from Auto too, where `mode` alone can't express "this turn is read-only"."""
     control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)

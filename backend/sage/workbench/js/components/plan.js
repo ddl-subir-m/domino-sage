@@ -1,0 +1,573 @@
+window.SW = window.SW || {};
+
+(function () {
+  const { createElement: h, useState, useEffect, Fragment } = React;
+  const {
+    Button, Space, Tag, Modal, Input, Tooltip, Avatar, Select, Divider, Alert, Checkbox,
+  } = antd;
+  const {
+    CheckCircleFilled, MessageOutlined, EditOutlined, ArrowRightOutlined,
+    ClockCircleOutlined, PlusOutlined, CloseOutlined,
+  } = icons;
+
+  const SECTIONS = [
+    { key: 'problem', label: 'Problem & outcome', kind: 'text' },
+    { key: 'users', label: 'Who uses this', kind: 'text' },
+    { key: 'outcomes', label: 'What it does', kind: 'list' },
+    { key: 'screens', label: 'Screens', kind: 'screens' },
+    { key: 'nonGoals', label: 'Not doing', kind: 'list' },
+    { key: 'acceptance', label: 'Done when', kind: 'list' },
+    { key: 'openQuestions', label: 'Open questions', kind: 'questions' },
+  ];
+
+  // The card that appears in the conversation. Deliberately a summary — the
+  // full artifact lives on its own page.
+  SW.PlanCard = function PlanCard({ planId }) {
+    const [plan, setPlan] = useState(null);
+
+    useEffect(() => {
+      SW.api.plan(planId).then(setPlan);
+    }, [planId]);
+
+    if (!plan) return h('div', { className: 'sw-plan-card' }, h(antd.Skeleton, { active: true, paragraph: { rows: 3 } }));
+
+    const outcomes = plan.sections.outcomes || [];
+    const questions = (plan.sections.openQuestions || []).filter((q) => !q.resolved);
+
+    return h(
+      'div',
+      { className: 'sw-plan-card' },
+      h(
+        'div',
+        { className: 'sw-plan-card-head' },
+        h('div', { className: 'sw-plan-card-title' }, plan.title),
+        h(SW.PlanStatusTag, { status: plan.status }),
+        h('span', { className: 'sw-caption' }, `v${plan.version}`)
+      ),
+      h('div', { className: 'sw-plan-card-problem' }, plan.sections.problem),
+      outcomes.length > 0 &&
+        h(
+          'ul',
+          { className: 'sw-plan-card-list' },
+          outcomes.slice(0, 3).map((item, i) => h('li', { key: i }, item)),
+          outcomes.length > 3 &&
+            h('li', { key: 'more', className: 'sw-caption' }, `+${outcomes.length - 3} more`)
+        ),
+      questions.length > 0 &&
+        h(
+          'div',
+          { className: 'sw-plan-card-questions' },
+          h(ClockCircleOutlined, null),
+          `${questions.length} open ${questions.length === 1 ? 'question' : 'questions'}`
+        ),
+      h(
+        'div',
+        { className: 'sw-plan-card-actions' },
+        h(
+          Button,
+          { type: 'primary', size: 'small', onClick: () => SW.store.openPlanArtifact(plan.id) },
+          'Open plan'
+        ),
+        h(
+          Button,
+          {
+            size: 'small',
+            onClick: () => SW.store.set({ handoffPlanId: plan.id }),
+          },
+          'Build this'
+        ),
+        h(
+          Button,
+          {
+            type: 'text',
+            size: 'small',
+            onClick: () => SW.router.go(`#/plan/${plan.id}?review=1`),
+          },
+          'Send for review'
+        )
+      )
+    );
+  };
+
+  function CommentThread({ plan, section, onPost }) {
+    const [text, setText] = useState('');
+    const { userIndex } = SW.store.get();
+    const comments = (plan.comments || []).filter((c) => c.section === section);
+
+    return h(
+      'div',
+      { className: 'sw-comments' },
+      comments.map((comment) =>
+        h(
+          'div',
+          { key: comment.id, className: `sw-comment${comment.resolved ? ' is-resolved' : ''}` },
+          h(SW.Avatar, { user: userIndex[comment.user], size: 20 }),
+          h(
+            'div',
+            { className: 'sw-comment-main' },
+            h(
+              'div',
+              { className: 'sw-comment-who' },
+              (userIndex[comment.user] || {}).name,
+              h('span', { className: 'sw-caption' }, SW.util.relativeTime(comment.at)),
+              comment.resolved && h(Tag, { bordered: false, color: 'success' }, 'Resolved')
+            ),
+            h('div', { className: 'sw-comment-text' }, comment.text),
+            !comment.resolved &&
+              h(
+                Button,
+                {
+                  type: 'link',
+                  size: 'small',
+                  style: { padding: 0, height: 18 },
+                  onClick: () => onPost({ resolve: comment.id }),
+                },
+                'Resolve'
+              )
+          )
+        )
+      ),
+      h(
+        'div',
+        { className: 'sw-comment-new' },
+        h(Input, {
+          size: 'small',
+          placeholder: 'Add a comment…',
+          value: text,
+          onChange: (e) => setText(e.target.value),
+          onPressEnter: () => {
+            if (!text.trim()) return;
+            onPost({ text: text.trim() });
+            setText('');
+          },
+        })
+      )
+    );
+  }
+
+  function ReviewModal({ plan, open, onClose, onSent }) {
+    const { members } = SW.store.get();
+    const [reviewers, setReviewers] = useState(plan.reviewers || []);
+    const [note, setNote] = useState('');
+
+    return h(
+      Modal,
+      {
+        open,
+        onCancel: onClose,
+        title: 'Send plan for review',
+        okText: 'Send for review',
+        okButtonProps: { disabled: reviewers.length === 0 },
+        onOk: async () => {
+          await SW.api.review(plan.id, { action: 'request', reviewers, note });
+          onClose();
+          onSent();
+          antd.message.success(
+            `Sent to ${reviewers.length} ${reviewers.length === 1 ? 'reviewer' : 'reviewers'}`
+          );
+        },
+      },
+      h(
+        'div',
+        { style: { display: 'grid', gap: 12 } },
+        h(
+          'div',
+          null,
+          h('div', { className: 'sw-field-label' }, 'Reviewers'),
+          h(Select, {
+            mode: 'multiple',
+            style: { width: '100%' },
+            value: reviewers,
+            onChange: setReviewers,
+            placeholder: 'Pick people who should sign off',
+            options: members
+              .filter((m) => m.id !== plan.author)
+              .map((m) => ({ value: m.id, label: `${m.name} · ${m.title}` })),
+          })
+        ),
+        h(
+          'div',
+          null,
+          h('div', { className: 'sw-field-label' }, 'Note (optional)'),
+          h(Input.TextArea, {
+            rows: 3,
+            value: note,
+            onChange: (e) => setNote(e.target.value),
+            placeholder: 'Anything you want them to look at closely?',
+          })
+        ),
+        h('div', { className: 'sw-caption' }, 'Reviewers can comment on any section. You can build before they finish.')
+      )
+    );
+  }
+
+  // One plan document, three homes: its own page, a sheet beside the chat, and
+  // the centre of the IDE in Build. Chat never sees raw markdown; Build does.
+  SW.PlanDoc = function PlanDoc({ planId, variant = 'page', autoReview, onClose }) {
+    const { userIndex, me } = SW.store.get();
+    const [plan, setPlan] = useState(null);
+    const [openSection, setOpenSection] = useState(null);
+    const [reviewOpen, setReviewOpen] = useState(false);
+    const [editing, setEditing] = useState(null);
+    const [draft, setDraft] = useState('');
+    const [view, setView] = useState('Preview');
+    const [markdown, setMarkdown] = useState(null);
+
+    const load = () => SW.api.plan(planId).then(setPlan);
+    useEffect(() => {
+      load();
+    }, [planId]);
+    useEffect(() => {
+      if (autoReview && plan) setReviewOpen(true);
+    }, [autoReview, Boolean(plan)]);
+
+    // Only Build offers the raw file, so only Build ever fetches it.
+    useEffect(() => {
+      if (variant !== 'ide' || view !== 'Markdown') return;
+      SW.api.planMarkdown(planId).then(setMarkdown);
+    }, [variant, view, planId, plan && plan.updatedAt]);
+
+    if (!plan) {
+      return h(
+        'div',
+        { className: `sw-plan-page is-${variant}` },
+        h(antd.Skeleton, { active: true, paragraph: { rows: 12 } })
+      );
+    }
+
+    const author = userIndex[plan.author] || {};
+    const isReviewer = (plan.reviewers || []).includes(me.id);
+    const approved = (plan.approvals || []).map((a) => a.user);
+    const unresolved = (plan.comments || []).filter((c) => !c.resolved).length;
+
+    const post = async (section, body) => {
+      if (body.resolve) {
+        await SW.api.review(plan.id, { action: 'resolve', commentId: body.resolve });
+      } else {
+        await SW.api.review(plan.id, { action: 'comment', section, text: body.text });
+      }
+      load();
+    };
+
+    const saveSection = async (key) => {
+      const section = SECTIONS.find((s) => s.key === key);
+      const value =
+        section.kind === 'list'
+          ? draft.split('\n').map((l) => l.replace(/^[-•]\s*/, '')).filter(Boolean)
+          : draft;
+      await SW.api.patchPlan(plan.id, { sections: { ...plan.sections, [key]: value } });
+      setEditing(null);
+      load();
+    };
+
+    const startEdit = (key, kind, value) => {
+      setEditing(key);
+      setDraft(kind === 'list' ? (value || []).join('\n') : value || '');
+    };
+
+    const renderBody = (section) => {
+      const value = plan.sections[section.key];
+      if (editing === section.key) {
+        return h(
+          'div',
+          { style: { display: 'grid', gap: 8 } },
+          h(Input.TextArea, {
+            autoSize: { minRows: 3, maxRows: 12 },
+            value: draft,
+            autoFocus: true,
+            onChange: (e) => setDraft(e.target.value),
+          }),
+          h(
+            Space,
+            { size: 8 },
+            h(Button, { type: 'primary', size: 'small', onClick: () => saveSection(section.key) }, 'Save'),
+            h(Button, { size: 'small', onClick: () => setEditing(null) }, 'Cancel')
+          )
+        );
+      }
+
+      switch (section.kind) {
+        case 'list':
+          return h('ul', { className: 'sw-plan-list' }, (value || []).map((item, i) => h('li', { key: i }, item)));
+        case 'screens':
+          return h(
+            'div',
+            { className: 'sw-plan-screens' },
+            (value || []).map((screen, i) =>
+              h(
+                'div',
+                { key: i, className: 'sw-plan-screen' },
+                h('div', { className: 'sw-plan-screen-name' }, screen.name),
+                h('div', { className: 'sw-plan-screen-detail' }, screen.detail)
+              )
+            )
+          );
+        case 'questions':
+          return h(
+            'div',
+            { className: 'sw-plan-questions' },
+            (value || []).map((q, i) =>
+              h(
+                'div',
+                { key: i, className: `sw-plan-question${q.resolved ? ' is-resolved' : ''}` },
+                h(Checkbox, {
+                  checked: Boolean(q.resolved),
+                  onChange: async (e) => {
+                    const next = (value || []).map((item, index) =>
+                      index === i ? { ...item, resolved: e.target.checked } : item
+                    );
+                    await SW.api.patchPlan(plan.id, {
+                      sections: { ...plan.sections, openQuestions: next },
+                    });
+                    load();
+                  },
+                }),
+                h('span', null, q.text)
+              )
+            )
+          );
+        default:
+          return h('p', { className: 'sw-plan-text' }, value);
+      }
+    };
+
+    const isPage = variant === 'page';
+
+    return h(
+      'div',
+      { className: `sw-plan-page is-${variant} sw-scroll` },
+      h(
+        'div',
+        { className: 'sw-plan-doc' },
+
+        !isPage &&
+          h(
+            'div',
+            { className: 'sw-plan-sheet-bar' },
+            h(Tag, { bordered: false, className: 'sw-sens sw-blessed-tag' }, 'PLAN'),
+            h('span', { className: 'sw-caption' }, 'Artifact · open beside your work'),
+            h('span', { style: { flex: 1 } }),
+            variant === 'ide' &&
+              h(antd.Segmented, {
+                value: view,
+                onChange: setView,
+                options: ['Preview', 'Markdown'],
+                size: 'small',
+              }),
+            h(
+              Tooltip,
+              { title: 'Close' },
+              h(
+                'button',
+                { className: 'sw-icon-btn is-dark-text', 'aria-label': 'Close plan', onClick: onClose },
+                h(CloseOutlined, null)
+              )
+            )
+          ),
+
+        h(
+          'div',
+          { className: 'sw-plan-head' },
+          h(
+            'div',
+            { className: 'sw-plan-head-main' },
+            h('h1', { className: 'sw-plan-title' }, plan.title),
+            h(
+              'div',
+              { className: 'sw-plan-meta' },
+              h(SW.PlanStatusTag, { status: plan.status }),
+              h('span', null, `v${plan.version}`),
+              h('span', null, '·'),
+              h(SW.Avatar, { user: author, size: 20 }),
+              h('span', null, author.name),
+              h('span', null, '·'),
+              h('span', null, `Updated ${SW.util.relativeTime(plan.updatedAt)}`),
+              plan.originThreadId &&
+                h(
+                  Fragment,
+                  null,
+                  h('span', null, '·'),
+                  h(
+                    Button,
+                    {
+                      type: 'link',
+                      size: 'small',
+                      style: { padding: 0, height: 'auto' },
+                      onClick: () => SW.router.go(`#/chat/${plan.originThreadId}`),
+                    },
+                    'From this conversation'
+                  )
+                )
+            )
+          ),
+          h(
+            Space,
+            { size: 8 },
+            plan.status === 'draft' &&
+              h(Button, { onClick: () => setReviewOpen(true) }, 'Send for review'),
+            isReviewer &&
+              plan.status === 'in_review' &&
+              !approved.includes(me.id) &&
+              h(
+                Button,
+                {
+                  onClick: async () => {
+                    await SW.api.review(plan.id, { action: 'approve', user: me.id });
+                    load();
+                    antd.message.success('Plan approved');
+                  },
+                },
+                'Approve'
+              ),
+            // In the IDE you are already in the Builder, so the only offer worth
+            // making is to build again from a plan that has no app yet.
+            !(variant === 'ide' && plan.appId) &&
+              h(
+                Button,
+                {
+                  type: 'primary',
+                  icon: h(ArrowRightOutlined, null),
+                  onClick: () => SW.store.set({ handoffPlanId: plan.id }),
+                },
+                plan.appId ? 'Open in Builder' : 'Build this'
+              )
+          )
+        ),
+
+        plan.status === 'in_review' &&
+          h(Alert, {
+            type: 'info',
+            showIcon: true,
+            style: { marginBottom: 16 },
+            message: approved.length
+              ? `${approved.length} of ${plan.reviewers.length} approved.`
+              : 'Waiting on review.',
+            description: h(
+              Space,
+              { size: 6, wrap: true },
+              (plan.reviewers || []).map((id) =>
+                h(
+                  Tag,
+                  {
+                    key: id,
+                    bordered: false,
+                    color: approved.includes(id) ? 'success' : undefined,
+                    icon: approved.includes(id) ? h(CheckCircleFilled, null) : undefined,
+                  },
+                  (userIndex[id] || {}).name
+                )
+              ),
+              unresolved > 0 &&
+                h('span', { className: 'sw-caption' }, `${unresolved} unresolved ${unresolved === 1 ? 'comment' : 'comments'}`)
+            ),
+          }),
+
+        variant === 'ide' && view === 'Markdown'
+          ? h(
+              'div',
+              { className: 'sw-plan-markdown' },
+              h(
+                'div',
+                { className: 'sw-editor-head' },
+                h('code', null, markdown ? markdown.path : 'plan.md'),
+                h('span', { className: 'sw-topnav-spacer' }),
+                markdown &&
+                  h(
+                    Button,
+                    { size: 'small', onClick: () => SW.util.copy(markdown.content, 'plan.md copied') },
+                    'Copy'
+                  )
+              ),
+              markdown
+                ? h('pre', { className: 'sw-code' }, SW.util.highlight(markdown.content, 'markdown'))
+                : h(antd.Skeleton, { active: true, paragraph: { rows: 10 } }),
+              h(
+                'div',
+                { className: 'sw-caption', style: { marginTop: 8 } },
+                'Switch back to Preview to edit. The preview writes straight to this file.'
+              )
+            )
+          : SECTIONS.map((section) => {
+              const comments = (plan.comments || []).filter((c) => c.section === section.key);
+              const open = openSection === section.key;
+              return h(
+                'section',
+                { key: section.key, className: 'sw-plan-section' },
+                h(
+                  'div',
+                  { className: 'sw-plan-section-head' },
+                  h('h2', null, section.label),
+                  h(
+                    Space,
+                    { size: 2, className: 'sw-plan-section-tools' },
+                    section.kind !== 'questions' &&
+                      section.kind !== 'screens' &&
+                      h(
+                        Tooltip,
+                        { title: 'Edit' },
+                        h(Button, {
+                          type: 'text',
+                          size: 'small',
+                          icon: h(EditOutlined, null),
+                          'aria-label': `Edit ${section.label}`,
+                          onClick: () => startEdit(section.key, section.kind, plan.sections[section.key]),
+                        })
+                      ),
+                    h(
+                      Tooltip,
+                      { title: 'Comments' },
+                      h(
+                        Button,
+                        {
+                          type: comments.length ? 'default' : 'text',
+                          size: 'small',
+                          icon: h(MessageOutlined, null),
+                          onClick: () => setOpenSection(open ? null : section.key),
+                        },
+                        comments.length || null
+                      )
+                    )
+                  )
+                ),
+                renderBody(section),
+                open && h(CommentThread, { plan, section: section.key, onPost: (body) => post(section.key, body) })
+              );
+            })
+      ),
+
+      h(ReviewModal, {
+        plan,
+        open: reviewOpen,
+        onClose: () => setReviewOpen(false),
+        onSent: load,
+      })
+    );
+  };
+
+  // The route survives for deep links and for anyone who wants the plan to
+  // fill the window.
+  SW.PlanPage = function PlanPage({ planId, autoReview }) {
+    return h(SW.PlanDoc, {
+      planId,
+      variant: 'page',
+      autoReview,
+      onClose: () => SW.router.go('#/chat'),
+    });
+  };
+
+  // Chat's home for the plan: the friendly editor with comments, beside the
+  // conversation rather than on top of it.
+  SW.PlanSheet = function PlanSheet() {
+    const { planViewerId } = SW.store.get();
+    if (!planViewerId) return null;
+    return h(
+      'aside',
+      { className: 'sw-plan-sheet' },
+      h(SW.PlanDoc, {
+        planId: planViewerId,
+        variant: 'side',
+        onClose: () => SW.store.closePlanViewer(),
+      })
+    );
+  };
+})();

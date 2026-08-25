@@ -24,6 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 PAGES = [
     REPO / "backend" / "sage" / "ui" / "index.html",
     REPO / "backend" / "sage" / "hub" / "ui" / "index.html",
+    REPO / "backend" / "sage" / "workbench" / "index.html",
     REPO / "template" / "react-vite" / "index.html",
 ]
 

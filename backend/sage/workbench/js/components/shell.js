@@ -1,0 +1,365 @@
+window.SW = window.SW || {};
+
+(function () {
+  const { createElement: h, useState, useEffect, useRef } = React;
+  const { Tooltip, Dropdown, Button, Space, Tag } = antd;
+  const {
+    SearchOutlined, QuestionCircleOutlined, AppstoreOutlined, DatabaseOutlined,
+    HistoryOutlined, DoubleRightOutlined, DoubleLeftOutlined, DownOutlined,
+  } = icons;
+
+  // Project-scoped work. Everything here is read through the scope chip that
+  // sits to its left.
+  const MODES = [
+    { id: 'chat', label: 'Chat', hint: 'Explore data and think out loud' },
+    { id: 'build', label: 'Build', hint: 'Turn a plan into a working app' },
+    { id: 'code', label: 'Code', hint: 'Work in your own editor' },
+    { id: 'manage', label: 'Manage', hint: 'Cost and app health in this project', path: '#/manage/project' },
+  ];
+
+  // Concepts that span every project, so they live in the platform bar rather
+  // than under a project scope.
+  const GLOBAL_NAV = [
+    { id: 'gallery', label: 'Gallery', hint: 'Find what your organization already built', path: '#/gallery' },
+    { id: 'manage', label: 'Manage', hint: 'Cost and app health across every project', path: '#/manage/org' },
+  ];
+
+  // The panel is the project's working set, so it is named after the project
+  // rather than after the abstract category of thing it contains.
+  const DOCK_TABS = [
+    { id: 'resources', label: 'Project resources', icon: DatabaseOutlined },
+    { id: 'activity', label: 'Activity', icon: HistoryOutlined },
+  ];
+
+  // Manage is the one mode that exists at both levels, so which one is lit
+  // depends on the level segment of the route rather than the mode alone.
+  function manageLevel(route) {
+    if (!route || route.mode !== 'manage') return null;
+    return route.a === 'project' ? 'project' : 'org';
+  }
+
+  // Switching mode should move you sideways, not send you back to the start.
+  // Both modes are two views of one conversation, so the conversation is what
+  // travels. Build adds the app it has in the preview.
+  function modePath(id, state) {
+    const { thread, activeApp } = state;
+    if (id === 'chat') return thread ? `#/chat/${thread.id}` : '#/chat';
+    if (id === 'build') {
+      const app = activeApp ? `?app=${activeApp.id}` : '';
+      return thread ? `#/build/${thread.id}${app}` : `#/build${app}`;
+    }
+    return `#/${id}`;
+  }
+
+  // Row 1: Domino platform chrome plus the global concepts. Deliberately
+  // unchanged from the rest of the product so the workspace reads as part of
+  // Domino, not a separate tool.
+  function TopNav({ route }) {
+    const { me } = SW.store.get();
+    const level = manageLevel(route);
+
+    const productMenu = {
+      items: [
+        { key: 'workbench', label: 'AI Workbench' },
+        { key: 'studio', label: 'ML Studio' },
+      ],
+      onClick: ({ key }) => {
+        if (key !== 'workbench') {
+          antd.message.info('ML Studio is the classic Domino experience. Only AI Workbench is built out here.');
+        }
+      },
+    };
+
+    const userMenu = {
+      items: [
+        { key: 'account', label: 'Account settings' },
+        { key: 'org', label: 'Organization' },
+        { type: 'divider' },
+        { key: 'signout', label: 'Sign out' },
+      ],
+      onClick: () => antd.message.info('Account screens are not part of this prototype.'),
+    };
+
+    return h(
+      'div',
+      { className: 'sw-topnav' },
+      h('img', { src: './img/domino-logo.svg', alt: 'Domino', className: 'sw-logo' }),
+      h(
+        Dropdown,
+        { menu: productMenu, trigger: ['click'] },
+        h(
+          'button',
+          { className: 'sw-topnav-product' },
+          'AI Workbench',
+          h(DownOutlined, { style: { fontSize: 9 } })
+        )
+      ),
+      h('span', { className: 'sw-topnav-sep' }),
+      h(
+        'nav',
+        { className: 'sw-global-nav', 'aria-label': 'Everything across your organization' },
+        GLOBAL_NAV.map((item) =>
+          h(
+            Tooltip,
+            { key: item.id, title: item.hint, mouseEnterDelay: 0.5 },
+            h(
+              'button',
+              {
+                className: `sw-topnav-link${
+                  route.mode === item.id && (item.id !== 'manage' || level === 'org') ? ' is-active' : ''
+                }`,
+                onClick: () => SW.router.go(item.path),
+              },
+              item.label
+            )
+          )
+        )
+      ),
+      h('span', { className: 'sw-topnav-spacer' }),
+      h(
+        Tooltip,
+        { title: 'Search · ⌘K' },
+        h(
+          'button',
+          {
+            className: 'sw-icon-btn',
+            'aria-label': 'Search',
+            onClick: () => SW.store.set({ paletteOpen: true }),
+          },
+          h(SearchOutlined, null)
+        )
+      ),
+      h(SW.NotificationBell, null),
+      h(
+        Tooltip,
+        { title: 'Help' },
+        h(
+          'button',
+          { className: 'sw-icon-btn', 'aria-label': 'Help', onClick: () => SW.store.set({ helpOpen: true }) },
+          h(QuestionCircleOutlined, null)
+        )
+      ),
+      h(
+        Dropdown,
+        { menu: userMenu, trigger: ['click'], placement: 'bottomRight' },
+        h(
+          'button',
+          { className: 'sw-topnav-user', 'aria-label': 'Account' },
+          h(SW.Avatar, { user: me, size: 26 })
+        )
+      )
+    );
+  }
+
+  // Clicking a mode replaces the whole main area, and the pointer never leaves
+  // the button, so nothing fires the mouseleave that would dismiss the hint —
+  // it sat over the header of whichever mode you had just opened. Once you have
+  // clicked, hints stay shut until you actually move away and come back.
+  function ModeTab({ item, active, onGo }) {
+    const [open, setOpen] = useState(false);
+    const clicked = useRef(false);
+
+    return h(
+      Tooltip,
+      {
+        title: item.hint,
+        mouseEnterDelay: 0.7,
+        open,
+        onOpenChange: (next) => {
+          if (next && clicked.current) return;
+          setOpen(next);
+        },
+      },
+      h(
+        'button',
+        {
+          role: 'tab',
+          'aria-selected': active,
+          className: `sw-mode${active ? ' is-active' : ''}`,
+          onMouseLeave: () => {
+            clicked.current = false;
+          },
+          onClick: () => {
+            clicked.current = true;
+            setOpen(false);
+            onGo();
+          },
+        },
+        item.label
+      )
+    );
+  }
+
+  // Row 2: project-scoped navigation. Scope on the left because everything to
+  // its right is scoped by it.
+  function SubNav({ mode, route }) {
+    const [pickerOpen, setPickerOpen] = useState(false);
+    const state = SW.store.get();
+    const { scopePickerOpen, dockTab } = state;
+    const level = manageLevel(route);
+
+    useEffect(() => {
+      if (scopePickerOpen) {
+        setPickerOpen(true);
+        SW.store.set({ scopePickerOpen: false });
+      }
+    }, [scopePickerOpen]);
+
+    return h(
+      'div',
+      { className: 'sw-subnav' },
+      h(SW.ScopePicker, { open: pickerOpen, onOpenChange: setPickerOpen }),
+      h('span', { className: 'sw-subnav-divider' }),
+      h(
+        'nav',
+        { className: 'sw-modes', role: 'tablist' },
+        MODES.map((item) =>
+          h(ModeTab, {
+            key: item.id,
+            item,
+            active: mode === item.id && (item.id !== 'manage' || level === 'project'),
+            onGo: () => SW.router.go(item.path || modePath(item.id, state)),
+          })
+        )
+      ),
+      h('span', { className: 'sw-topnav-spacer' }),
+      h(SW.PresenceStack, { onInvite: () => SW.store.set({ inviteOpen: true }) }),
+      h('span', { className: 'sw-subnav-divider' }),
+      h(
+        Tooltip,
+        { title: dockTab ? 'Hide the side panel' : 'Show resources · ⌘/' },
+        h(
+          'button',
+          {
+            className: 'sw-icon-btn is-dark-text',
+            'aria-label': 'Toggle side panel',
+            onClick: () => SW.store.toggleDock('resources'),
+          },
+          h(dockTab ? DoubleRightOutlined : DoubleLeftOutlined, null)
+        )
+      )
+    );
+  }
+
+  function Dock() {
+    const { dockTab } = SW.store.get();
+
+    if (!dockTab) {
+      return h(
+        'aside',
+        { className: 'sw-dock is-collapsed' },
+        DOCK_TABS.map((tab) =>
+          h(
+            Tooltip,
+            { key: tab.id, title: tab.label, placement: 'left' },
+            h(
+              'button',
+              {
+                className: 'sw-dock-rail-btn',
+                'aria-label': tab.label,
+                onClick: () => SW.store.toggleDock(tab.id),
+              },
+              h(tab.icon, null)
+            )
+          )
+        )
+      );
+    }
+
+    return h(
+      'aside',
+      { className: 'sw-dock is-expanded' },
+      h(
+        'div',
+        { className: 'sw-dock-tabs' },
+        DOCK_TABS.map((tab) =>
+          h(
+            'button',
+            {
+              key: tab.id,
+              className: `sw-dock-tab${dockTab === tab.id ? ' is-active' : ''}`,
+              onClick: () => SW.store.set({ dockTab: tab.id }),
+            },
+            tab.label
+          )
+        ),
+        h('span', { className: 'sw-topnav-spacer' }),
+        h(
+          Tooltip,
+          { title: 'Hide panel' },
+          h(
+            'button',
+            {
+              className: 'sw-icon-btn is-dark-text',
+              'aria-label': 'Hide panel',
+              onClick: () => SW.store.set({ dockTab: null, panelFilter: null }),
+            },
+            h(DoubleRightOutlined, null)
+          )
+        )
+      ),
+      h(
+        'div',
+        { className: 'sw-dock-body' },
+        dockTab === 'resources'
+          ? h(SW.ResourcePanel, null)
+          : h(
+              'div',
+              { className: 'sw-dock-activity sw-scroll' },
+              h(SW.ActivityFeed, null)
+            )
+      )
+    );
+  }
+
+  SW.Shell = function Shell({ mode, route, children }) {
+    return h(
+      'div',
+      { className: 'sw-app' },
+      h(TopNav, { route }),
+      h(SubNav, { mode, route }),
+      h(
+        'div',
+        { className: 'sw-body' },
+        h('main', { className: 'sw-main' }, children),
+        h(Dock, null)
+      ),
+      h(SW.ResourceCatalog, null),
+      h(SW.ResourceDrawer, null),
+      h(SW.HandoffSheet, null),
+      h(SW.GraduationModal, null),
+      h(SW.InviteModal, null),
+      h(SW.CommandPalette, null),
+      h(SW.HelpDrawer, null)
+    );
+  };
+
+  SW.HelpDrawer = function HelpDrawer() {
+    const { helpOpen } = SW.store.get();
+    return h(
+      antd.Drawer,
+      {
+        open: Boolean(helpOpen),
+        onClose: () => SW.store.set({ helpOpen: false }),
+        title: 'Keyboard shortcuts',
+        width: 360,
+      },
+      h(
+        'dl',
+        { className: 'sw-drawer-meta' },
+        h('dt', null, h('kbd', null, '⌘K')),
+        h('dd', null, 'Search everything'),
+        h('dt', null, h('kbd', null, '⌘P')),
+        h('dd', null, 'Switch project'),
+        h('dt', null, h('kbd', null, '⌘/')),
+        h('dd', null, 'Toggle the side panel'),
+        h('dt', null, h('kbd', null, '⌘⏎')),
+        h('dd', null, 'Send a message'),
+        h('dt', null, h('kbd', null, '⌘⇧N')),
+        h('dd', null, 'New conversation'),
+        h('dt', null, h('kbd', null, 'esc')),
+        h('dd', null, 'Close what is open')
+      )
+    );
+  };
+})();

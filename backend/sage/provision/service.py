@@ -100,6 +100,7 @@ _DELETE_RETRY_DELAY = 5.0
 _ENTRY_POINT = "app.sh"  # the entry script Domino runs to serve a published app (repo root)
 _BINDINGS_PATH = ".sage/bindings.json"  # the app's committed Resource list, as the workspace writes it
 _QUERIES_PATH = ".sage/queries.json"    # the query catalog the creator's agent wrote (#15)
+UNTITLED_NAME = "Untitled"
 
 
 def _repo_full_name(git_url: str | None) -> str | None:
@@ -208,6 +209,33 @@ class HubService:
 
         ws = self._cp.create_workspace(project.id, branch=self._branch)
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
+
+    def ensure_untitled(self) -> dict[str, Any]:
+        """The caller's one Untitled project: reuse it if a project is still named Untitled,
+        otherwise provision one. New conversation is a Thread inside it, not this method."""
+        existing = next((a for a in self.list_apps() if a.name == UNTITLED_NAME), None)
+        if existing:
+            opened = self.open_app(existing.id)
+            return {
+                "id": existing.id,
+                "name": existing.name,
+                "created": False,
+                "untitled": True,
+                **opened,
+            }
+        created = self.create_app(UNTITLED_NAME)
+        return {
+            "id": created.project.id,
+            "name": created.project.name,
+            "created": True,
+            "untitled": True,
+            "repo": created.repo.full_name,
+            "git_url": created.repo.clone_url,
+            "open_url": created.open_url,
+            "workspace": created.workspace,
+            "workspace_id": created.workspace.get("id") if isinstance(created.workspace, dict) else None,
+            "running": workspace_is_running(created.workspace),
+        }
 
     def open_app(self, project_id: str) -> dict[str, Any]:
         """Return a runnable workspace for an existing app: reuse a running one, else restart a

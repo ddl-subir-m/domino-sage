@@ -854,7 +854,7 @@
 // Domino serves this page under a proxy path prefix (rewrite:false preserves it); locally it's "".
 // Capture it ONCE from the load path — this is a single static page, so location.pathname doesn't
 // change under us — and prepend it to every same-origin request so calls carry the prefix back.
-const BASE = location.pathname.replace(/\/$/, "");
+const BASE = location.pathname.replace(/\/builder\/?$/, "").replace(/\/$/, "");
 const api = (p, opts) => fetch(BASE + p, opts).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }));
 // One builder = one project (bound to this Domino project's volume). `active` gates whether we're
 // in the project view vs the starter screen — there is no project id to juggle anymore.

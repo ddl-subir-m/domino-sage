@@ -102,6 +102,7 @@ from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
+from ..workspace.threads import ThreadStore, new_artifact_paths, revert_denied_writes, snapshot_files, title_from_prompt
 from . import scope
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
@@ -1099,6 +1100,8 @@ class Project:
             upstream = None
         return {
             "id": self.id,
+            "name": self.id,
+            "untitled": self.workspace.is_untitled(),
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
             "attached": list(self.attached),
@@ -1219,6 +1222,11 @@ class Orchestrator:
         if self._project is not None:
             return self._project
         workspace = self._wm.ensure(self._project_id)
+        if (
+            self._project_id == "Untitled"
+            or os.environ.get("DOMINO_PROJECT_NAME") == "Untitled"
+        ) and "untitled" not in workspace.read_settings():
+            workspace.mark_untitled(True)
         # Sage's own files in the app's repo, brought up to date before anything reads them. An app
         # keeps the copies it was seeded with, so without this a fix to the template reaches new
         # projects and never existing ones — the lesson refresh_entry_script already records. The
@@ -1527,6 +1535,190 @@ class Orchestrator:
             self._recheck_app_data()
             self._clear_turn_baseline()
             self._turn_lock.release()
+
+    def create_thread(self) -> dict:
+        """A new Chat Thread in this project. Does not provision a Domino project."""
+        return ThreadStore(self.project(start_preview=False).workspace.path).create()
+
+    def get_thread(self, thread_id: str) -> dict:
+        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        row = store.get(thread_id)
+        if row is None:
+            raise KeyError(thread_id)
+        return {
+            **row,
+            "history": store.read_history(thread_id),
+            "context": store.read_context(thread_id),
+            "artifacts": store.read_artifacts(thread_id),
+        }
+
+    def patch_thread(self, thread_id: str, body: dict) -> dict:
+        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        row = store.update(
+            thread_id,
+            title=body.get("title") if isinstance(body, dict) else None,
+            pinned=body.get("pinned") if isinstance(body, dict) else None,
+        )
+        if row is None:
+            raise KeyError(thread_id)
+        return row
+
+    def delete_thread(self, thread_id: str) -> None:
+        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        if not store.delete(thread_id):
+            raise KeyError(thread_id)
+
+    def list_threads(self) -> list[dict]:
+        return ThreadStore(self.project(start_preview=False).workspace.path).list()
+
+    def thread_history(self, thread_id: str) -> list[dict]:
+        return ThreadStore(self.project(start_preview=False).workspace.path).read_history(thread_id)
+
+    def thread_context(self, thread_id: str) -> dict:
+        return ThreadStore(self.project(start_preview=False).workspace.path).read_context(thread_id)
+
+    def add_thread_context(self, thread_id: str, item: dict) -> dict:
+        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        return store.add_context(thread_id, item)
+
+    def remove_thread_context(self, thread_id: str, item_id: str) -> bool:
+        return ThreadStore(self.project(start_preview=False).workspace.path).remove_context(
+            thread_id, item_id)
+
+    def chat_stream(self, thread_id: str, prompt: str):
+        """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread."""
+        if not self._turn_lock.acquire(blocking=False):
+            yield from self._busy_refusal()
+            return
+        try:
+            yield from self._chat_stream(thread_id, prompt)
+        finally:
+            self._clear_turn_baseline()
+            self._turn_lock.release()
+
+    def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
+                               client: OpenCodeClient) -> str:
+        sid = store.read_session_id(thread_id)
+        if sid:
+            try:
+                client.messages(sid)
+                return sid
+            except httpx.HTTPStatusError:
+                sid = None
+        sid = client.create_session(directory=str(project.workspace.path))
+        store.write_session_id(thread_id, sid)
+        return sid
+
+    def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict) -> str:
+        lines = [
+            f"Thread id: {thread_id}",
+            f"Write Artifacts under examples/{thread_id}/.",
+            "",
+        ]
+        items = ctx.get("items") or []
+        if items:
+            lines.append("Session context:")
+            for it in items:
+                extra = f" at {it['path']}" if it.get("path") else ""
+                lines.append(f"- {it.get('kind')}: {it.get('name')}{extra}")
+            lines.append("")
+        lines.append(prompt)
+        return "\n".join(lines)
+
+    def _chat_stream(self, thread_id: str, prompt: str):
+        import time
+
+        project = self.project()
+        store = ThreadStore(project.workspace.path)
+        thread = store.get(thread_id)
+        if thread is None:
+            yield {"type": "error", "message": "Unknown thread"}
+            yield {"type": "done", "ok": False, "decision": "unknown thread"}
+            return
+        if thread.get("title") in ("", "New conversation"):
+            store.touch(thread_id, title=title_from_prompt(prompt))
+        else:
+            store.touch(thread_id)
+
+        ctx = store.read_context(thread_id)
+        context_ids = [i["id"] for i in ctx["items"] if i.get("id")]
+        user_ev = {"type": "user", "text": prompt, "contextIds": context_ids}
+        store.append_history(thread_id, user_ev)
+        yield user_ev
+
+        chat_token = project.control.arm_chat(thread_id)
+        try:
+            client = self._ensure_opencode()
+            sid = self._ensure_thread_session(store, thread_id, project, client)
+            project.active_session_id = sid
+            before = snapshot_files(project.workspace.path)
+            client.send_prompt(sid, self._chat_prompt(thread_id, prompt, ctx), agent="sage-chat")
+            seen: set[tuple] = set()
+            appeared = False
+            poll_failures = 0
+            while True:
+                if project.stop_requested:
+                    client.interrupt(sid)
+                    yield {"type": "done", "ok": False, "decision": "stopped"}
+                    return
+                try:
+                    running = client.is_running(sid)
+                    msgs = client.messages(sid)
+                    poll_failures = 0
+                except httpx.HTTPError as e:
+                    poll_failures += 1
+                    log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
+                    if poll_failures >= _MAX_POLL_FAILURES:
+                        yield {"type": "error", "message": (
+                            "OpenCode stopped responding, so the turn was halted.")}
+                        yield {"type": "done", "ok": False, "decision": "opencode unresponsive"}
+                        return
+                    time.sleep(2.0)
+                    continue
+                appeared = appeared or running
+                for m in msgs:
+                    if m.get("type") != "assistant":
+                        continue
+                    for i, part in enumerate(m.get("content", [])):
+                        key = _part_key(m, i, part)
+                        if key in seen:
+                            continue
+                        pt = part.get("type", "")
+                        if "tool" in pt:
+                            status = (part.get("state") or {}).get("status")
+                            if status in ("pending", "running", "in_progress"):
+                                continue
+                            seen.add(key)
+                            tool = part.get("tool") or part.get("name") or pt
+                            ev = {"type": "agent", "kind": "tool", "tool": tool,
+                                  "detail": _tool_detail(tool, part)}
+                            store.append_history(thread_id, ev)
+                            yield ev
+                        elif pt == "text" and part.get("text"):
+                            seen.add(key)
+                            ev = {"type": "agent", "kind": "text", "text": part["text"]}
+                            store.append_history(thread_id, ev)
+                            yield ev
+                if appeared and not running:
+                    break
+                time.sleep(1.0)
+
+            revert_denied_writes(project.workspace.path, thread_id, before)
+            artifacts = [
+                store.record_artifact(thread_id, path=rel)
+                for rel in new_artifact_paths(project.workspace.path, thread_id, before)
+            ]
+            if artifacts:
+                yield {"type": "artifacts", "items": artifacts}
+            done = {"type": "done", "ok": True, "decision": "answered"}
+            if artifacts:
+                done["artifacts"] = artifacts
+            store.append_history(thread_id, done)
+            yield done
+        finally:
+            project.control.disarm_chat(chat_token)
 
     def _recheck_app_data(self) -> None:
         """Re-derive what the agent is told about the app's data, now that the turn is over (#15).

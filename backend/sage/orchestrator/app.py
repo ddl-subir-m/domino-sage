@@ -32,8 +32,11 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from starlette.concurrency import run_in_threadpool
+from starlette.staticfiles import StaticFiles
 
-_UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
+_WB = Path(__file__).resolve().parents[1] / "workbench"
+_UI = _WB / "index.html"
+_BUILDER_UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG, DominoAssetProvider, FakeAssetProvider
@@ -347,8 +350,14 @@ control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 
 @control_app.get("/")
 def ui() -> FileResponse:
-    """The thin builder UI (single static page). no-store so the current HTML is always served."""
+    """The Workbench shell (Chat / Build). no-store so the current HTML is always served."""
     return FileResponse(_UI, headers={"Cache-Control": "no-store"})
+
+
+@control_app.get("/builder")
+def builder_ui() -> FileResponse:
+    """The existing builder page, embedded by Build mode until that mode is wired through the shell."""
+    return FileResponse(_BUILDER_UI, headers={"Cache-Control": "no-store"})
 
 
 @control_app.get("/fonts/inter-latin-var.woff2")
@@ -384,6 +393,17 @@ def healthz() -> dict:
         # on its own route because /healthz is already the one call that answers "is this builder
         # correctly wired", and the UI already makes it on load.
         "preflight_slots": PREFLIGHT_SLOTS,
+    }
+
+
+@control_app.get("/api/me")
+def me() -> dict:
+    """Who the Workbench greets. Domino injects the username; locally this is just You."""
+    return {
+        "id": os.environ.get("DOMINO_USER_ID") or "me",
+        "name": os.environ.get("DOMINO_USER_NAME")
+            or os.environ.get("DOMINO_STARTING_USERNAME")
+            or "You",
     }
 
 
@@ -1127,6 +1147,81 @@ def build_stream(body: dict) -> StreamingResponse:
         media_type="text/event-stream")
 
 
+@control_app.get("/api/threads")
+def list_threads() -> JSONResponse:
+    return JSONResponse(orchestrator.list_threads())
+
+
+@control_app.post("/api/threads")
+def create_thread() -> JSONResponse:
+    return JSONResponse(orchestrator.create_thread())
+
+
+@control_app.get("/api/threads/{thread_id}")
+def get_thread(thread_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(orchestrator.get_thread(thread_id))
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+
+
+@control_app.patch("/api/threads/{thread_id}")
+def patch_thread(thread_id: str, body: dict) -> JSONResponse:
+    try:
+        return JSONResponse(orchestrator.patch_thread(thread_id, body or {}))
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+
+
+@control_app.delete("/api/threads/{thread_id}")
+def delete_thread(thread_id: str) -> JSONResponse:
+    try:
+        orchestrator.delete_thread(thread_id)
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+@control_app.get("/api/threads/{thread_id}/history")
+def thread_history(thread_id: str) -> JSONResponse:
+    return JSONResponse(orchestrator.thread_history(thread_id))
+
+
+@control_app.get("/api/threads/{thread_id}/context")
+def thread_context(thread_id: str) -> JSONResponse:
+    return JSONResponse(orchestrator.thread_context(thread_id))
+
+
+@control_app.post("/api/threads/{thread_id}/context")
+def add_thread_context(thread_id: str, body: dict) -> JSONResponse:
+    try:
+        row = orchestrator.add_thread_context(thread_id, body or {})
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+    return JSONResponse(row)
+
+
+@control_app.delete("/api/threads/{thread_id}/context/{item_id}")
+def remove_thread_context(thread_id: str, item_id: str) -> JSONResponse:
+    ok = orchestrator.remove_thread_context(thread_id, item_id)
+    if not ok:
+        return JSONResponse({"error": "unknown context item"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+@control_app.post("/api/threads/{thread_id}/chat/stream")
+def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
+    prompt = (body or {}).get("prompt", "")
+    if not prompt:
+        def refuse():
+            import json as _json
+            yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
+        return StreamingResponse(refuse(), media_type="text/event-stream")
+    return StreamingResponse(
+        _turn_sse(orchestrator.chat_stream(thread_id, prompt), "chat_stream"),
+        media_type="text/event-stream")
+
+
 @control_app.post("/api/project/build/approve")
 def build_approve(body: dict) -> StreamingResponse:
     """Approve a gated plan (SPEC P6) and stream the resulting build. Body: {answers?, plan_edits?}."""
@@ -1331,6 +1426,10 @@ def _preview_llm() -> tuple[str, str] | None:
 
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
                                                _preview_llm))
+control_app.mount("/css", StaticFiles(directory=_WB / "css"), name="wb-css")
+control_app.mount("/js", StaticFiles(directory=_WB / "js"), name="wb-js")
+control_app.mount("/img", StaticFiles(directory=_WB / "img"), name="wb-img")
+control_app.mount("/vendor", StaticFiles(directory=_WB / "vendor"), name="wb-vendor")
 
 
 def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:

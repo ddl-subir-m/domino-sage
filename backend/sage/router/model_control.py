@@ -32,6 +32,10 @@ class ModelControl:
         # Same token discipline as read-only: a per-turn arming for internet access, so an
         # overlapping/crashed turn can never drop another turn's guarantee. See arm_web().
         self._web_token: object | None = None
+        # Chat turn pin: same token discipline so a Chat turn cannot leak write tools into a later
+        # Ask turn, and an overlapping disarm cannot drop the allowlist mid-flight.
+        self._chat_token: object | None = None
+        self._chat_thread_id: str | None = None
         # And again for the mode a running turn is pinned to. The shim reads snapshot() per REQUEST,
         # so without a pin the picker lands mid-turn: the later inferences of a build lose their edit
         # tools and swap to another model while the earlier tool calls are still in their context.
@@ -124,6 +128,19 @@ class ModelControl:
         if self._web_token is token:
             self._web_token = None
 
+    def arm_chat(self, thread_id: str) -> object:
+        """Pin this turn as Chat for `thread_id` and return a token. The shim reads snapshot()
+        per request, so without a pin a later Ask/Build turn would inherit write tools."""
+        token = object()
+        self._chat_token = token
+        self._chat_thread_id = thread_id
+        return token
+
+    def disarm_chat(self, token: object) -> None:
+        if self._chat_token is token:
+            self._chat_token = None
+            self._chat_thread_id = None
+
     def arm_turn_mode(self, mode: Mode) -> object:
         """Pin `mode` for THIS turn and return its token, mirroring arm_read_only(). Every request the
         turn makes then resolves against one mode, whatever the user does to the picker while it
@@ -166,4 +183,5 @@ class ModelControl:
             web_allowed=self._web_token is not None,
             read_only_turn=self._read_only_token is not None,
             read_only_reason=self._read_only_reason,
+            chat_thread_id=self._chat_thread_id if self._chat_token is not None else None,
         )

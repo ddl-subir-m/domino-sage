@@ -1,0 +1,316 @@
+:root {
+  /* Brand */
+  --purple-700: #311EAE;
+  --purple-600: #3B23D1;
+  --purple-500: #543FDE;
+  --purple-100: #EEEBFC;
+
+  /* Neutrals */
+  --dark-700:   #2E2E38;
+  --gray-600:   #65657B;
+  --gray-500:   #8F8FA3;
+  --gray-400:   #B8B8C6;
+  --gray-300:   #E0E0E0;
+  --gray-200:   #F0F0F3;
+  --gray-100:   #FAFAFA;
+  --white:      #FFFFFF;
+
+  /* Status */
+  --success: #28A464;
+  --warning: #CCB718;
+  --error:   #C20A29;
+  --info:    #0070CC;
+
+  --success-bg: #E9F6EF;
+  --warning-bg: #FBF8E2;
+  --error-bg:   #FBEAED;
+  --info-bg:    #E6F1FA;
+
+  /* Accents — charts, project dots */
+  --accent-1: #543FDE;  --accent-2: #0070CC;  --accent-3: #28A464;
+  --accent-4: #CCB718;  --accent-5: #FF6543;  --accent-6: #E835A7;
+  --accent-7: #2EDCC4;  --accent-8: #A9734C;
+
+  /* Layout */
+  --nav-h: 44px;  --subnav-h: 48px;  --planbar-h: 40px;
+  --rail-w: 260px;  --builder-chat-w: 380px;
+  --dock-collapsed: 44px;  --dock-expanded: 320px;
+  --drawer-w: 480px;
+
+  /* Spacing scale */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px;
+  --s5: 24px; --s6: 32px; --s7: 48px;
+
+  --radius: 4px;  --radius-lg: 8px;
+  --shadow-card:  0 1px 2px rgba(46, 46, 56, .06);
+  --shadow-pop:   0 4px 16px rgba(46, 46, 56, .12);
+  --shadow-modal: 0 8px 32px rgba(46, 46, 56, .16);
+
+  --mono: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Builder and Chat both run three columns. On a laptop that is too many full
+   width ones, so the side columns give ground before the content does. */
+@media (max-width: 1400px) {
+  :root { --builder-chat-w: 320px; --rail-w: 232px; --dock-expanded: 300px; }
+}
+@media (max-width: 1180px) {
+  :root { --builder-chat-w: 288px; --rail-w: 208px; --dock-expanded: 280px; }
+}
+
+/* antd's <App> renders a wrapper div between #root and the shell, so it has
+   to carry the full height too or the layout collapses to content size. */
+html, body, #root, #root > .ant-app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: Inter, Lato, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  color: var(--dark-700);
+  background: var(--gray-100);
+  overflow: hidden;
+}
+
+/* Shared type helpers ---------------------------------------------------- */
+
+.sw-page-title { font-size: 20px; font-weight: 600; line-height: 1.3; margin: 0; }
+.sw-page-sub { font-size: 13px; color: var(--gray-600); margin: 4px 0 0; line-height: 1.5; }
+.sw-section-title { font-size: 16px; font-weight: 600; line-height: 1.3; margin: 0; }
+.sw-section-sub { font-size: 13px; color: var(--gray-600); margin: 4px 0 var(--s3); line-height: 1.5; }
+.sw-secondary { font-size: 13px; color: var(--gray-600); }
+.sw-caption { font-size: 12px; color: var(--gray-500); }
+.sw-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--gray-500);
+}
+.sw-mono { font-family: var(--mono); font-size: 13px; }
+.sw-num { font-variant-numeric: tabular-nums; }
+
+/* Provenance badges ------------------------------------------------------ */
+
+.sw-prov {
+  font-size: 11px !important;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-weight: 600;
+  border-radius: 2px !important;
+  padding: 0 5px !important;
+  margin: 0 !important;
+  line-height: 16px !important;
+  height: 16px;
+}
+.sw-prov-you  { color: var(--gray-600) !important; background: var(--gray-200) !important; }
+.sw-prov-sage { color: var(--purple-600) !important; background: var(--purple-100) !important; cursor: help; }
+
+/* Sensitivity badges ----------------------------------------------------- */
+
+.sw-sens {
+  font-size: 11px !important;
+  border-radius: 2px !important;
+  padding: 0 5px !important;
+  margin: 0 !important;
+  line-height: 16px !important;
+  height: 16px;
+  font-weight: 500;
+}
+.sw-sens-public       { color: var(--gray-600) !important; background: var(--gray-200) !important; }
+.sw-sens-internal     { color: var(--info) !important;     background: var(--info-bg) !important; }
+.sw-sens-confidential { color: #8A7A00 !important;         background: var(--warning-bg) !important; }
+.sw-sens-restricted   { color: var(--error) !important;    background: var(--error-bg) !important; }
+
+/* Status dots ------------------------------------------------------------ */
+
+.sw-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+.sw-dot-running { background: var(--success); }
+.sw-dot-stopped { background: var(--gray-400); }
+.sw-dot-building { background: var(--purple-500); animation: sw-pulse 1.4s ease-in-out infinite; }
+.sw-dot-failed  { background: var(--error); }
+.sw-dot-draft   { background: var(--gray-400); }
+
+@keyframes sw-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+
+/* Scrollbars ------------------------------------------------------------- */
+
+.sw-scroll { overflow-y: auto; overflow-x: hidden; }
+.sw-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.sw-scroll::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.sw-scroll::-webkit-scrollbar-thumb:hover { background: var(--gray-400); background-clip: content-box; }
+.sw-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* Empty states ----------------------------------------------------------- */
+
+.sw-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--s6) var(--s4);
+  gap: var(--s2);
+  color: var(--gray-600);
+}
+.sw-empty-title { font-size: 14px; font-weight: 600; color: var(--dark-700); }
+.sw-empty-detail { font-size: 13px; color: var(--gray-600); max-width: 320px; line-height: 1.5; }
+
+/* Shared primitives ------------------------------------------------------ */
+
+/* Transparent icon button that inherits its colour from context, so the same
+   element works on the dark top bar and on white surfaces. */
+.sw-icon-btn {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+.sw-icon-btn:hover { background: rgba(255, 255, 255, .14); }
+.sw-icon-btn.is-dark-text { color: var(--gray-600); }
+.sw-icon-btn.is-dark-text:hover { background: var(--gray-200); color: var(--dark-700); }
+.sw-icon-btn .anticon { display: block; }
+
+.sw-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-600);
+  margin-bottom: 6px;
+}
+
+.sw-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--purple-600);
+  cursor: pointer;
+  text-align: left;
+}
+.sw-link:hover { color: var(--purple-700); text-decoration: underline; }
+
+.sw-plain-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--gray-600);
+}
+
+/* KPI tile — used by Manage and by the app preview. */
+.sw-kpi {
+  background: var(--white);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: var(--s3) var(--s4);
+  min-width: 0;
+}
+.sw-kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--gray-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sw-kpi-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.sw-kpi-sub { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
+.sw-kpi.is-warning .sw-kpi-value { color: #8A7A00; }
+.sw-kpi.is-error   .sw-kpi-value { color: var(--error); }
+.sw-kpi.is-success .sw-kpi-value { color: var(--success); }
+
+.sw-sparkline { display: block; flex: none; }
+
+kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--gray-100);
+  border: 1px solid var(--gray-300);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--gray-600);
+}
+
+/* Code rendering --------------------------------------------------------- */
+
+.sw-code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  margin: 0;
+  padding: var(--s3);
+  background: var(--gray-100);
+  border-radius: var(--radius);
+  color: var(--dark-700);
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 2;
+}
+.sw-tok-key { color: var(--purple-600); font-weight: 500; }
+.sw-tok-str { color: #067D62; }
+.sw-tok-com { color: var(--gray-500); font-style: italic; }
+.sw-tok-num { color: var(--info); }
+
+/* Boot and fatal states -------------------------------------------------- */
+
+.sw-boot {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s4);
+  background: var(--gray-100);
+}
+.sw-boot-label { font-size: 13px; color: var(--gray-600); }
+
+.sw-boot-error {
+  max-width: 640px;
+  margin: 15vh auto;
+  padding: var(--s5);
+  font-family: Inter, system-ui, sans-serif;
+}
+.sw-boot-error h1 { font-size: 18px; margin: 0 0 var(--s3); }
+.sw-boot-error pre {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--error-bg);
+  color: var(--error);
+  padding: var(--s3);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+}

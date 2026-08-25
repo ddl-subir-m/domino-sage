@@ -93,6 +93,9 @@ class SessionState:
     # arms it only when the current prompt actually asked for the web (a URL or an intent verb), and
     # the shim strips web tools from every request otherwise. Per-turn, like read_only_turn.
     web_allowed: bool = False
+    # A Chat turn (docs/workbench/chat.md). When set, the shim keeps write/bash tools (Chat writes
+    # Artifacts) and only allows writes under that Thread's examples/ and .sage/threads/ dirs.
+    chat_thread_id: str | None = None
 
 
 @dataclass(frozen=True)

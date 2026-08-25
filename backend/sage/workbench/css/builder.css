@@ -1,0 +1,549 @@
+/* Builder frame ---------------------------------------------------------- */
+
+.sw-builder-embed {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: var(--white);
+}
+
+/* Build is rail plus workspace, the same shape as Chat, because the rail is
+   the app selector and it is never not there. */
+.sw-build { flex: 1; min-height: 0; display: flex; background: var(--white); }
+.sw-builder { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.sw-builder-body { flex: 1; min-height: 0; display: flex; }
+
+.sw-sandbox-build {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--s2);
+  padding: var(--s5);
+}
+.sw-sandbox-build .sw-empty-detail { max-width: 420px; }
+
+/* Nothing built yet ------------------------------------------------------ */
+
+/* Build with no app still looks like a builder: the centre is an empty app,
+   not a page of sections you scroll through. */
+.sw-app-frame {
+  max-width: 900px;
+  min-width: 420px;
+  margin: 0 auto;
+  background: var(--white);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.sw-app-frame-bar {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 0 var(--s3);
+  background: var(--gray-100);
+  border-bottom: 1px solid var(--gray-300);
+}
+.sw-app-frame-dots { display: inline-flex; gap: 5px; }
+.sw-app-frame-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gray-300);
+  display: block;
+}
+.sw-app-frame-url { font-size: 11px; color: var(--gray-500); font-family: var(--mono); }
+
+.sw-app-frame.is-empty .sw-app-frame-body {
+  min-height: 380px;
+  margin: var(--s4);
+  border: 1.5px dashed var(--gray-300);
+  border-radius: var(--radius-lg);
+  background: var(--gray-100);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--s2);
+  padding: var(--s5);
+}
+.sw-app-frame-icon { font-size: 34px; color: var(--gray-400); line-height: 1; }
+
+.sw-build-greeting { display: flex; flex-direction: column; gap: 4px; }
+.sw-build-greeting .sw-empty-detail { max-width: none; }
+.sw-build-starters { display: flex; flex-direction: column; gap: var(--s2); }
+
+/* App selector ----------------------------------------------------------- */
+
+/* Sits above the panel it controls, so it reads as part of the preview rather
+   than as a global heading — which is what makes switching feel like looking
+   rather than like navigating away. */
+.sw-apptabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: var(--planbar-h);
+  padding: 0 var(--s3);
+  background: var(--white);
+  border-bottom: 1px solid var(--gray-300);
+}
+.sw-appselect { flex: none; width: 240px; }
+.sw-appselect .ant-select-selection-item { font-weight: 600; color: var(--purple-700); }
+
+.sw-appopt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.sw-appopt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A dot means this conversation changed that app. Switching the preview around
+   is free, so the dots are what keep an auto-switching panel honest: the app on
+   screen says whether this conversation changed it, and so does every row. */
+.sw-appopt-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--purple-500);
+}
+
+.sw-apptabs-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--gray-600);
+  cursor: default;
+}
+
+.sw-apptab-new {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px var(--s2);
+  border: 1px dashed var(--gray-400);
+  border-radius: var(--radius);
+  background: none;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--gray-600);
+  cursor: pointer;
+}
+.sw-apptab-new:hover { border-color: var(--purple-500); color: var(--purple-600); }
+
+/* Plans that have not become apps yet. Not a conversation and not an app, so
+   they sit in the empty preview rather than in the conversation rail. */
+.sw-ready-plans {
+  margin-top: var(--s4);
+  width: 100%;
+  max-width: 420px;
+  text-align: left;
+}
+.sw-ready-plan {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 7px var(--s3);
+  border: 1px solid var(--gray-300);
+  border-left: 3px solid var(--purple-500);
+  border-radius: var(--radius);
+  background: var(--white);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.sw-ready-plan:hover { border-color: var(--purple-500); }
+.sw-ready-plan-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--dark-700);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Builder chat panel ----------------------------------------------------- */
+
+.sw-builder-chat {
+  width: var(--builder-chat-w);
+  flex: none;
+  min-width: 0;
+  background: var(--white);
+  border-right: 1px solid var(--gray-300);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sw-builder-chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+.sw-builder-chat-messages .sw-msg { margin-bottom: 0; }
+
+/* What a new conversation opens with: the app's own memory, rather than a stranger's
+   transcript inherited by accident. */
+.sw-build-resume-note {
+  border: 1px dashed var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: var(--s3);
+  background: var(--gray-100);
+}
+.sw-build-resume-note .sw-empty-title { font-size: 13px; margin-bottom: 2px; }
+.sw-build-resume-note .sw-empty-detail { font-size: 12px; max-width: none; }
+.sw-build-resume-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  margin-top: var(--s3);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--gray-300);
+}
+
+/* Only one conversation can build at a time, so the others say what they are for
+   instead of silently overwriting it. */
+/* The chat column is narrow, so the sentence gets the full width and the
+   button sits under it rather than squeezing the text into a ribbon. */
+.sw-held-banner {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--warning-bg);
+  border-top: 1px solid #EFE6A8;
+  font-size: 12px;
+  color: var(--dark-700);
+  line-height: 1.45;
+}
+.sw-held-banner > .anticon { margin-top: 2px; }
+.sw-held-banner > span { min-width: 0; }
+.sw-held-banner > button { grid-column: 2; justify-self: start; margin-top: 2px; }
+
+/* Build progress as a turn in the conversation. */
+.sw-build-entry { display: flex; flex-direction: column; gap: var(--s3); }
+.sw-build-entry-fold,
+.sw-build-entry-folded {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius);
+  background: var(--white);
+  color: var(--gray-600);
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.sw-build-entry-fold:hover,
+.sw-build-entry-folded:hover { background: var(--gray-100); color: var(--dark-700); }
+.sw-builder-chat-composer {
+  flex: none;
+  border-top: 1px solid var(--gray-300);
+  padding: var(--s3);
+}
+
+/* Build steps ------------------------------------------------------------ */
+
+.sw-steps-card {
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  background: var(--white);
+  overflow: hidden;
+}
+.sw-steps-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--gray-200);
+  background: var(--gray-100);
+}
+.sw-steps-title { font-size: 13px; font-weight: 600; }
+
+.sw-steps { list-style: none; margin: 0; padding: var(--s2) 0; }
+.sw-step-row {
+  display: flex;
+  gap: var(--s2);
+  padding: 6px var(--s3);
+  align-items: flex-start;
+}
+.sw-step-mark {
+  width: 18px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+  font-size: 13px;
+  color: var(--gray-400);
+}
+.sw-step-num {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--gray-300);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--gray-500);
+}
+.sw-step-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sw-step-lead { font-size: 13px; font-weight: 500; }
+.sw-step-detail { font-size: 12px; color: var(--gray-500); line-height: 1.5; }
+
+.sw-step-row.is-done .sw-step-mark { color: var(--success); }
+.sw-step-row.is-done .sw-step-lead { color: var(--gray-600); }
+.sw-step-row.is-active .sw-step-mark { color: var(--purple-500); }
+.sw-step-row.is-active .sw-step-lead { color: var(--purple-700); font-weight: 600; }
+.sw-step-row.is-todo .sw-step-lead { color: var(--gray-500); }
+.sw-step-row.is-todo .sw-step-detail { display: none; }
+
+/* Build log -------------------------------------------------------------- */
+
+.sw-buildlog {
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius);
+  background: var(--gray-100);
+  padding: var(--s2) var(--s3);
+  max-height: 240px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--gray-600);
+}
+.sw-buildlog-line { margin-bottom: 2px; }
+.sw-buildlog-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--gray-600);
+}
+.sw-buildlog-file code { color: var(--purple-600); }
+
+/* Builder content -------------------------------------------------------- */
+
+.sw-builder-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--gray-100);
+}
+.sw-builder-toolbar {
+  height: 44px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s4);
+  background: var(--white);
+  border-bottom: 1px solid var(--gray-300);
+  overflow: hidden;
+}
+.sw-builder-toolbar > * { flex: none; min-width: 0; }
+.sw-builder-toolbar .sw-topnav-spacer { flex: 1 1 auto; }
+
+/* The canvas holds a fixed-minimum app preview. On a narrow window it scrolls
+   rather than compressing the app into an unreadable column. */
+.sw-builder-canvas { flex: 1; min-height: 0; overflow: auto; padding: var(--s5); }
+
+.sw-preview-skeleton {
+  max-width: 900px;
+  margin: 0 auto;
+  background: var(--white);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: var(--s5);
+  display: grid;
+  gap: var(--s3);
+}
+
+/* App preview ------------------------------------------------------------ */
+
+.sw-preview-app {
+  max-width: 1000px;
+  min-width: 480px;
+  margin: 0 auto;
+  background: var(--white);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--s5);
+}
+.sw-preview-head { margin-bottom: var(--s4); }
+.sw-preview-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: var(--purple-500);
+  margin-bottom: 4px;
+}
+.sw-preview-title { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+.sw-preview-desc { font-size: 13px; color: var(--gray-600); margin: 0; line-height: 1.6; }
+
+.sw-preview-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--s3);
+  margin-bottom: var(--s4);
+}
+.sw-preview-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--s4);
+  margin-bottom: var(--s4);
+}
+.sw-preview-chart {
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: var(--s3);
+}
+.sw-preview-table {
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: var(--s3);
+}
+.sw-preview-table .sw-block-title { margin-bottom: var(--s2); }
+
+/* Code view -------------------------------------------------------------- */
+
+.sw-codeview {
+  max-width: 1100px;
+  min-width: 560px;
+  margin: 0 auto;
+  height: 100%;
+  min-height: 420px;
+  display: flex;
+  background: var(--white);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.sw-filetree {
+  width: 216px;
+  flex: none;
+  border-right: 1px solid var(--gray-300);
+  background: var(--gray-100);
+  padding: var(--s2) 0;
+}
+.sw-filetree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 5px var(--s3);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--gray-600);
+}
+.sw-filetree-row:hover { background: var(--gray-200); }
+.sw-filetree-row.is-active {
+  background: var(--white);
+  color: var(--purple-600);
+  box-shadow: inset 2px 0 0 var(--purple-500);
+}
+
+.sw-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sw-editor-head {
+  height: 36px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s3);
+  border-bottom: 1px solid var(--gray-300);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--gray-600);
+}
+.sw-editor-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--white);
+  border-radius: 0;
+  padding: var(--s3) var(--s4);
+}
+
+/* History tab — the app's durable memory ---------------------------------- */
+
+.sw-history {
+  max-width: 720px;
+  min-width: 420px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+.sw-history-card {
+  background: var(--white);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: var(--s4);
+}
+.sw-history-head { display: flex; align-items: center; gap: var(--s2); }
+.sw-history-head h2 { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; margin: 0; }
+.sw-history-hint { font-size: 12px; color: var(--gray-500); line-height: 1.5; margin: 2px 0 var(--s3); }
+.sw-history-note {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--dark-700);
+  margin: 0;
+  white-space: pre-wrap;
+}
+.sw-history-card .sw-history-note:only-of-type { color: var(--gray-600); }
+
+.sw-decisions { list-style: none; margin: 0 0 var(--s3); padding: 0; }
+.sw-decisions li {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--gray-200);
+}
+.sw-decisions li:last-child { border-bottom: none; }
+.sw-decision-text { flex: 1; min-width: 0; font-size: 13px; line-height: 1.5; }
+.sw-decisions .sw-ctx-remove { opacity: 0; }
+.sw-decisions li:hover .sw-ctx-remove { opacity: 1; }
+.sw-decision-new { display: flex; gap: var(--s2); }
+
+.sw-versions { display: flex; flex-direction: column; }
+.sw-version-note { font-size: 13px; }
+
+/* Publish modal ---------------------------------------------------------- */
+
+.sw-tag-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s3);
+}

@@ -125,6 +125,17 @@ def test_has_built_latches_on_and_persists(tmp_path: Path):
     assert ws2.has_built() is True
 
 
+def test_untitled_flag_persists(tmp_path: Path):
+    tmpl = _fake_template(tmp_path)
+    ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("Untitled")
+    assert ws.is_untitled() is False
+    ws.mark_untitled(True)
+    assert ws.is_untitled() is True
+    ws.mark_untitled(False)
+    ws2 = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("Untitled")
+    assert ws2.is_untitled() is False
+
+
 def test_mark_built_preserves_other_settings(tmp_path: Path):
     ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path)).ensure("p")
     ws.write_settings({"skip_planning": True})
