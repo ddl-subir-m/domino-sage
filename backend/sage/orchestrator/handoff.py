@@ -11,8 +11,10 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
+from pathlib import Path
 
 from ..gateway.client import CostLabels, GatewayClient
+from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
 from ..router.models import ModelCatalog
 from .scope import _extract, _model_for
 
@@ -173,3 +175,130 @@ def wants_an_app(
         _health.answered()
         return False
     return _health.unreadable_answer(answer)
+
+
+_BINDABLE = {KIND_DATA_SOURCE, KIND_MODEL_API, KIND_LLM_ALIAS}
+
+
+def draft_digest(*, title: str, asked: list[str], context: list[dict],
+                 artifacts: list[dict]) -> str:
+    """One-paragraph background for sage-plan. Not the transcript."""
+    bits: list[str] = []
+    if (title or "").strip():
+        bits.append(f'Thread "{title.strip()}".')
+    if asked:
+        bits.append("Asked: " + "; ".join(a.strip() for a in asked if a.strip()) + ".")
+    names = [str(i.get("name") or "").strip() for i in context]
+    names = [n for n in names if n]
+    if names:
+        bits.append("In context: " + ", ".join(names) + ".")
+    arts = []
+    for a in artifacts:
+        label = (a.get("title") or a.get("name") or "").strip()
+        path = (a.get("path") or "").strip()
+        if path and label and label not in path:
+            arts.append(f"{label} at {path}")
+        elif path or label:
+            arts.append(path or label)
+    if arts:
+        bits.append("Artifacts: " + "; ".join(arts) + ".")
+    return " ".join(bits) or "An empty Chat Thread."
+
+
+def plan_prompt(thread_id: str, digest: str) -> str:
+    return (
+        f"A Chat Thread produced the files under examples/{thread_id}/ and the digest in "
+        f".sage/handoff.md. The plan is what to build. The digest is background.\n\n"
+        f"{digest}\n\n"
+        "Write a concrete build plan for an app colleagues can open from this work."
+    )
+
+
+_HANDOFF_LINE = (
+    "A Chat Thread produced the files under `examples/` and the digest in "
+    "`.sage/handoff.md`. The plan is what to build. The digest is background."
+)
+
+
+def implement_note(workspace: Path) -> str:
+    """Extra implement-turn context when Chat handed off. Empty if there is no digest."""
+    digest_path = workspace / ".sage" / "handoff.md"
+    if not digest_path.is_file():
+        return ""
+    digest = digest_path.read_text().strip()
+    if not digest:
+        return ""
+    listing: list[str] = []
+    examples = workspace / "examples"
+    if examples.is_dir():
+        for p in sorted(examples.rglob("*")):
+            if p.is_file():
+                listing.append(str(p.relative_to(workspace)))
+    lines = [_HANDOFF_LINE, "", digest]
+    if listing:
+        lines += ["", "Example files:", *[f"- {x}" for x in listing]]
+    return "\n".join(lines)
+
+
+def plan_title(plan_md: str) -> str:
+    for line in (plan_md or "").splitlines():
+        text = line.strip().lstrip("#").strip()
+        if text:
+            return text[:80]
+    return "App"
+
+
+def user_texts(history: list[dict]) -> list[str]:
+    return [e.get("text") or "" for e in history if e.get("type") == "user" and e.get("text")]
+
+
+def transcript_markdown(history: list[dict]) -> str:
+    lines: list[str] = []
+    for e in history or []:
+        if e.get("type") == "user" and e.get("text"):
+            lines.append(f"**User:** {e['text']}")
+        elif e.get("type") == "agent" and e.get("kind") == "text" and e.get("text"):
+            lines.append(f"**Sage:** {e['text']}")
+    return ("\n\n".join(lines) + "\n") if lines else ""
+
+
+def binding_from_context(item: dict) -> Binding | None:
+    """A Binding for a Session context row that names a Resource, or None."""
+    kind = item.get("kind")
+    if kind not in _BINDABLE:
+        return None
+    key = item.get("bindingKey")
+    rid = ""
+    if isinstance(key, (list, tuple)) and len(key) >= 2:
+        rid = str(key[1] or "")
+    if not rid:
+        rid = str(item.get("resourceId") or "")
+    if not rid or rid.startswith("ctx_"):
+        return None
+    name = str(item.get("name") or rid)
+    return Binding(kind, rid, name, name)
+
+
+def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
+                   include_artifacts: bool, include_resources: bool) -> str:
+    parts = [draft.strip(), ""]
+    if include_artifacts:
+        parts.append("Artifacts to treat as examples:")
+        if artifacts:
+            parts.extend(f"- {a.get('path')}" for a in artifacts if a.get("path"))
+        else:
+            parts.append("- none")
+        parts.append("")
+    if include_resources:
+        parts.append("What the app needs:")
+        names = [i.get("name") for i in context if i.get("name")]
+        if names:
+            parts.extend(f"- {n}" for n in names)
+        else:
+            parts.append("- none")
+        parts.append("")
+    parts.append(
+        "A Chat Thread produced the files under examples/ and this digest. "
+        "The plan is what to build. The digest is background."
+    )
+    return "\n".join(parts).strip() + "\n"

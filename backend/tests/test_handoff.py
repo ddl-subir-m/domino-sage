@@ -7,6 +7,7 @@ must stay silent, and APP is the only hit.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -157,3 +158,53 @@ def test_should_classify_only_when_handoff_is_absent():
     assert handoff.should_classify({"suppressed": True}) is False
     assert handoff.should_classify({"status": "suggested"}) is False
     assert handoff.should_classify({"status": "bound"}) is False
+
+
+def test_digest_is_one_paragraph_with_names_not_bytes():
+    text = handoff.draft_digest(
+        title="Gross exposure",
+        asked=["what's our exposure?", "put this on a dashboard colleagues can open"],
+        context=[{"kind": "data_source", "name": "trades"}],
+        artifacts=[{"title": "By desk", "path": "examples/thr_1/desk.table.json",
+                    "png": "this-must-not-appear"}],
+    )
+    assert "Gross exposure" in text
+    assert "trades" in text
+    assert "examples/thr_1/desk.table.json" in text
+    assert "this-must-not-appear" not in text
+    assert "\n\n" not in text
+
+
+def test_plan_prompt_points_at_digest_and_examples():
+    prompt = handoff.plan_prompt("thr_1", "Thread background.")
+    assert "examples/thr_1/" in prompt
+    assert ".sage/handoff.md" in prompt
+    assert "The plan is what to build" in prompt
+
+
+def test_implement_note_is_empty_without_a_digest(tmp_path: Path):
+    assert handoff.implement_note(tmp_path) == ""
+
+
+def test_implement_note_includes_digest_and_example_paths(tmp_path: Path):
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "handoff.md").write_text("Thread background.\n")
+    dest = tmp_path / "examples" / "thr_1"
+    dest.mkdir(parents=True)
+    (dest / "desk.table.json").write_text("[]")
+    note = handoff.implement_note(tmp_path)
+    assert "The plan is what to build" in note
+    assert "Thread background." in note
+    assert "examples/thr_1/desk.table.json" in note
+
+
+def test_binding_from_context_only_for_resources():
+    b = handoff.binding_from_context({
+        "kind": "data_source", "name": "trades",
+        "bindingKey": ["data_source", "ds-1"],
+    })
+    assert b is not None
+    assert b.kind == "data_source"
+    assert b.id == "ds-1"
+    assert handoff.binding_from_context({"kind": "file", "name": "a.csv", "path": "public/data/a.csv"}) is None
+    assert handoff.binding_from_context({"kind": "data_source", "id": "ctx_01", "name": "x"}) is None

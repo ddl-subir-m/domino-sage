@@ -184,7 +184,7 @@ window.SW = window.SW || {};
         { size: 8 },
         h(
           Button,
-          { type: 'primary', size: 'small', onClick: () => SW.store.draftPlan() },
+          { type: 'primary', size: 'small', onClick: () => SW.store.draftHandoffPlan() },
           'Write a plan'
         ),
         h(

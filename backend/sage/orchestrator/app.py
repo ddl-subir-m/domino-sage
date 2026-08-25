@@ -1191,6 +1191,34 @@ def delete_thread(thread_id: str) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@control_app.post("/api/threads/{thread_id}/handoff/plan")
+def draft_handoff_plan(thread_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(orchestrator.draft_handoff_plan(thread_id))
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+    except RuntimeError as e:
+        if str(e) == "busy":
+            return JSONResponse({"error": "a turn is already running"}, status_code=409)
+        raise
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@control_app.post("/api/threads/{thread_id}/handoff/confirm")
+def confirm_handoff(thread_id: str, body: dict) -> JSONResponse:
+    try:
+        return JSONResponse(orchestrator.confirm_handoff(thread_id, (body or {}).get("include") or {}))
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+    except RuntimeError as e:
+        if str(e) == "busy":
+            return JSONResponse({"error": "a turn is already running"}, status_code=409)
+        raise
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
 @control_app.get("/api/threads/{thread_id}/history")
 def thread_history(thread_id: str) -> JSONResponse:
     return JSONResponse(orchestrator.thread_history(thread_id))

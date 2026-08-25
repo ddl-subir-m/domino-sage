@@ -32,7 +32,8 @@ window.SW = window.SW || {};
     catalogKind: null,
 
     // Overlays
-    handoffPlanId: null,
+    handoffOpen: false,
+    handoffDraft: null,
     graduationOpen: false,
     inviteOpen: false,
     paletteOpen: false,
@@ -930,6 +931,43 @@ window.SW = window.SW || {};
         state.thread = { ...state.thread, handoff: { ...(state.thread.handoff || {}), suppressed: true, status: 'suppressed' } };
       }
       notify();
+    },
+
+    async draftHandoffPlan(threadId) {
+      const id = threadId || (state.thread && state.thread.id);
+      if (!id) return null;
+      if (!state.thread || state.thread.id !== id) await store.openThread(id);
+      state.typing = 'Writing a plan…';
+      notify();
+      try {
+        const draft = await SW.api.draftHandoffPlan(id);
+        state.thread = { ...state.thread, handoff: draft.handoff };
+        state.messages = state.messages.filter(
+          (m) => !(m.blocks || []).some((b) => b.type === 'plan_suggestion')
+        );
+        state.handoffDraft = draft;
+        state.handoffOpen = true;
+        notify();
+        return draft;
+      } catch (err) {
+        antd.message.error(String((err && err.message) || err));
+        return null;
+      } finally {
+        state.typing = null;
+        notify();
+      }
+    },
+
+    async confirmHandoff(include) {
+      const id = state.thread && state.thread.id;
+      if (!id) return null;
+      const result = await SW.api.confirmHandoff(id, include);
+      state.handoffOpen = false;
+      state.handoffDraft = null;
+      state.thread = { ...state.thread, handoff: result.handoff };
+      notify();
+      SW.router.go(`#/build/${id}`);
+      return result;
     },
 
     // An upload is both things at once: it adds the file to the project and

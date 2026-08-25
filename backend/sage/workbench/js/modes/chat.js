@@ -169,12 +169,7 @@ window.SW = window.SW || {};
                         Button,
                         {
                           size: 'small',
-                          onClick: () => {
-                            const built = thread && (thread.touched || [])[0];
-                            return built
-                              ? SW.router.go(`#/build/${thread.id}?app=${built.appId}`)
-                              : SW.store.set({ handoffPlanId: activePlanId });
-                          },
+                          onClick: () => SW.store.draftHandoffPlan(thread && thread.id),
                         },
                         thread && (thread.touched || []).length ? 'Open in Build' : 'Build this'
                       )

@@ -243,6 +243,23 @@ class ThreadStore:
         self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
         return row
 
+    def mark_handoff_planned(self, thread_id: str) -> dict:
+        row = self.read_handoff(thread_id) or {}
+        if not row.get("suggestedAt"):
+            row["suggestedAt"] = _now()
+        row["suppressed"] = False
+        row["status"] = "planned"
+        row["planPath"] = ".sage/plan.md"
+        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        return row
+
+    def mark_handoff_bound(self, thread_id: str) -> dict:
+        row = self.mark_handoff_planned(thread_id)
+        row["status"] = "bound"
+        row["boundAt"] = _now()
+        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        return row
+
     def _write_index(self, rows: list[dict]) -> None:
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_json(self.index_path, rows)

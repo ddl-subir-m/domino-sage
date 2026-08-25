@@ -305,3 +305,81 @@ def test_not_now_suppresses_and_classifier_does_not_run_again(tmp_path: Path):
     assert len(gw.seen) == calls
     assert not any(e.get("type") == "handoff-suggest" for e in later)
     assert orch.get_thread(tid)["handoff"]["status"] == "suppressed"
+
+
+_PLAN = (
+    "A desk exposure dashboard.\n\n"
+    "## Plan\n"
+    "1. **Desk table** — Show notional by desk.\n"
+    "2. **Chart** — Use the example PNG.\n\n"
+    "## Open questions\n"
+    "None — ready to build.\n"
+)
+
+
+def test_write_a_plan_runs_sage_plan_and_opens_sheet_payload(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates is the largest desk."),
+        Turn(text=_PLAN),
+    ])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    result = orch.draft_handoff_plan(tid)
+
+    assert oc.prompts[-1]["agent"] == "sage-plan"
+    assert result["ok"] is True
+    assert result["handoff"]["status"] == "planned"
+    assert result["plan"].startswith("A desk exposure dashboard.")
+    ws = orch.project(start_preview=False).workspace
+    assert (ws.path / ".sage" / "plan.md").read_text().startswith("A desk exposure dashboard.")
+    assert "Asked:" in (ws.path / ".sage" / "handoff.md").read_text()
+    hist = ws.read_history()
+    assert any(e.get("type") == "plan-proposed" for e in hist)
+    src = ws.path / "src" / "App.tsx"
+    assert "return null" in src.read_text()
+
+    again = orch.draft_handoff_plan(tid)
+    assert again["handoff"]["status"] == "planned"
+    assert sum(1 for p in oc.prompts if p["agent"] == "sage-plan") == 1
+
+
+def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates."),
+        Turn(text=_PLAN),
+    ])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "data_source", "name": "trades",
+        "bindingKey": ["data_source", "ds-trades"],
+    })
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+    src = orch.project(start_preview=False).workspace.path / "src" / "App.tsx"
+    before = src.read_text()
+    orch.project(start_preview=False).workspace.mark_untitled(True)
+
+    result = orch.confirm_handoff(tid, {"resources": True, "artifacts": True, "transcript": False})
+    assert result["ok"] is True
+    assert result["handoff"]["status"] == "bound"
+    ws = orch.project(start_preview=False).workspace
+    handoff_md = (ws.path / ".sage" / "handoff.md").read_text()
+    assert "trades" in handoff_md
+    assert "The plan is what to build" in handoff_md
+    assert not (ws.path / ".sage" / "handoff-transcript.md").exists()
+    bindings = ws.read_bindings()
+    assert any(b.get("id") == "ds-trades" for b in bindings)
+    assert src.read_text() == before
+    assert ws.is_untitled() is False
+
+    orch.confirm_handoff(tid, {"transcript": True})
+    assert (ws.path / ".sage" / "handoff-transcript.md").exists()
+
+
+def test_empty_plan_does_not_mark_planned(tmp_path: Path):
+    orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text="")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "build me a dashboard"))
+    with pytest.raises(ValueError, match="empty plan"):
+        orch.draft_handoff_plan(tid)
+    assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"

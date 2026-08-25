@@ -694,6 +694,19 @@ def test_approve_prompt_omits_answers_section_when_blank():
     assert "Open questions" not in _approve_prompt("## Plan\n1. do it", "   ")
 
 
+def test_approve_prompt_names_chat_handoff_as_background():
+    p = _approve_prompt("## Plan\n1. do it", "", handoff_note=(
+        "A Chat Thread produced the files under `examples/` and the digest in "
+        "`.sage/handoff.md`. The plan is what to build. The digest is background."
+    ))
+    assert "The plan is what to build" in p
+    assert "digest is background" in p
+
+
+def test_approve_prompt_omits_handoff_when_blank():
+    assert "handoff.md" not in _approve_prompt("## Plan\n1. do it", "")
+
+
 def test_archive_plan_moves_plan_out_of_live_view(tmp_path: Path):
     ws = Workspace(project_id="p", path=tmp_path)
     ws.write_plan("build a queue")

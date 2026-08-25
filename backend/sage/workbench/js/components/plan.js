@@ -72,7 +72,7 @@ window.SW = window.SW || {};
           Button,
           {
             size: 'small',
-            onClick: () => SW.store.set({ handoffPlanId: plan.id }),
+            onClick: () => SW.store.draftHandoffPlan(),
           },
           'Build this'
         ),
@@ -427,7 +427,7 @@ window.SW = window.SW || {};
                 {
                   type: 'primary',
                   icon: h(ArrowRightOutlined, null),
-                  onClick: () => SW.store.set({ handoffPlanId: plan.id }),
+                  onClick: () => SW.store.draftHandoffPlan(),
                 },
                 plan.appId ? 'Open in Builder' : 'Build this'
               )

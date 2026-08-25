@@ -872,13 +872,15 @@ def _tidy_plan(plan_md: str) -> str:
     return _drop_empty_questions(_drop_i_will_openers("\n\n".join(out)))
 
 
-def _approve_prompt(plan_md: str, answers: str) -> str:
+def _approve_prompt(plan_md: str, answers: str, *, handoff_note: str = "") -> str:
     """The Implement-turn prompt built from an approved plan (SPEC P6): the plan is fed in as
     context so the build turn constructs exactly what the user signed off on."""
     parts = ["The user approved this plan. Build the app it describes now — implement it, don't re-plan.",
              "", "## Approved plan", plan_md]
     if answers.strip():
         parts += ["", "## Answers to the open questions", answers.strip()]
+    if handoff_note.strip():
+        parts += ["", handoff_note.strip()]
     return "\n".join(parts)
 
 
@@ -1693,6 +1695,150 @@ class Orchestrator:
         except Exception:
             log.exception("handoff: detect failed")
             return None
+
+    def draft_handoff_plan(self, thread_id: str) -> dict:
+        """Write a digest, run sage-plan in the Build session, persist plan.md, open-sheet payload.
+
+        Idempotent once plan.md exists for this Thread. Does not teleport into Build."""
+        if not self._turn_lock.acquire(blocking=False):
+            raise RuntimeError("busy")
+        try:
+            return self._draft_handoff_plan(thread_id)
+        finally:
+            self._turn_lock.release()
+
+    def confirm_handoff(self, thread_id: str, include: dict | None = None) -> dict:
+        """Write the confirm files, upsert Bindings, mark bound. Does not run implement."""
+        if not self._turn_lock.acquire(blocking=False):
+            raise RuntimeError("busy")
+        try:
+            return self._confirm_handoff(thread_id, include or {})
+        finally:
+            self._turn_lock.release()
+
+    def _handoff_sheet_payload(self, store: ThreadStore, thread_id: str, project: Project,
+                               plan_md: str, handoff: dict) -> dict:
+        thread = store.get(thread_id) or {}
+        return {
+            "ok": True,
+            "threadId": thread_id,
+            "plan": plan_md,
+            "title": chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
+            "handoff": handoff,
+            "untitled": project.workspace.is_untitled(),
+            "artifacts": store.read_artifacts(thread_id),
+            "context": store.read_context(thread_id).get("items") or [],
+        }
+
+    def _draft_handoff_plan(self, thread_id: str) -> dict:
+        project = self.project(start_preview=False)
+        store = ThreadStore(project.workspace.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        existing = store.read_handoff(thread_id) or {}
+        plan_md = (project.workspace.read_plan() or "").strip()
+        if existing.get("status") in ("planned", "bound") and plan_md:
+            return self._handoff_sheet_payload(store, thread_id, project, plan_md, existing)
+
+        thread = store.get(thread_id) or {}
+        history = store.read_history(thread_id)
+        context = store.read_context(thread_id).get("items") or []
+        artifacts = store.read_artifacts(thread_id)
+        digest = chat_handoff.draft_digest(
+            title=thread.get("title") or "",
+            asked=chat_handoff.user_texts(history),
+            context=context,
+            artifacts=artifacts,
+        )
+        handoff_path = project.workspace.path / ".sage" / "handoff.md"
+        handoff_path.parent.mkdir(parents=True, exist_ok=True)
+        handoff_path.write_text(digest + "\n")
+
+        prompt = chat_handoff.plan_prompt(thread_id, digest)
+        plan_md = self._run_sage_plan(project, prompt)
+        if not plan_md:
+            raise ValueError("empty plan")
+        project.workspace.write_plan(plan_md)
+        project.workspace.append_history(
+            {"type": "plan-proposed", "plan": plan_md, "kind": "plan", "steps": 0})
+        project.workspace.append_history(
+            {"type": "done", "ok": True, "decision": "awaiting approval"})
+        handoff = store.mark_handoff_planned(thread_id)
+        self._flush_chat_save("plan", holding_turn=True)
+        return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
+
+    def _run_sage_plan(self, project: Project, prompt: str) -> str:
+        """sage-plan on the Build session. No typecheck. Read-only arming so src/ stays put."""
+        client = self._ensure_opencode()
+        sid = self._ensure_session(project)
+        project.active_session_id = sid
+        token = project.control.arm_read_only("plan")
+        try:
+            seen = self._seen_baseline(client, sid)
+            client.send_prompt(sid, prompt, agent="sage-plan")
+            client.wait_for_idle(sid)
+            parts: list[str] = []
+            for m in client.messages(sid):
+                if m.get("type") != "assistant":
+                    continue
+                for i, part in enumerate(m.get("content", [])):
+                    if _part_key(m, i, part) in seen:
+                        continue
+                    if part.get("type") == "text" and part.get("text"):
+                        parts.append(part["text"])
+            return _tidy_plan("\n".join(parts))
+        finally:
+            project.control.disarm_read_only(token)
+            project.active_session_id = None
+
+    def _confirm_handoff(self, thread_id: str, include: dict) -> dict:
+        project = self.project(start_preview=False)
+        store = ThreadStore(project.workspace.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        plan_md = (project.workspace.read_plan() or "").strip()
+        if not plan_md:
+            raise ValueError("no plan")
+        include_resources = include.get("resources", True)
+        include_artifacts = include.get("artifacts", True)
+        include_transcript = include.get("transcript", False)
+        context = store.read_context(thread_id).get("items") or []
+        artifacts = store.read_artifacts(thread_id)
+        thread = store.get(thread_id) or {}
+        digest = chat_handoff.confirm_digest(
+            chat_handoff.draft_digest(
+                title=thread.get("title") or "",
+                asked=chat_handoff.user_texts(store.read_history(thread_id)),
+                context=context if include_resources else [],
+                artifacts=artifacts if include_artifacts else [],
+            ),
+            artifacts=artifacts,
+            context=context,
+            include_artifacts=include_artifacts,
+            include_resources=include_resources,
+        )
+        (project.workspace.path / ".sage" / "handoff.md").write_text(digest)
+        transcript_path = project.workspace.path / ".sage" / "handoff-transcript.md"
+        if include_transcript:
+            transcript_path.write_text(chat_handoff.transcript_markdown(store.read_history(thread_id)))
+        else:
+            transcript_path.unlink(missing_ok=True)
+        if include_resources:
+            for item in context:
+                binding = chat_handoff.binding_from_context(item)
+                if binding is not None:
+                    self._record(binding)
+        if project.workspace.is_untitled():
+            project.workspace.mark_untitled(False)
+        handoff = store.mark_handoff_bound(thread_id)
+        self._flush_chat_save("handoff", holding_turn=True)
+        return {
+            "ok": True,
+            "threadId": thread_id,
+            "handoff": handoff,
+            "untitled": project.workspace.is_untitled(),
+            "title": chat_handoff.plan_title(plan_md),
+        }
 
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> str:
@@ -2932,8 +3078,10 @@ class Orchestrator:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text)
             else:
-                yield from self._build_stream(_approve_prompt(plan_md, answers), is_approval=True,
-                                              user_text=user_text, mode=run_as)
+                yield from self._build_stream(
+                    _approve_prompt(plan_md, answers,
+                                   handoff_note=chat_handoff.implement_note(project.workspace.path)),
+                    is_approval=True, user_text=user_text, mode=run_as)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs

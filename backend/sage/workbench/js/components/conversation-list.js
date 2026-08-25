@@ -34,6 +34,7 @@ window.SW = window.SW || {};
       items: [
         { key: 'pin', label: thread.pinned ? 'Unpin' : 'Pin to top', icon: h(PushpinOutlined, null) },
         { key: 'rename', label: 'Rename', icon: h(EditOutlined, null) },
+        { key: 'build', label: 'Open in Build' },
         { type: 'divider' },
         { key: 'delete', label: 'Delete', danger: true, icon: h(DeleteOutlined, null) },
       ],
@@ -42,6 +43,9 @@ window.SW = window.SW || {};
         if (key === 'pin') {
           await SW.api.patchThread(thread.id, { pinned: !thread.pinned });
           SW.store.reloadThreads();
+        }
+        if (key === 'build') {
+          await SW.store.draftHandoffPlan(thread.id);
         }
         if (key === 'rename') {
           let value = thread.title;
