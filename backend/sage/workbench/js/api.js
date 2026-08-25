@@ -220,6 +220,7 @@ SW.api = {
   history: () => request('/project/history'),
   bindings: () => request('/bindings'),
   buildState: () => request('/project/build/state'),
+  setBuildMode: (mode) => post('/project/model', { mode }),
   cancelPlan: () => post('/project/plan/cancel'),
   stopBuild: () => post('/project/build/stop'),
 

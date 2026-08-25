@@ -82,6 +82,11 @@ window.SW = window.SW || {};
     // Composer
     model: 'auto',
     phase: 'planning',
+    // Build agent mode (Auto / Ask / Plan / Implement). Distinct from the
+    // prototype model picker above. `buildMode` is the picker's standing
+    // choice; `buildTurnMode` is what the in-flight turn is pinned to.
+    buildMode: 'auto',
+    buildTurnMode: 'auto',
 
     // Build is the project's history.jsonl, not the Chat Thread. Chat ↔ Build
     // is turning your head: the Thread stays selected, this transcript is the app's.
@@ -104,6 +109,13 @@ window.SW = window.SW || {};
   // one conversation report different context in Chat and Build.
   function conversationId() {
     return (state.thread && state.thread.id) || null;
+  }
+
+  function applyModelStatus(status) {
+    const m = status && status.model;
+    if (!m) return;
+    state.buildMode = m.selected_mode || m.mode || state.buildMode;
+    state.buildTurnMode = m.mode || state.buildTurnMode;
   }
 
   function indexResources(groups) {
@@ -493,6 +505,19 @@ window.SW = window.SW || {};
     set(patch) {
       Object.assign(state, patch);
       notify();
+    },
+
+    async setBuildMode(mode) {
+      if (!['auto', 'ask', 'plan', 'implement'].includes(mode)) return;
+      state.buildMode = mode;
+      notify();
+      try {
+        const status = await SW.api.setBuildMode(mode);
+        applyModelStatus(status);
+        notify();
+      } catch (err) {
+        antd.message.error(String((err && err.message) || err));
+      }
     },
 
     async init() {
@@ -906,6 +931,7 @@ window.SW = window.SW || {};
     // the Chat Thread. History is `.sage/history.jsonl`.
     async sendBuildPrompt(text) {
       if (!text.trim() || state.buildRunning) return null;
+      state.buildTurnMode = state.buildMode;
       state.buildHistory = state.buildHistory.concat([{ type: 'user', text }]);
       state.buildMessages = buildHistoryToMessages(state.buildHistory);
       state.buildRunning = true;
@@ -996,7 +1022,8 @@ window.SW = window.SW || {};
     },
 
     async loadBuild(options = {}) {
-      await SW.api.project().catch(() => ({}));
+      const project = await SW.api.project().catch(() => ({}));
+      applyModelStatus(project);
       const [hist, running] = await Promise.all([
         SW.api.history().catch(() => ({ history: [] })),
         SW.api.buildState().catch(() => ({ running: false })),

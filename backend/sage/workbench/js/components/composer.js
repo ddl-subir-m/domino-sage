@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useRef } = React;
+  const { createElement: h, useState, useRef, useEffect } = React;
   const { Input, Button, Dropdown, Tag, Tooltip, Space } = antd;
   const { PlusOutlined, ArrowUpOutlined, DownOutlined, CloseOutlined } = icons;
 
@@ -14,6 +14,13 @@ window.SW = window.SW || {};
     { id: 'sovereign', label: 'Runs in your environment', detail: 'Llama 3.3 70B', sovereign: true },
   ];
 
+  const BUILD_MODES = [
+    { id: 'auto', label: 'Auto', detail: 'Sage picks plan or build per turn', key: '1' },
+    { id: 'ask', label: 'Ask', detail: 'Answers questions, never changes files', key: '2' },
+    { id: 'plan', label: 'Plan', detail: 'Writes a plan and waits for approval', key: '3' },
+    { id: 'implement', label: 'Implement', detail: 'Builds without a plan gate', key: '4' },
+  ];
+  const BUILD_MODE_LABEL = { auto: 'Auto', ask: 'Ask · read-only', plan: 'Plan', implement: 'Implement' };
   const PROJECT_MENTION_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive'];
 
   // Session context, then project Resources, then files — never a flat A–Z dump.
@@ -71,18 +78,21 @@ window.SW = window.SW || {};
   SW.Composer = function Composer({
     placeholder,
     onSend,
-    showPhase,
-    hidePhase,
+    showMode,
     autoFocus,
     disabled,
     compact,
   }) {
-    const { model, phase, attachments, scope, resourceIndex, resourceGroups } = SW.store.get();
+    const {
+      model, attachments, scope, resourceIndex, resourceGroups,
+      buildMode, buildTurnMode, buildRunning,
+    } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
     const [mention, setMention] = useState(null);
     const [cursor, setCursor] = useState(0);
     const [sendHint, setSendHint] = useState(false);
+    const [modeOpen, setModeOpen] = useState(false);
     const fileRef = useRef(null);
 
     const lock = SW.util.modelLockFor(attachments);
@@ -91,6 +101,20 @@ window.SW = window.SW || {};
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
     const suggestions = mention ? mentionCandidates(attachments, resourceGroups, mention.query) : [];
+    const activeBuildMode = BUILD_MODES.find((m) => m.id === buildMode) || BUILD_MODES[0];
+    const modeQueued = showMode && buildRunning && buildTurnMode && buildTurnMode !== buildMode;
+
+    useEffect(() => {
+      if (!modeOpen || !showMode) return undefined;
+      const onKey = (e) => {
+        if (e.key < '1' || e.key > '4') return;
+        e.preventDefault();
+        SW.store.setBuildMode(BUILD_MODES[+e.key - 1].id);
+        setModeOpen(false);
+      };
+      document.addEventListener('keydown', onKey);
+      return () => document.removeEventListener('keydown', onKey);
+    }, [modeOpen, showMode]);
 
     const send = () => {
       const value = text.trim();
@@ -155,12 +179,26 @@ window.SW = window.SW || {};
       onClick: ({ key }) => SW.store.set({ model: key }),
     };
 
-    const phaseMenu = {
-      items: [
-        { key: 'planning', label: 'Planning' },
-        { key: 'building', label: 'Building' },
-      ],
-      onClick: ({ key }) => SW.store.set({ phase: key }),
+    const modeMenu = {
+      selectedKeys: [activeBuildMode.id],
+      items: BUILD_MODES.map((option) => ({
+        key: option.id,
+        label: h(
+          'div',
+          { style: { minWidth: 220, display: 'flex', alignItems: 'flex-start', gap: 12 } },
+          h(
+            'div',
+            { style: { flex: 1 } },
+            h('div', { className: 'sw-model-option-name' }, option.label),
+            h('div', { className: 'sw-model-option-detail' }, option.detail)
+          ),
+          h('span', { className: 'sw-caption' }, option.key)
+        ),
+      })),
+      onClick: ({ key }) => {
+        SW.store.setBuildMode(key);
+        setModeOpen(false);
+      },
     };
 
     return h(
@@ -330,30 +368,41 @@ window.SW = window.SW || {};
           ),
           h('span', { className: 'sw-composer-bar-spacer' }),
 
-          hidePhase
-            ? null
-            : showPhase
-            ? h(
-                Dropdown,
-                { menu: phaseMenu, trigger: ['click'], placement: 'topRight' },
-                h(
-                  'button',
-                  { className: 'sw-phase-pill' },
-                  h('span', { className: 'sw-dot sw-dot-building' }),
-                  `Auto · ${phase}`,
+          showMode &&
+            h(
+              Dropdown,
+              {
+                menu: modeMenu,
+                trigger: ['click'],
+                placement: 'topRight',
+                open: modeOpen,
+                onOpenChange: setModeOpen,
+              },
+              h(
+                'button',
+                {
+                  className: `sw-phase-pill${activeBuildMode.id === 'ask' ? ' is-ask' : ''}`,
+                  type: 'button',
+                  'aria-label': 'Build mode',
+                  title: modeQueued
+                    ? `This turn is still ${BUILD_MODE_LABEL[buildTurnMode] || buildTurnMode}. Your pick applies to the next message.`
+                    : (activeBuildMode.id === 'ask'
+                      ? 'Ask mode answers questions and never changes files'
+                      : 'Mode'),
+                },
+                  h('span', {
+                    className:
+                      'sw-dot ' +
+                      (activeBuildMode.id === 'ask'
+                        ? 'sw-dot-ask'
+                        : activeBuildMode.id === 'implement'
+                        ? 'sw-dot-building'
+                        : 'sw-dot-draft'),
+                  }),
+                  BUILD_MODE_LABEL[activeBuildMode.id],
                   h(DownOutlined, { style: { fontSize: 9 } })
                 )
-              )
-            : h(
-                Tooltip,
-                { title: 'Phases apply in Builder' },
-                h(
-                  'button',
-                  { className: 'sw-phase-pill', disabled: true },
-                  h('span', { className: 'sw-dot sw-dot-draft' }),
-                  'Auto · planning'
-                )
-              ),
+            ),
 
           h(
             Tooltip,

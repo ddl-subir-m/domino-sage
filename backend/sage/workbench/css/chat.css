@@ -619,6 +619,13 @@
 }
 .sw-phase-pill:hover:not(:disabled) { border-color: var(--gray-400); color: var(--dark-700); }
 .sw-phase-pill:disabled { opacity: .55; cursor: default; }
+.sw-phase-pill.is-ask {
+  color: #8A7A00;
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--gray-300));
+  background: var(--warning-bg);
+}
+.sw-phase-pill.is-ask:hover { border-color: var(--warning); }
+.sw-dot-ask { background: var(--warning); }
 
 .sw-model-option-name { font-size: 13px; font-weight: 500; }
 .sw-model-option-detail { font-size: 11px; color: var(--gray-500); }

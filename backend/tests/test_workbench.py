@@ -41,3 +41,13 @@ def test_workbench_is_the_default_ui():
     assert composer.status_code == 200
     assert b"PROJECT_MENTION_KINDS" in composer.content
     assert b"In context" in composer.content
+    assert b"BUILD_MODES" in composer.content
+    assert b"setBuildMode" in composer.content
+    assert b"read-only" in composer.content
+    assert b"'ask'" in composer.content
+    assert b"'plan'" in composer.content
+    assert b"'implement'" in composer.content
+
+    assert b"showMode: true" in build.content
+    assert b"hidePhase" not in build.content
+    assert b"/project/model" in js.content

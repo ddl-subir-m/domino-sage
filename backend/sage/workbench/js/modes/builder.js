@@ -142,7 +142,7 @@ window.SW = window.SW || {};
                 onSend: (text) => SW.store.sendBuildPrompt(text),
                 placeholder: 'Describe a change, or ask about this app…',
                 disabled: buildRunning,
-                hidePhase: true,
+                showMode: true,
                 compact: true,
               })
             )
