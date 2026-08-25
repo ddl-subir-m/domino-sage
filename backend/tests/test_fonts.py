@@ -19,10 +19,9 @@ from fastapi.testclient import TestClient
 
 REPO = Path(__file__).resolve().parents[2]
 
-# Every entry page Sage ships: the builder, the hub, and the one that lands in dist/index.html of
+# Every entry page Sage ships: the Workbench, the hub, and the one that lands in dist/index.html of
 # every published app. The third is the one a customer's viewer loads, and the reason this matters.
 PAGES = [
-    REPO / "backend" / "sage" / "ui" / "index.html",
     REPO / "backend" / "sage" / "hub" / "ui" / "index.html",
     REPO / "backend" / "sage" / "workbench" / "index.html",
     REPO / "template" / "react-vite" / "index.html",

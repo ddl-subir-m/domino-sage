@@ -11,9 +11,8 @@ def test_workbench_is_the_default_ui():
     assert "//fonts.googleapis.com" not in r.text
     assert "./vendor/react.production.min.js" in r.text
 
-    builder = client.get("/builder")
-    assert builder.status_code == 200
-    assert "function " in builder.text
+    gone = client.get("/builder")
+    assert gone.status_code == 404
 
     js = client.get("/js/api.js")
     assert js.status_code == 200

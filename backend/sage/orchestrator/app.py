@@ -36,7 +36,6 @@ from starlette.staticfiles import StaticFiles
 
 _WB = Path(__file__).resolve().parents[1] / "workbench"
 _UI = _WB / "index.html"
-_BUILDER_UI = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
 from ..assets.provider import DEFAULT_SENSITIVITY_TAG, DominoAssetProvider, FakeAssetProvider
@@ -352,12 +351,6 @@ control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 def ui() -> FileResponse:
     """The Workbench shell (Chat / Build). no-store so the current HTML is always served."""
     return FileResponse(_UI, headers={"Cache-Control": "no-store"})
-
-
-@control_app.get("/builder")
-def builder_ui() -> FileResponse:
-    """The vanilla builder page. Workbench Build no longer embeds it; kept as a debug escape hatch."""
-    return FileResponse(_BUILDER_UI, headers={"Cache-Control": "no-store"})
 
 
 @control_app.get("/fonts/inter-latin-var.woff2")
