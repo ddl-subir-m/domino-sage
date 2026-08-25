@@ -9,9 +9,13 @@
 # Run INSIDE a Domino workspace, in the project that should own them. Auth and project come from
 # the workspace sidecar, so there is nothing to configure.
 #
-# COMMIT FIRST. A Model API deploys from a commit, not from the workspace disk. model_churn.py and
-# model_priority.py must be pushed before this runs — the inner script stops with the exact git
-# command if they are not.
+# COMMIT FIRST. A Model API deploys from a commit, not from the workspace disk. Both files under
+# model_apis/ must be pushed before this runs — the inner script stops with the exact git command
+# if they are not.
+#
+# Both deploy into a STANDARD Domino environment, not the project's selected one. The Sage Builder
+# image has no Flask, and Domino serves a synchronous Model API through Flask. create_model_api.sh
+# picks the environment; set ENVIRONMENT_NAME_MATCH or ENVIRONMENT_ID if it picks wrong.
 #
 # NOT read-only: this deploys compute and it costs money while it runs. Both delete commands are
 # printed at the end. Use them when the checks are done.
@@ -22,13 +26,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # Sequential, not parallel. The first build pulls the environment image and the second reuses it,
 # so running them one after the other costs little more than one build and keeps the output
 # readable when something fails.
-echo "=== 1/2  sage-probe-churn  (model_churn.py) ==="
-MODEL_NAME="${CHURN_NAME:-sage-probe-churn}" MODEL_FILE=model_churn.py MODEL_FUNC=predict \
+echo "=== 1/2  sage-probe-churn  (model_apis/churn.py) ==="
+MODEL_NAME="${CHURN_NAME:-sage-probe-churn}" MODEL_FILE=spikes/domino-probes/model_apis/churn.py MODEL_FUNC=predict \
   "$HERE/create_model_api.sh"
 
 echo
-echo "=== 2/2  sage-probe-priority  (model_priority.py) ==="
-MODEL_NAME="${PRIORITY_NAME:-sage-probe-priority}" MODEL_FILE=model_priority.py MODEL_FUNC=predict \
+echo "=== 2/2  sage-probe-priority  (model_apis/priority.py) ==="
+MODEL_NAME="${PRIORITY_NAME:-sage-probe-priority}" MODEL_FILE=spikes/domino-probes/model_apis/priority.py MODEL_FUNC=predict \
   "$HERE/create_model_api.sh"
 
 cat <<'EOF'

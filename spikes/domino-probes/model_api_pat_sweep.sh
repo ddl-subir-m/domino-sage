@@ -19,7 +19,7 @@
 set -u
 
 M=${MODEL_URL:-https://cloud-dogfood.domino.tech/models/6a8727f40ff0450030085fb3/latest/model}
-# Matches spikes/domino-probes/model.py — predict(score). Domino's own sample snippet sends
+# Matches spikes/domino-probes/model_apis/model.py — predict(score). Domino's own sample snippet sends
 # {"start":1,"stop":100} instead, which is BOILERPLATE rather than anything read off the deployed
 # function, so it 400s against a model that does not happen to take start and stop.
 D=${MODEL_BODY:-'{"data":{"score":0.9}}'}

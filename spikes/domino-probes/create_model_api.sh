@@ -13,7 +13,7 @@
 # The last line prints the one command that deletes it. Use it when the probe is done.
 #
 # Override any of these if the defaults are wrong:
-#   MODEL_NAME  MODEL_FILE  MODEL_FUNC  ENVIRONMENT_ID  HARDWARE_TIER_ID
+#   MODEL_NAME  MODEL_FILE  MODEL_FUNC  ENVIRONMENT_ID  ENVIRONMENT_NAME_MATCH  HARDWARE_TIER_ID
 set -eu
 
 command -v jq >/dev/null || { echo "FATAL: jq is required." >&2; exit 1; }
@@ -24,7 +24,7 @@ T="$(curl -sS -m 10 "${DOMINO_API_PROXY:-http://localhost:8899}/access-token" ||
 [ -n "$T" ] || { echo "FATAL: no sidecar token from \$DOMINO_API_PROXY/access-token" >&2; exit 1; }
 
 NAME="${MODEL_NAME:-sage-probe-model}"
-FILE="${MODEL_FILE:-model.py}"
+FILE="${MODEL_FILE:-spikes/domino-probes/model_apis/model.py}"
 FUNC="${MODEL_FUNC:-predict}"
 CODE_DIR="${DOMINO_WORKING_DIR:-/mnt/code}"
 
@@ -47,6 +47,7 @@ api() {
 # Deliberately trivial. This model exists to be CALLED, not to be right: the probe is about whether
 # a browser can reach it at all, so anything more would only add ways for the build to fail.
 if [ ! -f "$CODE_DIR/$FILE" ]; then
+  mkdir -p "$(dirname "$CODE_DIR/$FILE")"
   cat > "$CODE_DIR/$FILE" <<'PY'
 def predict(score=0.5):
     """One number in, one verdict out."""
@@ -70,8 +71,31 @@ if git -C "$CODE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 ###### 2. environment and hardware tier, resolved from the project
-ENV_ID="${ENVIRONMENT_ID:-$(api GET "/v4/projects/$P/useableEnvironments" | jq -r '.currentlySelectedEnvironment.id // empty')}"
-[ -n "$ENV_ID" ] || { echo "FATAL: could not resolve an environment. Set ENVIRONMENT_ID." >&2; exit 1; }
+# NOT the project's currently selected environment, which is what this used to take. In a Sage
+# project that is the Sage Builder image, and it carries Node, uv and the warm template but no
+# Flask. Domino serves a synchronous Model API through Flask, so that image builds for ten minutes
+# and then fails on an import the model file never mentions. Take a standard Domino environment
+# instead: it has the serving dependencies already, and this model needs nothing else.
+#
+# Order: an explicit ENVIRONMENT_ID, then the first unarchived useable environment whose name
+# matches ENVIRONMENT_NAME_MATCH, then the deployment's own default environment. If all three miss,
+# print the names rather than guess — a wrong id costs a build.
+ENVS_JSON="$(api GET "/v4/projects/$P/useableEnvironments")"
+ENV_ID="${ENVIRONMENT_ID:-}"
+if [ -z "$ENV_ID" ]; then
+  ENV_ID="$(printf '%s' "$ENVS_JSON" | jq -r --arg pat "${ENVIRONMENT_NAME_MATCH:-Domino Standard Environment}" \
+    '[.environments[]? | select(.archived != true) | select(.name | test($pat; "i"))] | .[0].id // empty')"
+fi
+[ -n "$ENV_ID" ] || ENV_ID="$(api GET "/v4/environments/defaultEnvironment" | jq -r '.id // empty')"
+if [ -z "$ENV_ID" ]; then
+  echo "FATAL: no environment matched. Set ENVIRONMENT_ID to one of these, or widen" >&2
+  echo "       ENVIRONMENT_NAME_MATCH. It must be an environment that has Flask:" >&2
+  printf '%s' "$ENVS_JSON" | jq -r '.environments[]? | select(.archived != true) | "  \(.id)  \(.name)"' >&2
+  exit 1
+fi
+ENV_NAME="$(printf '%s' "$ENVS_JSON" | jq -r --arg id "$ENV_ID" \
+  'first(.environments[]? | select(.id == $id) | .name) // "(not in this project'"'"'s list)"')"
+echo "environment: $ENV_NAME"
 
 # Cheapest tier wins. This model does arithmetic; paying for a GPU to answer the probe would be silly.
 HW_ID="${HARDWARE_TIER_ID:-$(api GET "/v4/projects/$P/hardwareTiers" \
