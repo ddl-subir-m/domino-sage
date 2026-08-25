@@ -38,7 +38,7 @@ _WB = Path(__file__).resolve().parents[1] / "workbench"
 _UI = _WB / "index.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
-from ..assets.provider import DEFAULT_SENSITIVITY_TAG, DominoAssetProvider, FakeAssetProvider
+from ..assets.provider import DominoAssetProvider, FakeAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_token, static_token
 from ..gateway.factory import build_gateway
@@ -259,7 +259,6 @@ orchestrator = Orchestrator(
     opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
     assets=_build_assets(),
     resources=_build_resources(),
-    sensitivity_tag=os.environ.get("SAGE_SENSITIVITY_TAG", DEFAULT_SENSITIVITY_TAG),
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
     control_plane=_build_control_plane(),
     domino_project_name=os.environ.get("DOMINO_PROJECT_NAME"),
@@ -507,13 +506,6 @@ async def set_model(request: Request) -> JSONResponse:
             return JSONResponse(status_code=400, content={"error": str(e)})
     if "catalog" in body:
         orchestrator.set_catalog(**(body.get("catalog") or {}))
-    if "lock" in body:
-        lock = bool(body["lock"])
-        project.control.set_manual_lock(lock)
-        if not lock:
-            # A single "Unlock" fully unlocks: also override the sticky asset-driven lock (the UI
-            # warns the user before this — the sovereign guarantee no longer holds for the session).
-            project.control.clear_asset_lock()
     return JSONResponse(content=project.status())
 
 
@@ -741,7 +733,6 @@ def reset_app() -> JSONResponse:
 def list_assets() -> dict:
     return {
         "assets": orchestrator.list_assets(),
-        "sensitivity_tag": orchestrator._sensitivity_tag,
         "default_dataset_id": orchestrator.default_dataset_id(),
     }
 
@@ -935,8 +926,8 @@ def sample_candidates() -> JSONResponse:
 async def share_samples(request: Request) -> JSONResponse:
     """Show the agent real rows from the tables the creator ticked.
 
-    The whole payload is the creator's decision — which tables, and whether the rows are sensitive.
-    An empty `tables` is not an error but the opposite choice: stop showing any.
+    The payload is the creator's decision — which tables. An empty `tables` is not an error but
+    the opposite choice: stop showing any.
 
     502 for a store that will not answer, as the cascade's routes do: the rows are the thing being
     asked for, so unlike a Binding there is nothing to record when they do not arrive.
@@ -949,7 +940,6 @@ async def share_samples(request: Request) -> JSONResponse:
             # sources still means the first one; a store this app has no Binding for is a 404.
             str(body.get("source") or ""),
             [str(t) for t in tables] if isinstance(tables, list) else [],
-            bool(body.get("sensitive")),
         ))
     except LookupError as e:
         return JSONResponse(status_code=404, content={"error": str(e) or (
@@ -963,8 +953,6 @@ async def share_samples(request: Request) -> JSONResponse:
 @control_app.delete("/api/project/samples")
 def stop_sharing_samples(source: str = "") -> JSONResponse:
     """Stop showing the agent rows from one Data Source, or from all of them when none is named.
-
-    Leaves the sovereign lock on — it is sticky, because the model has already seen what it has seen.
     """
     return JSONResponse(content=orchestrator.clear_sample_rows(source))
 
@@ -1027,25 +1015,23 @@ async def detach_file(request: Request) -> JSONResponse:
 @control_app.post("/api/project/upload")
 async def upload_file(request: Request) -> JSONResponse:
     # Raw-body upload (avoids a python-multipart dependency): the file bytes are the request body;
-    # the name, sensitivity, and optional target dataset ride in query params. One file per request.
+    # the name and optional target dataset ride in query params. One file per request.
     filename = request.query_params.get("name", "")
-    sensitive = request.query_params.get("sensitive", "").lower() in ("1", "true", "yes")
     dataset_id = request.query_params.get("dataset") or None
     data = await request.body()
     if not data:
         return JSONResponse(status_code=400, content={"error": "empty upload"})
     try:
-        return JSONResponse(content=orchestrator.upload_file(filename, data, sensitive, dataset_id))
+        return JSONResponse(content=orchestrator.upload_file(filename, data, dataset_id))
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid filename"})
-    except UploadUnavailable as e:
-        where = "sensitive" if e.sensitive else "default"
+    except UploadUnavailable:
         msg = (
             "The dataset you picked isn't mounted and writable in this workspace."
             if dataset_id
             else "No writable dataset is available to store uploads in this project."
         )
-        return JSONResponse(status_code=409, content={"error": msg, "target": where})
+        return JSONResponse(status_code=409, content={"error": msg})
     except AttachTooLarge as e:
         mb = e.cap / (1024 * 1024)
         return JSONResponse(

@@ -2,7 +2,7 @@
 
 A Project bundles: workspace (from the warm template), a Vite supervisor (live preview), a
 ModelControl (per-project switching state), and an EnforcementShim (routes model calls through
-the gateway with the sovereign override). Per D9 a container hosts exactly one project, bound to
+the gateway). Per D9 a container hosts exactly one project, bound to
 the Domino project's mounted volume and attached lazily on first use.
 
 Deep module, narrow interface: project / build / build_stream / shutdown.
@@ -26,7 +26,7 @@ import httpx
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane, PublishedApp
 
-from ..assets.provider import DEFAULT_SENSITIVITY_TAG, Asset, AssetProvider, FakeAssetProvider, is_sensitive
+from ..assets.provider import Asset, AssetProvider, FakeAssetProvider
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
@@ -85,7 +85,6 @@ from ..resources.provider import (
     Column,
     DataSource,
     FakeResourceProvider,
-    LlmAlias,
     ResourceProvider,
     ResourceUnavailable,
     alias_reasoning_efforts,
@@ -96,7 +95,6 @@ from ..resources.publish_guard import (
     PublishRefused,
     data_source_bindings,
     publish_problems,
-    vendor_model_problems,
     vendor_model_warning,
 )
 from ..router.model_control import ModelControl
@@ -165,13 +163,7 @@ class AttachTooLarge(Exception):
 
 
 class UploadUnavailable(Exception):
-    """No writable dataset is mounted to receive an upload. For a sensitive upload it means the
-    per-project sensitive dataset isn't mounted (provisioned at project creation — rebuild the
-    workspace); otherwise the project has no writable default dataset mount."""
-
-    def __init__(self, sensitive: bool) -> None:
-        self.sensitive = sensitive
-        super().__init__("sensitive" if sensitive else "default")
+    """No writable dataset is mounted to receive an upload."""
 
 
 class DataReferenced(Exception):
@@ -215,8 +207,8 @@ def _attach_dest(dataset_name: str, file_path: str) -> str:
     return PurePosix("public/data", _slug(dataset_name), *parts).as_posix()
 
 
-# Subfolders Sage writes uploaded bytes into: `uploads/` (non-sensitive) and `sensitive/` (a
-# sensitive upload into the shared default dataset, which we deliberately don't tag). Both are
+# Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept so a
+# file written by an older Sage can still be deleted as a Sage-managed upload. Both are
 # Sage-created, so both are safe to delete; a genuine pre-existing dataset file is neither.
 _SAGE_UPLOAD_PREFIXES = ("uploads/", "sensitive/")
 
@@ -1121,9 +1113,6 @@ class Project:
                 "picked_model": s.picked_model,
                 "chat_model": s.chat_model,
                 "reasoning_effort": s.reasoning_effort,
-                "sensitivity_locked": s.sensitivity_locked,
-                "asset_locked": self.control.asset_locked,
-                "manual_locked": self.control.manual_locked,
                 "catalog": {
                     "sovereign_plan": self.shim.catalog.sovereign_plan,
                     "sovereign_implement": self.shim.catalog.sovereign_implement,
@@ -1149,7 +1138,6 @@ class Orchestrator:
         feedback: FeedbackRunner | None = None,
         assets: AssetProvider | None = None,
         resources: ResourceProvider | None = None,
-        sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG,
         domino_project_id: str | None = None,
         control_plane: ControlPlane | None = None,
         domino_project_name: str | None = None,
@@ -1166,7 +1154,6 @@ class Orchestrator:
         self._catalog = catalog
         self._assets = assets or FakeAssetProvider()
         self._resources = resources or FakeResourceProvider()
-        self._sensitivity_tag = sensitivity_tag
         # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
         # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
         self._attach_max_bytes = _env_int("SAGE_ATTACH_MAX_BYTES", 500 * 1024 * 1024)
@@ -1258,7 +1245,6 @@ class Orchestrator:
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
         self._rehydrate_attached(self._project)
-        self._relock_for_samples(self._project)
         return self._project
 
     def set_chat_pick(self, model: str | None, effort: str | None) -> None:
@@ -1273,11 +1259,6 @@ class Orchestrator:
         caps = alias.get("capabilities") or []
         if caps and "embeddings" in caps and "chat" not in caps:
             raise ValueError(f"{model!r} is not a chat model")
-        if project.control.locked:
-            cat = project.shim.catalog
-            sovereign = {cat.sovereign_plan, cat.sovereign_implement, cat.sovereign_ask}
-            if model not in sovereign:
-                raise ValueError("sensitivity lock: pick a sovereign model")
         efforts = alias.get("reasoning_efforts") or []
         if effort in ("", None, "default"):
             effort = None
@@ -1308,20 +1289,6 @@ class Orchestrator:
         if naming.is_scratch_name(name, expected):
             workspace.mark_untitled(True)
 
-    def _relock_for_samples(self, project: Project) -> None:
-        """Re-fire the sovereign lock for shared sample rows, the way `_rehydrate_attached` does for a
-        sensitive attachment (#16).
-
-        The lock is sticky but in-memory, so an orchestrator restart would otherwise drop it while
-        the rows it was protecting are still sitting in the workspace for the agent to read. Read
-        from the samples file itself rather than a committed manifest, because that file is
-        gitignored — which also means a fresh clone has neither the rows nor the lock, and that is
-        the point of gitignoring them.
-        """
-        sensitive, samples = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
-        if sensitive and samples:
-            project.control.on_assets_changed([True])
-
     def _rehydrate_attached(self, project: Project) -> None:
         """Restore the attached-files list. The manifest (.sage/attachments.json) is the source of
         truth — it's committed, so it survives clones and orchestrator restarts (the in-memory list
@@ -1330,9 +1297,6 @@ class Orchestrator:
         entries = project.workspace.read_attachments()
         if entries:
             project.attached[:] = entries
-            # The sovereign lock is sticky but in-memory; re-fire it if any restored file is sensitive.
-            if any(e.get("sensitive") for e in entries):
-                project.control.on_assets_changed([True])
             return
         data_root = project.workspace.path / "public" / "data"
         if not data_root.is_dir():
@@ -1731,7 +1695,6 @@ class Orchestrator:
                 assistant=chat_handoff.last_assistant_text(store.read_history(thread_id)),
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
-                locked=project.control.snapshot().sensitivity_locked,
                 session=project.session_id,
                 version=project.shim.version,
             )
@@ -2417,7 +2380,6 @@ class Orchestrator:
                 prompt,
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
-                locked=project.control.snapshot().sensitivity_locked,
                 root=project.workspace.path,
                 session=project.session_id,
                 version=project.shim.version,
@@ -2887,7 +2849,7 @@ class Orchestrator:
             if gate and not agent_wrote():
                 plan_md = _tidy_plan("\n".join(plan_text_parts))
                 restore_mode()
-                # A weak planner (notably the small sovereign models a sensitivity lock forces) can
+                # A weak planner can finish this read-only turn without emitting any plan text —
                 # finish this read-only turn without emitting any plan text — leaving nothing to
                 # approve. Don't persist a blank plan or present an approve card that would build
                 # from an empty plan; report it as a failed planning turn, with the same diagnostics
@@ -3016,7 +2978,7 @@ class Orchestrator:
                         # resolve() routes to catalog.implement — the cheap coder that just wrote
                         # nothing. With the fallback on, pin the strong plan-tier model for the retry
                         # so a model capable of calling the edit tool drives it. Restored to the user's
-                        # own pick in restore_mode(); no-op under a sensitivity lock (sovereign forced).
+                        # own pick in restore_mode().
                         if strong_fallback and not escalated_pick and mode_now in (Mode.AUTO, Mode.IMPLEMENT):
                             project.control.pick(project.shim.catalog.plan)
                             escalated_pick = True
@@ -3562,25 +3524,9 @@ class Orchestrator:
             except Exception:
                 log.exception("publish: couldn't read the app's visibility")
                 visibility = None
-        problems = publish_problems(bindings, sources, visibility) + \
-            vendor_model_problems(recorded, self._aliases_for_guard(recorded))
+        problems = publish_problems(bindings, sources, visibility)
         if problems:
             raise PublishRefused(problems)
-
-    def _aliases_for_guard(self, recorded: list[Binding]) -> list[LlmAlias] | None:
-        """The Alias listing the vendor-model guard needs, or None when it could not be fetched.
-
-        Fetched only when there is a sensitive store to ask about, so an app that reads nothing
-        sensitive costs no gateway call and cannot be blocked by a gateway that is having a bad
-        minute. `vendor_model_problems` decides what None MEANS; this only decides whether to ask.
-        """
-        if not any(b.kind == KIND_DATA_SOURCE and b.sensitive for b in recorded):
-            return []
-        try:
-            return self._resources.list_llm_aliases()
-        except Exception:
-            log.exception("publish: couldn't list LLM Aliases to check where sensitive rows would go")
-            return None
 
     def stop(self) -> dict:
         """Stop THIS builder's workspace so it stops consuming compute. Saves in-progress work first
@@ -3667,7 +3613,6 @@ class Orchestrator:
                 "name": a.name,
                 "tags": a.tags,
                 "project": a.project,
-                "sensitive": is_sensitive(a, self._sensitivity_tag),
                 "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
             }
             for a in self._assets.list_datasets(self._domino_project_id)
@@ -3934,8 +3879,8 @@ class Orchestrator:
         ticked, the rail labels each store's row with what it is showing, and the builder's `@` menu
         offers every table, each labelled with the store it is inside.
 
-        `shared` and `sensitive` ride along for that reason — one read of two files answers all
-        three, where a request per store would mean one per row on every project open.
+        `shared` rides along for that reason — one read of two files answers all three, where a
+        request per store would mean one per row on every project open.
         """
         project = self.project()
         columns = parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH))
@@ -3943,8 +3888,7 @@ class Orchestrator:
         return [
             {"id": b.id, "name": b.name, "display_name": b.display_name, "scope": b.scope,
              "tables": list(dict.fromkeys(c.table for c in columns.get(b.id, []))),
-             "shared": [x.rows.table for x in shared if x.binding == b.id],
-             "sensitive": any(x.sensitive for x in shared if x.binding == b.id)}
+             "shared": [x.rows.table for x in shared if x.binding == b.id]}
             for b in parse_bindings(project.workspace.read_bindings()) if b.kind == KIND_DATA_SOURCE
         ]
 
@@ -3958,7 +3902,7 @@ class Orchestrator:
         binding = self._data_source_binding(project)
         sources = self.recorded_tables()
         if binding is None:
-            return {"bindable": False, "source": "", "tables": [], "shared": [], "sensitive": False,
+            return {"bindable": False, "source": "", "tables": [], "shared": [],
                     "sources": sources}
         first = next((s for s in sources if s["id"] == binding.id), None) or {}
         return {
@@ -3969,20 +3913,17 @@ class Orchestrator:
             # sources were bindable expects to find it.
             "tables": first.get("tables", []),
             "shared": first.get("shared", []),
-            "sensitive": bool(first.get("sensitive")),
             # Every bound source, for the picker, the rail and the builder's `@` menu. Same read —
             # a route per store would mean a request per row on every project open.
             "sources": sources,
         }
 
-    def share_sample_rows(self, source_id: str, tables: list[str], sensitive: bool,
+    def share_sample_rows(self, source_id: str, tables: list[str],
                           limit: int = 5) -> dict:
         """Show the agent a few real rows from the tables the creator picked (#16).
 
-        Every part of this is the creator's: whether to share at all, which tables, and whether the
-        rows are sensitive. Sage infers none of it — a rule that decided warehouse data is sensitive
-        would be Sage making a judgement about data it cannot see, and one that decided it is not
-        would be worse.
+        Every part of this is the creator's: whether to share at all, and which tables. Sage infers
+        none of it.
 
         Replaces rather than adds. The picker shows what is currently shared, so the list that comes
         back IS the choice, and a table unticked is a table the creator wants the agent to stop
@@ -3999,7 +3940,7 @@ class Orchestrator:
             return self.clear_sample_rows(source_id)
         source = self._data_source(binding.id)
         fresh = [
-            SharedSample(binding.id, sensitive,
+            SharedSample(binding.id,
                          self._resources.sample_rows(source, binding.database or "",
                                                      binding.schema or "", table, limit))
             for table in wanted
@@ -4010,12 +3951,9 @@ class Orchestrator:
         kept = [s for s in self._shared(project) if s.binding != binding.id]
         self._ensure_gitignored(project.workspace, SAMPLES_PATH)
         self._write_generated(project.workspace.path / SAMPLES_PATH, render_samples(kept + fresh))
-        self._stamp_sensitivity(project)
-        if sensitive:
-            project.control.on_assets_changed([True])   # the same sticky lock a sensitive upload fires
         self._write_app_data(project)
         self._rebaseline_turn(project)
-        return {"shared": [s.rows.table for s in fresh], "sensitive": bool(sensitive),
+        return {"shared": [s.rows.table for s in fresh],
                 "rows": sum(len(s.rows.rows) for s in fresh)}
 
     def clear_sample_rows(self, source_id: str = "") -> dict:
@@ -4024,10 +3962,6 @@ class Orchestrator:
         One source by default of the picker, which is opened from a store's own row: "stop showing
         these" there means that store's rows, not the ones chosen next to another store. No id clears
         the file, which is what a caller with no store in mind means.
-
-        Does NOT clear the sovereign lock, for the same reason detaching a sensitive file does not:
-        the lock is sticky because the model has already seen what it has seen, and unlocking is its
-        own deliberate act with its own warning.
         """
         project = self.project()
         path = project.workspace.path / SAMPLES_PATH
@@ -4036,49 +3970,13 @@ class Orchestrator:
             self._write_generated(path, render_samples(kept))
         else:
             path.unlink(missing_ok=True)
-        self._stamp_sensitivity(project)
         self._write_app_data(project)
         self._rebaseline_turn(project)
-        return {"shared": [s.rows.table for s in kept],
-                "sensitive": any(s.sensitive for s in kept), "rows": 0}
+        return {"shared": [s.rows.table for s in kept], "rows": 0}
 
     def _data_source_binding(self, project: Project) -> Binding | None:
         recorded = parse_bindings(project.workspace.read_bindings())
         return next((b for b in recorded if b.kind == KIND_DATA_SOURCE), None)
-
-    def _stamp_sensitivity(self, project: Project) -> None:
-        """Record on each Data Source Binding whether its rows are currently marked sensitive (#35).
-
-        The rows live in `.sage/samples.json`, gitignored on purpose. The hub publishes from the repo
-        and never sees a workspace, so without this it is the one route that cannot ask the question
-        the builder refuses on — a door beside a lock, which is the mistake #12 was careful not to
-        make. The judgement is one bool and belongs in the committed manifest; the rows do not, and
-        stay where they are.
-
-        Runs after every write to the samples file, so the flag tracks the current choice rather than
-        latching. Re-sharing without the tick clears it, which is a creator's only way to correct a
-        mis-click, and it is what the sovereign lock already does across a restart.
-
-        Edits the raw entries rather than round-tripping them through `Binding`, which would drop any
-        field a newer Sage wrote — the same reason `parse_bindings` keeps a kind it cannot render.
-        """
-        marked = {s.binding for s in self._shared(project) if s.sensitive}
-
-        def change(entries: list[dict]) -> list[dict]:
-            out = []
-            for entry in entries:
-                if isinstance(entry, dict) and str(entry.get("kind") or "") == KIND_DATA_SOURCE:
-                    entry = dict(entry)
-                    if str(entry.get("id") or "") in marked:
-                        entry["sensitive"] = True
-                    else:
-                        # Removed rather than written False, so an app whose rows were never
-                        # sensitive keeps the manifest it already had and shows no diff.
-                        entry.pop("sensitive", None)
-                out.append(entry)
-            return out
-
-        project.workspace.update_bindings(change)
 
     def _shared(self, project: Project) -> list[SharedSample]:
         """The rows currently shared, with every entry attributed to a Data Source Binding.
@@ -4087,14 +3985,14 @@ class Orchestrator:
         which is the one the picker read from when there was no other. Resolved here rather than in
         `parse_samples`, which has no Binding list to resolve it against.
         """
-        _, shared = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
+        shared = parse_samples(self._read_json(project.workspace.path / SAMPLES_PATH))
         first = self._data_source_binding(project)
         if first is None:
             return shared
         return [s if s.binding else replace(s, binding=first.id) for s in shared]
 
-    def _shared_samples(self, project: Project) -> tuple[bool, list[tuple[str, list[str]]]]:
-        """(is any of it sensitive, the shared tables per store) for the AGENTS.md region.
+    def _shared_samples(self, project: Project) -> list[tuple[str, list[str]]]:
+        """The shared tables per store, for the AGENTS.md region.
 
         Grouped in Binding order rather than in file order, so the section reads in the same order as
         the store sections above it.
@@ -4104,7 +4002,7 @@ class Orchestrator:
                     if b.kind == KIND_DATA_SOURCE]
         groups = [(b.display_name, [s.rows.table for s in shared if s.binding == b.id])
                   for b in bindings]
-        return any(s.sensitive for s in shared), [g for g in groups if g[1]]
+        return [g for g in groups if g[1]]
 
     def _binding_for(self, project: Project, source_id: str) -> Binding:
         """The Data Source Binding a request names, or the first one when it names none.
@@ -4363,7 +4261,7 @@ class Orchestrator:
     def attach_file(self, dataset_id: str, file_path: str) -> dict:
         """Symlink one dataset file into the workspace under public/data/ so OpenCode can @mention
         it and the (static) preview/published app can fetch it — no byte copy, the symlink points
-        at the live Domino mount. A sensitivity-tagged dataset still fires the sticky sovereign lock.
+        at the live Domino mount.
         Enforces a configurable total-size cap across all attached files."""
         project = self.project()
         asset = self._find_asset(dataset_id)
@@ -4374,7 +4272,6 @@ class Orchestrator:
             raise FileNotFoundError(file_path)
         rel = _attach_dest(asset.name, file_path)  # workspace-relative posix path
         already = next((e for e in project.attached if e["path"] == rel), None)
-        sensitive = is_sensitive(asset, self._sensitivity_tag)
         if already is None:
             size = src.stat().st_size
             total = sum(e["size"] for e in project.attached)
@@ -4388,16 +4285,15 @@ class Orchestrator:
             # source="dataset": bytes belong to a pre-existing dataset — delete must never remove them.
             project.attached.append(
                 {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel,
-                 "size": size, "sensitive": sensitive, "source": "dataset", "dataset_rel_path": file_path}
+                 "size": size, "source": "dataset", "dataset_rel_path": file_path}
             )
             self._ensure_gitignored(project.workspace, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
-        project.control.on_assets_changed([sensitive])  # sticky lock if sensitive
         size = next((e["size"] for e in project.attached if e["path"] == rel), 0)
         entry = next((e for e in project.attached if e["path"] == rel), {})
         return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size,
-                "sensitive": sensitive, "descriptor": entry.get("descriptor"),
+                "descriptor": entry.get("descriptor"),
                 "status": project.status()}
 
     def detach_file(self, path: str) -> dict:
@@ -4405,11 +4301,10 @@ class Orchestrator:
         with no dataset_id detach too) and forget it. Also deletes any standalone COPY of the file the
         agent leaked into the app tree (same basename under src/ etc.): once the entry leaves
         project.attached the commit backstop (_detect_leaks) stops covering it, so a leaked copy would
-        otherwise get staged into the next save — pushing the (possibly sensitive) bytes into git.
+        otherwise get staged into the next save — pushing the bytes into git.
         Inlined-into-code copies are left in place (deleting the source file would nuke app logic) and
         reported, alongside code that fetches the served path, as `refs` so the UI can warn and offer an
-        agent cleanup. Keeps the dataset bytes. Does NOT clear the sovereign lock even for a
-        sensitivity-tagged dataset — the asset-driven lock is sticky (ModelControl); unlock manually."""
+        agent cleanup. Keeps the dataset bytes."""
         project = self.project()
         if not path.startswith("public/data/"):
             raise ValueError(path)
@@ -4433,17 +4328,12 @@ class Orchestrator:
         still_used = sorted(set(usage["refs"] + [r for r in usage["copies"] if PurePosix(r).name != name]))
         return {"detached": path, "removed_copies": removed, "refs": still_used, "status": project.status()}
 
-    def upload_file(self, filename: str, data: bytes, sensitive: bool = False,
-                    dataset_id: str | None = None) -> dict:
+    def upload_file(self, filename: str, data: bytes, dataset_id: str | None = None) -> dict:
         """Write an uploaded file into a writable dataset mount (persisted, and outside git), then
-        attach it under public/data/ like any dataset file. Hybrid sensitivity:
+        attach it under public/data/ like any dataset file.
 
-        - No `dataset_id` -> the shared default project dataset. A sensitive upload goes to its
-          `sensitive/` subfolder and is recorded sensitive in the manifest (which drives the
-          sovereign lock); the dataset is NOT tagged (its non-sensitive data must stay unmarked).
-        - A picked `dataset_id` -> a real Domino tag. If the dataset is already tagged `sensitive`
-          the file is sensitive regardless; if it's untagged and the upload is marked sensitive we
-          tag the whole dataset (best-effort) so the tag governs it and every future attachment.
+        - No `dataset_id` -> the shared default project dataset, under `uploads/`.
+        - A picked `dataset_id` -> that dataset, also under `uploads/`.
 
         The committed manifest lets the published app rebuild public/data/ from the mount. Enforces
         the same total-size cap as attach."""
@@ -4451,14 +4341,14 @@ class Orchestrator:
         if not filename or not filename.strip():
             raise ValueError("filename required")
         name = _slug(filename)
-        target, effective_sensitive, subfolder = self._resolve_upload_target(sensitive, dataset_id)
+        target = self._resolve_upload_target(dataset_id)
         if target is None or not target.mount_path:
-            raise UploadUnavailable(sensitive)
+            raise UploadUnavailable()
         size = len(data)
         total = sum(e["size"] for e in project.attached)
         if total + size > self._attach_max_bytes:
             raise AttachTooLarge(self._attach_max_bytes, total, size)
-        rel_in_dataset = PurePosix(subfolder, name).as_posix()
+        rel_in_dataset = PurePosix("uploads", name).as_posix()
         dest_bytes = _safe_join(Path(target.mount_path), rel_in_dataset)
         rel = _attach_dest(target.name, rel_in_dataset)
         link = _safe_join(project.workspace.path, rel)   # resolved BEFORE any write, so a rejected
@@ -4466,9 +4356,9 @@ class Orchestrator:
         # The bytes land on the dataset mount, which is OUTSIDE git and outside the workspace, while
         # everything that RECORDS them (symlink, manifest, AGENTS.md) is inside it. A failure in
         # between therefore strands data on a shared mount with nothing pointing at it — invisible
-        # to detach/delete, and for a sensitive upload, unlocked. So the write is undone on any
-        # failure. `created` guards the one case we must not undo: overwriting a same-named
-        # re-upload already destroyed the old bytes, and deleting the file would compound that.
+        # to detach/delete. So the write is undone on any failure. `created` guards the one case we
+        # must not undo: overwriting a same-named re-upload already destroyed the old bytes, and
+        # deleting the file would compound that.
         created = not dest_bytes.exists()
         dest_bytes.write_bytes(data)
         try:
@@ -4479,7 +4369,7 @@ class Orchestrator:
             project.attached[:] = [e for e in project.attached if e["path"] != rel]
             project.attached.append(
                 {"dataset_id": target.id, "dataset": target.name, "file": rel_in_dataset, "path": rel,
-                 "size": size, "sensitive": effective_sensitive, "source": "upload",
+                 "size": size, "source": "upload",
                  "dataset_rel_path": rel_in_dataset}
             )
             self._ensure_gitignored(project.workspace, "public/data/")
@@ -4497,38 +4387,25 @@ class Orchestrator:
                 except OSError:
                     pass  # best effort — rollback must never mask the failure that caused it
             raise
-        if effective_sensitive:
-            project.control.on_assets_changed([True])  # sticky sovereign lock
         # descriptor rides the response so the Data panel can flag an image the agent can't see
         # immediately, instead of only after the next page load refetches the attachment list.
         entry = next((e for e in project.attached if e["path"] == rel), {})
         return {"uploaded": name, "dataset": target.name, "dataset_id": target.id, "path": rel,
-                "size": size, "sensitive": effective_sensitive,
+                "size": size,
                 "descriptor": entry.get("descriptor"), "status": project.status()}
 
-    def _resolve_upload_target(self, sensitive: bool, dataset_id: str | None) -> tuple[Asset | None, bool, str]:
-        """Resolve (target dataset, effective sensitivity, subfolder) for an upload.
-
-        Without a picked dataset the target is the shared default dataset and sensitivity uses the
-        `sensitive/` subfolder without tagging. With a picked dataset, sensitivity is tag-driven:
-        an already-tagged dataset forces sensitive; an untagged one gets tagged (best-effort) when
-        the upload is marked sensitive. Picked datasets always write to `uploads/`."""
+    def _resolve_upload_target(self, dataset_id: str | None) -> Asset | None:
+        """The dataset an upload writes into: a picked one if it is mounted and writable, else the
+        shared default project dataset."""
         if dataset_id:
             try:
                 target = self._find_asset(dataset_id)
             except LookupError:
-                return None, False, "uploads"
+                return None
             if not target.mount_path or not os.access(target.mount_path, os.W_OK):
-                return None, False, "uploads"
-            already = is_sensitive(target, self._sensitivity_tag)
-            effective = already or bool(sensitive)
-            if effective and not already:
-                self._tag_dataset_sensitive(target)  # best-effort governance tag
-            return target, effective, "uploads"
-        # Default (shared) project dataset: subfolder + manifest drive sensitivity, no tag.
-        target = self._default_dataset()
-        subfolder = "sensitive" if sensitive else "uploads"
-        return target, bool(sensitive), subfolder
+                return None
+            return target
+        return self._default_dataset()
 
     def default_dataset_id(self) -> str | None:
         """Id of the dataset uploads land in when the user doesn't pick one — lets the UI label and
@@ -4539,7 +4416,7 @@ class Orchestrator:
     def _default_dataset(self) -> Asset | None:
         """The shared default project dataset to write uploads into: a writable, mounted dataset,
         preferring the project's own (named after / owned by the project, mounted under /mnt/data),
-        falling back to the first writable non-sensitive dataset (covers the local fake harness)."""
+        falling back to the first writable dataset (covers the local fake harness)."""
         writable = [a for a in self._assets.list_datasets(self._domino_project_id)
                     if a.mount_path and os.access(a.mount_path, os.W_OK)]
         pname = self._domino_project_name
@@ -4550,21 +4427,7 @@ class Orchestrator:
             for a in writable:
                 if a.project == pname or a.name == pname:
                     return a
-        for a in writable:
-            if not is_sensitive(a, self._sensitivity_tag):
-                return a
         return writable[0] if writable else None
-
-    def _tag_dataset_sensitive(self, target: Asset) -> bool:
-        """Tag a picked dataset `sensitive` via the control plane (best-effort). Reuses the snapshot
-        id from the dataset's tag map when present, else lets the control plane fetch one. Returns
-        False (without raising) when there's no control plane or the tag write fails — the upload
-        still proceeds and the manifest carries the per-file sensitive flag."""
-        if self._control_plane is None:
-            log.warning("tag_dataset_sensitive skipped: no control plane (dataset %s)", target.id)
-            return False
-        snap = next(iter(target.tag_snapshots.values()), None) if target.tag_snapshots else None
-        return bool(self._control_plane.tag_dataset_sensitive(target.id, snapshot_id=snap))
 
     def delete_file(self, path: str) -> dict:
         """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the dataset mount,
@@ -4572,8 +4435,7 @@ class Orchestrator:
         `uploads/` folder, which Sage always created (whether attached as source=='upload' or later
         re-attached from the dataset browser as source=='dataset'). A genuine pre-existing dataset
         file (not under uploads/) is detach-only here; its bytes are the user's data and never
-        removed. Sensitivity is irrelevant to deletability — it only drives the sovereign lock.
-        The sovereign lock stays sticky."""
+        removed."""
         project = self.project()
         if not path.startswith("public/data/"):
             raise ValueError(path)
@@ -4731,7 +4593,7 @@ class Orchestrator:
 
     def _leaked_copy_paths(self, project: Project) -> list[str]:
         """Flat list of workspace-relative source files that are copies of attached data — passed to
-        commit_all(exclude=...) so the (possibly sensitive) bytes are never staged into a commit."""
+        commit_all(exclude=...) so the bytes are never staged into a commit."""
         return [f for _, files in self._detect_leaks(project) for f in files]
 
     def _attachment_bytes(self, project: Project, entry: dict) -> bytes | None:

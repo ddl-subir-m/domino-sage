@@ -62,8 +62,6 @@ UNLISTED_SOURCE = "unlisted-source"
 UNCHECKED_SOURCE = "unchecked-source"
 OPEN_APP = "open-visibility"
 UNCHECKED_APP = "unchecked-visibility"
-SENSITIVE_TO_VENDOR = "sensitive-rows-to-vendor-model"
-UNCHECKED_ALIAS = "unchecked-alias"
 
 
 @dataclass(frozen=True)
@@ -217,106 +215,38 @@ def _names(bindings: list[Binding]) -> str:
 
 
 # ---------------------------------------------------------------------------------------------
-# Where the rows go (#35)
+# Where the rows go
 #
 # A published app can read a store and call a language model in the same page load. The Alias it
-# calls may be a Hosted GenAI Endpoint inside Domino, or a vendor model outside it — and until this,
-# nothing looked. So `read the customer table, then summarise each row with @gpt-5.4` published
-# quietly, and sent warehouse rows to a vendor for every viewer on every load.
+# calls may be a Hosted GenAI Endpoint inside Domino, or a vendor model outside it. This does not
+# refuse that combination — the creator can publish past it — but `publish_check` says so, because
+# every viewer's page load sends what the app reads to that vendor.
 #
-# The judgement is the creator's own and Sage already asks for it. When they share sample rows they
-# say whether the rows are sensitive, and that answer already locks SAGE's conversation to sovereign
-# models (#16). It did nothing to the app Sage builds, which is the actual inconsistency: a creator
-# who ticked that box would reasonably assume it covered both. So the same answer now governs both.
-#
-#   sensitive rows + a model outside Domino   -> refuse, here
-#   rows nobody called sensitive + the same   -> say so, and let them publish (`vendor_model_warning`)
-#
-# Two things this deliberately does NOT do. It does not decide for itself that warehouse data is
-# sensitive — `share_sample_rows` says why, and a rule that guessed would be Sage judging data it
-# cannot see. And it does not fire for an app that binds an Alias and no store: a model call that
-# reads nothing re-exports nothing, which is the same line #12 draws.
-
-
-def vendor_model_problems(bindings: list[Binding], aliases: list[LlmAlias] | None) -> list[PublishProblem]:
-    """Every reason not to publish an app that would send sensitive rows to a model outside Domino.
-
-    Takes ALL the app's Bindings, not just the Data Source ones, because the question spans two
-    kinds. Answers `[]` for the ordinary app, and costs an Alias listing only when there is a
-    sensitive store to ask about — which is why the caller may pass `aliases=None` cheaply.
-
-    `aliases` is the listing the caller fetched, or `None` when it could not be fetched. `None`
-    refuses, for the reason a missing Data Source listing refuses: this function is only reached
-    because the creator called a store's rows sensitive, and "Sage could not check where they would
-    go" is not a reason to send them. The blast radius is narrow by construction — an app with no
-    sensitive store never reaches the fetch, so a gateway wobble cannot block an ordinary publish.
-    """
-    sensitive = _sensitive_sources(bindings)
-    alias_bindings = [b for b in bindings if b.kind == KIND_LLM_ALIAS]
-    if not sensitive or not alias_bindings:
-        return []
-    if aliases is None:
-        return [PublishProblem(UNCHECKED_ALIAS, (
-            f"Sage couldn't reach the LLM Gateway to check whether the models this app calls run "
-            f"inside Domino, and it won't publish an app that reads {_names(sensitive)} — whose rows "
-            f"you marked sensitive — without knowing that. Try publishing again in a moment."
-        ))]
-    problems = [_vendor_problem(b, sensitive, aliases) for b in alias_bindings]
-    return [p for p in problems if p is not None]
+# Silent for an app that binds an Alias and no store: a model call that reads nothing re-exports
+# nothing, which is the same line #12 draws.
 
 
 def vendor_model_warning(bindings: list[Binding], aliases: list[LlmAlias] | None) -> str | None:
-    """The sentence for a creator whose app sends store rows to a vendor model, when nothing has
-    said those rows are sensitive. `None` when there is nothing to say.
+    """The sentence for a creator whose app sends store rows to a vendor model. `None` when there
+    is nothing to say.
 
     Informs rather than refuses, and is therefore shaped like the broken-query check (#26, #27)
     rather than like a guard: it goes out on `publish_check`, and the creator publishes past it.
-    Silent whenever `vendor_model_problems` speaks, so a creator never reads a warning and a refusal
-    about the same two Resources.
 
-    Fails open in every direction — no Alias listing, no sentence. A hint one route skips is a missed
-    nudge; the refusal above is the thing that must not be skippable.
+    Fails open in every direction — no Alias listing, no sentence. A hint one route skips is a
+    missed nudge.
     """
     stores = [b for b in bindings if b.kind == KIND_DATA_SOURCE]
-    if not stores or _sensitive_sources(bindings) or aliases is None:
+    if not stores or aliases is None:
         return None
     outside = [b for b in bindings if b.kind == KIND_LLM_ALIAS and _is_vendor(b, aliases)]
     if not outside:
         return None
     return (
         f"This app reads {_names(stores)} and sends what it reads to {_alias_names(outside)}, which "
-        f"runs outside Domino. Every viewer's page load does it. If those rows shouldn't leave, share "
-        f"sample rows from the store and mark them sensitive — Sage will then refuse this publish — "
-        f"or bind an Alias whose model is hosted in Domino."
+        f"runs outside Domino. Every viewer's page load does it. Bind an Alias whose model is hosted "
+        f"in Domino if those rows shouldn't leave."
     )
-
-
-def _sensitive_sources(bindings: list[Binding]) -> list[Binding]:
-    """The bound Data Sources whose rows the creator called sensitive."""
-    return [b for b in bindings if b.kind == KIND_DATA_SOURCE and b.sensitive]
-
-
-def _vendor_problem(b: Binding, sensitive: list[Binding], aliases: list[LlmAlias]) -> PublishProblem | None:
-    """What is wrong with publishing one Alias Binding beside sensitive rows, or None when nothing is."""
-    alias = next((a for a in aliases if a.id == b.id), None) or next((a for a in aliases if a.name == b.name), None)
-    if alias is None:
-        # Same reading as UNLISTED_SOURCE: an Alias that is not in the listing is one Sage cannot say
-        # anything about, and "cannot tell" is not "hosted in Domino".
-        return PublishProblem(UNCHECKED_ALIAS, (
-            f"This app is recorded as calling {b.display_name}, which isn't in the LLM Aliases you "
-            f"have a grant for, so Sage can't tell whether it runs inside Domino. This app also reads "
-            f"{_names(sensitive)}, whose rows you marked sensitive. Check the Alias in the LLM "
-            f"Gateway, or remove it from this app's Resources, and publish again."
-        ), b.kind, b.id)
-    if alias.endpoint_url:
-        return None
-    return PublishProblem(SENSITIVE_TO_VENDOR, (
-        f"This app reads {_names(sensitive)}, whose rows you marked sensitive, and calls "
-        f"{b.display_name}, which runs outside Domino rather than on a Hosted GenAI Endpoint. "
-        f"Publishing this would send those rows to that vendor for every viewer. Bind an Alias whose "
-        f"model is hosted in Domino, or re-share the rows without marking them sensitive if they can "
-        f"leave, and publish again."
-    ), b.kind, b.id)
 
 
 def _is_vendor(b: Binding, aliases: list[LlmAlias]) -> bool:
@@ -324,7 +254,7 @@ def _is_vendor(b: Binding, aliases: list[LlmAlias]) -> bool:
 
     `endpoint_url` is the discriminator `preflight.endpoint_status` already reads: an Alias without
     one is a vendor model. An Alias missing from the listing is NOT counted here — the warning path
-    fails open, and the refusal path above is where an unanswerable Alias costs something.
+    fails open.
     """
     alias = next((a for a in aliases if a.id == b.id), None) or next((a for a in aliases if a.name == b.name), None)
     return alias is not None and not alias.endpoint_url

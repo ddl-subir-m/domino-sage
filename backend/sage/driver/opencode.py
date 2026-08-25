@@ -131,7 +131,7 @@ class OpenCodeClient:
                 f"Do NOT hardcode, paste, or copy any sample values into the app as its data — the "
                 f"descriptor is a summary and the real file has far more. The built app MUST load the "
                 f"FULL file at runtime by fetching its served URL (see the 'Attached data' section in "
-                f"AGENTS.md). Never copy a file into src/ — that leaks possibly-sensitive data into "
+                f"AGENTS.md). Never copy a file into src/ — that leaks data into "
                 f"git; public/data/ is gitignored on purpose:\n\n{listing}")
         body: dict = {"prompt": {"text": text}}
         images = [{"uri": a["image_uri"], "name": a["name"]}

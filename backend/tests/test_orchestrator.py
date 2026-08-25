@@ -93,15 +93,7 @@ def test_attach_file_symlinks_live_bytes_into_public_data(tmp_path: Path):
     assert "public/data/sales_2026/train.csv" in (ws / "AGENTS.md").read_text()
 
 
-def test_attaching_sensitive_dataset_file_locks_sovereign(tmp_path: Path):
-    orch = _orch(tmp_path)
-    orch.project(start_preview=False)  # memoize without Vite
-    res = orch.attach_file(_dataset(orch, "customer_pii"), "customers.csv")
-    assert res["sensitive"] is True
-    assert orch.project().control.locked
-
-
-def test_detach_removes_symlink_but_keeps_sticky_lock(tmp_path: Path):
+def test_detach_removes_symlink_and_clears_the_attachment(tmp_path: Path):
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
     ds = _dataset(orch, "customer_pii")
@@ -112,7 +104,6 @@ def test_detach_removes_symlink_but_keeps_sticky_lock(tmp_path: Path):
     orch.detach_file("public/data/customer_pii/customers.csv")
     assert not link.exists()
     assert orch.project().attached == []
-    assert orch.project().control.locked           # sticky: detach does not unlock
     assert "customer_pii" not in (ws / "AGENTS.md").read_text()
 
 

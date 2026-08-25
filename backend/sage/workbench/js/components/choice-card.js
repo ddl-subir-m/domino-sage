@@ -64,8 +64,7 @@ window.SW = window.SW || {};
         { className: 'sw-result-head' },
         h('span', { className: 'sw-res-icon' }, SW.util.iconFor(resource.kind)),
         h('span', { className: 'sw-result-name' }, resource.name),
-        h(SW.ProvenanceBadge, { addedBy: 'sage', rationale: reason }),
-        h(SW.SensitivityTag, { level: resource.sensitivity, short: true })
+        h(SW.ProvenanceBadge, { addedBy: 'sage', rationale: reason })
       ),
       h('div', { className: 'sw-result-reason' }, reason),
       h(

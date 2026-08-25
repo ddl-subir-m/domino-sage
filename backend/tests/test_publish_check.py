@@ -459,7 +459,7 @@ def test_the_two_routes_say_the_same_thing_about_where_the_rows_go(tmp_path: Pat
 
     assert from_the_hub == from_the_rail
     assert "outside Domino" in from_the_hub["models"]
-    # And it stays a warning: the app publishes past it, because nothing said the rows were sensitive.
+    # And it stays a warning: the app publishes past it.
     assert not from_the_hub["queries"]
 
 

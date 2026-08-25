@@ -107,7 +107,7 @@ Do not invent a builder agent. Map onto what exists:
 
 Extra prompt context on the first implement turn (and on the plan turn if plan was not drafted yet): the contents of `.sage/handoff.md` and a directory listing of `examples/<threadId>/`. Implement is still bound by `template/react-vite/AGENTS.md` — it builds the app in `src/`, and may copy an example into the app if the plan says so. It must not treat Chat history as a spec; `AGENTS.md` already says `.sage/history.md` is a past record and `.sage/plan.md` is live intent. Add one line to the implement prompt (only for a turn that has `handoff.md`): "A Chat Thread produced the files under `examples/` and the digest in `.sage/handoff.md`. The plan is what to build. The digest is background."
 
-Phased builds (`plan_steps.py`) stay as they are. First-build gate stays as it is. Sensitivity lock stays as it is: if a Binding recorded `sensitive: true` (or samples were marked sensitive), ModelControl already locks.
+Phased builds (`plan_steps.py`) stay as they are. First-build gate stays as it is.
 
 ## 6. `handoff.json` states
 

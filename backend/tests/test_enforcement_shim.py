@@ -1,7 +1,8 @@
 """Integration tests for the enforcement shim against the FakeGatewayClient (DESIGN.md Seam 2).
 
-Proves the policy half of the guarantee without a network: model override under lock + mandatory
-tagging. The containment half (egress allowlist) is an infra test, not here (Step 1.4).
+Proves the policy half of the guarantee without a network: the shim overwrites `model` with
+the router decision and tags every request. The containment half (egress allowlist) is an infra
+test, not here (Step 1.4).
 """
 from __future__ import annotations
 
@@ -26,26 +27,12 @@ def _shim(control: ModelControl, gw: FakeGatewayClient) -> EnforcementShim:
     return EnforcementShim(control, CATALOG, gw)
 
 
-def test_override_forces_sovereign_when_locked():
-    control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
-    control.pick("strong-vendor")
-    control.on_assets_changed([True])  # sensitivity-tagged asset attached
-    gw = FakeGatewayClient()
-
-    list(_shim(control, gw).handle({"model": "strong-vendor", "messages": []}, project="p1"))
-
-    sent_request, labels = gw.seen[-1]
-    assert sent_request["model"] == "sovereign-8b"  # caller's model was overridden
-    assert labels.mode == "sovereign"  # asset lock is surfaced as the sovereign cost dimension
-
-
-def test_router_overrides_the_caller_model_when_unlocked():
-    """The shape of every real request: nothing locked, and OpenCode sending its configured model.
+def test_router_overrides_the_caller_model():
+    """The shape of every real request: OpenCode sending its configured model.
 
     This is the case that used to slip through. The override was conditional on `decision.locked or
     force_model or "model" not in request`, and in domino mode all three are false — so the router
-    ran, logged its decision, and the caller's model went upstream untouched. Both older tests
-    happened to dodge it: one is the locked case, the other omits `model` entirely. Sending a model
+    ran, logged its decision, and the caller's model went upstream untouched. Sending a model
     the router disagrees with is what pins the guarantee.
     """
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
@@ -84,29 +71,6 @@ def test_auto_mode_classifies_phase_per_request():
     sent_request, labels = gw.seen[-1]
     assert labels.phase == "implement"
     assert sent_request["model"] == "cheap-vendor"  # catalog.implement
-
-
-def test_sticky_lock_survives_detach():
-    control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
-    control.on_assets_changed([True])   # attach tagged
-    control.on_assets_changed([False])  # detach: must NOT clear the lock
-    gw = FakeGatewayClient()
-
-    list(_shim(control, gw).handle({"model": "strong-vendor", "messages": []}, project="p1"))
-
-    assert gw.seen[-1][0]["model"] == "sovereign-8b"
-
-
-def test_user_can_override_asset_lock():
-    # The sticky asset lock is user-removable (with a UI warning); once cleared, routing is no
-    # longer forced to sovereign — until another sensitivity-tagged asset is attached.
-    control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
-    control.on_assets_changed([True])   # sensitivity-tagged asset attached -> locked
-    assert control.locked
-    control.clear_asset_lock()          # user override
-    assert not control.locked
-    control.on_assets_changed([True])   # attaching another sensitive asset re-locks
-    assert control.locked
 
 
 def test_ask_mode_strips_write_tools_from_request():
@@ -504,19 +468,6 @@ def test_chat_pick_and_effort_go_to_the_gateway():
     control.disarm_chat(token)
 
 
-def test_chat_effort_is_dropped_when_the_lock_reroutes():
-    control = ModelControl()
-    control.pick_chat("gpt-5.4", "high")
-    control.on_assets_changed([True])
-    token = control.arm_chat("thr_1")
-    gw = FakeGatewayClient()
-    list(_shim(control, gw).handle({"model": "gpt-5.4", "messages": []}, project="p"))
-    sent = gw.seen[-1][0]
-    assert sent["model"] == "sovereign-8b"
-    assert "reasoning_effort" not in sent
-    control.disarm_chat(token)
-
-
 def test_chat_auto_uses_the_plan_model_not_the_build_mode():
     control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
     token = control.arm_chat("thr_1")
@@ -535,16 +486,6 @@ def test_chat_auto_does_not_run_the_build_phase_classifier():
     list(_shim(control, gw).handle({"messages": messages}, project="p"))
     assert gw.seen[-1][0]["model"] == "strong-vendor"
     control.disarm_chat(token)
-
-
-def test_ask_mode_respects_locked_sovereign_ask():
-    control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
-    control.on_assets_changed([True])  # sensitivity-tagged asset attached
-    gw = FakeGatewayClient()
-
-    list(_shim(control, gw).handle({"model": "ask-vendor", "messages": []}, project="p"))
-
-    assert gw.seen[-1][0]["model"] == "sovereign-8b"
 
 
 # --- the turn-mode pin -------------------------------------------------------------------------
@@ -663,19 +604,6 @@ def test_the_rescued_step_is_told_why_it_was_called_in():
     assert note["role"] == "system"
     assert "[sage]" in note["content"]
     assert not any(m.get("role") == "user" for m in sent["messages"][len(_RESCUE_MESSAGES):])
-
-
-def test_a_rescue_can_never_reach_a_vendor_model_under_lock():
-    # THE guarantee. Same failing history, but sensitivity-locked: the shim skips the scorer, and
-    # resolve() would map PLAN to a sovereign model even if it hadn't. Either way the vendor plan
-    # model must be unreachable — a rescue is a cost/quality feature and must never widen egress.
-    control = ModelControl(mode=Mode.AUTO)
-    control.on_assets_changed([True])  # sensitivity-tagged asset attached -> locked
-    sent, labels = _handled(control, _RESCUE_MESSAGES)
-    assert sent["model"] == "sovereign-8b"
-    assert sent["model"] != CATALOG.plan
-    assert labels.mode == "sovereign"
-    assert labels.route_reason is None  # nothing was rescued, so nothing to price
 
 
 def test_a_clean_turn_still_routes_on_the_write_flip():

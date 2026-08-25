@@ -42,7 +42,6 @@ def _ask(gateway, user="put this on a dashboard colleagues can open", **kw):
         assistant="Here is notional by desk.",
         gateway=gateway,
         catalog=CATALOG,
-        locked=False,
         **kw,
     )
 

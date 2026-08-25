@@ -28,14 +28,11 @@ from sage.resources.provider import DataSource, FakeResourceProvider, LlmAlias
 from sage.resources.publish_guard import (
     INDIVIDUAL_CREDENTIAL,
     OPEN_APP,
-    SENSITIVE_TO_VENDOR,
-    UNCHECKED_ALIAS,
     UNCHECKED_APP,
     UNCHECKED_SOURCE,
     UNLISTED_SOURCE,
     PublishRefused,
     publish_problems,
-    vendor_model_problems,
     vendor_model_warning,
 )
 from sage.router.models import ModelCatalog
@@ -311,143 +308,78 @@ def test_the_hub_leaves_an_llm_alias_binding_alone(tmp_path: Path):
     assert _hub(tmp_path, cp, repo).publish_app(ref.id)["published"] is True
 
 
-# --- Where the rows go (#35) -------------------------------------------------------------------
+# --- Where the rows go -------------------------------------------------------------------------
 #
 # A published app can read a store and call a model in one page load, and the model may be a vendor's
-# rather than one hosted in Domino. The creator has already answered the only question that matters —
-# they said whether the rows were sensitive when they shared samples — and until this that answer
-# governed Sage's own conversation and nothing about the app Sage built.
-#
-# The pairs worth pinning are the asymmetries, as above: a store nobody called sensitive WARNS and
-# must not refuse, an unreachable Alias listing REFUSES beside sensitive rows and must not warn, and
-# an app that binds a model but reads no store must gain nothing at all.
+# rather than one hosted in Domino. That combination warns on publish_check and does not refuse.
 
 HOSTED = LlmAlias("f-qwen25", "qwen-2-5", "Qwen 2.5 (Domino-hosted)",
                   endpoint_url="https://apps.example.domino.tech/qwen/v1")
 VENDOR = LlmAlias("f-gpt54", "gpt-5.4", "gpt-5.4")
 ALIASES = [VENDOR, HOSTED]
 
-SENSITIVE_BINDING = Binding(KIND_DATA_SOURCE, "ds-dwh", "ANALYTICS", "MARTS", sensitive=True)
 VENDOR_BINDING = Binding(KIND_LLM_ALIAS, "f-gpt54", "gpt-5.4", "gpt-5.4")
 HOSTED_BINDING = Binding(KIND_LLM_ALIAS, "f-qwen25", "qwen-2-5", "Qwen 2.5 (Domino-hosted)")
 
 
-def test_sensitive_rows_and_a_vendor_model_refuse_and_name_both():
-    problems = vendor_model_problems([SENSITIVE_BINDING, VENDOR_BINDING], ALIASES)
-
-    assert [p.reason for p in problems] == [SENSITIVE_TO_VENDOR]
-    # A refusal a creator can act on names the two Resources that caused it, not the rule.
-    assert "MARTS" in problems[0].message and "gpt-5.4" in problems[0].message
-    assert problems[0].id == "f-gpt54"
-
-
-def test_sensitive_rows_and_a_domino_hosted_model_publish():
-    # The whole point of the choice. Option C refuses a destination, not a capability: an app that
-    # reasons over sensitive rows inside Domino is exactly what the LLM Gateway is for.
-    assert vendor_model_problems([SENSITIVE_BINDING, HOSTED_BINDING], ALIASES) == []
-
-
-def test_rows_nobody_called_sensitive_warn_and_do_not_refuse():
+def test_a_store_and_a_vendor_model_warn_and_do_not_refuse():
     bindings = [SHARED_BINDING, VENDOR_BINDING]
 
-    assert vendor_model_problems(bindings, ALIASES) == []
     warning = vendor_model_warning(bindings, ALIASES)
     assert warning and "gpt-5.4" in warning and "outside Domino" in warning
+    assert "mark them sensitive" not in warning
 
 
-def test_the_warning_is_silent_whenever_the_refusal_speaks():
-    # One pair of Resources produces one sentence. A creator who is being refused must not also read
-    # a warning inviting them to publish past it.
-    bindings = [SENSITIVE_BINDING, VENDOR_BINDING]
-
-    assert vendor_model_problems(bindings, ALIASES) != []
-    assert vendor_model_warning(bindings, ALIASES) is None
+def test_a_store_and_a_domino_hosted_model_say_nothing():
+    assert vendor_model_warning([SHARED_BINDING, HOSTED_BINDING], ALIASES) is None
 
 
-def test_an_alias_listing_sage_could_not_read_refuses_beside_sensitive_rows():
-    # Fails CLOSED, like an unreadable Data Source listing and unlike an unreadable visibility. The
-    # creator called these rows sensitive; "Sage could not check where they would go" is not a reason
-    # to send them.
-    problems = vendor_model_problems([SENSITIVE_BINDING, VENDOR_BINDING], None)
-
-    assert [p.reason for p in problems] == [UNCHECKED_ALIAS]
-
-
-def test_an_alias_listing_sage_could_not_read_says_nothing_when_no_rows_are_sensitive():
-    # And fails OPEN on the same unknown, because this is the hint rather than the guard. Do not
-    # symmetrise these two: a refusal one route skips is a hole, a hint one route skips is a nudge.
+def test_an_alias_listing_sage_could_not_read_says_nothing():
+    # Fails OPEN: this is a hint, not a guard.
     assert vendor_model_warning([SHARED_BINDING, VENDOR_BINDING], None) is None
-
-
-def test_an_alias_that_is_not_in_the_listing_refuses_rather_than_reads_as_hosted():
-    gone = Binding(KIND_LLM_ALIAS, "f-retired", "retired-model", "retired-model")
-
-    problems = vendor_model_problems([SENSITIVE_BINDING, gone], ALIASES)
-
-    assert [p.reason for p in problems] == [UNCHECKED_ALIAS]
 
 
 def test_an_app_that_calls_a_vendor_model_and_reads_no_store_gains_nothing():
     # The line #12 already draws. A model call that reads nothing re-exports nothing, so binding an
     # Alias on its own must cost a publish exactly what it cost before.
-    assert vendor_model_problems([VENDOR_BINDING], ALIASES) == []
     assert vendor_model_warning([VENDOR_BINDING], ALIASES) is None
 
 
-def test_every_vendor_model_beside_sensitive_rows_is_named_at_once():
-    # The reason PublishRefused carries every problem: a creator who removes the one Alias they were
-    # told about and is then told about the next has been made to discover their own app one refusal
-    # at a time.
-    second = Binding(KIND_LLM_ALIAS, "f-sonnet", "sonnet", "Claude Sonnet 4.6")
-
-    problems = vendor_model_problems([SENSITIVE_BINDING, VENDOR_BINDING, second],
-                                     [*ALIASES, LlmAlias("f-sonnet", "sonnet", "Claude Sonnet 4.6")])
-
-    assert [p.id for p in problems] == ["f-gpt54", "f-sonnet"]
-
-
-def test_the_builder_refuses_sensitive_rows_bound_to_a_vendor_model_and_deploys_nothing(tmp_path: Path):
+def test_the_builder_publishes_a_store_bound_to_a_vendor_model(tmp_path: Path):
     cp = FakeControlPlane()
     orch = _orch(tmp_path, cp, resources=FakeResourceProvider(data_sources=list(SOURCES),
                                                              aliases=list(ALIASES)))
     orch.bind_data_source("ds-dwh", "ANALYTICS", "MARTS")
     orch.bind_llm_alias("f-gpt54")
-    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"], sensitive=True)
+    orch.share_sample_rows("ds-dwh", ["FCT_USAGE_DAILY"])
 
-    with pytest.raises(PublishRefused) as ei:
-        orch.publish()
+    orch.publish()
 
-    assert [p.reason for p in ei.value.problems] == [SENSITIVE_TO_VENDOR]
-    assert not cp.published
+    assert cp.published
 
 
-def test_the_hub_refuses_the_same_app_the_builder_refuses(tmp_path: Path):
-    # The door beside the lock. The hub publishes from the repo and never sees `.sage/samples.json`,
-    # so this passes only because the creator's judgement rides in the committed Bindings manifest.
+def test_the_hub_publishes_the_same_app_the_builder_publishes(tmp_path: Path):
     cp = FakeControlPlane()
     ref = cp.create_project("Sales App", git_url=_GIT_URL)
     repo = _repo_with([
         {"kind": KIND_DATA_SOURCE, "id": "ds-dwh", "name": "Snowflake-Data-Warehouse",
-         "display_name": "Snowflake-Data-Warehouse", "database": "ANALYTICS", "schema": "MARTS",
-         "sensitive": True},
+         "display_name": "Snowflake-Data-Warehouse", "database": "ANALYTICS", "schema": "MARTS"},
         {"kind": KIND_LLM_ALIAS, "id": "f-gpt54", "name": "gpt-5.4", "display_name": "gpt-5.4"},
     ])
     hub = _hub(tmp_path, cp, repo, resources=FakeResourceProvider(data_sources=list(SOURCES),
                                                                  aliases=list(ALIASES)))
 
-    with pytest.raises(PublishRefused) as ei:
-        hub.publish_app(ref.id)
-
-    assert [p.reason for p in ei.value.problems] == [SENSITIVE_TO_VENDOR]
-    assert not cp.published
+    assert hub.publish_app(ref.id)["published"] is True
+    assert cp.published
 
 
-def test_an_app_with_nothing_sensitive_never_asks_the_gateway(tmp_path: Path):
-    # The cost guarantee. An ordinary publish must not gain a gateway call it can be blocked by, so
-    # the listing is fetched only once a bound store's rows are marked sensitive.
+def test_publish_never_asks_the_gateway_for_aliases(tmp_path: Path):
+    # Publish itself only asks the Data Source listing. The vendor-model hint lives on
+    # publish_check, so an ordinary publish cannot be blocked by a gateway that is having a bad
+    # minute.
     class NoAliases(FakeResourceProvider):
         def list_llm_aliases(self):
-            raise AssertionError("publish asked for the Alias listing with nothing sensitive bound")
+            raise AssertionError("publish asked for the Alias listing")
 
     cp = FakeControlPlane()
     orch = _orch(tmp_path, cp, resources=NoAliases(data_sources=list(SOURCES)))

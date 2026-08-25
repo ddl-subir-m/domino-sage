@@ -147,40 +147,27 @@ class SharedSample:
     stores in one app can hold a table of the same name, and `events` shared from the warehouse is
     not `events` shared from the app database. Without it the two collide in one file and the picker
     cannot tell which of its boxes to tick.
-
-    `sensitive` is per table because the choice is: a creator sharing rows from a claims table and
-    from a product catalogue has said two different things about two different tables. The project's
-    sovereign lock fires if ANY of them is sensitive, which is what `render_samples` records at the
-    top of the file.
     """
 
     binding: str
-    sensitive: bool
     rows: SampleRows
 
 
 def render_samples(shared: list[SharedSample]) -> str:
-    """`.sage/samples.json` — the rows a creator chose to share, and how they chose to treat them.
+    """`.sage/samples.json` — the rows a creator chose to share.
 
-    `sensitive` is recorded beside the rows rather than inferred from them, because it is the
-    creator's judgement about their own data and nothing here can second-guess it. It is also what
-    re-fires the sovereign lock when a session reopens: the lock is in-memory, and for attachments it
-    is restored from a committed manifest — this file is the only place a sample's treatment is
-    written down.
-
-    The top-level `sensitive` is the OR of the entries, so the one question the lock asks is answered
-    without reading them.
+    Named tables and their rows only. Leftover `sensitive` keys in an older file are ignored on
+    read and not rewritten.
     """
     return json.dumps({
-        "sensitive": any(s.sensitive for s in shared),
-        "tables": [{"binding": s.binding, "name": s.rows.table, "sensitive": s.sensitive,
+        "tables": [{"binding": s.binding, "name": s.rows.table,
                     "columns": s.rows.columns, "rows": s.rows.rows} for s in shared],
     }, indent=2) + "\n"
 
 
-def parse_samples(raw: object) -> tuple[bool, list[SharedSample]]:
-    """(whether anything shared is sensitive, the shared tables). Unreadable is no samples,
-    which is the safe reading: the agent is shown nothing it was not certainly given.
+def parse_samples(raw: object) -> list[SharedSample]:
+    """The shared tables. Unreadable is no samples, which is the safe reading: the agent is shown
+    nothing it was not certainly given.
 
     An entry written before #33 names no Binding. It reads back with an empty one, and the caller —
     which knows the Bindings — resolves that to the first Data Source, the only one that could have
@@ -188,20 +175,18 @@ def parse_samples(raw: object) -> tuple[bool, list[SharedSample]]:
     was upgraded under it, never to a clone.
     """
     if not isinstance(raw, dict):
-        return False, []
-    legacy_sensitive = bool(raw.get("sensitive"))
+        return []
     out: list[SharedSample] = []
     for table in raw.get("tables") or []:
         if isinstance(table, dict) and str(table.get("name") or ""):
             rows = SampleRows(str(table["name"]), list(table.get("columns") or []),
                               [list(r) for r in table.get("rows") or [] if isinstance(r, list)])
-            sensitive = bool(table["sensitive"]) if "sensitive" in table else legacy_sensitive
-            out.append(SharedSample(str(table.get("binding") or ""), sensitive, rows))
-    return any(s.sensitive for s in out), out
+            out.append(SharedSample(str(table.get("binding") or ""), rows))
+    return out
 
 
 def agents_block(sources: list[BoundSource], problems: list[str] | None,
-                 max_rows: int, *, samples: tuple[bool, list[str]] = (False, ())) -> str:
+                 max_rows: int, *, samples=()) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
     Empty when no Data Source is bound. Describing the machinery for a store that is not there would
@@ -242,7 +227,7 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
     # The example names one of this app's own tables. A generic `usage` reads as a placeholder the
     # agent has to translate, and the translation is exactly the step this block exists to remove.
     lines += _how_to_ask(sources, max_rows)
-    lines += _samples_section(*samples)
+    lines += _samples_section(samples)
     lines += _problems_section(problems)
     return "\n".join(lines)
 
@@ -383,7 +368,7 @@ def _scope_rule(binding: Binding, stranded: list[tuple[str, str]] | None, table:
             "Scope as configuration, so a query that leaves it out is refused before it runs.")
 
 
-def _samples_section(sensitive: bool, tables) -> list[str]:
+def _samples_section(tables) -> list[str]:
     """The rows a creator chose to share, named but not quoted (#16).
 
     `tables` is (store, table names) per Data Source they were shared from, in Binding order.
@@ -406,7 +391,7 @@ def _samples_section(sensitive: bool, tables) -> list[str]:
         named = _and_list(groups[0][1])
     else:
         named = _and_list_of([f"{_and_list(names)} in **{store}**" for store, names in groups])
-    out = [
+    return [
         "### Sample rows", "",
         (f"The user has chosen to show you a few real rows from {named}. They are in "
          f"`{SAMPLES_PATH}` — read that file when you need to see the shape of the data: what a code "
@@ -417,14 +402,8 @@ def _samples_section(sensitive: bool, tables) -> list[str]:
         ("- **Never copy them anywhere.** Not into `src/`, not into a fixture, not into a test. The "
          "app reads the store at request time, so a copied row is both a snapshot that is wrong "
          "tomorrow and real data in a repo."),
+        "",
     ]
-    if sensitive:
-        out.append(
-            "- The user marked this data sensitive, so Sage is running on sovereign models and "
-            "nothing in this conversation leaves Domino. Keep it that way: do not put row values "
-            "into a file, a commit message, or anything that travels.")
-    out.append("")
-    return out
 
 
 def _and_list(names: list[str]) -> str:

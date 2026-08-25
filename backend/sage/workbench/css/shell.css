@@ -653,7 +653,7 @@
 
 /* Catalogue picker ------------------------------------------------------- */
 
-/* Choosing a resource means weighing owner, sensitivity, freshness and who else
+/* Choosing a resource means weighing owner, freshness and who else
    depends on it. None of that fits in the panel, so browsing the platform gets
    width and its own surface. */
 .sw-cat { display: flex; height: 62vh; min-height: 420px; }

@@ -125,7 +125,6 @@ def wants_an_app(
     assistant: str,
     gateway: GatewayClient,
     catalog: ModelCatalog,
-    locked: bool,
     session: str | None = None,
     version: str | None = None,
     timeout_s: float = TIMEOUT_S,
@@ -140,7 +139,7 @@ def wants_an_app(
         return False
 
     request = {
-        "model": _model_for(catalog, locked),
+        "model": _model_for(catalog),
         "messages": [
             {"role": "system", "content": _SYSTEM},
             {"role": "user", "content": text},

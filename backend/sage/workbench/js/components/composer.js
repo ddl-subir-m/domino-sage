@@ -14,16 +14,11 @@ window.SW = window.SW || {};
   const BUILD_MODE_LABEL = { auto: 'Auto', ask: 'Ask · read-only', plan: 'Plan', implement: 'Implement' };
   const PROJECT_MENTION_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive'];
 
-  function chatAliases(resourceGroups, locked, catalog) {
-    const rows = (resourceGroups.model_llm || []).filter((r) => {
+  function chatAliases(resourceGroups) {
+    return (resourceGroups.model_llm || []).filter((r) => {
       const caps = r.capabilities || [];
       return !(caps.includes('embeddings') && !caps.includes('chat'));
     });
-    if (!locked || !catalog) return rows;
-    const sovereign = new Set(
-      [catalog.sovereign_plan, catalog.sovereign_implement, catalog.sovereign_ask].filter(Boolean)
-    );
-    return rows.filter((r) => sovereign.has(r.alias));
   }
 
   function effortLabel(value) {
@@ -93,7 +88,7 @@ window.SW = window.SW || {};
   }) {
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
-      buildMode, buildTurnMode, buildRunning, sensitivityLocked, catalog,
+      buildMode, buildTurnMode, buildRunning,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -103,10 +98,7 @@ window.SW = window.SW || {};
     const [modeOpen, setModeOpen] = useState(false);
     const fileRef = useRef(null);
 
-    const lock = SW.util.modelLockFor(attachments) || (sensitivityLocked ? {
-      message: 'Only models that run inside your environment can be used with this data.',
-    } : null);
-    const aliases = chatAliases(resourceGroups, !!(lock || sensitivityLocked), catalog);
+    const aliases = chatAliases(resourceGroups);
     const activeAlias = aliases.find((a) => a.alias === model);
     const modelLabel = activeAlias ? (activeAlias.name || activeAlias.alias) : 'Auto';
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
@@ -243,19 +235,6 @@ window.SW = window.SW || {};
     return h(
       'div',
       { className: 'sw-composer-inner' },
-
-      lock &&
-        h(
-          'div',
-          { style: { marginBottom: 8 } },
-          h(antd.Alert, {
-            type: 'warning',
-            showIcon: true,
-            banner: true,
-            style: { borderRadius: 4 },
-            message: lock.message,
-          })
-        ),
 
       h(
         'div',

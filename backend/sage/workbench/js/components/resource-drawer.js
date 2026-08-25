@@ -32,7 +32,6 @@ window.SW = window.SW || {};
     const body = () => {
       if (!resource) return null;
       const meta = SW.util.RESOURCE_META[resource.kind] || {};
-      const isRestricted = resource.sensitivity === 'restricted';
 
       const columns = (resource.schema || []).map((col, index) => ({
         title: col.name,
@@ -46,15 +45,6 @@ window.SW = window.SW || {};
       return h(
         'div',
         null,
-        isRestricted &&
-          h(Alert, {
-            className: 'sw-sovereign-callout',
-            type: 'error',
-            showIcon: true,
-            message: 'Restricted data',
-            description: `Only models that run inside your environment can be used with ${resource.name}. Export is blocked and execution stays on your own infrastructure.`,
-          }),
-
         h('p', { className: 'sw-secondary', style: { marginTop: 0 } }, resource.description),
 
         h(
@@ -62,20 +52,6 @@ window.SW = window.SW || {};
           { className: 'sw-drawer-meta' },
           h('dt', null, 'Type'),
           h('dd', null, meta.label || resource.kind),
-          // For a model the useful fact is not its own label but how sensitive
-          // the data it is cleared to touch can be.
-          resource.maxSensitivity && h('dt', null, 'Cleared for data up to'),
-          resource.maxSensitivity &&
-            h('dd', null, h(SW.SensitivityTag, { level: resource.maxSensitivity })),
-          !resource.maxSensitivity && h('dt', null, 'Sensitivity'),
-          !resource.maxSensitivity &&
-            h(
-              'dd',
-              null,
-              resource.sensitivity === 'public'
-                ? 'Public'
-                : h(SW.SensitivityTag, { level: resource.sensitivity })
-            ),
           h('dt', null, 'Owner'),
           h('dd', null, resource.ownerName),
           h('dt', null, 'Last updated'),

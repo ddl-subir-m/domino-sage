@@ -1,8 +1,7 @@
 """Upload / delete / manifest behavior for the builder Context panel.
 
-Uses the FakeAssetProvider's seeded datasets (writable temp mounts): sales_2026 (non-sensitive,
-the resolved default), customer_pii (tagged `sensitive`), app_logs (untagged). Non-sensitive
-uploads land under uploads/; sensitive uploads to the default dataset land under sensitive/."""
+Uses the FakeAssetProvider's seeded datasets (writable temp mounts): sales_2026 (the resolved
+default), customer_pii, app_logs. Uploads land under uploads/."""
 from __future__ import annotations
 
 import json
@@ -12,7 +11,6 @@ import pytest
 
 from sage.assets.provider import FakeAssetProvider
 from sage.orchestrator.service import DataReferenced, Orchestrator, UploadUnavailable
-from sage.provision.domino import FakeControlPlane
 from sage.router.models import ModelCatalog
 
 
@@ -29,10 +27,9 @@ def _catalog() -> ModelCatalog:
                         plan="p", implement="i", ask="a")
 
 
-def _orch(tmp: Path, assets=None, control_plane=None) -> Orchestrator:
+def _orch(tmp: Path, assets=None) -> Orchestrator:
     return Orchestrator(workspace_dir=tmp / "mnt" / "code", template=_template(tmp),
-                        gateway=object(), catalog=_catalog(), project_id="Sage", assets=assets,
-                        control_plane=control_plane)
+                        gateway=object(), catalog=_catalog(), project_id="Sage", assets=assets)
 
 
 def _dataset(orch: Orchestrator, name: str) -> str:
@@ -47,15 +44,13 @@ def test_upload_writes_to_default_dataset_mount_and_attaches(tmp_path: Path):
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
 
-    res = orch.upload_file("my data.csv", b"a,b\n1,2\n", sensitive=False)
+    res = orch.upload_file("my data.csv", b"a,b\n1,2\n")
 
-    assert res["sensitive"] is False
     link = ws / res["path"]
     assert link.is_symlink() and link.read_bytes() == b"a,b\n1,2\n"
     assert "/uploads/" in str(link.resolve())          # bytes live on the dataset mount, not copied
     entry = _manifest(ws)[0]
     assert entry["source"] == "upload" and entry["dataset_rel_path"] == "uploads/my_data.csv"
-    assert not orch.project().control.locked            # non-sensitive -> no lock
 
 
 def test_agents_block_gives_exact_served_path_and_guardrails(tmp_path: Path):
@@ -64,7 +59,7 @@ def test_agents_block_gives_exact_served_path_and_guardrails(tmp_path: Path):
     # workaround of copying data into src/.
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
-    orch.upload_file("my data.csv", b"a,b\n1,2\n", sensitive=False)
+    orch.upload_file("my data.csv", b"a,b\n1,2\n")
 
     agents = (ws / "AGENTS.md").read_text()
     assert "fetch `data/sales_2026/uploads/my_data.csv`" in agents   # nested, base-relative
@@ -75,37 +70,20 @@ def test_agents_block_gives_exact_served_path_and_guardrails(tmp_path: Path):
     assert "src/" in agents and "gitignored" in agents               # don't-copy-into-git guardrail
 
 
-def test_sensitive_upload_to_default_dataset_uses_sensitive_subfolder_and_locks(tmp_path: Path):
-    orch = _orch(tmp_path)
-    ws = orch.project(start_preview=False).workspace.path
-
-    res = orch.upload_file("secret.csv", b"ssn\n1\n", sensitive=True)
-
-    assert res["sensitive"] is True
-    assert res["dataset"] == "sales_2026"               # the resolved shared default dataset
-    entry = _manifest(ws)[0]
-    assert entry["dataset_rel_path"] == "sensitive/secret.csv"   # sensitive subfolder, not uploads/
-    assert "/sensitive/" in str((ws / res["path"]).resolve())    # bytes on the mount, under sensitive/
-    assert orch.project().control.locked
-    # The default dataset itself is NOT tagged sensitive — its non-sensitive data stays unmarked.
-    assert next(a["sensitive"] for a in orch.list_assets() if a["name"] == "sales_2026") is False
-
-
-def test_manifest_rehydrates_attachments_and_restores_lock(tmp_path: Path):
+def test_manifest_rehydrates_attachments(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.project(start_preview=False)
-    orch.upload_file("secret.csv", b"x", sensitive=True)
+    orch.upload_file("secret.csv", b"x")
 
     # A fresh orchestrator over the same volume rebuilds from the committed manifest.
     proj = _orch(tmp_path).project(start_preview=False)
-    assert [e["file"] for e in proj.attached] == ["sensitive/secret.csv"]
-    assert proj.control.locked                          # sticky sovereign lock restored from manifest
+    assert [e["file"] for e in proj.attached] == ["uploads/secret.csv"]
 
 
 def test_delete_removes_uploaded_symlink_and_dataset_bytes(tmp_path: Path):
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
-    res = orch.upload_file("d.csv", b"x", sensitive=False)
+    res = orch.upload_file("d.csv", b"x")
     src = (ws / res["path"]).resolve()
     assert src.is_file()
 
@@ -131,11 +109,11 @@ def test_delete_never_removes_a_pre_existing_dataset_files_bytes(tmp_path: Path)
 
 def test_delete_removes_bytes_for_an_uploads_file_reattached_as_dataset(tmp_path: Path):
     # A Sage upload that later shows up as a dataset-browser attachment (source flips to
-    # 'dataset', e.g. rehydrated that way) still lives under a Sage folder (sensitive/ here), so
-    # it's Sage-managed and delete must remove its bytes — sensitivity is irrelevant to this.
+    # 'dataset', e.g. rehydrated that way) still lives under a Sage folder, so it's Sage-managed
+    # and delete must remove its bytes.
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
-    res = orch.upload_file("d.csv", b"x", sensitive=True)   # sensitive -> default dataset sensitive/
+    res = orch.upload_file("d.csv", b"x")
     src = (ws / res["path"]).resolve()
     assert src.is_file()
     for e in orch.project().attached:                        # simulate the re-attach reclassification
@@ -151,7 +129,7 @@ def test_delete_blocked_while_app_fetches_the_file(tmp_path: Path):
     # Deleting data the dashboard fetches at runtime would orphan that code — block it (Detach stays).
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
-    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=False)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n")
     (ws / "src" / "App.tsx").write_text('fetch(import.meta.env.BASE_URL + "data/sales_2026/uploads/d.csv")')
 
     with pytest.raises(DataReferenced) as ei:
@@ -165,7 +143,7 @@ def test_delete_blocked_when_data_was_copied_into_src(tmp_path: Path):
     # A copied file (same basename under the app tree) is the git-leak — and why delete "does nothing".
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
-    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=False)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n")
     (ws / "src" / "data").mkdir(parents=True, exist_ok=True)
     (ws / "src" / "data" / "d.csv").write_text("a,b\n1,2\n")     # agent copied it into src/
 
@@ -179,7 +157,7 @@ def test_delete_allowed_when_app_does_not_use_the_file(tmp_path: Path):
     # The template App.tsx is a placeholder that never references the upload -> delete proceeds.
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
-    res = orch.upload_file("d.csv", b"x", sensitive=False)
+    res = orch.upload_file("d.csv", b"x")
 
     orch.delete_file(res["path"])                    # no DataReferenced
 
@@ -190,7 +168,7 @@ def test_data_usage_flags_inlined_bytes_as_a_copy(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
     body = b"name,score\n" + b"".join(b"row%d,%d\n" % (i, i) for i in range(20))
-    res = orch.upload_file("d.csv", body, sensitive=False)
+    res = orch.upload_file("d.csv", body)
     (proj.workspace.path / "src" / "rows.ts").write_text("export const RAW = `" + body.decode() + "`;")
 
     entry = next(e for e in proj.attached if e["path"] == res["path"])
@@ -201,7 +179,7 @@ def test_data_usage_flags_inlined_bytes_as_a_copy(tmp_path: Path):
 def test_detect_leaks_finds_copied_data_for_the_commit_backstop(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    orch.upload_file("sales.csv", b"a,b\n1,2\n", sensitive=False)
+    orch.upload_file("sales.csv", b"a,b\n1,2\n")
     (proj.workspace.path / "src" / "sales.csv").write_text("a,b\n1,2\n")   # agent copied it into src/
 
     assert orch._detect_leaks(proj) == [("sales.csv", ["src/sales.csv"])]
@@ -211,7 +189,7 @@ def test_detect_leaks_finds_copied_data_for_the_commit_backstop(tmp_path: Path):
 def test_no_leak_when_app_only_fetches_from_data(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    orch.upload_file("sales.csv", b"a,b\n1,2\n", sensitive=False)
+    orch.upload_file("sales.csv", b"a,b\n1,2\n")
     (proj.workspace.path / "src" / "App.tsx").write_text('fetch("data/sales_2026/uploads/sales.csv")')
 
     assert orch._detect_leaks(proj) == []          # a fetch is the intended pattern, not a leak
@@ -223,7 +201,7 @@ def test_detach_removes_a_leaked_copy_so_it_cant_reach_git(tmp_path: Path):
     # forgets the entry, so the commit backstop stops covering it — detach must delete the copy itself.
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=True)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n")
     (proj.workspace.path / "src" / "data").mkdir(parents=True, exist_ok=True)
     (proj.workspace.path / "src" / "data" / "d.csv").write_text("a,b\n1,2\n")   # agent copied it into src/
 
@@ -240,7 +218,7 @@ def test_detach_reports_still_referenced_files_without_deleting_source(tmp_path:
     # delete the source, but must report it so the UI can warn and offer the agent cleanup.
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    res = orch.upload_file("d.csv", b"x", sensitive=False)
+    res = orch.upload_file("d.csv", b"x")
     (proj.workspace.path / "src" / "App.tsx").write_text('fetch("data/sales_2026/uploads/d.csv")')
 
     out = orch.detach_file(res["path"])
@@ -257,7 +235,7 @@ def test_detach_reports_a_hardcoded_sample_of_the_file_not_just_a_full_copy(tmp_
     proj = orch.project(start_preview=False)
     rows = "event_id,patient,outcome\n" + "\n".join(
         f"EV{i:04d},patient_{i:04d},outcome_value_{i}" for i in range(200))  # 200-row dataset
-    res = orch.upload_file("big.csv", rows.encode(), sensitive=False)
+    res = orch.upload_file("big.csv", rows.encode())
     sample = "\n".join(rows.splitlines()[:6])                              # header + first 5 rows only
     (proj.workspace.path / "src" / "App.tsx").write_text(f"const data = `{sample}`;")
 
@@ -277,7 +255,7 @@ def test_read_file_previews_an_attached_symlink_but_still_blocks_escapes(tmp_pat
 
     orch = _orch(tmp_path)
     orch.project(start_preview=False)
-    res = orch.upload_file("d.csv", b"a,b\n1,2\n", sensitive=False)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n")
     monkeypatch.setattr(appmod, "orchestrator", orch)
     client = TestClient(appmod.control_app)
 
@@ -291,91 +269,33 @@ def test_read_file_previews_an_attached_symlink_but_still_blocks_escapes(tmp_pat
 def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    res = orch.upload_file("d.csv", b"x", sensitive=False)
+    res = orch.upload_file("d.csv", b"x")
 
     assert [m["path"] for m in orch._resolve_mentions(proj, [res["path"]])] == [res["path"]]
     assert orch._resolve_mentions(proj, ["public/data/not-attached.csv"]) is None  # unknown -> ignored
     assert orch._resolve_mentions(proj, None) is None
 
 
-def test_non_sensitive_upload_to_default_dataset_does_not_lock(tmp_path: Path):
-    # Guards the on_assets_changed([sensitive]) fix: a non-sensitive upload must NOT lock.
-    orch = _orch(tmp_path)
-    ws = orch.project(start_preview=False).workspace.path
-
-    res = orch.upload_file("plain.csv", b"a,b\n1,2\n", sensitive=False)
-
-    assert res["sensitive"] is False
-    assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/plain.csv"
-    assert not orch.project().control.locked
-
-
-def test_sensitive_upload_without_a_sensitive_dataset_uses_default_subfolder(tmp_path: Path):
-    # No `sensitive`-tagged dataset needs to exist any more: sensitive uploads fall back to the
-    # shared default dataset's sensitive/ subfolder (manifest-driven lock), not an error.
-    prov = FakeAssetProvider()
-    prov.assets = [a for a in prov.assets if "sensitive" not in {t.lower() for t in a.tags}]
-    orch = _orch(tmp_path, assets=prov)
-    ws = orch.project(start_preview=False).workspace.path
-
-    res = orch.upload_file("x.csv", b"x", sensitive=True)
-
-    assert res["sensitive"] is True
-    assert _manifest(ws)[0]["dataset_rel_path"] == "sensitive/x.csv"
-    assert orch.project().control.locked
-
-
 def test_upload_is_unavailable_when_no_writable_dataset_exists(tmp_path: Path):
-    # UploadUnavailable now fires only when there's genuinely nowhere writable to store bytes.
+    # UploadUnavailable fires only when there's genuinely nowhere writable to store bytes.
     prov = FakeAssetProvider()
     prov.assets = []
     orch = _orch(tmp_path, assets=prov)
     orch.project(start_preview=False)
 
     with pytest.raises(UploadUnavailable):
-        orch.upload_file("x.csv", b"x", sensitive=True)
+        orch.upload_file("x.csv", b"x")
 
 
-def test_upload_to_already_sensitive_dataset_forces_sensitive(tmp_path: Path):
-    # Picking a dataset that's already tagged sensitive marks the file sensitive even if the box is
-    # unchecked — you can't drop a non-sensitive file into a sensitive dataset.
+def test_upload_to_a_picked_dataset_lands_under_uploads(tmp_path: Path):
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
     pii = _dataset(orch, "customer_pii")
 
-    res = orch.upload_file("note.csv", b"x", sensitive=False, dataset_id=pii)
+    res = orch.upload_file("note.csv", b"x", dataset_id=pii)
 
-    assert res["sensitive"] is True and res["dataset"] == "customer_pii"
-    assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/note.csv"   # picked dataset -> uploads/
-    assert orch.project().control.locked
-
-
-def test_sensitive_upload_to_untagged_picked_dataset_tags_it(tmp_path: Path):
-    # Marking a file sensitive while targeting an untagged dataset tags the WHOLE dataset.
-    cp = FakeControlPlane()
-    orch = _orch(tmp_path, control_plane=cp)
-    orch.project(start_preview=False)
-    logs = _dataset(orch, "app_logs")   # untagged fake dataset
-
-    res = orch.upload_file("audit.csv", b"x", sensitive=True, dataset_id=logs)
-
-    assert res["sensitive"] is True
-    assert logs in cp.tagged_sensitive                 # the dataset was tagged via the control plane
-    assert orch.project().control.locked
-
-
-def test_sensitive_upload_to_untagged_dataset_without_control_plane_is_best_effort(tmp_path: Path):
-    # No control plane (local/off-Domino): the tag can't be written, but the upload still succeeds
-    # and the per-file sovereign lock still fires from the manifest.
-    orch = _orch(tmp_path)   # control_plane=None
-    ws = orch.project(start_preview=False).workspace.path
-    logs = _dataset(orch, "app_logs")
-
-    res = orch.upload_file("audit.csv", b"x", sensitive=True, dataset_id=logs)
-
-    assert res["sensitive"] is True
-    assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/audit.csv"
-    assert orch.project().control.locked
+    assert res["dataset"] == "customer_pii"
+    assert _manifest(ws)[0]["dataset_rel_path"] == "uploads/note.csv"
 
 
 # --- typed descriptors: the agent gets each file's SHAPE, never its bytes ------------------------
@@ -595,7 +515,7 @@ def test_upload_during_a_turn_is_not_mistaken_for_the_agent_writing(tmp_path: Pa
     project.turn_tree_baseline = project.snapshot.working_tree_hash()
     before = project.turn_tree_baseline
 
-    orch.upload_file("mid_turn.csv", b"a,b\n1,2\n", sensitive=False)
+    orch.upload_file("mid_turn.csv", b"a,b\n1,2\n")
 
     assert project.snapshot.working_tree_hash() != before      # the upload really did change the tree
     assert project.turn_tree_baseline == project.snapshot.working_tree_hash()  # ...and was absorbed
@@ -608,7 +528,7 @@ def test_upload_outside_a_turn_leaves_the_baseline_alone(tmp_path: Path):
     project = orch.project(start_preview=False)
     assert project.turn_tree_baseline == ""
 
-    orch.upload_file("idle.csv", b"a,b\n1,2\n", sensitive=False)
+    orch.upload_file("idle.csv", b"a,b\n1,2\n")
 
     assert project.turn_tree_baseline == ""
 

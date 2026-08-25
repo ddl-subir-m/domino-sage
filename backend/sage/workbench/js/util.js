@@ -21,15 +21,6 @@ window.SW = window.SW || {};
     skill:            { icon: '📘', label: 'skill',          group: 'skills' },
   };
 
-  const SENSITIVITY = {
-    public:       { label: 'Public',       short: 'public', tone: 'default' },
-    internal:     { label: 'Internal',     short: 'internal', tone: 'info' },
-    confidential: { label: 'Confidential', short: 'conf.', tone: 'warning' },
-    restricted:   { label: 'Restricted',   short: 'restr.', tone: 'error' },
-  };
-
-  const SENSITIVITY_RANK = { public: 0, internal: 1, confidential: 2, restricted: 3 };
-
   const PLAN_STATUS = {
     draft:      { label: 'Draft',      color: 'default' },
     in_review:  { label: 'In review',  color: 'blue' },
@@ -51,8 +42,6 @@ window.SW = window.SW || {};
   SW.util = {
     TODAY,
     RESOURCE_META,
-    SENSITIVITY,
-    SENSITIVITY_RANK,
     PLAN_STATUS,
     APP_STATUS,
 
@@ -245,23 +234,6 @@ window.SW = window.SW || {};
       });
     },
 
-    // Which models are usable given the sensitivity of what's attached.
-    // Phrased without gateway vocabulary — see Decision 7.
-    modelLockFor(attachments) {
-      const worst = attachments.reduce(
-        (acc, a) => Math.max(acc, SENSITIVITY_RANK[a.sensitivity] || 0),
-        0
-      );
-      if (worst < SENSITIVITY_RANK.restricted) return null;
-      const trigger = attachments.find((a) => a.sensitivity === 'restricted');
-      return {
-        resourceName: trigger ? trigger.resourceName || trigger.name : 'this data',
-        message: `Only models that run inside your environment can be used with ${
-          trigger ? trigger.resourceName || trigger.name : 'this data'
-        }.`,
-      };
-    },
-
     initialsOf(name) {
       return String(name || '?')
         .split(' ')
@@ -311,33 +283,6 @@ window.SW = window.SW || {};
       },
       (user && user.initials) || SW.util.initialsOf(user && user.name)
     );
-  };
-
-  SW.SensitivityTag = function SensitivityTag({ level, short }) {
-    const meta = SENSITIVITY[level];
-    if (!meta || level === 'public') return null;
-    return h(
-      antd.Tooltip,
-      { title: SW.SensitivityTag.explain(level) },
-      h(
-        antd.Tag,
-        { bordered: false, className: `sw-sens sw-sens-${level}` },
-        short ? meta.short : meta.label
-      )
-    );
-  };
-
-  SW.SensitivityTag.explain = function explain(level) {
-    switch (level) {
-      case 'restricted':
-        return 'Restricted — runs only inside your environment. External models are unavailable and export is blocked.';
-      case 'confidential':
-        return 'Confidential — usable only with approved models.';
-      case 'internal':
-        return 'Internal — available to everyone in your organization.';
-      default:
-        return 'Public — no handling restrictions.';
-    }
   };
 
   SW.ProvenanceBadge = function ProvenanceBadge({ addedBy, rationale }) {

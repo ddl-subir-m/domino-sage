@@ -39,7 +39,7 @@ class StubGateway:
 
 
 def _ask(gateway, prompt="add scheduled retraining", **kw):
-    return scope.wants_a_plan(prompt, gateway=gateway, catalog=CATALOG, locked=False, **kw)
+    return scope.wants_a_plan(prompt, gateway=gateway, catalog=CATALOG, **kw)
 
 
 @pytest.fixture(autouse=True)
@@ -159,15 +159,7 @@ def test_an_empty_prompt_never_calls_the_gateway():
 
 # --- what gets sent ----------------------------------------------------------------------------
 
-def test_a_locked_project_classifies_on_the_sovereign_model():
-    # The sensitivity lock is the product's central promise; a classification is not an exception to
-    # it. Routing this call to a vendor model would leak the prompt off the sovereign path.
-    gw = StubGateway("BUILD")
-    scope.wants_a_plan("add auth", gateway=gw, catalog=CATALOG, locked=True)
-    assert gw.seen[0][0]["model"] == "sov-ask"
-
-
-def test_an_unlocked_project_classifies_on_the_cheap_ask_model():
+def test_scope_classifies_on_the_ask_model():
     gw = StubGateway("BUILD")
     _ask(gw)
     request, labels = gw.seen[0]

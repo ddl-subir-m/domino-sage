@@ -33,10 +33,6 @@ log = logging.getLogger("sage.provision.domino")
 
 _PROJECTS_PATH = "/api/projects/beta/projects"
 _APPS_PATH = "/api/apps/beta/apps"  # public apps API (create+launch, then republish new versions)
-_DATASETRW_PATH = "/api/datasetrw/v1"  # dataset create/snapshot/tag (list is v2, see assets/provider)
-# Must match assets.provider.DEFAULT_SENSITIVITY_TAG — the builder reads this tag to detect sensitive
-# datasets and fire the sovereign lock.
-_SENSITIVITY_TAG = "sensitive"
 # Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
 # create API has no tag field, so list_apps filters on the project's git repo URI instead.
 _SAGE_REPO_PREFIX = "sage-"
@@ -85,7 +81,6 @@ class PublishedApp:
 class ControlPlane(Protocol):
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
-    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
@@ -236,36 +231,6 @@ class DominoControlPlane:
         if isinstance(data, dict):
             log.info("workspace-create response keys: %s", sorted(data.keys()))
         return data
-
-    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
-        """Tag an existing dataset `sensitive` so its files trip the sovereign lock on attach.
-
-        Best-effort: returns True on success, False on any failure — a governance tag must never
-        block an upload (the per-file sovereign lock is driven by the attachment manifest, not by
-        this tag, so a missing tag degrades gracefully).
-
-        Tags attach to a snapshot, not the dataset directly (POST .../tags requires snapshotId). The
-        caller passes `snapshot_id` when it already has one (from the datasetrw v2 tag map); when it
-        doesn't (an untagged dataset), we fetch the dataset's current snapshot.
-
-        LIVE-VERIFY: the GET shape that returns an existing dataset's current snapshot id — we read
-        `snapshotIds`/`latestSnapshotId` off GET .../datasets/{id}, falling back across both keys."""
-        try:
-            snap_id = str(snapshot_id or "")
-            if not snap_id:
-                data = self._get(f"{_DATASETRW_PATH}/datasets/{dataset_id}")
-                ds = (data.get("dataset") or data) if isinstance(data, dict) else {}
-                snap_ids = ds.get("snapshotIds") or []
-                snap_id = str(ds.get("latestSnapshotId") or (snap_ids[-1] if snap_ids else "") or "")
-            if not snap_id:
-                log.error("tag_dataset_sensitive: dataset %s has no snapshot to tag", dataset_id)
-                return False
-            self._post(f"{_DATASETRW_PATH}/datasets/{dataset_id}/tags",
-                       {"tagName": _SENSITIVITY_TAG, "snapshotId": snap_id})
-            return True
-        except Exception:
-            log.exception("tag_dataset_sensitive failed for dataset %s", dataset_id)
-            return False
 
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
         # Stop a running builder so it stops consuming a hardware tier. Path + verb confirmed against
@@ -522,7 +487,6 @@ class FakeControlPlane:
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
-    tagged_sensitive: dict[str, str] = field(default_factory=dict)  # dataset_id -> snapshot_id tagged
     _seq: int = 0
 
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
@@ -530,10 +494,6 @@ class FakeControlPlane:
         ref = ProjectRef(id=f"proj-{self._seq}", name=name, git_url=git_url)
         self.projects.append(ref)
         return ref
-
-    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
-        self.tagged_sensitive[dataset_id] = snapshot_id or "snap"
-        return True
 
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
         ws = {

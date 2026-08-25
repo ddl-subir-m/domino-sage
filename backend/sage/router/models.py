@@ -24,7 +24,6 @@ class Phase(str, Enum):
 
 
 class Reason(str, Enum):
-    SENSITIVITY = "sensitivity"
     AUTO_PLAN = "auto-plan"
     AUTO_IMPLEMENT = "auto-implement"
     ASK_PINNED = "ask-pinned"
@@ -92,7 +91,6 @@ class ModelCatalog:
 class SessionState:
     """Everything the router needs. Snapshot taken by the shim per request."""
 
-    sensitivity_locked: bool
     mode: Mode
     phase: Phase
     picked_model: ModelId | None = None
@@ -123,4 +121,4 @@ class SessionState:
 class ModelDecision:
     model: ModelId
     reason: Reason
-    locked: bool  # when True, the shim must override the request model and not let it change
+    locked: bool  # leftover from the old sensitivity lock; always False. The shim still overwrites model.

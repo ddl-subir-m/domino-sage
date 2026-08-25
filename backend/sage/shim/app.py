@@ -2,7 +2,7 @@
 
 OpenCode points its OpenAI base_url at this app. Every request:
   1. resolve the model decision (router),
-  2. override the model when locked,
+  2. overwrite the model with that decision,
   3. tag with project + phase,
   4. forward to the gateway and stream back.
 
@@ -56,10 +56,6 @@ _catalog = ModelCatalog(
     ask=os.environ.get("SAGE_MODEL_ASK", "sonnet"),
 )
 _control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
-# Spike helper (Step 1.3): SAGE_FORCE_SENSITIVITY_LOCK=1 starts locked so you can verify the
-# sovereign override live — any request, whatever model OpenCode asks for, routes to sovereign.
-if os.environ.get("SAGE_FORCE_SENSITIVITY_LOCK") in {"1", "true", "yes"}:
-    _control.on_assets_changed([True])
 _shim = EnforcementShim(_control, _catalog, _gateway,
                         project_name=domino_project_label(fallback="unknown"))
 
@@ -68,7 +64,7 @@ app = FastAPI(title="sage enforcement shim")
 
 @app.get("/healthz")
 def healthz() -> dict[str, object]:
-    return {"ok": True, "gateway_mode": GATEWAY_MODE, "locked": _control.locked}
+    return {"ok": True, "gateway_mode": GATEWAY_MODE}
 
 
 # Default the project tag from the Domino project context so cost doesn't land in "unknown".

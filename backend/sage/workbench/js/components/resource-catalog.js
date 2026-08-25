@@ -2,11 +2,11 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect, Fragment } = React;
-  const { Modal, Input, Button, Tooltip, Tag, Segmented, Skeleton, Empty } = antd;
+  const { Modal, Input, Button, Tooltip, Tag, Skeleton, Empty } = antd;
   const { SearchOutlined, PlusOutlined, CheckOutlined } = icons;
 
   // Browsing a platform catalogue needs room for the facts you actually choose
-  // on — who owns it, how sensitive it is, how fresh, who else uses it. That is
+  // on — who owns it, how fresh, who else uses it. That is
   // why this is a surface you open rather than a 300px column you live beside.
   const KINDS = [
     { key: null, label: 'Everything' },
@@ -18,14 +18,6 @@ window.SW = window.SW || {};
     { key: 'tool', label: 'Tools' },
     { key: 'agent', label: 'Agents' },
     { key: 'skill', label: 'Skills' },
-  ];
-
-  const SENSITIVITIES = [
-    { value: 'all', label: 'Any' },
-    { value: 'public', label: 'Public' },
-    { value: 'internal', label: 'Internal' },
-    { value: 'confidential', label: 'Confidential' },
-    { value: 'restricted', label: 'Restricted' },
   ];
 
   function CatalogRow({ resource, scope, onAdd, onOpen, busy }) {
@@ -43,7 +35,6 @@ window.SW = window.SW || {};
             'span',
             { className: 'sw-cat-name-line' },
             h('span', { className: 'sw-cat-name' }, resource.name),
-            h(SW.SensitivityTag, { level: resource.sensitivity, short: true }),
             resource.sovereign &&
               h(
                 Tooltip,
@@ -101,7 +92,6 @@ window.SW = window.SW || {};
     const { catalogOpen, catalogKind, scope } = SW.store.get();
     const [query, setQuery] = useState('');
     const [kind, setKind] = useState(null);
-    const [sensitivity, setSensitivity] = useState('all');
     const [rows, setRows] = useState([]);
     const [counts, setCounts] = useState({});
     const [loading, setLoading] = useState(false);
@@ -113,7 +103,6 @@ window.SW = window.SW || {};
       if (catalogOpen) {
         setKind(catalogKind || null);
         setQuery('');
-        setSensitivity('all');
       }
     }, [catalogOpen, catalogKind]);
 
@@ -127,7 +116,6 @@ window.SW = window.SW || {};
             projectId: scope.id,
             q: query,
             kind: kind || '',
-            sensitivity: sensitivity === 'all' ? '' : sensitivity,
           })
           .then((found) => {
             if (cancelled) return;
@@ -140,7 +128,7 @@ window.SW = window.SW || {};
         cancelled = true;
         clearTimeout(timer);
       };
-    }, [catalogOpen, query, kind, sensitivity, scope.id]);
+    }, [catalogOpen, query, kind, scope.id]);
 
     if (!catalogOpen) return null;
 
@@ -205,12 +193,6 @@ window.SW = window.SW || {};
               allowClear: true,
               autoFocus: true,
               onChange: (e) => setQuery(e.target.value),
-            }),
-            h(Segmented, {
-              size: 'small',
-              options: SENSITIVITIES,
-              value: sensitivity,
-              onChange: setSensitivity,
             })
           ),
           h(

@@ -21,14 +21,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, Binding, parse_bindings
+from ..resources.bindings import KIND_LLM_ALIAS, parse_bindings
 from ..resources.builtapp import catalog_problems
-from ..resources.provider import DataSource, FakeResourceProvider, LlmAlias, ResourceProvider
+from ..resources.provider import DataSource, FakeResourceProvider, ResourceProvider
 from ..resources.publish_guard import (
     PublishRefused,
     data_source_bindings,
     publish_problems,
-    vendor_model_problems,
     vendor_model_warning,
 )
 from . import naming
@@ -416,8 +415,7 @@ class HubService:
             except Exception:
                 log.exception("publish: couldn't read the app's visibility")
                 visibility = None
-        problems = publish_problems(bindings, sources, visibility) + \
-            vendor_model_problems(recorded, self._aliases_for_guard(recorded))
+        problems = publish_problems(bindings, sources, visibility)
         if problems:
             raise PublishRefused(problems)
 
@@ -476,25 +474,6 @@ class HubService:
             problems = catalog_problems(self._template, root)
         return {"checked": problems is not None, "queries": problems or [],
                 "models": self._vendor_model_warning(full)}
-
-    def _aliases_for_guard(self, recorded: list[Binding]) -> list[LlmAlias] | None:
-        """The Alias listing the vendor-model guard needs, or None when it could not be fetched.
-
-        The builder's `_aliases_for_guard`, asked from the hub. Same rule, same reason: fetched only
-        when a bound store's rows are marked sensitive, so an ordinary publish costs no gateway call.
-
-        The hub can ask this question at all only because the judgement rides in the committed
-        manifest — `.sage/samples.json`, which holds the rows, is gitignored and never reaches a
-        repo. An app whose manifest predates that stamp reads as not sensitive, which is the same
-        answer the builder gave it before this shipped.
-        """
-        if not any(b.kind == KIND_DATA_SOURCE and b.sensitive for b in recorded):
-            return []
-        try:
-            return self._resources.list_llm_aliases()
-        except Exception:
-            log.exception("publish: couldn't list LLM Aliases to check where sensitive rows would go")
-            return None
 
     def _vendor_model_warning(self, full_name: str | None) -> str | None:
         """Where this app's rows go, for a creator who never opened the builder (#35). None when silent.

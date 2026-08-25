@@ -1,10 +1,10 @@
-"""EnforcementShim — the core of the sovereign / zero-vendor guarantee (DESIGN.md Seam 2).
+"""EnforcementShim — consult the router, set `model`, tag, forward (DESIGN.md Seam 2).
 
-Per request: consult the router, override the `model` field when locked, tag with
+Per request: consult the router, overwrite the `model` field with the decision, tag with
 project + phase, forward to the gateway. This is a thin shim in front of the EXISTING
 OpenAI-compatible Domino gateway, not a proxy built from scratch (SPEC.md C4).
 
-Containment ("zero direct-to-vendor") is provided by the container egress allowlist, NOT by
+Containment ("no direct-to-vendor") is provided by the container egress allowlist, NOT by
 this code — this shim only guarantees the *policy* half (right model + tagging). See Step 1.4.
 """
 from __future__ import annotations
@@ -153,9 +153,7 @@ class EnforcementShim:
 
         Exposed rather than given a wrapper method here on purpose: a caller that wants to ask the
         gateway a question of its own supplies its own model and labels, and routing that through the
-        shim would put product decisions inside the enforcement seam. What the shim owns is the
-        guarantee that a LOCKED project only ever reaches a sovereign model — callers of this must
-        honour it themselves, which is why `locked` is a required argument over there."""
+        shim would put product decisions inside the enforcement seam."""
         return self._gateway
 
     @property
@@ -180,19 +178,17 @@ class EnforcementShim:
 
         # Per-step phase: in Auto mode, classify THIS inference from its own message tail (plan
         # while reasoning/reading, implement while writing code). Done here, per request, so
-        # interleaved turns route correctly step by step — not from a laggy background poll. The
-        # lock still wins in resolve(), so skip classifying when locked. Reflect the phase back to
-        # the control so the UI's live indicator matches what actually routed.
+        # interleaved turns route correctly step by step — not from a laggy background poll.
+        # Reflect the phase back to the control so the UI's live indicator matches what routed.
         signals = None
-        if state.chat_thread_id is None and state.mode is Mode.AUTO and not state.sensitivity_locked:
+        if state.chat_thread_id is None and state.mode is Mode.AUTO:
             # assess() scores BOTH directions: the write-flip down to the cheap model, and a rescue
             # back up to PLAN when the turn starts failing (see phase_classifier). `signals.phase`
             # is the resolved answer; `base_phase` is the write-flip rule alone, kept for the log.
             #
             # This shipped observe-only first and was flipped on 2026-08-13 once live builds showed
             # the signal fires on real failures (a vite build exiting 2) and stays silent across
-            # five healthy turns. Under a sensitivity lock we never get here — and resolve() would
-            # map PLAN to catalog.sovereign_plan anyway, so a rescue can never reach a vendor model.
+            # five healthy turns.
             signals = assess(request.get("messages"))
             state = replace(state, phase=signals.phase)
             self._control.set_phase(signals.phase)
@@ -240,9 +236,8 @@ class EnforcementShim:
         # documented this as the contract: no session-level model, the shim decides per request.
         request = {**request, "model": decision.model}
 
-        # Chat-only: the user picked an effort for THIS alias. Do not send it when the lock (or
-        # Auto) routed somewhere else — qwen-2-5 400s on unknown fields, and a locked turn must
-        # stay sovereign rather than fail open.
+        # Chat-only: the user picked an effort for THIS alias. Do not send it when routing landed
+        # on a different model — qwen-2-5 400s on unknown fields.
         if (
             state.chat_thread_id
             and state.reasoning_effort
@@ -257,8 +252,7 @@ class EnforcementShim:
         # injecting one would reset the very error window that triggered the rescue and flap
         # straight back to the cheap model. Not persisted anywhere — OpenCode owns the history and
         # we only rewrite the outgoing request, so the note appears while rescued and is gone once
-        # a write lands. Deliberately says "a different model", not "a stronger vendor model": under
-        # a lock the rescue target is catalog.sovereign_plan.
+        # a write lands.
         if (signals is not None and signals.phase is not signals.base_phase
                 and isinstance(request.get("messages"), list)):
             request = {**request, "messages": [*request["messages"], {
@@ -270,10 +264,9 @@ class EnforcementShim:
             }]}
 
         # Attached images against a non-vision model: strip them here rather than switch models or
-        # let it fly. The resolved model is only known at this point (per request), and switching to
-        # a vision model would defeat the sovereignty lock — sending sovereign data to a vendor to
-        # read a screenshot is worse than not reading it. Passing it through is worse still:
-        # bedrock-qwen3-coder (the default implement model) hard-400s, killing the turn.
+        # let it fly. The resolved model is only known at this point (per request). Passing an image
+        # through is worse: bedrock-qwen3-coder (the default implement model) hard-400s, killing
+        # the turn.
         dropped = 0
         if not supports_vision(request["model"]) and isinstance(request.get("messages"), list):
             messages, dropped = _strip_images(request["messages"])
@@ -299,8 +292,7 @@ class EnforcementShim:
         # Logs whenever the scorer read a shell/write result at all, not just when it escalates: a
         # clean build and a build whose failure the markers missed have to be told apart, and
         # only-on-rescue made them both silent. `rescued=no` is the ordinary case. Samples are
-        # head-and-tail only and capped in the classifier; none of this can run under a sensitivity
-        # lock, since assess() is skipped there.
+        # head-and-tail only and capped in the classifier.
         if signals is not None and signals.examined:
             log.info(
                 "model policy: rescue examined=%d errors=%d episodes=%d rescued=%s (%s) — %s",
@@ -310,10 +302,9 @@ class EnforcementShim:
             )
 
         # Cost-attribution tags (sent as X-LLM-Tag-sage-*, queryable in the gateway usage dashboard).
-        # sovereign = an asset lock forced the model, the dimension worth isolating spend on.
         labels = CostLabels(
             phase=state.phase.value,
-            mode="sovereign" if decision.locked else state.mode.value,
+            mode=state.mode.value,
             route_reason=(signals.reason
                           if signals is not None and signals.phase is not signals.base_phase
                           else None),

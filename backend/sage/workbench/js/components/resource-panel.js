@@ -167,9 +167,7 @@ window.SW = window.SW || {};
             Tooltip,
             { title: 'Runs inside your environment.' },
             h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
-          ),
-        resource.kind !== 'model_llm' &&
-          h(SW.SensitivityTag, { level: resource.sensitivity, short: true })
+          )
       ),
       contextItem
         ? h(

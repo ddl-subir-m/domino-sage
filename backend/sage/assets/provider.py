@@ -1,8 +1,6 @@
 """Asset explorer / dataset provider (SPEC C6, Step 6).
 
-Lists the project's Domino datasets with their tags. Sensitivity = presence of a configurable
-tag name (default "sensitive"); attaching such a dataset triggers the sovereign lock. Domino
-dataset tags are freeform, so the sensitivity tag is a convention we read, not a built-in field.
+Lists the project's Domino datasets with their tags. Domino dataset tags are freeform.
 
 Deep module, narrow interface: list_datasets(project_id) -> [Asset]. Two adapters:
   - DominoAssetProvider : real, via /api/datasetrw/v2/datasets (works in a Domino workspace)
@@ -15,8 +13,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
-
-DEFAULT_SENSITIVITY_TAG = "sensitive"
 
 # Where Domino mounts a project's datasets in the running container. DFS projects use
 # /domino/datasets/local; git-based projects use /mnt/data (local) and /mnt/imported/data (shared).
@@ -57,12 +53,6 @@ class DatasetFile:
     size: int  # bytes
 
 
-def is_sensitive(asset: Asset, sensitivity_tag: str = DEFAULT_SENSITIVITY_TAG) -> bool:
-    """Case-insensitive membership of the sensitivity tag in the dataset's tags."""
-    want = sensitivity_tag.lower()
-    return any(t.lower() == want for t in asset.tags)
-
-
 def walk_files(root: Path) -> list[DatasetFile]:
     """List regular files under a dataset mount, relative + sized. Skips dotfiles and caps count."""
     out: list[DatasetFile] = []
@@ -88,7 +78,7 @@ class AssetProvider(Protocol):
 # (which symlinks real bytes into the workspace) works end-to-end on a local Mac with no Domino.
 _FAKE_SPEC = {
     "sales_2026": (["curated"], "Revenue", {"train.csv": "month,revenue\n2026-01,120000\n2026-02,138500\n", "README.md": "Monthly revenue.\n"}),
-    "customer_pii": (["sensitive"], "Revenue", {"customers.csv": "id,email,ssn\n1,a@x.com,000-00-0001\n"}),
+    "customer_pii": ([], "Revenue", {"customers.csv": "id,email,ssn\n1,a@x.com,000-00-0001\n"}),
     "app_logs": ([], "Platform", {"2026-07.log": "INFO boot ok\nWARN slow query 812ms\n"}),
 }
 
@@ -161,9 +151,9 @@ class DominoAssetProvider:
     MOUNTED in this project's container — because attaching a file symlinks its real bytes from
     the mount into the workspace, and lists its files from disk. Needs DOMINO_API_HOST + a token.
 
-    The API (minimumPermission=ReadDatasetRwV2) supplies id/name/tags/project + sensitivity (read
-    from the tag map keys); the filesystem supplies which of those are available here and their
-    files. Mirrors the AutoML extension's GET /api/datasetrw/v2/datasets and mount-root resolution.
+    The API (minimumPermission=ReadDatasetRwV2) supplies id/name/tags/project (tags from the tag
+    map keys); the filesystem supplies which of those are available here and their files. Mirrors
+    the AutoML extension's GET /api/datasetrw/v2/datasets and mount-root resolution.
     """
 
     _PAGE = 100

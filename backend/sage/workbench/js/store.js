@@ -82,8 +82,6 @@ window.SW = window.SW || {};
     // Composer
     model: 'auto',
     reasoningEffort: null,
-    sensitivityLocked: false,
-    catalog: null,
     phase: 'planning',
     // Build agent mode (Auto / Ask / Plan / Implement). Distinct from the
     // prototype model picker above. `buildMode` is the picker's standing
@@ -123,8 +121,6 @@ window.SW = window.SW || {};
       state.model = m.chat_model || 'auto';
     }
     if ('reasoning_effort' in m) state.reasoningEffort = m.reasoning_effort || null;
-    if ('sensitivity_locked' in m) state.sensitivityLocked = !!m.sensitivity_locked;
-    if (m.catalog) state.catalog = m.catalog;
   }
 
   function indexResources(groups) {

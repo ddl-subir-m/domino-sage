@@ -2,13 +2,8 @@
 
 Owns the mutable SessionState and its transitions. The router only reads a snapshot.
 Single serialized writer, so the manual-toggle-vs-auto-phase race has one arbiter.
-
-Sticky lock rule (SPEC.md): once a sensitivity-tagged asset is attached, the lock stays
-on for the session; detaching does NOT clear it.
 """
 from __future__ import annotations
-
-from collections.abc import Iterable
 
 from .models import Mode, ModelId, Phase, SessionState
 
@@ -20,8 +15,6 @@ class ModelControl:
         self._picked_model: ModelId | None = None
         self._chat_model: ModelId | None = None
         self._reasoning_effort: str | None = None
-        self._asset_locked = False   # sticky once True: set by an attached sensitivity-tagged asset
-        self._manual_locked = False  # user-toggled via the "Force sovereign" button; freely reversible
         # Read-only guarantee is scoped to the turn that armed it, not a shared on/off flag. arm_
         # read_only() mints a fresh token and returns it; disarm only clears if the live token is
         # still that same one. So a turn can never clear a *different* turn's arming (a stale disarm
@@ -72,34 +65,6 @@ class ModelControl:
         """Standing Chat alias + optional reasoning_effort. None model is Auto."""
         self._chat_model = model
         self._reasoning_effort = effort if model else None
-
-    def on_assets_changed(self, asset_sensitivity_tags: Iterable[bool]) -> None:
-        """Recompute the asset-driven lock from currently-attached assets. Sticky: attaching a
-        sensitivity-tagged asset locks and detaching never clears it. A later user override
-        (clear_asset_lock) can drop the lock, but attaching another sensitive asset re-locks."""
-        if any(asset_sensitivity_tags):
-            self._asset_locked = True
-
-    def clear_asset_lock(self) -> None:
-        """User override of the sticky asset-driven lock. The sovereign guarantee no longer holds
-        for the session unless another sensitivity-tagged asset is attached."""
-        self._asset_locked = False
-
-    def set_manual_lock(self, on: bool) -> None:
-        """User-initiated lock/unlock, independent of the sticky asset-driven lock."""
-        self._manual_locked = on
-
-    @property
-    def locked(self) -> bool:
-        return self._asset_locked or self._manual_locked
-
-    @property
-    def asset_locked(self) -> bool:
-        return self._asset_locked
-
-    @property
-    def manual_locked(self) -> bool:
-        return self._manual_locked
 
     def arm_read_only(self, reason: str = "") -> object:
         """Arm the read-only guarantee for a gated turn and return its token. The caller keeps the
@@ -183,7 +148,6 @@ class ModelControl:
 
     def snapshot(self) -> SessionState:
         return SessionState(
-            sensitivity_locked=self.locked,
             mode=self._turn_mode if self._turn_mode_token is not None else self._mode,
             phase=self._phase,
             picked_model=self._picked_model,

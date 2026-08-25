@@ -240,13 +240,9 @@ def app_context(root: Path | None) -> str:
     return _CONTEXT_HEADER + "\n\n" + "\n".join(lines)
 
 
-def _model_for(catalog: ModelCatalog, locked: bool) -> str:
-    """The read-only ask model, or its sovereign counterpart under a sensitivity lock.
-
-    The lock is absolute — it is the product's central promise — so a classification is not an
-    exception to it. Routing this one call to a vendor model on a locked project would leak the
-    user's prompt off the sovereign path for the sake of an optimisation."""
-    return catalog.sovereign_ask if locked else catalog.ask
+def _model_for(catalog: ModelCatalog) -> str:
+    """The read-only ask model. Scope and handoff classify on the same slot the user would Ask on."""
+    return catalog.ask
 
 
 def wants_a_plan(
@@ -254,7 +250,6 @@ def wants_a_plan(
     *,
     gateway: GatewayClient,
     catalog: ModelCatalog,
-    locked: bool,
     root: Path | None = None,
     session: str | None = None,
     version: str | None = None,
@@ -271,12 +266,9 @@ def wants_a_plan(
         # pay for another answer we already know we can't read.
         return False
 
-    # File paths are app structure, not user data — but they are still workspace content leaving the
-    # box, so this rides the same routing as the prompt and a locked project sends it sovereign. The
-    # lock being incidental here is the point: there is no path where it can be skipped as an
-    # optimisation.
+    # File paths are app structure, not user data. Truncate the prompt rather than refuse.
     request = {
-        "model": _model_for(catalog, locked),
+        "model": _model_for(catalog),
         "messages": [
             {"role": "system", "content": _SYSTEM + app_context(root)},
             {"role": "user", "content": text[:MAX_PROMPT_CHARS]},
