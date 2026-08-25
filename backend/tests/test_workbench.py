@@ -30,3 +30,14 @@ def test_workbench_is_the_default_ui():
     assert b"./api/project/build/stream" in build.content or b"sendBuildPrompt" in build.content
     assert b"src: './builder'" not in build.content
     assert b'src: "./builder"' not in build.content
+
+    panel = client.get("/js/components/resource-panel.js")
+    assert panel.status_code == 200
+    assert b"In context" in panel.content
+    assert b"Project resources" in panel.content
+    assert b"addToContext" in panel.content
+
+    composer = client.get("/js/components/composer.js")
+    assert composer.status_code == 200
+    assert b"PROJECT_MENTION_KINDS" in composer.content
+    assert b"In context" in composer.content

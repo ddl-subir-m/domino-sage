@@ -214,6 +214,15 @@ class ThreadStore:
         items = self.read_artifacts(thread_id)
         items.append(row)
         self._write_json(self.thread_dir(thread_id) / "artifacts.json", {"items": items})
+        # Artifacts belong under IN CONTEXT. Skip if this path is already a chip.
+        ctx = self.read_context(thread_id)
+        if not any(i.get("path") == path for i in ctx["items"]):
+            self.add_context(thread_id, {
+                "kind": "artifact",
+                "name": row.get("title") or name,
+                "path": path,
+                "addedBy": "sage",
+            })
         return row
 
     def read_handoff(self, thread_id: str) -> dict | None:

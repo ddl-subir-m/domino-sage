@@ -5,20 +5,17 @@ window.SW = window.SW || {};
   const { Input, Tooltip, Button, Tag, Dropdown } = antd;
   const {
     SearchOutlined, DownOutlined, RightOutlined, PlusOutlined, MoreOutlined,
-    FolderOutlined, FileTextOutlined, ArrowRightOutlined,
+    FolderOutlined, FileTextOutlined, ArrowRightOutlined, CloseOutlined,
   } = icons;
 
-  // The project's working set, by category. Plans are not here — the one that
-  // matters is pinned above, and the rest are history. Files are not here
-  // either; they get their own drawer at the bottom, because files only matter
-  // once you are coding.
+  // What the caller can pick: Datasets, Data Sources, Model APIs, LLM Aliases.
+  // Tools / agents / skills were prototype groups with no product surface.
   const GROUPS = [
     {
       key: 'data',
       label: 'Data',
       subgroups: [
         { kind: 'dataset', label: 'Datasets' },
-        { kind: 'table', label: 'Database tables' },
         { kind: 'datasource', label: 'Data sources' },
       ],
     },
@@ -30,22 +27,13 @@ window.SW = window.SW || {};
         { kind: 'model_predictive', label: 'Predictive models' },
       ],
     },
-    { key: 'tools', label: 'Tools', subgroups: [{ kind: 'tool', label: null }] },
-    { key: 'agents', label: 'Agents', subgroups: [{ kind: 'agent', label: null }] },
-    { key: 'skills', label: 'Skills', subgroups: [{ kind: 'skill', label: null }] },
   ];
 
   const EMPTY_HINT = {
     data: 'No data here yet.',
     models: 'No models here yet.',
-    tools: 'No tools here yet.',
-    agents: 'No agents here yet.',
-    skills: 'No skills here yet — add some so builds follow your conventions.',
   };
 
-  // The plan is the project's north star, so it sits above the list rather than
-  // as row one of an accordion. A project's other plans are history and live in
-  // the plan list, not here.
   function PlanCard({ plan, blessed }) {
     if (!plan) {
       return h(
@@ -78,54 +66,67 @@ window.SW = window.SW || {};
     );
   }
 
-  SW.ResourceRow = function ResourceRow({ resource, required, highlighted, app, onOpen }) {
+  function resourceFromAttachment(att) {
+    return {
+      id: att.resourceId || att.id,
+      name: att.resourceName,
+      kind: att.resourceKind || 'file',
+      path: att.path,
+      bindingKey: att.bindingKey,
+      subtitle: att.addedBy === 'sage' ? 'Sage added this' : 'You added this',
+    };
+  }
+
+  SW.ResourceRow = function ResourceRow({
+    resource,
+    required,
+    highlighted,
+    app,
+    onOpen,
+    contextItem,
+    attached,
+    allowAppActs,
+  }) {
     const [menuOpen, setMenuOpen] = useState(false);
 
-    // What an app needs is a fact about the app, not about the project, so it
-    // rides along as a badge on the project's row instead of duplicating the
-    // row into a second list.
-    const items = [
-      { key: 'mention', label: 'Mention in this chat' },
-      ...(app
-        ? [
-            {
-              key: required ? 'demote' : 'promote',
-              label: required ? `${app.name} no longer needs this` : `${app.name} needs this to run`,
-            },
-          ]
-        : []),
-      ...(resource.fromCatalog
-        ? [
-            { type: 'divider' },
-            { key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true },
-          ]
-        : []),
-    ];
+    const items = contextItem
+      ? [{ key: 'detach', label: 'Remove from this conversation' }]
+      : [
+          {
+            key: attached ? 'detach-resource' : 'mention',
+            label: attached ? 'Remove from this conversation' : 'Add to this conversation',
+          },
+          ...(allowAppActs && app
+            ? [
+                {
+                  key: required ? 'demote' : 'promote',
+                  label: required ? `${app.name} no longer needs this` : `${app.name} needs this to run`,
+                },
+              ]
+            : []),
+          ...(resource.fromCatalog
+            ? [
+                { type: 'divider' },
+                { key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true },
+              ]
+            : []),
+        ];
 
     const onMenu = ({ key }) => {
       setMenuOpen(false);
-      if (key === 'mention') return SW.store.addToContext(resource);
+      if (key === 'mention') return SW.store.addToContext(resource, { quiet: true });
+      if (key === 'detach') return SW.store.detach(contextItem);
+      if (key === 'detach-resource') return SW.store.detachResource(resource.id);
       if (key === 'promote') return SW.store.promoteResource(resource);
       if (key === 'demote') return SW.store.demoteResource(resource);
       if (key === 'remove') return SW.store.removeFromProject(resource);
       return undefined;
     };
 
-    // A model, tool, or agent reads very differently once the row says what
-    // breaks without it, so dependants win over the spec line there. For data
-    // the spec line is the more useful fact, and its dependants show up in the
-    // preview instead.
-    //
-    // Counted rather than named, because app names are long and the panel is
-    // narrow — a name that truncates to "Used by Limit Alert Rou…" tells you
-    // less than a number does. The names are in the tooltip.
     const used = resource.usedBy || [];
     const showsDependants = ['model_llm', 'model_predictive', 'tool', 'agent', 'skill'].includes(
       resource.kind
     );
-    // Being a dependency of the app you are building outranks everything else
-    // this line could say. It also goes here rather than beside the name, where
-    // a badge would eat the width the name needs.
     const secondary = required && app
       ? `Required by ${app.name}`
       : showsDependants && used.length
@@ -139,6 +140,7 @@ window.SW = window.SW || {};
           'sw-res-row' +
           (required ? ' is-required' : '') +
           (highlighted ? ' is-highlighted' : '') +
+          (contextItem ? ' is-context' : '') +
           (menuOpen ? ' is-menu-open' : ''),
       },
       h(
@@ -166,38 +168,52 @@ window.SW = window.SW || {};
             { title: 'Runs inside your environment.' },
             h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
           ),
-        // A model is not data, so its own sensitivity label says nothing useful.
-        // What matters is how sensitive the data it may touch can be, and that
-        // needs more room than a row has — the preview carries it.
         resource.kind !== 'model_llm' &&
           h(SW.SensitivityTag, { level: resource.sensitivity, short: true })
       ),
-      h(
-        Dropdown,
-        {
-          menu: { items, onClick: onMenu },
-          trigger: ['click'],
-          open: menuOpen,
-          onOpenChange: setMenuOpen,
-          placement: 'bottomRight',
-        },
-        h(
-          'button',
-          { className: 'sw-res-more', 'aria-label': `Actions for ${resource.name}` },
-          h(MoreOutlined, null)
-        )
-      )
+      contextItem
+        ? h(
+            'button',
+            {
+              className: 'sw-res-more',
+              'aria-label': `Remove ${resource.name} from this conversation`,
+              onClick: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                SW.store.detach(contextItem);
+              },
+            },
+            h(CloseOutlined, { style: { fontSize: 10 } })
+          )
+        : h(
+            Dropdown,
+            {
+              menu: { items, onClick: onMenu },
+              trigger: ['click'],
+              open: menuOpen,
+              onOpenChange: setMenuOpen,
+              placement: 'bottomRight',
+            },
+            h(
+              'button',
+              { className: 'sw-res-more', 'aria-label': `Actions for ${resource.name}` },
+              h(MoreOutlined, null)
+            )
+          )
     );
   };
 
   SW.ResourcePanel = function ResourcePanel() {
-    const { resourceGroups, requires, activeApp, panelFilter, activePlanId, bindings } = SW.store.get();
+    const {
+      resourceGroups, requires, activeApp, panelFilter, activePlanId, bindings, attachments,
+    } = SW.store.get();
     const [query, setQuery] = useState('');
     const [collapsed, setCollapsed] = useState({});
     const [filesOpen, setFilesOpen] = useState(false);
     const fileRef = useRef(null);
 
     const requiredIds = new Set(requires.map((r) => r.resourceId));
+    const attachedIds = new Set((attachments || []).map((a) => a.resourceId));
     const filterGroup = panelFilter && SW.util.RESOURCE_META[panelFilter]
       ? SW.util.RESOURCE_META[panelFilter].group
       : null;
@@ -206,11 +222,10 @@ window.SW = window.SW || {};
     const visible = (kind) => (resourceGroups[kind] || []).filter(matches);
     const files = (resourceGroups.file || []).filter(matches);
 
-    // The plan the current work is anchored to, falling back to the project's
-    // most recently touched one.
     const plans = resourceGroups.plan || [];
     const pinned = plans.find((p) => p.id === activePlanId) || plans[0] || null;
     const inBuild = SW.router.get().mode === 'build';
+    const inChat = SW.router.get().mode === 'chat';
     const needle = query.trim().toLowerCase();
     const kindForBinding = (kind) =>
       kind === 'data_source' ? 'datasource'
@@ -225,6 +240,11 @@ window.SW = window.SW || {};
       resource.kind === 'plan'
         ? SW.store.openPlanArtifact(resource.id)
         : SW.store.previewResource(resource.id);
+
+    const addFromPanel = (resource) => {
+      if (attachedIds.has(resource.id)) return openResource(resource);
+      return SW.store.addToContext(resource, { quiet: true });
+    };
 
     const addMenu = {
       items: [
@@ -250,15 +270,46 @@ window.SW = window.SW || {};
         resource,
         required: requiredIds.has(resource.id),
         app: activeApp,
-        highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
-        onOpen: openResource,
+        attached: attachedIds.has(resource.id),
+        allowAppActs: inBuild,
+        highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
+          && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
+        onOpen: inChat ? addFromPanel : openResource,
       });
 
     return h(
       'div',
       { className: 'sw-panel' },
 
-      h(PlanCard, { plan: pinned, blessed: Boolean(pinned && pinned.id === activePlanId) }),
+      inBuild &&
+        h(PlanCard, { plan: pinned, blessed: Boolean(pinned && pinned.id === activePlanId) }),
+
+      inChat &&
+        h(
+          'div',
+          { className: 'sw-panel-section-head' },
+          h('span', { className: 'sw-panel-section-title' }, 'In context'),
+          h('span', { className: 'sw-panel-section-count' }, (attachments || []).length)
+        ),
+      inChat &&
+        h(
+          'div',
+          { className: 'sw-in-context' },
+          (attachments || []).length === 0
+            ? h(
+                'div',
+                { className: 'sw-caption' },
+                'Nothing in this conversation yet. Add a resource from the list below, or type @.'
+              )
+            : attachments.map((att) =>
+                h(SW.ResourceRow, {
+                  key: att.id,
+                  resource: resourceFromAttachment(att),
+                  contextItem: att,
+                  onOpen: openResource,
+                })
+              )
+        ),
 
       inBuild &&
         h(
@@ -284,6 +335,7 @@ window.SW = window.SW || {};
                   },
                   required: true,
                   app: { name: 'this app' },
+                  allowAppActs: false,
                   onOpen: () => {},
                 })
               )
@@ -292,9 +344,7 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-panel-section-head' },
-        // The scope chip above already names the project, so repeating it here
-        // only makes the header wrap.
-        h('span', { className: 'sw-panel-section-title' }, 'In this project'),
+        h('span', { className: 'sw-panel-section-title' }, 'Project resources'),
         h('span', { className: 'sw-panel-section-count' }, total),
         h(
           Dropdown,

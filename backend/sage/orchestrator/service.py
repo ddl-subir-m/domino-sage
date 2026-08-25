@@ -1887,8 +1887,15 @@ class Orchestrator:
             store.touch(thread_id)
 
         ctx = store.read_context(thread_id)
-        context_ids = [i["id"] for i in ctx["items"] if i.get("id")]
-        user_ev = {"type": "user", "text": prompt, "contextIds": context_ids}
+        items = [i for i in (ctx.get("items") or []) if i.get("id")]
+        context_ids = [i["id"] for i in items]
+        user_ev = {
+            "type": "user",
+            "text": prompt,
+            "contextIds": context_ids,
+            # Names live on the event so a later chip-remove still paints this message.
+            "context": [{"id": i["id"], "name": i.get("name"), "kind": i.get("kind")} for i in items],
+        }
         store.append_history(thread_id, user_ev)
         yield user_ev
 

@@ -14,24 +14,47 @@ window.SW = window.SW || {};
     { id: 'sovereign', label: 'Runs in your environment', detail: 'Llama 3.3 70B', sovereign: true },
   ];
 
-  // Everything the user could @-mention, with what is already in context first
-  // so the common case — "the thing we were just working with" — is one key away.
-  function mentionCandidates(resourceGroups, attachedIds, query) {
+  const PROJECT_MENTION_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive'];
+
+  // Session context, then project Resources, then files — never a flat A–Z dump.
+  function mentionCandidates(attachments, resourceGroups, query) {
     const lowered = query.trim().toLowerCase();
-    const all = [];
-    Object.entries(resourceGroups || {}).forEach(([kind, list]) => {
-      // Plans travel with the conversation already; they are opened, not mentioned.
-      if (kind === 'plan') return;
-      list.forEach((r) => all.push(r));
+    const matches = (r) => !lowered || (r.name || '').toLowerCase().includes(lowered);
+    const seen = new Set();
+    const take = (row) => {
+      if (!row || !row.id || seen.has(row.id) || !matches(row)) return null;
+      seen.add(row.id);
+      return row;
+    };
+
+    const context = [];
+    (attachments || []).forEach((att) => {
+      const row = take({
+        id: att.resourceId || att.id,
+        name: att.resourceName,
+        kind: att.resourceKind || 'file',
+        path: att.path,
+        bindingKey: att.bindingKey,
+      });
+      if (row) context.push(row);
     });
-    return all
-      .filter((r) => !lowered || r.name.toLowerCase().includes(lowered))
-      .sort((a, b) => {
-        const rank = (r) => (attachedIds.has(r.id) ? 0 : 1);
-        if (rank(a) !== rank(b)) return rank(a) - rank(b);
-        return a.name.localeCompare(b.name);
-      })
-      .slice(0, 8);
+
+    const project = [];
+    PROJECT_MENTION_KINDS.forEach((kind) => {
+      (resourceGroups[kind] || []).forEach((r) => {
+        const row = take(r);
+        if (row) project.push(row);
+      });
+    });
+
+    const files = [];
+    (resourceGroups.file || []).forEach((r) => {
+      if (SW.util.isHiddenFromExplorer(r.path || r.name)) return;
+      const row = take(r);
+      if (row) files.push(row);
+    });
+
+    return context.concat(project, files).slice(0, 8);
   }
 
   // Where the caret sits inside an unfinished @mention, if it does.
@@ -67,7 +90,7 @@ window.SW = window.SW || {};
     const activeModel = MODELS.find((m) => m.id === model) || MODELS[0];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
-    const suggestions = mention ? mentionCandidates(resourceGroups, attachedIds, mention.query) : [];
+    const suggestions = mention ? mentionCandidates(attachments, resourceGroups, mention.query) : [];
 
     const send = () => {
       const value = text.trim();
@@ -223,7 +246,11 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-mention-pop' },
-              h('div', { className: 'sw-mention-head sw-group-label' }, `In ${scope.name}`),
+              h(
+                'div',
+                { className: 'sw-mention-head sw-group-label' },
+                suggestions[0] && attachedIds.has(suggestions[0].id) ? 'In context' : `In ${scope.name}`
+              ),
               suggestions.map((resource, index) =>
                 h(
                   'button',

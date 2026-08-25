@@ -41,6 +41,21 @@ def test_chips_persist_on_the_user_event_after_removal(tmp_path: Path):
     assert store.read_history(thread["id"])[0]["contextIds"] == [chip["id"]]
 
 
+def test_record_artifact_lands_in_context(tmp_path: Path):
+    store = ThreadStore(tmp_path)
+    thread = store.create()
+    path = f"examples/{thread['id']}/exposure.table.json"
+    row = store.record_artifact(thread["id"], path=path)
+    ctx = store.read_context(thread["id"])["items"]
+    assert row["kind"] == "table"
+    assert len(ctx) == 1
+    assert ctx[0]["kind"] == "artifact"
+    assert ctx[0]["path"] == path
+    assert ctx[0]["addedBy"] == "sage"
+    store.record_artifact(thread["id"], path=path)
+    assert len(store.read_context(thread["id"])["items"]) == 1
+
+
 def test_title_from_prompt_truncates():
     assert title_from_prompt("  what's our exposure?  ") == "what's our exposure?"
     long = "x" * 80

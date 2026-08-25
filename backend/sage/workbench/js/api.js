@@ -113,12 +113,14 @@ SW.api = {
       tool: [],
       agent: [],
       skill: [],
-      file: (project.attached || []).map((e) => ({
-        id: `file:${e.path}`,
-        name: (e.path || '').split('/').pop(),
-        kind: 'file',
-        path: e.path,
-      })),
+      file: (project.attached || [])
+        .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
+        .map((e) => ({
+          id: `file:${e.path}`,
+          name: (e.path || '').split('/').pop(),
+          kind: 'file',
+          path: e.path,
+        })),
     };
     return { groups };
   },
@@ -136,14 +138,10 @@ SW.api = {
     const ctx = await request(`/threads/${id}/context`);
     return (ctx.items || []).map((item) => ({
       id: item.id,
-      resourceId: item.path
-        ? `file:${item.path}`
-        : (item.bindingKey ? item.bindingKey.join(':') : item.id),
+      resourceId: item.resourceId
+        || (item.path ? `file:${item.path}` : (item.bindingKey ? item.bindingKey.join(':') : item.id)),
       resourceName: item.name,
-      resourceKind: item.kind === 'data_source' ? 'datasource'
-        : item.kind === 'llm_alias' ? 'model_llm'
-        : item.kind === 'model_api' ? 'model_predictive'
-        : item.kind || 'file',
+      resourceKind: SW.util.uiKind(item.kind),
       addedBy: item.addedBy || 'user',
       path: item.path,
       bindingKey: item.bindingKey,
@@ -162,10 +160,11 @@ SW.api = {
       path: resource.path || (kind === 'file' ? rawFromPrefix(resourceId) : undefined),
       bindingKey: resource.bindingKey,
       addedBy: addedBy || 'user',
+      resourceId,
     });
     return {
       id: row.id,
-      resourceId,
+      resourceId: row.resourceId || resourceId,
       resourceName: row.name,
       resourceKind: resource.kind || 'file',
       addedBy: row.addedBy || addedBy || 'user',

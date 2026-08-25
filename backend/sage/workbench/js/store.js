@@ -226,6 +226,7 @@ window.SW = window.SW || {};
           at: ev.at,
           blocks: [{ type: 'text', value: ev.text || '' }],
           contextIds: ev.contextIds,
+          attachments: attachmentsFromUserEvent(ev),
         });
       } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
         ensureAssistant().blocks.push({ type: 'text', value: ev.text });
@@ -248,6 +249,16 @@ window.SW = window.SW || {};
       }
     }
     return withHandoffCallout(messages, handoff);
+  }
+
+  function attachmentsFromUserEvent(ev) {
+    const snap = ev.context;
+    if (!Array.isArray(snap) || !snap.length) return [];
+    return snap.map((c) => ({
+      resourceId: c.id,
+      name: c.name,
+      kind: SW.util.uiKind(c.kind),
+    }));
   }
 
   function withHandoffCallout(messages, handoff) {
@@ -1082,6 +1093,7 @@ window.SW = window.SW || {};
             ensurePushed();
             assistant.blocks = [...assistant.blocks, ...(await blocksForArtifacts(ev.items))];
             notify();
+            refreshAttachments();
           } else if (ev.type === 'error') {
             state.typing = null;
             ensurePushed();
@@ -1107,6 +1119,7 @@ window.SW = window.SW || {};
         notify();
       }
       await loadThreadList();
+      await refreshAttachments();
     },
 
     async chooseOption(option) {

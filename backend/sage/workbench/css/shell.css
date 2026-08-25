@@ -582,7 +582,8 @@
   align-items: center;
   justify-content: center;
 }
-.sw-res-row:hover .sw-res-more, .sw-res-row.is-menu-open .sw-res-more { opacity: 1; }
+.sw-res-row:hover .sw-res-more, .sw-res-row.is-menu-open .sw-res-more,
+.sw-res-row.is-context .sw-res-more { opacity: 1; }
 .sw-res-more:hover { background: var(--gray-200); color: var(--dark-700); }
 
 .sw-res-icon { font-size: 13px; width: 16px; flex: none; text-align: center; }

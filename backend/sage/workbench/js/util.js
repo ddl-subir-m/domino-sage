@@ -17,6 +17,7 @@ window.SW = window.SW || {};
     tool:             { icon: '🔧', label: 'tool',           group: 'tools' },
     agent:            { icon: '✨', label: 'agent',          group: 'agents' },
     file:             { icon: '📄', label: 'file',           group: 'files' },
+    artifact:         { icon: '🖼', label: 'artifact',       group: 'artifacts' },
     skill:            { icon: '📘', label: 'skill',          group: 'skills' },
   };
 
@@ -61,6 +62,23 @@ window.SW = window.SW || {};
 
     labelFor(kind) {
       return (RESOURCE_META[kind] || RESOURCE_META.file).label;
+    },
+
+    uiKind(kind) {
+      if (kind === 'data_source') return 'datasource';
+      if (kind === 'llm_alias') return 'model_llm';
+      if (kind === 'model_api') return 'model_predictive';
+      return kind || 'file';
+    },
+
+    // The Chat explorer is the project's pickable working set, not the repo.
+    isHiddenFromExplorer(path) {
+      const p = String(path || '').replace(/^\.\//, '');
+      if (!p) return false;
+      const base = p.split('/').pop();
+      if (base === 'AGENTS.md') return true;
+      if (p === '.sage' || p.startsWith('.sage/')) return true;
+      return false;
     },
 
     thumbUrl(name) {

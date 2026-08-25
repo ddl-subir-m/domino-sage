@@ -95,7 +95,26 @@ def test_chat_turn_records_artifact_and_reverts_src(tmp_path: Path):
     assert (orch.project(start_preview=False).workspace.path / arts[0]["path"]).read_text() == table
     hist = orch.thread_history(tid)
     assert hist[0]["type"] == "user"
+    ctx = orch.thread_context(tid)["items"]
+    assert any(i.get("kind") == "artifact" and i.get("path") == arts[0]["path"] for i in ctx)
     assert orch.project(start_preview=False).workspace.read_history() == []
+
+
+def test_chat_user_event_snapshots_context_chips(tmp_path: Path):
+    orch, _ = _orch(tmp_path, [Turn(text="Rates is the largest desk.")])
+    tid = orch.create_thread()["id"]
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "positions.csv", "path": "public/data/positions.csv",
+    })
+    events = list(orch.chat_stream(tid, "summarise this"))
+    user = next(e for e in events if e["type"] == "user")
+    assert user["contextIds"] == [row["id"]]
+    assert user["context"][0]["name"] == "positions.csv"
+    orch.remove_thread_context(tid, row["id"])
+    hist = orch.thread_history(tid)
+    assert hist[0]["contextIds"] == [row["id"]]
+    assert hist[0]["context"][0]["name"] == "positions.csv"
+    assert orch.thread_context(tid)["items"] == []
 
 
 def test_new_conversation_does_not_provision(tmp_path: Path, monkeypatch):
