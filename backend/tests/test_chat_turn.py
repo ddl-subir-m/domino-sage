@@ -107,3 +107,114 @@ def test_get_patch_delete_thread(tmp_path: Path):
     assert patched["pinned"] is True
     orch.delete_thread(row["id"])
     assert orch.list_threads() == []
+
+
+def _track_saves(orch):
+    calls = []
+
+    def fake(project, prompt):
+        calls.append(prompt)
+        return {"type": "saved", "ok": True, "pushed": True, "detail": prompt}
+
+    orch._save_to_git = fake
+    return calls
+
+
+def test_chat_first_turn_saves(tmp_path: Path):
+    orch, _ = _orch(tmp_path, [Turn(text="Rates is the largest desk.")])
+    calls = _track_saves(orch)
+    thread = orch.create_thread()
+    events = list(orch.chat_stream(thread["id"], "what's our gross exposure by desk?"))
+
+    assert calls == ["chat (first)"]
+    saved = next(e for e in events if e["type"] == "saved")
+    assert saved["ok"] is True
+    assert orch._chat_dirty is False
+    assert orch._chat_save_timer is None
+
+
+def test_chat_text_followup_saves_on_idle_not_every_turn(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="And by region, APAC.")])
+    calls = _track_saves(orch)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what's our gross exposure by desk?"))
+    calls.clear()
+
+    events = list(orch.chat_stream(tid, "and by region?"))
+    assert calls == []
+    assert not any(e.get("type") == "saved" for e in events)
+    assert orch._chat_dirty is True
+    assert orch._chat_save_timer is not None
+
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert calls == ["chat (idle)"]
+    assert orch._chat_dirty is False
+    assert orch._chat_save_timer is None
+
+
+def test_chat_artifact_followup_saves_immediately(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    calls = _track_saves(orch)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "hello"))
+    calls.clear()
+
+    table = '{"title": "Desks", "columns": ["desk"], "rows": [["Rates"]]}'
+    oc.turns.append(Turn(
+        text="Here is gross notional by desk.",
+        writes={f"examples/{tid}/exposure.table.json": table},
+    ))
+    events = list(orch.chat_stream(tid, "what's in this CSV?"))
+
+    assert calls == ["chat (artifacts)"]
+    assert next(e for e in events if e["type"] == "saved")["ok"] is True
+    assert orch._chat_dirty is False
+
+
+def test_chat_leave_thread_flushes(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="Still Rates.")])
+    calls = _track_saves(orch)
+    a = orch.create_thread()
+    b = orch.create_thread()
+    list(orch.chat_stream(a["id"], "what's our gross exposure by desk?"))
+    calls.clear()
+    list(orch.chat_stream(a["id"], "say more"))
+    assert calls == []
+
+    orch.get_thread(a["id"])
+    assert calls == []
+
+    orch.get_thread(b["id"])
+    assert calls == ["chat (leave)"]
+    assert orch._chat_dirty is False
+
+    calls.clear()
+    oc.turns.append(Turn(text="APAC."))
+    list(orch.chat_stream(a["id"], "and by region?"))
+    assert orch._chat_dirty is True
+    orch.create_thread()
+    assert calls == ["chat (leave)"]
+
+
+def test_flush_chat_save_and_shutdown_cancel_idle(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="Still Rates.")])
+    calls = _track_saves(orch)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what's our gross exposure by desk?"))
+    calls.clear()
+    list(orch.chat_stream(tid, "say more"))
+    assert orch._chat_save_timer is not None
+
+    assert orch.flush_chat_save()["ok"] is True
+    assert calls == ["chat (leave)"]
+    assert orch._chat_dirty is False
+    assert orch._chat_save_timer is None
+
+    oc.turns.append(Turn(text="APAC."))
+    list(orch.chat_stream(tid, "and by region?"))
+    calls.clear()
+    assert orch._chat_save_timer is not None
+    orch.shutdown()
+    assert orch._chat_save_timer is None
+    assert calls == ["save before stop"]

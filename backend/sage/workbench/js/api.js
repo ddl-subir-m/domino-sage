@@ -182,6 +182,7 @@ SW.api = {
   threads: async () => request('/threads'),
   thread: (id) => request(`/threads/${id}`),
   createThread: () => post('/threads', {}),
+  flushChat: () => post('/threads/save', {}),
   patchThread: (id, body) => patch(`/threads/${id}`, body),
   touchApp: async () => ({ touched: [] }),
   deleteThread: (id) => del(`/threads/${id}`),

@@ -18,4 +18,5 @@ def test_workbench_is_the_default_ui():
     js = client.get("/js/api.js")
     assert js.status_code == 200
     assert b"/threads" in js.content
+    assert b"/threads/save" in js.content
     assert b"./api" in js.content

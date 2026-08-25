@@ -1157,6 +1157,15 @@ def create_thread() -> JSONResponse:
     return JSONResponse(orchestrator.create_thread())
 
 
+@control_app.post("/api/threads/save")
+def flush_chat_save() -> JSONResponse:
+    """Push dirty Chat files now (leaving Chat, or switching Thread). No-op if nothing is dirty."""
+    result = orchestrator.flush_chat_save()
+    if result is None:
+        return JSONResponse({"type": "saved", "ok": True, "pushed": False, "detail": "nothing to save"})
+    return JSONResponse(result)
+
+
 @control_app.get("/api/threads/{thread_id}")
 def get_thread(thread_id: str) -> JSONResponse:
     try:

@@ -1207,6 +1207,11 @@ class Orchestrator:
         # overlap is refused with a clear event, not silently run. Stop stays lock-free (it only sets
         # stop_requested, which the running turn polls) so it can always interrupt the held turn.
         self._turn_lock = threading.Lock()
+        # Chat files are written every turn; git save is coalesced (docs/workbench/chat.md).
+        self._chat_dirty = False
+        self._chat_dirty_thread: str | None = None
+        self._chat_save_timer: threading.Timer | None = None
+        self._chat_save_idle_s = 30.0
 
     def turn_busy(self) -> bool:
         """True while a build/approve turn holds the turn lock. The UI polls this to tell a dropped
@@ -1538,9 +1543,12 @@ class Orchestrator:
 
     def create_thread(self) -> dict:
         """A new Chat Thread in this project. Does not provision a Domino project."""
+        self._flush_chat_save("leave")
         return ThreadStore(self.project(start_preview=False).workspace.path).create()
 
     def get_thread(self, thread_id: str) -> dict:
+        if self._chat_dirty_thread and self._chat_dirty_thread != thread_id:
+            self._flush_chat_save("leave")
         store = ThreadStore(self.project(start_preview=False).workspace.path)
         row = store.get(thread_id)
         if row is None:
@@ -1598,6 +1606,59 @@ class Orchestrator:
             self._clear_turn_baseline()
             self._turn_lock.release()
 
+    def flush_chat_save(self) -> dict | None:
+        """Push dirty Chat files now (leaving Chat, switching Thread). No-op if nothing is dirty."""
+        return self._flush_chat_save("leave")
+
+    def _cancel_chat_idle_save(self) -> None:
+        timer = self._chat_save_timer
+        self._chat_save_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_chat_idle_save(self) -> None:
+        self._cancel_chat_idle_save()
+        timer = threading.Timer(self._chat_save_idle_s, self._on_chat_save_idle)
+        timer.daemon = True
+        self._chat_save_timer = timer
+        timer.start()
+
+    def _on_chat_save_idle(self) -> None:
+        if self._turn_lock.locked():
+            self._arm_chat_idle_save()
+            return
+        self._flush_chat_save("idle")
+
+    def _flush_chat_save(self, reason: str, *, holding_turn: bool = False) -> dict | None:
+        """Commit + push if Chat has unsaved files. Returns the `saved` event, or None."""
+        self._cancel_chat_idle_save()
+        if not self._chat_dirty:
+            return None
+        if not holding_turn and self._turn_lock.locked():
+            self._arm_chat_idle_save()
+            return None
+        try:
+            project = self.project(start_preview=False)
+            result = self._save_to_git(project, f"chat ({reason})")
+        except Exception:
+            log.exception("chat save failed")
+            self._arm_chat_idle_save()
+            return {"type": "saved", "ok": False, "pushed": False, "detail": "chat save failed"}
+        if result is None or result.get("ok"):
+            self._chat_dirty = False
+            self._chat_dirty_thread = None
+        else:
+            self._arm_chat_idle_save()
+        return result
+
+    def _after_chat_turn(self, thread_id: str, *, immediate: str | None) -> dict | None:
+        self._chat_dirty = True
+        self._chat_dirty_thread = thread_id
+        if immediate:
+            return self._flush_chat_save(immediate, holding_turn=True)
+        self._arm_chat_idle_save()
+        return None
+
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> str:
         sid = store.read_session_id(thread_id)
@@ -1637,7 +1698,9 @@ class Orchestrator:
             yield {"type": "error", "message": "Unknown thread"}
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
-        if thread.get("title") in ("", "New conversation"):
+        self._cancel_chat_idle_save()
+        was_first = thread.get("title") in ("", "New conversation")
+        if was_first:
             store.touch(thread_id, title=title_from_prompt(prompt))
         else:
             store.touch(thread_id)
@@ -1648,6 +1711,8 @@ class Orchestrator:
         store.append_history(thread_id, user_ev)
         yield user_ev
 
+        immediate = "first" if was_first else None
+        artifacts: list[dict] = []
         chat_token = project.control.arm_chat(thread_id)
         try:
             client = self._ensure_opencode()
@@ -1711,6 +1776,7 @@ class Orchestrator:
                 for rel in new_artifact_paths(project.workspace.path, thread_id, before)
             ]
             if artifacts:
+                immediate = immediate or "artifacts"
                 yield {"type": "artifacts", "items": artifacts}
             done = {"type": "done", "ok": True, "decision": "answered"}
             if artifacts:
@@ -1719,6 +1785,9 @@ class Orchestrator:
             yield done
         finally:
             project.control.disarm_chat(chat_token)
+            saved = self._after_chat_turn(thread_id, immediate=immediate)
+            if saved:
+                yield saved
 
     def _recheck_app_data(self) -> None:
         """Re-derive what the agent is told about the app's data, now that the turn is over (#15).
@@ -4731,6 +4800,7 @@ class Orchestrator:
         # save any in-progress work first — commit + pull/resolve + push — so stopping never drops
         # uncommitted edits. Done before tearing down opencode, whose server the conflict-resolution
         # turn still needs. Best-effort: _save_to_git never raises, but guard the teardown regardless.
+        self._cancel_chat_idle_save()
         if self._project is not None:
             try:
                 self._save_to_git(self._project, "save before stop")

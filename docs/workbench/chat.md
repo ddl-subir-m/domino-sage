@@ -40,6 +40,8 @@ Chat adds:
 examples/<threadId>/                       # Artifact files; committed
 ```
 
+Chat writes those files every turn. Git commit + push is coalesced so a burst of follow-ups does not spam the remote. Push when losing the workspace would hurt: the first message of a Thread, a turn that produced Artifacts, leaving the Thread (New conversation, a different Thread, Chat → Build / Code / Manage), ~30s idle, and container stop. Mid-stream and tool steps do not push. Reuses `_save_to_git`; commit message `sage: chat ({reason})`. Local `/tmp` workspaces are not a repo root — treat that as saved.
+
 `threads.json` shape:
 
 ```json

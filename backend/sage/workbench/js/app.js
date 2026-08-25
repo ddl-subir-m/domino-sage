@@ -97,6 +97,10 @@ window.SW = window.SW || {};
       SW.store.init().catch((err) => setError(err));
     }, []);
 
+    useEffect(() => {
+      if (route.mode !== 'chat') SW.api.flushChat().catch(() => {});
+    }, [route.mode]);
+
     if (error) {
       return h(Result, {
         status: 'error',
