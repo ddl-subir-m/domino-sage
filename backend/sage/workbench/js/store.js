@@ -1311,6 +1311,31 @@ window.SW = window.SW || {};
         if (!state.messages.some((m) => m.id === assistant.id)) pushMessage(assistant);
       };
 
+      // The answer as it is being written. `liveIndex` is where that block sits in this message,
+      // or -1 when no block is open — a turn can write more than one, and each `final` closes the
+      // one it completes so the next fragment starts a fresh one.
+      //
+      // Deltas arrive faster than the screen refreshes, and every one of them re-renders the whole
+      // Thread — including earlier messages' charts, which stringify their options to decide
+      // whether to redraw. So fragments accumulate and repaint once a frame. The text is identical
+      // either way; the difference is a Thread that scrolls smoothly and one that stutters.
+      let liveIndex = -1;
+      let streamed = '';
+      let painting = false;
+      const flush = () => {
+        painting = false;
+        if (liveIndex < 0) return;
+        const blocks = [...assistant.blocks];
+        blocks[liveIndex] = { type: 'text', value: streamed, streaming: true };
+        assistant.blocks = blocks;
+        notify();
+      };
+      const paint = () => {
+        if (painting) return;
+        painting = true;
+        requestAnimationFrame(flush);
+      };
+
       try {
         const res = await fetch(`./api/threads/${thread.id}/chat/stream`, {
           method: 'POST',
@@ -1323,10 +1348,35 @@ window.SW = window.SW || {};
         }
         await readSSE(res, async (ev) => {
           if (!ev || ev.type === 'user') return;
-          if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
+          if (ev.type === 'delta') {
             state.typing = null;
             ensurePushed();
-            assistant.blocks = [...assistant.blocks, { type: 'text', value: ev.text }];
+            if (liveIndex < 0) {
+              liveIndex = assistant.blocks.length;
+              assistant.blocks = [...assistant.blocks, { type: 'text', value: '', streaming: true }];
+              streamed = '';
+            }
+            if (ev.final) {
+              // The whole text rather than the last fragment. The stream cannot be replayed, so
+              // this is what repairs a live copy that dropped a frame — and it closes the block.
+              streamed = ev.text || '';
+              flush();
+              liveIndex = -1;
+            } else {
+              streamed += ev.text || '';
+              paint();
+            }
+          } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
+            state.typing = null;
+            ensurePushed();
+            // What streamed was the turn happening. This is the record of it, and it is the only
+            // part the server keeps, so the live blocks go: a Thread has to look the same on
+            // reload as it did while it ran. Intermediate "let me read that file" text is not in
+            // the transcript and so is not in the Thread either way. A queued repaint is harmless
+            // once liveIndex is -1.
+            liveIndex = -1;
+            assistant.blocks = [...assistant.blocks.filter((b) => !b.streaming),
+                                { type: 'text', value: ev.text }];
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
             if (ev.tool === 'bash') state.typing = 'Running Python…';

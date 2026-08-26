@@ -389,7 +389,10 @@ window.SW = window.SW || {};
   SW.MessageBlock = function MessageBlock({ block, onSave }) {
     switch (block.type) {
       case 'text':
-        return h('div', { className: 'sw-msg-text' }, SW.util.markdown(block.value));
+        // A caret while the text is still arriving. Without it a model that pauses mid-sentence
+        // looks like a model that finished a short answer, and the reader gives up on it.
+        return h('div', { className: `sw-msg-text${block.streaming ? ' is-streaming' : ''}` },
+                 SW.util.markdown(block.value));
       case 'code':
         return h(CodeBlock, { code: block.value, language: block.language });
       case 'sandbox_run':

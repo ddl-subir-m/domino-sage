@@ -84,6 +84,20 @@ window.SW = window.SW || {};
       if (el) el.scrollTop = el.scrollHeight;
     }, [messages.length, typing]);
 
+    // A streaming answer grows the last message rather than adding one, so the length of the list
+    // does not change and the view stops following the text. Follow it — but only from the bottom.
+    // Being yanked back down every frame while reading something further up is worse than not
+    // following at all.
+    const streamedChars = messages.length
+      ? (messages[messages.length - 1].blocks || []).reduce((n, b) => n + (b.value || '').length, 0)
+      : 0;
+
+    useEffect(() => {
+      const el = scroller.current;
+      if (!el) return;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight;
+    }, [streamedChars]);
+
     const send = async (text) => {
       if (!thread) {
         const created = await SW.store.newThread();

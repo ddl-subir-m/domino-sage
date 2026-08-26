@@ -191,3 +191,55 @@ def test_a_dataset_file_chip_does_not_invent_a_path_out_of_its_own_id():
 
     assert "kind === 'file' && kindFromPrefix(resourceId) === 'file'" in api
     assert "path: resource.path || (kind === 'file' ? rawFromPrefix(resourceId) : undefined)" not in api
+
+
+def _js(*parts: str) -> str:
+    return (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js" / Path(*parts)).read_text()
+
+
+def test_the_answer_is_rendered_as_it_arrives_and_replaced_by_the_record_of_it():
+    """Chat showed nothing until the turn ended. The server now sends `delta` while the text is
+    being written, and the client has to do two things with it: paint the fragments, then let go of
+    them when the authoritative text arrives. Only the authoritative text is in the transcript, so
+    a client that kept its live blocks would show a Thread that changes when you reload it."""
+    store = _js("store.js")
+
+    assert "if (ev.type === 'delta')" in store
+    # `final` is the whole text, not the last fragment — the stream cannot be replayed, so this is
+    # what repairs a live copy that dropped a frame.
+    assert "streamed = ev.text || '';" in store
+    # And the record replaces what streamed rather than being appended after it.
+    assert "assistant.blocks.filter((b) => !b.streaming)" in store
+
+
+def test_fragments_repaint_once_a_frame_rather_than_once_each():
+    """Deltas arrive faster than the screen refreshes, and each one re-renders the whole Thread —
+    including earlier messages' charts, which stringify their options to decide whether to redraw.
+    Painting per fragment is the difference between a Thread that scrolls and one that stutters."""
+    assert "requestAnimationFrame(flush)" in _js("store.js")
+
+
+def test_a_replayed_thread_has_no_live_text_to_replay():
+    """`delta` never reaches history.jsonl — it is the turn happening, not the record of it. The
+    replay path reads `ev.text`, so a Thread on reload is built from the transcript alone."""
+    store = _js("store.js")
+    head = store[:store.index("async function readSSE")]
+    assert "'delta'" not in head
+
+
+def test_text_still_arriving_says_so():
+    """A model that pauses mid-sentence otherwise looks like a model that finished a short answer."""
+    blocks = _js("components", "message-blocks.js")
+    assert "block.streaming ? ' is-streaming' : ''" in blocks
+    css = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "css" / "chat.css").read_text()
+    assert ".sw-msg-text.is-streaming" in css
+    assert "prefers-reduced-motion" in css   # a blinking caret is not for everyone
+
+
+def test_the_view_follows_a_growing_answer_but_only_from_the_bottom():
+    """A streamed answer grows the last message rather than adding one, so the length of the list
+    never changes and the scroller stops following. It has to follow the text — and stop following
+    the moment the reader scrolls up, or reading anything earlier becomes impossible mid-turn."""
+    chat = _js("modes", "chat.js")
+    assert "streamedChars" in chat
+    assert "el.scrollHeight - el.scrollTop - el.clientHeight < 120" in chat
