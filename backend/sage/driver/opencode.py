@@ -159,6 +159,20 @@ class OpenCodeClient:
         r = httpx.post(f"{self.base_url}/api/session/{session_id}/prompt", json=body, timeout=self.timeout_s)
         r.raise_for_status()
 
+    def summarize(self, session_id: str, provider_id: str, model_id: str, *, auto: bool = False) -> None:
+        """Compact this session's model context (OpenCode 1.18.4: POST /summarize).
+
+        Body is `{providerID, modelID, auto}`. `auto=False` so OpenCode does not inject a synthetic
+        "continue" user turn after the summary — Sage only wants the checkpoint, then the next
+        real user prompt. The call may block until the summary loop finishes; callers still
+        wait_for_idle when the session is running, in case a later build returns before it idles.
+        """
+        body = {"providerID": provider_id, "modelID": model_id, "auto": auto}
+        r = httpx.post(
+            f"{self.base_url}/api/session/{session_id}/summarize",
+            json=body, timeout=self.timeout_s)
+        r.raise_for_status()
+
     def agent_summaries(self) -> list[dict]:
         """The agents OpenCode actually resolved from its config. `send_prompt(agent=...)` silently
         falls back to the default build agent when a name is missing, so a mode's `permission`/`prompt`

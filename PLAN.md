@@ -204,10 +204,9 @@ and the Phase-0 spike report shows the enforcement guarantee held under the bypa
 
 Follow-ups discovered during the build; not yet implemented.
 
-- **Session compaction (context/cost control).** Follow-up prompts reuse one OpenCode session per
-  project for context, so a long-lived session's context (and token cost) grows unbounded.
-  Add compaction: summarize/trim old turns (OpenCode has `/api/session/{id}/compact` and
-  `/summarize`), or cap history, and surface it in the UI. Prevents slow/expensive later turns.
+- **Session compaction (context/cost control).** Chat Threads auto-compact the OpenCode session
+  after a turn when usage (or a 12-turn fallback) crosses the threshold; Sage `history.jsonl` stays
+  the full UI replay. Build still reuses one OpenCode session per project with unbounded context.
 - **Token-level streaming.** Build streaming currently ~1s-polls session messages (tool steps +
   summaries appear as they complete). For word-by-word output, proxy OpenCode's `/event` SSE with
   clean teardown of the blocking stream.

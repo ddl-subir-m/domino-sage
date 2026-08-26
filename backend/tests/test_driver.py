@@ -180,3 +180,13 @@ def test_a_normal_data_attachment_gets_no_image_note(monkeypatch):
     OpenCodeClient("http://x").send_prompt("s1", "chart it", attachments=[_ATT])
 
     assert "NOT shown to you" not in calls[0]["prompt"]["text"]
+
+
+def test_summarize_posts_provider_and_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append((url, json)) or _Resp(200))
+    OpenCodeClient("http://x").summarize("s1", "sage-gateway", "sonnet", auto=False)
+    url, body = calls[0]
+    assert url.endswith("/api/session/s1/summarize")
+    assert body == {"providerID": "sage-gateway", "modelID": "sonnet", "auto": False}

@@ -35,6 +35,9 @@ class Turn:
     prelude: str = ""
     writes: dict[str, str] = field(default_factory=dict)
     tools: list[str] = field(default_factory=list)
+    # OpenCode usage on the assistant message. None means the fake omits `tokens` (turn-count
+    # fallback). Tests that want the token threshold set this to `{input, output, ...}`.
+    tokens: dict | None = None
 
 
 class FakeOpenCode:
@@ -60,6 +63,8 @@ class FakeOpenCode:
         self._by_session: dict[str, list[dict]] = {"fake-session": []}
         self._running: dict[str, bool] = {}
         self._next = 0
+        self.compacts: list[dict] = []
+        self.compact_error: Exception | None = None
 
     # --- session ---------------------------------------------------------------------------------
 
@@ -114,7 +119,23 @@ class FakeOpenCode:
             parts.append({"id": f"m{n}-p", "type": "text", "text": turn.prelude})
         if turn.text:
             parts.append({"id": f"m{n}-x", "type": "text", "text": turn.text})
-        msgs.append({"id": f"m{n}", "type": "assistant", "content": parts})
+        assistant: dict = {"id": f"m{n}", "type": "assistant", "content": parts}
+        if turn.tokens is not None:
+            assistant["tokens"] = turn.tokens
+        msgs.append(assistant)
+
+    def summarize(self, session_id: str, provider_id: str, model_id: str, *, auto: bool = False) -> None:
+        if self.compact_error is not None:
+            raise self.compact_error
+        n = len(self.compacts) + 1
+        self.compacts.append({
+            "session": session_id, "providerID": provider_id, "modelID": model_id, "auto": auto,
+        })
+        msgs = self._by_session.setdefault(session_id, [])
+        msgs.append({"id": f"c{n}", "type": "user",
+                     "content": [{"type": "compaction", "auto": auto}]})
+        msgs.append({"id": f"cs{n}", "type": "assistant", "summary": True,
+                     "content": [{"type": "text", "text": "compacted"}]})
 
     def is_running(self, session_id: str) -> bool:
         was = self._running.get(session_id, False)

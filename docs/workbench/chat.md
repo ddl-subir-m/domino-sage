@@ -59,7 +59,11 @@ Title: first user message, truncated to 60 characters, until the user renames. `
 
 `Workspace.read_session_id` / `history_path` stay Build-scoped. Chat goes through new helpers on `Workspace` (`thread_session_id`, `append_thread_history`, …) so a Chat turn cannot append to the Build transcript and a Build turn cannot append to a Thread.
 
-OpenCode: `create_session(directory=.sage/chat-work)` per Thread, persist that id under the Thread. One `opencode serve` per container still; sessions are many. Compaction is still backlog — a long Thread will get expensive; do not solve it in this slice.
+OpenCode: `create_session(directory=.sage/chat-work)` per Thread, persist that id under the Thread. One `opencode serve` per container still; sessions are many.
+
+After a successful Chat turn, Sage asks OpenCode to compact that Thread's session when the model's context is getting full (`POST /api/session/{id}/summarize`, same Chat alias as the thread; `auto=false` so OpenCode does not start a synthetic follow-up). Token usage on the latest assistant message is the trigger when OpenCode reports it (70% of that alias's window in `opencode.json`). If usage is missing, Sage falls back to 12 user turns since the last compact. Compact errors are logged and ignored — the turn the person just got still succeeds.
+
+Sage `history.jsonl` is the UI replay and is never rewritten. The Thread still shows every turn; only what OpenCode sends the model next shrinks.
 
 ## 4. Agent: `sage-chat`
 
@@ -224,7 +228,7 @@ Minimum Chat chrome that must work (the rest of the mock can wait):
 - A second LLM stack or Open Web UI
 - RAG, MCP connector UI
 - Many Built Apps per Domino project
-- Token streaming, compaction
+- Token streaming
 - Reverse handoff ("Ask about this app") — nice, not required
 
 ## 9. Acceptance

@@ -109,6 +109,7 @@ from ..workspace.threads import (
     snapshot_files,
     title_from_prompt,
 )
+from . import chat_compact
 from . import handoff as chat_handoff
 from . import scope
 from .describe import describe, fit_image
@@ -2363,6 +2364,7 @@ class Orchestrator:
             if suggestion:
                 store.append_history(thread_id, suggestion)
                 yield suggestion
+            self._maybe_compact_chat(client, sid, project)
         finally:
             project.control.disarm_chat(chat_token)
             if web_token is not None:
@@ -2370,6 +2372,31 @@ class Orchestrator:
             saved = self._after_chat_turn(thread_id, immediate=immediate)
             if saved:
                 yield saved
+
+    def _maybe_compact_chat(self, client, sid: str, project: Project) -> None:
+        """After a Chat turn, compact the OpenCode session if it has grown too large.
+
+        Sage `history.jsonl` is the UI replay and is left alone. Compact only what the next
+        `sage-chat` prompt will see. Chat arming must still be live so the summary call routes
+        as this Thread's Chat model (the shim rewrites every sage-gateway request). Fail open.
+        """
+        summarize = getattr(client, "summarize", None)
+        if summarize is None:
+            return
+        state = project.control.snapshot()
+        if not state.chat_thread_id:
+            return
+        try:
+            messages = client.messages(sid)
+            provider, model = chat_compact.compact_model(state, project.shim.catalog)
+            if not chat_compact.should_compact(messages, model):
+                return
+            log.info("chat compact: session=%s model=%s/%s", sid, provider, model)
+            summarize(sid, provider, model, auto=False)
+            if client.is_running(sid):
+                client.wait_for_idle(sid, appear_grace_s=2.0)
+        except Exception:
+            log.exception("chat compact failed; leaving the OpenCode session as-is")
 
     def _recheck_app_data(self) -> None:
         """Re-derive what the agent is told about the app's data, now that the turn is over (#15).
