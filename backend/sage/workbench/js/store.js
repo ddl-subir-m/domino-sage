@@ -780,7 +780,21 @@ window.SW = window.SW || {};
             try {
               await SW.api.removeFromProject(state.scope.id, resource.id);
             } catch (err) {
-              antd.message.error(err.message);
+              // The app still binds it, so the removal is refused. A toast saying so is a dead
+              // end — name the source that still uses it, because that is the change the creator
+              // has to make first. (Removing the record is not removing the code: an app whose
+              // Summarise button calls an Alias it no longer has keeps the button.)
+              const refs = (err.payload && err.payload.refs) || [];
+              if (refs.length) {
+                antd.Modal.info({
+                  title: `${resource.name} is still used by this app`,
+                  content: `${err.message}, so it can't leave ${scopeName} yet. Used in: ` +
+                    `${refs.join(', ')}. Remove those uses in Build, then remove it here.`,
+                  okText: 'Got it',
+                });
+              } else {
+                antd.message.error(err.message);
+              }
               resolve(false);
               return;
             }

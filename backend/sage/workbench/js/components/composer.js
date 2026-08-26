@@ -171,8 +171,13 @@ window.SW = window.SW || {};
       onSend(value);
     };
 
-    const changeText = (value, caret) => {
+    const changeText = (value, caret, inputType) => {
       setText(value);
+      // Backspacing over a finished mention re-opens the picker on every keystroke: the caret lands
+      // just after "@BigQuery_Dem", which still matches the token. The user is deleting and gets a
+      // menu — and the open menu then takes the next Enter for row selection instead of send. A
+      // deletion may still NARROW a menu that is already open, so the guard is conditional on state.
+      if (String(inputType || '').startsWith('delete') && !mention) return;
       const found = mentionAt(value, caret === undefined ? value.length : caret);
       setMention(found);
       setCursor(0);
@@ -364,7 +369,8 @@ window.SW = window.SW || {};
             disabled,
             placeholder: placeholder || 'Describe your app, or a change to make… use @ to bring in a resource',
             autoSize: { minRows: compact ? 1 : 2, maxRows: 8 },
-            onChange: (e) => changeText(e.target.value, e.target.selectionStart),
+            onChange: (e) =>
+              changeText(e.target.value, e.target.selectionStart, e.nativeEvent && e.nativeEvent.inputType),
             onKeyDown: (e) => {
               if (!mention || suggestions.length === 0) return;
               if (e.key === 'ArrowDown') {

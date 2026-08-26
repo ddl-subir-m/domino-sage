@@ -21,8 +21,9 @@ async function request(path, options = {}) {
     });
     if (!res.ok) {
       let detail = `${res.status} ${res.statusText}`;
+      let payload = null;
       try {
-        const payload = await res.json();
+        payload = await res.json();
         if (payload && (payload.detail || payload.error || payload.message)) {
           detail = payload.detail || payload.error || payload.message;
           if (typeof detail === 'object') detail = detail.message || JSON.stringify(detail);
@@ -30,7 +31,13 @@ async function request(path, options = {}) {
       } catch (parseError) {
         // Response wasn't JSON; the status line is the best we have.
       }
-      throw new Error(detail);
+      // A refusal often carries more than a sentence — which files still use the Resource, which
+      // rows a query touched. Flattening it to a message throws that away, and the caller is the
+      // only one that knows what to do with it.
+      const err = new Error(detail);
+      err.status = res.status;
+      err.payload = payload;
+      throw err;
     }
     if (res.status === 204) return null;
     const ct = res.headers.get('content-type') || '';

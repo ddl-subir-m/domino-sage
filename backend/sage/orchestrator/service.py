@@ -179,10 +179,16 @@ class UploadUnavailable(Exception):
 
 
 class ResourceStillBound(Exception):
-    """The Built App still records a Binding for this Resource, so membership cannot drop it."""
+    """The Built App still records a Binding for this Resource, so membership cannot drop it.
 
-    def __init__(self, name: str) -> None:
+    Carries `refs` — the app source that still uses it — for the same reason `unbind` reports them:
+    "this app still needs it" is a refusal, and a refusal a creator cannot act on is a dead end. The
+    files are what turns it into a next step.
+    """
+
+    def __init__(self, name: str, refs: list[str] | None = None) -> None:
         self.name = name
+        self.refs = list(refs or [])
         super().__init__(f"this app still needs {name}")
 
 
@@ -4086,7 +4092,10 @@ class Orchestrator:
             return False
         bound = self._binding_for_membership(rid)
         if bound is not None:
-            raise ResourceStillBound(bound.display_name or bound.name or rid)
+            raise ResourceStillBound(
+                bound.display_name or bound.name or rid,
+                self._resource_usage(self.project(start_preview=False), bound),
+            )
         found = {"ok": False}
 
         def change(items: list[dict]) -> list[dict]:

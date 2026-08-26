@@ -167,3 +167,29 @@ def test_an_unparseable_query_catalog_does_not_fail_the_unbind(tmp_path):
     _write(orch, ".sage/queries.json", "{not json")
 
     assert orch.unbind(KIND_DATA_SOURCE, "ds-1")["refs"] == []
+
+
+def test_refusing_a_membership_removal_names_the_same_files(tmp_path):
+    """The refusal is the other door onto the same problem.
+
+    Removing a Resource from the project is refused while the app still binds it — membership is not
+    a back door to unbind. But "this app still needs it" on its own is a dead end: the creator can
+    neither act on it nor find out what to change. It carries the refs the unbind would have given,
+    so the panel can say which files to fix first.
+    """
+    from sage.orchestrator.service import ResourceStillBound
+
+    orch = _orch(tmp_path)
+    orch.add_project_resource({"id": "llm_alias:id-mimo", "kind": "model_llm", "name": "MiMo 2.5"})
+    orch.bind_llm_alias("id-mimo")
+    _write(orch, "src/Cluster.tsx",
+           'import { askModel } from "./sageLlm";\n'
+           'await askModel(msgs, { alias: "mimo-v2.5" });\n')
+
+    try:
+        orch.remove_project_resource("llm_alias:id-mimo")
+    except ResourceStillBound as e:
+        assert "src/Cluster.tsx" in e.refs
+    else:
+        raise AssertionError("expected the removal to be refused while the app still binds it")
+

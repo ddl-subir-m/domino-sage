@@ -655,7 +655,9 @@ def remove_project_resource(id: str = "") -> JSONResponse:
     try:
         ok = orchestrator.remove_project_resource(id)
     except ResourceStillBound as e:
-        return JSONResponse(status_code=409, content={"error": str(e)})
+        # `refs` names the app source that still uses it, so the panel can say what to change rather
+        # than only that it refused — the same cleanup affordance `unbind` gives.
+        return JSONResponse(status_code=409, content={"error": str(e), "refs": e.refs})
     if not ok:
         return JSONResponse(status_code=404, content={"error": "not in this project"})
     return JSONResponse(content={"removed": True})

@@ -48,3 +48,14 @@ def test_nothing_competes_with_the_keyboard_highlight():
     assert ".sw-mention-item.is-active" in CSS
     assert ".sw-mention-item:hover" not in CSS
     assert "onMouseEnter: () => setCursor(index)," in UI
+
+
+def test_a_deletion_never_opens_a_closed_mention_menu():
+    # Backspacing over a finished mention re-opened the picker on every keystroke: the caret lands
+    # just after "@BigQuery_Dem", which still matches the token regex. The user was deleting and got
+    # a menu — and the open menu then took the next Enter for row selection instead of sending.
+    assert "if (String(inputType || '').startsWith('delete') && !mention) return;" in UI
+    # The rule needs the browser to say what kind of edit this was, so the handler has to pass it on.
+    assert "e.nativeEvent && e.nativeEvent.inputType" in UI
+    # A deletion may still NARROW a menu that is already open, so the guard is conditional on state.
+    assert "&& !mention) return;" in UI

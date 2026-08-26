@@ -58,6 +58,9 @@ def test_workbench_is_the_default_ui():
 
     store = client.get("/js/store.js")
     assert store.status_code == 200
+    # A refused removal names the app source that still uses it, rather than a dead-end toast.
+    assert b"is still used by this app" in store.content
+    assert b"err.payload && err.payload.refs" in store.content
     assert b"gatewayAliases" in store.content
     assert b"resourcesLoading" in store.content
     assert b"resourceListing" in store.content
