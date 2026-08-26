@@ -349,7 +349,7 @@ window.SW = window.SW || {};
         messages.push({
           id: `sug_${messages.length}`,
           role: 'system',
-          blocks: [{ type: 'plan_suggestion' }],
+          blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
         });
       }
     }
@@ -1354,7 +1354,7 @@ window.SW = window.SW || {};
               id: `sug_${Date.now()}`,
               role: 'system',
               at: new Date().toISOString(),
-              blocks: [{ type: 'plan_suggestion' }],
+              blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
             });
           }
         });

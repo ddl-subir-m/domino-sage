@@ -142,3 +142,19 @@ def test_workbench_is_the_default_ui():
     assert b"or describe something you want to build" not in chat.content
     assert b"Ask about your data" in chat.content
     assert b"use @ to bring in a resource" in chat.content
+def test_the_build_offer_answers_an_explicit_ask_in_its_own_words():
+    """One card, two moments. The classifier notices an app taking shape in a conversation about
+    something else; an explicit "build me a webapp" was already a decision, and meeting that with
+    "this is starting to look like an app" reads as though nobody was listening."""
+    from pathlib import Path as P
+
+    wb = P(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
+    blocks = (wb / "components" / "message-blocks.js").read_text()
+    store = (wb / "store.js").read_text()
+
+    assert "reason === 'explicit'" in blocks
+    assert "Let’s build that in Build." in blocks
+    assert "This is starting to look like an app." in blocks  # the classifier keeps its voice
+    assert "h(PlanSuggestion, { block })" in blocks           # the card can see which one it is
+    # and the reason reaches it from the turn event, live and on reload
+    assert store.count("{ type: 'plan_suggestion', reason: ev.reason }") == 2

@@ -164,7 +164,12 @@ window.SW = window.SW || {};
     );
   }
 
-  function PlanSuggestion() {
+  // Two ways this card arrives, and they are not the same moment. The classifier notices an app
+  // taking shape in a conversation about something else, so it opens tentatively. An explicit
+  // "build me a webapp" was already a decision — answering that with "this is starting to look
+  // like an app" reads as though nobody was listening.
+  function PlanSuggestion({ block }) {
+    const asked = (block || {}).reason === 'explicit';
     return h(
       'div',
       { className: 'sw-suggestion' },
@@ -172,12 +177,15 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        'This is starting to look like an app.'
+        asked ? 'Let’s build that in Build.' : 'This is starting to look like an app.'
       ),
       h(
         'div',
         { className: 'sw-suggestion-detail' },
-        'I can write a plan so you can review it, share it, and build from it.'
+        asked
+          ? 'Chat answers questions; Build writes the app. I can turn this conversation into a '
+            + 'plan to start from.'
+          : 'I can write a plan so you can review it, share it, and build from it.'
       ),
       h(
         Space,
@@ -424,7 +432,7 @@ window.SW = window.SW || {};
           block.value
         );
       case 'plan_suggestion':
-        return h(PlanSuggestion, null);
+        return h(PlanSuggestion, { block });
       case 'graduation_nudge':
         return h(GraduationNudge, { onSave });
       default:
