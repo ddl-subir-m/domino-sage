@@ -2,7 +2,8 @@
 
 The shim and the orchestrator both call `chat_path_allowed`. OpenCode's own permission
 config does not enforce this (see phase_classifier.READ_ONLY_DENIED); a denied write must
-be stripped from the request and reverted on disk if it still landed.
+be rejected in the tool result (so the model retries the Artifact path) and reverted on
+disk if it still landed. Silent-dropping the tool_call made the model retry `src/` forever.
 """
 from __future__ import annotations
 
@@ -71,12 +72,29 @@ def write_path_from_tool_call(call: dict[str, Any]) -> str | None:
     return str(path) if path else None
 
 
+def denied_write_result(thread_id: str) -> str:
+    """What the model sees when a Chat write missed the Artifact dir.
+
+    Addressed to the model, not the user. Must name the path so the next call lands
+    under examples/<threadId>/ instead of retrying src/.
+    """
+    return (
+        f"Write rejected: this Chat turn cannot change the app. "
+        f"Save a PNG chart at examples/{thread_id}/<slug>.png or a table at "
+        f"examples/{thread_id}/<slug>.table.json. Never write under src/ "
+        f"(including src/examples/)."
+    )
+
+
 def strip_denied_writes(messages: list[Any], thread_id: str) -> list[Any]:
-    """Drop write/edit tool_calls (and their matching tool results) whose path is outside
-    this Thread's allowlist, so the model is not asked to continue an illegal write."""
+    """Turn illegal Chat writes into tool errors so the model retries the Artifact path.
+
+    Dropping the tool_call (the previous behaviour) hid the attempt, so the model
+    called write on src/ again — dozens of times — and Chat filled with 'Ran write'.
+    """
     if not isinstance(messages, list):
         return messages
-    drop_ids: set[str] = set()
+    denied: dict[str, str] = {}
     for m in messages:
         if not isinstance(m, dict) or m.get("role") != "assistant":
             continue
@@ -87,29 +105,29 @@ def strip_denied_writes(messages: list[Any], thread_id: str) -> list[Any]:
             if path and not chat_path_allowed(path, thread_id):
                 cid = call.get("id")
                 if cid:
-                    drop_ids.add(str(cid))
-    if not drop_ids:
+                    denied[str(cid)] = path
+    if not denied:
         return messages
+    have_result = {
+        str(m.get("tool_call_id"))
+        for m in messages
+        if isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_call_id")
+    }
+    err = denied_write_result(thread_id)
     out: list[Any] = []
     for m in messages:
         if not isinstance(m, dict):
             out.append(m)
             continue
-        if m.get("role") == "tool" and str(m.get("tool_call_id") or "") in drop_ids:
+        if m.get("role") == "tool" and str(m.get("tool_call_id") or "") in denied:
+            out.append({**m, "content": err})
             continue
-        calls = m.get("tool_calls")
-        if m.get("role") == "assistant" and isinstance(calls, list):
-            kept = [c for c in calls if not (isinstance(c, dict) and str(c.get("id") or "") in drop_ids)]
-            if not kept:
-                # An assistant message that was only illegal writes would be an empty tool_calls
-                # list, which some providers reject — drop the message if it has no content either.
-                content = m.get("content")
-                if not content:
-                    continue
-                out.append({**m, "tool_calls": []})
-                continue
-            if len(kept) != len(calls):
-                out.append({**m, "tool_calls": kept})
-                continue
         out.append(m)
+        if m.get("role") == "assistant":
+            for call in m.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                cid = str(call.get("id") or "")
+                if cid in denied and cid not in have_result:
+                    out.append({"role": "tool", "tool_call_id": cid, "content": err})
     return out

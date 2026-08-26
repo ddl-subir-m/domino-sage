@@ -83,7 +83,7 @@ OpenCode `permission` is not trusted (same lesson as `sage-ask`: the shim strips
 
 - **Allow** bash.
 - **Allow** edit/write only when the path is under `examples/<currentThreadId>/` or `.sage/threads/<currentThreadId>/`.
-- **Strip** any edit/write whose path is under `src/`, `public/`, `.sage/` except that Thread dir, or any config file (`package.json`, `AGENTS.md`, `vite.config.ts`, `app.sh`, `serve.py`).
+- **Reject** any edit/write whose path is under `src/`, `public/`, `.sage/` except that Thread dir, or any config file (`package.json`, `AGENTS.md`, `vite.config.ts`, `app.sh`, `serve.py`). The shim rewrites that tool result to an error naming `examples/<threadId>/` so the model retries there instead of `src/` in a loop. Revert the file on disk at turn end.
 - **Do not** run the typecheck feedback loop. A Chat turn that writes a PNG is done.
 
 The React `template/react-vite/AGENTS.md` still sits at the workspace root and still says "every turn must end with edits to `src/`". The shim allowlist is what makes that instruction harmless on a Chat turn. Do not delete or swap that file for Chat — Build needs it, and Untitled is already a seeded app repo.
@@ -145,7 +145,7 @@ Assistant history entries gain an optional `artifacts: [{ id, kind, path, title 
 - `table` → the JSON as a table, 10 rows, Show all.
 - `query` / `note` / `file` → a compact file card.
 
-Collapsed "Ran Python" is optional. If the SSE stream includes a bash tool step, show it collapsed the way the prototype does (`Ran Python · 1.2s`). If it does not, do not fake a sandbox card.
+Collapsed "Ran Python" is optional. If the SSE stream includes a bash tool step, show it collapsed the way the prototype does (`Ran Python · 1.2s`). Do not render write, read, or edit tool steps in Chat — those are how a missed `src/` path used to fill the Thread. If there is no bash step, do not fake a sandbox card.
 
 ## 6. Session context and chips
 

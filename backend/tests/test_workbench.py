@@ -36,6 +36,7 @@ def test_workbench_is_the_default_ui():
     assert b"gatewayAliases" in store.content
     assert b"resourcesLoading" in store.content
     assert b"resourceListing" in store.content
+    assert b"ev.type === 'done' && ev.artifacts" in store.content
 
     build = client.get("/js/modes/builder.js")
     assert build.status_code == 200

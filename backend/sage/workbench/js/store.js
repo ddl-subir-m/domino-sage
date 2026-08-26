@@ -275,6 +275,7 @@ window.SW = window.SW || {};
     };
     const hideSuggest = handoff && (handoff.suppressed || handoff.status === 'suppressed'
       || handoff.status === 'bound' || handoff.status === 'planned');
+    const shownArts = new Set();
     for (const ev of history || []) {
       if (ev.type === 'user') {
         assistant = null;
@@ -289,14 +290,17 @@ window.SW = window.SW || {};
       } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
         ensureAssistant().blocks.push({ type: 'text', value: ev.text });
       } else if (ev.type === 'agent' && ev.kind === 'tool') {
-        ensureAssistant().blocks.push({
-          type: 'sandbox_run',
-          label: ev.tool === 'bash' ? 'Ran Python' : `Ran ${ev.tool || 'tool'}`,
-          durationMs: 0,
-          code: ev.detail || '',
+        continue;
+      } else if (ev.type === 'artifacts' || (ev.type === 'done' && ev.artifacts && ev.artifacts.length)) {
+        const items = (ev.items || ev.artifacts || []).filter((a) => {
+          const key = a.path || a.id;
+          if (!key || shownArts.has(key)) return false;
+          shownArts.add(key);
+          return true;
         });
-      } else if (ev.type === 'artifacts') {
-        ensureAssistant().blocks.push(...(await blocksForArtifacts(ev.items)));
+        if (items.length) {
+          ensureAssistant().blocks.push(...(await blocksForArtifacts(items)));
+        }
       } else if (ev.type === 'handoff-suggest' && !hideSuggest) {
         assistant = null;
         messages.push({
@@ -1174,12 +1178,20 @@ window.SW = window.SW || {};
             assistant.blocks = [...assistant.blocks, { type: 'text', value: ev.text }];
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
-            state.typing = ev.tool === 'bash' ? 'Running Python…' : `Using ${ev.tool}…`;
+            if (ev.tool === 'bash') state.typing = 'Running Python…';
             notify();
-          } else if (ev.type === 'artifacts') {
+          } else if (ev.type === 'artifacts' || (ev.type === 'done' && ev.artifacts && ev.artifacts.length)) {
             state.typing = null;
             ensurePushed();
-            assistant.blocks = [...assistant.blocks, ...(await blocksForArtifacts(ev.items))];
+            const items = ev.items || ev.artifacts;
+            const have = new Set(
+              assistant.blocks.filter((b) => b.type === 'image' || b.type === 'table' || b.type === 'file')
+                .map((b) => b.src || b.path || b.title)
+            );
+            const fresh = (items || []).filter((a) => !have.has(fileUrl(a.path)) && !have.has(a.path) && !have.has(a.title));
+            if (fresh.length) {
+              assistant.blocks = [...assistant.blocks, ...(await blocksForArtifacts(fresh))];
+            }
             notify();
             refreshAttachments();
           } else if (ev.type === 'error') {

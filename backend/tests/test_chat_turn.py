@@ -98,6 +98,22 @@ def test_chat_turn_records_artifact_and_reverts_src(tmp_path: Path):
     ctx = orch.thread_context(tid)["items"]
     assert any(i.get("kind") == "artifact" and i.get("path") == arts[0]["path"] for i in ctx)
     assert orch.project(start_preview=False).workspace.read_history() == []
+    assert not any(e.get("kind") == "tool" for e in events)
+    assert any(e.get("type") == "artifacts" for e in hist)
+
+
+def test_chat_does_not_record_bash_on_the_thread(tmp_path: Path):
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    oc.turns = [Turn(
+        text="Here is a sine wave.",
+        tools=["bash"],
+        writes={"src/examples/SineWaveChart.tsx": "// no"},
+    )]
+    events = list(orch.chat_stream(tid, "generate a dummy chart that has a sine wave"))
+    assert [e["tool"] for e in events if e.get("kind") == "tool"] == ["bash"]
+    hist = orch.thread_history(tid)
+    assert [e.get("tool") for e in hist if e.get("kind") == "tool"] == []
 
 
 def test_chat_user_event_snapshots_context_chips(tmp_path: Path):
@@ -141,6 +157,8 @@ def test_chat_prompt_tells_the_agent_an_unmounted_dataset_is_not_the_git_repo(tm
     assert "not mounted" in prompt
     assert "not this Dataset" in prompt
     assert "Do not greet by asking what to build" in prompt
+    assert f"examples/{tid}/" in prompt
+    assert "not a React file" in prompt
 
 
 def test_chat_turn_arms_web_when_the_prompt_has_a_url(tmp_path: Path):

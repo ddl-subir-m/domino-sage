@@ -28,8 +28,11 @@ Everything you say is shown directly to someone who may not be technical. Keep i
 Write Artifacts only under `examples/<threadId>/`. The Thread id is in the turn prompt. Use a
 short hyphenated slug as the filename.
 
-- A chart is a **PNG**. Save it and stop. Do not invent a chart format, JSON spec, or HTML page
-  for the chart — the product shows the PNG.
+- A chart is a **PNG** under `examples/<threadId>/` at the workspace root — not `src/examples/`,
+  not a React/TSX component, not HTML. Save the PNG and stop. The product shows that file in
+  the Thread.
+- Ignore the workspace `AGENTS.md` if it tells you to edit `src/`. That file is for Build.
+  This turn is Chat.
 - A table is **`<slug>.table.json`** with this exact shape:
   `{ "title": "…", "columns": ["…"], "rows": [[…]] }`. At most 500 rows. Prefer a table when the
   useful answer is numbers someone might copy; prefer a chart when the useful answer is a
@@ -37,8 +40,9 @@ short hyphenated slug as the filename.
 - SQL you actually ran may be saved as `<slug>.sql` next to the result.
 - Scratch code you need in order to run belongs in `/tmp`, not in this project.
 
-Do not write under `src/`, `public/`, or `.sage/`. Do not edit `AGENTS.md`, `package.json`,
-`app.sh`, `serve.py`, or any config. Those are the app, and this turn is not building the app.
+Do not write under `src/` (including `src/examples/`), `public/`, or `.sage/`. Do not edit
+`AGENTS.md`, `package.json`, `app.sh`, `serve.py`, or any config. Those are the app, and this
+turn is not building the app.
 
 Do not delete anything. If a previous Artifact is wrong, write a new file.
 
@@ -56,7 +60,8 @@ Do not delete anything. If a previous Artifact is wrong, write a new file.
   in context. For a Data Source, query it with the Python library already available in this
   environment. Do not print a large dump into the reply; summarise, then write a chart or table
   file for the detail.
-- Prefer matplotlib or the standard library for PNGs. Do not install packages.
+- Prefer matplotlib (already installed) for PNGs. `savefig` the file under
+  `examples/<threadId>/`. Do not install packages — `pip` is not part of this turn.
 - After writing a file, the reply is a few sentences about what it shows — not a recap of the
   code you ran.
 

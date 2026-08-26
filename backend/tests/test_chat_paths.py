@@ -27,7 +27,7 @@ def test_write_path_from_openai_tool_call():
     assert write_path_from_tool_call(call) == "src/App.tsx"
 
 
-def test_strip_denied_writes_drops_src_tool_calls_and_results():
+def test_strip_denied_writes_turns_src_into_a_tool_error():
     tid = "thr_01abc"
     messages = [
         {"role": "assistant", "tool_calls": [
@@ -40,5 +40,24 @@ def test_strip_denied_writes_drops_src_tool_calls_and_results():
     ]
     out = strip_denied_writes(messages, tid)
     calls = out[0]["tool_calls"]
-    assert [c["id"] for c in calls] == ["ok"]
-    assert [m.get("tool_call_id") for m in out if m.get("role") == "tool"] == ["ok"]
+    assert [c["id"] for c in calls] == ["bad", "ok"]
+    by_id = {m["tool_call_id"]: m["content"] for m in out if m.get("role") == "tool"}
+    assert "examples/thr_01abc/" in by_id["bad"]
+    assert "src/" in by_id["bad"]
+    assert by_id["ok"] == "wrote"
+
+
+def test_strip_denied_writes_injects_an_error_when_the_result_is_missing():
+    tid = "thr_01abc"
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [{
+            "id": "w1",
+            "function": {"name": "write", "arguments": '{"filePath": "src/examples/x.tsx"}'},
+        }],
+    }]
+    out = strip_denied_writes(messages, tid)
+    assert out[0]["tool_calls"][0]["id"] == "w1"
+    assert out[1]["role"] == "tool"
+    assert out[1]["tool_call_id"] == "w1"
+    assert "examples/thr_01abc/" in out[1]["content"]

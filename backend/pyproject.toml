@@ -12,6 +12,8 @@ dependencies = [
     "openpyxl>=3.1,<4.0",       # attachment descriptors: xlsx sheet names + dims (describe.py)
     "pypdf>=5.0,<7.0",          # attachment descriptors: pdf page count + text extraction
     "pillow>=10.0,<13.0",       # shrink oversized images to fit the prompt's inline budget
+    "numpy>=2.0,<3.0",          # Chat sage-chat plots and array work (OpenCode bash uses this venv)
+    "matplotlib>=3.8,<4.0",     # Chat charts: PNG under examples/<threadId>/
 ]
 
 [project.optional-dependencies]

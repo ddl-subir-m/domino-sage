@@ -143,7 +143,7 @@ def test_chat_turn_keeps_web_tools_when_web_is_armed():
     assert [t["function"]["name"] for t in sent_request["tools"]] == ["webfetch", "bash", "read"]
 
 
-def test_chat_turn_strips_src_writes_from_messages():
+def test_chat_turn_rejects_src_writes_instead_of_dropping_them():
     control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
     control.arm_chat("thr_01abc")
     gw = FakeGatewayClient()
@@ -157,8 +157,10 @@ def test_chat_turn_strips_src_writes_from_messages():
 
     list(_shim(control, gw).handle({"messages": messages, "tools": []}, project="p"))
 
-    sent_request, _ = gw.seen[-1]
-    assert sent_request["messages"] == []
+    sent = gw.seen[-1][0]["messages"]
+    assert sent[0]["tool_calls"][0]["id"] == "w1"
+    assert sent[1]["role"] == "tool"
+    assert "examples/thr_01abc/" in sent[1]["content"]
 
 
 def test_gated_plan_turn_strips_tools_even_outside_ask_mode():

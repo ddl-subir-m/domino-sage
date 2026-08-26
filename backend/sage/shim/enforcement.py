@@ -199,8 +199,9 @@ class EnforcementShim:
         # `permission: {edit: deny, bash: deny}` does nothing on the headless server path (see
         # READ_ONLY_DENIED), so if a tool survives this filter, it runs. Shell matters most — that's
         # the hole that let Ask mode write files with `printf > file` for as long as it existed.
-        # Chat turns are the opposite: they must write Artifacts, so write/bash stay, and the path
-        # allowlist (strip_denied_writes) is what stops a Chat turn editing src/.
+        # Chat turns are the opposite: they must write Artifacts, so write/bash stay, and
+        # strip_denied_writes turns an out-of-path write into a tool error so the model retries
+        # examples/<threadId>/ instead of src/. The files are also reverted on disk at turn end.
         # Web tools are default-denied on EVERY turn and only survive when the orchestrator armed
         # web_allowed for this turn (the current prompt asked for the web). Same enforcement reason as
         # read-only: OpenCode's per-agent permission is inert on the headless path, so stripping the

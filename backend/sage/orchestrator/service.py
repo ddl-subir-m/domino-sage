@@ -767,6 +767,11 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     return (m["id"], part.get("id") or i)
 
 
+# Chat's Thread shows the chart/table, not a tool log. bash still drives the
+# "Running Python…" spinner; write/read/edit stay off the transcript entirely.
+_CHAT_SHOWN_TOOLS = frozenset()
+
+
 def _chat_context_line(item: dict) -> str:
     """One Session-context row for sage-chat: identity, and whether files or a query are possible.
 
@@ -1950,7 +1955,8 @@ class Orchestrator:
             lines.append("")
         lines.append(
             "This turn answers a question about data. Do not greet by asking what to build, "
-            "and do not offer an app unless the person asked to make one that other people would use."
+            "and do not offer an app unless the person asked to make one that other people would use. "
+            f"A chart is a PNG at examples/{thread_id}/<slug>.png — not a React file, not src/."
         )
         lines.append("")
         lines.append(prompt)
@@ -2038,8 +2044,11 @@ class Orchestrator:
                             tool = part.get("tool") or part.get("name") or pt
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
-                            store.append_history(thread_id, ev)
-                            yield ev
+                            if str(tool).lower() in _CHAT_SHOWN_TOOLS:
+                                store.append_history(thread_id, ev)
+                                yield ev
+                            elif str(tool).lower() == "bash":
+                                yield ev
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
                             ev = {"type": "agent", "kind": "text", "text": part["text"]}
@@ -2056,7 +2065,9 @@ class Orchestrator:
             ]
             if artifacts:
                 immediate = immediate or "artifacts"
-                yield {"type": "artifacts", "items": artifacts}
+                art_ev = {"type": "artifacts", "items": artifacts}
+                store.append_history(thread_id, art_ev)
+                yield art_ev
             done = {"type": "done", "ok": True, "decision": "answered"}
             if artifacts:
                 done["artifacts"] = artifacts
