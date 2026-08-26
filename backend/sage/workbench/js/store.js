@@ -1,11 +1,12 @@
 window.SW = window.SW || {};
 
 (function () {
-  const SANDBOX = {
-    id: 'sandbox',
-    name: 'Personal sandbox',
-    color: '#8F8FA3',
-    ephemeral: true,
+  // Until /project answers, the chip has nothing real to name. Not a sandbox: scratch is not
+  // offered as a Project any more (ADR-0004) — every Thread lives in a git-backed sage-* Project.
+  const NO_SCOPE = {
+    id: '',
+    name: 'Default',
+    color: '#543FDE',
     appCount: 0,
     planCount: 0,
     memberCount: 1,
@@ -27,7 +28,7 @@ window.SW = window.SW || {};
       },
     },
     projects: [],
-    scope: SANDBOX,
+    scope: NO_SCOPE,
     scopeFlash: false,
 
     // Dock
@@ -219,9 +220,9 @@ window.SW = window.SW || {};
       notify();
     }).catch(() => {});
 
-    const members = await SW.api.members(scope.ephemeral ? null : scope.id);
+    const members = await SW.api.members(scope.id || null);
     if (gen !== scopeLoad) return;
-    state.members = scope.ephemeral ? [] : members.members;
+    state.members = members.members;
     state.directory = members.directory;
 
     // Anything that renders a name or avatar looks the person up here, so
@@ -567,21 +568,9 @@ window.SW = window.SW || {};
       if (state.thread) SW.api.patchThread(state.thread.id, { planSuggested: true }).catch(() => {});
     }
 
-    maybeNudge();
-  }
-
-  // The sandbox nudge fires once, after enough real work has happened that
-  // losing it would actually hurt.
-  function maybeNudge() {
-    if (!state.scope.ephemeral) return;
-    if (state.nudgeDismissed) return;
-    if (state.assistantTurns < 2) return;
-    if (state.messages.some((m) => m.blocks.some((b) => b.type === 'graduation_nudge'))) return;
-    pushMessage({ id: `nudge_${Date.now()}`, role: 'system', blocks: [{ type: 'graduation_nudge' }] });
   }
 
   const store = {
-    SANDBOX,
 
     get: () => state,
     getConversationId: conversationId,
@@ -657,7 +646,7 @@ window.SW = window.SW || {};
       // open. Opening a deep link resolves the app and the conversation at the
       // same time, and whichever settled the scope used to wipe the other.
       const keepThread =
-        state.thread && (state.thread.projectId || SANDBOX.id) === project.id;
+        state.thread && (state.thread.projectId || NO_SCOPE.id) === project.id;
 
       state.scope = project;
       state.activePlanId = null;
@@ -981,7 +970,7 @@ window.SW = window.SW || {};
 
     async newThread(options = {}) {
       const thread = await SW.api.createThread(
-        state.scope.ephemeral ? null : state.scope.id,
+        state.scope.id || null,
         options.title || 'New chat',
         options.appId
       );
@@ -1477,10 +1466,6 @@ window.SW = window.SW || {};
     },
 
     async draftPlan() {
-      if (state.scope.ephemeral) {
-        antd.message.warning('Save this chat to a project first — plans live at project scope.');
-        return null;
-      }
       const plan = await SW.api.createPlan({
         threadId: state.thread && state.thread.id,
         projectId: state.scope.id,

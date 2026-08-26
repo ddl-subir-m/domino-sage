@@ -228,7 +228,6 @@ SW.api = {
       id: p.id,
       name: p.name || p.id,
       color: '#543FDE',
-      ephemeral: false,
       untitled: !!p.untitled,
       ownerName: 'you',
       memberCount: 1,

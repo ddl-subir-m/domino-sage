@@ -1,4 +1,22 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+
+
+def test_the_published_app_serves_the_door_not_the_chat_shell(monkeypatch):
+    """ADR-0004: the Workbench App is a door. It must not serve Chat from its scratch checkout —
+    it sends the viewer to their own Sage Builder, where their files are in a real git Project."""
+    import sage.orchestrator.app as appmod
+
+    assert Path(appmod.ui().path) == appmod._UI  # a Sage Builder serves the shell, unchanged
+    monkeypatch.setattr(appmod, "proxy_is_app", lambda: True)
+    assert Path(appmod.ui().path) == appmod._DOOR_UI
+
+    door = Path(appmod._DOOR_UI).read_text()
+    assert "/door" in door and "location.replace" in door  # it opens the builder and goes there
+    assert "/door/status" in door  # and waits for the session rather than landing on a dead page
+    # A builder lives on the main host; the App is served from apps.<host>.
+    assert "apps." in door and "slice(5)" in door
 
 
 def test_workbench_is_the_default_ui():

@@ -122,8 +122,7 @@ class ProvisionService:
         name starts with `sage-`, so an ordinary Domino project never shows up as Sage work."""
         return self._cp.list_apps()
 
-    def _create_repo(self, display_name: str) -> RepoInfo:
-        base = naming.repo_base(display_name)
+    def _create_repo(self, base: str, display_name: str) -> RepoInfo:
         last: Exception | None = None
         for name in naming.candidates(base, self._name_limit):
             try:
@@ -141,12 +140,20 @@ class ProvisionService:
         except Exception:
             log.warning("couldn't roll back repo %s (delete it manually)", repo.full_name, exc_info=True)
 
-    def create_app(self, display_name: str) -> AppCreated:
+    def create_app(self, display_name: str, *, name: str | None = None) -> AppCreated:
+        """Provision a Project. The repo is `sage-<slug of display_name>` and the Domino project
+        keeps the typed display name.
+
+        `name` overrides both: an already-`sage-`-prefixed name that becomes the repo name AND the
+        Domino project name. That is how the door creates a viewer's Default — it has to be findable
+        by `naming.default_project_name` on the next door call, and the chip's Default is a display
+        overlay that never reaches Domino.
+        """
         display_name = display_name.strip()
         if not display_name:
             raise ValueError("app name is required")
 
-        repo = self._create_repo(display_name)
+        repo = self._create_repo(name or naming.repo_base(display_name), display_name)
         # Roll back the repo if we fail before the project exists — otherwise it's an orphan. Once
         # the project is created the app is real, so a later (workspace) failure must NOT delete it.
         try:
@@ -154,13 +161,18 @@ class ProvisionService:
                 repo.clone_url, self._template, branch=self._branch,
                 token_provider=self._push_token_provider,
             )
-            # Project keeps the human name; fall back to the (unique) repo name if Domino rejects it
+            # With an explicit `name` the Domino project IS the repo name — that is what the door
+            # looks the Default up by, so there is nothing to fall back to. Otherwise the project
+            # keeps the human name, falling back to the (unique) repo name if Domino rejects it
             # (e.g. a duplicate project name).
+            repo_name = repo.full_name.split("/", 1)[-1]
             try:
-                project = self._cp.create_project(display_name, git_url=repo.clone_url, branch=self._branch)
+                project = self._cp.create_project(
+                    repo_name if name else display_name, git_url=repo.clone_url, branch=self._branch)
             except Exception:
-                fallback = repo.full_name.split("/", 1)[-1]
-                project = self._cp.create_project(fallback, git_url=repo.clone_url, branch=self._branch)
+                if name:
+                    raise
+                project = self._cp.create_project(repo_name, git_url=repo.clone_url, branch=self._branch)
         except Exception:
             self._rollback_repo(repo)
             raise
@@ -196,6 +208,31 @@ class ProvisionService:
             return self._open_result(target, name, launched=True)
         ws = self._cp.create_workspace(project_id, branch=self._branch)
         return self._open_result(ws, name, launched=True)
+
+    def workspace_status(self, project_id: str, workspace_id: str | None = None) -> dict[str, Any]:
+        """Current running-state + open URL for an app's workspace — the door polls this after a launch
+        so it only sends the viewer in once the session is actually running."""
+        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
+        workspaces = [w for w in self._cp.list_workspaces(project_id)
+                      if isinstance(w, dict) and is_builder_workspace(w)]
+        ws = None
+        if workspace_id:
+            ws = next((w for w in workspaces if w.get("id") == workspace_id), None)
+        if ws is None:
+            # Prefer a running workspace so the card reflects a live builder even when a stopped
+            # leftover was created more recently (the earlier relaunch bug piled these up); else newest.
+            running = [w for w in workspaces if workspace_is_running(w)]
+            pool = running or workspaces
+            if pool:
+                ws = max(pool, key=lambda w: w.get("createdAt") or "")
+        if ws is None:
+            return {"running": False, "open_url": None, "state": None, "workspace_id": None}
+        return {
+            "running": workspace_is_running(ws),
+            "open_url": workspace_open_url(ws, name),
+            "state": ws.get("state") or ws.get("status"),
+            "workspace_id": ws.get("id"),
+        }
 
     @staticmethod
     def _open_result(ws: dict[str, Any], name: str | None, *, launched: bool) -> dict[str, Any]:

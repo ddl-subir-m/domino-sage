@@ -73,12 +73,22 @@ class ProjectRef:
 
 
 @dataclass(frozen=True)
+class UserRef:
+    """Who the control-plane token acts as. On the Workbench App that is the viewer (Domino's
+    extended identity puts them behind the sidecar token); in a builder it is whoever started it."""
+
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
 class PublishedApp:
     id: str
     url: str  # shareable Domino App URL ("" if the response carried none, e.g. a republish)
 
 
 class ControlPlane(Protocol):
+    def whoami(self) -> UserRef: ...
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
@@ -455,9 +465,16 @@ class DominoControlPlane:
         proj = quote(project_name, safe="")
         return f"/u/{owner}/{proj}/apps/{app_id}/{version_id}/details/overview"
 
-    def _username(self) -> str:
+    def whoami(self) -> UserRef:
+        """The identity this client's token acts as (GET /api/users/v1/self)."""
         u = self._get("/api/users/v1/self").get("user") or {}
-        return str(u.get("userName") or u.get("loginId") or u.get("id") or "")
+        return UserRef(
+            id=str(u.get("id") or ""),
+            name=str(u.get("userName") or u.get("loginId") or u.get("id") or ""),
+        )
+
+    def _username(self) -> str:
+        return self.whoami().name
 
     def _app_version(self, git_ref_type: str, git_ref_value: str | None) -> dict[str, Any]:
         """AppVersionCreationRequest: the env + tier the app runs on and the git ref it deploys.
@@ -487,7 +504,11 @@ class FakeControlPlane:
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
+    user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
     _seq: int = 0
+
+    def whoami(self) -> UserRef:
+        return self.user
 
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
         self._seq += 1

@@ -146,8 +146,8 @@ window.SW = window.SW || {};
     );
   };
 
-  // Sandbox → project. Same idea, different direction: make the ephemeral
-  // durable without losing the thread.
+  // Save this conversation into a Project of its own. Same idea as the handoff above,
+  // different direction — and it keeps the thread.
   SW.GraduationModal = function GraduationModal() {
     const { graduationOpen, projects, thread, resourceGroups } = SW.store.get();
     const [mode, setMode] = useState('new');

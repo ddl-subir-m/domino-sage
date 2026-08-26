@@ -1534,8 +1534,8 @@ class Orchestrator:
             or ""
         )
         user_id = os.environ.get("DOMINO_USER_ID") or ""
-        expected = naming.untitled_project_name(username, user_id)
-        if naming.is_scratch_name(name, expected):
+        expected = naming.default_project_name(username, user_id)
+        if naming.is_default_name(name, expected):
             workspace.mark_untitled(True)
 
     def _rehydrate_attached(self, project: Project) -> None:

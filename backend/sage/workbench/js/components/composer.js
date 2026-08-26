@@ -498,14 +498,7 @@ window.SW = window.SW || {};
             e.target.value = '';
           },
         })
-      ),
-
-      scope.ephemeral &&
-        h(
-          'div',
-          { className: 'sw-composer-hint' },
-          'Personal sandbox — files are cleared when you leave.'
-        )
+      )
     );
   };
 })();

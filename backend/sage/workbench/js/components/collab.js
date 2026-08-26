@@ -21,8 +21,7 @@ window.SW = window.SW || {};
   };
 
   SW.PresenceStack = function PresenceStack({ onInvite }) {
-    const { members, scope } = SW.store.get();
-    if (scope.ephemeral) return null;
+    const { members } = SW.store.get();
 
     const here = members.filter((m) => m.presence && m.presence !== 'offline');
     const shown = here.slice(0, 4);

@@ -5,10 +5,14 @@ React+Vite template with baked `node_modules`. Chat and Build are one orchestrat
 
 Two launch paths, same process:
 
-1. **Published App** — publish **this repo** as a Domino App. Root `app.sh` starts the workbench
-   (`SAGE_PROXY_MODE=app`, port 8888). Domino's App proxy strips the mount prefix; Vite's prefix is
-   empty. `/mnt/code` is Sage source, so Chat/Build use a scratch workspace. Listings and model
-   calls use the sidecar at `:8899`. Publish of a Built App is disabled here (that project id is Sage).
+1. **Published App — the door.** Publish **this repo** as a Domino App. Root `app.sh` starts the
+   workbench (`SAGE_PROXY_MODE=app`, port 8888). Domino's App proxy strips the mount prefix; Vite's
+   prefix is empty. It does **not** run Chat or Build: `/mnt/code` is Sage source, so the App finds
+   or creates the viewer's Default Project and sends them to their own Sage Builder (ADR-0004).
+   Listings, provisioning and model calls all use the sidecar at `:8899`, which is the viewer.
+   To provision, the App's container needs an **HTTPS Git credential** (Account Settings > Git
+   Credentials) — it creates the `sage-*` repo and pushes the seed with it. Set `SAGE_GIT_HOST`
+   when that host is not `github.com`.
 2. **Sage Builder workspace** — launch the `sageBuilder` pluggable tool in a **git-based app
    project**. [`environment/app.sh`](app.sh) starts the same orchestrator with
    `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the Built App.

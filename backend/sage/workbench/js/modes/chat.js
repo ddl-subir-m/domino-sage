@@ -6,23 +6,15 @@ window.SW = window.SW || {};
   const { PlusOutlined, MenuFoldOutlined, MenuUnfoldOutlined } = icons;
 
   // The rail itself is shared with Build — same component, same behaviour. Chat
-  // only adds the sandbox footnote, which is about the scope rather than about
-  // the list.
+  // only adds the layout wrapper the docked rail needs.
   function Rail() {
-    const { railHidden, scope } = SW.store.get();
+    const { railHidden } = SW.store.get();
     if (railHidden) return h(SW.ConversationRail, { mode: 'chat' });
 
     return h(
       'div',
       { className: 'sw-rail' },
-      h(SW.ConversationRail, { mode: 'chat' }),
-      scope.ephemeral &&
-        h(
-          'div',
-          { className: 'sw-rail-foot' },
-          h('span', { className: 'sw-scope-dot is-hollow' }),
-          'Sandbox conversations are cleared when you leave.'
-        )
+      h(SW.ConversationRail, { mode: 'chat' })
     );
   }
 

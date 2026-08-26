@@ -146,13 +146,13 @@ class Workspace:
 
     def display_name(self) -> str:
         """Sage overlay name for the scope chip. Domino's project name is the URL slug and does
-        not change; Untitled and the plan title live here."""
+        not change; Default and the plan title live here (ADR-0004)."""
         settings = self.read_settings()
         stored = settings.get("displayName")
         if isinstance(stored, str) and stored.strip():
             return stored.strip()
         if settings.get("untitled"):
-            return "Untitled"
+            return "Default"
         return ""
 
     def set_display_name(self, name: str) -> None:

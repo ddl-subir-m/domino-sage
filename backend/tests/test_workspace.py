@@ -156,12 +156,12 @@ def test_untitled_flag_persists(tmp_path: Path):
     assert ws2.is_untitled() is False
 
 
-def test_display_name_untitled_then_named(tmp_path: Path):
+def test_display_name_is_default_then_named(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
     ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("p")
     assert ws.display_name() == ""
     ws.mark_untitled(True)
-    assert ws.display_name() == "Untitled"
+    assert ws.display_name() == "Default"
     ws.set_display_name("Rates dashboard")
     ws.mark_untitled(False)
     assert ws.is_untitled() is False

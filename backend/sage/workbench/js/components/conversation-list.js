@@ -150,7 +150,7 @@ window.SW = window.SW || {};
   };
 
   SW.ConversationRail = function ConversationRail({ mode }) {
-    const { threads, thread, scope, railHidden, railAppFilter } = SW.store.get();
+    const { threads, thread, railHidden, railAppFilter } = SW.store.get();
     const [query, setQuery] = useState('');
 
     if (railHidden) {
@@ -287,12 +287,11 @@ window.SW = window.SW || {};
                 )
               )
             ),
-        scope.ephemeral ||
-          h(
-            'div',
-            { className: 'sw-rail-note' },
-            'Tags name the apps a conversation changed. Click one to see everything that touched it.'
-          )
+        h(
+          'div',
+          { className: 'sw-rail-note' },
+          'Tags name the apps a conversation changed. Click one to see everything that touched it.'
+        )
       )
     );
   };

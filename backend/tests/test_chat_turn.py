@@ -659,17 +659,17 @@ def test_empty_plan_does_not_mark_planned(tmp_path: Path):
     assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"
 
 
-def test_scratch_slug_hydrates_untitled_chip(tmp_path: Path, monkeypatch):
+def test_default_slug_hydrates_the_default_chip(tmp_path: Path, monkeypatch):
     from sage.provision import naming
 
     monkeypatch.setenv("DOMINO_USER_NAME", "alice")
     monkeypatch.setenv("DOMINO_USER_ID", "507f1f77bcf86cd799439011")
-    slug = naming.untitled_project_name("alice", "507f1f77bcf86cd799439011")
+    slug = naming.default_project_name("alice", "507f1f77bcf86cd799439011")
     orch, _ = _orch(tmp_path, project_id=slug)
     project = orch.project(start_preview=False)
     assert project.workspace.is_untitled() is True
     assert project.status()["untitled"] is True
-    assert project.status()["name"] == "Untitled"
+    assert project.status()["name"] == "Default"  # the chip's word for the overlay (ADR-0004)
 
 
 def test_named_project_does_not_hydrate_untitled(tmp_path: Path):

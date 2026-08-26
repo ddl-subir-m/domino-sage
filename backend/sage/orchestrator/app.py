@@ -36,6 +36,7 @@ from starlette.staticfiles import StaticFiles
 
 _WB = Path(__file__).resolve().parents[1] / "workbench"
 _UI = _WB / "index.html"
+_DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
@@ -46,7 +47,7 @@ from ..gateway.client import (
 )
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
-from ..preview.prefix import domino_base_prefix, domino_project_label, publish_available
+from ..preview.prefix import domino_base_prefix, domino_project_label, proxy_is_app, publish_available
 from ..preview.proxy import make_preview_app
 from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API
 from ..resources.model_api_credentials import CredentialRequired
@@ -168,7 +169,55 @@ def _build_control_plane():
         environment_revision_id=os.environ.get("DOMINO_ENVIRONMENT_REVISION_ID"),
         hardware_tier_id=tier_id,
         builder_tool=os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder"),
+        git_host=os.environ.get("SAGE_GIT_HOST", "github.com"),
     )
+
+
+def _build_door(control_plane):
+    """The Workbench door (ADR-0004), or None when this process is not one.
+
+    Only the published Workbench App is a door: a Sage Builder serves the Workbench chrome, and a
+    laptop run has nothing to provision against — "no second local hub" is a decision, not a gap.
+
+    The repo is created with the container's own mounted git credential, the same one the seed push
+    uses. If that credential belongs to the publisher while the sidecar is the viewer, the Project
+    still lands correctly — the Domino project is created as the viewer, and only the GitHub repo
+    carries the publisher's account. That seam is the platform's to close, not a reason to hand
+    people a scratch directory.
+    """
+    if not proxy_is_app():
+        return None
+    if control_plane is None:
+        log.warning("Workbench App with no Domino control plane — the door cannot provision")
+        return None
+    from ..provision import credentials
+    from ..provision.door import Door
+    from ..provision.github import GitHubProvider
+    from ..provision.service import ProvisionService
+
+    host = os.environ.get("SAGE_GIT_HOST", "github.com").strip()
+    provider = credentials.detect_provider(host)
+    if provider != "github":
+        log.warning("git host %s resolves to provider %r; the door provisions GitHub only", host, provider)
+        return None
+
+    def token_provider() -> str:  # shared by repo create + seed push; in-memory, never logged
+        tok = credentials.extract_token(host)
+        if not tok:
+            raise RuntimeError(
+                f"no HTTPS git credential for {host} in this container "
+                "(an SSH-key credential can't be extracted). Add an HTTPS Git credential under "
+                "Account Settings > Git Credentials and restart the App."
+            )
+        return tok
+
+    service = ProvisionService(
+        control_plane,
+        GitHubProvider(token_provider=token_provider),
+        Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
+        push_token_provider=token_provider,
+    )
+    return Door(service, control_plane.whoami)
 
 
 _gateway, GATEWAY_MODE = build_gateway()
@@ -264,6 +313,8 @@ def _build_resources():
 
 
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
+_control_plane = _build_control_plane()
+_door = _build_door(_control_plane)
 orchestrator = Orchestrator(
     workspace_dir=_WORKSPACE_DIR,
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
@@ -274,7 +325,7 @@ orchestrator = Orchestrator(
     assets=_build_assets(),
     resources=_build_resources(),
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
-    control_plane=_build_control_plane(),
+    control_plane=_control_plane,
     domino_project_name=os.environ.get("DOMINO_PROJECT_NAME"),
     domino_run_id=os.environ.get("DOMINO_RUN_ID"),
     cost_project_label=_COST_PROJECT_LABEL,
@@ -392,8 +443,61 @@ control_app.add_middleware(_ViewerIdentityMiddleware)
 
 @control_app.get("/")
 def ui() -> FileResponse:
-    """The Workbench shell (Chat / Build). no-store so the current HTML is always served."""
-    return FileResponse(_UI, headers={"Cache-Control": "no-store"})
+    """The Workbench shell (Chat / Build), or the door.
+
+    In the published Workbench App this is the door (ADR-0004): it does not run Chat or Build
+    against the App's scratch checkout — it sends the viewer to their own Sage Builder, where their
+    files live in a real git Project. A Sage Builder serves the shell itself, unchanged.
+
+    no-store so the current HTML is always served.
+    """
+    page = _DOOR_UI if proxy_is_app() else _UI
+    return FileResponse(page, headers={"Cache-Control": "no-store"})
+
+
+@control_app.post("/api/door")
+async def door_open() -> JSONResponse:
+    """Find or create this viewer's Default Project, open their Sage Builder, and say where to go.
+
+    Slow on purpose the first time — creating the repo, seeding it, creating the Domino project and
+    launching the builder is a minute of real work — so the door page holds a progress line rather
+    than the browser holding a blank tab.
+    """
+    if _door is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Sage can't reach Domino from this App, so it can't open your Sage "
+                              "Builder. Check the App's Environment has the Domino API host and a "
+                              "Git credential, then restart it."},
+        )
+    try:
+        target = await run_in_threadpool(_door.ensure_default)
+    except Exception as e:
+        log.exception("door: couldn't open the viewer's Sage Builder")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content={
+        "open_url": target.open_url,
+        "running": target.running,
+        "launched": target.launched,
+        "created": target.created,
+        "project": {"id": target.project.id, "name": target.project.name},
+    })
+
+
+@control_app.get("/api/door/status")
+async def door_status(project_id: str, workspace_id: str | None = None) -> JSONResponse:
+    """Whether that builder's session is up yet, and the URL to open once it is.
+
+    A launched or resumed workspace says `Started` before its session runs, so the door page polls
+    here rather than sending the viewer to a page that isn't ready.
+    """
+    if _door is None:
+        return JSONResponse(status_code=503, content={"error": "no door in this container"})
+    try:
+        return JSONResponse(content=await run_in_threadpool(_door.status, project_id, workspace_id))
+    except Exception as e:
+        log.exception("door: couldn't read the builder's status")
+        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @control_app.get("/fonts/inter-latin-var.woff2")

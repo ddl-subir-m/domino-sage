@@ -6,14 +6,10 @@ window.SW = window.SW || {};
   const { PlusOutlined, DownOutlined, SearchOutlined } = icons;
 
   function ScopeRow({ project, active, onSelect }) {
-    const sandbox = project.ephemeral;
     return h(
       'button',
       { className: `sw-scope-row${active ? ' is-active' : ''}`, onClick: () => onSelect(project) },
-      h('span', {
-        className: `sw-scope-dot${sandbox ? ' is-hollow' : ''}`,
-        style: { background: project.color },
-      }),
+      h('span', { className: 'sw-scope-dot', style: { background: project.color } }),
       h(
         'span',
         { className: 'sw-scope-row-main' },
@@ -21,17 +17,14 @@ window.SW = window.SW || {};
         h(
           'span',
           { className: 'sw-scope-row-meta' },
-          sandbox
-            ? 'Ephemeral · files cleared on exit'
-            : `${project.ownerName} · ${project.memberCount} ${project.memberCount === 1 ? 'member' : 'members'}`
+          `${project.ownerName} · ${project.memberCount} ${project.memberCount === 1 ? 'member' : 'members'}`
         )
       ),
-      !sandbox &&
-        h(
-          'span',
-          { className: 'sw-scope-row-count' },
-          `${project.appCount} ${project.appCount === 1 ? 'app' : 'apps'}`
-        )
+      h(
+        'span',
+        { className: 'sw-scope-row-count' },
+        `${project.appCount} ${project.appCount === 1 ? 'app' : 'apps'}`
+      )
     );
   }
 
@@ -112,11 +105,6 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-scope-pop-list' },
-        h(ScopeRow, {
-          project: SW.store.SANDBOX,
-          active: scope.id === 'sandbox',
-          onSelect: select,
-        }),
         h('div', { className: 'sw-scope-pop-section' }, h('span', { className: 'sw-group-label' }, 'Recent')),
         filtered.length
           ? filtered.map((project) =>
@@ -162,10 +150,10 @@ window.SW = window.SW || {};
         h(
           'button',
           {
-            className: `sw-scope-chip${scope.ephemeral ? ' is-sandbox' : ''}${scopeFlash ? ' is-flashing' : ''}`,
+            className: `sw-scope-chip${scopeFlash ? ' is-flashing' : ''}`,
           },
           h('span', {
-            className: `sw-scope-dot${scope.ephemeral ? ' is-hollow' : ''}`,
+            className: 'sw-scope-dot',
             style: { background: scope.color },
           }),
           h('span', { className: 'sw-scope-name' }, scope.name),

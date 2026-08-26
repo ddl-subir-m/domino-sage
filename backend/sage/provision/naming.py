@@ -4,8 +4,9 @@ A new app's GitHub repo is `sage-<slug>` where the slug is a host-safe, lowercas
 display name the user typed. Repo/project name collisions are resolved by suffixing `-2`, `-3`, …
 (the caller retries the next candidate when the provider reports the name is taken).
 
-The caller's one Untitled project is a Sage overlay: the chip says Untitled, but the Domino
-project and git repo are `sage-<user-slug>-<id>` so they never collide with a literal "Untitled".
+The viewer's one Default Project is a Sage overlay: the chip says Default, but the Domino project
+and git repo are `sage-<user-slug>-<id>`, so the door can find it again by name after they rename
+the chip, and two viewers never share one.
 """
 from __future__ import annotations
 
@@ -17,6 +18,9 @@ _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _IDENT_KEEP = re.compile(r"[^a-z0-9]+")
 _USER_SLUG_MAX = 20
 _IDENT_LEN = 8
+# ADR-0003 named the overlay project literally "Untitled". ADR-0004 names it sage-<user-slug>-<id>
+# (default_project_name); this is kept only so a project created under the old scheme still reads
+# as Default in its builder.
 UNTITLED_DISPLAY = "Untitled"
 
 
@@ -46,19 +50,22 @@ def candidates(base: str, limit: int = 50) -> Iterator[str]:
         yield suffixed(base, n)
 
 
-def untitled_project_name(username: str, user_id: str) -> str:
-    """Stable Domino + git name for this caller's Untitled project: sage-<user>-<id>.
+def default_project_name(username: str, user_id: str) -> str:
+    """Stable Domino + git name for this viewer's Default Project: sage-<user>-<id>.
+
+    The door finds the Default by THIS name, not by the chip: naming the chip writes a display
+    overlay and leaves the Domino/git name alone, so the next door call still lands here.
 
     The id is a short token from the Domino user id when it has usable characters, otherwise a
-    hash of username+id so local/fake hubs still get a deterministic slug.
+    hash of username+id so local/fake control planes still get a deterministic slug.
     """
     user = slugify(username)[:_USER_SLUG_MAX]
     ident = _ident_token(user_id, username)
     return f"sage-{user}-{ident}"
 
 
-def is_scratch_name(name: str | None, expected: str) -> bool:
-    """True if `name` is this caller's scratch project (exact or a -N collision suffix)."""
+def is_default_name(name: str | None, expected: str) -> bool:
+    """True if `name` is this viewer's Default Project (exact or a -N collision suffix)."""
     if not name or not expected:
         return False
     if name == expected:

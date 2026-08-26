@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Opening your workspace</title>
+  <style>
+    /* Inter from Sage's own origin (#19). Do not <link> Google fonts. */
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 100 900;
+      font-display: swap;
+      src: url('fonts/inter-latin-var.woff2') format('woff2');
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+        U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+        U+FEFF, U+FFFD;
+    }
+
+    :root {
+      --primary: #543FDE;
+      --heading: #3F4547;
+      --body: #7F8385;
+      --border: #DBE4E8;
+      --err: #C20A29;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: #FAFAFA;
+      color: var(--heading);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 460px;
+      background: #FFFFFF;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 32px;
+      text-align: center;
+    }
+
+    .logo { height: 28px; margin-bottom: 24px; }
+
+    h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; }
+
+    p { margin: 0; color: var(--body); }
+
+    /* Indeterminate: the control plane reports no percentage, so a bar that claimed one would be
+       inventing it. This says "still working" honestly. */
+    .track {
+      margin: 24px 0 4px;
+      height: 4px;
+      border-radius: 2px;
+      background: #EEEBFC;
+      overflow: hidden;
+    }
+
+    .track i {
+      display: block;
+      height: 100%;
+      width: 40%;
+      border-radius: 2px;
+      background: var(--primary);
+      animation: slide 1.4s ease-in-out infinite;
+    }
+
+    @keyframes slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(250%); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .track i { animation: none; width: 100%; opacity: .5; }
+    }
+
+    .is-error .track { display: none; }
+    .is-error h1 { color: var(--err); }
+
+    .actions { margin-top: 24px; display: none; }
+    .is-error .actions { display: block; }
+
+    button {
+      font: inherit;
+      font-weight: 600;
+      color: #FFFFFF;
+      background: var(--primary);
+      border: none;
+      border-radius: 4px;
+      padding: 8px 16px;
+      min-height: 32px;
+      cursor: pointer;
+    }
+
+    button:hover { filter: brightness(1.08); }
+  </style>
+</head>
+<body>
+  <main class="card" id="card">
+    <img class="logo" id="logo" src="./img/domino-logo.svg" alt="" />
+    <h1 id="title">Opening your workspace…</h1>
+    <p id="detail">Finding your Default project.</p>
+    <div class="track"><i></i></div>
+    <div class="actions"><button id="retry" type="button">Try again</button></div>
+  </main>
+
+  <script>
+    // The Workbench App is a door (ADR-0004): it provisions or attaches, then sends the browser to
+    // the viewer's own Sage Builder. Nothing is built or chatted with here.
+    (function () {
+      var card = document.getElementById('card');
+      var title = document.getElementById('title');
+      var detail = document.getElementById('detail');
+      var api = new URL('.', location.href).pathname.replace(/\/$/, '') + '/api';
+
+      function say(head, sub) {
+        if (head) title.textContent = head;
+        detail.textContent = sub;
+      }
+
+      function fail(message) {
+        card.classList.add('is-error');
+        title.textContent = 'Sage couldn’t open your workspace';
+        detail.textContent = message;
+      }
+
+      // A running builder lives on the MAIN Domino host. A published App is served from
+      // apps.<host>, so a host-relative open URL would resolve against the apps origin and 404.
+      // Drop the "apps." prefix to land on the main host. No-op anywhere else.
+      function builderUrl(openUrl) {
+        if (!openUrl || /^https?:\/\//i.test(openUrl)) return openUrl;
+        var host = location.hostname;
+        if (host.indexOf('apps.') === 0) return location.protocol + '//' + host.slice(5) + openUrl;
+        return openUrl;
+      }
+
+      function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+      async function readJson(r) {
+        try { return await r.json(); } catch (e) { return { error: 'Request failed (' + r.status + ')' }; }
+      }
+
+      // OEM chrome, when this deployment has a brand pack. Best-effort: the door still reads
+      // correctly in Domino's own colours if it isn't there.
+      async function brand() {
+        try {
+          var r = await fetch(api + '/brand');
+          if (!r.ok) return;
+          var b = await r.json();
+          if (b.colors && b.colors.primary) {
+            document.documentElement.style.setProperty('--primary', b.colors.primary);
+          }
+          if (b.logoUrl) {
+            var logo = document.getElementById('logo');
+            logo.src = b.logoUrl;
+            logo.alt = b.logoAlt || '';
+          }
+          if (b.pageTitle) document.title = b.pageTitle;
+        } catch (e) { /* no brand pack — Domino default */ }
+      }
+
+      // A launched or resumed workspace reports Started before its session is running; going in
+      // then lands on a not-ready page. Wait for the session, ~4 minutes at most.
+      async function waitUntilRunning(projectId, workspaceId) {
+        for (var i = 0; i < 80; i++) {
+          await sleep(3000);
+          try {
+            var q = '?project_id=' + encodeURIComponent(projectId) +
+              (workspaceId ? '&workspace_id=' + encodeURIComponent(workspaceId) : '');
+            var r = await fetch(api + '/door/status' + q);
+            if (r.ok) {
+              var s = await r.json();
+              if (s.running && s.open_url) return s.open_url;
+            }
+          } catch (e) { /* transient — keep polling */ }
+        }
+        return null;
+      }
+
+      async function open() {
+        card.classList.remove('is-error');
+        say('Opening your workspace…', 'Finding your Default project.');
+        var r, data;
+        try {
+          r = await fetch(api + '/door', { method: 'POST' });
+          data = await readJson(r);
+        } catch (e) {
+          fail('Sage is unreachable from this page. Reload to try again.');
+          return;
+        }
+        if (!r.ok) {
+          fail(data.error || 'Request failed (' + r.status + ')');
+          return;
+        }
+
+        if (data.created) {
+          say('Setting up your Default project…', 'Creating the project and starting your workspace. This takes about a minute the first time.');
+        } else if (data.launched) {
+          say('Starting your workspace…', 'Your project is ready — waiting for the workspace to come up.');
+        } else {
+          say('Opening your workspace…', 'Your workspace is already running.');
+        }
+
+        var url = (data.running && data.open_url) ? data.open_url : null;
+        if (!url) url = await waitUntilRunning(data.project.id, data.workspace_id);
+        if (!url) {
+          fail('Your project is ready, but the workspace is taking longer than expected to start. Try again in a moment.');
+          return;
+        }
+        location.replace(builderUrl(url));
+      }
+
+      document.getElementById('retry').addEventListener('click', open);
+      brand();
+      open();
+    })();
+  </script>
+</body>
+</html>

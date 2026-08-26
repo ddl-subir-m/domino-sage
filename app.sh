@@ -8,7 +8,9 @@
 #
 # Domino's App proxy strips the mount prefix before the request reaches this process, so we must
 # not bake the workspace notebookSession path into Vite. SAGE_PROXY_MODE=app makes the prefix empty.
-# /mnt/code is this Sage repo — not a user app — so Chat/Build use a scratch workspace.
+# /mnt/code is this Sage repo — not a user app — so this process is the DOOR (ADR-0004): it does not
+# run Chat/Build here, it opens the viewer's own Sage Builder. The scratch workspace below only
+# keeps the orchestrator's boot honest; nothing is built in it.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
