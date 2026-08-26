@@ -24,6 +24,11 @@ fi
 
 if [ -x /opt/sage/environment/app.sh ]; then
   export SAGE_APP_HOME="${SAGE_APP_HOME:-/opt/sage}"
+  # Python still runs from the baked venv. The entrypoint script comes from this checkout so an
+  # App republish can keep `uv run --extra domino` without waiting on an Environment rebuild.
+  if [ -f "$here/environment/app.sh" ]; then
+    exec bash "$here/environment/app.sh"
+  fi
   exec bash /opt/sage/environment/app.sh
 fi
 

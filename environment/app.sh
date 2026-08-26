@@ -41,4 +41,7 @@ echo "[sage] node=$(command -v node) $(node -v)  opencode=$(opencode --version 2
 echo "[sage] app_home=$SAGE_APP_HOME workspace=$SAGE_WORKSPACE_DIR port=$SAGE_CONTROL_PORT proxy=$SAGE_PROXY_MODE"
 
 cd "$SAGE_APP_HOME/backend"
-exec uv run python -m sage.orchestrator.app
+# `--extra domino` is the same extra the image `uv sync`s. Plain `uv run` re-syncs the venv to
+# default deps only and drops `dominodatalab-data`, which is how a builder that passed the
+# Dockerfile import check still told the UI "the Domino data library is not installed here".
+exec uv run --extra domino python -m sage.orchestrator.app
