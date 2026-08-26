@@ -49,7 +49,7 @@ class Door:
         expected = naming.default_project_name(who.name, who.id)
         existing = self._find_default(expected)
         if existing is not None:
-            opened = self._service.open_app(existing.id)
+            opened = self._service.open_app(existing.id, owner=who.name)
             return DoorTarget(
                 project=existing,
                 open_url=opened["open_url"],

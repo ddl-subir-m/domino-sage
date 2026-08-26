@@ -37,7 +37,7 @@ def test_create_app_returns_an_open_url_for_the_new_builder(tmp_path, no_network
     # The workspace DTO carries owner + run id and the project name comes from the ProjectRef, so
     # the caller gets a host-relative path it can send the browser to.
     created = _service(tmp_path, seed_calls=no_network_seed).create_app("My App")
-    assert created.open_url == f"/owner/My%20App/notebookSession/run-{created.project.id}/"
+    assert created.open_url == f"/tester/My%20App/notebookSession/run-{created.project.id}/"
 
 
 def test_create_app_resolves_repo_name_collision(tmp_path, no_network_seed):

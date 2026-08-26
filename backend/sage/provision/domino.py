@@ -138,6 +138,7 @@ class DominoControlPlane:
         self._provider = git_service_provider
         self._git_host = git_host
         self._cred_id: str | None = None  # resolved lazily, then cached
+        self._me: UserRef | None = None  # ditto: the token's identity can't change under us
         self._transport = transport
         self._timeout_s = timeout_s
 
@@ -466,12 +467,18 @@ class DominoControlPlane:
         return f"/u/{owner}/{proj}/apps/{app_id}/{version_id}/details/overview"
 
     def whoami(self) -> UserRef:
-        """The identity this client's token acts as (GET /api/users/v1/self)."""
-        u = self._get("/api/users/v1/self").get("user") or {}
-        return UserRef(
-            id=str(u.get("id") or ""),
-            name=str(u.get("userName") or u.get("loginId") or u.get("id") or ""),
-        )
+        """The identity this client's token acts as (GET /api/users/v1/self), cached.
+
+        One client acts as one user for its lifetime, and attach polls ask who the viewer is every
+        few seconds while a builder boots — without the cache that is a request per poll.
+        """
+        if self._me is None:
+            u = self._get("/api/users/v1/self").get("user") or {}
+            self._me = UserRef(
+                id=str(u.get("id") or ""),
+                name=str(u.get("userName") or u.get("loginId") or u.get("id") or ""),
+            )
+        return self._me
 
     def _username(self) -> str:
         return self.whoami().name
@@ -520,7 +527,7 @@ class FakeControlPlane:
         ws = {
             "id": f"ws-{project_id}",
             "projectId": project_id,
-            "ownerName": "owner",
+            "ownerName": self.user.name,
             "project": {"name": project_id},
             "mostRecentSession": {"executionId": f"run-{project_id}"},
         }

@@ -672,6 +672,41 @@ window.SW = window.SW || {};
       await Promise.all([loadScopeData(), loadThreadList()]);
     },
 
+    // Switching Project means LEAVING this container (#47). One Sage Builder is bound to one
+    // project volume, so the viewer's work in another Project lives in their builder there — this
+    // attaches it (reuse, resume, or create) and hands the browser over, the same move the door
+    // makes. A collaborator's builder in that Project is never taken over.
+    async attachProject(project) {
+      if (!project || project.current) return;
+      const modal = antd.Modal.info({
+        title: `Opening ${project.name}`,
+        content: 'Starting your workspace there. This takes about a minute if it was stopped.',
+        okButtonProps: { style: { display: 'none' } },
+        closable: false,
+        maskClosable: false,
+      });
+      try {
+        const opened = await SW.api.openProject(project.id);
+        let url = opened.running ? opened.open_url : null;
+        // A launched or resumed workspace reports Started while its session is still booting, so
+        // going in now would land on a page that isn't ready. ~4 minutes, then say so.
+        for (let i = 0; !url && i < 80; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const s = await SW.api.projectStatus(project.id, opened.workspace_id).catch(() => null);
+          if (s && s.running && s.open_url) url = s.open_url;
+        }
+        if (!url) throw new Error('The workspace is taking longer than expected to start.');
+        modal.destroy();
+        window.location.replace(url);
+      } catch (err) {
+        modal.destroy();
+        antd.Modal.error({
+          title: `Sage couldn't open ${project.name}`,
+          content: String((err && err.message) || err),
+        });
+      }
+    },
+
     // Opening a thread adopts its project, so you never attach a resource
     // from the wrong project to an old conversation.
     async adoptThreadScope(thread) {

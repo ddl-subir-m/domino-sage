@@ -5,25 +5,25 @@ window.SW = window.SW || {};
   const { Popover, Input, Button, Tooltip } = antd;
   const { PlusOutlined, DownOutlined, SearchOutlined } = icons;
 
-  function ScopeRow({ project, active, onSelect }) {
+  // Only the project this builder is bound to can be described from here — the others are a name
+  // and an id to attach by, so the row says what picking it does rather than inventing counts.
+  function ScopeRow({ project, onSelect }) {
     return h(
       'button',
-      { className: `sw-scope-row${active ? ' is-active' : ''}`, onClick: () => onSelect(project) },
+      {
+        className: `sw-scope-row${project.current ? ' is-active' : ''}`,
+        onClick: () => onSelect(project),
+      },
       h('span', { className: 'sw-scope-dot', style: { background: project.color } }),
       h(
         'span',
         { className: 'sw-scope-row-main' },
-        h('span', { className: 'sw-scope-row-name' }, project.name),
-        h(
-          'span',
-          { className: 'sw-scope-row-meta' },
-          `${project.ownerName} · ${project.memberCount} ${project.memberCount === 1 ? 'member' : 'members'}`
-        )
+        h('span', { className: 'sw-scope-row-name' }, project.name)
       ),
       h(
         'span',
         { className: 'sw-scope-row-count' },
-        `${project.appCount} ${project.appCount === 1 ? 'app' : 'apps'}`
+        project.current ? 'You are here' : 'Open'
       )
     );
   }
@@ -49,7 +49,7 @@ window.SW = window.SW || {};
 
     const select = async (project) => {
       onOpenChange(false);
-      await SW.store.setScope(project);
+      await SW.store.attachProject(project);
     };
 
     const create = async () => {
@@ -108,12 +108,7 @@ window.SW = window.SW || {};
         h('div', { className: 'sw-scope-pop-section' }, h('span', { className: 'sw-group-label' }, 'Recent')),
         filtered.length
           ? filtered.map((project) =>
-              h(ScopeRow, {
-                key: project.id,
-                project,
-                active: scope.id === project.id,
-                onSelect: select,
-              })
+              h(ScopeRow, { key: project.id, project, onSelect: select })
             )
           : h(
               'div',

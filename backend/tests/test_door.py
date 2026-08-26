@@ -14,7 +14,9 @@ BOB = UserRef(id="607f1f77bcf86cd799439022", name="bob")
 
 
 def _door(tmp_path, cp=None, repo=None, viewer=ALICE):
-    cp = cp or FakeControlPlane()
+    # The fake acts as the viewer, so the builders it creates are owned by them — attaching
+    # is scoped to the viewer's own workspaces (#47).
+    cp = cp or FakeControlPlane(user=viewer)
     service = ProvisionService(cp, repo or FakeRepoProvider(), tmp_path, seed=lambda *a, **k: None)
     return Door(service, lambda: viewer), cp
 
@@ -35,7 +37,7 @@ def test_first_open_creates_the_default_project_and_a_builder(tmp_path):
     assert cp.workspaces[target.project.id]
     assert target.created is True
     assert target.launched is True
-    assert target.open_url == f"/owner/{expected}/notebookSession/run-{target.project.id}/"
+    assert target.open_url == f"/alice/{expected}/notebookSession/run-{target.project.id}/"
 
 
 def test_second_open_reuses_the_default_and_its_running_builder(tmp_path):
@@ -144,3 +146,31 @@ def test_the_viewer_is_the_control_planes_own_identity(tmp_path):
 
     assert target.project.name == naming.default_project_name("Carol Danvers", "99887766")
     assert target.project.name.startswith("sage-carol-danvers-")
+
+
+def test_a_sage_builder_can_provision_even_though_it_is_not_the_door(monkeypatch):
+    """The provision service is gated on capability, not on role.
+
+    A Sage Builder is not a door — it must never serve the bounce page — but #46/#47 create
+    Projects and attach builders from Sage Builder chrome, so it still needs a ProvisionService.
+    """
+    import sage.orchestrator.app as appmod
+
+    monkeypatch.delenv("SAGE_GIT_HOST", raising=False)
+    monkeypatch.setattr(appmod, "proxy_is_app", lambda: False)
+
+    service = appmod._build_provision_service(FakeControlPlane())
+    assert service is not None
+    assert appmod._build_door(service, FakeControlPlane()) is None
+
+    monkeypatch.setattr(appmod, "proxy_is_app", lambda: True)
+    assert appmod._build_door(service, FakeControlPlane()) is not None
+
+
+def test_nothing_provisions_without_a_domino_control_plane(monkeypatch):
+    # A laptop run has nothing to provision against, in either role.
+    import sage.orchestrator.app as appmod
+
+    monkeypatch.setattr(appmod, "proxy_is_app", lambda: True)
+    assert appmod._build_provision_service(None) is None
+    assert appmod._build_door(None, None) is None

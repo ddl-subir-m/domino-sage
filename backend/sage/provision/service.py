@@ -83,6 +83,20 @@ def is_builder_workspace(ws: dict[str, Any]) -> bool:
     return not name or name == BUILDER_WORKSPACE_NAME
 
 
+def is_owned_by(ws: dict[str, Any], owner: str | None) -> bool:
+    """True when this workspace belongs to `owner` — or when the caller isn't filtering by owner.
+
+    A Project can hold several people's Sage Builders. Reusing or resuming a collaborator's would
+    put two people in one container and hand this viewer someone else's session, so attaching is
+    always scoped to the viewer (#47). `ownerName` on the workspace DTO is the Domino username, the
+    same value `whoami()` returns. A workspace with no owner is nobody's to claim.
+    """
+    if owner is None:
+        return True
+    name = ws.get("ownerName")
+    return bool(name) and str(name) == owner
+
+
 def workspace_is_running(ws: dict[str, Any]) -> bool:
     """True once the workspace's session is actually running — i.e. safe to open in the browser.
 
@@ -180,13 +194,18 @@ class ProvisionService:
         ws = self._cp.create_workspace(project.id, branch=self._branch)
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
 
-    def open_app(self, project_id: str) -> dict[str, Any]:
-        """Return a runnable workspace for an existing app: reuse a running one, else restart a
-        stopped one in place, else launch a fresh one."""
+    def open_app(self, project_id: str, *, owner: str | None = None) -> dict[str, Any]:
+        """Return a runnable workspace in an existing Project: reuse a running one, else restart a
+        stopped one in place, else launch a fresh one.
+
+        `owner` scopes reuse and resume to one person's builders (#47) — pass the viewer's Domino
+        username and a collaborator's builder in the same Project is left running and untouched.
+        A fresh launch is always the caller's own, so it needs no filter.
+        """
         # The workspace DTO has no project name (the URL slug), so resolve it from the app list.
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
         workspaces = [w for w in self._cp.list_workspaces(project_id)
-                      if isinstance(w, dict) and is_builder_workspace(w)]
+                      if isinstance(w, dict) and is_builder_workspace(w) and is_owned_by(w, owner)]
         for ws in workspaces:
             state = str(ws.get("state") or ws.get("status") or "").lower()
             if state in ("", "running", "started", "active") or ws.get("isRunning"):
@@ -209,12 +228,18 @@ class ProvisionService:
         ws = self._cp.create_workspace(project_id, branch=self._branch)
         return self._open_result(ws, name, launched=True)
 
-    def workspace_status(self, project_id: str, workspace_id: str | None = None) -> dict[str, Any]:
-        """Current running-state + open URL for an app's workspace — the door polls this after a launch
-        so it only sends the viewer in once the session is actually running."""
+    def workspace_status(
+        self, project_id: str, workspace_id: str | None = None, *, owner: str | None = None
+    ) -> dict[str, Any]:
+        """Current running-state + open URL for a Project's workspace — the caller polls this after a
+        launch so it only sends the viewer in once the session is actually running.
+
+        `owner` scopes the answer the same way `open_app` scopes reuse: without it, a collaborator's
+        newer builder could answer for the viewer's and hand back a URL that is not theirs to open.
+        """
         name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
         workspaces = [w for w in self._cp.list_workspaces(project_id)
-                      if isinstance(w, dict) and is_builder_workspace(w)]
+                      if isinstance(w, dict) and is_builder_workspace(w) and is_owned_by(w, owner)]
         ws = None
         if workspace_id:
             ws = next((w for w in workspaces if w.get("id") == workspace_id), None)

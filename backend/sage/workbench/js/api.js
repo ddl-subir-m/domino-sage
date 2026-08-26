@@ -229,9 +229,16 @@ SW.api = {
   brand: () => request('/brand'),
   project: () => request('/project'),
 
+  // The project this builder is bound to, first, followed by the viewer's other Sage Projects (#47).
+  // Only the first entry can be described in full: its display name, its untitled flag and its model
+  // are read from this container. The rest are Domino names and an id to attach by — a Sage overlay
+  // lives in the builder that owns it, and this one cannot read another's.
   projects: async () => {
-    const p = await request('/project');
-    return [{
+    const [p, listing] = await Promise.all([
+      request('/project'),
+      request('/projects').catch(() => ({ items: [] })),
+    ]);
+    const here = {
       id: p.id,
       name: p.name || p.id,
       color: '#543FDE',
@@ -241,8 +248,17 @@ SW.api = {
       appCount: 1,
       planCount: 0,
       model: p.model,
-    }];
+      current: true,
+    };
+    const elsewhere = (listing.items || [])
+      .filter((it) => it && it.id && !it.current)
+      .map((it) => ({ id: it.id, name: it.name || it.id, color: '#543FDE', current: false }));
+    return [here, ...elsewhere];
   },
+  openProject: (id) => request(`/projects/${encodeURIComponent(id)}/open`, { method: 'POST' }),
+  projectStatus: (id, workspaceId) =>
+    request(`/projects/status?project_id=${encodeURIComponent(id)}` +
+      (workspaceId ? `&workspace_id=${encodeURIComponent(workspaceId)}` : '')),
   createProject: async () => {
     throw new Error('This project is the current scope. Open Sage Builder in a git-based app project to publish a Built App.');
   },

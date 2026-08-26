@@ -173,32 +173,33 @@ def _build_control_plane():
     )
 
 
-def _build_door(control_plane):
-    """The Workbench door (ADR-0004), or None when this process is not one.
+def _build_provision_service(control_plane):
+    """A ProvisionService for this container, or None when this container can't provision.
 
-    Only the published Workbench App is a door: a Sage Builder serves the Workbench chrome, and a
-    laptop run has nothing to provision against — "no second local hub" is a decision, not a gap.
+    Both Workbench roles need one (ADR-0004). The published App provisions the viewer's Default
+    Project; a Sage Builder creates further Projects and attaches this viewer's builder in them. So
+    the gate is capability, not role: a Domino control plane, and a git host Sage has an adapter for.
 
-    The repo is created with the container's own mounted git credential, the same one the seed push
+    Repos are created with the container's own mounted git credential, the same one the seed push
     uses. If that credential belongs to the publisher while the sidecar is the viewer, the Project
     still lands correctly — the Domino project is created as the viewer, and only the GitHub repo
     carries the publisher's account. That seam is the platform's to close, not a reason to hand
     people a scratch directory.
+
+    The credential itself is read lazily, per call: a container with no HTTPS credential still starts
+    and still serves everything that doesn't provision, and says what to add when something does.
     """
-    if not proxy_is_app():
-        return None
     if control_plane is None:
-        log.warning("Workbench App with no Domino control plane — the door cannot provision")
+        log.info("no Domino control plane — Sage can't create or attach Projects (local run)")
         return None
     from ..provision import credentials
-    from ..provision.door import Door
     from ..provision.github import GitHubProvider
     from ..provision.service import ProvisionService
 
     host = os.environ.get("SAGE_GIT_HOST", "github.com").strip()
     provider = credentials.detect_provider(host)
     if provider != "github":
-        log.warning("git host %s resolves to provider %r; the door provisions GitHub only", host, provider)
+        log.warning("git host %s resolves to provider %r; Sage provisions GitHub only", host, provider)
         return None
 
     def token_provider() -> str:  # shared by repo create + seed push; in-memory, never logged
@@ -207,16 +208,31 @@ def _build_door(control_plane):
             raise RuntimeError(
                 f"no HTTPS git credential for {host} in this container "
                 "(an SSH-key credential can't be extracted). Add an HTTPS Git credential under "
-                "Account Settings > Git Credentials and restart the App."
+                "Account Settings > Git Credentials, then restart Sage."
             )
         return tok
 
-    service = ProvisionService(
+    return ProvisionService(
         control_plane,
         GitHubProvider(token_provider=token_provider),
         Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
         push_token_provider=token_provider,
     )
+
+
+def _build_door(service, control_plane):
+    """The Workbench door (ADR-0004), or None when this process is not one.
+
+    Only the published Workbench App is a door: a Sage Builder serves the Workbench chrome, and a
+    laptop run has nothing to provision against — "no second local hub" is a decision, not a gap.
+    """
+    if not proxy_is_app():
+        return None
+    if service is None or control_plane is None:
+        log.warning("Workbench App can't provision — the door has nothing to open")
+        return None
+    from ..provision.door import Door
+
     return Door(service, control_plane.whoami)
 
 
@@ -314,7 +330,8 @@ def _build_resources():
 
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 _control_plane = _build_control_plane()
-_door = _build_door(_control_plane)
+_provision = _build_provision_service(_control_plane)
+_door = _build_door(_provision, _control_plane)
 orchestrator = Orchestrator(
     workspace_dir=_WORKSPACE_DIR,
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
@@ -498,6 +515,79 @@ async def door_status(project_id: str, workspace_id: str | None = None) -> JSONR
     except Exception as e:
         log.exception("door: couldn't read the builder's status")
         return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@control_app.get("/api/projects")
+async def list_projects() -> JSONResponse:
+    """The Sage Projects this viewer can open, for the scope chip (#47).
+
+    sage-* only, and not by a filter of ours: the control plane's own list keeps a Domino project
+    only when its git repo carries the `sage-` prefix, so an ordinary Domino project this viewer
+    owns never appears in the chip.
+
+    Empty off Domino, and empty is honest — a laptop run has no Projects to switch between. The
+    chip still shows the project this builder is bound to; that entry comes from /api/project.
+    """
+    if _provision is None:
+        return JSONResponse(content={"items": [], "provisioning": False})
+    current = os.environ.get("DOMINO_PROJECT_ID", "")
+    try:
+        projects = await run_in_threadpool(_provision.list_apps)
+    except Exception as e:
+        log.exception("chip: couldn't list this viewer's Sage Projects")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content={
+        "items": [{"id": p.id, "name": p.name, "current": p.id == current} for p in projects],
+        "provisioning": True,
+    })
+
+
+@control_app.post("/api/projects/{project_id}/open")
+async def open_project(project_id: str) -> JSONResponse:
+    """Attach THIS viewer's Sage Builder in that Project and say where to send the browser (#47).
+
+    Switching Project means leaving this container for another one, so the answer is a URL, not new
+    state here. Reuse if theirs is running, resume if it is stopped, create if they have none — and
+    a collaborator's builder in the same Project is left alone (see ProvisionService.open_app).
+    """
+    if _provision is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Sage can't reach Domino from this container, so it can't open "
+                              "another Project. This build runs against the project it is bound to."},
+        )
+    try:
+        who = await run_in_threadpool(_control_plane.whoami)
+        opened = await run_in_threadpool(_provision.open_app, project_id, owner=who.name)
+    except Exception as e:
+        log.exception("chip: couldn't attach a Sage Builder in project %s", project_id)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content={
+        "open_url": opened["open_url"],
+        "running": opened["running"],
+        "launched": opened["launched"],
+        "workspace_id": (opened["workspace"] or {}).get("id"),
+    })
+
+
+@control_app.get("/api/projects/status")
+async def project_status(project_id: str, workspace_id: str | None = None) -> JSONResponse:
+    """Whether that builder's session is up yet, and the URL to open once it is.
+
+    Same reason the door polls: a launched or resumed workspace says `Started` before its session
+    runs, and sending the browser in then lands it on a page that isn't ready.
+    """
+    if _provision is None:
+        return JSONResponse(status_code=503, content={"error": "this container can't open Projects"})
+    try:
+        who = await run_in_threadpool(_control_plane.whoami)
+        content = await run_in_threadpool(
+            _provision.workspace_status, project_id, workspace_id, owner=who.name
+        )
+    except Exception as e:
+        log.exception("chip: couldn't read the builder's status in project %s", project_id)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content=content)
 
 
 @control_app.get("/fonts/inter-latin-var.woff2")
