@@ -1296,6 +1296,9 @@ window.SW = window.SW || {};
         ensurePushed();
         assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
         notify();
+      } finally {
+        state.typing = null;
+        notify();
       }
       await loadThreadList();
       await refreshAttachments();

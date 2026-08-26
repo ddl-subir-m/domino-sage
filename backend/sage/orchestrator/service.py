@@ -121,6 +121,11 @@ log = logging.getLogger("sage.orchestrator")
 # can block up to its httpx timeout, so this is ~a minute of sustained unresponsiveness, not a blip.
 _MAX_POLL_FAILURES = 4
 
+# Chat poll loop after send_prompt. A hung `DataSourceClient.query` (Arrow Flight from a published
+# App) never goes idle, the UI stays on "Running Python…", and the turn lock blocks the next send.
+# 90s is enough for a real query + chart; the live hang ran past 20 minutes.
+_CHAT_TURN_TIMEOUT_S = 90.0
+
 # Largest image inlined into a prompt as a data: URI. Base64 inflates by ~4/3, and the result rides
 # in the request body through OpenCode -> shim -> gateway -> provider; anything larger degrades to
 # its descriptor instead. Provider limits sit around 5 MB per image, so this stays well under.
@@ -946,8 +951,12 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
             ).strip()
             extra = f" Columns: {col_txt}." if col_txt else ""
             return (
-                f"- Data Source {name}, table {dotted}.{extra} Query this table. "
-                "Do not invent rows. If a query fails, tell the person."
+                f"- Data Source {name}, table {dotted}.{extra} Query it with "
+                "`from domino_data.data_sources import DataSourceClient` then "
+                f"`DataSourceClient().get_datasource({name!r}).query("
+                f'"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
+                "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
+                "If the query errors, tell the person."
             )
         extra = f" at {path}" if path else ""
         return (
@@ -1894,13 +1903,13 @@ class Orchestrator:
         return ThreadStore(self._chat_project().workspace.path).remove_context(
             thread_id, item_id)
 
-    def chat_stream(self, thread_id: str, prompt: str):
+    def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread."""
         if not self._turn_lock.acquire(blocking=False):
             yield from self._busy_refusal()
             return
         try:
-            yield from self._chat_stream(thread_id, prompt)
+            yield from self._chat_stream(thread_id, prompt, timeout_s=timeout_s)
         finally:
             self._clear_turn_baseline()
             self._turn_lock.release()
@@ -2238,7 +2247,7 @@ class Orchestrator:
         lines.append(prompt)
         return "\n".join(lines)
 
-    def _chat_stream(self, thread_id: str, prompt: str):
+    def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None):
         import time
 
         project = self._chat_project()
@@ -2291,10 +2300,31 @@ class Orchestrator:
                 chat=True)
             appeared = False
             poll_failures = 0
+            started = time.monotonic()
+            limit = _CHAT_TURN_TIMEOUT_S if timeout_s is None else timeout_s
             while True:
                 if project.stop_requested:
                     client.interrupt(sid)
                     yield {"type": "done", "ok": False, "decision": "stopped"}
+                    return
+                if time.monotonic() - started >= limit:
+                    try:
+                        client.interrupt(sid)
+                    except Exception:
+                        log.exception("chat: interrupt after timeout failed")
+                    err = {
+                        "type": "error",
+                        "message": (
+                            "This turn took too long, so it was stopped. Ask again with a smaller "
+                            "question. If you were querying a Data Source, it may not answer from "
+                            "this App."
+                        ),
+                    }
+                    done = {"type": "done", "ok": False, "decision": "timeout"}
+                    store.append_history(thread_id, err)
+                    store.append_history(thread_id, done)
+                    yield err
+                    yield done
                     return
                 try:
                     running = client.is_running(sid)

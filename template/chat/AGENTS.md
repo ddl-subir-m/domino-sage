@@ -84,9 +84,11 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
 - A Dataset with no file path is not mounted. Say that you cannot see its files, then stop.
   Never treat a similarly named folder as that Dataset.
 - For a CSV or similar file, read it with pandas (or the stdlib csv module) from the path given
-  in context. For a Data Source, query it with the Python library already available in this
-  environment. Do not print a large dump into the reply; summarise, then write a chart or table
-  file for the detail.
+  in context. For a Data Source, query it with `domino_data` already in this environment:
+  `from domino_data.data_sources import DataSourceClient` then
+  `DataSourceClient().get_datasource("<name from context>").query("<sql>").to_pandas()`.
+  Do not grep the filesystem, env, or `/opt/sage` for credentials. Do not print a large dump
+  into the reply; summarise, then write a chart or table file for the detail.
 - After writing a file, the reply is a few sentences about what it shows — not a recap of the
   code you ran.
 

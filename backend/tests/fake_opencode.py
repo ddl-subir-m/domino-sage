@@ -65,6 +65,8 @@ class FakeOpenCode:
         self._next = 0
         self.compacts: list[dict] = []
         self.compact_error: Exception | None = None
+        # When True, is_running stays true until interrupt — a hung DataSourceClient.query.
+        self.stay_running = False
 
     # --- session ---------------------------------------------------------------------------------
 
@@ -138,6 +140,8 @@ class FakeOpenCode:
                      "content": [{"type": "text", "text": "compacted"}]})
 
     def is_running(self, session_id: str) -> bool:
+        if self.stay_running:
+            return True
         was = self._running.get(session_id, False)
         self._running[session_id] = False
         return was
@@ -148,4 +152,5 @@ class FakeOpenCode:
 
     def interrupt(self, session_id: str) -> None:
         self.interrupted += 1
+        self.stay_running = False
         self._running[session_id] = False

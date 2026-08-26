@@ -338,6 +338,23 @@ def test_chat_prompt_names_a_scoped_table_and_its_columns(tmp_path: Path):
     assert "table DWH.MARTS.DIM_ACCOUNT" in prompt
     assert "ACCOUNT_ID" in prompt
     assert "cannot query it live" not in prompt
+    assert "DataSourceClient" in prompt
+    assert "get_datasource" in prompt
+
+
+def test_chat_turn_times_out_a_hung_opencode_session(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="never emitted")])
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+    events = list(orch.chat_stream(tid, "what is in clickstream", timeout_s=0.05))
+    assert oc.interrupted == 1
+    err = next(e for e in events if e["type"] == "error")
+    assert "took too long" in err["message"]
+    done = next(e for e in events if e["type"] == "done")
+    assert done == {"type": "done", "ok": False, "decision": "timeout"}
+    hist = orch.thread_history(tid)
+    assert any(e.get("type") == "error" for e in hist)
+    assert any(e.get("decision") == "timeout" for e in hist)
 
 
 def test_chat_prompt_for_an_unmounted_dataset_file_does_not_search_git(tmp_path: Path):
