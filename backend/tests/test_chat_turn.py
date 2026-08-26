@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import json
+import time
 
 import pytest
 
@@ -370,13 +371,14 @@ def test_chat_will_not_hand_out_a_query_recipe_it_cannot_name_the_source_for(tmp
 
 
 def test_chat_turn_times_out_a_hung_opencode_session(tmp_path: Path):
+    """Running is not the same as working: the session never goes idle and never says anything."""
     orch, oc = _orch(tmp_path, [Turn(text="never emitted")])
     oc.stay_running = True
     tid = orch.create_thread()["id"]
     events = list(orch.chat_stream(tid, "what is in clickstream", timeout_s=0.05))
     assert oc.interrupted == 1
     err = next(e for e in events if e["type"] == "error")
-    assert "took too long" in err["message"]
+    assert "stopped making progress" in err["message"]
 def test_an_explicit_build_request_does_not_spend_a_chat_turn(tmp_path: Path):
     """sage-chat writes an Artifact under examples/, never an app.
 
@@ -807,16 +809,27 @@ def _live(kind: str, **payload):
 
 
 class _FakeStream:
-    """Stands in for SessionEvents: scripted frames, then it stays open the way /event does."""
+    """Stands in for SessionEvents: scripted frames, then it stays open the way /event does.
 
-    def __init__(self, events):
+    `gap` spreads the frames over time the way a real turn arrives them. Instant delivery is fine
+    for asking what a turn shows; it cannot ask how long a turn is allowed to take, because every
+    frame lands in the first poll and the rest of the turn is silence either way.
+    """
+
+    def __init__(self, events, gap: float = 0.0):
         import threading
         self._events = list(events)
+        self._gap = gap
         self.delivered = threading.Event()
         self._closed = threading.Event()
 
     def __iter__(self):
         for ev in self._events:
+            if self._gap:
+                # Waiting on `_closed` rather than sleeping so close() ends the turn's thread now.
+                self._closed.wait(self._gap)
+            if self._closed.is_set():
+                break
             yield ev
         self.delivered.set()
         self._closed.wait(5)
@@ -829,9 +842,9 @@ class StreamingFake(FakeOpenCode):
     """A FakeOpenCode that can stream. `reads` records every transcript read, which is the thing
     the stream is supposed to make rare."""
 
-    def __init__(self, workspace, turns, events):
+    def __init__(self, workspace, turns, events, gap: float = 0.0):
         super().__init__(workspace, turns)
-        self.stream = _FakeStream(events)
+        self.stream = _FakeStream(events, gap)
         self.reads: list = []
         self.stream_dir = None
         self._grace = False
@@ -847,7 +860,8 @@ class StreamingFake(FakeOpenCode):
     def is_running(self, session_id):
         # True until every scripted frame is on the tap's queue, then one poll more: a real session
         # goes idle a moment after its last token, and the loop drains before it asks.
-        if not self.stream.delivered.is_set():
+        # `stay_running` holds it there for good — a session whose tool never comes back.
+        if self.stay_running or not self.stream.delivered.is_set():
             return True
         if not self._grace:
             self._grace = True
@@ -864,9 +878,9 @@ _A_TURN = [
 ]
 
 
-def _streamed(tmp_path: Path, events=None, text: str = "The answer."):
+def _streamed(tmp_path: Path, events=None, text: str = "The answer.", gap: float = 0.0):
     def client(ws):
-        return StreamingFake(ws, [Turn(text=text)], _A_TURN if events is None else events)
+        return StreamingFake(ws, [Turn(text=text)], _A_TURN if events is None else events, gap)
     return _orch(tmp_path, client=client)
 
 
@@ -1011,3 +1025,70 @@ def test_a_label_stops_being_true_the_moment_the_work_stops():
     # grep and glob are not worth naming, but they still end whatever the last label said.
     assert _chat_live_event(_live("tool_run", tool="grep", status="called",
                                   input={"pattern": "x"})) == idle
+
+
+# --- The turn cap is quiet time, not wall clock -------------------------------------------------
+
+_A_LONG_TURN = [
+    _live("message", delta="Looking. ", final=False),
+    _live("tool_run", tool="bash", input={"command": "get_datasource('WH')"}, status="called"),
+    _live("tool_run", tool="", call_id="c1", status="success"),
+    _live("message", delta="Charting. ", final=False),
+    _live("tool_run", tool="write", input={"path": "examples/x.png"}, status="called"),
+    _live("message", text="Done.", final=True),
+    _live("phase", finish="stop"),
+]
+
+
+def test_a_turn_that_keeps_working_outlives_the_quiet_window(tmp_path: Path):
+    """The wall clock could not tell a slow turn from a stuck one, so it killed both. This turn
+    runs for longer than the whole window and finishes, because it never stops saying so."""
+    orch, oc = _streamed(tmp_path, _A_LONG_TURN, text="Done.", gap=0.25)
+    tid = orch.create_thread()["id"]
+    started = time.monotonic()
+    out = list(orch.chat_stream(tid, "chart last quarter", timeout_s=0.6))
+    elapsed = time.monotonic() - started
+
+    assert elapsed > 0.6, "the turn ended too early to have outlived one quiet window"
+    assert not [e for e in out if e["type"] == "error"]
+    assert next(e for e in out if e["type"] == "done")["ok"] is True
+    assert oc.interrupted == 0
+
+
+def test_a_tool_that_never_comes_back_still_ends_the_turn(tmp_path: Path):
+    """The live hang: the query starts, the session stays running, and nothing else arrives. A
+    tool that is merely in flight is not activity, or the cap would never fire on the one case it
+    exists for."""
+    started_only = [
+        _live("tool_run", tool="bash", input={"command": "get_datasource('WH')"}, status="called"),
+    ]
+    orch, oc = _streamed(tmp_path, started_only, gap=0.1)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "how many rows", timeout_s=0.5))
+
+    assert oc.interrupted == 1
+    # The label it died under is the one that names what to do about it.
+    assert {"type": "agent", "kind": "tool", "tool": "bash",
+            "doing": "query", "detail": "WH"} in out
+    assert "narrower query" in next(e for e in out if e["type"] == "error")["message"]
+
+
+def test_a_turn_that_never_stops_talking_hits_the_ceiling(tmp_path: Path, monkeypatch):
+    """Alive is not the same as getting anywhere. Without a ceiling an agent that loops holds the
+    turn lock for as long as it keeps emitting."""
+    from sage.orchestrator import service
+
+    forever = [_live("message", delta="and ", final=False) for _ in range(40)]
+    monkeypatch.setattr(service, "_CHAT_TURN_MAX_S", 0.8)
+    orch, oc = _streamed(tmp_path, forever, gap=0.05)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "keep going"))
+
+    assert oc.interrupted == 1
+    err = next(e for e in out if e["type"] == "error")
+    assert "worked for too long" in err["message"]
+    assert "stopped making progress" not in err["message"]  # it never stopped; that is the point
+    assert next(e for e in out if e["type"] == "done") == {
+        "type": "done", "ok": False, "decision": "timeout"}

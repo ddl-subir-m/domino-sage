@@ -122,10 +122,18 @@ log = logging.getLogger("sage.orchestrator")
 # can block up to its httpx timeout, so this is ~a minute of sustained unresponsiveness, not a blip.
 _MAX_POLL_FAILURES = 4
 
-# Chat poll loop after send_prompt. A hung `DataSourceClient.query` (Arrow Flight from a published
-# App) never goes idle, the UI stays on "Running Python…", and the turn lock blocks the next send.
-# 90s is enough for a real query + chart; the live hang ran past 20 minutes.
-_CHAT_TURN_TIMEOUT_S = 90.0
+# What ends a Chat turn that will not end itself. Quiet time, not wall clock: a hung
+# `DataSourceClient.query` (Arrow Flight from a published App) never goes idle, the UI stays on its
+# last label, and the turn lock blocks the next send — and that hang looks exactly like this, a
+# session that is running while nothing arrives. A turn that is streaming text, or starting and
+# finishing tools, is alive however long it has been going, so only silence ends it. The wall clock
+# this replaces could not tell the two apart: it killed long-but-working turns at 90s, which is what
+# "convert this into an app" hit, and the live hang ran past 20 minutes because nothing capped it.
+_CHAT_QUIET_TIMEOUT_S = 90.0
+# Alive is not the same as getting somewhere: an agent that loops holds the turn lock for as long as
+# it keeps talking. Generous, because by then the person can see the work and can press Stop — this
+# is the backstop for a turn nobody is watching, not the cap for a turn that is going well.
+_CHAT_TURN_MAX_S = 600.0
 # How many of the newest messages a Chat poll reads. The whole transcript came back on every poll,
 # once a second for the length of the turn, so the cost of asking a question grew with the length of
 # the Thread rather than with the question — and it competed for CPU with the agent it was watching,
@@ -2554,8 +2562,8 @@ class Orchestrator:
 
         # "Build me an app" is answered by Build, so offer it now rather than after a turn.
         # sage-chat writes an Artifact under examples/, never an app, so running the turn first
-        # spends up to _CHAT_TURN_TIMEOUT_S and ends exactly where this starts — which is how a
-        # build request became 90 seconds of spinner and "ask again with a smaller question".
+        # spends a whole turn and ends exactly where this starts — which is how a build request
+        # became 90 seconds of spinner and "ask again with a smaller question".
         #
         # Only the regex short-circuits. The model classifier still runs after a turn, because it
         # judges the assistant's reply as well as the ask, and it cannot do that before one exists.
@@ -2596,13 +2604,24 @@ class Orchestrator:
             appeared = False
             poll_failures = 0
             started = time.monotonic()
-            limit = _CHAT_TURN_TIMEOUT_S if timeout_s is None else timeout_s
+            # The last moment this turn showed it was moving. Everything OpenCode sends counts,
+            # not only what Chat shows: `map_session_event` already drops the stream's noise, so a
+            # frame arriving means the session did something. A stuck tool sends nothing between
+            # `called` and its result, which is exactly why the quiet window still expires on it.
+            last_activity = started
+            last_text = ""
+            quiet_limit = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
             while True:
                 if project.stop_requested:
                     client.interrupt(sid)
                     yield {"type": "done", "ok": False, "decision": "stopped"}
                     return
-                if time.monotonic() - started >= limit:
+                now = time.monotonic()
+                quiet = now - last_activity >= quiet_limit
+                if quiet or now - started >= _CHAT_TURN_MAX_S:
+                    log.warning("chat: turn stopped after %.0fs — %s", now - started,
+                                f"quiet for {now - last_activity:.0f}s" if quiet
+                                else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling")
                     try:
                         client.interrupt(sid)
                     except Exception:
@@ -2612,17 +2631,26 @@ class Orchestrator:
                     # the turn the person most needs the nudge on is the one that never reaches the
                     # end of this loop. Without it the timeout is a dead end they retype into.
                     suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
-                    err = {
-                        "type": "error",
-                        "message": (
+                    if suggestion:
+                        message = (
                             "This turn took too long, so it was stopped. Building an app is Build's "
                             "job rather than Chat's — open it in Build below."
-                        ) if suggestion else (
-                            "This turn took too long, so it was stopped. Ask again with a smaller "
-                            "question. If you were querying a Data Source, it may be too slow to "
-                            "answer here — try a narrower query."
-                        ),
-                    }
+                        )
+                    elif quiet:
+                        # Say which of the two happened. The turn did not run out of time doing
+                        # work — it stopped doing any, and the thing that stops answering is
+                        # nearly always the query.
+                        message = (
+                            "Sage stopped making progress, so the turn was stopped. If you were "
+                            "querying a Data Source, it may be too slow to answer here — try a "
+                            "narrower query."
+                        )
+                    else:
+                        message = (
+                            "This turn worked for too long to finish, so it was stopped. Ask again "
+                            "with a smaller question, or ask for one step at a time."
+                        )
+                    err = {"type": "error", "message": message}
                     done = {"type": "done", "ok": False, "decision": "timeout"}
                     store.append_history(thread_id, err)
                     store.append_history(thread_id, done)
@@ -2633,6 +2661,7 @@ class Orchestrator:
                         yield suggestion
                     return
                 for ev in tap.drain():
+                    last_activity = time.monotonic()
                     live = _chat_live_event(ev)
                     if live is not None:
                         yield live
@@ -2678,6 +2707,7 @@ class Orchestrator:
                             if status in ("pending", "running", "in_progress"):
                                 continue
                             seen.add(key)
+                            last_activity = time.monotonic()
                             tool = part.get("tool") or part.get("name") or pt
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
@@ -2689,6 +2719,11 @@ class Orchestrator:
                                 # line already ran when the command started, and replaying it from
                                 # the final read would flash "Running Python…" on a finished turn.
                                 yield ev
+                # Proof of life when the transcript is the only source. The same text part comes
+                # back on every poll, so it is the change that counts, not the presence.
+                if pending_text and pending_text != last_text:
+                    last_text = pending_text
+                    last_activity = time.monotonic()
                 if finished:
                     if pending_text:
                         ev = {"type": "agent", "kind": "text", "text": pending_text}
