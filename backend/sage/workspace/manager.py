@@ -203,17 +203,35 @@ class Workspace:
     def session_path(self) -> Path:
         """Persisted OpenCode session id, so the project re-attached after an orchestrator restart
         (see Orchestrator.project) can resume the same conversation instead of starting a fresh
-        session with no memory of prior turns."""
+        session with no memory of prior turns. The unscoped path: a build turn that names no
+        conversation (CLI, tests) still gets a session that survives a restart."""
         return self.path / ".sage" / "session.json"
 
-    def read_session_id(self) -> str | None:
-        if not self.session_path.exists():
-            return None
-        return json.loads(self.session_path.read_text()).get("session_id")
+    def build_session_path(self, conversation: str | None = None) -> Path:
+        """A Build conversation owns its own OpenCode session, the way a Chat Thread already does
+        (ThreadStore.write_session_id). Both live under the same `.sage/threads/<id>/`, so a
+        conversation's two halves sit together and a deleted Thread takes both with it.
 
-    def write_session_id(self, session_id: str) -> None:
-        self.session_path.parent.mkdir(parents=True, exist_ok=True)
-        self.session_path.write_text(json.dumps({"session_id": session_id}))
+        The session is what makes "New conversation" mean anything in Build: a fresh session has
+        no memory of the earlier talk. It is not amnesia about the app — the session opens the
+        same workspace, so the agent reads every file back."""
+        if not conversation:
+            return self.session_path
+        return self.path / ".sage" / "threads" / conversation / "build-session.json"
+
+    def read_session_id(self, conversation: str | None = None) -> str | None:
+        p = self.build_session_path(conversation)
+        if not p.exists():
+            return None
+        try:
+            return json.loads(p.read_text()).get("session_id")
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def write_session_id(self, session_id: str, conversation: str | None = None) -> None:
+        p = self.build_session_path(conversation)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"session_id": session_id}))
 
     @property
     def history_path(self) -> Path:
@@ -222,15 +240,39 @@ class Workspace:
         registry survives)."""
         return self.path / ".sage" / "history.jsonl"
 
-    def append_history(self, entry: dict) -> None:
+    def append_history(self, entry: dict, conversation: str | None = None) -> None:
+        """`conversation` tags the entry with the Build conversation that produced it, so the UI
+        can replay one conversation rather than the whole project. The file stays one append-only
+        log: history.md renders all of it (the agent's memory is project-wide on purpose), and the
+        stop-button baseline below stays positional and therefore stays correct."""
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        row = {**entry, "conversation": conversation} if conversation else entry
         with self.history_path.open("a") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(json.dumps(row) + "\n")
 
-    def read_history(self) -> list[dict]:
+    def read_history(self, conversation: str | None = None) -> list[dict]:
+        """No conversation means the whole project: history.md and any caller that wants the log
+        as written. Naming one filters to it."""
         if not self.history_path.exists():
             return []
-        return [json.loads(line) for line in self.history_path.read_text().splitlines() if line.strip()]
+        rows = [json.loads(line) for line in self.history_path.read_text().splitlines() if line.strip()]
+        if conversation is None:
+            return rows
+        return [r for r in rows if r.get("conversation") == conversation]
+
+    def has_untagged_history(self) -> bool:
+        """True while entries written before conversation tagging are still unclaimed."""
+        return any(not r.get("conversation") for r in self.read_history())
+
+    def adopt_history(self, conversation: str) -> None:
+        """Give every untagged entry to `conversation`. Build history predates tagging, so an
+        upgrade would otherwise blank a project's transcript. Rewrites in place and keeps order,
+        so the positional stop-button baseline survives. Idempotent."""
+        rows = self.read_history()
+        if not rows:
+            return
+        adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
+        self.history_path.write_text("".join(json.dumps(r) + "\n" for r in adopted))
 
     def history_len(self) -> int:
         return len(self.read_history())

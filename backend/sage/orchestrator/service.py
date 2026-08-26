@@ -1298,6 +1298,12 @@ class Project:
     # spend into one bucket — which is exactly the per-phase breakdown a phased build exists to be
     # judged on). None between turns.
     active_session_id: str | None = None
+    # The Build conversation the current turn belongs to. Build used to be one session and one
+    # transcript per project; it is now per conversation, the way Chat already was, so that "New
+    # conversation" in the rail means something (see docs/workbench/handoff.md). Set at the top of
+    # every public build entry, read by the append_history calls that persist the turn. None means
+    # an unscoped caller (CLI, tests) — it still builds, it just owns no conversation.
+    build_conversation: str | None = None
     # Attached dataset FILES: [{dataset_id, dataset, file, path, size}]. `path` is the
     # workspace-relative symlink under public/data/ (what OpenCode @mentions and the app fetches).
     attached: list[dict] = field(default_factory=list)
@@ -1614,23 +1620,60 @@ class Orchestrator:
         except OSError:
             return []
 
-    def _ensure_session(self, project: Project) -> str:
+    @staticmethod
+    def _switch_conversation(project: Project, conversation: str | None) -> None:
+        """A different conversation is a different session. project.session_id caches only the one
+        in play, so switching conversations drops the cache and forces a re-read from disk."""
+        if conversation != project.build_conversation:
+            project.build_conversation = conversation
+            project.session_id = None
+
+    def _begin_conversation(self, conversation: str | None) -> None:
+        """Pin a streaming turn to its Build conversation before any of it is persisted: the
+        append_history calls below read project.build_conversation, and _ensure_session opens that
+        conversation's own session."""
+        project = self.project()
+        self._switch_conversation(project, conversation)
+        self._adopt_legacy_build_history(project.workspace)
+
+    @staticmethod
+    def _adopt_legacy_build_history(workspace: Workspace) -> None:
+        """Build history predates conversation tagging (Workspace.adopt_history). Hand every
+        untagged entry to the project's OLDEST conversation: an upgraded project keeps its
+        transcript, and a conversation created after the upgrade — the "New conversation" the rail
+        offers — still opens empty. With no conversations yet nothing can own them, so leave them
+        for the first one that builds."""
+        if not workspace.has_untagged_history():
+            return
+        rows = ThreadStore(workspace.path).list()
+        if not rows:
+            return
+        # createdAt has one-second resolution, so two Threads made in the same second tie. The
+        # index is newest-first (ThreadStore.create inserts at 0), so read it backwards and let the
+        # earliest insert win the tie.
+        oldest = min(reversed(rows), key=lambda r: str(r.get("createdAt") or ""))
+        if oldest.get("id"):
+            workspace.adopt_history(str(oldest["id"]))
+
+    def _ensure_session(self, project: Project, conversation: str | None = None) -> str:
         client = self._ensure_opencode()
+        self._switch_conversation(project, conversation)
         if project.session_id is None:
-            project.session_id = self._recover_session(project.workspace, client)
+            project.session_id = self._recover_session(project.workspace, client, conversation)
         if project.session_id is None:
             # No session-level model: use opencode.json's default; the shim's router enforces the
             # real model per request. (An explicit ModelRef at creation stalled turns.)
             project.session_id = client.create_session(directory=str(project.workspace.path))
-            project.workspace.write_session_id(project.session_id)
+            project.workspace.write_session_id(project.session_id, conversation)
         return project.session_id
 
     @staticmethod
-    def _recover_session(workspace: Workspace, client: OpenCodeClient) -> str | None:
+    def _recover_session(workspace: Workspace, client: OpenCodeClient,
+                         conversation: str | None = None) -> str | None:
         """A session id persisted from a prior process may point at a session the current
         OpenCode server doesn't know about (e.g. its storage was reset); validate before reusing
         it so a stale id doesn't wedge every subsequent build call."""
-        sid = workspace.read_session_id()
+        sid = workspace.read_session_id(conversation)
         if sid is None:
             return None
         try:
@@ -1639,7 +1682,7 @@ class Orchestrator:
             return None
         return sid
 
-    def build(self, prompt: str) -> dict:
+    def build(self, prompt: str, conversation: str | None = None) -> dict:
         """Run one build to completion (non-streaming). Reuses the session, so repeated calls are
         follow-up turns with context. Requires gateway access."""
         # Serialize with the streaming turns: only one turn may run at a time (see _turn_lock). Refuse
@@ -1649,8 +1692,9 @@ class Orchestrator:
                     "message": "A build is already running. Wait for it to finish or stop it first."}
         try:
             project = self._ensure_seeded()
+            self._adopt_legacy_build_history(project.workspace)
             client = self._ensure_opencode()
-            sid = self._ensure_session(project)
+            sid = self._ensure_session(project, conversation)
 
             def send_and_wait(text: str) -> None:
                 project.last_gateway_error = None
@@ -1786,7 +1830,7 @@ class Orchestrator:
         return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
     def build_stream(self, prompt: str, mentions: list[str] | None = None,
-                     resources: list[dict] | None = None):
+                     resources: list[dict] | None = None, conversation: str | None = None):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time. If a turn is already streaming, refuse rather than run a second one
@@ -1799,6 +1843,7 @@ class Orchestrator:
             yield from self._busy_refusal()
             return
         try:
+            self._begin_conversation(conversation)
             if _looks_like_approval(prompt) and (self.project().workspace.read_plan() or "").strip():
                 yield {"type": "plan-stale", "note": "Approved in chat — building this plan."}
                 yield from self._approve_locked(user_text=prompt)
@@ -2046,7 +2091,7 @@ class Orchestrator:
             return None
 
     def draft_handoff_plan(self, thread_id: str) -> dict:
-        """Write a digest, run sage-plan in the Build session, persist plan.md, open-sheet payload.
+        """Write a digest, run sage-plan in this Thread's Build session, persist plan.md, open-sheet payload.
 
         Idempotent once plan.md exists for this Thread. Does not teleport into Build."""
         if not self._turn_lock.acquire(blocking=False):
@@ -2104,22 +2149,24 @@ class Orchestrator:
         handoff_path.write_text(digest + "\n")
 
         prompt = chat_handoff.plan_prompt(thread_id, digest)
-        plan_md = self._run_sage_plan(project, prompt)
+        plan_md = self._run_sage_plan(project, prompt, conversation=thread_id)
         if not plan_md:
             raise ValueError("empty plan")
         project.workspace.write_plan(plan_md)
+        # The plan card opens in the Build conversation the handoff created, not in whichever
+        # one Build last had on screen.
         project.workspace.append_history(
-            {"type": "plan-proposed", "plan": plan_md, "kind": "plan", "steps": 0})
+            {"type": "plan-proposed", "plan": plan_md, "kind": "plan", "steps": 0}, thread_id)
         project.workspace.append_history(
-            {"type": "done", "ok": True, "decision": "awaiting approval"})
+            {"type": "done", "ok": True, "decision": "awaiting approval"}, thread_id)
         handoff = store.mark_handoff_planned(thread_id)
         self._flush_chat_save("plan", holding_turn=True)
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
-    def _run_sage_plan(self, project: Project, prompt: str) -> str:
-        """sage-plan on the Build session. No typecheck. Read-only arming so src/ stays put."""
+    def _run_sage_plan(self, project: Project, prompt: str, conversation: str | None = None) -> str:
+        """sage-plan on the conversation's Build session. No typecheck. Read-only arming so src/ stays put."""
         client = self._ensure_opencode()
-        sid = self._ensure_session(project)
+        sid = self._ensure_session(project, conversation)
         project.active_session_id = sid
         token = project.control.arm_read_only("plan")
         try:
@@ -2575,7 +2622,7 @@ class Orchestrator:
             settings = project.workspace.read_settings()
             settings.pop("built", None)
             project.workspace.write_settings(settings)
-            project.workspace.append_history({"type": "app-reset"})
+            project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
             project.workspace.render_history_md()
             return {"ok": True, "status": project.status()}
         finally:
@@ -2639,7 +2686,8 @@ class Orchestrator:
             log.warning("attachments: the turn deleted %d attachment(s); restored %s",
                         len(restored), ", ".join(restored))
             try:
-                project.workspace.append_history({"type": "attachments-restored", "paths": restored})
+                project.workspace.append_history({"type": "attachments-restored", "paths": restored},
+                                                 project.build_conversation)
             except OSError:
                 pass
 
@@ -2674,7 +2722,7 @@ class Orchestrator:
         for ev in ({"type": "user", "text": prompt},
                    {"type": "ask-blocked", "prompt": prompt, "message": message},
                    {"type": "done", "ok": False, "decision": "ask mode (read-only)"}):
-            project.workspace.append_history(ev)
+            project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":  # the composer already rendered the user's own bubble
                 yield ev
 
@@ -2697,7 +2745,7 @@ class Orchestrator:
         for ev in ({"type": "user", "text": prompt},
                    {"type": "reset-offer", "prompt": prompt, "message": message},
                    {"type": "done", "ok": False, "decision": "reset offered"}):
-            project.workspace.append_history(ev)
+            project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
                 yield ev
 
@@ -2759,7 +2807,7 @@ class Orchestrator:
         client = self._ensure_opencode()
         # A phase runs in the throwaway session its caller made; everything else reuses the project's.
         owns_turn = brief is None
-        sid = session_id or self._ensure_session(project)
+        sid = session_id or self._ensure_session(project, project.build_conversation)
         project.active_session_id = sid
         breaker = CircuitBreaker()
         current = prompt
@@ -2802,7 +2850,7 @@ class Orchestrator:
             # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
             # must not reach history either, or a reload would replay six "build is clean" dividers.
             if ev["type"] in _PERSISTED_EVENTS and (owns_turn or ev["type"] != "done"):
-                project.workspace.append_history(ev)
+                project.workspace.append_history(ev, project.build_conversation)
             return ev
 
         # Refresh the agent-facing archive of earlier turns BEFORE the baseline below, so this write
@@ -3065,7 +3113,8 @@ class Orchestrator:
         # replay their words, not ours. A phase writes none: the user approved once, so a phased
         # build is one bubble in the transcript, not six copies of their approval.
         if owns_turn:
-            project.workspace.append_history({"type": "user", "text": user_text if user_text is not None else prompt})
+            project.workspace.append_history({"type": "user", "text": user_text if user_text is not None else prompt},
+                                             project.build_conversation)
 
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never
@@ -3555,7 +3604,8 @@ class Orchestrator:
             yield {"type": "iterate", "reason": decision.reason}
             current = report.as_agent_message()
 
-    def approve_stream(self, answers: str = "", plan_edits: str | None = None):
+    def approve_stream(self, answers: str = "", plan_edits: str | None = None,
+                       conversation: str | None = None):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
@@ -3570,6 +3620,7 @@ class Orchestrator:
             yield from self._busy_refusal()
             return
         try:
+            self._begin_conversation(conversation)
             yield from self._approve_locked(answers, plan_edits)
         finally:
             self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
@@ -3626,7 +3677,7 @@ class Orchestrator:
                       "message": "Approving built this plan, but the mode is still Ask — it answers "
                                  "questions and never changes files. Switch to Auto or Implement "
                                  "before asking for your next change."}
-                project.workspace.append_history(ev)
+                project.workspace.append_history(ev, project.build_conversation)
                 yield ev
         finally:
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
@@ -3650,13 +3701,14 @@ class Orchestrator:
 
         def persist(ev: dict) -> dict:
             if ev["type"] in _PERSISTED_EVENTS:
-                project.workspace.append_history(ev)
+                project.workspace.append_history(ev, project.build_conversation)
             return ev
 
         # Same ordering rule as _build_stream: refresh the archive before the revert point below.
         project.workspace.render_history_md()
         project.workspace.append_history(
-            {"type": "user", "text": user_text if user_text is not None else "Approved the plan."})
+            {"type": "user", "text": user_text if user_text is not None else "Approved the plan."},
+            project.build_conversation)
         # ONE revert point for the whole build. _build_stream still checkpoints per phase (which is
         # what gives a gate violation its correct, narrow scope), so undoing everything needs a ref
         # that reaches back past all of them — hence discard_to rather than discard_changes.
@@ -3844,7 +3896,7 @@ class Orchestrator:
 
         path = project.workspace.path
         client = self._ensure_opencode()
-        sid = self._ensure_session(project)
+        sid = self._ensure_session(project, project.build_conversation)
         files = "\n".join(f"- {c}" for c in conflicts)
         prompt = (
             "A `git pull` brought in changes from a teammate that conflict with the current code. "
@@ -4105,10 +4157,12 @@ class Orchestrator:
         project.workspace.write_catalog_overrides(overrides)
         return new_catalog
 
-    def history(self) -> list[dict]:
+    def history(self, conversation: str | None = None) -> list[dict]:
         """Reads straight from the workspace volume, so the transcript is available without
         starting the preview (attaching the project) — a plain GET must not spin up Vite."""
-        return Workspace(self._project_id, self._wm.path).read_history()
+        workspace = Workspace(self._project_id, self._wm.path)
+        self._adopt_legacy_build_history(workspace)
+        return workspace.read_history(conversation)
 
     def list_project_resources(self) -> list[dict]:
         """Domino Resources the creator added to this project — the rail, not the catalogue."""

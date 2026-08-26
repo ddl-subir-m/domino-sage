@@ -448,7 +448,10 @@ SW.api = {
   holdBuild: async () => ({}),
   releaseBuild: async () => ({}),
 
-  history: () => request('/project/history'),
+  // Build's transcript is per conversation, the way Chat's already was. No conversation
+  // means the whole project — the agent's view, not the rail's.
+  history: (conversation) =>
+    request(`/project/history${conversation ? `?conversation=${encodeURIComponent(conversation)}` : ''}`),
   bindings: () => request('/bindings'),
   buildState: () => request('/project/build/state'),
   setBuildMode: (mode) => post('/project/model', { mode }),

@@ -78,15 +78,26 @@ window.SW = window.SW || {};
     const scroller = useRef(null);
 
     useEffect(() => {
-      if (conversationId && (!thread || thread.id !== conversationId)) {
+      if (!conversationId) {
+        // The route named no conversation, so this is a new one. Build's transcript is per
+        // conversation now, so the old turns have to leave the screen with it.
+        SW.store.clearConversation();
+        return;
+      }
+      if (!thread || thread.id !== conversationId) {
         SW.store.openThread(conversationId).catch(() => {});
       }
     }, [conversationId]);
 
+    // The transcript follows the open conversation rather than the mount. While the route names
+    // one that is still opening, loading would replay the conversation we are leaving.
+    const openId = thread ? thread.id : null;
+    const opening = !!conversationId && openId !== conversationId;
     useEffect(() => {
+      if (opening) return;
       SW.store.loadBuild();
       if (!SW.store.get().dockTab) SW.store.set({ dockTab: 'resources' });
-    }, []);
+    }, [openId, opening]);
 
     useEffect(() => {
       const el = scroller.current;

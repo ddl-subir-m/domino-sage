@@ -207,8 +207,15 @@ window.SW = window.SW || {};
             block: true,
             // A new conversation in Build keeps the app in the preview: you are
             // starting a new line of work on the thing you are looking at.
+            //
+            // Clear before navigating. A conversation can start without the route
+            // ever naming it (attaching a Resource opens one, and so does typing
+            // in Build), so the hash may already be the one we are going to.
+            // Navigation alone would then change nothing, and the button would
+            // look dead — which is exactly how it looked.
             onClick: () => {
               const { activeApp } = SW.store.get();
+              SW.store.clearConversation();
               SW.router.go(
                 mode === 'build' && activeApp ? `#/build?app=${activeApp.id}` : `#/${mode}`
               );

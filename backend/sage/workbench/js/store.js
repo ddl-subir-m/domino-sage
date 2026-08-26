@@ -1088,6 +1088,8 @@ window.SW = window.SW || {};
     clearConversation() {
       state.thread = null;
       state.messages = [];
+      state.buildHistory = [];
+      state.buildMessages = [];
       state.attachments = [];
       state.touched = [];
       state.assistantTurns = 0;
@@ -1128,10 +1130,12 @@ window.SW = window.SW || {};
       return summary;
     },
 
-    // Changes asked for in Build belong to the project's Build session, not
-    // the Chat Thread. History is `.sage/history.jsonl`.
+    // A Build turn belongs to a conversation: it opens that conversation's own OpenCode
+    // session, and its events are tagged with it in `.sage/history.jsonl`. Typing is intent, so
+    // it opens one, the same way Chat does.
     async sendBuildPrompt(text) {
       if (!text.trim() || state.buildRunning) return null;
+      if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
       state.buildHistory = state.buildHistory.concat([{ type: 'user', text }]);
       state.buildMessages = buildHistoryToMessages(state.buildHistory);
@@ -1142,7 +1146,7 @@ window.SW = window.SW || {};
         const res = await fetch('./api/project/build/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: text }),
+          body: JSON.stringify({ prompt: text, conversation: state.thread.id }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -1169,13 +1173,14 @@ window.SW = window.SW || {};
 
     async approveBuild(answers, planEdits) {
       if (state.buildRunning) return null;
+      if (!state.thread) await store.newThread();
       state.buildHistory = state.buildHistory.concat([{ type: 'user', text: 'Approved the plan.' }]);
       state.buildMessages = buildHistoryToMessages(state.buildHistory);
       state.buildRunning = true;
       state.buildTyping = 'Building…';
       notify();
       try {
-        const payload = { answers: answers || '' };
+        const payload = { answers: answers || '', conversation: state.thread.id };
         if (planEdits) payload.plan_edits = planEdits;
         const res = await fetch('./api/project/build/approve', {
           method: 'POST',
@@ -1225,8 +1230,13 @@ window.SW = window.SW || {};
     async loadBuild(options = {}) {
       const project = await SW.api.project().catch(() => ({}));
       applyModelStatus(project);
+      // No conversation open means a new one: nothing to replay. Asking for the whole project
+      // here is what used to make "New conversation" look dead — the transcript never changed.
+      const conversation = state.thread && state.thread.id;
       const [hist, running] = await Promise.all([
-        SW.api.history().catch(() => ({ history: [] })),
+        conversation
+          ? SW.api.history(conversation).catch(() => ({ history: [] }))
+          : Promise.resolve({ history: [] }),
         SW.api.buildState().catch(() => ({ running: false })),
         refreshBindings(),
       ]);
@@ -1250,7 +1260,12 @@ window.SW = window.SW || {};
       if (store._watchTimer) return;
       const tick = async () => {
         const running = await SW.api.buildState().catch(() => ({ running: true }));
-        const hist = await SW.api.history().catch(() => ({ history: [] }));
+        // Same scope as loadBuild: polling the whole project here would pull other
+        // conversations' turns into the one on screen.
+        const watched = state.thread && state.thread.id;
+        const hist = watched
+          ? await SW.api.history(watched).catch(() => ({ history: [] }))
+          : { history: [] };
         state.buildHistory = hist.history || [];
         state.buildMessages = buildHistoryToMessages(state.buildHistory);
         state.buildRunning = !!running.running;

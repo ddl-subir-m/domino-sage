@@ -5,13 +5,30 @@ window.SW = window.SW || {};
   const { Modal, Input } = antd;
   const { SearchOutlined } = icons;
 
+  // Going to Chat or Build keeps the conversation you are in: switching modes is turning your
+  // head, not starting over (docs/workbench/handoff.md). A route that dropped the Thread would
+  // now drop Build's transcript with it.
+  function goTo(mode) {
+    const { thread } = SW.store.get();
+    SW.router.go(thread ? SW.conversationRoute(thread, mode) : `#/${mode}`);
+  }
+
+  // Same as the rail's button: clear, then land on a mode with nothing open. The first message
+  // is what opens the conversation.
+  function newConversation() {
+    const mode = SW.router.get().mode === 'build' ? 'build' : 'chat';
+    const { activeApp } = SW.store.get();
+    SW.store.clearConversation();
+    SW.router.go(mode === 'build' && activeApp ? `#/build?app=${activeApp.id}` : `#/${mode}`);
+  }
+
   const STATIC_ACTIONS = [
-    { id: 'go_chat', group: 'Go to', label: 'Chat', run: () => SW.router.go('#/chat') },
-    { id: 'go_build', group: 'Go to', label: 'Build', run: () => SW.router.go('#/build') },
+    { id: 'go_chat', group: 'Go to', label: 'Chat', run: () => goTo('chat') },
+    { id: 'go_build', group: 'Go to', label: 'Build', run: () => goTo('build') },
     { id: 'go_code', group: 'Go to', label: 'Code', run: () => SW.router.go('#/code') },
     { id: 'go_manage', group: 'Go to', label: 'Manage', run: () => SW.router.go('#/manage') },
     { id: 'go_gallery', group: 'Go to', label: 'Gallery', run: () => SW.router.go('#/gallery') },
-    { id: 'new_thread', group: 'Actions', label: 'New conversation', run: () => SW.store.newThread() },
+    { id: 'new_thread', group: 'Actions', label: 'New conversation', run: newConversation },
     { id: 'switch', group: 'Actions', label: 'Switch project', run: () => SW.store.set({ scopePickerOpen: true }) },
     { id: 'invite', group: 'Actions', label: 'Invite people', run: () => SW.store.set({ inviteOpen: true }) },
     { id: 'resources', group: 'Actions', label: 'Open resources', run: () => SW.store.openDock('resources') },

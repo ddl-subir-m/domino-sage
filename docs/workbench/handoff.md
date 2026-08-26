@@ -19,7 +19,9 @@ Handoff is a write to the project filesystem, then a mode switch. The payload is
 |-------------|------|-----|
 | Transcript | `.sage/handoff-transcript.md` | Half a Thread is dead ends. Off unless the user checks it on the sheet. |
 
-Do not copy OpenCode session state. Build uses the project's existing Build session (`.sage/session.json`), which is a **new** OpenCode session if this project has never built. Continuity for the human is the Thread still listed in the rail and reachable from `#/chat/<threadId>` — not one harness session spanning both modes.
+Do not copy OpenCode session state. Build opens **this Thread's own** Build session (`.sage/threads/<threadId>/build-session.json`), which is a **new** OpenCode session the first time this Thread builds. Continuity for the human is the Thread still listed in the rail and reachable from `#/chat/<threadId>` — not one harness session spanning both modes.
+
+> Revised. Build used to share one session and one transcript per project (`.sage/session.json`). Both are now per conversation, matching Chat, so **New conversation** in the Build rail means something. See [ADR-0005](../adr/0005-build-is-per-conversation.md).
 
 Do not silently teleport. Detect, suggest, confirm.
 
@@ -93,7 +95,7 @@ On confirm, in order:
 4. Set `handoff.json` `status: "bound"`, `boundAt`, `planPath: ".sage/plan.md"`.
 5. Route to `#/build/<threadId>`. The Build pane is the existing builder: plan approval card if `has_built` is false (it will be), preview on the right, resource panel showing the new Bindings as IN THIS APP.
 
-The Thread id stays in the URL so Chat ↔ Build is turning your head, not starting over. Build's composer is the existing one; its history is the Build `history.jsonl`, which at this moment is empty except what the plan-approval card needs. The origin Thread is one click away in the rail, tagged with the app once `has_built` is true.
+The Thread id stays in the URL so Chat ↔ Build is turning your head, not starting over. Build's composer is the existing one; its history is this Thread's slice of the Build `history.jsonl`, which at this moment is empty except what the plan-approval card needs. The origin Thread is one click away in the rail, tagged with the app once `has_built` is true.
 
 ## 5. Build after landing
 

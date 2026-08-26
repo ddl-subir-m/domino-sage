@@ -832,11 +832,14 @@ def unpin_project_resource(
 
 
 @control_app.get("/api/project/history")
-def project_history() -> JSONResponse:
+def project_history(conversation: str = "") -> JSONResponse:
     """The chat transcript persisted in the workspace, so the UI can replay it after a reload or
     restart (see Workspace.append_history / Orchestrator.history). Reads disk without starting the
-    preview."""
-    return JSONResponse(content={"history": orchestrator.history()})
+    preview.
+
+    `conversation` is a Thread id: Build's transcript is per conversation (ADR-0005). Naming none
+    returns the whole project log, which is what the agent's own archive renders."""
+    return JSONResponse(content={"history": orchestrator.history(conversation or None)})
 
 
 @control_app.post("/api/project/model")
@@ -1505,6 +1508,8 @@ def build_stream(body: dict) -> StreamingResponse:
     # @-referenced Resources (#31), as `{"kind", "id"}` Binding identities. Their own field rather
     # than more entries in `mentions`: a Resource has no path, so nothing here resolves to a file.
     resources = (body or {}).get("resources") or None
+    # Which Build conversation this turn belongs to (Thread id). Absent for an unscoped caller.
+    conversation = (body or {}).get("conversation") or None
 
     if not prompt:
         def refuse():
@@ -1512,7 +1517,7 @@ def build_stream(body: dict) -> StreamingResponse:
         return StreamingResponse(refuse(), media_type="text/event-stream")
 
     return StreamingResponse(
-        _turn_sse(orchestrator.build_stream(prompt, mentions, resources), "build_stream"),
+        _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation), "build_stream"),
         media_type="text/event-stream")
 
 
@@ -1633,9 +1638,10 @@ def build_approve(body: dict) -> StreamingResponse:
     """Approve a gated plan (SPEC P6) and stream the resulting build. Body: {answers?, plan_edits?}."""
     answers = (body or {}).get("answers", "") or ""
     plan_edits = (body or {}).get("plan_edits")  # None = approve the plan as proposed
+    conversation = (body or {}).get("conversation") or None
 
     return StreamingResponse(
-        _turn_sse(orchestrator.approve_stream(answers, plan_edits), "approve_stream"),
+        _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation), "approve_stream"),
         media_type="text/event-stream")
 
 
@@ -1696,7 +1702,7 @@ async def build_project(request: Request) -> JSONResponse:
         # Offload the blocking build (drives OpenCode, sleeps) to a thread so the event loop
         # stays free to serve the /v1 model calls that OpenCode makes DURING the build.
         # Without this the single loop deadlocks: build waits for a turn that can't be served.
-        result = await run_in_threadpool(orchestrator.build, prompt)
+        result = await run_in_threadpool(orchestrator.build, prompt, body.get("conversation") or None)
         return JSONResponse(content=result)
     except Exception as e:
         log.exception("build failed")
