@@ -35,3 +35,4 @@ __pycache__/
 .sage/samples.json
 # Chat-local files. They persist on this volume and do not travel with git.
 .sage/scratch/
+.sage/chat-work/

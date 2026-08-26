@@ -6,6 +6,7 @@ turn cannot append to the Build transcript (docs/workbench/chat.md).
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import threading
 import time
@@ -46,6 +47,13 @@ def artifact_kind(name: str) -> str:
         if lower.endswith(suffix):
             return kind
     return "file"
+
+
+def _is_auto_artifact(item: dict) -> bool:
+    """Sage-produced charts/tables are Thread outputs, not user pins."""
+    if str(item.get("kind") or "") != "artifact":
+        return False
+    return str(item.get("addedBy") or "sage") != "user"
 
 
 class ThreadStore:
@@ -107,18 +115,26 @@ class ThreadStore:
         return None
 
     def read_session_id(self, thread_id: str) -> str | None:
+        rec = self.read_session(thread_id)
+        return rec.get("session_id") if rec else None
+
+    def read_session(self, thread_id: str) -> dict | None:
         p = self.thread_dir(thread_id) / "session.json"
         if not p.exists():
             return None
         try:
-            return json.loads(p.read_text()).get("session_id")
+            data = json.loads(p.read_text())
         except (json.JSONDecodeError, OSError):
             return None
+        return data if isinstance(data, dict) else None
 
-    def write_session_id(self, thread_id: str, session_id: str) -> None:
+    def write_session_id(self, thread_id: str, session_id: str, directory: str | None = None) -> None:
         p = self.thread_dir(thread_id) / "session.json"
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"session_id": session_id}))
+        body: dict[str, str] = {"session_id": session_id}
+        if directory:
+            body["directory"] = directory
+        p.write_text(json.dumps(body))
 
     def history_path(self, thread_id: str) -> Path:
         return self.thread_dir(thread_id) / "history.jsonl"
@@ -144,7 +160,12 @@ class ThreadStore:
         except (json.JSONDecodeError, OSError):
             return {"items": []}
         items = data.get("items") if isinstance(data, dict) else None
-        return {"items": items} if isinstance(items, list) else {"items": []}
+        if not isinstance(items, list):
+            return {"items": []}
+        kept = [i for i in items if not _is_auto_artifact(i)]
+        if len(kept) != len(items):
+            self.write_context(thread_id, {"items": kept})
+        return {"items": kept}
 
     def write_context(self, thread_id: str, body: dict) -> None:
         self._write_json(self.thread_dir(thread_id) / "context.json", body)
@@ -214,15 +235,6 @@ class ThreadStore:
         items = self.read_artifacts(thread_id)
         items.append(row)
         self._write_json(self.thread_dir(thread_id) / "artifacts.json", {"items": items})
-        # Artifacts belong under IN CONTEXT. Skip if this path is already a chip.
-        ctx = self.read_context(thread_id)
-        if not any(i.get("path") == path for i in ctx["items"]):
-            self.add_context(thread_id, {
-                "kind": "artifact",
-                "name": row.get("title") or name,
-                "path": path,
-                "addedBy": "sage",
-            })
         return row
 
     def read_handoff(self, thread_id: str) -> dict | None:
@@ -279,7 +291,34 @@ class ThreadStore:
         path.write_text(json.dumps(body, indent=2))
 
 
-_SKIP_SNAPSHOT_PARTS = frozenset({"node_modules", ".git", "dist", "__pycache__"})
+_SKIP_SNAPSHOT_PARTS = frozenset({"node_modules", ".git", "dist", "__pycache__", "chat-work"})
+
+CHAT_WORK = Path(".sage") / "chat-work"
+
+
+def ensure_chat_workdir(workspace: Path, agents_md: str) -> Path:
+    """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/ and scratch.
+
+    Chat must not use the React app clone as cwd. Paths in the prompt stay workspace-shaped
+    (`examples/<threadId>/…`, `.sage/scratch/…`) because those names are linked in here.
+    """
+    root = Path(workspace) / CHAT_WORK
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "AGENTS.md").write_text(agents_md)
+    (Path(workspace) / "examples").mkdir(exist_ok=True)
+    (Path(workspace) / ".sage" / "scratch").mkdir(parents=True, exist_ok=True)
+    _ensure_dir_link(root / "examples", Path(workspace) / "examples")
+    sage = root / ".sage"
+    sage.mkdir(exist_ok=True)
+    _ensure_dir_link(sage / "scratch", Path(workspace) / ".sage" / "scratch")
+    return root
+
+
+def _ensure_dir_link(link: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() or link.exists():
+        return
+    link.symlink_to(Path(os.path.relpath(target, link.parent)), target_is_directory=True)
 
 
 def snapshot_files(root: Path) -> dict[str, bytes]:

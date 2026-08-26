@@ -1226,6 +1226,16 @@ window.SW = window.SW || {};
             if (fresh.length) {
               assistant.blocks = [...assistant.blocks, ...(await blocksForArtifacts(fresh))];
             }
+            if (state.thread && items && items.length) {
+              const have = new Set((state.thread.artifacts || []).map((a) => a.path));
+              const extra = items.filter((a) => a.path && !have.has(a.path));
+              if (extra.length) {
+                state.thread = {
+                  ...state.thread,
+                  artifacts: [...(state.thread.artifacts || []), ...extra],
+                };
+              }
+            }
             notify();
             refreshAttachments();
           } else if (ev.type === 'error') {

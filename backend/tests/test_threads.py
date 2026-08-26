@@ -41,19 +41,36 @@ def test_chips_persist_on_the_user_event_after_removal(tmp_path: Path):
     assert store.read_history(thread["id"])[0]["contextIds"] == [chip["id"]]
 
 
-def test_record_artifact_lands_in_context(tmp_path: Path):
+def test_record_artifact_does_not_land_in_context(tmp_path: Path):
     store = ThreadStore(tmp_path)
     thread = store.create()
     path = f"examples/{thread['id']}/exposure.table.json"
     row = store.record_artifact(thread["id"], path=path)
-    ctx = store.read_context(thread["id"])["items"]
     assert row["kind"] == "table"
-    assert len(ctx) == 1
-    assert ctx[0]["kind"] == "artifact"
-    assert ctx[0]["path"] == path
-    assert ctx[0]["addedBy"] == "sage"
+    assert store.read_context(thread["id"])["items"] == []
     store.record_artifact(thread["id"], path=path)
-    assert len(store.read_context(thread["id"])["items"]) == 1
+    assert len(store.read_artifacts(thread["id"])) == 2
+    assert store.read_context(thread["id"])["items"] == []
+
+
+def test_read_context_drops_sage_added_artifacts(tmp_path: Path):
+    store = ThreadStore(tmp_path)
+    thread = store.create()
+    store.add_context(thread["id"], {
+        "kind": "file", "name": "desk.csv", "path": ".sage/scratch/desk.csv", "addedBy": "user",
+    })
+    store.add_context(thread["id"], {
+        "kind": "artifact", "name": "desks.png",
+        "path": f"examples/{thread['id']}/desks.png", "addedBy": "sage",
+    })
+    items = store.read_context(thread["id"])["items"]
+    assert [i["kind"] for i in items] == ["file"]
+    store.add_context(thread["id"], {
+        "kind": "artifact", "name": "desks.png",
+        "path": f"examples/{thread['id']}/desks.png", "addedBy": "user",
+    })
+    kinds = [i["kind"] for i in store.read_context(thread["id"])["items"]]
+    assert kinds == ["file", "artifact"]
 
 
 def test_title_from_prompt_truncates():

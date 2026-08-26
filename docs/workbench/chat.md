@@ -60,7 +60,7 @@ Title: first user message, truncated to 60 characters, until the user renames. `
 
 `Workspace.read_session_id` / `history_path` stay Build-scoped. Chat goes through new helpers on `Workspace` (`thread_session_id`, `append_thread_history`, …) so a Chat turn cannot append to the Build transcript and a Build turn cannot append to a Thread.
 
-OpenCode: `create_session(directory=workspace.root)` per Thread, persist that id under the Thread. One `opencode serve` per container still; sessions are many. Compaction is still backlog — a long Thread will get expensive; do not solve it in this slice.
+OpenCode: `create_session(directory=.sage/chat-work)` per Thread, persist that id under the Thread. One `opencode serve` per container still; sessions are many. Compaction is still backlog — a long Thread will get expensive; do not solve it in this slice.
 
 ## 4. Agent: `sage-chat`
 
@@ -86,13 +86,14 @@ OpenCode `permission` is not trusted (same lesson as `sage-ask`: the shim strips
 - **Reject** any edit/write whose path is under `src/`, `public/`, `.sage/` except that Thread dir, or any config file (`package.json`, `AGENTS.md`, `vite.config.ts`, `app.sh`, `serve.py`). The shim rewrites that tool result to an error naming `examples/<threadId>/` so the model retries there instead of `src/` in a loop. Revert the file on disk at turn end.
 - **Do not** run the typecheck feedback loop. A Chat turn that writes a PNG is done.
 
-The React `template/react-vite/AGENTS.md` still sits at the workspace root and still says "every turn must end with edits to `src/`". The shim allowlist is what makes that instruction harmless on a Chat turn. Do not delete or swap that file for Chat — Build needs it, and Untitled is already a seeded app repo.
+OpenCode's Chat session directory is `.sage/chat-work/` (Chat `AGENTS.md`, plus links to `examples/` and `.sage/scratch/`). It is not the React app clone. Chat attach does not seed `template/react-vite` or start Vite. Build / the preview proxy seed when they need the app.
 
 ### Data the agent can see
 
 On each Chat turn the orchestrator injects, as prompt context, the same style of notes used today for mentions:
 
 - Session context chips (see §6): name, kind, and for files the existing `describe.py` summary (shape, not content).
+- Artifacts already on this Thread (`artifacts.json`): path and title only, so a follow-up can edit a chart without pinning it. `describe.py` runs only if the person `@`s that file.
 - Bound Data Sources in Session context: display name, connector, scope. The agent queries live via the Python SDK already on the image (`domino_data`), not via named queries. Named queries remain a Built App contract and are out of scope for Chat.
 - Uploaded files already in `public/data/` (existing Attachment path) if they are in Session context.
 
@@ -145,7 +146,7 @@ Assistant history entries gain an optional `artifacts: [{ id, kind, path, title 
 - `table` → the JSON as a table, 10 rows, Show all.
 - `query` / `note` / `file` → a compact file card.
 
-Collapsed "Ran Python" is optional. If the SSE stream includes a bash tool step, show it collapsed the way the prototype does (`Ran Python · 1.2s`). Do not render write, read, or edit tool steps in Chat — those are how a missed `src/` path used to fill the Thread. If there is no bash step, do not fake a sandbox card.
+Collapsed "Ran Python" is optional. If the SSE stream includes a bash tool step, show it collapsed the way the prototype does (`Ran Python · 1.2s`). Do not render write, read, or edit tool steps in Chat — those are how a missed `src/` path used to fill the Thread. If there is no bash step, do not fake a sandbox card. Intermediate assistant text ("let me save there") is dropped; the Thread keeps the last text part of the turn.
 
 ## 6. Session context and chips
 
@@ -195,10 +196,11 @@ Chips:
 
 - Persist across turns in this Thread.
 - Clicking × removes the row from `context.json` for subsequent turns. Already-sent messages keep the chips they were sent with (store them on the history `user` event as `contextIds`).
-- `@` autocomplete lists Session context first, then project **pins**, then parent Resources, then Files. Cap 8. It does not fetch a warehouse catalog.
+- `@` autocomplete lists Session context first, then this Thread's Artifacts (from the manifest, not as chips), then project **pins**, then parent Resources, then Files. Cap 8. It does not fetch a warehouse catalog.
+- Picking `@` inserts `@name` into the composer text (and the prompt OpenCode receives) **and** adds the chip. Do not strip the token.
 - Adding from the resource panel appends to `context.json` and shows the chip. Provenance `addedBy: user | sage`. When Sage adds one, it reports in the Thread in a sentence ("I'll use card-transactions-q3") — mixed-initiative from the mock, but the panel is the accounting.
 
-The resource panel in Chat: **IN CONTEXT** (this Thread's `context.json`) above **PROJECT RESOURCES** (Datasets, Data Sources, Model APIs, LLM Aliases). Dataset and Data Source rows expand to browse files or database/schema/table. Files produced as Artifacts appear under IN CONTEXT as `kind: artifact`. Do not show `.sage/` except `.sage/scratch/`, and do not show `AGENTS.md`.
+The resource panel in Chat: **IN CONTEXT** (this Thread's `context.json`) above **PROJECT RESOURCES** (Datasets, Data Sources, Model APIs, LLM Aliases). Dataset and Data Source rows expand to browse files or database/schema/table. Files Sage writes as Artifacts stay in the Thread and `artifacts.json`; they are **not** auto-added to IN CONTEXT. `@` can still name them. Do not show `.sage/` except `.sage/scratch/`, and do not show `AGENTS.md`.
 
 Remove from project is on every membership parent. It is refused while a Binding still names that Resource. Removing a parent also drops matching chips from the open Thread.
 
@@ -234,7 +236,7 @@ An implementer is done when all of these pass:
 2. A Chat turn with "what's in this CSV?" on an attached file writes a PNG and/or a `.table.json` under `examples/<threadId>/`, appends the manifest, and the Thread shows the Artifact after reload. `src/` is untouched (git diff).
 3. A `sage-chat` attempt to edit `src/App.tsx` is stripped by the shim; the user-visible reply does not mention tools or permissions.
 4. Removing a chip drops that Resource from the next turn's prompt context and from IN CONTEXT. The previous user message still shows the chip it was sent with.
-5. `@` lists IN CONTEXT rows first.
+5. `@` lists IN CONTEXT rows first, then this Thread's Artifacts. Picking a row leaves `@name` in the sent message; OpenCode's prompt includes that token and the file path. A generated PNG is not auto-chipped.
 6. Chat turns never produce a plan-approval card and never run `tsc`.
 7. `template/chat/AGENTS.md` is the prompt body OpenCode receives for `sage-chat` (inline in `opencode.json`, kept in sync).
 8. Tests: shim path-allowlist for `sage-chat`; Thread history does not leak into Build `history.jsonl`; Untitled reuse (no second provision when `untitled: true` already exists).

@@ -45,6 +45,14 @@ def test_ensure_seeds_from_template_and_symlinks_node_modules(tmp_path: Path):
     assert nm.is_symlink() and (nm / "dep").read_text() == "x"  # warm deps, not copied
 
 
+def test_ensure_without_seed_app_does_not_copy_the_react_template(tmp_path: Path):
+    tmpl = _fake_template(tmp_path)
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("proj1", seed_app=False)
+    assert not (ws.path / "package.json").exists()
+    assert not (ws.path / "src").exists()
+
+
 def test_ensure_is_idempotent_and_never_clobbers_existing_app(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
     ws_dir = tmp_path / "ws"

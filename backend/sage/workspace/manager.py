@@ -500,11 +500,14 @@ class WorkspaceManager:
                 shutil.copy2(item, dest)
         self.link_warm_deps()
 
-    def ensure(self, project_id: str) -> Workspace:
+    def ensure(self, project_id: str, seed_app: bool = True) -> Workspace:
         """Get-or-seed the bound workspace. Idempotent: seeds the template in place only when the
-        volume has no app yet (no package.json), never clobbering a pre-existing app or its .git."""
+        volume has no app yet (no package.json), never clobbering a pre-existing app or its .git.
+
+        `seed_app=False` is Chat: mkdir the volume, leave the React template uncopied.
+        """
         self._dir.mkdir(parents=True, exist_ok=True)
-        if not (self._dir / "package.json").exists():
+        if seed_app and not (self._dir / "package.json").exists():
             # Seed the template INTO the (possibly pre-existing, e.g. a fresh git checkout)
             # directory entry by entry, so an existing .git / dotfiles are preserved.
             for item in self._template.iterdir():
@@ -518,7 +521,8 @@ class WorkspaceManager:
                 else:
                     shutil.copy2(item, dest)
 
-        self.link_warm_deps()
+        if seed_app:
+            self.link_warm_deps()
         return Workspace(project_id, self._dir)
 
     def link_warm_deps(self) -> bool:

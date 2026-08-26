@@ -26,10 +26,15 @@ window.SW = window.SW || {};
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
 
-  // Session context, then project Resources, then files — never a flat A–Z dump.
-  function mentionCandidates(attachments, resourceGroups, query) {
+  // Session context, then this Thread's artifacts, then project Resources, then files.
+  function mentionCandidates(attachments, resourceGroups, query, artifacts) {
     const lowered = query.trim().toLowerCase();
-    const matches = (r) => !lowered || (r.name || '').toLowerCase().includes(lowered);
+    const matches = (r) => {
+      if (!lowered) return true;
+      const name = (r.name || '').toLowerCase();
+      const base = String((r.path || '')).split('/').pop().toLowerCase();
+      return name.includes(lowered) || base.includes(lowered);
+    };
     const seen = new Set();
     const take = (row) => {
       if (!row || !row.id || seen.has(row.id) || !matches(row)) return null;
@@ -47,6 +52,18 @@ window.SW = window.SW || {};
         bindingKey: att.bindingKey,
       });
       if (row) context.push(row);
+    });
+
+    const produced = [];
+    (artifacts || []).forEach((a) => {
+      const path = a.path || '';
+      const row = take({
+        id: a.id || (path ? `artifact:${path}` : ''),
+        name: a.name || path.split('/').pop(),
+        kind: 'artifact',
+        path,
+      });
+      if (row) produced.push(row);
     });
 
     const project = [];
@@ -69,7 +86,7 @@ window.SW = window.SW || {};
       if (row) files.push(row);
     });
 
-    return context.concat(pins, project, files).slice(0, 8);
+    return context.concat(produced, pins, project, files).slice(0, 8);
   }
 
   // Where the caret sits inside an unfinished @mention, if it does.
@@ -83,6 +100,14 @@ window.SW = window.SW || {};
     return { start: at, query: token };
   }
 
+  // Prefer the file's basename so "@data.csv" matches the path OpenCode reads.
+  function mentionToken(resource) {
+    const fromPath = String((resource && resource.path) || '').split('/').pop();
+    const fromName = String((resource && resource.name) || '').split('/').pop();
+    const token = (fromPath || fromName || 'resource').replace(/\s+/g, '_').replace(/^@+/, '');
+    return '@' + token;
+  }
+
   SW.Composer = function Composer({
     placeholder,
     onSend,
@@ -93,7 +118,7 @@ window.SW = window.SW || {};
   }) {
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
-      buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases,
+      buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -113,7 +138,9 @@ window.SW = window.SW || {};
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
-    const suggestions = mention ? mentionCandidates(attachments, resourceGroups, mention.query) : [];
+    const suggestions = mention
+      ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts)
+      : [];
     const activeBuildMode = BUILD_MODES.find((m) => m.id === buildMode) || BUILD_MODES[0];
     const modeQueued = showMode && buildRunning && buildTurnMode && buildTurnMode !== buildMode;
 
@@ -147,11 +174,14 @@ window.SW = window.SW || {};
       setCursor(0);
     };
 
-    // The mention resolves into a chip rather than into text: context is a
-    // thing you can see and remove, not a string in the message.
+    // Keep @name in the box (and the sent prompt) and add the chip. Context
+    // without the token meant OpenCode saw "what's in this" with no file name.
     const pickMention = async (resource) => {
-      const rest = text.slice(mention.start).replace(/^@\S*/, '');
-      setText(text.slice(0, mention.start) + rest);
+      if (!mention) return;
+      const token = mentionToken(resource);
+      const after = text.slice(mention.start).replace(/^@\S*/, '');
+      const pad = after === '' || /^\s/.test(after) ? '' : ' ';
+      setText(text.slice(0, mention.start) + token + pad + after);
       setMention(null);
       await SW.store.addToContext(resource, { quiet: true });
     };
@@ -300,7 +330,11 @@ window.SW = window.SW || {};
               h(
                 'div',
                 { className: 'sw-mention-head sw-group-label' },
-                suggestions[0] && attachedIds.has(suggestions[0].id) ? 'In context' : `In ${scope.name}`
+                suggestions[0] && attachedIds.has(suggestions[0].id)
+                  ? 'In context'
+                  : suggestions[0] && suggestions[0].kind === 'artifact'
+                    ? 'In this thread'
+                    : `In ${scope.name}`
               ),
               suggestions.map((resource, index) =>
                 h(

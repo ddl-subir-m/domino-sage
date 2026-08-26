@@ -71,6 +71,23 @@ def test_send_prompt_text_only_when_no_attachments(monkeypatch):
     assert calls[0]["prompt"] == {"text": "just text"}   # untouched when nothing attached
 
 
+def test_chat_send_prompt_does_not_talk_about_the_built_app(monkeypatch):
+    calls = []
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+    OpenCodeClient("http://x").send_prompt(
+        "s1", "what data is there in @desk.csv",
+        attachments=[{"path": ".sage/scratch/desk.csv", "name": "desk.csv",
+                      "summary": "CSV — 2 columns", "detail": ""}],
+        chat=True,
+    )
+    text = calls[0]["prompt"]["text"]
+    assert "what data is there in @desk.csv" in text
+    assert ".sage/scratch/desk.csv" in text
+    assert "built app MUST" not in text
+    assert "public/data/" not in text
+
+
 def test_parse_server_url():
     assert parse_server_url("opencode server listening on http://127.0.0.1:4096") == "http://127.0.0.1:4096"
     assert parse_server_url("nothing here") is None

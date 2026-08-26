@@ -22,6 +22,42 @@ from .agent_driver import AgentEvent
 log = logging.getLogger("sage.driver")  # "sage.*" -> surfaced by /api/diag's log tail
 
 
+def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: bool = False) -> str:
+    """Append @mentioned file descriptors to a prompt. Chat must not get the Build-app preamble."""
+    if not attachments:
+        return text
+
+    def _entry(a: dict) -> str:
+        s = f"- {a['name']} — {a['summary']}\n  path: {a['path']}"
+        if "image_uri" in a and not a["image_uri"]:
+            s += ("\n  NOTE: this image was NOT shown to you — it is too large to inline. "
+                  "You cannot see its contents and reading the file will not help. "
+                  "Say so plainly rather than guessing or searching for it.")
+        if a.get("detail"):
+            s += f"\n{a['detail']}"
+        return s
+
+    listing = "\n\n".join(_entry(a) for a in attachments)
+    if chat:
+        return (
+            f"{text}\n\nThe user @mentioned these files. Paths are relative to this Chat working "
+            f"directory (examples/ and .sage/scratch/ are linked here). The lines below are shape, "
+            f"not the rows — read the file at the path shown when you need the data:\n\n{listing}"
+        )
+    return (
+        f"{text}\n\nAttached data files (the user @mentioned these). Below is a DESCRIPTION "
+        f"OF SHAPE (schema/structure) for each — it is NOT the data. You MAY read a file at "
+        f"the workspace-relative path shown if you genuinely need more than the descriptor, "
+        f"but do not do so routinely, and do NOT read a large file: it bloats the context and "
+        f"has previously wedged the OpenCode server. Judge from the size/shape given. "
+        f"Do NOT hardcode, paste, or copy any sample values into the app as its data — the "
+        f"descriptor is a summary and the real file has far more. The built app MUST load the "
+        f"FULL file at runtime by fetching its served URL (see the 'Attached data' section in "
+        f"AGENTS.md). Never copy a file into src/ — that leaks data into "
+        f"git; public/data/ is gitignored on purpose:\n\n{listing}"
+    )
+
+
 def map_event(raw: dict) -> AgentEvent:
     """OpenCode SSE envelope {id,type,properties} -> our harness-agnostic AgentEvent.
 
@@ -66,7 +102,7 @@ class OpenCodeClient:
         return ms[-1]["id"] if ms else None
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None, agent: str | None = None,
-                    attachments: list[dict] | None = None) -> None:
+                    attachments: list[dict] | None = None, *, chat: bool = False) -> None:
         """Send a prompt. `/prompt` returns before the turn completes (async), so callers must
         wait_for_completion() to know the edits landed.
 
@@ -107,32 +143,7 @@ class OpenCodeClient:
             them, so this method attaches unconditionally and lets that policy live in one place.
         Confirmed end to end (OpenCode -> shim -> gateway -> sonnet): the model read a test image
         correctly."""
-        if attachments:
-            def _entry(a: dict) -> str:
-                s = f"- {a['name']} — {a['summary']}\n  path: {a['path']}"
-                # An image whose pixels couldn't be inlined must SAY so. Otherwise its descriptor
-                # is indistinguishable from a normal one, the agent assumes it can see the image,
-                # and it guesses or goes hunting the filesystem instead of telling the user.
-                if "image_uri" in a and not a["image_uri"]:
-                    s += ("\n  NOTE: this image was NOT shown to you — it is too large to inline. "
-                          "You cannot see its contents and reading the file will not help. "
-                          "Say so plainly rather than guessing or searching for it.")
-                if a.get("detail"):
-                    s += f"\n{a['detail']}"
-                return s
-
-            listing = "\n\n".join(_entry(a) for a in attachments)
-            text = (
-                f"{text}\n\nAttached data files (the user @mentioned these). Below is a DESCRIPTION "
-                f"OF SHAPE (schema/structure) for each — it is NOT the data. You MAY read a file at "
-                f"the workspace-relative path shown if you genuinely need more than the descriptor, "
-                f"but do not do so routinely, and do NOT read a large file: it bloats the context and "
-                f"has previously wedged the OpenCode server. Judge from the size/shape given. "
-                f"Do NOT hardcode, paste, or copy any sample values into the app as its data — the "
-                f"descriptor is a summary and the real file has far more. The built app MUST load the "
-                f"FULL file at runtime by fetching its served URL (see the 'Attached data' section in "
-                f"AGENTS.md). Never copy a file into src/ — that leaks data into "
-                f"git; public/data/ is gitignored on purpose:\n\n{listing}")
+        text = with_attachment_listing(text, attachments, chat=chat)
         body: dict = {"prompt": {"text": text}}
         images = [{"uri": a["image_uri"], "name": a["name"]}
                   for a in (attachments or []) if a.get("image_uri")]

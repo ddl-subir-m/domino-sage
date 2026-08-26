@@ -59,6 +59,53 @@ def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: 
     return orch, oc
 
 
+def test_chat_opencode_session_is_not_the_react_app(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "hi"))
+    work = orch.project(start_preview=False).workspace.path / ".sage" / "chat-work"
+    assert oc.sessions[0]["directory"] == str(work)
+    assert (work / "AGENTS.md").exists()
+    assert (work / "examples").is_symlink()
+
+
+def test_chat_does_not_seed_the_react_template(tmp_path: Path):
+    template = tmp_path / "template"
+    (template / "src").mkdir(parents=True)
+    (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
+    (template / "package.json").write_text("{}")
+    ws = tmp_path / "mnt" / "code"
+    oc = FakeOpenCode(ws, [Turn(text="hello")])
+    orch = Orchestrator(workspace_dir=ws, template=template, gateway=ScriptedGateway(),
+                        catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
+                        opencode_client=oc)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "hi"))
+    assert not (ws / "package.json").exists()
+    assert not (ws / "src").exists()
+    assert oc.sessions[0]["directory"] == str(ws / ".sage" / "chat-work")
+
+
+def test_chat_prompt_keeps_at_name_and_attaches_the_file(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    ws = orch.project(start_preview=False).workspace.path
+    path = ".sage/scratch/desk.csv"
+    dest = ws / path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("desk,notional\nRates,10\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "desk.csv", "path": path})
+    list(orch.chat_stream(tid, "what data is there in @desk.csv"))
+    prompt = oc.prompts[0]["text"]
+    assert prompt.endswith("what data is there in @desk.csv") or "what data is there in @desk.csv" in prompt
+    atts = oc.prompts[0]["attachments"]
+    assert atts and atts[0]["name"] == "desk.csv"
+    assert atts[0]["path"] == path
+    assert "Rates,10" not in prompt
+    assert "(@desk.csv)" in prompt
+    assert "@name in the user's message" in prompt
+
+
 def test_chat_turn_uses_sage_chat_skips_plan_and_tsc(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="Rates is the largest desk.")])
     thread = orch.create_thread()
@@ -96,10 +143,28 @@ def test_chat_turn_records_artifact_and_reverts_src(tmp_path: Path):
     hist = orch.thread_history(tid)
     assert hist[0]["type"] == "user"
     ctx = orch.thread_context(tid)["items"]
-    assert any(i.get("kind") == "artifact" and i.get("path") == arts[0]["path"] for i in ctx)
+    assert not any(i.get("kind") == "artifact" for i in ctx)
+    assert orch.get_thread(tid)["artifacts"][0]["path"] == arts[0]["path"]
     assert orch.project(start_preview=False).workspace.read_history() == []
     assert not any(e.get("kind") == "tool" for e in events)
     assert any(e.get("type") == "artifacts" for e in hist)
+
+
+def test_followup_lists_written_artifacts_without_chipping_them(tmp_path: Path):
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    path = f"examples/{tid}/desks.png"
+    oc.turns = [
+        Turn(text="Charted.", writes={path: "png"}),
+        Turn(text="Bluer."),
+    ]
+    list(orch.chat_stream(tid, "chart desks"))
+    list(orch.chat_stream(tid, "make the bars blue"))
+    prompt = oc.prompts[1]["text"]
+    assert "Already written this Thread" in prompt
+    assert path in prompt
+    assert "served URL" not in prompt
+    assert not any(i.get("kind") == "artifact" for i in orch.thread_context(tid)["items"])
 
 
 def test_chat_does_not_record_bash_on_the_thread(tmp_path: Path):
@@ -147,6 +212,19 @@ def test_chat_followup_does_not_replay_the_prior_reply(tmp_path: Path):
     assert texts == ["Autodoc is a dataset of model documents."]
 
 
+def test_chat_keeps_only_the_last_assistant_text(tmp_path: Path):
+    orch, _ = _orch(tmp_path, [Turn(
+        prelude="The examples directory is at the chat-work root. Let me save there",
+        text="Rates is the largest desk.",
+    )])
+    tid = orch.create_thread()["id"]
+    events = list(orch.chat_stream(tid, "chart this"))
+    texts = [e["text"] for e in events if e.get("type") == "agent" and e.get("kind") == "text"]
+    assert texts == ["Rates is the largest desk."]
+    hist = orch.thread_history(tid)
+    assert [e.get("text") for e in hist if e.get("kind") == "text"] == ["Rates is the largest desk."]
+
+
 def test_chat_prompt_tells_the_agent_an_unmounted_dataset_is_not_the_git_repo(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="ok")])
     tid = orch.create_thread()["id"]
@@ -166,9 +244,9 @@ def test_chat_turn_arms_web_when_the_prompt_has_a_url(tmp_path: Path):
     armed = []
     orig = oc.send_prompt
 
-    def wrap(session_id, text, model=None, agent=None, attachments=None):
+    def wrap(session_id, text, model=None, agent=None, attachments=None, **kwargs):
         armed.append(orch.project(start_preview=False).control.snapshot().web_allowed)
-        return orig(session_id, text, model=model, agent=agent, attachments=attachments)
+        return orig(session_id, text, model=model, agent=agent, attachments=attachments, **kwargs)
 
     oc.send_prompt = wrap
     tid = orch.create_thread()["id"]
@@ -184,9 +262,9 @@ def test_chat_turn_does_not_arm_web_for_an_ordinary_question(tmp_path: Path):
     armed = []
     orig = oc.send_prompt
 
-    def wrap(session_id, text, model=None, agent=None, attachments=None):
+    def wrap(session_id, text, model=None, agent=None, attachments=None, **kwargs):
         armed.append(orch.project(start_preview=False).control.snapshot().web_allowed)
-        return orig(session_id, text, model=model, agent=agent, attachments=attachments)
+        return orig(session_id, text, model=model, agent=agent, attachments=attachments, **kwargs)
 
     oc.send_prompt = wrap
     tid = orch.create_thread()["id"]
@@ -203,9 +281,9 @@ def test_chat_followup_still_arms_web_after_a_url_turn(tmp_path: Path):
     armed = []
     orig = oc.send_prompt
 
-    def wrap(session_id, text, model=None, agent=None, attachments=None):
+    def wrap(session_id, text, model=None, agent=None, attachments=None, **kwargs):
         armed.append(orch.project(start_preview=False).control.snapshot().web_allowed)
-        return orig(session_id, text, model=model, agent=agent, attachments=attachments)
+        return orig(session_id, text, model=model, agent=agent, attachments=attachments, **kwargs)
 
     oc.send_prompt = wrap
     tid = orch.create_thread()["id"]

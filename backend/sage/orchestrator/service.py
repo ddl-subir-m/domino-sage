@@ -101,7 +101,14 @@ from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
 from ..workspace.manager import Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
-from ..workspace.threads import ThreadStore, new_artifact_paths, revert_denied_writes, snapshot_files, title_from_prompt
+from ..workspace.threads import (
+    ThreadStore,
+    ensure_chat_workdir,
+    new_artifact_paths,
+    revert_denied_writes,
+    snapshot_files,
+    title_from_prompt,
+)
 from . import handoff as chat_handoff
 from . import scope
 from .describe import describe, fit_image
@@ -857,12 +864,24 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
 # Chat's Thread shows the chart/table, not a tool log. bash still drives the
 # "Running Python…" spinner; write/read/edit stay off the transcript entirely.
 _CHAT_SHOWN_TOOLS = frozenset()
+_CHAT_AT = re.compile(r"@([^\s@]+)")
 
 
 def _scope_label(scope: dict) -> str:
     return ".".join(
         str(p) for p in (scope.get("database"), scope.get("schema"), scope.get("table")) if p
     )
+
+
+def _at_token_hits(token: str, name: str, path: str) -> bool:
+    """True when an @token from the user message names this context file."""
+    t = token.lower().lstrip("@")
+    if not t:
+        return False
+    names = {name.lower(), Path(path).name.lower(), Path(name).name.lower()}
+    names.update(n.replace(" ", "_") for n in list(names))
+    stems = {n.rsplit(".", 1)[0] for n in names if "." in n}
+    return t in names or t in stems
 
 
 def _chat_context_line(item: dict, *, file_note: str = "") -> str:
@@ -893,6 +912,8 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
         )
     if kind in ("file", "artifact"):
         extra = f" at {path}" if path else ""
+        at = f" (@{Path(path).name})" if path else (f" (@{name.replace(' ', '_')})" if name else "")
+        extra = extra + at
         if not path and item.get("datasetId"):
             ds = item.get("datasetName") or item.get("datasetId")
             rel = item.get("datasetRelPath") or name
@@ -1414,29 +1435,23 @@ class Orchestrator:
         network blip makes the composer look idle and the next send hits _busy_refusal."""
         return self._turn_lock.locked()
 
-    def project(self, start_preview: bool = True) -> Project:
-        """Get-or-attach the single bound project. Idempotent: on first call it seeds the volume
-        if empty, wires control/shim/supervisor, starts the preview, and rehydrates session/history/
-        plan/model-overrides from .sage/; subsequent calls return the memoized Project (the preview
-        is not restarted)."""
+    def project(self, start_preview: bool = True, seed_app: bool = True) -> Project:
+        """Get-or-attach the single bound project. Idempotent.
+
+        Chat uses `start_preview=False, seed_app=False` so opening a Thread does not clone the
+        React template or start Vite. Later `project()` calls return that attach as-is. Build and
+        the preview proxy call `_ensure_seeded` / `_ensure_preview_running` when they need the app.
+        """
         if self._project is not None:
             return self._project
-        workspace = self._wm.ensure(self._project_id)
+        workspace = self._wm.ensure(self._project_id, seed_app=seed_app)
         self._hydrate_untitled(workspace)
-        # Sage's own files in the app's repo, brought up to date before anything reads them. An app
-        # keeps the copies it was seeded with, so without this a fix to the template reaches new
-        # projects and never existing ones — the lesson refresh_entry_script already records. The
-        # preview config has to land before ViteSupervisor.start() below, which reads it once at boot.
-        self._wm.refresh_preview_config()
-        self._wm.ensure_llm_helper()
+        if seed_app:
+            self._prepare_app_files()
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway,
                                project_name=self._cost_project_label)
         supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
-        # Same lifetime and the same gate as the preview it answers for (#24): it is only ever
-        # reached through the preview proxy, so a build session with no preview has nothing to dial
-        # it. `start` never raises — a query server that will not come up leaves the preview exactly
-        # as it was before this existed.
         queries = PreviewQueries(workspace.path, self._wm.template)
         if start_preview:
             supervisor.start()
@@ -1448,9 +1463,32 @@ class Orchestrator:
         self._rehydrate_attached(self._project)
         return self._project
 
+    def _chat_project(self) -> Project:
+        return self.project(start_preview=False, seed_app=False)
+
+    def _ensure_seeded(self) -> Project:
+        """Chat may have attached an empty volume. Handoff / Build need the app template."""
+        if self._project is None:
+            return self.project(start_preview=False, seed_app=True)
+        self._wm.ensure(self._project_id, seed_app=True)
+        self._prepare_app_files()
+        return self._project
+
+    def _prepare_app_files(self) -> None:
+        self._wm.refresh_preview_config()
+        self._wm.ensure_llm_helper()
+
+    def _ensure_preview_running(self, project: Project) -> None:
+        try:
+            project.supervisor.upstream()
+        except RuntimeError:
+            project.supervisor.start()
+        if project.queries.port is None:
+            project.queries.start()
+
     def set_chat_pick(self, model: str | None, effort: str | None) -> None:
         """Standing Chat alias + reasoning_effort. `auto`/empty is Sage's default (catalog.ask)."""
-        project = self.project(start_preview=False)
+        project = self._chat_project()
         if model in (None, "", "auto"):
             project.control.pick_chat(None, None)
             return
@@ -1584,7 +1622,7 @@ class Orchestrator:
             return {"ok": False, "error_count": 0, "decision": "busy",
                     "message": "A build is already running. Wait for it to finish or stop it first."}
         try:
-            project = self.project()
+            project = self._ensure_seeded()
             client = self._ensure_opencode()
             sid = self._ensure_session(project)
 
@@ -1759,12 +1797,12 @@ class Orchestrator:
     def create_thread(self) -> dict:
         """A new Chat Thread in this project. Does not provision a Domino project."""
         self._flush_chat_save("leave")
-        return ThreadStore(self.project(start_preview=False).workspace.path).create()
+        return ThreadStore(self._chat_project().workspace.path).create()
 
     def get_thread(self, thread_id: str) -> dict:
         if self._chat_dirty_thread and self._chat_dirty_thread != thread_id:
             self._flush_chat_save("leave")
-        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        store = ThreadStore(self._chat_project().workspace.path)
         row = store.get(thread_id)
         if row is None:
             raise KeyError(thread_id)
@@ -1777,7 +1815,7 @@ class Orchestrator:
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
-        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        store = ThreadStore(self._chat_project().workspace.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         if isinstance(body, dict) and body.get("handoff") == "suppress":
@@ -1792,21 +1830,21 @@ class Orchestrator:
         return row
 
     def delete_thread(self, thread_id: str) -> None:
-        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        store = ThreadStore(self._chat_project().workspace.path)
         if not store.delete(thread_id):
             raise KeyError(thread_id)
 
     def list_threads(self) -> list[dict]:
-        return ThreadStore(self.project(start_preview=False).workspace.path).list()
+        return ThreadStore(self._chat_project().workspace.path).list()
 
     def thread_history(self, thread_id: str) -> list[dict]:
-        return ThreadStore(self.project(start_preview=False).workspace.path).read_history(thread_id)
+        return ThreadStore(self._chat_project().workspace.path).read_history(thread_id)
 
     def thread_context(self, thread_id: str) -> dict:
-        return ThreadStore(self.project(start_preview=False).workspace.path).read_context(thread_id)
+        return ThreadStore(self._chat_project().workspace.path).read_context(thread_id)
 
     def add_thread_context(self, thread_id: str, item: dict) -> dict:
-        store = ThreadStore(self.project(start_preview=False).workspace.path)
+        store = ThreadStore(self._chat_project().workspace.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         row = dict(item or {})
@@ -1852,7 +1890,7 @@ class Orchestrator:
         return [{"name": c.name, "type": c.type, "table": c.table} for c in columns]
 
     def remove_thread_context(self, thread_id: str, item_id: str) -> bool:
-        return ThreadStore(self.project(start_preview=False).workspace.path).remove_context(
+        return ThreadStore(self._chat_project().workspace.path).remove_context(
             thread_id, item_id)
 
     def chat_stream(self, thread_id: str, prompt: str):
@@ -1982,7 +2020,7 @@ class Orchestrator:
         }
 
     def _draft_handoff_plan(self, thread_id: str) -> dict:
-        project = self.project(start_preview=False)
+        project = self._ensure_seeded()
         store = ThreadStore(project.workspace.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
@@ -2043,7 +2081,7 @@ class Orchestrator:
             project.active_session_id = None
 
     def _confirm_handoff(self, thread_id: str, include: dict) -> dict:
-        project = self.project(start_preview=False)
+        project = self._ensure_seeded()
         store = ThreadStore(project.workspace.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
@@ -2093,21 +2131,65 @@ class Orchestrator:
             "title": chat_handoff.plan_title(plan_md),
         }
 
+    def _chat_agents_md(self) -> str:
+        p = self._wm.template.parent / "chat" / "AGENTS.md"
+        if p.is_file():
+            return p.read_text()
+        return (
+            "You are Sage's chat agent. Answer questions about data. "
+            "Write charts as PNG files under examples/<threadId>/.\n"
+        )
+
+    def _chat_mention_files(self, prompt: str, items: list[dict], workspace: Path) -> list[dict] | None:
+        """Descriptors for files the user @named, so OpenCode sees the path not just a chip."""
+        tokens = {m.group(1).lower() for m in _CHAT_AT.finditer(prompt or "")}
+        if not tokens:
+            return None
+        out: list[dict] = []
+        seen: set[str] = set()
+        for it in items:
+            if str(it.get("kind") or "") not in ("file", "artifact"):
+                continue
+            path = str(it.get("path") or "")
+            if not path:
+                continue
+            name = str(it.get("name") or Path(path).name)
+            if not any(_at_token_hits(t, name, path) for t in tokens):
+                continue
+            if path in seen:
+                continue
+            try:
+                real = Path(path) if Path(path).is_absolute() else _safe_join(workspace, path)
+                d = describe(str(real))
+            except (ValueError, OSError, TypeError):
+                continue
+            seen.add(path)
+            out.append({
+                "path": path,
+                "name": name,
+                "summary": str(d.get("summary") or ""),
+                "detail": str(d.get("detail") or ""),
+            })
+        return out or None
+
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> str:
-        sid = store.read_session_id(thread_id)
-        if sid:
+        work = str(ensure_chat_workdir(project.workspace.path, self._chat_agents_md()))
+        rec = store.read_session(thread_id) or {}
+        sid = rec.get("session_id")
+        if sid and rec.get("directory") == work:
             try:
                 client.messages(sid)
                 return sid
             except httpx.HTTPStatusError:
                 sid = None
-        sid = client.create_session(directory=str(project.workspace.path))
-        store.write_session_id(thread_id, sid)
+        sid = client.create_session(directory=work)
+        store.write_session_id(thread_id, sid, directory=work)
         return sid
 
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
-                     urls: list[str] | None = None, workspace: Path | None = None) -> str:
+                     urls: list[str] | None = None, workspace: Path | None = None,
+                     artifacts: list[dict] | None = None) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
@@ -2128,10 +2210,25 @@ class Orchestrator:
                     "Do not guess the contents."
                 )
             lines.append("")
+        if artifacts:
+            lines.append(
+                "Already written this Thread (on screen; change one only if asked):"
+            )
+            for art in artifacts:
+                path = str(art.get("path") or "")
+                title = str(art.get("title") or art.get("name") or Path(path).name).strip()
+                kind = str(art.get("kind") or "file")
+                if path:
+                    lines.append(f"- {kind}: {title} at {path}")
+                elif title:
+                    lines.append(f"- {kind}: {title}")
+            lines.append("")
         lines.append(
             "This turn answers a question about data. Do not greet by asking what to build, "
             "and do not offer an app unless the person asked to make one that other people would use. "
-            f"A chart is a PNG at examples/{thread_id}/<slug>.png — not a React file, not src/."
+            f"A chart is a PNG at examples/{thread_id}/<slug>.png — that folder already exists, "
+            "not a React file, not src/. Write the file there; do not list directories. "
+            "@name in the user's message is the file listed above; read that path."
         )
         lines.append("")
         lines.append(prompt)
@@ -2140,7 +2237,7 @@ class Orchestrator:
     def _chat_stream(self, thread_id: str, prompt: str):
         import time
 
-        project = self.project()
+        project = self._chat_project()
         store = ThreadStore(project.workspace.path)
         thread = store.get(thread_id)
         if thread is None:
@@ -2148,6 +2245,7 @@ class Orchestrator:
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
         self._cancel_chat_idle_save()
+        store.examples_dir(thread_id).mkdir(parents=True, exist_ok=True)
         was_first = thread.get("title") in ("", "New conversation")
         if was_first:
             store.touch(thread_id, title=title_from_prompt(prompt))
@@ -2179,10 +2277,14 @@ class Orchestrator:
             project.active_session_id = sid
             before = snapshot_files(project.workspace.path)
             seen = self._seen_baseline(client, sid)
+            mentioned = self._chat_mention_files(prompt, items, project.workspace.path)
             client.send_prompt(
                 sid, self._chat_prompt(thread_id, prompt, ctx, urls,
-                                       workspace=project.workspace.path),
-                agent="sage-chat")
+                                       workspace=project.workspace.path,
+                                       artifacts=store.read_artifacts(thread_id)),
+                agent="sage-chat",
+                attachments=mentioned,
+                chat=True)
             appeared = False
             poll_failures = 0
             while True:
@@ -2205,14 +2307,22 @@ class Orchestrator:
                     time.sleep(2.0)
                     continue
                 appeared = appeared or running
+                pending_text = ""
                 for m in msgs:
                     if m.get("type") != "assistant":
                         continue
                     for i, part in enumerate(m.get("content", [])):
                         key = _part_key(m, i, part)
+                        pt = part.get("type", "")
+                        # Intermediate "let me save there" text is not the answer. Keep only the
+                        # latest text part; persist it once the turn is idle.
+                        if pt == "text" and part.get("text"):
+                            if key in seen:
+                                continue
+                            pending_text = part["text"]
+                            continue
                         if key in seen:
                             continue
-                        pt = part.get("type", "")
                         if "tool" in pt:
                             status = (part.get("state") or {}).get("status")
                             if status in ("pending", "running", "in_progress"):
@@ -2226,12 +2336,11 @@ class Orchestrator:
                                 yield ev
                             elif str(tool).lower() == "bash":
                                 yield ev
-                        elif pt == "text" and part.get("text"):
-                            seen.add(key)
-                            ev = {"type": "agent", "kind": "text", "text": part["text"]}
-                            store.append_history(thread_id, ev)
-                            yield ev
                 if appeared and not running:
+                    if pending_text:
+                        ev = {"type": "agent", "kind": "text", "text": pending_text}
+                        store.append_history(thread_id, ev)
+                        yield ev
                     break
                 time.sleep(1.0)
 
@@ -2405,8 +2514,10 @@ class Orchestrator:
         turn is over", rather than at each of _build_stream's many exits — a phased build reassigns
         it per phase, and the turn lock means no other turn can observe it mid-flight anyway."""
         try:
-            self.project().turn_tree_baseline = ""
-            self.project().active_session_id = None
+            if self._project is None:
+                return
+            self._project.turn_tree_baseline = ""
+            self._project.active_session_id = None
         except Exception:
             pass
 
@@ -2502,7 +2613,7 @@ class Orchestrator:
         Bindings they @-referenced, which ride the prompt text instead (see _resource_mention_note)."""
         import time
 
-        project = self.project()
+        project = self._ensure_seeded()
         # Repair the warm node_modules before the turn, not only at attach — attach happens once per
         # process, and an agent-run `npm install` can destroy the symlink mid-session and leave the
         # workspace unable to build or preview (see WorkspaceManager.link_warm_deps).

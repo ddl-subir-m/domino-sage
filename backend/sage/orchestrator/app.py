@@ -498,9 +498,9 @@ async def set_debug_stream(request: Request) -> JSONResponse:
 
 @control_app.get("/api/project")
 def get_project() -> JSONResponse:
-    """Attach the bound project (seeds the volume + starts the preview on first call) and return
-    its status. The UI calls this on load to boot the single project."""
-    return JSONResponse(content=orchestrator.project().status())
+    """Attach the bound project and return its status. Chat boots this without seeding the
+    React template or starting Vite; Build's preview proxy seeds when it needs the app."""
+    return JSONResponse(content=orchestrator.project(start_preview=False, seed_app=False).status())
 
 
 @control_app.get("/api/project/resources")
@@ -1515,9 +1515,11 @@ async def chat_completions(request: Request):
 
 # Preview proxy for the bound project, mounted under /preview on the one control port. Vite bakes
 # base=<prefix>/preview/, so the proxy re-adds that when forwarding upstream (see make_preview_app).
-# Attaching the project (first hit) seeds the volume + starts Vite; .upstream() raises until ready.
+# Chat may have attached an empty volume; seeding + Vite start happen here, not on Thread open.
 def _preview_upstream() -> str:
-    return orchestrator.project().supervisor.upstream()
+    project = orchestrator._ensure_seeded()
+    orchestrator._ensure_preview_running(project)
+    return project.supervisor.upstream()
 
 
 # The previewed app's own named queries (#24). Answered by `serve.py` on loopback rather than 404'd

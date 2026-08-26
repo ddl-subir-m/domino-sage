@@ -32,6 +32,7 @@ class Turn:
     those two against each other. `tools` is for calls with no file effect (read, grep, bash)."""
 
     text: str = ""
+    prelude: str = ""
     writes: dict[str, str] = field(default_factory=dict)
     tools: list[str] = field(default_factory=list)
 
@@ -85,7 +86,8 @@ class FakeOpenCode:
     # --- the turn --------------------------------------------------------------------------------
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None,
-                    agent: str | None = None, attachments: list[dict] | None = None) -> None:
+                    agent: str | None = None, attachments: list[dict] | None = None,
+                    chat: bool = False) -> None:
         # `session` recorded too: a phased build's assertions are mostly about WHICH session saw
         # which prompt.
         self.prompts.append({"text": text, "agent": agent, "attachments": attachments,
@@ -108,6 +110,8 @@ class FakeOpenCode:
             path.write_text(body)
             parts.append({"id": f"m{n}-w{j}", "type": "tool", "tool": "write",
                           "state": {"status": "completed", "input": {"filePath": rel}}})
+        if turn.prelude:
+            parts.append({"id": f"m{n}-p", "type": "text", "text": turn.prelude})
         if turn.text:
             parts.append({"id": f"m{n}-x", "type": "text", "text": turn.text})
         msgs.append({"id": f"m{n}", "type": "assistant", "content": parts})
