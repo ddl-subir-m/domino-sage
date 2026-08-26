@@ -219,6 +219,7 @@ function overlayListing(groups, listing) {
 
 SW.api = {
   me: () => request('/me'),
+  brand: () => request('/brand'),
   project: () => request('/project'),
 
   projects: async () => {

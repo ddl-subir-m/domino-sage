@@ -2133,10 +2133,11 @@ class Orchestrator:
         }
 
     def _chat_agents_md(self) -> str:
+        from .brand import apply_voice
         p = self._wm.template.parent / "chat" / "AGENTS.md"
         if p.is_file():
-            return p.read_text()
-        return (
+            return apply_voice(p.read_text())
+        return apply_voice(
             "You are Sage's chat agent. Answer questions about data. "
             "Write charts as PNG files under examples/<threadId>/.\n"
         )

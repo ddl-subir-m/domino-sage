@@ -14,6 +14,12 @@ def test_workbench_is_the_default_ui():
     gone = client.get("/builder")
     assert gone.status_code == 404
 
+    pack = client.get("/api/brand")
+    assert pack.status_code == 200
+    assert pack.json()["productName"]
+    assert pack.json()["assistantName"]
+    assert pack.json()["colors"]["primary"]
+
     js = client.get("/js/api.js")
     assert js.status_code == 200
     assert b"/threads" in js.content
@@ -30,6 +36,7 @@ def test_workbench_is_the_default_ui():
     assert b"resourceListing" in js.content
     assert b"memberIds.has" in js.content
     assert b"inProject: true" not in js.content
+    assert b"request('/brand')" in js.content
 
     store = client.get("/js/store.js")
     assert store.status_code == 200
@@ -37,6 +44,8 @@ def test_workbench_is_the_default_ui():
     assert b"resourcesLoading" in store.content
     assert b"resourceListing" in store.content
     assert b"ev.type === 'done' && ev.artifacts" in store.content
+    assert b"applyBrandChrome" in store.content
+    assert b"SW.brand" in store.content
 
     build = client.get("/js/modes/builder.js")
     assert build.status_code == 200

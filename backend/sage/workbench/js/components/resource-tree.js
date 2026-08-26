@@ -252,7 +252,7 @@ window.SW = window.SW || {};
       return h(
         'div',
         { className: 'sw-tree-empty' },
-        'Sage cannot look inside this Data Source.'
+        `${SW.brand.assistant()} cannot look inside this Data Source.`
       );
     }
 

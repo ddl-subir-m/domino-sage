@@ -297,8 +297,8 @@ window.SW = window.SW || {};
     }
     return h(
       antd.Tooltip,
-      { title: rationale || 'Picked for you by Sage.' },
-      h(antd.Tag, { className: 'sw-prov sw-prov-sage', bordered: false }, 'Sage')
+      { title: rationale || `Picked for you by ${SW.brand.assistant()}.` },
+      h(antd.Tag, { className: 'sw-prov sw-prov-sage', bordered: false }, SW.brand.assistant())
     );
   };
 

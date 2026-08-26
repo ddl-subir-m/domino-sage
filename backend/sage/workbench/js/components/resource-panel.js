@@ -68,7 +68,7 @@ window.SW = window.SW || {};
         h(
           'span',
           { className: 'sw-plan-pin-empty' },
-          'No plan yet. Ask Sage to draft one when the work is worth writing down.'
+          `No plan yet. Ask ${SW.brand.assistant()} to draft one when the work is worth writing down.`
         )
       );
     }
@@ -98,7 +98,7 @@ window.SW = window.SW || {};
       kind: att.resourceKind || 'file',
       path: att.path,
       bindingKey: att.bindingKey,
-      subtitle: att.addedBy === 'sage' ? 'Sage added this' : 'You added this',
+      subtitle: att.addedBy === 'sage' ? `${SW.brand.assistant()} added this` : 'You added this',
     };
   }
 

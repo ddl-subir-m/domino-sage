@@ -5,12 +5,15 @@ window.SW = window.SW || {};
   const { Input, Button, Dropdown, Tag, Tooltip, Space } = antd;
   const { PlusOutlined, ArrowUpOutlined, DownOutlined, CloseOutlined } = icons;
 
-  const BUILD_MODES = [
-    { id: 'auto', label: 'Auto', detail: 'Sage picks plan or build per turn', key: '1' },
-    { id: 'ask', label: 'Ask', detail: 'Answers questions, never changes files', key: '2' },
-    { id: 'plan', label: 'Plan', detail: 'Writes a plan and waits for approval', key: '3' },
-    { id: 'implement', label: 'Implement', detail: 'Builds without a plan gate', key: '4' },
-  ];
+  function BUILD_MODES() {
+    const who = SW.brand.assistant();
+    return [
+      { id: 'auto', label: 'Auto', detail: `${who} picks plan or build per turn`, key: '1' },
+      { id: 'ask', label: 'Ask', detail: 'Answers questions, never changes files', key: '2' },
+      { id: 'plan', label: 'Plan', detail: 'Writes a plan and waits for approval', key: '3' },
+      { id: 'implement', label: 'Implement', detail: 'Builds without a plan gate', key: '4' },
+    ];
+  }
   const BUILD_MODE_LABEL = { auto: 'Auto', ask: 'Ask · read-only', plan: 'Plan', implement: 'Implement' };
   const PROJECT_MENTION_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive'];
 
@@ -141,7 +144,8 @@ window.SW = window.SW || {};
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts)
       : [];
-    const activeBuildMode = BUILD_MODES.find((m) => m.id === buildMode) || BUILD_MODES[0];
+    const buildModes = BUILD_MODES();
+    const activeBuildMode = buildModes.find((m) => m.id === buildMode) || buildModes[0];
     const modeQueued = showMode && buildRunning && buildTurnMode && buildTurnMode !== buildMode;
 
     useEffect(() => {
@@ -149,7 +153,7 @@ window.SW = window.SW || {};
       const onKey = (e) => {
         if (e.key < '1' || e.key > '4') return;
         e.preventDefault();
-        SW.store.setBuildMode(BUILD_MODES[+e.key - 1].id);
+        SW.store.setBuildMode(BUILD_MODES()[+e.key - 1].id);
         setModeOpen(false);
       };
       document.addEventListener('keydown', onKey);
@@ -237,7 +241,7 @@ window.SW = window.SW || {};
 
     const modeMenu = {
       selectedKeys: [activeBuildMode.id],
-      items: BUILD_MODES.map((option) => ({
+      items: BUILD_MODES().map((option) => ({
         key: option.id,
         label: h(
           'div',
@@ -297,7 +301,7 @@ window.SW = window.SW || {};
                   // now, so the reason Sage reached for something has to live
                   // here rather than in a panel zone.
                   title: att.addedBy === 'sage'
-                    ? `Sage added this — ${att.rationale || 'picked for you.'}`
+                    ? `${SW.brand.assistant()} added this — ${att.rationale || 'picked for you.'}`
                     : 'You added this to the conversation.',
                 },
                 h(

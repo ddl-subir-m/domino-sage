@@ -55,17 +55,18 @@ window.SW = window.SW || {};
   // unchanged from the rest of the product so the workspace reads as part of
   // Domino, not a separate tool.
   function TopNav({ route }) {
-    const { me } = SW.store.get();
+    const { me, brand = {} } = SW.store.get();
     const level = manageLevel(route);
 
+    const product = SW.brand.product();
     const productMenu = {
       items: [
-        { key: 'workbench', label: 'AI Workbench' },
+        { key: 'workbench', label: product },
         { key: 'studio', label: 'ML Studio' },
       ],
       onClick: ({ key }) => {
         if (key !== 'workbench') {
-          antd.message.info('ML Studio is the classic Domino experience. Only AI Workbench is built out here.');
+          antd.message.info(`ML Studio is the classic Domino experience. Only ${product} is built out here.`);
         }
       },
     };
@@ -83,14 +84,18 @@ window.SW = window.SW || {};
     return h(
       'div',
       { className: 'sw-topnav' },
-      h('img', { src: './img/domino-logo.svg', alt: 'Domino', className: 'sw-logo' }),
+      h('img', {
+        src: brand.logoUrl || './img/domino-logo.svg',
+        alt: brand.logoAlt || 'Domino',
+        className: 'sw-logo',
+      }),
       h(
         Dropdown,
         { menu: productMenu, trigger: ['click'] },
         h(
           'button',
           { className: 'sw-topnav-product' },
-          'AI Workbench',
+          product,
           h(DownOutlined, { style: { fontSize: 9 } })
         )
       ),

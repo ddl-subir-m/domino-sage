@@ -43,6 +43,21 @@ SW.theme = {
   },
 };
 
+SW.themeFromBrand = function themeFromBrand(brand) {
+  const colors = (brand && brand.colors) || {};
+  const primary = colors.primary || '#543FDE';
+  const primaryDark = colors.primaryDark || '#311EAE';
+  return {
+    ...SW.theme,
+    token: {
+      ...SW.theme.token,
+      colorPrimary: primary,
+      colorPrimaryHover: primaryDark,
+      colorPrimaryActive: primaryDark,
+    },
+  };
+};
+
 SW.accents = ['#543FDE', '#0070CC', '#28A464', '#CCB718',
               '#FF6543', '#E835A7', '#2EDCC4', '#A9734C'];
 

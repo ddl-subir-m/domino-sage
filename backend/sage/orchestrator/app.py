@@ -452,6 +452,13 @@ def healthz() -> dict:
     }
 
 
+@control_app.get("/api/brand")
+def brand() -> dict:
+    """Resolved Workbench chrome + voice. OEM overlay, or the Domino default."""
+    from .brand import load as load_brand
+    return load_brand()
+
+
 @control_app.get("/api/me")
 def me() -> dict:
     """Who the Workbench greets. Viewer JWT when extended identity forwarded one; else the
@@ -1611,9 +1618,13 @@ def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
     So write our config into the global path OpenCode demonstrably reads — no env-var dependency, no
     precedence guesswork. Align the sage-gateway baseURL to the port the shim serves, then write to both
     opencode.json and opencode.jsonc so ours is the last-loaded global source and wins over any free-tier
-    default. Keep the source file aligned too (in case OPENCODE_CONFIG is honored). Logs to app logs."""
+    default. Keep the source file aligned too (in case OPENCODE_CONFIG is honored) — port only, not
+    brand voice, so an OEM pack does not rewrite the repo. Logs to app logs."""
     import json
     import re
+    from copy import deepcopy
+
+    from .brand import apply_agent_voice
 
     src = opencode_cwd / "opencode.json"
     try:
@@ -1630,11 +1641,12 @@ def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
         src.write_text(blob)
     except OSError as e:
         log.warning("[wiring] could not rewrite %s: %s", src, e)
+    voiced = json.dumps(apply_agent_voice(deepcopy(cfg)), indent=2) + "\n"
     global_dir = Path(os.path.expanduser("~/.config/opencode"))
     try:
         global_dir.mkdir(parents=True, exist_ok=True)
         for name in ("opencode.json", "opencode.jsonc"):
-            (global_dir / name).write_text(blob)
+            (global_dir / name).write_text(voiced)
         log.warning("[wiring] installed Sage config into %s (model=%s, sage-gateway baseURL -> :%d)",
                     global_dir, cfg.get("model"), control_port)
     except OSError as e:

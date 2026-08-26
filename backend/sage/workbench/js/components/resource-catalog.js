@@ -244,7 +244,7 @@ window.SW = window.SW || {};
             : h(
                 'div',
                 { className: 'sw-cat-note' },
-                `Adding something makes it available to Sage in ${scope.name} — in every conversation and every app here, not just this one.`
+                `Adding something makes it available to ${SW.brand.assistant()} in ${scope.name} — in every conversation and every app here, not just this one.`
               ),
           h(
             'div',

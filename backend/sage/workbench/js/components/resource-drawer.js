@@ -100,7 +100,7 @@ window.SW = window.SW || {};
             type: 'info',
             showIcon: true,
             message: `Not in ${scope.name} yet`,
-            description: `You are looking at it in the Domino catalogue. Adding it makes it available to Sage everywhere in ${scope.name}. You can remove it later.`,
+            description: `You are looking at it in the Domino catalogue. Adding it makes it available to ${SW.brand.assistant()} everywhere in ${scope.name}. You can remove it later.`,
           })
       );
     };

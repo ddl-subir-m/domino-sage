@@ -495,7 +495,7 @@ window.SW = window.SW || {};
           isUser
             ? h(SW.Avatar, { user: me, size: 20 })
             : h('span', { style: { fontSize: 14 } }, '✦'),
-          isUser ? 'You' : 'Sage'
+          isUser ? 'You' : SW.brand.assistant()
         ),
 
         (message.attachments || []).length > 0 &&
@@ -571,7 +571,7 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-msg-body' },
-        h('div', { className: 'sw-msg-who' }, h('span', { style: { fontSize: 14 } }, '✦'), 'Sage'),
+        h('div', { className: 'sw-msg-who' }, h('span', { style: { fontSize: 14 } }, '✦'), SW.brand.assistant()),
         h(
           'div',
           { className: 'sw-typing' },

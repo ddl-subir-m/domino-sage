@@ -14,6 +14,18 @@ window.SW = window.SW || {};
   const state = {
     ready: false,
     me: null,
+    brand: {
+      productName: 'AI Workbench',
+      assistantName: 'Sage',
+      pageTitle: 'Sage Workspace',
+      logoUrl: './img/domino-logo.svg',
+      logoAlt: 'Domino',
+      colors: {
+        primary: '#543FDE',
+        primaryDark: '#311EAE',
+        primaryLight: '#EEEBFC',
+      },
+    },
     projects: [],
     scope: SANDBOX,
     scopeFlash: false,
@@ -141,6 +153,24 @@ window.SW = window.SW || {};
     state.resourceIndex = indexResources(groups);
     if ('aliases' in extras) state.gatewayAliases = extras.aliases || [];
     if ('errors' in extras) state.resourceErrors = extras.errors || {};
+  }
+
+  function applyBrandChrome(brand) {
+    if (!brand) return;
+    if (brand.pageTitle) document.title = brand.pageTitle;
+    const colors = brand.colors || {};
+    const root = document.documentElement.style;
+    if (colors.primaryDark) {
+      root.setProperty('--purple-700', colors.primaryDark);
+      root.setProperty('--purple-600', colors.primaryDark);
+    }
+    if (colors.primary) {
+      root.setProperty('--purple-500', colors.primary);
+      root.setProperty('--accent-1', colors.primary);
+    }
+    if (colors.primaryLight) {
+      root.setProperty('--purple-100', colors.primaryLight);
+    }
   }
 
   async function loadScopeData() {
@@ -593,14 +623,19 @@ window.SW = window.SW || {};
     },
 
     async init() {
-      const [me, projects, charts, starters, notifications] = await Promise.all([
+      const [me, projects, charts, starters, notifications, brand] = await Promise.all([
         SW.api.me(),
         SW.api.projects(),
         SW.api.charts(),
         SW.api.starters(),
         SW.api.notifications(),
+        SW.api.brand().catch(() => state.brand),
       ]);
       state.me = me;
+      if (brand) {
+        state.brand = brand;
+        applyBrandChrome(brand);
+      }
       state.projects = projects;
       state.scope = projects[0] || state.scope;
       applyModelStatus(projects[0]);
@@ -1504,4 +1539,15 @@ window.SW = window.SW || {};
   };
 
   SW.store = store;
+
+  SW.brand = {
+    assistant() {
+      const brand = store.get().brand || {};
+      return brand.assistantName || 'Sage';
+    },
+    product() {
+      const brand = store.get().brand || {};
+      return brand.productName || 'AI Workbench';
+    },
+  };
 })();

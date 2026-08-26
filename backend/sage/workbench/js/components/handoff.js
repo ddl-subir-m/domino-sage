@@ -139,7 +139,7 @@ window.SW = window.SW || {};
           h(
             'div',
             { className: 'sw-caption', style: { marginTop: 6 } },
-            'Everything is a real file. Sage reads them in Builder, and so can you.'
+            `Everything is a real file. ${SW.brand.assistant()} reads them in Builder, and so can you.`
           )
         )
       )

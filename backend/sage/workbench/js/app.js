@@ -101,34 +101,32 @@ window.SW = window.SW || {};
       if (route.mode !== 'chat') SW.api.flushChat().catch(() => {});
     }, [route.mode]);
 
+    const shellMode = SUBROUTES[route.mode] || route.mode;
+    let body;
     if (error) {
-      return h(Result, {
+      body = h(Result, {
         status: 'error',
         title: 'The workspace could not load',
         subTitle: String(error.message || error),
         extra: h(Button, { type: 'primary', onClick: () => window.location.reload() }, 'Reload'),
       });
-    }
-
-    if (!state.ready) {
-      return h(
+    } else if (!state.ready) {
+      body = h(
         'div',
         { className: 'sw-boot' },
         h(Spin, { size: 'large' }),
         h('div', { className: 'sw-boot-label' }, 'Loading your workspace…')
       );
+    } else {
+      body = h(SW.Shell, { mode: shellMode, route }, h(Routes, { route }));
     }
-
-    const shellMode = SUBROUTES[route.mode] || route.mode;
-    return h(SW.Shell, { mode: shellMode, route }, h(Routes, { route }));
+    return h(
+      ConfigProvider,
+      { theme: SW.themeFromBrand(state.brand) },
+      h(AntApp, null, body)
+    );
   }
 
   const root = ReactDOM.createRoot(document.getElementById('root'));
-  root.render(
-    h(
-      ConfigProvider,
-      { theme: SW.theme },
-      h(AntApp, null, h(Root, null))
-    )
-  );
+  root.render(h(Root, null));
 })();
