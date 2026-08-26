@@ -1,1 +1,1 @@
-"""Domino control plane (Publish / Stop) and scratch-project naming."""
+"""Git-backed Sage Project provisioning, the Domino control plane (Publish / Stop), and naming."""
