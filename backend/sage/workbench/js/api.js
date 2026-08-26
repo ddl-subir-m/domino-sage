@@ -79,6 +79,7 @@ async function fetchDominoListing() {
         description: a.project ? `in ${a.project}` : '',
         project: a.project,
         path: a.mount_path || a.mountPath || undefined,
+        writable: !!a.writable,
       })),
       datasource: (res.data_sources || []).map((d) => ({
         id: `data_source:${d.id}`,
@@ -86,6 +87,10 @@ async function fetchDominoListing() {
         kind: 'datasource',
         description: d.connector || '',
         bindingKey: ['data_source', d.id],
+        levels: d.levels || [],
+        default_database: d.default_database,
+        default_schema: d.default_schema,
+        connector: d.connector,
       })),
       model_llm: (res.llm_aliases || []).map((a) => ({
         id: `llm_alias:${a.id}`,
@@ -115,8 +120,42 @@ function membershipKind(item) {
 function emptyResourceGroups() {
   return {
     dataset: [], table: [], datasource: [], model_llm: [], model_predictive: [],
-    tool: [], agent: [], skill: [], mcp: [], file: [],
+    tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
   };
+}
+
+function pinRow(parent, pin) {
+  const kind = membershipKind(parent);
+  const bare = rawFromPrefix(parent.id);
+  if (kind === 'dataset' && pin && pin.path) {
+    return {
+      id: `dsfile:${bare}:${pin.path}`,
+      name: pin.name || String(pin.path).split('/').pop(),
+      kind: 'file',
+      datasetId: bare,
+      datasetRelPath: pin.path,
+      datasetName: parent.name,
+      parentId: parent.id,
+      subtitle: parent.name,
+    };
+  }
+  if (kind === 'datasource' && pin && pin.table) {
+    const dotted = [pin.database, pin.schema, pin.table].filter(Boolean).join('.');
+    return {
+      id: `table:${bare}:${dotted}`,
+      name: pin.name || pin.table,
+      kind: 'table',
+      bindingKey: parent.bindingKey || ['data_source', bare],
+      scope: {
+        database: pin.database || '',
+        schema: pin.schema || '',
+        table: pin.table,
+      },
+      parentId: parent.id,
+      subtitle: parent.name,
+    };
+  }
+  return null;
 }
 
 function rowFromMember(item) {
@@ -132,6 +171,12 @@ function rowFromMember(item) {
     alias: item.alias,
     capabilities: item.capabilities || [],
     reasoning_efforts: item.reasoning_efforts || [],
+    pins: item.pins || [],
+    membershipParent: true,
+    writable: item.writable,
+    levels: item.levels,
+    default_database: item.default_database,
+    default_schema: item.default_schema,
   };
 }
 
@@ -141,14 +186,19 @@ function groupsFromMembership(items, attached) {
     const row = rowFromMember(item);
     if (!groups[row.kind]) return;
     groups[row.kind].push(row);
+    (item.pins || []).forEach((pin) => {
+      const leaf = pinRow(row, pin);
+      if (leaf) groups.pin.push(leaf);
+    });
   });
   groups.file = (attached || [])
     .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
     .map((e) => ({
       id: `file:${e.path}`,
-      name: (e.path || '').split('/').pop(),
+      name: e.name || (e.path || '').split('/').pop(),
       kind: 'file',
       path: e.path,
+      source: e.source || (String(e.path || '').startsWith('.sage/scratch/') ? 'scratch' : undefined),
     }));
   return groups;
 }
@@ -158,7 +208,11 @@ function overlayListing(groups, listing) {
   ['dataset', 'datasource', 'model_llm', 'model_predictive'].forEach((kind) => {
     const liveById = {};
     ((listing.groups || {})[kind] || []).forEach((r) => { liveById[r.id] = r; });
-    next[kind] = (groups[kind] || []).map((row) => (liveById[row.id] ? { ...row, ...liveById[row.id] } : row));
+    next[kind] = (groups[kind] || []).map((row) => {
+      const live = liveById[row.id];
+      if (!live) return row;
+      return { ...row, ...live, pins: row.pins, membershipParent: true };
+    });
   });
   return next;
 }
@@ -244,11 +298,30 @@ SW.api = {
         alias: resource.alias,
         capabilities: resource.capabilities,
         reasoning_efforts: resource.reasoning_efforts,
+        pin: resource.pin,
       };
     return post('/project/resources', row);
   },
   removeFromProject: (projectId, resourceId) =>
     del(`/project/resources?id=${encodeURIComponent(resourceId)}`),
+  pinToProject: (parentId, pin) => post('/project/resources/pins', { id: parentId, ...pin }),
+  unpinFromProject: (parentId, pin) => {
+    const q = new URLSearchParams({ id: parentId });
+    if (pin && pin.path) q.set('path', pin.path);
+    if (pin && pin.database) q.set('database', pin.database);
+    if (pin && pin.schema) q.set('schema', pin.schema);
+    if (pin && pin.table) q.set('table', pin.table);
+    return del(`/project/resources/pins?${q.toString()}`);
+  },
+  assetFiles: (datasetId) => request(`/project/assets/${encodeURIComponent(datasetId)}/files`),
+  attachDatasetFile: (datasetId, path) =>
+    post(`/project/assets/${encodeURIComponent(datasetId)}/files/attach`, { path }),
+  dataSourceDatabases: (sourceId) => request(`/data-sources/${encodeURIComponent(sourceId)}/databases`),
+  dataSourceSchemas: (sourceId, database) =>
+    request(`/data-sources/${encodeURIComponent(sourceId)}/schemas?database=${encodeURIComponent(database || '')}`),
+  dataSourceTables: (sourceId, database, schema) =>
+    request(`/data-sources/${encodeURIComponent(sourceId)}/tables?database=${encodeURIComponent(database || '')}&schema=${encodeURIComponent(schema || '')}`),
+  promoteScratch: (path, datasetId) => post('/project/scratch/promote', { path, dataset: datasetId }),
 
   conversationContext: async (id) => {
     const ctx = await request(`/threads/${id}/context`);
@@ -257,16 +330,23 @@ SW.api = {
       resourceId: item.resourceId
         || (item.path ? `file:${item.path}` : (item.bindingKey ? item.bindingKey.join(':') : item.id)),
       resourceName: item.name,
-      resourceKind: SW.util.uiKind(item.kind),
+      resourceKind: item.kind === 'data_source' && item.scope && item.scope.table
+        ? 'table'
+        : SW.util.uiKind(item.kind),
       addedBy: item.addedBy || 'user',
       path: item.path,
       bindingKey: item.bindingKey,
+      parentId: item.parentId,
+      datasetId: item.datasetId,
+      datasetRelPath: item.datasetRelPath,
+      scope: item.scope,
     }));
   },
   addToConversation: async (id, resourceId, addedBy) => {
     const { resourceIndex } = SW.store.get();
     const resource = resourceIndex[resourceId] || {};
-    const kind = resource.kind === 'datasource' ? 'data_source'
+    const kind = resource.kind === 'table' ? 'data_source'
+      : resource.kind === 'datasource' ? 'data_source'
       : resource.kind === 'model_llm' ? 'llm_alias'
       : resource.kind === 'model_predictive' ? 'model_api'
       : resource.kind || kindFromPrefix(resourceId);
@@ -278,6 +358,11 @@ SW.api = {
       bindingKey: resource.bindingKey,
       addedBy: addedBy || 'user',
       resourceId,
+      parentId: resource.parentId,
+      datasetId: resource.datasetId,
+      datasetRelPath: resource.datasetRelPath,
+      datasetName: resource.datasetName,
+      scope: resource.scope,
     });
     return {
       id: row.id,
@@ -287,6 +372,10 @@ SW.api = {
       addedBy: row.addedBy || addedBy || 'user',
       path: row.path,
       bindingKey: row.bindingKey,
+      parentId: row.parentId || resource.parentId,
+      datasetId: row.datasetId || resource.datasetId,
+      datasetRelPath: row.datasetRelPath || resource.datasetRelPath,
+      scope: row.scope || resource.scope,
     };
   },
   removeFromConversation: (id, attachmentId) => del(`/threads/${id}/context/${attachmentId}`),

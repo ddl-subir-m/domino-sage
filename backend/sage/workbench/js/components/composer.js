@@ -50,6 +50,11 @@ window.SW = window.SW || {};
     });
 
     const project = [];
+    const pins = [];
+    (resourceGroups.pin || []).forEach((r) => {
+      const row = take(r);
+      if (row) pins.push(row);
+    });
     PROJECT_MENTION_KINDS.forEach((kind) => {
       (resourceGroups[kind] || []).forEach((r) => {
         const row = take(r);
@@ -64,7 +69,7 @@ window.SW = window.SW || {};
       if (row) files.push(row);
     });
 
-    return context.concat(project, files).slice(0, 8);
+    return context.concat(pins, project, files).slice(0, 8);
   }
 
   // Where the caret sits inside an unfinished @mention, if it does.

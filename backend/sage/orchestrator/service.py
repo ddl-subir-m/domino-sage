@@ -165,6 +165,14 @@ class UploadUnavailable(Exception):
     """No writable dataset is mounted to receive an upload."""
 
 
+class ResourceStillBound(Exception):
+    """The Built App still records a Binding for this Resource, so membership cannot drop it."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"this app still needs {name}")
+
+
 class DataReferenced(Exception):
     """The app's source still uses an attached file — either fetches it (`refs`) or has copied its
     bytes into `src/` (`copies`, the git-leaking pattern we forbid). Deleting the data would leave
@@ -219,6 +227,85 @@ def _is_sage_upload(entry: dict) -> bool:
     These are safe to delete; a genuine pre-existing dataset file is not."""
     rel = str(entry.get("dataset_rel_path") or "")
     return entry.get("source") == "upload" or rel.startswith(_SAGE_UPLOAD_PREFIXES)
+
+
+_SCRATCH_PREFIX = ".sage/scratch/"
+
+
+def _bare_kind_id(value: str, kind: str) -> str:
+    """Strip a `kind:` prefix from a membership id. Dataset `dataset:ds_1` and Data Source
+    `data_source:abc` / `datasource:abc` all store the live id after the first colon."""
+    s = str(value or "").strip()
+    prefix = f"{kind}:"
+    if s.startswith(prefix):
+        return s[len(prefix):]
+    if kind == "data_source" and s.startswith("datasource:"):
+        return s[len("datasource:"):]
+    return s
+
+
+def _list_scratch_files(workspace: Path) -> list[dict]:
+    """Chat-local uploads that live in this workspace, not in a Dataset and not in git."""
+    root = Path(workspace) / ".sage" / "scratch"
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    for p in sorted(root.iterdir()):
+        if p.is_file() and not p.name.startswith("."):
+            out.append({
+                "path": f"{_SCRATCH_PREFIX}{p.name}",
+                "name": p.name,
+                "size": p.stat().st_size,
+                "source": "scratch",
+            })
+    return out
+
+
+def _normalize_pin(kind: str, pin: dict) -> dict:
+    """One Dataset file or one Data Source table, as stored on a membership parent."""
+    pin = pin if isinstance(pin, dict) else {}
+    ui = str(kind or "")
+    if ui in ("dataset",):
+        path = str(pin.get("path") or "").replace("\\", "/").strip().lstrip("/")
+        if not path or path.startswith("/") or ".." in path.split("/"):
+            raise ValueError("path required")
+        return {"path": path, "name": str(pin.get("name") or path.rsplit("/", 1)[-1])}
+    if ui in ("datasource", "data_source"):
+        table = str(pin.get("table") or "").strip()
+        if not table:
+            raise ValueError("table required")
+        return {
+            "database": str(pin.get("database") or ""),
+            "schema": str(pin.get("schema") or ""),
+            "table": table,
+            "name": str(pin.get("name") or table),
+        }
+    raise ValueError("this Resource cannot pin leaves")
+
+
+def _pin_key(pin: dict) -> tuple:
+    if pin.get("path"):
+        return ("file", str(pin.get("path")))
+    return (
+        "table",
+        str(pin.get("database") or ""),
+        str(pin.get("schema") or ""),
+        str(pin.get("table") or ""),
+    )
+
+
+def _describe_context_file(workspace: Path, item: dict) -> str:
+    """Shape summary for a file chip. Empty when the bytes are not here to read."""
+    path = item.get("path")
+    if not path:
+        return ""
+    try:
+        p = Path(str(path))
+        real = p if p.is_absolute() else _safe_join(workspace, str(path))
+        d = describe(str(real))
+    except (ValueError, OSError, TypeError):
+        return ""
+    return str(d.get("summary") or "").strip()
 
 
 def _safe_join(root: Path, rel: str) -> Path:
@@ -772,17 +859,26 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
 _CHAT_SHOWN_TOOLS = frozenset()
 
 
-def _chat_context_line(item: dict) -> str:
+def _scope_label(scope: dict) -> str:
+    return ".".join(
+        str(p) for p in (scope.get("database"), scope.get("schema"), scope.get("table")) if p
+    )
+
+
+def _chat_context_line(item: dict, *, file_note: str = "") -> str:
     """One Session-context row for sage-chat: identity, and whether files or a query are possible.
 
     A Dataset without a mount is still a real Resource. Naming it without saying the files are
     absent lets the agent grep this git repo for a similarly named folder and answer about the
-    wrong thing.
+    wrong thing. A table chip names Scope and columns, not rows.
     """
     kind = str(item.get("kind") or "resource")
+    if kind == "table":
+        kind = "data_source"
     name = str(item.get("name") or item.get("id") or "unnamed")
     path = item.get("path")
     project = item.get("project")
+    scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
     if kind == "dataset":
         where = f" (project {project})" if project else ""
         if path:
@@ -795,7 +891,42 @@ def _chat_context_line(item: dict) -> str:
             "list rows or files. Tell the person that. Do not search this git repo or any other "
             "folder for a project of the same name — that is not this Dataset."
         )
+    if kind in ("file", "artifact"):
+        extra = f" at {path}" if path else ""
+        if not path and item.get("datasetId"):
+            ds = item.get("datasetName") or item.get("datasetId")
+            rel = item.get("datasetRelPath") or name
+            return (
+                f"- file {name} in Dataset {ds} ({rel}). Its files are not mounted in this "
+                "workspace, so you cannot list rows. Tell the person that. Do not search this "
+                "git repo for a substitute."
+            )
+        line = f"- {kind}: {name}{extra}"
+        if file_note:
+            return f"{line}. {file_note}"
+        if path:
+            return (
+                f"{line}. Read that file. Do not search the rest of this workspace for a substitute."
+            )
+        return line
     if kind in ("data_source", "datasource"):
+        if scope and scope.get("table"):
+            dotted = _scope_label(scope)
+            cols = item.get("columns") if isinstance(item.get("columns"), list) else []
+            col_txt = ", ".join(
+                " ".join(
+                    str(p) for p in (
+                        (c.get("name") if isinstance(c, dict) else None),
+                        (c.get("type") if isinstance(c, dict) else None),
+                    ) if p
+                )
+                for c in cols[:40]
+            ).strip()
+            extra = f" Columns: {col_txt}." if col_txt else ""
+            return (
+                f"- Data Source {name}, table {dotted}.{extra} Query this table. "
+                "Do not invent rows. If a query fails, tell the person."
+            )
         extra = f" at {path}" if path else ""
         return (
             f"- Data Source {name}{extra}. This workspace cannot query it live. Do not invent rows. "
@@ -1171,6 +1302,7 @@ class Project:
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
             "attached": list(self.attached),
+            "scratch": _list_scratch_files(self.workspace.path),
             "model": {
                 # `mode` is what routes right now — the pin, while a turn is running (see
                 # arm_turn_mode). `selected_mode` is where the user's picker actually sits, which is
@@ -1677,7 +1809,47 @@ class Orchestrator:
         store = ThreadStore(self.project(start_preview=False).workspace.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
-        return store.add_context(thread_id, item)
+        row = dict(item or {})
+        dataset_id = row.get("datasetId")
+        rel = row.get("datasetRelPath")
+        if str(row.get("kind") or "") == "file" and dataset_id and rel and not row.get("path"):
+            try:
+                attached = self.attach_file(str(dataset_id), str(rel))
+                row["path"] = attached.get("path")
+            except (LookupError, FileNotFoundError, ValueError, AttachTooLarge):
+                pass
+        scope = row.get("scope") if isinstance(row.get("scope"), dict) else None
+        if str(row.get("kind") or "") in ("data_source", "datasource") and scope and scope.get("table"):
+            cols = self._columns_for_context(row, scope)
+            if cols:
+                row["columns"] = cols
+        return store.add_context(thread_id, row)
+
+    def _columns_for_context(self, item: dict, scope: dict) -> list[dict]:
+        """Column names and types for a table chip. Empty when the store will not answer."""
+        source_id = ""
+        bk = item.get("bindingKey")
+        if isinstance(bk, (list, tuple)) and len(bk) >= 2:
+            source_id = str(bk[1] or "")
+        if not source_id:
+            source_id = _bare_kind_id(str(item.get("parentId") or ""), "data_source")
+        if not source_id:
+            candidate = _bare_kind_id(str(item.get("resourceId") or ""), "data_source")
+            if candidate and not candidate.startswith(("table:", "dsfile:", "file:", "pin:")):
+                source_id = candidate
+        if not source_id:
+            return []
+        try:
+            source = self._data_source(source_id)
+            columns = self._resources.list_columns(
+                source,
+                _level(str(scope.get("database") or "")),
+                _level(str(scope.get("schema") or "")),
+                _level(str(scope.get("table") or "")),
+            )
+        except (LookupError, ValueError, ResourceUnavailable):
+            return []
+        return [{"name": c.name, "type": c.type, "table": c.table} for c in columns]
 
     def remove_thread_context(self, thread_id: str, item_id: str) -> bool:
         return ThreadStore(self.project(start_preview=False).workspace.path).remove_context(
@@ -1935,7 +2107,7 @@ class Orchestrator:
         return sid
 
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
-                     urls: list[str] | None = None) -> str:
+                     urls: list[str] | None = None, workspace: Path | None = None) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
@@ -1946,7 +2118,10 @@ class Orchestrator:
         if items or urls:
             lines.append("Session context:")
             for it in items:
-                lines.append(_chat_context_line(it))
+                note = ""
+                if workspace is not None and str(it.get("kind") or "") in ("file", "artifact"):
+                    note = _describe_context_file(workspace, it)
+                lines.append(_chat_context_line(it, file_note=note))
             for url in urls:
                 lines.append(
                     f"- URL {url}. Read this page and answer from what it contains. "
@@ -2005,7 +2180,9 @@ class Orchestrator:
             before = snapshot_files(project.workspace.path)
             seen = self._seen_baseline(client, sid)
             client.send_prompt(
-                sid, self._chat_prompt(thread_id, prompt, ctx, urls), agent="sage-chat")
+                sid, self._chat_prompt(thread_id, prompt, ctx, urls,
+                                       workspace=project.workspace.path),
+                agent="sage-chat")
             appeared = False
             poll_failures = 0
             while True:
@@ -3715,19 +3892,113 @@ class Orchestrator:
             return items + [row]
 
         self.project(start_preview=False).workspace.update_project_resources(change)
+        if (item or {}).get("pin"):
+            self.pin_project_resource(rid, item["pin"])
+            added["item"] = next(
+                (r for r in self.list_project_resources() if r.get("id") == rid),
+                added["item"],
+            )
         return {"added": added["added"], "item": added["item"]}
 
     def remove_project_resource(self, resource_id: str) -> bool:
-        """Drop a Resource from this project's working set. False if it was not there."""
+        """Drop a Resource from this project's working set. False if it was not there.
+
+        Refuses when the Built App still records a Binding for it — membership is not a back door
+        to unbind.
+        """
         rid = str(resource_id or "").strip()
         if not rid:
             return False
+        bound = self._binding_for_membership(rid)
+        if bound is not None:
+            raise ResourceStillBound(bound.display_name or bound.name or rid)
         found = {"ok": False}
 
         def change(items: list[dict]) -> list[dict]:
             kept = [row for row in items if row.get("id") != rid]
             found["ok"] = len(kept) != len(items)
             return kept
+
+        self.project(start_preview=False).workspace.update_project_resources(change)
+        return found["ok"]
+
+    def _binding_for_membership(self, resource_id: str) -> Binding | None:
+        """The Binding this membership id names, if the Built App still records one."""
+        rid = str(resource_id or "").strip()
+        if not rid:
+            return None
+        aliases = {rid}
+        if ":" in rid:
+            kind, _, rest = rid.partition(":")
+            aliases.add(rest)
+            if kind == "datasource":
+                aliases.add(f"data_source:{rest}")
+            elif kind == "data_source":
+                aliases.add(f"datasource:{rest}")
+        recorded = parse_bindings(self.project(start_preview=False).workspace.read_bindings())
+        for b in recorded:
+            if f"{b.kind}:{b.id}" in aliases or b.id in aliases:
+                return b
+        return None
+
+    def pin_project_resource(self, resource_id: str, pin: dict) -> dict:
+        """Pin one file or table on a membership parent. Parent must already be in the project."""
+        rid = str(resource_id or "").strip()
+        if not rid:
+            raise ValueError("id required")
+        found = {"item": None}
+
+        def change(items: list[dict]) -> list[dict]:
+            out: list[dict] = []
+            for row in items:
+                if row.get("id") != rid:
+                    out.append(row)
+                    continue
+                leaf = _normalize_pin(str(row.get("kind") or ""), pin)
+                pins = [p for p in (row.get("pins") or []) if isinstance(p, dict)]
+                key = _pin_key(leaf)
+                if any(_pin_key(p) == key for p in pins):
+                    found["item"] = row
+                    out.append(row)
+                    continue
+                updated = {**row, "pins": pins + [leaf]}
+                found["item"] = updated
+                out.append(updated)
+            return out
+
+        self.project(start_preview=False).workspace.update_project_resources(change)
+        if found["item"] is None:
+            raise KeyError(rid)
+        return found["item"]
+
+    def unpin_project_resource(self, resource_id: str, pin: dict) -> bool:
+        """Drop one pin from a membership parent. Does not drop the parent."""
+        rid = str(resource_id or "").strip()
+        if not rid:
+            return False
+        try:
+            leaf = _normalize_pin(
+                "dataset" if pin.get("path") else "data_source", pin)
+        except ValueError:
+            return False
+        key = _pin_key(leaf)
+        found = {"ok": False}
+
+        def change(items: list[dict]) -> list[dict]:
+            out: list[dict] = []
+            for row in items:
+                if row.get("id") != rid:
+                    out.append(row)
+                    continue
+                pins = [p for p in (row.get("pins") or []) if isinstance(p, dict)]
+                kept = [p for p in pins if _pin_key(p) != key]
+                found["ok"] = len(kept) != len(pins)
+                updated = {**row, "pins": kept}
+                if not kept:
+                    updated.pop("pins", None)
+                    updated["pins"] = []
+                out.append(updated)
+            return out
 
         self.project(start_preview=False).workspace.update_project_resources(change)
         return found["ok"]
@@ -4371,7 +4642,8 @@ class Orchestrator:
             return None
 
     def _find_asset(self, dataset_id: str) -> Asset:
-        asset = next((a for a in self._assets.list_datasets(self._domino_project_id) if a.id == dataset_id), None)
+        asset = next((a for a in self._assets.list_datasets(self._domino_project_id)
+                      if a.id == _bare_kind_id(dataset_id, "dataset")), None)
         if asset is None:
             raise LookupError(dataset_id)
         return asset
@@ -4379,7 +4651,7 @@ class Orchestrator:
     def list_asset_files(self, dataset_id: str) -> list[dict]:
         """Files under a mounted dataset, each with its size and whether it's already attached."""
         asset = self._find_asset(dataset_id)
-        attached = {e["path"] for e in self.project().attached}
+        attached = {e["path"] for e in self.project(start_preview=False).attached}
         out = []
         for f in self._assets.list_files(asset):
             dest = _attach_dest(asset.name, f.path)
@@ -4521,6 +4793,39 @@ class Orchestrator:
         return {"uploaded": name, "dataset": target.name, "dataset_id": target.id, "path": rel,
                 "size": size,
                 "descriptor": entry.get("descriptor"), "status": project.status()}
+
+    def upload_scratch(self, filename: str, data: bytes) -> dict:
+        """Write a Chat-local file into gitignored `.sage/scratch/`. No Dataset required."""
+        project = self.project()
+        if not filename or not filename.strip():
+            raise ValueError("filename required")
+        name = _slug(filename)
+        rel = f"{_SCRATCH_PREFIX}{name}"
+        dest = _safe_join(project.workspace.path, rel)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        self._ensure_gitignored(project.workspace, _SCRATCH_PREFIX)
+        return {"uploaded": name, "path": rel, "size": len(data), "source": "scratch",
+                "status": project.status()}
+
+    def promote_scratch_to_dataset(self, path: str, dataset_id: str) -> dict:
+        """Copy a scratch file onto a writable Dataset, then drop the scratch copy."""
+        rel = str(path or "").replace("\\", "/")
+        if rel.startswith("./"):
+            rel = rel[2:]
+        if not rel.startswith(_SCRATCH_PREFIX):
+            raise ValueError("not a scratch file")
+        src = _safe_join(self.project().workspace.path, rel)
+        if not src.is_file():
+            raise FileNotFoundError(path)
+        data = src.read_bytes()
+        result = self.upload_file(src.name, data, dataset_id)
+        try:
+            src.unlink()
+        except OSError:
+            pass
+        result["scratch"] = rel
+        return result
 
     def _resolve_upload_target(self, dataset_id: str | None) -> Asset | None:
         """The dataset an upload writes into: a picked one if it is mounted and writable, else the

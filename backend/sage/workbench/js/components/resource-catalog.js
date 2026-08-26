@@ -11,7 +11,6 @@ window.SW = window.SW || {};
   const KINDS = [
     { key: null, label: 'Everything' },
     { key: 'dataset', label: 'Datasets' },
-    { key: 'table', label: 'Database tables' },
     { key: 'datasource', label: 'Data sources' },
     { key: 'model_llm', label: 'Language models' },
     { key: 'model_predictive', label: 'Predictive models' },
@@ -96,6 +95,7 @@ window.SW = window.SW || {};
     const [counts, setCounts] = useState({});
     const [loading, setLoading] = useState(false);
     const [busyId, setBusyId] = useState(null);
+    const [drill, setDrill] = useState(null);
 
     // Sage can send the user here asking for a specific kind of thing, so the
     // opening state answers that question rather than showing everything.
@@ -103,6 +103,7 @@ window.SW = window.SW || {};
       if (catalogOpen) {
         setKind(catalogKind || null);
         setQuery('');
+        setDrill(null);
       }
     }, [catalogOpen, catalogKind]);
 
@@ -139,12 +140,29 @@ window.SW = window.SW || {};
         setRows((current) =>
           current.map((r) => (r.id === resource.id ? { ...r, inProject: true } : r))
         );
+        if (drill && drill.id === resource.id) setDrill({ ...drill, inProject: true });
       } finally {
         setBusyId(null);
       }
     };
 
+    const openRow = (resource) => {
+      if (resource.kind === 'dataset' || resource.kind === 'datasource') {
+        setQuery('');
+        setDrill(resource);
+        return;
+      }
+      SW.store.previewResource(resource.id);
+    };
+
     const inCount = rows.filter((r) => r.inProject).length;
+    const { resourceGroups } = SW.store.get();
+    const member = drill && ((resourceGroups[drill.kind] || []).find((r) => r.id === drill.id) || null);
+    const drillResource = drill && {
+      ...drill,
+      ...(member || {}),
+      pins: (member && member.pins) || [],
+    };
 
     return h(
       Modal,
@@ -171,7 +189,10 @@ window.SW = window.SW || {};
               {
                 key: entry.key || 'all',
                 className: `sw-cat-side-btn${kind === entry.key ? ' is-active' : ''}`,
-                onClick: () => setKind(entry.key),
+                onClick: () => {
+                  setKind(entry.key);
+                  setDrill(null);
+                },
               },
               h('span', null, entry.label),
               entry.key &&
@@ -188,22 +209,49 @@ window.SW = window.SW || {};
             { className: 'sw-cat-toolbar' },
             h(Input, {
               prefix: h(SearchOutlined, { style: { color: '#8F8FA3' } }),
-              placeholder: 'Search everything in Domino…',
+              placeholder: drill
+                ? `Search in ${drill.name}…`
+                : 'Search everything in Domino…',
               value: query,
               allowClear: true,
               autoFocus: true,
               onChange: (e) => setQuery(e.target.value),
             })
           ),
-          h(
-            'div',
-            { className: 'sw-cat-note' },
-            `Adding something makes it available to Sage in ${scope.name} — in every conversation and every app here, not just this one.`
-          ),
+          drill
+            ? h(
+                'div',
+                { className: 'sw-cat-note sw-cat-drill-head' },
+                h(
+                  Button,
+                  { type: 'link', size: 'small', onClick: () => { setDrill(null); setQuery(''); } },
+                  'Back'
+                ),
+                h('span', { className: 'sw-cat-drill-name' }, drill.name),
+                !(member || drill.inProject)
+                  ? h(
+                      Button,
+                      {
+                        size: 'small',
+                        type: 'primary',
+                        loading: busyId === drill.id,
+                        onClick: () => add(drill),
+                      },
+                      'Add to project'
+                    )
+                  : h('span', { className: 'sw-cat-in' }, 'In project')
+              )
+            : h(
+                'div',
+                { className: 'sw-cat-note' },
+                `Adding something makes it available to Sage in ${scope.name} — in every conversation and every app here, not just this one.`
+              ),
           h(
             'div',
             { className: 'sw-cat-list sw-scroll' },
-            loading && rows.length === 0
+            drill
+              ? h(SW.ResourceTree, { resource: drillResource, query, variant: 'catalog' })
+              : loading && rows.length === 0
               ? h(Skeleton, { active: true, paragraph: { rows: 6 }, style: { padding: 16 } })
               : rows.length === 0
               ? h(Empty, {
@@ -219,7 +267,7 @@ window.SW = window.SW || {};
                     scope,
                     busy: busyId === resource.id,
                     onAdd: add,
-                    onOpen: (r) => SW.store.previewResource(r.id),
+                    onOpen: openRow,
                   })
                 )
           ),

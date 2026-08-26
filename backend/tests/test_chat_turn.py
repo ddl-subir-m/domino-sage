@@ -227,6 +227,57 @@ def test_chat_prompt_points_at_mounted_dataset_files(tmp_path: Path):
     assert "not mounted" not in prompt
 
 
+def test_chat_prompt_describes_a_file_chip_without_dumping_rows(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    ws = orch.project(start_preview=False).workspace.path
+    path = ".sage/scratch/desk.csv"
+    dest = ws / path
+    dest.parent.mkdir(parents=True)
+    dest.write_text("desk,notional\nRates,10\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "desk.csv", "path": path})
+    list(orch.chat_stream(tid, "summarise this"))
+    prompt = oc.prompts[0]["text"]
+    assert "desk.csv" in prompt
+    assert "csv" in prompt.lower()
+    assert "Rates,10" not in prompt
+
+
+def test_chat_prompt_names_a_scoped_table_and_its_columns(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    row = orch.add_thread_context(tid, {
+        "kind": "data_source",
+        "name": "Snowflake-Data-Warehouse",
+        "resourceId": "table:ds-dwh:DWH.MARTS.DIM_ACCOUNT",
+        "bindingKey": ["data_source", "ds-dwh"],
+        "parentId": "data_source:ds-dwh",
+        "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
+    })
+    assert any(c["name"] == "ACCOUNT_ID" for c in row.get("columns") or [])
+    list(orch.chat_stream(tid, "what is in DIM_ACCOUNT"))
+    prompt = oc.prompts[0]["text"]
+    assert "table DWH.MARTS.DIM_ACCOUNT" in prompt
+    assert "ACCOUNT_ID" in prompt
+    assert "cannot query it live" not in prompt
+
+
+def test_chat_prompt_for_an_unmounted_dataset_file_does_not_search_git(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "file",
+        "name": "positions.csv",
+        "datasetId": "ds_missing",
+        "datasetRelPath": "positions.csv",
+        "datasetName": "autodoc",
+    })
+    list(orch.chat_stream(tid, "whats in positions"))
+    prompt = oc.prompts[0]["text"]
+    assert "not mounted" in prompt
+    assert "Do not search this git repo" in prompt
+
+
 def test_new_conversation_does_not_provision(tmp_path: Path, monkeypatch):
     orch, _ = _orch(tmp_path)
     calls: list[int] = []

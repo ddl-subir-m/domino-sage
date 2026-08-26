@@ -33,3 +33,5 @@ __pycache__/
 # the rest of .sage/ rides into the published app's container, which is right for column names and
 # wrong for production data.
 .sage/samples.json
+# Chat-local files. They persist on this volume and do not travel with git.
+.sage/scratch/

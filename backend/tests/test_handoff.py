@@ -205,5 +205,15 @@ def test_binding_from_context_only_for_resources():
     assert b is not None
     assert b.kind == "data_source"
     assert b.id == "ds-1"
+    table = handoff.binding_from_context({
+        "kind": "data_source",
+        "name": "DIM_ACCOUNT",
+        "bindingKey": ["data_source", "ds-dwh"],
+        "resourceId": "table:ds-dwh:DWH.MARTS.DIM_ACCOUNT",
+        "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
+    })
+    assert table is not None
+    assert table.id == "ds-dwh"
+    assert table.table == "DIM_ACCOUNT"
     assert handoff.binding_from_context({"kind": "file", "name": "a.csv", "path": "public/data/a.csv"}) is None
     assert handoff.binding_from_context({"kind": "data_source", "id": "ctx_01", "name": "x"}) is None

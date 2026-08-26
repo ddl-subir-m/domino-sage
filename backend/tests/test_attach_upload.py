@@ -567,3 +567,33 @@ def test_a_turn_that_deletes_nothing_restores_nothing_and_says_nothing(tmp_path:
     orch._restore_attachments()
 
     assert not [e for e in project.workspace.read_history() if e["type"] == "attachments-restored"]
+
+
+def test_scratch_upload_does_not_need_a_dataset(tmp_path: Path):
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_scratch("my data.csv", b"a,b\n1,2\n")
+    assert res["source"] == "scratch"
+    assert res["path"] == ".sage/scratch/my_data.csv"
+    assert (ws / res["path"]).read_bytes() == b"a,b\n1,2\n"
+    gi = (ws / ".gitignore").read_text()
+    assert ".sage/scratch/" in gi
+    assert "scratch" in {e["source"] for e in orch.project(start_preview=False).status()["scratch"]}
+
+
+def test_promote_scratch_copies_onto_a_dataset_and_drops_the_scratch_copy(tmp_path: Path):
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    scratch = orch.upload_scratch("note.csv", b"x")
+    ds = orch.default_dataset_id()
+    res = orch.promote_scratch_to_dataset(scratch["path"], ds)
+    assert not (ws / scratch["path"]).exists()
+    assert res["path"].startswith("public/data/")
+    assert (ws / res["path"]).read_bytes() == b"x"
+
+
+def test_list_asset_files_accepts_a_membership_id(tmp_path: Path):
+    orch = _orch(tmp_path)
+    files = orch.list_asset_files("dataset:ds_sales_2026")
+    names = {f["path"] for f in files}
+    assert "train.csv" in names

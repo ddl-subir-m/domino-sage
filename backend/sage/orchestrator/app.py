@@ -56,7 +56,9 @@ from ..resources.provider import (
 from ..resources.publish_guard import PublishRefused
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
-from .service import AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, UploadUnavailable
+from .service import (
+    AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceStillBound, UploadUnavailable,
+)
 
 _feedback = FeedbackRunner()
 
@@ -517,9 +519,34 @@ def add_project_resource(body: dict) -> JSONResponse:
 
 @control_app.delete("/api/project/resources")
 def remove_project_resource(id: str = "") -> JSONResponse:
-    ok = orchestrator.remove_project_resource(id)
+    try:
+        ok = orchestrator.remove_project_resource(id)
+    except ResourceStillBound as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
     if not ok:
         return JSONResponse(status_code=404, content={"error": "not in this project"})
+    return JSONResponse(content={"removed": True})
+
+
+@control_app.post("/api/project/resources/pins")
+def pin_project_resource(body: dict) -> JSONResponse:
+    try:
+        item = orchestrator.pin_project_resource(str((body or {}).get("id") or ""), body or {})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not in this project"})
+    return JSONResponse(content={"item": item})
+
+
+@control_app.delete("/api/project/resources/pins")
+def unpin_project_resource(
+    id: str = "", path: str = "", database: str = "", schema: str = "", table: str = "",
+) -> JSONResponse:
+    pin = {"path": path} if path else {"database": database, "schema": schema, "table": table}
+    ok = orchestrator.unpin_project_resource(id, pin)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "pin not in this project"})
     return JSONResponse(content={"removed": True})
 
 
@@ -1071,7 +1098,9 @@ async def upload_file(request: Request) -> JSONResponse:
     if not data:
         return JSONResponse(status_code=400, content={"error": "empty upload"})
     try:
-        return JSONResponse(content=orchestrator.upload_file(filename, data, dataset_id))
+        if dataset_id:
+            return JSONResponse(content=orchestrator.upload_file(filename, data, dataset_id))
+        return JSONResponse(content=orchestrator.upload_scratch(filename, data))
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid filename"})
     except UploadUnavailable:
@@ -1086,6 +1115,32 @@ async def upload_file(request: Request) -> JSONResponse:
         return JSONResponse(
             status_code=413,
             content={"error": f"uploading this file would exceed the {mb:.0f} MB limit for attached data"},
+        )
+
+
+@control_app.post("/api/project/scratch/promote")
+async def promote_scratch(request: Request) -> JSONResponse:
+    body = await request.json()
+    path = (body or {}).get("path") or ""
+    dataset_id = (body or {}).get("dataset") or (body or {}).get("dataset_id") or ""
+    try:
+        return JSONResponse(content=orchestrator.promote_scratch_to_dataset(path, dataset_id))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "scratch file not found"})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": "dataset not found"})
+    except UploadUnavailable:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "The dataset you picked isn't mounted and writable in this workspace."},
+        )
+    except AttachTooLarge as e:
+        mb = e.cap / (1024 * 1024)
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"promoting this file would exceed the {mb:.0f} MB limit for attached data"},
         )
 
 

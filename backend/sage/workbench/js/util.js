@@ -67,6 +67,7 @@ window.SW = window.SW || {};
       if (!p) return false;
       const base = p.split('/').pop();
       if (base === 'AGENTS.md') return true;
+      if (p === '.sage/scratch' || p.startsWith('.sage/scratch/')) return false;
       if (p === '.sage' || p.startsWith('.sage/')) return true;
       return false;
     },

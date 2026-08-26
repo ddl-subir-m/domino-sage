@@ -55,7 +55,25 @@ def test_workbench_is_the_default_ui():
     assert b"Skills" in panel.content
     assert b"Extensions" not in panel.content
     assert b"resourcesLoading" in panel.content
-    assert b"Loading this project" in panel.content
+    assert b"fromCatalog" not in panel.content
+    assert b"membershipParent" in panel.content
+    assert b"Files in this workspace" in panel.content
+    assert b"e.target.files || []).map((f) => f.name)" not in panel.content
+    assert b"SW.store.uploadFile(file)" in panel.content
+    assert b"Add to a Dataset" in panel.content
+
+    tree = client.get("/js/components/resource-tree.js")
+    assert tree.status_code == 200
+    assert b"Files are not mounted in this workspace" in tree.content
+    assert b"SW.DatasetFileTree" in tree.content
+    assert b"SW.DataSourceCascade" in tree.content
+
+    catalog = client.get("/js/components/resource-catalog.js")
+    assert catalog.status_code == 200
+    assert b"Database tables" not in catalog.content
+    assert b"setDrill" in catalog.content
+
+    assert b"Remove from ${SW.store.get().scope.name}" in panel.content
 
     composer = client.get("/js/components/composer.js")
     assert composer.status_code == 200
@@ -74,8 +92,13 @@ def test_workbench_is_the_default_ui():
     assert b"Sage picks from your gateway models" not in composer.content
     assert b"catalogAsk" in composer.content
     assert b"gatewayAliases" in composer.content
+    assert b"resourceGroups.pin" in composer.content
     assert b"See what's in" not in composer.content
     assert b"Add a URL" not in composer.content
+
+    assert b"Modal.confirm" in store.content
+    assert b"promoteScratch" in js.content
+    assert b"resource-tree.js" in client.get("/").content
 
     assert b"showMode: true" in build.content
     assert b"hidePhase" not in build.content

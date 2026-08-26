@@ -111,9 +111,13 @@ window.SW = window.SW || {};
     contextItem,
     attached,
     allowAppActs,
+    expandable,
+    expanded,
+    onToggleExpand,
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
 
+    const writableDatasets = (SW.store.get().resourceGroups.dataset || []).filter((d) => d.writable);
     const items = contextItem
       ? [{ key: 'detach', label: 'Remove from this conversation' }]
       : [
@@ -129,7 +133,15 @@ window.SW = window.SW || {};
                 },
               ]
             : []),
-          ...(resource.fromCatalog
+          ...(resource.source === 'scratch'
+            ? writableDatasets.length
+              ? writableDatasets.map((d) => ({
+                  key: `to-dataset:${d.id}`,
+                  label: `Add to ${d.name}`,
+                }))
+              : [{ key: 'to-dataset', label: 'Add to a Dataset…', disabled: true }]
+            : []),
+          ...(resource.membershipParent
             ? [
                 { type: 'divider' },
                 { key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true },
@@ -145,6 +157,12 @@ window.SW = window.SW || {};
       if (key === 'promote') return SW.store.promoteResource(resource);
       if (key === 'demote') return SW.store.demoteResource(resource);
       if (key === 'remove') return SW.store.removeFromProject(resource);
+      if (key === 'to-dataset') {
+        return antd.message.info('No writable Dataset is mounted in this workspace.');
+      }
+      if (key.startsWith('to-dataset:')) {
+        return SW.store.addScratchToDataset(resource, key.slice('to-dataset:'.length).replace(/^dataset:/, ''));
+      }
       return undefined;
     };
 
@@ -168,6 +186,26 @@ window.SW = window.SW || {};
           (contextItem ? ' is-context' : '') +
           (menuOpen ? ' is-menu-open' : ''),
       },
+      h(
+        expandable
+          ? 'button'
+          : 'span',
+        expandable
+          ? {
+              className: 'sw-res-expand',
+              'aria-expanded': !!expanded,
+              'aria-label': expanded ? `Collapse ${resource.name}` : `Browse ${resource.name}`,
+              onClick: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (onToggleExpand) onToggleExpand();
+              },
+            }
+          : { className: 'sw-res-expand is-spacer' },
+        expandable
+          ? h(expanded ? DownOutlined : RightOutlined, { style: { fontSize: 9 } })
+          : null
+      ),
       h(
         'button',
         { className: 'sw-res-open', onClick: () => onOpen(resource) },
@@ -236,6 +274,8 @@ window.SW = window.SW || {};
     const [filesOpen, setFilesOpen] = useState(false);
     const fileRef = useRef(null);
 
+    const [expandedId, setExpandedId] = useState(null);
+
     const requiredIds = new Set(requires.map((r) => r.resourceId));
     const attachedIds = new Set((attachments || []).map((a) => a.resourceId));
     const filterGroup = panelFilter && SW.util.RESOURCE_META[panelFilter]
@@ -288,18 +328,30 @@ window.SW = window.SW || {};
       0
     );
 
-    const rowFor = (resource) =>
-      h(SW.ResourceRow, {
-        key: resource.id,
-        resource,
-        required: requiredIds.has(resource.id),
-        app: activeApp,
-        attached: attachedIds.has(resource.id),
-        allowAppActs: inBuild,
-        highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
-          && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
-        onOpen: inChat ? addFromPanel : openResource,
-      });
+    const rowFor = (resource) => {
+      const expandable = resource.membershipParent
+        && (resource.kind === 'dataset' || resource.kind === 'datasource');
+      const expanded = expandable && expandedId === resource.id;
+      return h(
+        Fragment,
+        { key: resource.id },
+        h(SW.ResourceRow, {
+          resource,
+          required: requiredIds.has(resource.id),
+          app: activeApp,
+          attached: attachedIds.has(resource.id),
+          allowAppActs: inBuild,
+          highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
+            && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
+          onOpen: inChat ? addFromPanel : openResource,
+          expandable,
+          expanded,
+          onToggleExpand: () => setExpandedId(expanded ? null : resource.id),
+        }),
+        expanded &&
+          h(SW.ResourceTree, { resource, query: needle, variant: 'rail' })
+      );
+    };
 
     return h(
       'div',
@@ -496,7 +548,7 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-drawer-body' },
-              h('div', { className: 'sw-drawer-hint' }, 'The project working tree.'),
+              h('div', { className: 'sw-drawer-hint' }, 'Files in this workspace. Dataset contents live under the Dataset.'),
               files.length
                 ? files.map(rowFor)
                 : h('div', { className: 'sw-group-empty' }, 'No files in this project yet.')
@@ -509,9 +561,9 @@ window.SW = window.SW || {};
           multiple: true,
           style: { display: 'none' },
           onChange: async (e) => {
-            const names = Array.from(e.target.files || []).map((f) => f.name);
+            const files = Array.from(e.target.files || []);
             e.target.value = '';
-            for (const name of names) await SW.store.uploadFile(name);
+            for (const file of files) await SW.store.uploadFile(file);
           },
         })
       )

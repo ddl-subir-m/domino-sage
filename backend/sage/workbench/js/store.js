@@ -162,14 +162,23 @@ window.SW = window.SW || {};
       SW.api.resourceListing(),
     ]).then(([project, listing]) => {
       if (gen !== scopeLoad) return;
-      const files = (project.attached || [])
-        .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
-        .map((e) => ({
+      const files = [
+        ...(project.scratch || []).map((e) => ({
           id: `file:${e.path}`,
-          name: (e.path || '').split('/').pop(),
+          name: e.name || (e.path || '').split('/').pop(),
           kind: 'file',
           path: e.path,
-        }));
+          source: 'scratch',
+        })),
+        ...(project.attached || [])
+          .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
+          .map((e) => ({
+            id: `file:${e.path}`,
+            name: (e.path || '').split('/').pop(),
+            kind: 'file',
+            path: e.path,
+          })),
+      ];
       applyResourceGroups(
         SW.api.overlayResourceListing({ ...state.resourceGroups, file: files }, listing),
         {
@@ -736,17 +745,40 @@ window.SW = window.SW || {};
     },
 
     async removeFromProject(resource) {
-      try {
-        await SW.api.removeFromProject(state.scope.id, resource.id);
-      } catch (err) {
-        // The server refuses when an app still needs it, and that refusal is
-        // the useful part — it names what would break.
-        antd.message.error(err.message);
-        return false;
-      }
-      await loadScopeData();
-      antd.message.info(`${resource.name} is out of ${state.scope.name}`);
-      return true;
+      const scopeName = state.scope.name;
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Remove ${resource.name} from ${scopeName}?`,
+          content: 'It leaves this project. You can add it again from Browse Domino.',
+          okText: 'Remove',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            try {
+              await SW.api.removeFromProject(state.scope.id, resource.id);
+            } catch (err) {
+              antd.message.error(err.message);
+              resolve(false);
+              return;
+            }
+            const tid = conversationId();
+            const drop = (state.attachments || []).filter(
+              (a) => a.resourceId === resource.id || a.parentId === resource.id
+            );
+            if (tid) {
+              await Promise.all(
+                drop.map((a) => SW.api.removeFromConversation(tid, a.id).catch(() => null))
+              );
+            }
+            state.attachments = (state.attachments || []).filter(
+              (a) => a.resourceId !== resource.id && a.parentId !== resource.id
+            );
+            await loadScopeData();
+            antd.message.info(`${resource.name} is out of ${scopeName}`);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
     },
 
     // Conversation context ------------------------------------------------
@@ -867,7 +899,9 @@ window.SW = window.SW || {};
     // Mentions pass quiet: the chip in the composer is already the feedback,
     // so Sage speaking up before the message is even sent just adds noise.
     addToContext(resource, options = {}) {
+      if (!resource || !resource.id) return Promise.resolve();
       if (state.attachments.some((a) => a.resourceId === resource.id)) return Promise.resolve();
+      state.resourceIndex[resource.id] = { ...(state.resourceIndex[resource.id] || {}), ...resource };
       return store.attach(resource.id, 'user', undefined, options);
     },
 
@@ -1313,11 +1347,49 @@ window.SW = window.SW || {};
         name: name,
         kind: 'file',
         path: body.path,
+        source: body.source || 'scratch',
       };
       state.resourceIndex[resource.id] = resource;
       await store.attach(resource.id, 'user', 'Uploaded in this conversation.', { silent: true });
       antd.message.success(`${name} added to this context`);
       return resource;
+    },
+
+    async pinLeaf(parent, pin) {
+      if (!parent || !parent.id) return null;
+      await store.addToProject({ ...parent, pin }, { silent: true });
+      return true;
+    },
+
+    async unpinLeaf(parent, pin) {
+      await SW.api.unpinFromProject(parent.id, pin);
+      await loadScopeData();
+      return true;
+    },
+
+    async addScratchToDataset(resource, datasetId) {
+      if (!resource || !resource.path || !datasetId) return null;
+      const res = await SW.api.promoteScratch(resource.path, datasetId);
+      const oldId = resource.id;
+      await loadScopeData();
+      const tid = conversationId();
+      const old = (state.attachments || []).find(
+        (a) => a.resourceId === oldId || a.path === resource.path
+      );
+      if (old && tid) {
+        await SW.api.removeFromConversation(tid, old.id).catch(() => null);
+        state.attachments = state.attachments.filter((a) => a.id !== old.id);
+        const next = {
+          id: `file:${res.path}`,
+          name: resource.name,
+          kind: 'file',
+          path: res.path,
+        };
+        state.resourceIndex[next.id] = next;
+        await store.attach(next.id, 'user', undefined, { silent: true, quiet: true });
+      }
+      antd.message.success(`${resource.name} is on the Dataset`);
+      return res;
     },
 
     // Plans --------------------------------------------------------------

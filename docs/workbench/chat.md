@@ -149,12 +149,15 @@ Collapsed "Ran Python" is optional. If the SSE stream includes a bash tool step,
 
 ## 6. Session context and chips
 
-Two bags, never one (the prototype's P0 bug was using `planId || threadId` as a single context id).
+Three bags, never one (the prototype's P0 bug was using `planId || threadId` as a single context id).
 
 | Bag | File | Lifetime | UI |
 |-----|------|----------|----|
 | Session context | `.sage/threads/<id>/context.json` | This Thread | Chips on the composer; "IN CONTEXT" in the resource panel |
-| Bindings | `.sage/bindings.json` | The Built App | "IN THIS APP" in Build after handoff; Resource Browser today |
+| Project membership | `.sage/project-resources.json` | This project | "PROJECT RESOURCES" rail. Parents plus optional **pins** (Dataset files, Data Source tables). Pins are not prompt context. |
+| Bindings | `.sage/bindings.json` | The Built App | "IN THIS APP" in Build after handoff |
+
+Chat-local files live in gitignored `.sage/scratch/`. They persist on this workspace volume. **Add to a Dataset** copies them onto a writable Dataset so they outlive this workspace.
 
 `context.json`:
 
@@ -165,15 +168,18 @@ Two bags, never one (the prototype's P0 bug was using `planId || threadId` as a 
       "id": "ctx_1",
       "kind": "file",
       "name": "positions_q3.csv",
-      "path": "public/data/positions_q3.csv",
+      "path": ".sage/scratch/positions_q3.csv",
       "addedBy": "user",
       "addedAt": "2026-08-25T18:02:00Z"
     },
     {
       "id": "ctx_2",
       "kind": "data_source",
+      "resourceId": "table:ds-dwh:DWH.MARTS.DIM_ACCOUNT",
+      "parentId": "data_source:ds-dwh",
       "bindingKey": ["data_source", "ds-dwh"],
-      "name": "Snowflake-Data-Warehouse",
+      "name": "DIM_ACCOUNT",
+      "scope": { "database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT" },
       "addedBy": "user",
       "addedAt": "2026-08-25T18:08:00Z"
     }
@@ -181,16 +187,20 @@ Two bags, never one (the prototype's P0 bug was using `planId || threadId` as a 
 }
 ```
 
-`kind` is `file` | `data_source` | `model_api` | `llm_alias` | `artifact`. A Resource in Session context is **not** automatically a Binding. `bindingKey` is a pointer at a row that *may* already exist in `bindings.json`; Chat will usually leave it unset until handoff.
+`kind` is `file` | `dataset` | `data_source` | `model_api` | `llm_alias` | `artifact`. A Resource in Session context is **not** automatically a Binding. `bindingKey` is a pointer at a row that *may* already exist in `bindings.json`; Chat will usually leave it unset until handoff. A Data Source **table** chip stores `scope` without writing a Binding.
+
+The prompt receives one line per chip (plus `describe.py` for files, column names/types for a scoped table). Listing a Dataset or opening a Data Source must not inject the tree.
 
 Chips:
 
 - Persist across turns in this Thread.
 - Clicking × removes the row from `context.json` for subsequent turns. Already-sent messages keep the chips they were sent with (store them on the history `user` event as `contextIds`).
-- `@` autocomplete lists Session context first, then project Resources (existing Resource Browser data), then files.
+- `@` autocomplete lists Session context first, then project **pins**, then parent Resources, then Files. Cap 8. It does not fetch a warehouse catalog.
 - Adding from the resource panel appends to `context.json` and shows the chip. Provenance `addedBy: user | sage`. When Sage adds one, it reports in the Thread in a sentence ("I'll use card-transactions-q3") — mixed-initiative from the mock, but the panel is the accounting.
 
-The resource panel in Chat: **IN CONTEXT** (this Thread's `context.json`) above **PROJECT RESOURCES** (what the caller can pick: Datasets, Data Sources, Model APIs, LLM Aliases — today's explorer). Files produced as Artifacts appear under IN CONTEXT as `kind: artifact`. Do not show `.sage/` or `AGENTS.md`.
+The resource panel in Chat: **IN CONTEXT** (this Thread's `context.json`) above **PROJECT RESOURCES** (Datasets, Data Sources, Model APIs, LLM Aliases). Dataset and Data Source rows expand to browse files or database/schema/table. Files produced as Artifacts appear under IN CONTEXT as `kind: artifact`. Do not show `.sage/` except `.sage/scratch/`, and do not show `AGENTS.md`.
+
+Remove from project is on every membership parent. It is refused while a Binding still names that Resource. Removing a parent also drops matching chips from the open Thread.
 
 ## 7. Workbench UI
 

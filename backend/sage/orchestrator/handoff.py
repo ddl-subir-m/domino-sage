@@ -262,8 +262,14 @@ def transcript_markdown(history: list[dict]) -> str:
 
 
 def binding_from_context(item: dict) -> Binding | None:
-    """A Binding for a Session context row that names a Resource, or None."""
+    """A Binding for a Session context row that names a Resource, or None.
+
+    A table chip is still a Data Source Binding: the id is the source, and Scope rides
+    on the Binding. Leaf ids (`table:…`, `dsfile:…`) are not Resource ids.
+    """
     kind = item.get("kind")
+    if kind == "datasource":
+        kind = KIND_DATA_SOURCE
     if kind not in _BINDABLE:
         return None
     key = item.get("bindingKey")
@@ -271,11 +277,21 @@ def binding_from_context(item: dict) -> Binding | None:
     if isinstance(key, (list, tuple)) and len(key) >= 2:
         rid = str(key[1] or "")
     if not rid:
-        rid = str(item.get("resourceId") or "")
-    if not rid or rid.startswith("ctx_"):
+        rid = str(item.get("parentId") or item.get("resourceId") or "")
+    for prefix in ("data_source:", "datasource:", "llm_alias:", "model_api:"):
+        if rid.startswith(prefix):
+            rid = rid[len(prefix):]
+            break
+    if not rid or rid.startswith(("ctx_", "table:", "dsfile:", "file:")):
         return None
     name = str(item.get("name") or rid)
-    return Binding(kind, rid, name, name)
+    scope = item.get("scope") if isinstance(item.get("scope"), dict) else {}
+    database = schema = table = None
+    if kind == KIND_DATA_SOURCE:
+        database = scope.get("database") or None
+        schema = scope.get("schema") or None
+        table = scope.get("table") or None
+    return Binding(kind, rid, name, name, database, schema, table)
 
 
 def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
