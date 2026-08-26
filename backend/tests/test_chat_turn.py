@@ -373,6 +373,38 @@ def test_chat_turn_times_out_a_hung_opencode_session(tmp_path: Path):
     assert oc.interrupted == 1
     err = next(e for e in events if e["type"] == "error")
     assert "took too long" in err["message"]
+def test_a_build_request_that_times_out_still_offers_build(tmp_path: Path):
+    """Asking Chat to build an app is what runs long — sage-chat writes an Artifact, not an app.
+
+    The nudge used to fire only after a turn reached the end of the poll loop, so the one turn that
+    most needs it produced a dead end the person retypes into.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="never emitted")])
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "lets build the webapp", timeout_s=0.05))
+
+    suggest = next(e for e in events if e["type"] == "handoff-suggest")
+    assert suggest["reason"] == "explicit"     # a regex, so no model call after a timeout
+    err = next(e for e in events if e["type"] == "error")
+    assert "open it in Build" in err["message"]
+    assert "smaller question" not in err["message"]   # wrong advice for a build request
+    # And it survives a reload, like any other turn event.
+    assert any(e.get("type") == "handoff-suggest" for e in orch.thread_history(tid))
+
+
+def test_a_slow_question_that_is_not_a_build_keeps_the_narrower_query_advice(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="never emitted")])
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "count the rows by event type", timeout_s=0.05))
+
+    assert not any(e["type"] == "handoff-suggest" for e in events)
+    err = next(e for e in events if e["type"] == "error")
+    assert "narrower query" in err["message"]
+
     done = next(e for e in events if e["type"] == "done")
     assert done == {"type": "done", "ok": False, "decision": "timeout"}
     hist = orch.thread_history(tid)

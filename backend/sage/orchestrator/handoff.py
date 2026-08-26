@@ -48,6 +48,11 @@ _EXPLICIT_BUILD = re.compile(
     r"|\bopen (?:this|it) in (?:the )?(?:builder|build)\b"
     r"|\bturn (?:this|it) into an app\b"
     r"|\bmake (?:this|it)(?: into)? an app\b"
+    # A verb of intent anywhere ahead of "web app" / "website". Unlike "dashboard", nobody asks an
+    # analysis question about a webapp, so the noun alone carries the intent and the gap can be
+    # loose — "lets build the webapp" and "build this chart ... as a webapp" both landed on the
+    # classifier before, which meant a timed-out turn detected nothing at all.
+    r"|\b(?:build|make|turn|ship|publish|deploy)\b[^.?!]{0,60}?\bweb\s?(?:app|site)\b"
     r")",
     re.IGNORECASE,
 )

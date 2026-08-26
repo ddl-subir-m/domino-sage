@@ -2346,9 +2346,17 @@ class Orchestrator:
                         client.interrupt(sid)
                     except Exception:
                         log.exception("chat: interrupt after timeout failed")
+                    # Detect here too, not only after a turn that finished. Asking Chat to build an
+                    # app is exactly what runs long — sage-chat writes an Artifact, not an app — so
+                    # the turn the person most needs the nudge on is the one that never reaches the
+                    # end of this loop. Without it the timeout is a dead end they retype into.
+                    suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
                     err = {
                         "type": "error",
                         "message": (
+                            "This turn took too long, so it was stopped. Building an app is Build's "
+                            "job rather than Chat's — open it in Build below."
+                        ) if suggestion else (
                             "This turn took too long, so it was stopped. Ask again with a smaller "
                             "question. If you were querying a Data Source, it may be too slow to "
                             "answer here — try a narrower query."
@@ -2359,6 +2367,9 @@ class Orchestrator:
                     store.append_history(thread_id, done)
                     yield err
                     yield done
+                    if suggestion:
+                        store.append_history(thread_id, suggestion)
+                        yield suggestion
                     return
                 try:
                     running = client.is_running(sid)
