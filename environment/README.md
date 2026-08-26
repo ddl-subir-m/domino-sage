@@ -61,6 +61,16 @@ the baked Node/OpenCode/template. `SAGE_TEMPLATE` stays pinned to the baked `/op
 boots cold. In that mode also set `SAGE_WORKSPACE_DIR` to a scratch dir (e.g. `/tmp/sage-workspaces/app`)
 so the source tree isn't treated as an app.
 
+Note what that mode does NOT cover: a Sage Builder the door creates has no such mount, so it always
+runs the baked `/opt/sage`. Two containers, two Sages — the App can be running your branch off
+`/mnt/code` while every builder it opens is on whatever the image holds. When a builder behaves like
+older code, check `/api/diag` (`sage_rev`) there before suspecting the door.
+
+Builders take the Environment's **active** revision — Sage sends no `environmentRevisionSpec` — so a
+rebuilt Environment reaches the next builder without restarting the Workbench App. A published Built
+App is the opposite: it pins the revision it was published on, so a deployed app keeps running the
+image it was tested against.
+
 ## Relationship to the spike
 
 This supersedes `spikes/domino-verify/` (which installs deps at runtime via `run.sh`). Once this

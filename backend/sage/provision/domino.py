@@ -244,8 +244,16 @@ class DominoControlPlane:
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
         # CreateWorkspaceRequest (domino_private_spec). Required: name, environmentId,
         # hardwareTierId, tools, externalVolumeMounts. The branch comes from the project's
-        # mainRepository.defaultRef, so overrideMainGitRepoRef is unnecessary. Pin the same
-        # environment revision as the hub when Domino injected one, else default to active.
+        # mainRepository.defaultRef, so overrideMainGitRepoRef is unnecessary.
+        #
+        # No environmentRevisionSpec, deliberately: a builder takes the Environment's ACTIVE
+        # revision. This used to pin the revision Domino injected into the caller — which is the
+        # revision the *Workbench App* was launched with, not the current one. A rebuilt Environment
+        # then never reached a new builder until somebody restarted the App, and the symptom was a
+        # builder serving Sage code weeks older than the door that created it. The App is a door
+        # that lives for seconds; the builder is where the work happens, so the builder wins.
+        # (publish_app still pins — a deployed Built App should keep running the image it was
+        # tested on. That is a different question with a different answer.)
         body: dict[str, Any] = {
             "name": BUILDER_WORKSPACE_NAME,
             "environmentId": self._env_id,
@@ -253,8 +261,6 @@ class DominoControlPlane:
             "tools": [self._tool],
             "externalVolumeMounts": [],
         }
-        if self._env_rev:
-            body["environmentRevisionSpec"] = {"revisionId": self._env_rev}
         data = self._post(f"/v4/workspace/project/{project_id}/workspace", body)
         # LIVE-VERIFY seam: which field carries the run/session id we assemble the open URL from
         # (see preview.prefix). Workspace metadata has no secrets, so log the shape to stdout.
@@ -553,7 +559,10 @@ class DominoControlPlane:
             "hardwareTierId": self._tier_id,
             "gitRef": ref,
         }
-        if self._env_rev:  # pin the revision Domino injected, else the app uses the env's active one
+        # A Built App DOES pin the revision Domino injected — unlike a builder, which takes the
+        # Environment's active one. A deployed artifact should keep running the image it was
+        # tested on; a builder should pick up a rebuilt Environment. Same field, opposite answer.
+        if self._env_rev:
             version["environmentRevisionId"] = self._env_rev
         return version
 

@@ -98,7 +98,9 @@ def test_create_workspace_body():
     assert seen["path"] == "/v4/workspace/project/proj-42/workspace"
     b = seen["body"]
     assert b["environmentId"] == "env-1"
-    assert b["environmentRevisionSpec"] == {"revisionId": "rev-1"}
+    # No revision pin: a builder takes the Environment's active revision, so rebuilding the
+    # Environment reaches new builders without restarting the Workbench App.
+    assert "environmentRevisionSpec" not in b
     assert b["hardwareTierId"] == {"value": "tier-1"}
     assert b["tools"] == ["sageBuilder"]
     assert b["name"] == "sage"  # names the builder so the hub can tell it from other workspaces
@@ -182,6 +184,20 @@ def test_save_workspace_work_surfaces_error_body():
 def test_stop_workspace_tolerates_empty_body():
     out = _cp(lambda req: httpx.Response(200, text="")).stop_workspace("p", "ws")
     assert out == {}  # empty body -> no error, empty dict
+
+
+def test_a_published_app_still_pins_its_environment_revision():
+    # The opposite of create_workspace on purpose: a deployed Built App keeps running the image it
+    # was tested on, while a builder follows the Environment so a rebuild reaches it.
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "app-9", "url": ""})
+
+    _cp(handler).publish_app("proj-42", name="My App")
+
+    assert seen["body"]["version"]["environmentRevisionId"] == "rev-1"
 
 
 def test_publish_app_posts_create_and_launch_body():
