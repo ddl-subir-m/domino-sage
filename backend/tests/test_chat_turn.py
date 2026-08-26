@@ -373,24 +373,59 @@ def test_chat_turn_times_out_a_hung_opencode_session(tmp_path: Path):
     assert oc.interrupted == 1
     err = next(e for e in events if e["type"] == "error")
     assert "took too long" in err["message"]
-def test_a_build_request_that_times_out_still_offers_build(tmp_path: Path):
-    """Asking Chat to build an app is what runs long — sage-chat writes an Artifact, not an app.
+def test_an_explicit_build_request_does_not_spend_a_chat_turn(tmp_path: Path):
+    """sage-chat writes an Artifact under examples/, never an app.
 
-    The nudge used to fire only after a turn reached the end of the poll loop, so the one turn that
-    most needs it produced a dead end the person retypes into.
+    Running the turn first spends up to the turn timeout and ends exactly where the offer starts —
+    which is how "lets build the webapp" became 90 seconds of spinner and "ask again with a smaller
+    question". The regex half needs no model call, so it can answer before a turn begins.
     """
+    orch, oc = _orch(tmp_path, [Turn(text="should never run")])
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "lets build the webapp"))
+
+    assert oc.prompts == []  # no turn was sent at all
+    suggest = next(e for e in events if e["type"] == "handoff-suggest")
+    assert suggest["reason"] == "explicit"
+    done = next(e for e in events if e["type"] == "done")
+    assert done["ok"] is True and done["decision"] == "handoff"
+    # And it survives a reload, like any other turn event.
+    assert any(e.get("type") == "handoff-suggest" for e in orch.thread_history(tid))
+
+
+def test_declining_the_offer_leaves_chat_answering_build_words(tmp_path: Path):
+    # Suppressed once means they chose Chat. A later build word must not short-circuit the turn.
+    orch, oc = _orch(tmp_path, [Turn(text="Here is what that would take.")])
+    tid = orch.create_thread()["id"]
+    orch.patch_thread(tid, {"handoff": "suppress"})
+
+    events = list(orch.chat_stream(tid, "lets build the webapp"))
+
+    assert len(oc.prompts) == 1
+    assert not any(e["type"] == "handoff-suggest" for e in events)
+
+
+def test_a_build_request_the_regex_misses_still_offers_build_after_a_timeout(
+    tmp_path: Path, monkeypatch
+):
+    """The model classifier judges the assistant's reply too, so it can only run after a turn — and
+    a turn stopped at the timeout used to return before reaching it."""
+    from sage.orchestrator import handoff as chat_handoff
+
+    monkeypatch.setattr(chat_handoff, "wants_an_app", lambda **kw: True)
     orch, oc = _orch(tmp_path, [Turn(text="never emitted")])
     oc.stay_running = True
     tid = orch.create_thread()["id"]
 
-    events = list(orch.chat_stream(tid, "lets build the webapp", timeout_s=0.05))
+    events = list(orch.chat_stream(
+        tid, "could this be something the team opens every morning?", timeout_s=0.05))
 
     suggest = next(e for e in events if e["type"] == "handoff-suggest")
-    assert suggest["reason"] == "explicit"     # a regex, so no model call after a timeout
+    assert suggest["reason"] == "classifier"
     err = next(e for e in events if e["type"] == "error")
     assert "open it in Build" in err["message"]
     assert "smaller question" not in err["message"]   # wrong advice for a build request
-    # And it survives a reload, like any other turn event.
     assert any(e.get("type") == "handoff-suggest" for e in orch.thread_history(tid))
 
 
@@ -708,7 +743,8 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
 def test_empty_plan_does_not_mark_planned(tmp_path: Path):
     orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text="")])
     tid = orch.create_thread()["id"]
-    list(orch.chat_stream(tid, "build me a dashboard"))
+    # Not a build word: an explicit one is answered by the offer without spending a turn.
+    list(orch.chat_stream(tid, "which desk is largest?"))
     with pytest.raises(ValueError, match="empty plan"):
         orch.draft_handoff_plan(tid)
     assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"

@@ -2001,16 +2001,32 @@ class Orchestrator:
         self._arm_chat_idle_save()
         return None
 
+    def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
+        """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
+
+        Silent once this Thread has been suggested or suppressed — someone who chose to stay in Chat
+        keeps asking in Chat.
+        """
+        try:
+            if not chat_handoff.should_classify(store.read_handoff(thread_id)):
+                return None
+            if not chat_handoff.looks_like_build_request(prompt):
+                return None
+            store.mark_handoff_suggested(thread_id)
+            return {"type": "handoff-suggest", "reason": "explicit"}
+        except Exception:
+            log.exception("handoff: explicit detect failed")
+            return None
+
     def _maybe_suggest_handoff(self, store: ThreadStore, project: Project,
                                thread_id: str, prompt: str) -> dict | None:
         """Detect once: persist handoff.json and emit a callout, or stay silent. Never raises."""
         try:
-            existing = store.read_handoff(thread_id)
-            if not chat_handoff.should_classify(existing):
+            explicit = self._explicit_handoff(store, thread_id, prompt)
+            if explicit:
+                return explicit
+            if not chat_handoff.should_classify(store.read_handoff(thread_id)):
                 return None
-            if chat_handoff.looks_like_build_request(prompt):
-                store.mark_handoff_suggested(thread_id)
-                return {"type": "handoff-suggest", "reason": "explicit"}
             thread = store.get(thread_id) or {}
             hit = chat_handoff.wants_an_app(
                 title=thread.get("title") or "",
@@ -2311,6 +2327,22 @@ class Orchestrator:
         }
         store.append_history(thread_id, user_ev)
         yield user_ev
+
+        # "Build me an app" is answered by Build, so offer it now rather than after a turn.
+        # sage-chat writes an Artifact under examples/, never an app, so running the turn first
+        # spends up to _CHAT_TURN_TIMEOUT_S and ends exactly where this starts — which is how a
+        # build request became 90 seconds of spinner and "ask again with a smaller question".
+        #
+        # Only the regex short-circuits. The model classifier still runs after a turn, because it
+        # judges the assistant's reply as well as the ask, and it cannot do that before one exists.
+        early = self._explicit_handoff(store, thread_id, prompt)
+        if early:
+            done = {"type": "done", "ok": True, "decision": "handoff"}
+            store.append_history(thread_id, early)
+            store.append_history(thread_id, done)
+            yield early
+            yield done
+            return
 
         immediate = "first" if was_first else None
         artifacts: list[dict] = []
