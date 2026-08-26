@@ -19,10 +19,9 @@ from fastapi.testclient import TestClient
 
 REPO = Path(__file__).resolve().parents[2]
 
-# Every entry page Sage ships: the Workbench, the hub, and the one that lands in dist/index.html of
-# every published app. The third is the one a customer's viewer loads, and the reason this matters.
+# Every entry page Sage ships: the Workbench, and the one that lands in dist/index.html of
+# every published app. The second is the one a customer's viewer loads, and the reason this matters.
 PAGES = [
-    REPO / "backend" / "sage" / "hub" / "ui" / "index.html",
     REPO / "backend" / "sage" / "workbench" / "index.html",
     REPO / "template" / "react-vite" / "index.html",
 ]
@@ -51,17 +50,6 @@ def test_the_builder_serves_the_font_its_page_asks_for():
 
     url = _asked_for(appmod._UI.read_text())
     r = TestClient(appmod.control_app).get(f"/{url}")
-
-    assert r.status_code == 200
-    assert r.headers["content-type"] == "font/woff2"
-    assert r.content[:4] == b"wOF2"
-
-
-def test_the_hub_serves_the_font_its_page_asks_for():
-    from sage.hub import app as hubmod
-
-    url = _asked_for(hubmod._UI.read_text())
-    r = TestClient(hubmod.app).get(f"/{url}")
 
     assert r.status_code == 200
     assert r.headers["content-type"] == "font/woff2"

@@ -2,45 +2,50 @@
 status: accepted
 ---
 
-# Workbench Chat: Untitled is a hidden project, the prototype is the shell, artifacts are files
+# Workbench Chat: Untitled is a chip on this workspace, the prototype is the shell, artifacts are files
 
 Sage grows a Chat mode beside the existing builder. Three product decisions are locked together
 because each one is what makes the other two cheap to ship. The mock that set the UX is
 `etanlightstone/sage_explorations` (live at the Sage Workspace prototype). Manage and Code are
 owned by a parallel branch; this slice ships the chrome and makes Chat and Build real.
 
-## Decision 1 — One Untitled Domino project per user, Threads inside it
+## Decision 1 — Untitled is a chip on this container's workspace; Threads live inside it
 
-The UI says **Untitled**. Behind it Sage immediately provisions a real git-based Domino project
-through the existing hub pipeline (`provision/service.py`), named `sage-<user-slug>-<id>` (username
-plus a short token from the Domino user id) with `.sage/settings.json` carrying `"untitled": true`.
-The chip is a Sage overlay: it shows Untitled, then the plan title after handoff confirm. Domino’s
-project name does not change — there is no rename API, and renaming would break the workspace URL.
-Persistence starts at message one. Naming the app clears the flag and is the only time the Sage
-display name changes.
+The UI says **Untitled**. That is a Sage overlay on `.sage/settings.json` (`"untitled": true`), not a
+Domino project rename. There is no Control Plane rename API.
 
-A user has **at most one** Untitled project. Opening the Workbench reuses it. **New conversation**
-creates a Thread inside that project (a new OpenCode session + `.sage/threads/<id>/`), not a new
-Domino project.
+The Workbench is one orchestrator process with two launch paths, and no Hub:
+
+- **Published App** (this repo's `app.sh`, `SAGE_PROXY_MODE=app`): Chat and Build run in a scratch
+  workspace. The chip can say Untitled. Files do not survive an App rebuild. **Publish is disabled**
+  — `DOMINO_PROJECT_ID` is Sage itself.
+- **Sage Builder workspace** (`sageBuilder` in a git-based app project, `/mnt/code`): Chat and Build
+  run on that project's repo. First boot hydrates Untitled from the Domino slug when it matches
+  `sage-<user>-<id>` (or a legacy project named Untitled). **Publish** ships that project as a Built
+  App.
+
+**New conversation** creates a Thread inside the current workspace (a new OpenCode session +
+`.sage/threads/<id>/`), not a new Domino project. Hub-style provisioning of `sage-<user>-<id>`
+git projects is gone; restoring it is a later slice.
 
 ### Considered options
 
-**New Domino project per Thread** — closest to today's hub (one named app per create). Rejected:
+**New Domino project per Thread** — closest to the old hub (one named app per create). Rejected:
 provisioning GitHub + project + workspace on every "New conversation" makes ChatGPT-like Chat
 unusable, and scratch projects would multiply as colliding `Untitled` / `sage-untitled-2`, `-3`, …
 
-**Ephemeral Personal sandbox, graduate later** — the mock's Decision 2. Rejected: the product
-requirement is that Untitled work survives refresh, and we already have a persistence mechanism
-(the Domino project). Faking ephemerality then copying into a project is two systems.
+**Ephemeral Personal sandbox, graduate later** — the mock's Decision 2. Rejected for Sage Builder:
+Untitled work in `/mnt/code` survives refresh because it is the project. In App mode the scratch dir
+*is* ephemeral across rebuilds until provision returns.
 
 **Optimistic local workspace, provision in the background** — correct isolation, much more work.
-Deferred until Untitled-reuse is proven too coarse.
+Deferred.
 
 ### Consequences
 
-- Scope chip lists the caller's Sage projects (Untitled + named). Switching scope is switching
-  Domino project, which is today's hub list restyled.
-- One project still hosts one Built App (the 1:1:1 topology is unchanged). Many Threads, one app.
+- Scope chip is this container's one project (Untitled overlay or the Domino name). Switching
+  Domino project means launching Sage Builder in a different project, not a hub gallery.
+- One container still hosts one Built App (the 1:1:1 topology is unchanged). Many Threads, one app.
   The mock's "eight apps in Market Risk Analytics" picker is not real in this slice.
 - Chat turns must not fire the first-build plan gate. Untitled is a place to think; `has_built`
   stays false until a handoff actually builds.

@@ -32,7 +32,7 @@ from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import GatewayClient
-from ..preview.prefix import domino_base_prefix
+from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
 from ..preview.supervisor import ViteSupervisor
 from ..provision import naming
@@ -148,8 +148,8 @@ _ENTRY_POINT = "app.sh"
 # The Python server that entry script execs to serve the build (ADR-0002). Pre-checked too, but only
 # when this app's app.sh actually calls it — an app still serving with Node doesn't need it.
 _SERVER_SCRIPT = "serve.py"
-# Published-app deploy status -> terminal phase (mirrors HubService.publish_status). Matched
-# case-insensitively; anything else means the deploy is still in progress.
+# Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
+# the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
 _FAILED_STATES = frozenset({"failed", "error"})
 
@@ -3757,10 +3757,14 @@ class Orchestrator:
 
     def publish(self) -> dict:
         """Publish (or republish) THIS app's project as a live Domino App, deploying the latest
-        committed code on the default branch. Mirrors HubService.publish_app: an existing App gets a
-        new version (stable URL); otherwise a new App is created + launched. Best-effort saves the
-        current work first so the deploy ships the newest code. Returns {published, app_id, url,
-        manage_url, republished}."""
+        committed code on the default branch. An existing App gets a new version (stable URL);
+        otherwise a new App is created + launched. Best-effort saves the current work first so the
+        deploy ships the newest code. Returns {published, app_id, url, manage_url, republished}."""
+        if not publish_available(self._wm.path):
+            raise RuntimeError(
+                "Publish is only available in a Sage Builder workspace whose app repo is /mnt/code. "
+                "This Workbench App is Sage itself, not a Built App."
+            )
         if self._control_plane is None or not self._domino_project_id:
             raise RuntimeError(
                 "Publish is only available when this builder runs on Domino (missing control-plane "

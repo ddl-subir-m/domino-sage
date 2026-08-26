@@ -356,15 +356,11 @@ def test_chat_prompt_for_an_unmounted_dataset_file_does_not_search_git(tmp_path:
     assert "Do not search this git repo" in prompt
 
 
-def test_new_conversation_does_not_provision(tmp_path: Path, monkeypatch):
+def test_new_conversation_does_not_provision(tmp_path: Path):
     orch, _ = _orch(tmp_path)
-    calls: list[int] = []
-    monkeypatch.setattr("sage.provision.service.HubService.create_app",
-                        lambda *a, **k: calls.append(1))
     first = orch.create_thread()
     second = orch.create_thread()
     assert first["id"] != second["id"]
-    assert calls == []
     assert len(orch.list_threads()) == 2
 
 

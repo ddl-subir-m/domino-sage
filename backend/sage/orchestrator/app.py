@@ -40,10 +40,13 @@ _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.
 
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
-from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_token, static_token
+from ..gateway.client import (
+    DEFAULT_SIDECAR_URL, GatewayUpstreamError, bearer_from_authorization, bind_viewer_token,
+    jwt_identity, prefer_viewer, sidecar_token, static_token, viewer_token,
+)
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
-from ..preview.prefix import domino_base_prefix, domino_project_label
+from ..preview.prefix import domino_base_prefix, domino_project_label, publish_available
 from ..preview.proxy import make_preview_app
 from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API
 from ..resources.model_api_credentials import CredentialRequired
@@ -128,8 +131,9 @@ def _build_catalog() -> ModelCatalog:
 def _domino_api_token():
     """Bearer for the Domino API (datasets, Data Sources, Model APIs).
 
-    Prefer an Account API key (`DOMINO_API_KEY` / `DOMINO_USER_API_KEY`). Off-Domino the same JWT
-    already in `GATEWAY_API_KEY` is accepted by the public Dataset and Data Source APIs (verified
+    Prefer a viewer JWT from extended identity (Workbench App). Else an Account API key
+    (`DOMINO_API_KEY` / `DOMINO_USER_API_KEY`). Off-Domino the same JWT already in
+    `GATEWAY_API_KEY` is accepted by the public Dataset and Data Source APIs (verified
     against cloud-dogfood). A workspace without either uses the sidecar. Never fall back to the
     sidecar on a machine that does not have one — that is a connection-refused 500 instead of a
     sentence the rail can show.
@@ -140,17 +144,18 @@ def _domino_api_token():
         or os.environ.get("GATEWAY_API_KEY")
     )
     if key:
-        return static_token(key)
-    if os.environ.get("DOMINO_API_PROXY"):
-        return sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+        fallback = static_token(key)
+    elif os.environ.get("DOMINO_API_PROXY"):
+        fallback = sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    else:
+        def _missing() -> str:
+            raise ResourceUnavailable(
+                "Sage lists Datasets, Data Sources, and Model APIs with a Domino API key. "
+                "Set DOMINO_API_KEY in backend/.env (Account → API Key)."
+            )
 
-    def _missing() -> str:
-        raise ResourceUnavailable(
-            "Sage lists Datasets, Data Sources, and Model APIs with a Domino API key. "
-            "Set DOMINO_API_KEY in backend/.env (Account → API Key)."
-        )
-
-    return _missing
+        fallback = _missing
+    return prefer_viewer(fallback)
 
 
 def _build_assets():
@@ -266,7 +271,9 @@ def _build_resources():
     if GATEWAY_MODE != "domino" or not base:
         return FakeResourceProvider()
     key = os.environ.get("GATEWAY_API_KEY", "")
-    token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    token = prefer_viewer(
+        static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    )
     # Model APIs come off the Domino API instead, on its own bearer — the same recipe _build_assets
     # uses, because it is the same host and the same token. Absent (Sage pointed at a Domino gateway
     # from outside Domino), the provider reports Model APIs as unlistable rather than as none.
@@ -372,6 +379,36 @@ class _PrefixMiddleware:
 control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 
 
+class _ViewerIdentityMiddleware:
+    """Bind the viewer's JWT from Authorization (extended identity on the Workbench App).
+
+    OpenCode later POSTs /v1 over localhost with no header, so a browser request remembers the
+    token for that hop. Internal /v1 and /healthz never overwrite the remembered viewer.
+    """
+
+    _UNPROXIED = ("/v1/", "/healthz")
+
+    def __init__(self, app) -> None:
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        path = scope.get("path", "") or ""
+        headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
+        extracted = bearer_from_authorization(headers.get("authorization"))
+        remember = not path.startswith(self._UNPROXIED)
+        bind_viewer_token(extracted if remember else viewer_token(), remember=remember and bool(extracted))
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            bind_viewer_token(None, remember=False)
+
+
+control_app.add_middleware(_ViewerIdentityMiddleware)
+
+
 @control_app.get("/")
 def ui() -> FileResponse:
     """The Workbench shell (Chat / Build). no-store so the current HTML is always served."""
@@ -401,9 +438,10 @@ def healthz() -> dict:
         "ok": True,
         "project": orchestrator._project_id,
         "gateway_mode": GATEWAY_MODE,
-        # True when this builder can Publish/Stop through the Domino control plane (Domino runs
-        # only); the UI hides those controls otherwise.
-        "domino": orchestrator._control_plane is not None,
+        # True when this builder can Publish/Stop through the Domino control plane (Sage Builder
+        # workspace on an app repo). The Workbench App hides those controls — publishing would ship
+        # Sage itself, not a Built App.
+        "domino": orchestrator._control_plane is not None and publish_available(orchestrator._wm.path),
         "open_weight_models": [
             {"id": m.id, "provider": m.provider} for m in OPEN_WEIGHT_MODELS
         ] if GATEWAY_MODE == "openai" else [],
@@ -416,10 +454,13 @@ def healthz() -> dict:
 
 @control_app.get("/api/me")
 def me() -> dict:
-    """Who the Workbench greets. Domino injects the username; locally this is just You."""
+    """Who the Workbench greets. Viewer JWT when extended identity forwarded one; else the
+    container's injected username (publisher on an App, the workspace user in Sage Builder)."""
+    ident = jwt_identity(viewer_token())
     return {
-        "id": os.environ.get("DOMINO_USER_ID") or "me",
-        "name": os.environ.get("DOMINO_USER_NAME")
+        "id": ident.get("id") or os.environ.get("DOMINO_USER_ID") or "me",
+        "name": ident.get("name")
+            or os.environ.get("DOMINO_USER_NAME")
             or os.environ.get("DOMINO_STARTING_USERNAME")
             or "You",
     }
@@ -1546,9 +1587,9 @@ def _preview_llm() -> tuple[str, str] | None:
     if GATEWAY_MODE != "domino" or not base:
         return None
     key = os.environ.get("GATEWAY_API_KEY", "")
-    provider = static_token(key) if key else sidecar_token(
+    fallback = static_token(key) if key else sidecar_token(
         os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/v1", provider()
+    return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/v1", prefer_viewer(fallback)()
 
 
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,

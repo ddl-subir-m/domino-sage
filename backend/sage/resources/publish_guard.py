@@ -16,8 +16,8 @@ refusing at pick time would take away a source the creator can legitimately use.
 
 Pure functions on purpose, like `preflight`. The judgement takes an already-fetched Data Source
 list and an already-read visibility string, so the sentence a creator reads is testable without a
-Domino, and each caller — the builder and the hub, which publish by different routes — owns its
-own I/O and its own failure handling.
+Domino, and the builder (the only remaining publish route) owns its own I/O and its own failure
+handling.
 """
 from __future__ import annotations
 

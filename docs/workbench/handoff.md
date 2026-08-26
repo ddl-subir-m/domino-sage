@@ -83,7 +83,7 @@ Checkboxes, matching the prototype:
 | Artifacts → stay in `examples/` | on | no — unchecking does not delete files; it omits them from `.sage/handoff.md` so implement does not treat them as required examples |
 | Transcript → `.sage/handoff-transcript.md` | off | no |
 
-If the current project is still Untitled, the sheet says the app will live in this project and the Sage display name will become the plan title. Confirm writes that into `.sage/settings.json` (`untitled: false`, `displayName: <title>`). The Domino project name stays `sage-<user>-<id>`. Do not block on "save to a project" — Untitled already is a project (ADR-0003). Do not PATCH Domino.
+If the current project is still Untitled, the sheet says the app will live in this workspace and the Sage display name will become the plan title. Confirm writes that into `.sage/settings.json` (`untitled: false`, `displayName: <title>`). Do not PATCH Domino. In Sage Builder, Untitled already is this git-based project. In the Workbench App, Publish stays disabled until you open Sage Builder in an app project.
 
 On confirm, in order:
 

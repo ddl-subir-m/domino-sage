@@ -1,9 +1,16 @@
 """What this process derives from the identity env Domino injects (single source of truth).
 
-Domino's pluggable-tool proxy preserves the path prefix (rewrite:false), so every request arrives
-under /<owner>/<project>/notebookSession/<runId>/. We derive it ONCE from the env Domino injects
-and thread the SAME value into request routing (strip) and Vite's `base` (bake) — so the two can't
-drift. Empty when not in a Domino workspace, which collapses everything to naked-localhost behavior.
+Two launch paths share one orchestrator:
+
+- Sage Builder workspace (`SAGE_PROXY_MODE=workspace`, default): Domino's pluggable-tool proxy
+  preserves the path prefix (rewrite:false), so every request arrives under
+  /<owner>/<project>/notebookSession/<runId>/. We derive it ONCE from the env Domino injects
+  and thread the SAME value into request routing (strip) and Vite's `base` (bake).
+- Workbench App (`SAGE_PROXY_MODE=app`): nginx strips the `/apps-internal/<id>/` mount before
+  the request reaches us. The prefix must be empty — baking the workspace notebookSession path
+  would break `./preview/` and `./api`.
+
+Empty when not in a Domino workspace, which collapses everything to naked-localhost behavior.
 
 The same DOMINO_PROJECT_OWNER/DOMINO_PROJECT_NAME pair also names this deployment in the gateway's
 cost dashboard (domino_project_label), so both readers of that env live here.
@@ -11,10 +18,40 @@ cost dashboard (domino_project_label), so both readers of that env live here.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+
+def proxy_is_app() -> bool:
+    """True when this process is the published Workbench App, not a Sage Builder workspace."""
+    return os.environ.get("SAGE_PROXY_MODE", "").strip().lower() == "app"
+
+
+def publish_available(workspace_dir: Path | None = None) -> bool:
+    """Whether this container may Publish a Built App through the control plane.
+
+    The Workbench App's DOMINO_PROJECT_ID is Sage itself; publishing from there would ship Sage,
+    not a user's app. A dogfood scratch dir that is not `/mnt/code` is the same hazard.
+    """
+    if proxy_is_app():
+        return False
+    raw = workspace_dir if workspace_dir is not None else os.environ.get("SAGE_WORKSPACE_DIR")
+    if not raw:
+        return True
+    ws = Path(raw)
+    mnt = Path("/mnt/code")
+    try:
+        if mnt.exists() and ws.resolve() != mnt.resolve():
+            return False
+    except OSError:
+        return True
+    return True
 
 
 def domino_base_prefix() -> str:
     """The path prefix (no trailing slash), e.g. "/sub_user/Sage/notebookSession/abc123", or ""."""
+    if proxy_is_app():
+        # App nginx already stripped the mount. SAGE_BASE_PREFIX is only for tests / odd deploys.
+        return os.environ.get("SAGE_BASE_PREFIX", "").rstrip("/")
     owner = os.environ.get("DOMINO_PROJECT_OWNER")
     project = os.environ.get("DOMINO_PROJECT_NAME")
     run_id = os.environ.get("DOMINO_RUN_ID")

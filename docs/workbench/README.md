@@ -5,7 +5,7 @@ are owned by a parallel branch.
 
 | Doc | What it decides |
 |-----|-----------------|
-| [ADR-0003](../adr/0003-workbench-chat-and-untitled.md) | Untitled is a hidden project; lift the prototype shell; artifacts are files |
+| [ADR-0003](../adr/0003-workbench-chat-and-untitled.md) | Untitled is a chip on this workspace; lift the prototype shell; artifacts are files |
 | [chat.md](chat.md) | `sage-chat`, Thread storage, Artifact layout, chips / Session context |
 | [handoff.md](handoff.md) | Detect once, suggest, file payload, then existing `sage-plan` / `sage-implement` |
 | [template/chat/AGENTS.md](../../template/chat/AGENTS.md) | Prompt body for `sage-chat` (source of truth; inline into `opencode.json`) |

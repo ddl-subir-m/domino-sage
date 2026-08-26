@@ -1,4 +1,4 @@
-"""Gateway provider-mode resolution (one place both apps use).
+"""Gateway provider-mode resolution (one place the orchestrator uses).
 
 Modes:
   - fake    : no GATEWAY_BASE_URL and no explicit SAGE_GATEWAY_MODE -> in-process fake (offline).
@@ -25,6 +25,7 @@ from .client import (
     GatewayClient,
     MultiProviderOpenAIClient,
     OpenAICompatibleClient,
+    prefer_viewer,
     sidecar_token,
     static_token,
 )
@@ -57,5 +58,7 @@ def build_gateway() -> tuple[GatewayClient, str]:
     # domino
     base_url = os.environ["GATEWAY_BASE_URL"]
     key = os.environ.get("GATEWAY_API_KEY", "")
-    token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    return OpenAICompatibleClient(base_url, token, domino_tags=True), "domino"
+    fallback = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    # Extended identity (Workbench App): the viewer's JWT when the request carried one; sidecar
+    # otherwise (Sage Builder workspace, local, OpenCode /v1 after a remembered viewer).
+    return OpenAICompatibleClient(base_url, prefer_viewer(fallback), domino_tags=True), "domino"

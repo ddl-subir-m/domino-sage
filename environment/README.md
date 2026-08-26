@@ -1,26 +1,38 @@
-# Sage Builder — Environment (Phase 3, the shippable artifact)
+# Sage Workbench — Environment
 
 One Domino Environment image that carries Sage's code, the agent runtime (OpenCode), and a warm
-React+Vite template with baked `node_modules`. A user's app runs by launching the **Sage Builder**
-pluggable tool in a git-based Domino project; the app repo mounts at `/mnt/code` and is the
-workspace.
+React+Vite template with baked `node_modules`. Chat and Build are one orchestrator process.
+
+Two launch paths, same process:
+
+1. **Published App** — publish **this repo** as a Domino App. Root `app.sh` starts the workbench
+   (`SAGE_PROXY_MODE=app`, port 8888). Domino's App proxy strips the mount prefix; Vite's prefix is
+   empty. `/mnt/code` is Sage source, so Chat/Build use a scratch workspace. Turn on **extended
+   identity** so Dataset / Data Source / gateway calls use the viewer's JWT. Publish of a Built App
+   is disabled here (that project id is Sage).
+2. **Sage Builder workspace** — launch the `sageBuilder` pluggable tool in a **git-based app
+   project**. [`environment/app.sh`](app.sh) starts the same orchestrator with
+   `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the Built App.
+
+There is no Hub, no second server, and no `sageHub` tool.
 
 ## Files
 
 | File | Goes into |
 |------|-----------|
 | `Dockerfile` | The Environment's **Edit Dockerfile** box (on top of your base image) |
-| `pluggable-tools.yaml` | The Environment's **Pluggable Workspace Tools** field |
+| `pluggable-tools.yaml` | The Environment's **Pluggable Workspace Tools** field (`sageBuilder` only) |
 | `app.sh` | Baked via the repo clone; the tool's `start` runs `/opt/sage/environment/app.sh` |
-| `hub.sh` | Same image, different entrypoint; the `sageHub` tool's `start` runs `/opt/sage/environment/hub.sh` |
+| repo-root `app.sh` | What a published App runs (`/mnt/code/app.sh`) — execs the same orchestrator with App settings |
 
 ## Key design decision
 
-**Sage code is baked into `/opt/sage`; the app lives on `/mnt/code`.** A Domino Environment build
-has no local build context, so nothing is `COPY`ed — the Dockerfile `git clone`s Sage into
-`/opt/sage` and `npm ci`s the template there. At runtime the *user's app repo* is the mount
-(`/mnt/code`), which is where the orchestrator seeds/edits/commits. This is what lets one image be
-both dev artifact and ship artifact without the app and the tooling fighting over `/mnt/code`.
+**Sage code is baked into `/opt/sage`; the user's app lives on `/mnt/code` in a Builder workspace.**
+A Domino Environment build has no local build context, so nothing is `COPY`ed — the Dockerfile
+`git clone`s Sage into `/opt/sage` and `npm ci`s the template there. At runtime a Sage Builder
+session mounts the *user's app repo* at `/mnt/code`, which is where the orchestrator seeds/edits/
+commits. A published Workbench App must **not** treat that checkout as an app — root `app.sh` points
+`SAGE_WORKSPACE_DIR` at a scratch dir when `/mnt/code` is this Sage tree.
 
 ## Fill-ins before it builds
 
@@ -29,14 +41,14 @@ both dev artifact and ship artifact without the app and the tooling fighting ove
    build-time `git clone` needs a credential (secret build-arg token, or a public deploy mirror).
 3. **Gateway** — set `GATEWAY_BASE_URL` in the Environment's **Environment Variables** box so builds
    can reach a model. Without it the UI and preview still work; builds can't call the LLM.
-   - Set it at the **Environment** level, not the project level. Child builders the hub launches
-     inherit the *Environment's* baked env, not the hub project's env vars — a project-scoped
-     `GATEWAY_BASE_URL` leaves every "New app" builder stuck in `fake` mode.
+   - Set it at the **Environment** level, not the project level. Workspaces inherit the
+     Environment's baked env.
    - Domino requires each Environment Variable to also be declared as an `ARG` in the Dockerfile.
      Ours (`GATEWAY_BASE_URL`, `SAGE_GATEWAY_MODE`) are declared *and* promoted to `ENV` so they
      survive into the running container — a bare `ARG` is build-time only.
    - **Don't** put `GATEWAY_API_KEY` here: promoted to `ENV` it lands in an image layer. In `domino`
-     mode leave the key unset; the per-workspace sidecar token at `:8899` works in every workspace.
+     mode leave the key unset; the per-workspace sidecar token at `:8899` is the fallback when no
+     viewer JWT arrived. On the published App, extended identity supplies the viewer's token.
 
 ## Fast inner dev loop
 
@@ -47,17 +59,13 @@ the baked Node/OpenCode/template. `SAGE_TEMPLATE` stays pinned to the baked `/op
 boots cold. In that mode also set `SAGE_WORKSPACE_DIR` to a scratch dir (e.g. `/tmp/sage-workspaces/app`)
 so the source tree isn't treated as an app.
 
-## Hub (same image, no git-based project)
-
-The **New app** hub ships from this same image via `hub.sh` / the `sageHub` tool. Unlike the Builder,
-it needs **no git-based project of its own**: the GitHub host comes from `SAGE_GIT_HOST` (default
-`github.com`) and the token from Domino's global `git credential` helper, so it runs as a plain baked
-App. It provisions the *git-based app projects* and launches a Builder in each.
-
 ## Relationship to the spike
 
 This supersedes `spikes/domino-verify/` (which installs deps at runtime via `run.sh`). Once this
 image is verified, the spike is only kept for reference.
 
-→ **Verify:** launch **Sage Builder** from this Environment in a git-based Domino project → describe
-an app → watch it build → private preview renders → a clean build commits+pushes to the app repo.
+→ **Verify (App):** publish this repo as an App on the Sage Environment with extended identity →
+open Chat → listings are the viewer's. `#/chat` / `#/build` and `./preview/` work.
+
+→ **Verify (workspace):** launch **Sage** (`sageBuilder`) in a git-based app project → describe an
+app → watch it build → private preview renders → Publish deploys that project as a Built App.

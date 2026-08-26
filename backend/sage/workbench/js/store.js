@@ -669,7 +669,7 @@ window.SW = window.SW || {};
     },
 
     async createProject(name) {
-      antd.message.info('Named apps are created from the Sage hub. This project is the current scope.');
+      antd.message.info('This project is the current scope.');
       return null;
     },
 

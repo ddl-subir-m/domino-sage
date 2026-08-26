@@ -15,8 +15,11 @@ Two adapters make the seam real:
 """
 from __future__ import annotations
 
+import base64
+import json
 import os
 from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -24,6 +27,74 @@ from .open_models import OpenModel
 
 # Domino workspace sidecar that mints a short-lived access token.
 DEFAULT_SIDECAR_URL = "http://localhost:8899/access-token"
+
+# Extended-identity JWT from the current (or last browser) request. OpenCode dials /v1 over
+# localhost with no Authorization header, so we remember the viewer's token across that hop.
+_viewer_token: ContextVar[str | None] = ContextVar("sage_viewer_token", default=None)
+_last_viewer_token: str | None = None
+
+
+def bearer_from_authorization(header: str | None) -> str | None:
+    """The raw JWT from an Authorization header, or None."""
+    if not header:
+        return None
+    raw = header.strip()
+    if raw.lower().startswith("bearer "):
+        raw = raw[7:].strip()
+    return raw or None
+
+
+def bind_viewer_token(token: str | None, *, remember: bool = True) -> None:
+    """Attach a viewer JWT to this request. `remember` keeps it for later unproxied /v1 calls."""
+    global _last_viewer_token
+    _viewer_token.set(token)
+    if remember and token:
+        _last_viewer_token = token
+
+
+def reset_viewer_token() -> None:
+    """Tests: drop both the request-scoped and remembered viewer JWT."""
+    global _last_viewer_token
+    _last_viewer_token = None
+    _viewer_token.set(None)
+
+
+def viewer_token() -> str | None:
+    """Viewer JWT for this request, else the one remembered from the last browser call."""
+    return _viewer_token.get() or _last_viewer_token
+
+
+def prefer_viewer(fallback: Callable[[], str]) -> Callable[[], str]:
+    """Token provider: extended-identity JWT when present, otherwise the process credential."""
+    def _get() -> str:
+        tok = viewer_token()
+        if tok:
+            return tok
+        return fallback()
+
+    return _get
+
+
+def jwt_identity(token: str | None) -> dict[str, str]:
+    """sub / preferred_username from a JWT payload. Unverified — Domino already gated the request."""
+    if not token:
+        return {}
+    parts = token.split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        seg = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(seg))
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    sub = claims.get("sub")
+    if sub:
+        out["id"] = str(sub)
+    name = claims.get("preferred_username") or claims.get("email")
+    if name:
+        out["name"] = str(name)
+    return out
 
 
 def static_token(token: str) -> Callable[[], str]:

@@ -237,7 +237,7 @@ SW.api = {
     }];
   },
   createProject: async () => {
-    throw new Error('Named apps are created from the Sage hub, not from this project.');
+    throw new Error('This project is the current scope. Open Sage Builder in a git-based app project to publish a Built App.');
   },
   resources: async () => {
     // Membership is a local file. Do not wait on the Domino listing or on /project

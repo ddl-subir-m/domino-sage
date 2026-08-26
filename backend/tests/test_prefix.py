@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from sage.orchestrator.app import _gateway_ui_url, _PrefixMiddleware, _slot
-from sage.preview.prefix import domino_base_prefix, domino_project_label
+from sage.preview.prefix import domino_base_prefix, domino_project_label, publish_available
 from sage.preview.proxy import make_preview_app
 
 
@@ -50,6 +50,7 @@ def test_bare_root_path_matches_index():
 
 
 def test_domino_base_prefix_from_env(monkeypatch):
+    monkeypatch.delenv("SAGE_PROXY_MODE", raising=False)
     monkeypatch.setenv("DOMINO_PROJECT_OWNER", "sub_user")
     monkeypatch.setenv("DOMINO_PROJECT_NAME", "Sage")
     monkeypatch.setenv("DOMINO_RUN_ID", "abc123")
@@ -58,9 +59,30 @@ def test_domino_base_prefix_from_env(monkeypatch):
 
 
 def test_domino_base_prefix_empty_locally(monkeypatch):
-    for k in ("DOMINO_PROJECT_OWNER", "DOMINO_PROJECT_NAME", "DOMINO_RUN_ID", "SAGE_BASE_PREFIX"):
+    for k in ("DOMINO_PROJECT_OWNER", "DOMINO_PROJECT_NAME", "DOMINO_RUN_ID", "SAGE_BASE_PREFIX",
+              "SAGE_PROXY_MODE"):
         monkeypatch.delenv(k, raising=False)
     assert domino_base_prefix() == ""
+
+
+def test_domino_base_prefix_empty_when_running_as_app(monkeypatch):
+    # App nginx strips the mount. Baking the workspace notebookSession path would break ./preview/.
+    monkeypatch.setenv("SAGE_PROXY_MODE", "app")
+    monkeypatch.setenv("DOMINO_PROJECT_OWNER", "sub_user")
+    monkeypatch.setenv("DOMINO_PROJECT_NAME", "Sage")
+    monkeypatch.setenv("DOMINO_RUN_ID", "abc123")
+    monkeypatch.delenv("SAGE_BASE_PREFIX", raising=False)
+    assert domino_base_prefix() == ""
+
+
+def test_publish_available_false_as_app(monkeypatch, tmp_path):
+    monkeypatch.setenv("SAGE_PROXY_MODE", "app")
+    assert publish_available(tmp_path / "code") is False
+
+
+def test_publish_available_true_off_domino(monkeypatch, tmp_path):
+    monkeypatch.delenv("SAGE_PROXY_MODE", raising=False)
+    assert publish_available(tmp_path / "workspaces" / "app") is True
 
 
 def test_domino_project_label_includes_owner(monkeypatch):

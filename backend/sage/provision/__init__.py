@@ -1,1 +1,1 @@
-"""App provisioning + hub control plane (Phase 4)."""
+"""Domino control plane (Publish / Stop) and scratch-project naming."""

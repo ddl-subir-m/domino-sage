@@ -7,13 +7,12 @@ symmetrical by accident — an unlistable Data Source must refuse, and an unreco
 not. And the case that must NOT break: building against an `Individual` source is exactly what the
 creator's own session is for, so nothing before publish may take it away.
 
-Both publish routes are covered, the builder's and the hub's, because they refuse by different
-means: the builder reads the workspace's manifest, the hub reads the committed one over the repo
-provider. Nothing here reaches a network — the fakes stand in for Domino throughout.
+Both publish routes used to be covered, the builder's and the hub's. The hub is gone; the builder
+reads the workspace's manifest. Nothing here reaches a network — the fakes stand in for Domino
+throughout.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -21,9 +20,7 @@ import pytest
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.provision.domino import FakeControlPlane, PublishedApp
-from sage.provision.github import FakeRepoProvider
-from sage.provision.service import HubService
-from sage.resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, Binding
+from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.resources.provider import DataSource, FakeResourceProvider, LlmAlias
 from sage.resources.publish_guard import (
     INDIVIDUAL_CREDENTIAL,
@@ -237,76 +234,6 @@ def test_building_against_an_individual_credential_stays_allowed(tmp_path: Path)
     assert any(d["id"] == "ds-test" for d in orch.list_data_sources())  # still offered, too
 
 
-# ---- the hub's publish --------------------------------------------------------------------------
-
-_GIT_URL = "https://github.com/me/sage-sales-app.git"
-_FULL = "me/sage-sales-app"
-
-
-def _hub(tmp_path: Path, cp: FakeControlPlane, repo: FakeRepoProvider, *,
-         resources: FakeResourceProvider | None = None) -> HubService:
-    return HubService(cp, repo, tmp_path, seed=lambda *a, **k: None,
-                      resources=resources or FakeResourceProvider(data_sources=list(SOURCES)))
-
-
-def _repo_with(bindings: list[dict]) -> FakeRepoProvider:
-    repo = FakeRepoProvider()
-    repo.files[(_FULL, ".sage/bindings.json")] = json.dumps(bindings)
-    return repo
-
-
-def test_the_hub_refuses_an_individual_credential_from_the_committed_manifest(tmp_path: Path):
-    # The hub publishes without a builder, so the only copy of the Resource list it can reach is the
-    # one in the repo. The guard has to be the same one, or it is a door left open beside a lock.
-    cp = FakeControlPlane()
-    ref = cp.create_project("Sales App", git_url=_GIT_URL)
-    repo = _repo_with([{"kind": "data_source", "id": "ds-test", "name": "test",
-                        "display_name": "test", "database": "ANALYTICS"}])
-
-    with pytest.raises(PublishRefused) as ei:
-        _hub(tmp_path, cp, repo).publish_app(ref.id)
-
-    assert [p.reason for p in ei.value.problems] == [INDIVIDUAL_CREDENTIAL]
-    assert not cp.published
-
-
-def test_the_hub_publishes_a_shared_credential(tmp_path: Path):
-    cp = FakeControlPlane()
-    ref = cp.create_project("Sales App", git_url=_GIT_URL)
-    repo = _repo_with([{"kind": "data_source", "id": "ds-dwh", "name": "Snowflake-Data-Warehouse",
-                        "display_name": "Snowflake-Data-Warehouse", "database": "ANALYTICS"}])
-
-    assert _hub(tmp_path, cp, repo).publish_app(ref.id)["published"] is True
-
-
-def test_the_hub_publishes_an_app_with_no_manifest_unchanged(tmp_path: Path):
-    # Every app built before #11 has no manifest at all, and a repo read that answers nothing is not
-    # evidence the app reads a store.
-    cp = FakeControlPlane()
-    ref = cp.create_project("Sales App", git_url=_GIT_URL)
-
-    assert _hub(tmp_path, cp, FakeRepoProvider()).publish_app(ref.id)["published"] is True
-
-
-def test_the_hub_ignores_a_manifest_that_is_not_valid_json(tmp_path: Path):
-    cp = FakeControlPlane()
-    ref = cp.create_project("Sales App", git_url=_GIT_URL)
-    repo = FakeRepoProvider()
-    repo.files[(_FULL, ".sage/bindings.json")] = "{not json"
-
-    assert _hub(tmp_path, cp, repo).publish_app(ref.id)["published"] is True
-
-
-def test_the_hub_leaves_an_llm_alias_binding_alone(tmp_path: Path):
-    # These guards are about stores, and an app that pins an Alias reads none.
-    cp = FakeControlPlane()
-    ref = cp.create_project("Sales App", git_url=_GIT_URL)
-    repo = _repo_with([{"kind": KIND_LLM_ALIAS, "id": "id-sonnet", "name": "sonnet",
-                        "display_name": "Claude Sonnet 4.6"}])
-
-    assert _hub(tmp_path, cp, repo).publish_app(ref.id)["published"] is True
-
-
 VENDOR = LlmAlias("f-gpt54", "gpt-5.4", "gpt-5.4")
 ALIASES = [VENDOR]
 
@@ -324,21 +251,6 @@ def test_the_builder_publishes_a_store_bound_to_a_vendor_model(tmp_path: Path):
     assert cp.published
 
 
-def test_the_hub_publishes_the_same_app_the_builder_publishes(tmp_path: Path):
-    cp = FakeControlPlane()
-    ref = cp.create_project("Sales App", git_url=_GIT_URL)
-    repo = _repo_with([
-        {"kind": KIND_DATA_SOURCE, "id": "ds-dwh", "name": "Snowflake-Data-Warehouse",
-         "display_name": "Snowflake-Data-Warehouse", "database": "ANALYTICS", "schema": "MARTS"},
-        {"kind": KIND_LLM_ALIAS, "id": "f-gpt54", "name": "gpt-5.4", "display_name": "gpt-5.4"},
-    ])
-    hub = _hub(tmp_path, cp, repo, resources=FakeResourceProvider(data_sources=list(SOURCES),
-                                                                 aliases=list(ALIASES)))
-
-    assert hub.publish_app(ref.id)["published"] is True
-    assert cp.published
-
-
 def test_publish_never_asks_the_gateway_for_aliases(tmp_path: Path):
     # Publish only asks the Data Source listing. An ordinary publish cannot be blocked by a gateway
     # that is having a bad minute.
@@ -353,3 +265,14 @@ def test_publish_never_asks_the_gateway_for_aliases(tmp_path: Path):
     orch.publish()
 
     assert cp.published
+
+
+def test_publish_from_the_workbench_app_is_refused(tmp_path: Path, monkeypatch):
+    # DOMINO_PROJECT_ID on the Workbench App is Sage itself. Publishing would ship this repo.
+    monkeypatch.setenv("SAGE_PROXY_MODE", "app")
+    cp = FakeControlPlane()
+    orch = _orch(tmp_path, cp)
+
+    with pytest.raises(RuntimeError, match="Workbench App"):
+        orch.publish()
+    assert not cp.published
