@@ -38,7 +38,7 @@ _WB = Path(__file__).resolve().parents[1] / "workbench"
 _UI = _WB / "index.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
-from ..assets.provider import DominoAssetProvider, FakeAssetProvider
+from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import DEFAULT_SIDECAR_URL, GatewayUpstreamError, sidecar_token, static_token
 from ..gateway.factory import build_gateway
@@ -123,14 +123,41 @@ def _build_catalog() -> ModelCatalog:
     )
 
 
+def _domino_api_token():
+    """Bearer for the Domino API (datasets, Data Sources, Model APIs).
+
+    Prefer an Account API key (`DOMINO_API_KEY` / `DOMINO_USER_API_KEY`). Off-Domino the same JWT
+    already in `GATEWAY_API_KEY` is accepted by the public Dataset and Data Source APIs (verified
+    against cloud-dogfood). A workspace without either uses the sidecar. Never fall back to the
+    sidecar on a machine that does not have one — that is a connection-refused 500 instead of a
+    sentence the rail can show.
+    """
+    key = (
+        os.environ.get("DOMINO_API_KEY")
+        or os.environ.get("DOMINO_USER_API_KEY")
+        or os.environ.get("GATEWAY_API_KEY")
+    )
+    if key:
+        return static_token(key)
+    if os.environ.get("DOMINO_API_PROXY"):
+        return sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+
+    def _missing() -> str:
+        raise ResourceUnavailable(
+            "Sage lists Datasets, Data Sources, and Model APIs with a Domino API key. "
+            "Set DOMINO_API_KEY in backend/.env (Account → API Key)."
+        )
+
+    return _missing
+
+
 def _build_assets():
-    """Domino datasets when DOMINO_API_HOST is set (workspace), else an in-memory fake."""
-    api_host = os.environ.get("DOMINO_API_HOST")
+    """Domino datasets when DOMINO_API_HOST is set, else unlistable — never the in-memory fake."""
+    api_host = os.environ.get("DOMINO_API_HOST", "").strip()
     if not api_host:
-        return FakeAssetProvider()
-    key = os.environ.get("DOMINO_API_KEY")
-    token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    return DominoAssetProvider(api_host, token)
+        log.info("no DOMINO_API_HOST — Datasets unlistable (set the public Domino API host to list them)")
+        return UnconfiguredAssetProvider()
+    return DominoAssetProvider(api_host, _domino_api_token())
 
 
 def _build_control_plane():
@@ -242,10 +269,7 @@ def _build_resources():
     # uses, because it is the same host and the same token. Absent (Sage pointed at a Domino gateway
     # from outside Domino), the provider reports Model APIs as unlistable rather than as none.
     api_host = os.environ.get("DOMINO_API_HOST", "").strip()
-    api_key = os.environ.get("DOMINO_API_KEY")
-    api_token = static_token(api_key) if api_key else sidecar_token(
-        os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL)
-    )
+    api_token = _domino_api_token()
     return DominoResourceProvider(base, token, api_host=api_host, api_token_provider=api_token)
 
 
@@ -475,6 +499,28 @@ def get_project() -> JSONResponse:
     """Attach the bound project (seeds the volume + starts the preview on first call) and return
     its status. The UI calls this on load to boot the single project."""
     return JSONResponse(content=orchestrator.project().status())
+
+
+@control_app.get("/api/project/resources")
+def list_project_resources() -> JSONResponse:
+    """Resources the creator added to this project. Browse Domino lists access; this is membership."""
+    return JSONResponse(content={"items": orchestrator.list_project_resources()})
+
+
+@control_app.post("/api/project/resources")
+def add_project_resource(body: dict) -> JSONResponse:
+    try:
+        return JSONResponse(content=orchestrator.add_project_resource(body or {}))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.delete("/api/project/resources")
+def remove_project_resource(id: str = "") -> JSONResponse:
+    ok = orchestrator.remove_project_resource(id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "not in this project"})
+    return JSONResponse(content={"removed": True})
 
 
 @control_app.get("/api/project/history")
@@ -731,10 +777,13 @@ def reset_app() -> JSONResponse:
 
 @control_app.get("/api/assets")
 def list_assets() -> dict:
-    return {
-        "assets": orchestrator.list_assets(),
-        "default_dataset_id": orchestrator.default_dataset_id(),
-    }
+    try:
+        return {
+            "assets": orchestrator.list_assets(),
+            "default_dataset_id": orchestrator.default_dataset_id(),
+        }
+    except ResourceUnavailable as e:
+        return {"assets": [], "default_dataset_id": None, "error": str(e)}
 
 
 @control_app.get("/api/resources")

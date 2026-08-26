@@ -117,6 +117,98 @@ def test_chat_user_event_snapshots_context_chips(tmp_path: Path):
     assert orch.thread_context(tid)["items"] == []
 
 
+def test_chat_followup_does_not_replay_the_prior_reply(tmp_path: Path):
+    # OpenCode returns the whole session on every poll. Without a seen-baseline, a follow-up
+    # re-emits the previous greeting at the top of the new Sage bubble.
+    orch, _ = _orch(tmp_path, [
+        Turn(text="Hi there! What would you like to build today?"),
+        Turn(text="Autodoc is a dataset of model documents."),
+    ])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "hi"))
+    events = list(orch.chat_stream(tid, "whats in autodoc"))
+    texts = [e["text"] for e in events if e.get("type") == "agent" and e.get("kind") == "text"]
+    assert texts == ["Autodoc is a dataset of model documents."]
+
+
+def test_chat_prompt_tells_the_agent_an_unmounted_dataset_is_not_the_git_repo(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {"kind": "dataset", "name": "autodoc", "project": "Sage"})
+    list(orch.chat_stream(tid, "whats in autodoc"))
+    prompt = oc.prompts[0]["text"]
+    assert "autodoc" in prompt
+    assert "not mounted" in prompt
+    assert "not this Dataset" in prompt
+    assert "Do not greet by asking what to build" in prompt
+
+
+def test_chat_turn_arms_web_when_the_prompt_has_a_url(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="The page lists three desks.")])
+    armed = []
+    orig = oc.send_prompt
+
+    def wrap(session_id, text, model=None, agent=None, attachments=None):
+        armed.append(orch.project(start_preview=False).control.snapshot().web_allowed)
+        return orig(session_id, text, model=model, agent=agent, attachments=attachments)
+
+    oc.send_prompt = wrap
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "summarise https://example.com/rates"))
+    assert armed == [True]
+    assert "URL https://example.com/rates" in oc.prompts[0]["text"]
+    assert "Read this page" in oc.prompts[0]["text"]
+    assert orch.project(start_preview=False).control.snapshot().web_allowed is False
+
+
+def test_chat_turn_does_not_arm_web_for_an_ordinary_question(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="Rates is the largest desk.")])
+    armed = []
+    orig = oc.send_prompt
+
+    def wrap(session_id, text, model=None, agent=None, attachments=None):
+        armed.append(orch.project(start_preview=False).control.snapshot().web_allowed)
+        return orig(session_id, text, model=model, agent=agent, attachments=attachments)
+
+    oc.send_prompt = wrap
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what's our gross exposure by desk?"))
+    assert armed == [False]
+    assert "URL " not in oc.prompts[0]["text"]
+
+
+def test_chat_followup_still_arms_web_after_a_url_turn(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [
+        Turn(text="The page lists three desks."),
+        Turn(text="Rates is still the largest."),
+    ])
+    armed = []
+    orig = oc.send_prompt
+
+    def wrap(session_id, text, model=None, agent=None, attachments=None):
+        armed.append(orch.project(start_preview=False).control.snapshot().web_allowed)
+        return orig(session_id, text, model=model, agent=agent, attachments=attachments)
+
+    oc.send_prompt = wrap
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "summarise https://example.com/rates"))
+    list(orch.chat_stream(tid, "which desk is largest?"))
+    assert armed == [True, True]
+    assert "URL https://example.com/rates" in oc.prompts[1]["text"]
+
+
+def test_chat_prompt_points_at_mounted_dataset_files(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "dataset", "name": "autodoc", "path": "/mnt/data/autodoc", "project": "Sage",
+    })
+    list(orch.chat_stream(tid, "whats in autodoc"))
+    prompt = oc.prompts[0]["text"]
+    assert "files at /mnt/data/autodoc" in prompt
+    assert "not mounted" not in prompt
+
+
 def test_new_conversation_does_not_provision(tmp_path: Path, monkeypatch):
     orch, _ = _orch(tmp_path)
     calls: list[int] = []

@@ -14,11 +14,10 @@ The listing is the intersection, so a registration the caller holds no grant for
 as available. The two sets really do differ: verified live on cloud-dogfood 2026-08-18 (see
 DOMINO-PRIMITIVES.md), one gateway reported 12 registered aliases and 6 accessible ones.
 
-The Model API (#8): one call, and it MUST carry a projectId. Unscoped, Domino answers
-`403 "not authorized to view access configuration"` — that listing is deployment-wide and wants an
-admin role a normal Sage user does not have. Scoped to a project it answers 200 (verified live,
-DOMINO-PRIMITIVES.md), which is also the right question: a creator composes from what their own
-project has deployed.
+The Model API (#8): the unscoped listing 403s (`"not authorized to view access configuration"`) —
+that surface is deployment-wide and wants an admin role a normal Sage user does not have. Scoped to
+a project it answers 200 (verified live, DOMINO-PRIMITIVES.md). Off-Domino, Sage has no home project,
+so it fans out over every project the caller owns or collaborates on instead.
 
 That call goes to the Domino API host, not to the gateway, so this one adapter speaks to two Domino
 surfaces. It is still one object because the rail asks one question — "what can I use?" — and
@@ -945,19 +944,22 @@ class DominoResourceProvider:
 
         Degrades rather than fails. If Domino will not say who the caller is, or will not list
         projects, this answers with the builder's own project alone — which is exactly the behaviour
-        before #42, and a rail listing one project beats a rail listing an error.
+        before #42, and a rail listing one project beats a rail listing an error. Off-Domino there is
+        no home project: an empty home collapses to the membership list, or to nothing.
 
         Capped at `_MAX_FANOUT_PROJECTS` beyond the home project, sorted by name so the cap falls in
         the same place twice running. A member of more projects than that reaches the rest through
         the paste door, which is why that door exists.
         """
-        home = (home_project_id, "")
+        home = (home_project_id, "") if home_project_id else None
         try:
             me = str(((self._domino_get("/api/users/v1/self") or {}).get("user") or {}).get("id") or "")
         except ResourceUnavailable:
-            return [home]
+            if home:
+                return [home]
+            raise
         if not me:
-            return [home]
+            return [home] if home else []
 
         mine: list[tuple[str, str]] = []
         offset = 0
@@ -982,7 +984,8 @@ class DominoResourceProvider:
             offset += self._PAGE
             if not rows or (total is not None and offset >= total):
                 break
-        return [home, *sorted(mine, key=lambda p: p[1])[: self._MAX_FANOUT_PROJECTS]]
+        extras = sorted(mine, key=lambda p: p[1])[: self._MAX_FANOUT_PROJECTS]
+        return [home, *extras] if home else extras
 
     def _model_apis_in(self, project_id: str, project_name: str) -> list[ModelApi]:
         """The Model APIs of one project — the whole of what this call used to be."""
@@ -1014,20 +1017,27 @@ class DominoResourceProvider:
         The builder's own project is first and its failure is fatal, as it has always been: a creator
         whose own project will not list is looking at something broken and should be told. Any OTHER
         project's failure is skipped — one odd grant somewhere on the tenant must not empty a rail
-        that would otherwise have answered.
+        that would otherwise have answered. Off-Domino there is no home project: membership is the
+        whole list, and finding none is unlistable rather than empty.
         """
-        if not self._api_host or not project_id:
+        if not self._api_host:
             raise ResourceUnavailable(
                 "Sage lists Model APIs from the Domino project it runs in, and it is not running in "
                 "one, so it cannot tell whether this project has any."
             )
+        home_id = project_id or ""
+        pairs = [(pid, pname) for pid, pname in self._member_projects(home_id) if pid]
+        if not pairs:
+            raise ResourceUnavailable(
+                "Sage lists Model APIs from the projects you belong to, and it could not find any."
+            )
         out: list[ModelApi] = []
         seen: set[str] = set()
-        for pid, pname in self._member_projects(project_id):
+        for pid, pname in pairs:
             try:
                 rows = self._model_apis_in(pid, pname)
             except ResourceUnavailable:
-                if pid == project_id:
+                if pid == home_id:
                     raise
                 continue
             for m in rows:
@@ -1282,8 +1292,8 @@ class DominoResourceProvider:
     ) -> Any:
         import httpx  # local import so tests never need it on the path they don't take
 
-        token = (token_provider or self._token_provider)()
         try:
+            token = (token_provider or self._token_provider)()
             r = httpx.request(
                 method,
                 (self._root if root is None else root) + path,
@@ -1292,6 +1302,8 @@ class DominoResourceProvider:
                 json=json_body,
                 timeout=self._timeout_s,
             )
+        except ResourceUnavailable:
+            raise
         except Exception as e:
             raise ResourceUnavailable(
                 f"{service} didn't answer at {path} ({type(e).__name__}). "

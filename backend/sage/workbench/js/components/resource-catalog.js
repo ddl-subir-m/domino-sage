@@ -15,9 +15,9 @@ window.SW = window.SW || {};
     { key: 'datasource', label: 'Data sources' },
     { key: 'model_llm', label: 'Language models' },
     { key: 'model_predictive', label: 'Predictive models' },
-    { key: 'tool', label: 'Tools' },
     { key: 'agent', label: 'Agents' },
     { key: 'skill', label: 'Skills' },
+    { key: 'mcp', label: 'MCPs' },
   ];
 
   function CatalogRow({ resource, scope, onAdd, onOpen, busy }) {

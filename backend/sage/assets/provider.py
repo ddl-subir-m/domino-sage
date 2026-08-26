@@ -3,8 +3,9 @@
 Lists the project's Domino datasets with their tags. Domino dataset tags are freeform.
 
 Deep module, narrow interface: list_datasets(project_id) -> [Asset]. Two adapters:
-  - DominoAssetProvider : real, via /api/datasetrw/v2/datasets (works in a Domino workspace)
-  - FakeAssetProvider   : in-memory, for local Mac testing
+  - DominoAssetProvider : real, via /api/datasetrw/v2/datasets
+  - FakeAssetProvider   : in-memory, for tests
+  - UnconfiguredAssetProvider : no Domino API host — the rail reports a reason, not fake rows
 """
 from __future__ import annotations
 
@@ -13,6 +14,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+from ..resources.provider import ResourceUnavailable
 
 # Where Domino mounts a project's datasets in the running container. DFS projects use
 # /domino/datasets/local; git-based projects use /mnt/data (local) and /mnt/imported/data (shared).
@@ -72,6 +75,19 @@ def walk_files(root: Path) -> list[DatasetFile]:
 class AssetProvider(Protocol):
     def list_datasets(self, project_id: str | None) -> list[Asset]: ...
     def list_files(self, asset: Asset) -> list[DatasetFile]: ...
+
+
+class UnconfiguredAssetProvider:
+    """No DOMINO_API_HOST. Raises rather than inventing datasets, so the rail cannot look populated."""
+
+    def list_datasets(self, project_id: str | None) -> list[Asset]:
+        raise ResourceUnavailable(
+            "Sage lists Datasets from the Domino API, and it is not configured to reach one, "
+            "so it cannot tell which Datasets you have."
+        )
+
+    def list_files(self, asset: Asset) -> list[DatasetFile]:
+        return []
 
 
 # name -> (tags, project, {filename: contents}). Seeded to a temp dir so the file-attach flow
@@ -147,13 +163,11 @@ def parse_tag_snapshots(raw: Any) -> dict[str, str]:
 
 
 class DominoAssetProvider:
-    """Reads datasets via the Domino public datasetrw v2 API, then keeps only those actually
-    MOUNTED in this project's container — because attaching a file symlinks its real bytes from
-    the mount into the workspace, and lists its files from disk. Needs DOMINO_API_HOST + a token.
+    """Reads datasets via the Domino public datasetrw v2 API.
 
-    The API (minimumPermission=ReadDatasetRwV2) supplies id/name/tags/project (tags from the tag
-    map keys); the filesystem supplies which of those are available here and their files. Mirrors
-    the AutoML extension's GET /api/datasetrw/v2/datasets and mount-root resolution.
+    Needs DOMINO_API_HOST + a token. Every dataset this caller can read is listed; `mount_path` is
+    set only when this container actually has the files (a Domino workspace). Off-Domino the rail
+    can still name them; attaching a file from one still needs the mount.
     """
 
     _PAGE = 100
@@ -181,9 +195,13 @@ class DominoAssetProvider:
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         import httpx
 
+        if not self._api_host:
+            raise ResourceUnavailable(
+                "Sage lists Datasets from the Domino API, and it is not configured to reach one, "
+                "so it cannot tell which Datasets you have."
+            )
         url = f"{self._api_host}/api/datasetrw/v2/datasets"
-        headers = {"Authorization": f"Bearer {self._token_provider()}"}
-        mounted: list[Asset] = []
+        found: list[Asset] = []
         offset = 0
         for _ in range(self._MAX_PAGES):
             params = {
@@ -192,24 +210,39 @@ class DominoAssetProvider:
                 "offset": offset,
                 "limit": self._PAGE,
             }
-            r = httpx.get(url, headers=headers, params=params, timeout=self._timeout_s)
-            r.raise_for_status()
-            data = r.json()
+            try:
+                headers = {"Authorization": f"Bearer {self._token_provider()}"}
+                r = httpx.get(url, headers=headers, params=params, timeout=self._timeout_s)
+            except ResourceUnavailable:
+                raise
+            except Exception as e:
+                raise ResourceUnavailable(
+                    f"The Domino API didn't answer at /api/datasetrw/v2/datasets ({type(e).__name__})."
+                ) from e
+            if r.status_code >= 400:
+                raise ResourceUnavailable(
+                    f"The Domino API answered {r.status_code} at /api/datasetrw/v2/datasets."
+                )
+            try:
+                data = r.json()
+            except ValueError as e:
+                raise ResourceUnavailable(
+                    "The Domino API returned a non-JSON body listing Datasets. "
+                    "That is what a signed-out session looks like, so this builder's token for it "
+                    "may have expired."
+                ) from e
             items = data.get("datasets") or data.get("data") or []
             for item in items:
                 ds = item.get("dataset") or item
                 name = str(ds.get("name") or "unnamed")
-                mount_path = self._mount_path_for(name)
-                if not mount_path:  # not mounted here -> its files aren't on disk to attach
-                    continue
                 proj = (item.get("projectInfo") or {}).get("name")
-                mounted.append(
+                found.append(
                     Asset(
                         id=str(ds.get("id") or ""),
                         name=name,
                         tags=parse_tags(ds.get("tags")),
                         project=str(proj) if proj else None,
-                        mount_path=mount_path,
+                        mount_path=self._mount_path_for(name),
                         tag_snapshots=parse_tag_snapshots(ds.get("tags")),
                     )
                 )
@@ -217,7 +250,7 @@ class DominoAssetProvider:
             offset += self._PAGE
             if not items or (total is not None and offset >= total):
                 break
-        return mounted
+        return found
 
     def list_files(self, asset: Asset) -> list[DatasetFile]:
         return walk_files(Path(asset.mount_path)) if asset.mount_path else []

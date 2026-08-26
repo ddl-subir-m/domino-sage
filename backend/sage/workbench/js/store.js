@@ -42,7 +42,10 @@ window.SW = window.SW || {};
 
     // Project-scoped data
     resourceGroups: {},
+    resourceErrors: {},
     resourceIndex: {},
+    gatewayAliases: [],
+    resourcesLoading: true,
     members: [],
     directory: [],
     userIndex: {},
@@ -80,7 +83,8 @@ window.SW = window.SW || {};
     planViewerId: null,
 
     // Composer
-    model: 'auto',
+    model: '',
+    catalogAsk: '',
     reasoningEffort: null,
     phase: 'planning',
     // Build agent mode (Auto / Ask / Plan / Implement). Distinct from the
@@ -117,8 +121,9 @@ window.SW = window.SW || {};
     if (!m) return;
     state.buildMode = m.selected_mode || m.mode || state.buildMode;
     state.buildTurnMode = m.mode || state.buildTurnMode;
+    if (m.catalog && m.catalog.ask) state.catalogAsk = m.catalog.ask;
     if ('chat_model' in m || m.chat_model === null) {
-      state.model = m.chat_model || 'auto';
+      state.model = m.chat_model || '';
     }
     if ('reasoning_effort' in m) state.reasoningEffort = m.reasoning_effort || null;
   }
@@ -129,17 +134,54 @@ window.SW = window.SW || {};
     return index;
   }
 
+  let scopeLoad = 0;
+
+  function applyResourceGroups(groups, extras = {}) {
+    state.resourceGroups = groups;
+    state.resourceIndex = indexResources(groups);
+    if ('aliases' in extras) state.gatewayAliases = extras.aliases || [];
+    if ('errors' in extras) state.resourceErrors = extras.errors || {};
+  }
+
   async function loadScopeData() {
     const scope = state.scope;
+    const gen = ++scopeLoad;
+
     const [resources, activity] = await Promise.all([
       SW.api.resources(scope.id),
       SW.api.activity(scope.id),
     ]);
-    state.resourceGroups = resources.groups;
-    state.resourceIndex = indexResources(resources.groups);
+    if (gen !== scopeLoad) return;
+    applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
+    state.resourcesLoading = false;
     state.activity = activity;
+    notify();
+
+    Promise.all([
+      SW.api.project().catch(() => ({ attached: [] })),
+      SW.api.resourceListing(),
+    ]).then(([project, listing]) => {
+      if (gen !== scopeLoad) return;
+      const files = (project.attached || [])
+        .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
+        .map((e) => ({
+          id: `file:${e.path}`,
+          name: (e.path || '').split('/').pop(),
+          kind: 'file',
+          path: e.path,
+        }));
+      applyResourceGroups(
+        SW.api.overlayResourceListing({ ...state.resourceGroups, file: files }, listing),
+        {
+          aliases: (listing.groups && listing.groups.model_llm) || [],
+          errors: listing.errors || {},
+        }
+      );
+      notify();
+    }).catch(() => {});
 
     const members = await SW.api.members(scope.ephemeral ? null : scope.id);
+    if (gen !== scopeLoad) return;
     state.members = scope.ephemeral ? [] : members.members;
     state.directory = members.directory;
 
@@ -150,7 +192,6 @@ window.SW = window.SW || {};
       state.userIndex[user.id] = user;
     });
     if (state.me) state.userIndex[state.me.id] = state.me;
-
     notify();
   }
 
@@ -526,7 +567,7 @@ window.SW = window.SW || {};
     },
 
     async setChatModel(alias, effort) {
-      state.model = alias || 'auto';
+      state.model = alias || '';
       state.reasoningEffort = effort || null;
       notify();
       try {
@@ -554,8 +595,9 @@ window.SW = window.SW || {};
       state.starters = starters;
       state.notifications = notifications;
       state.ready = true;
-      await Promise.all([loadScopeData(), loadThreadList()]);
+      state.resourcesLoading = true;
       notify();
+      await Promise.all([loadScopeData(), loadThreadList()]);
     },
 
     // Scope --------------------------------------------------------------
@@ -681,7 +723,7 @@ window.SW = window.SW || {};
     // @-mentions, an app's requirements — points at something that already
     // went through this.
     async addToProject(resource, options = {}) {
-      const result = await SW.api.addToProject(state.scope.id, resource.id);
+      const result = await SW.api.addToProject(state.scope.id, resource);
       await loadScopeData();
       if (!options.silent && result.added) {
         antd.message.success(`${resource.name} is now in ${state.scope.name}`);

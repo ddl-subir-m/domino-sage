@@ -35,6 +35,7 @@ window.SW = window.SW || {};
       ...(catalogue['cross-industry'] || []),
       ...(catalogue['financial-services'] || []),
     ].slice(0, compact ? 3 : 6);
+    const placeholder = 'Ask about your data… use @ to bring in a resource';
 
     return h(
       'div',
@@ -42,18 +43,18 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-landing-inner' },
-        h('h1', { className: 'sw-landing-title' }, `What are you working on${me && me.name ? `, ${me.name.split(' ')[0]}` : ''}?`),
+        h('h1', { className: 'sw-landing-title' }, `What do you want to know${me && me.name ? `, ${me.name.split(' ')[0]}` : ''}?`),
         h(
           'p',
           { className: 'sw-landing-sub' },
           scope.untitled
             ? 'Ask about your data. This project is saved; rename it when you want a lasting name.'
-            : `Ask about data in ${scope.name}, or describe something you want to build.`
+            : `Ask about data in ${scope.name}.`
         ),
         h(
           'div',
           { className: 'sw-landing-composer' },
-          h(SW.Composer, { onSend, autoFocus: true, placeholder: 'Ask about your data, or describe an app…' })
+          h(SW.Composer, { onSend, autoFocus: true, placeholder })
         ),
         h(
           'div',
@@ -174,7 +175,10 @@ window.SW = window.SW || {};
                         thread && (thread.touched || []).length ? 'Open in Build' : 'Build this'
                       )
                     ),
-                  h(SW.Composer, { onSend: send })
+                  h(SW.Composer, {
+                    onSend: send,
+                    placeholder: 'Ask about your data… use @ to bring in a resource',
+                  })
                 )
               )
             )

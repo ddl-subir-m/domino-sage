@@ -31,7 +31,7 @@ class Reason(str, Enum):
     PLAN_OVERRIDE = "plan-override"
     IMPLEMENT_PINNED = "implement-pinned"
     IMPLEMENT_OVERRIDE = "implement-override"
-    CHAT_AUTO = "chat-auto"
+    CHAT_DEFAULT = "chat-default"
     CHAT_OVERRIDE = "chat-override"
 
 
@@ -111,7 +111,7 @@ class SessionState:
     # A Chat turn (docs/workbench/chat.md). When set, the shim keeps write/bash tools (Chat writes
     # Artifacts) and only allows writes under that Thread's examples/ and .sage/threads/ dirs.
     chat_thread_id: str | None = None
-    # Standing Chat pick. Ignored on Build turns. None means Auto (catalog.plan).
+    # Standing Chat pick. Ignored on Build turns. None means catalog.ask.
     chat_model: ModelId | None = None
     # OpenAI-style reasoning_effort for Chat, when the picked alias supports it. None omits the field.
     reasoning_effort: str | None = None

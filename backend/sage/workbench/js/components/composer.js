@@ -88,7 +88,7 @@ window.SW = window.SW || {};
   }) {
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
-      buildMode, buildTurnMode, buildRunning,
+      buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -98,9 +98,13 @@ window.SW = window.SW || {};
     const [modeOpen, setModeOpen] = useState(false);
     const fileRef = useRef(null);
 
-    const aliases = chatAliases(resourceGroups);
-    const activeAlias = aliases.find((a) => a.alias === model);
-    const modelLabel = activeAlias ? (activeAlias.name || activeAlias.alias) : 'Auto';
+    const aliases = chatAliases({
+      model_llm: (gatewayAliases && gatewayAliases.length) ? gatewayAliases : resourceGroups.model_llm,
+    });
+    const askAlias = catalogAsk || '';
+    const effectiveModel = (model && model !== 'auto') ? model : askAlias;
+    const activeAlias = aliases.find((a) => a.alias === effectiveModel);
+    const modelLabel = activeAlias ? (activeAlias.name || activeAlias.alias) : (effectiveModel || 'Ask');
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
@@ -158,45 +162,31 @@ window.SW = window.SW || {};
     const attachMenu = {
       items: [
         { key: 'upload', label: 'Upload a file' },
-        { key: 'project', label: `See what's in ${scope.name}` },
         { key: 'browse', label: 'Browse Domino…' },
-        { key: 'url', label: 'Add a URL' },
       ],
       onClick: ({ key }) => {
         if (key === 'upload') pickFile();
-        if (key === 'project') SW.store.openDock('resources');
         if (key === 'browse') SW.store.openCatalog();
-        if (key === 'url') antd.message.info('Adding a URL is not wired up in this prototype.');
       },
     };
 
     const modelMenu = {
-      items: [
-        {
-          key: 'auto',
-          label: h(
-            'div',
-            { style: { minWidth: 200 } },
-            h('div', { className: 'sw-model-option-name' }, 'Auto'),
-            h('div', { className: 'sw-model-option-detail' }, 'Sage picks from your gateway models')
-          ),
-        },
-        ...aliases.map((option) => ({
-          key: option.alias,
-          label: h(
-            'div',
-            { style: { minWidth: 200 } },
-            h('div', { className: 'sw-model-option-name' }, option.name || option.alias),
-            h('div', { className: 'sw-model-option-detail' }, option.alias)
-          ),
-        })),
-      ],
+      selectedKeys: effectiveModel ? [effectiveModel] : [],
+      items: aliases.map((option) => ({
+        key: option.alias,
+        label: h(
+          'div',
+          { style: { minWidth: 200 } },
+          h('div', { className: 'sw-model-option-name' }, option.name || option.alias),
+          h('div', { className: 'sw-model-option-detail' }, option.alias)
+        ),
+      })),
       onClick: ({ key }) => {
         const next = aliases.find((a) => a.alias === key);
         const keep = next && (next.reasoning_efforts || []).includes(reasoningEffort)
           ? reasoningEffort
           : null;
-        SW.store.setChatModel(key === 'auto' ? 'auto' : key, keep);
+        SW.store.setChatModel(key, keep);
       },
     };
 

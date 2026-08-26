@@ -60,6 +60,109 @@ function rawFromPrefix(id) {
   return i === -1 ? id : id.slice(i + 1);
 }
 
+async function fetchDominoListing() {
+  const [res, assets] = await Promise.all([
+    request('/resources').catch(() => ({ data_sources: [], llm_aliases: [], model_apis: [], errors: {
+      data_sources: 'Could not list Data Sources.',
+      llm_aliases: 'Could not list language models.',
+      model_apis: 'Could not list Model APIs.',
+    } })),
+    request('/assets').catch(() => ({ assets: [], error: 'Could not list Datasets.' })),
+  ]);
+  const errors = { ...(res.errors || {}) };
+  if (assets.error) errors.datasets = assets.error;
+  return {
+    errors,
+    groups: {
+      dataset: (assets.assets || []).map((a) => ({
+        id: `dataset:${a.id}`, name: a.name, kind: 'dataset',
+        description: a.project ? `in ${a.project}` : '',
+        project: a.project,
+        path: a.mount_path || a.mountPath || undefined,
+      })),
+      datasource: (res.data_sources || []).map((d) => ({
+        id: `data_source:${d.id}`,
+        name: d.name,
+        kind: 'datasource',
+        description: d.connector || '',
+        bindingKey: ['data_source', d.id],
+      })),
+      model_llm: (res.llm_aliases || []).map((a) => ({
+        id: `llm_alias:${a.id}`,
+        name: a.display_name || a.name,
+        alias: a.name,
+        kind: 'model_llm',
+        capabilities: a.capabilities || [],
+        reasoning_efforts: a.reasoning_efforts || [],
+        bindingKey: ['llm_alias', a.id],
+      })),
+      model_predictive: (res.model_apis || []).map((m) => ({
+        id: `model_api:${m.id}`,
+        name: m.name || m.display_name,
+        kind: 'model_predictive',
+        description: m.project || m.status || '',
+        bindingKey: ['model_api', m.id],
+      })),
+    },
+  };
+}
+
+function membershipKind(item) {
+  const kind = item && item.kind;
+  return (SW.util && SW.util.uiKind(kind)) || kind;
+}
+
+function emptyResourceGroups() {
+  return {
+    dataset: [], table: [], datasource: [], model_llm: [], model_predictive: [],
+    tool: [], agent: [], skill: [], mcp: [], file: [],
+  };
+}
+
+function rowFromMember(item) {
+  const kind = membershipKind(item);
+  return {
+    id: item.id,
+    name: item.name,
+    kind,
+    description: item.description || (item.project ? `in ${item.project}` : ''),
+    project: item.project,
+    path: item.path,
+    bindingKey: item.bindingKey,
+    alias: item.alias,
+    capabilities: item.capabilities || [],
+    reasoning_efforts: item.reasoning_efforts || [],
+  };
+}
+
+function groupsFromMembership(items, attached) {
+  const groups = emptyResourceGroups();
+  (items || []).forEach((item) => {
+    const row = rowFromMember(item);
+    if (!groups[row.kind]) return;
+    groups[row.kind].push(row);
+  });
+  groups.file = (attached || [])
+    .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
+    .map((e) => ({
+      id: `file:${e.path}`,
+      name: (e.path || '').split('/').pop(),
+      kind: 'file',
+      path: e.path,
+    }));
+  return groups;
+}
+
+function overlayListing(groups, listing) {
+  const next = { ...groups };
+  ['dataset', 'datasource', 'model_llm', 'model_predictive'].forEach((kind) => {
+    const liveById = {};
+    ((listing.groups || {})[kind] || []).forEach((r) => { liveById[r.id] = r; });
+    next[kind] = (groups[kind] || []).map((row) => (liveById[row.id] ? { ...row, ...liveById[row.id] } : row));
+  });
+  return next;
+}
+
 SW.api = {
   me: () => request('/me'),
   project: () => request('/project'),
@@ -83,60 +186,69 @@ SW.api = {
     throw new Error('Named apps are created from the Sage hub, not from this project.');
   },
   resources: async () => {
-    const [res, assets, project] = await Promise.all([
-      request('/resources').catch(() => ({ data_sources: [], llm_aliases: [], model_apis: [] })),
-      request('/assets').catch(() => ({ assets: [] })),
-      request('/project').catch(() => ({ attached: [] })),
-    ]);
-    const groups = {
-      dataset: (assets.assets || []).map((a) => ({
-        id: `dataset:${a.id}`, name: a.name, kind: 'dataset',
-      })),
-      table: [],
-      datasource: (res.data_sources || []).map((d) => ({
-        id: `data_source:${d.id}`,
-        name: d.name,
-        kind: 'datasource',
-        bindingKey: ['data_source', d.id],
-      })),
-      model_llm: (res.llm_aliases || []).map((a) => ({
-        id: `llm_alias:${a.id}`,
-        name: a.display_name || a.name,
-        alias: a.name,
-        kind: 'model_llm',
-        capabilities: a.capabilities || [],
-        reasoning_efforts: a.reasoning_efforts || [],
-        bindingKey: ['llm_alias', a.id],
-      })),
-      model_predictive: (res.model_apis || []).map((m) => ({
-        id: `model_api:${m.id}`,
-        name: m.name || m.display_name,
-        kind: 'model_predictive',
-        bindingKey: ['model_api', m.id],
-      })),
-      tool: [],
-      agent: [],
-      skill: [],
-      file: (project.attached || [])
-        .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
-        .map((e) => ({
-          id: `file:${e.path}`,
-          name: (e.path || '').split('/').pop(),
-          kind: 'file',
-          path: e.path,
-        })),
+    // Membership is a local file. Do not wait on the Domino listing or on /project
+    // (which starts the preview) — a hard refresh otherwise paints Data (0) for seconds.
+    const membership = await request('/project/resources').catch(() => ({ items: [] }));
+    return {
+      groups: groupsFromMembership(membership.items || [], []),
+      members: membership.items || [],
+      errors: {},
+      aliases: [],
     };
-    return { groups };
   },
+  resourceListing: () => fetchDominoListing(),
+  overlayResourceListing: overlayListing,
   resource: (id) => {
     const { resourceIndex } = SW.store.get();
     return Promise.resolve(resourceIndex[id] || { id, name: rawFromPrefix(id), kind: kindFromPrefix(id) });
   },
   restrictedIn: () => Promise.resolve([]),
 
-  catalog: async () => ({ items: [], facets: {} }),
-  addToProject: async () => ({ added: false }),
-  removeFromProject: async () => ({ removed: false }),
+  catalog: async ({ q, kind } = {}) => {
+    const [listing, membership] = await Promise.all([
+      fetchDominoListing(),
+      request('/project/resources').catch(() => ({ items: [] })),
+    ]);
+    const memberIds = new Set((membership.items || []).map((i) => i.id));
+    const allKeys = ['dataset', 'datasource', 'model_llm', 'model_predictive', 'agent', 'skill', 'mcp'];
+    const keys = kind ? [kind] : allKeys;
+    const needle = (q || '').trim().toLowerCase();
+    const counts = {};
+    allKeys.forEach((k) => { counts[k] = (listing.groups[k] || []).length; });
+    const results = [];
+    keys.forEach((k) => {
+      (listing.groups[k] || []).forEach((r) => {
+        if (needle && !(r.name || '').toLowerCase().includes(needle)) return;
+        results.push({
+          ...r,
+          inProject: memberIds.has(r.id),
+          description: r.description || '',
+          originName: r.project || 'Domino',
+          ownerName: '',
+        });
+      });
+    });
+    return { results, counts, errors: listing.errors };
+  },
+  addToProject: (projectId, resource) => {
+    const row = typeof resource === 'string'
+      ? { id: resource, kind: kindFromPrefix(resource), name: rawFromPrefix(resource) }
+      : {
+        id: resource.id,
+        kind: resource.kind,
+        name: resource.name,
+        description: resource.description,
+        project: resource.project,
+        path: resource.path,
+        bindingKey: resource.bindingKey,
+        alias: resource.alias,
+        capabilities: resource.capabilities,
+        reasoning_efforts: resource.reasoning_efforts,
+      };
+    return post('/project/resources', row);
+  },
+  removeFromProject: (projectId, resourceId) =>
+    del(`/project/resources?id=${encodeURIComponent(resourceId)}`),
 
   conversationContext: async (id) => {
     const ctx = await request(`/threads/${id}/context`);
@@ -162,6 +274,7 @@ SW.api = {
       kind,
       name: resource.name || rawFromPrefix(resourceId),
       path: resource.path || (kind === 'file' ? rawFromPrefix(resourceId) : undefined),
+      project: resource.project,
       bindingKey: resource.bindingKey,
       addedBy: addedBy || 'user',
       resourceId,
@@ -226,7 +339,7 @@ SW.api = {
   buildState: () => request('/project/build/state'),
   setBuildMode: (mode) => post('/project/model', { mode }),
   setChatModel: (chat_model, reasoning_effort) =>
-    post('/project/model', { chat_model: chat_model || 'auto', reasoning_effort: reasoning_effort || null }),
+    post('/project/model', { chat_model: chat_model || null, reasoning_effort: reasoning_effort || null }),
   cancelPlan: () => post('/project/plan/cancel'),
   stopBuild: () => post('/project/build/stop'),
 

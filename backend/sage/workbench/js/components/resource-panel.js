@@ -8,8 +8,7 @@ window.SW = window.SW || {};
     FolderOutlined, FileTextOutlined, ArrowRightOutlined, CloseOutlined,
   } = icons;
 
-  // What the caller can pick: Datasets, Data Sources, Model APIs, LLM Aliases.
-  // Tools / agents / skills were prototype groups with no product surface.
+  // What the caller can pick now. Agents / Skills / MCPs stay visible until OpenCode config wires them.
   const GROUPS = [
     {
       key: 'data',
@@ -27,11 +26,37 @@ window.SW = window.SW || {};
         { kind: 'model_predictive', label: 'Predictive models' },
       ],
     },
+    {
+      key: 'agents',
+      label: 'Agents',
+      placeholder: true,
+      subgroups: [{ kind: 'agent' }],
+    },
+    {
+      key: 'skills',
+      label: 'Skills',
+      placeholder: true,
+      subgroups: [{ kind: 'skill' }],
+    },
+    {
+      key: 'mcp',
+      label: 'MCPs',
+      placeholder: true,
+      subgroups: [{ kind: 'mcp' }],
+    },
   ];
 
   const EMPTY_HINT = {
     data: 'No data here yet.',
     models: 'No models here yet.',
+    agents: 'No agents here yet.',
+    skills: 'No skills here yet.',
+    mcp: 'No MCPs here yet.',
+  };
+
+  const ERROR_KEYS = {
+    data: ['datasets', 'data_sources'],
+    models: ['llm_aliases', 'model_apis'],
   };
 
   function PlanCard({ plan, blessed }) {
@@ -203,7 +228,8 @@ window.SW = window.SW || {};
 
   SW.ResourcePanel = function ResourcePanel() {
     const {
-      resourceGroups, requires, activeApp, panelFilter, activePlanId, bindings, attachments,
+      resourceGroups, resourceErrors, requires, activeApp, panelFilter, activePlanId, bindings, attachments,
+      resourcesLoading,
     } = SW.store.get();
     const [query, setQuery] = useState('');
     const [collapsed, setCollapsed] = useState({});
@@ -343,7 +369,7 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-panel-section-head' },
         h('span', { className: 'sw-panel-section-title' }, 'Project resources'),
-        h('span', { className: 'sw-panel-section-count' }, total),
+        h('span', { className: 'sw-panel-section-count' }, resourcesLoading ? '…' : total),
         h(
           Dropdown,
           { menu: addMenu, trigger: ['click'], placement: 'bottomRight' },
@@ -393,6 +419,9 @@ window.SW = window.SW || {};
           const items = group.subgroups.map((sub) => ({ sub, rows: visible(sub.kind) }));
           const count = items.reduce((acc, i) => acc + i.rows.length, 0);
           const isCollapsed = collapsed[group.key];
+          const listingError = (ERROR_KEYS[group.key] || [])
+            .map((k) => (resourceErrors || {})[k])
+            .find(Boolean);
 
           return h(
             Fragment,
@@ -405,15 +434,19 @@ window.SW = window.SW || {};
                 role: 'button',
               },
               h(isCollapsed ? RightOutlined : DownOutlined, { style: { fontSize: 9, color: '#8F8FA3' } }),
-              h('span', { className: 'sw-group-label' }, `${group.label} (${count})`)
+              h('span', { className: 'sw-group-label' }, `${group.label} (${resourcesLoading ? '…' : count})`)
             ),
             !isCollapsed &&
               (count === 0
                 ? h(
                     'div',
                     { className: 'sw-group-empty' },
-                    query.trim() ? 'Nothing matches here.' : EMPTY_HINT[group.key],
-                    !query.trim() &&
+                    query.trim()
+                      ? 'Nothing matches here.'
+                      : resourcesLoading
+                        ? 'Loading this project…'
+                        : (listingError || EMPTY_HINT[group.key]),
+                    !query.trim() && !resourcesLoading && !group.placeholder && !listingError &&
                       h(
                         Button,
                         {

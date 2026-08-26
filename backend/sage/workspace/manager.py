@@ -46,6 +46,9 @@ _DEPLOY_FILES = ("serve.py", "app.sh")
 # the lock cannot live on the instance; a process-wide one is enough because a Sage process serves a
 # single project (D9) and every binding write goes through update_bindings.
 _BINDINGS_LOCK = threading.Lock()
+# Same shape for the project's working set of Domino Resources (Browse → Add). Not Bindings: those
+# are the Built App's recorded uses. This list is what the Resource Browser rail shows.
+_PROJECT_RESOURCES_LOCK = threading.Lock()
 # The helper a Built App calls its model through (#7). Sage-owned like the deploy files above,
 # and committed to the app's repo for the same reason: a published app has no Sage around it.
 _LLM_HELPER = str(Path("src") / "sageLlm.ts")
@@ -379,6 +382,43 @@ class Workspace:
                 os.replace(tmp, self.bindings_path)
             finally:
                 # A leftover .tmp inside committed .sage/ would land in the user's app repo.
+                tmp.unlink(missing_ok=True)
+            return entries
+
+    @property
+    def project_resources_path(self) -> Path:
+        """Domino Resources the creator added to this project (the Resource Browser working set).
+
+        Browse Domino lists everything this caller can access. Add writes a row here. The rail
+        shows only these rows — listing access is not membership.
+        """
+        return self.path / ".sage" / "project-resources.json"
+
+    def read_project_resources(self) -> list[dict]:
+        if not self.project_resources_path.exists():
+            return []
+        try:
+            data = json.loads(self.project_resources_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+        if isinstance(data, dict):
+            items = data.get("items")
+            return items if isinstance(items, list) else []
+        return data if isinstance(data, list) else []
+
+    def update_project_resources(self, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
+        """Read, change and republish the project-resource working set as one step."""
+        with _PROJECT_RESOURCES_LOCK:
+            entries = change(self.read_project_resources())
+            self.project_resources_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.project_resources_path.with_name(self.project_resources_path.name + ".tmp")
+            try:
+                with open(tmp, "w") as f:
+                    json.dump({"items": entries}, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.project_resources_path)
+            finally:
                 tmp.unlink(missing_ok=True)
             return entries
 

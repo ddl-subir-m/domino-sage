@@ -639,6 +639,38 @@ def _wants_web(prompt: str) -> bool:
     return bool(_WEB_INTENT.search(prompt or ""))
 
 
+_URL = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+
+
+def _urls_in_chat(prompt: str, history: list | None = None) -> list[str]:
+    """http(s) URLs the person named in this Thread, current message last-wins-deduped.
+
+    Listed in the sage-chat prompt so a follow-up that does not repeat the link still has it."""
+    found: list[str] = []
+    seen: set[str] = set()
+    texts = [str(ev.get("text") or "") for ev in (history or []) if ev.get("type") == "user"]
+    if prompt and prompt not in texts:
+        texts.append(prompt)
+    for text in texts:
+        for raw in _URL.findall(text):
+            url = raw.rstrip(".,);]>\"'")
+            if url and url not in seen:
+                seen.add(url)
+                found.append(url)
+    return found
+
+
+def _chat_wants_web(prompt: str, history: list | None = None) -> bool:
+    """Chat arms internet access when this turn asked for the web, or an earlier user message
+    in the Thread already did — so 'summarise that page' can still read the URL from last turn."""
+    if _wants_web(prompt):
+        return True
+    return any(
+        ev.get("type") == "user" and _wants_web(ev.get("text") or "")
+        for ev in (history or [])
+    )
+
+
 def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_question: bool = False,
                  wants_plan: bool = False) -> bool:
     """Plan gate (SPEC P6): run the read-only planner and stop for the user to approve before any
@@ -733,6 +765,39 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     time. Falls back to the index when a part carries no id, which is the old behaviour and no worse
     than it was."""
     return (m["id"], part.get("id") or i)
+
+
+def _chat_context_line(item: dict) -> str:
+    """One Session-context row for sage-chat: identity, and whether files or a query are possible.
+
+    A Dataset without a mount is still a real Resource. Naming it without saying the files are
+    absent lets the agent grep this git repo for a similarly named folder and answer about the
+    wrong thing.
+    """
+    kind = str(item.get("kind") or "resource")
+    name = str(item.get("name") or item.get("id") or "unnamed")
+    path = item.get("path")
+    project = item.get("project")
+    if kind == "dataset":
+        where = f" (project {project})" if project else ""
+        if path:
+            return (
+                f"- Dataset {name}{where}, files at {path}. Read those files. "
+                "Do not search the rest of this workspace for a substitute."
+            )
+        return (
+            f"- Dataset {name}{where}. Its files are not mounted in this workspace, so you cannot "
+            "list rows or files. Tell the person that. Do not search this git repo or any other "
+            "folder for a project of the same name — that is not this Dataset."
+        )
+    if kind in ("data_source", "datasource"):
+        extra = f" at {path}" if path else ""
+        return (
+            f"- Data Source {name}{extra}. This workspace cannot query it live. Do not invent rows. "
+            "Say that you cannot open it."
+        )
+    extra = f" at {path}" if path else ""
+    return f"- {kind}: {name}{extra}"
 
 
 # The one way an agent may end a turn without editing `src/`. AGENTS.md holds that rule absolutely —
@@ -1247,7 +1312,7 @@ class Orchestrator:
         return self._project
 
     def set_chat_pick(self, model: str | None, effort: str | None) -> None:
-        """Standing Chat alias + reasoning_effort. `auto`/empty is Sage's default (catalog.plan)."""
+        """Standing Chat alias + reasoning_effort. `auto`/empty is Sage's default (catalog.ask)."""
         project = self.project(start_preview=False)
         if model in (None, "", "auto"):
             project.control.pick_chat(None, None)
@@ -1864,19 +1929,30 @@ class Orchestrator:
         store.write_session_id(thread_id, sid)
         return sid
 
-    def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict) -> str:
+    def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
+                     urls: list[str] | None = None) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
             "",
         ]
         items = ctx.get("items") or []
-        if items:
+        urls = [u for u in (urls or []) if u]
+        if items or urls:
             lines.append("Session context:")
             for it in items:
-                extra = f" at {it['path']}" if it.get("path") else ""
-                lines.append(f"- {it.get('kind')}: {it.get('name')}{extra}")
+                lines.append(_chat_context_line(it))
+            for url in urls:
+                lines.append(
+                    f"- URL {url}. Read this page and answer from what it contains. "
+                    "Do not guess the contents."
+                )
             lines.append("")
+        lines.append(
+            "This turn answers a question about data. Do not greet by asking what to build, "
+            "and do not offer an app unless the person asked to make one that other people would use."
+        )
+        lines.append("")
         lines.append(prompt)
         return "\n".join(lines)
 
@@ -1912,14 +1988,18 @@ class Orchestrator:
 
         immediate = "first" if was_first else None
         artifacts: list[dict] = []
+        history = store.read_history(thread_id)
+        urls = _urls_in_chat(prompt, history)
         chat_token = project.control.arm_chat(thread_id)
+        web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         try:
             client = self._ensure_opencode()
             sid = self._ensure_thread_session(store, thread_id, project, client)
             project.active_session_id = sid
             before = snapshot_files(project.workspace.path)
-            client.send_prompt(sid, self._chat_prompt(thread_id, prompt, ctx), agent="sage-chat")
-            seen: set[tuple] = set()
+            seen = self._seen_baseline(client, sid)
+            client.send_prompt(
+                sid, self._chat_prompt(thread_id, prompt, ctx, urls), agent="sage-chat")
             appeared = False
             poll_failures = 0
             while True:
@@ -1988,6 +2068,8 @@ class Orchestrator:
                 yield suggestion
         finally:
             project.control.disarm_chat(chat_token)
+            if web_token is not None:
+                project.control.disarm_web(web_token)
             saved = self._after_chat_turn(thread_id, immediate=immediate)
             if saved:
                 yield saved
@@ -3588,6 +3670,57 @@ class Orchestrator:
         starting the preview (attaching the project) — a plain GET must not spin up Vite."""
         return Workspace(self._project_id, self._wm.path).read_history()
 
+    def list_project_resources(self) -> list[dict]:
+        """Domino Resources the creator added to this project — the rail, not the catalogue."""
+        return self.project(start_preview=False).workspace.read_project_resources()
+
+    def add_project_resource(self, item: dict) -> dict:
+        """Put one Resource in this project's working set. Idempotent on id."""
+        import time
+
+        rid = str((item or {}).get("id") or "").strip()
+        if not rid:
+            raise ValueError("id required")
+        kind = str(item.get("kind") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not kind or not name:
+            raise ValueError("kind and name required")
+        added = {"added": False, "item": None}
+
+        def change(items: list[dict]) -> list[dict]:
+            for row in items:
+                if row.get("id") == rid:
+                    added["item"] = row
+                    return items
+            keep = ("id", "kind", "name", "description", "project", "path", "bindingKey",
+                    "alias", "capabilities", "reasoning_efforts")
+            row = {k: item[k] for k in keep if k in item and item[k] is not None}
+            row["id"] = rid
+            row["kind"] = kind
+            row["name"] = name
+            row["addedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            added["added"] = True
+            added["item"] = row
+            return items + [row]
+
+        self.project(start_preview=False).workspace.update_project_resources(change)
+        return {"added": added["added"], "item": added["item"]}
+
+    def remove_project_resource(self, resource_id: str) -> bool:
+        """Drop a Resource from this project's working set. False if it was not there."""
+        rid = str(resource_id or "").strip()
+        if not rid:
+            return False
+        found = {"ok": False}
+
+        def change(items: list[dict]) -> list[dict]:
+            kept = [row for row in items if row.get("id") != rid]
+            found["ok"] = len(kept) != len(items)
+            return kept
+
+        self.project(start_preview=False).workspace.update_project_resources(change)
+        return found["ok"]
+
     def list_assets(self) -> list[dict]:
         """Datasets mounted in this project (the ones whose files can actually be attached)."""
         return [
@@ -3597,6 +3730,7 @@ class Orchestrator:
                 "tags": a.tags,
                 "project": a.project,
                 "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
+                "mount_path": a.mount_path,
             }
             for a in self._assets.list_datasets(self._domino_project_id)
         ]

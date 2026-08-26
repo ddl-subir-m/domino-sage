@@ -21,6 +21,18 @@ def _fake_template(tmp: Path) -> Path:
     return t
 
 
+def test_project_resources_start_empty_and_round_trip(tmp_path: Path):
+    tmpl = _fake_template(tmp_path)
+    ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("p")
+    assert ws.read_project_resources() == []
+    row = {"id": "dataset:1", "kind": "dataset", "name": "autodoc"}
+    out = ws.update_project_resources(lambda items: items + [row])
+    assert out == [row]
+    assert ws.read_project_resources() == [row]
+    ws2 = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("p")
+    assert ws2.read_project_resources() == [row]
+
+
 def test_ensure_seeds_from_template_and_symlinks_node_modules(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)

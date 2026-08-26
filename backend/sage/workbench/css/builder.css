@@ -78,8 +78,26 @@
 }
 .sw-app-frame-icon { font-size: 34px; color: var(--gray-400); line-height: 1; }
 
-.sw-build-greeting { display: flex; flex-direction: column; gap: 4px; }
-.sw-build-greeting .sw-empty-detail { max-width: none; }
+.sw-build-greeting {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--s2);
+  padding: var(--s5) var(--s3);
+}
+.sw-build-greeting .sw-empty-title {
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--dark-700);
+}
+.sw-build-greeting .sw-empty-detail {
+  max-width: none;
+  font-size: 13px;
+  color: var(--gray-600);
+  line-height: 1.5;
+}
 .sw-build-starters { display: flex; flex-direction: column; gap: var(--s2); }
 
 /* App selector ----------------------------------------------------------- */
@@ -195,7 +213,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--s4);
+  padding: var(--s5) var(--s4) var(--s4);
   display: flex;
   flex-direction: column;
   gap: var(--s4);
@@ -263,7 +281,8 @@
 .sw-builder-chat-composer {
   flex: none;
   border-top: 1px solid var(--gray-300);
-  padding: var(--s3);
+  background: var(--white);
+  padding: var(--s3) var(--s3) var(--s4);
 }
 
 /* Build steps ------------------------------------------------------------ */

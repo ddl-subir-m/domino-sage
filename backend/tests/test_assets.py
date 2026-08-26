@@ -1,5 +1,8 @@
 """Asset provider — tags and snapshots (Step 6)."""
-from sage.assets.provider import FakeAssetProvider, parse_tag_snapshots, parse_tags
+import pytest
+
+from sage.assets.provider import FakeAssetProvider, UnconfiguredAssetProvider, parse_tag_snapshots, parse_tags
+from sage.resources.provider import ResourceUnavailable
 
 
 def test_parse_tags_handles_strings_and_objects():
@@ -25,3 +28,8 @@ def test_parse_tag_snapshots_keeps_the_snapshot_ids():
 def test_fake_provider_seeds_named_datasets():
     names = {a.name for a in FakeAssetProvider().list_datasets(None)}
     assert {"sales_2026", "customer_pii", "app_logs"} <= names
+
+
+def test_unconfigured_provider_does_not_invent_datasets():
+    with pytest.raises(ResourceUnavailable, match="not configured"):
+        UnconfiguredAssetProvider().list_datasets(None)

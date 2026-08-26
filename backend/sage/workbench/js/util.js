@@ -19,6 +19,7 @@ window.SW = window.SW || {};
     file:             { icon: '📄', label: 'file',           group: 'files' },
     artifact:         { icon: '🖼', label: 'artifact',       group: 'artifacts' },
     skill:            { icon: '📘', label: 'skill',          group: 'skills' },
+    mcp:              { icon: '🧩', label: 'MCP',            group: 'mcp' },
   };
 
   const PLAN_STATUS = {

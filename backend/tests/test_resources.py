@@ -260,16 +260,14 @@ def test_a_record_with_no_name_is_dropped():
     assert parse_model_apis({"items": [{"id": "m9", "name": ""}]}) == []
 
 
-def test_model_apis_are_unlistable_rather_than_empty_when_there_is_no_project_to_scope_to():
+def test_model_apis_are_unlistable_rather_than_empty_when_there_is_no_domino_api():
     # The unscoped listing 403s ("not authorized to view access configuration") because it is an
-    # admin surface, so a call without a project cannot succeed. Reporting "none" would tell the
-    # creator their project is empty when Sage never managed to ask.
-    p = DominoResourceProvider("http://gw/v1", lambda: "tok", api_host="http://api")
-    with pytest.raises(ResourceUnavailable, match="not running in one"):
-        p.list_model_apis(None)
+    # admin surface. Off a Domino API Sage cannot fan out either, so it must not report "none".
     off_domino = DominoResourceProvider("http://gw/v1", lambda: "tok")
     with pytest.raises(ResourceUnavailable, match="not running in one"):
         off_domino.list_model_apis("proj-1")
+    with pytest.raises(ResourceUnavailable, match="not running in one"):
+        off_domino.list_model_apis(None)
 
 
 @contextmanager
@@ -384,6 +382,22 @@ def test_the_listing_spans_the_projects_this_caller_belongs_to_and_names_each_ro
     # Home first, and blank — the rail is already in that project's context.
     assert [(m.name, m.project_name) for m in out] == [("churn", ""), ("priority", "Sage")]
     assert "projectId=proj-1" in listings[0] and "projectId=proj-2" in listings[1]
+
+
+def test_off_domino_the_listing_fans_out_over_membership_with_no_home_project():
+    projects = _projects(
+        {"id": "proj-1", "name": "test-ds", "ownerId": "u-me"},
+        {"id": "proj-2", "name": "Sage", "ownerId": "u-me"},
+    )
+    with stub_domino_api([_model_apis("churn"), _model_apis("priority")],
+                         user=_ME, projects=projects) as (api_host, listings):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis(None)
+
+    assert {m.name for m in out} == {"churn", "priority"}
+    assert any("projectId=proj-1" in path for path in listings)
+    assert any("projectId=proj-2" in path for path in listings)
 
 
 def test_a_project_the_caller_only_has_visibility_on_is_never_asked_about():

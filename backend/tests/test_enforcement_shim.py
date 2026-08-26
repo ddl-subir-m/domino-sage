@@ -116,6 +116,7 @@ def test_chat_turn_keeps_write_and_bash_tools():
         {"type": "function", "function": {"name": "bash"}},
         {"type": "function", "function": {"name": "edit"}},
         {"type": "function", "function": {"name": "read"}},
+        {"type": "function", "function": {"name": "webfetch"}},
     ]
 
     list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
@@ -123,6 +124,23 @@ def test_chat_turn_keeps_write_and_bash_tools():
     sent_request, _ = gw.seen[-1]
     tool_names = [t["function"]["name"] for t in sent_request["tools"]]
     assert set(tool_names) == {"write", "bash", "edit", "read"}
+
+
+def test_chat_turn_keeps_web_tools_when_web_is_armed():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.arm_chat("thr_01abc")
+    control.arm_web()
+    gw = FakeGatewayClient()
+    tools = [
+        {"type": "function", "function": {"name": "webfetch"}},
+        {"type": "function", "function": {"name": "bash"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    sent_request, _ = gw.seen[-1]
+    assert [t["function"]["name"] for t in sent_request["tools"]] == ["webfetch", "bash", "read"]
 
 
 def test_chat_turn_strips_src_writes_from_messages():
@@ -468,23 +486,23 @@ def test_chat_pick_and_effort_go_to_the_gateway():
     control.disarm_chat(token)
 
 
-def test_chat_auto_uses_the_plan_model_not_the_build_mode():
-    control = ModelControl(mode=Mode.ASK, phase=Phase.PLAN)
+def test_chat_default_uses_the_ask_model_not_the_build_mode():
+    control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
     token = control.arm_chat("thr_1")
     gw = FakeGatewayClient()
-    list(_shim(control, gw).handle({"model": "ask-vendor", "messages": []}, project="p"))
-    assert gw.seen[-1][0]["model"] == "strong-vendor"
+    list(_shim(control, gw).handle({"model": "opencode-default", "messages": []}, project="p"))
+    assert gw.seen[-1][0]["model"] == "ask-vendor"
     control.disarm_chat(token)
 
 
-def test_chat_auto_does_not_run_the_build_phase_classifier():
-    # The same edit-tool tail that flips Build Auto to catalog.implement must stay on catalog.plan.
+def test_chat_default_does_not_run_the_build_phase_classifier():
+    # The same edit-tool tail that flips Build Auto to catalog.implement must stay on catalog.ask.
     control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
     token = control.arm_chat("thr_1")
     gw = FakeGatewayClient()
     messages = [{"role": "assistant", "tool_calls": [{"function": {"name": "edit"}}]}]
     list(_shim(control, gw).handle({"messages": messages}, project="p"))
-    assert gw.seen[-1][0]["model"] == "strong-vendor"
+    assert gw.seen[-1][0]["model"] == "ask-vendor"
     control.disarm_chat(token)
 
 

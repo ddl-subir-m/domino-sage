@@ -8,7 +8,7 @@ Precedence (highest first), per SPEC.md Component 3 minus the old sensitivity lo
     3. plan mode         -> user's picked model if set, else catalog.plan
     4. implement mode    -> user's picked model if set, else catalog.implement
 
-A Chat turn (chat_thread_id set) is separate: the Chat pick, else catalog.plan.
+A Chat turn (chat_thread_id set) is separate: the Chat pick, else catalog.ask.
 Build Auto/Ask/Plan/Implement does not apply. Sensitive attachments do not change the model —
 the caller uses any LLM alias they can reach on the gateway.
 
@@ -50,4 +50,4 @@ def resolve(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
 def _resolve_chat(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     if state.chat_model:
         return ModelDecision(model=state.chat_model, reason=Reason.CHAT_OVERRIDE, locked=False)
-    return ModelDecision(model=catalog.plan, reason=Reason.CHAT_AUTO, locked=False)
+    return ModelDecision(model=catalog.ask, reason=Reason.CHAT_DEFAULT, locked=False)

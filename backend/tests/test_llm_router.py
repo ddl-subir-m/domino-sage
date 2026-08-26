@@ -45,15 +45,15 @@ def test_resolve(state, expected_model, expected_reason):
     assert decision.locked is False
 
 
-def test_chat_turn_does_not_inherit_build_mode():
-    # Build left on Ask would otherwise pin Chat to catalog.ask.
-    state = SessionState(Mode.ASK, Phase.PLAN, chat_thread_id="thr")
+def test_chat_turn_defaults_to_the_ask_model_not_build_mode():
+    # Build left on Plan would otherwise pin Chat to catalog.plan. Chat's standing default is Ask.
+    state = SessionState(Mode.PLAN, Phase.PLAN, chat_thread_id="thr")
     decision = resolve(state, CATALOG)
-    assert decision.model == "strong-vendor"
-    assert decision.reason is Reason.CHAT_AUTO
+    assert decision.model == "ask-vendor"
+    assert decision.reason is Reason.CHAT_DEFAULT
 
 
-def test_chat_pick_overrides_auto():
+def test_chat_pick_overrides_the_ask_default():
     state = SessionState(
         Mode.AUTO, Phase.PLAN, chat_thread_id="thr", chat_model="sonnet",
     )
