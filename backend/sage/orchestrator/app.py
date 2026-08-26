@@ -590,6 +590,28 @@ async def project_status(project_id: str, workspace_id: str | None = None) -> JS
     return JSONResponse(content=content)
 
 
+@control_app.get("/api/gallery")
+async def gallery() -> JSONResponse:
+    """The Built Apps this viewer may open, published from Sage Builder sessions (#48).
+
+    Not the chip's Project list: a sage-* Project with nothing published has nothing to show here,
+    and an empty Gallery is an empty Gallery. Opening a card opens that App — it does not move the
+    Workbench to another Project.
+    """
+    if _provision is None:
+        return JSONResponse(content={"items": [], "provisioning": False})
+    try:
+        apps = await run_in_threadpool(_provision.list_built_apps)
+    except Exception as e:
+        log.exception("gallery: couldn't list this viewer's Built Apps")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content={
+        "items": [{"id": a.id, "name": a.name, "url": a.url, "status": a.status,
+                   "project": a.project_name or a.project_id} for a in apps],
+        "provisioning": True,
+    })
+
+
 @control_app.get("/fonts/inter-latin-var.woff2")
 def font() -> FileResponse:
     """Inter, from Sage's own origin (#19). See the @font-face block in the page for the why.

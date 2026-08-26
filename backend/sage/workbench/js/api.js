@@ -255,6 +255,7 @@ SW.api = {
       .map((it) => ({ id: it.id, name: it.name || it.id, color: '#543FDE', current: false }));
     return [here, ...elsewhere];
   },
+  gallery: () => request('/gallery'),
   openProject: (id) => request(`/projects/${encodeURIComponent(id)}/open`, { method: 'POST' }),
   projectStatus: (id, workspaceId) =>
     request(`/projects/status?project_id=${encodeURIComponent(id)}` +

@@ -123,7 +123,7 @@ window.SW = window.SW || {};
         h(
           Button,
           { type: 'link', size: 'small', style: { padding: 0 }, onClick: () => { onOpenChange(false); SW.router.go('#/gallery'); } },
-          'Browse all projects in the gallery'
+          'See the apps your team has built'
         )
       )
     );

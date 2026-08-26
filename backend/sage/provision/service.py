@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import quote
 
 from . import naming
-from .domino import BUILDER_WORKSPACE_NAME, ControlPlane, ProjectRef
+from .domino import BUILDER_WORKSPACE_NAME, BuiltApp, ControlPlane, ProjectRef
 from .github import RepoInfo, RepoNameConflict, RepoProvider
 from .seed import seed_and_push
 
@@ -135,6 +135,21 @@ class ProvisionService:
         """The caller's Sage Projects — the control plane keeps only git-backed projects whose repo
         name starts with `sage-`, so an ordinary Domino project never shows up as Sage work."""
         return self._cp.list_apps()
+
+    def list_built_apps(self) -> list[BuiltApp]:
+        """The Built Apps to show this viewer in the Gallery (#48).
+
+        The control plane's app list is global — every App on the deployment — so it is narrowed by
+        the Projects this viewer can list, and that list is already sage-* only. Both halves matter:
+        the Project list is Domino answering "may they see it", and the sage-* prefix is what
+        "published from a Sage Builder" means. The Workbench App falls out for free — Sage's own
+        project is not a sage-* one.
+
+        An App in a sage-* Project the viewer cannot list is left out. That is the conservative
+        miss, and the alternative is offering a card that opens on a permission error.
+        """
+        mine = {p.id for p in self.list_apps()}
+        return [a for a in self._cp.list_all_apps() if a.project_id in mine]
 
     def _create_repo(self, base: str, display_name: str) -> RepoInfo:
         last: Exception | None = None

@@ -32,7 +32,9 @@ import httpx
 log = logging.getLogger("sage.provision.domino")
 
 _PROJECTS_PATH = "/api/projects/beta/projects"
-_APPS_PATH = "/api/apps/beta/apps"  # public apps API (create+launch, then republish new versions)
+_APPS_PATH = "/api/apps/beta/apps"
+_APPS_PAGE = 100  # the list API's page size
+_APPS_MAX = 1000  # ceiling on the global app list, so a wrong totalCount can't spin forever  # public apps API (create+launch, then republish new versions)
 # Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
 # create API has no tag field, so list_apps filters on the project's git repo URI instead.
 _SAGE_REPO_PREFIX = "sage-"
@@ -87,6 +89,22 @@ class PublishedApp:
     url: str  # shareable Domino App URL ("" if the response carried none, e.g. a republish)
 
 
+@dataclass(frozen=True)
+class BuiltApp:
+    """A published Domino App as the Gallery lists it (#48).
+
+    Wider than PublishedApp, which is Publish's own id+URL pair: a Gallery card has to be readable
+    before it is clicked, so it carries the App's name, where it came from, and whether it is up.
+    """
+
+    id: str
+    name: str
+    url: str
+    project_id: str
+    project_name: str
+    status: str  # currentVersion.currentInstance.status: Running / Failed / Preparing / "" unknown
+
+
 class ControlPlane(Protocol):
     def whoami(self) -> UserRef: ...
     def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
@@ -105,6 +123,7 @@ class ControlPlane(Protocol):
                       git_ref_value: str | None = None) -> PublishedApp: ...
     def find_project_app(self, project_id: str) -> PublishedApp | None: ...
     def list_project_apps(self, project_id: str) -> list[PublishedApp]: ...
+    def list_all_apps(self) -> list[BuiltApp]: ...
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]: ...
     def app_manage_url(self, app_id: str, project_name: str) -> str | None: ...
     def app_status(self, app_id: str) -> str: ...
@@ -399,6 +418,45 @@ class DominoControlPlane:
             out.append(PublishedApp(id=str(a["id"]), url=_viewer_url(str(a.get("url") or ""), str(a["id"]))))
         return out
 
+    def list_all_apps(self) -> list[BuiltApp]:
+        """Every published App this token can read, across every project.
+
+        The beta list is GLOBAL — one deployment answered with 284 rows — so a single page of 100
+        would drop most of it while looking like a complete answer. This pages to metadata's
+        totalCount, with a ceiling so a bad count can't spin forever.
+
+        Which of these a viewer should actually be shown is a policy question, and it lives one
+        layer up in ProvisionService.list_built_apps.
+        """
+        out: list[BuiltApp] = []
+        offset, total = 0, None
+        while total is None or offset < total:
+            d = self._get(_APPS_PATH, params={"offset": offset, "limit": _APPS_PAGE})
+            d = d if isinstance(d, dict) else {"items": d if isinstance(d, list) else []}
+            items = d.get("items") or []
+            meta = d.get("metadata") if isinstance(d.get("metadata"), dict) else {}
+            count = meta.get("totalCount")
+            total = count if isinstance(count, int) else offset + len(items)
+            for a in items:
+                if not isinstance(a, dict) or not a.get("id"):
+                    continue
+                app_id = str(a["id"])
+                proj = a.get("project") if isinstance(a.get("project"), dict) else {}
+                version = a.get("currentVersion") if isinstance(a.get("currentVersion"), dict) else {}
+                inst = version.get("currentInstance") if isinstance(version.get("currentInstance"), dict) else {}
+                out.append(BuiltApp(
+                    id=app_id,
+                    name=str(a.get("name") or "Untitled app"),
+                    url=_viewer_url(str(a.get("url") or ""), app_id),
+                    project_id=str(proj.get("id") or ""),
+                    project_name=str(proj.get("name") or ""),
+                    status=str(inst.get("status") or ""),
+                ))
+            if not items or len(out) >= _APPS_MAX:
+                break
+            offset += len(items)
+        return out
+
     def find_project_app(self, project_id: str) -> PublishedApp | None:
         """The published Domino App for this project, if one already exists — so a re-publish targets
         it (new version, stable URL) instead of creating a duplicate App."""
@@ -510,6 +568,7 @@ class FakeControlPlane:
     app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id (find_project_app)
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
+    built: list[BuiltApp] = field(default_factory=list)  # what list_all_apps answers (Gallery)
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
     user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
     _seq: int = 0
@@ -590,6 +649,9 @@ class FakeControlPlane:
     def list_project_apps(self, project_id: str) -> list[PublishedApp]:
         return [self.published[aid] for aid, pid in self.app_projects.items()
                 if pid == project_id and aid in self.published]
+
+    def list_all_apps(self) -> list[BuiltApp]:
+        return list(self.built)
 
     def find_project_app(self, project_id: str) -> PublishedApp | None:
         apps = self.list_project_apps(project_id)
