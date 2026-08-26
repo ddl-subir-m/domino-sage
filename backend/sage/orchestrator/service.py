@@ -906,7 +906,13 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
     kind = str(item.get("kind") or "resource")
     if kind == "table":
         kind = "data_source"
-    name = str(item.get("name") or item.get("id") or "unnamed")
+    # A table chip carries the TABLE in `name` — the panel pins a table, and the client sends it
+    # under kind "data_source". `get_datasource()` takes the SOURCE, so `sourceName` (stamped by
+    # add_thread_context from the chip's own parent id) is the only field that answers it. Reading
+    # `name` here told the agent to call get_datasource('clickstream') for a source named
+    # BigQuery_Demo, and Domino answered, correctly, that no Data Source goes by that name.
+    source_name = str(item.get("sourceName") or item.get("subtitle") or "").strip()
+    name = source_name or str(item.get("name") or item.get("id") or "unnamed")
     path = item.get("path")
     project = item.get("project")
     scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
@@ -943,7 +949,11 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
             )
         return line
     if kind in ("data_source", "datasource"):
-        if scope and scope.get("table"):
+        # No resolved source name, no recipe. When a table is scoped, `name` is the table, so
+        # guessing with it sends the agent at a lookup that cannot succeed — and it comes back as
+        # "no Data Source registered under that name", which reads like the person attached the
+        # wrong thing. Saying "cannot query" is worse to read and far better to act on.
+        if scope and scope.get("table") and source_name:
             dotted = _scope_label(scope)
             cols = item.get("columns") if isinstance(item.get("columns"), list) else []
             col_txt = ", ".join(
@@ -1873,28 +1883,46 @@ class Orchestrator:
             except (LookupError, FileNotFoundError, ValueError, AttachTooLarge):
                 pass
         scope = row.get("scope") if isinstance(row.get("scope"), dict) else None
-        if str(row.get("kind") or "") in ("data_source", "datasource") and scope and scope.get("table"):
-            cols = self._columns_for_context(row, scope)
-            if cols:
-                row["columns"] = cols
+        # "table" belongs here as much as "data_source": the panel pins a table, and the client
+        # flattens that to "data_source" before posting — but a stored row may carry either.
+        if str(row.get("kind") or "") in ("data_source", "datasource", "table") and scope and scope.get("table"):
+            source = self._context_source(row)
+            if source is not None:
+                # The chip's `name` is the table. Stamp the SOURCE's own Domino name, because that
+                # is what `get_datasource()` takes and nothing else in the row answers it.
+                row["sourceName"] = source.name
+                cols = self._columns_for_context(source, scope)
+                if cols:
+                    row["columns"] = cols
         return store.add_context(thread_id, row)
 
-    def _columns_for_context(self, item: dict, scope: dict) -> list[dict]:
-        """Column names and types for a table chip. Empty when the store will not answer."""
-        source_id = ""
+    @staticmethod
+    def _context_source_id(item: dict) -> str:
+        """The Data Source id behind a table chip, from whichever field carried it."""
         bk = item.get("bindingKey")
-        if isinstance(bk, (list, tuple)) and len(bk) >= 2:
-            source_id = str(bk[1] or "")
+        if isinstance(bk, (list, tuple)) and len(bk) >= 2 and bk[1]:
+            return str(bk[1])
+        parent = _bare_kind_id(str(item.get("parentId") or ""), "data_source")
+        if parent:
+            return parent
+        candidate = _bare_kind_id(str(item.get("resourceId") or ""), "data_source")
+        if candidate and not candidate.startswith(("table:", "dsfile:", "file:", "pin:")):
+            return candidate
+        return ""
+
+    def _context_source(self, item: dict):
+        """The Data Source a table chip belongs to, or None when it cannot be resolved."""
+        source_id = self._context_source_id(item)
         if not source_id:
-            source_id = _bare_kind_id(str(item.get("parentId") or ""), "data_source")
-        if not source_id:
-            candidate = _bare_kind_id(str(item.get("resourceId") or ""), "data_source")
-            if candidate and not candidate.startswith(("table:", "dsfile:", "file:", "pin:")):
-                source_id = candidate
-        if not source_id:
-            return []
+            return None
         try:
-            source = self._data_source(source_id)
+            return self._data_source(source_id)
+        except (LookupError, ValueError, ResourceUnavailable):
+            return None
+
+    def _columns_for_context(self, source, scope: dict) -> list[dict]:
+        """Column names and types for a table chip. Empty when the store will not answer."""
+        try:
             columns = self._resources.list_columns(
                 source,
                 _level(str(scope.get("database") or "")),
@@ -2322,8 +2350,8 @@ class Orchestrator:
                         "type": "error",
                         "message": (
                             "This turn took too long, so it was stopped. Ask again with a smaller "
-                            "question. If you were querying a Data Source, it may not answer from "
-                            "this App."
+                            "question. If you were querying a Data Source, it may be too slow to "
+                            "answer here — try a narrower query."
                         ),
                     }
                     done = {"type": "done", "ok": False, "decision": "timeout"}

@@ -324,14 +324,17 @@ def test_chat_prompt_describes_a_file_chip_without_dumping_rows(tmp_path: Path):
 def test_chat_prompt_names_a_scoped_table_and_its_columns(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="ok")])
     tid = orch.create_thread()["id"]
+    # The panel pins a TABLE, so the chip's name is the table — this is the payload the Workbench
+    # actually posts. The source's own name has to be resolved from the chip's parent.
     row = orch.add_thread_context(tid, {
         "kind": "data_source",
-        "name": "Snowflake-Data-Warehouse",
+        "name": "DIM_ACCOUNT",
         "resourceId": "table:ds-dwh:DWH.MARTS.DIM_ACCOUNT",
         "bindingKey": ["data_source", "ds-dwh"],
         "parentId": "data_source:ds-dwh",
         "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
     })
+    assert row["sourceName"] == "Snowflake-Data-Warehouse"
     assert any(c["name"] == "ACCOUNT_ID" for c in row.get("columns") or [])
     list(orch.chat_stream(tid, "what is in DIM_ACCOUNT"))
     prompt = oc.prompts[0]["text"]
@@ -339,7 +342,27 @@ def test_chat_prompt_names_a_scoped_table_and_its_columns(tmp_path: Path):
     assert "ACCOUNT_ID" in prompt
     assert "cannot query it live" not in prompt
     assert "DataSourceClient" in prompt
-    assert "get_datasource" in prompt
+    # get_datasource() takes the SOURCE. Passing the table name is what produced the live
+    # "no Data Source registered under that name" against a source called BigQuery_Demo.
+    assert "get_datasource('Snowflake-Data-Warehouse')" in prompt
+    assert "get_datasource('DIM_ACCOUNT')" not in prompt
+
+
+def test_chat_will_not_hand_out_a_query_recipe_it_cannot_name_the_source_for(tmp_path: Path):
+    # A chip that lost its parent leaves only the table name, and guessing with it sends the agent
+    # at a lookup that fails as "no Data Source registered under that name" — which reads like the
+    # person attached the wrong thing.
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "data_source",
+        "name": "DIM_ACCOUNT",
+        "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
+    })
+    list(orch.chat_stream(tid, "what is in DIM_ACCOUNT"))
+    prompt = oc.prompts[0]["text"]
+    assert "cannot query it live" in prompt
+    assert "get_datasource" not in prompt
 
 
 def test_chat_turn_times_out_a_hung_opencode_session(tmp_path: Path):
