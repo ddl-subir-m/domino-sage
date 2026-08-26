@@ -2,53 +2,19 @@
 status: accepted
 ---
 
-# Workbench Chat: Untitled is a chip on this workspace, the prototype is the shell, artifacts are files
+# Workbench Chat: the prototype is the shell, artifacts are files
 
-Sage grows a Chat mode beside the existing builder. Three product decisions are locked together
-because each one is what makes the other two cheap to ship. The mock that set the UX is
-`etanlightstone/sage_explorations` (live at the Sage Workspace prototype). Manage and Code are
-owned by a parallel branch; this slice ships the chrome and makes Chat and Build real.
+Sage grows a Chat mode beside the existing builder. Decisions 2 and 3 below still hold. Decision 1
+(scratch-in-the-App, Untitled as a chip on this container) is **superseded by
+[ADR-0004](0004-workbench-is-the-door.md)**. The mock that set the UX is
+`etanlightstone/sage_explorations`. Manage and Code are owned by a parallel branch.
 
-## Decision 1 — Untitled is a chip on this container's workspace; Threads live inside it
+## Decision 1 — superseded by [ADR-0004](0004-workbench-is-the-door.md)
 
-The UI says **Untitled**. That is a Sage overlay on `.sage/settings.json` (`"untitled": true`), not a
-Domino project rename. There is no Control Plane rename API.
-
-The Workbench is one orchestrator process with two launch paths, and no Hub:
-
-- **Published App** (this repo's `app.sh`, `SAGE_PROXY_MODE=app`): Chat and Build run in a scratch
-  workspace. The chip can say Untitled. Files do not survive an App rebuild. **Publish is disabled**
-  — `DOMINO_PROJECT_ID` is Sage itself.
-- **Sage Builder workspace** (`sageBuilder` in a git-based app project, `/mnt/code`): Chat and Build
-  run on that project's repo. First boot hydrates Untitled from the Domino slug when it matches
-  `sage-<user>-<id>` (or a legacy project named Untitled). **Publish** ships that project as a Built
-  App.
-
-**New conversation** creates a Thread inside the current workspace (a new OpenCode session +
-`.sage/threads/<id>/`), not a new Domino project. Hub-style provisioning of `sage-<user>-<id>`
-git projects is gone; restoring it is a later slice.
-
-### Considered options
-
-**New Domino project per Thread** — closest to the old hub (one named app per create). Rejected:
-provisioning GitHub + project + workspace on every "New conversation" makes ChatGPT-like Chat
-unusable, and scratch projects would multiply as colliding `Untitled` / `sage-untitled-2`, `-3`, …
-
-**Ephemeral Personal sandbox, graduate later** — the mock's Decision 2. Rejected for Sage Builder:
-Untitled work in `/mnt/code` survives refresh because it is the project. In App mode the scratch dir
-*is* ephemeral across rebuilds until provision returns.
-
-**Optimistic local workspace, provision in the background** — correct isolation, much more work.
-Deferred.
-
-### Consequences
-
-- Scope chip is this container's one project (Untitled overlay or the Domino name). Switching
-  Domino project means launching Sage Builder in a different project, not a hub gallery.
-- One container still hosts one Built App (the 1:1:1 topology is unchanged). Many Threads, one app.
-  The mock's "eight apps in Market Risk Analytics" picker is not real in this slice.
-- Chat turns must not fire the first-build plan gate. Untitled is a place to think; `has_built`
-  stays false until a handoff actually builds.
+The Workbench App is the door into this viewer's Sage Builder in a `sage-*` Project. Default
+replaces Untitled. New conversation is still a Thread, not a Domino project — that part of the
+old decision survives in ADR-0004. Scratch `/tmp`, disabled Publish on the App, and New project
+as a no-op do not.
 
 ## Decision 2 — Lift the prototype React shell; Sage stays the backend
 

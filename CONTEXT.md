@@ -89,10 +89,31 @@ _Avoid_: upload, mount, bundled file
 The app Sage produces for a user and publishes on Domino, as distinct from Sage itself.
 _Avoid_: child app, generated app, output
 
+**Gallery**:
+The list of Built Apps a viewer is allowed to see — apps published from Sage Builder
+sessions, filtered by that viewer's Domino credentials. It lives in Sage Builder chrome
+after the door bounce. Opening an item opens that Built App; it does not switch Project.
+_Avoid_: Hub, marketplace, catalog, project list
+
 **Workbench**:
-The shell that hosts Chat and Build as modes over one Domino project. Code and Manage are
-tabs in the same chrome and are owned by a parallel branch.
-_Avoid_: workspace (that word already means the Domino builder session), studio, platform
+The published Domino App that is Sage. Opening it is how a viewer reaches Chat and Build.
+Code and Manage are tabs in the same chrome and are owned by a parallel branch. It is not a
+Built App and it is not a Hub.
+_Avoid_: workspace (that word already means the Domino builder session), studio, platform,
+Built App, Hub
+
+**Project**:
+A git-backed Domino project whose Control Plane and git name start with `sage-`. Threads,
+Artifacts, Builds, and the Built App for that work live in it. The chip lists only these.
+Default is a Project. New project creates another, starts Sage Builder, and lands in Chat.
+_Avoid_: folder, sandbox, scratch, workspace (that is Sage Builder)
+
+**Sage Builder**:
+The Domino workspace, belonging to this viewer, in a Project where Chat and Build run. The
+Workbench App is the door: it starts or resumes that builder, then they work there. Switching
+the chip does the same for another Project. Left running unless something stops it. Two
+viewers in the same Project each have their own Sage Builder.
+_Avoid_: Hub, notebook, App container (that is the Workbench process)
 
 **Chat**:
 The Workbench mode for open-ended questions and analysis. It produces Artifacts. It does not
@@ -100,17 +121,16 @@ edit `src/`. Driven by the OpenCode agent `sage-chat`.
 _Avoid_: ask mode, assistant, sandbox, Jupyter, notebook
 
 **Thread**:
-One conversation inside a project. A project has many Threads; Untitled is one project, not
+One conversation inside a Project. A Project has many Threads; Default is one Project, not
 one Thread. Each Thread has its own OpenCode session and its own history.
 _Avoid_: conversation, session (OpenCode already uses session for the harness object), chat
 (that is the mode)
 
-**Untitled**:
-The Sage display name of the caller's single persistent personal Domino project, provisioned on
-first Workbench open, reused thereafter. The Domino/git name is `sage-<user-slug>-<id>`, not the
-word Untitled. `.sage/settings.json` carries `"untitled": true` until the user names it
-(`displayName`). Files are real; nothing is ephemeral.
-_Avoid_: Personal sandbox, ephemeral, temporary project
+**Default**:
+The Sage display name of the caller's one persistent personal Project, created the first
+time they open the Workbench, reused thereafter. Naming it changes the chip only; it stays
+this viewer's Default. The Domino/git name is `sage-<user-slug>-<id>`, not the word Default.
+_Avoid_: Untitled, sandbox, ephemeral, temporary project, scratch
 
 **Artifact**:
 A file the chat agent wrote under `examples/<threadId>/` and indexed in that Thread's

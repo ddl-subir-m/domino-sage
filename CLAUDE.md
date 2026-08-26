@@ -84,5 +84,6 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/
 
 ### Workbench (Chat + Build)
 
-Chat mode, Untitled, artifacts, and Chat→Build handoff: `docs/workbench/` and ADR-0003.
+Chat mode, Default Project, artifacts, and Chat→Build handoff: `docs/workbench/`, ADR-0003 (shell,
+artifacts), and ADR-0004 (Workbench is the door).
 Do not invent a second harness or a chart DSL — OpenCode `sage-chat` writes files.

@@ -1,6 +1,8 @@
 # Workbench Chat
 
-Executable spec for Chat mode. Companion: [handoff.md](handoff.md). Locked decisions: [ADR-0003](../adr/0003-workbench-chat-and-untitled.md). Language: [CONTEXT.md](../../CONTEXT.md).
+Executable spec for Chat mode. Companion: [handoff.md](handoff.md). Locked decisions: [ADR-0003](../adr/0003-workbench-chat-and-untitled.md) (shell, artifacts),
+[ADR-0004](../adr/0004-workbench-is-the-door.md) (door, Default, Sage Builder). Language:
+[CONTEXT.md](../../CONTEXT.md).
 
 **Done when** every acceptance check at the bottom is true, and `sage-chat` can answer an open-ended question with a chart PNG and a table JSON in the Thread without touching `src/`.
 
@@ -8,20 +10,34 @@ Executable spec for Chat mode. Companion: [handoff.md](handoff.md). Locked decis
 
 A person who is comfortable with data and does not want to manage projects, git, or a coding agent. They land in Chat, ask a question, attach a file or a Data Source, and get an answer with Artifacts. They can stay in Chat forever. Building an app is a later, explicit step ([handoff.md](handoff.md)).
 
-## 2. Untitled
+## 2. Default
 
-There is no Hub and no auto-provision of a `sage-<user>-<id>` Domino project.
+Hub is not a product. The Workbench App is the door ([ADR-0004](../adr/0004-workbench-is-the-door.md)):
+with extended identity the sidecar is the viewer. First open finds or creates this viewer's
+**Default** Project (`sage-<user-slug>-<id>`), starts or resumes **their** Sage Builder, and lands
+in Chat there. Wait only when that builder is down.
 
-- **Workbench App** (`SAGE_PROXY_MODE=app`): Chat/Build use a scratch dir (not this Sage repo). The chip may say Untitled. An App rebuild drops that dir.
-- **Sage Builder workspace** (`/mnt/code` is the app): first boot writes `.sage/settings.json` `{ "untitled": true }` when the Domino slug is `sage-<user>-<id>` (or a `-N` suffix, or a legacy project named Untitled). Seed must not wipe this.
+The chip says **Default**. That is a Sage overlay, not a Domino rename. Naming it writes
+`displayName` and clears the default mark; the Domino/git name stays `sage-<user-slug>-<id>`.
+There is no Control Plane rename API. They never get a second Default.
 
-Rename (the first time a handoff names the app) writes `displayName` into `.sage/settings.json` and sets `untitled: false`. Domino’s project name, id, repo, and Threads do not move — there is no Control Plane rename API.
+The chip lists only Projects whose Control Plane and git name start with `sage-`. Switching it
+starts or resumes this viewer's Sage Builder in that Project and takes them there.
 
-**New conversation** creates a Thread in the current workspace. It does not create a Domino project.
+**New conversation** creates a Thread in the current Project. It does not create a Domino project.
 
-**Publish** is only for Sage Builder on `/mnt/code`. The Workbench App refuses it (that project id is Sage).
+**New project** creates a git-backed `sage-*` Project (GitHub repo + git-based Domino project +
+this viewer's Sage Builder) and lands in Chat there.
 
-Chat turns **do not** consult `has_built` or the first-build plan gate. `Mode.CHAT` is not added to `ModelControl` — Chat is a Workbench mode, not a plan/implement phase. The orchestrator maps Chat turns to agent `sage-chat` and skips `_build_stream`'s plan-gate / typecheck loop.
+**Gallery** is Built Apps this viewer may see. It lives in Sage Builder chrome. Opening an item
+opens that Built App; it does not switch Project.
+
+**Publish** is a Sage Builder verb. Default is a real git Project, so Publish is available once
+they are in that builder.
+
+Chat turns **do not** consult `has_built` or the first-build plan gate. `Mode.CHAT` is not added to
+`ModelControl` — Chat is a Workbench mode, not a plan/implement phase. The orchestrator maps Chat
+turns to agent `sage-chat` and skips `_build_stream`'s plan-gate / typecheck loop.
 
 ## 3. Thread storage
 
@@ -213,7 +229,7 @@ Lift `sage_workspace_prototype/static` from `etanlightstone/sage_explorations` i
 
 Minimum Chat chrome that must work (the rest of the mock can wait):
 
-- Scope chip (Untitled + named projects)
+- Scope chip (Default + other `sage-*` Projects)
 - Chat / Build tabs (Build is the existing builder, restyled into the shell)
 - Conversation rail of Threads in the current project
 - Composer with chips, `@`, attach, model picker (gateway aliases this caller can use; reasoning effort when the alias supports it)
@@ -235,11 +251,11 @@ Minimum Chat chrome that must work (the rest of the mock can wait):
 
 An implementer is done when all of these pass:
 
-1. Opening the Workbench lands in Chat with Threads in this container's workspace. The chip says Untitled when settings say so (App scratch, or a Sage Builder slug that hydrates). "New conversation" does not create a Domino project.
+1. Opening the Workbench finds or creates Default, starts this viewer's Sage Builder if it is down, and lands in Chat there. The chip says Default until they name it. "New conversation" does not create a Domino project. "New project" does.
 2. A Chat turn with "what's in this CSV?" on an attached file writes a PNG and/or a `.table.json` under `examples/<threadId>/`, appends the manifest, and the Thread shows the Artifact after reload. `src/` is untouched (git diff).
 3. A `sage-chat` attempt to edit `src/App.tsx` is stripped by the shim; the user-visible reply does not mention tools or permissions.
 4. Removing a chip drops that Resource from the next turn's prompt context and from IN CONTEXT. The previous user message still shows the chip it was sent with.
 5. `@` lists IN CONTEXT rows first, then this Thread's Artifacts. Picking a row leaves `@name` in the sent message; OpenCode's prompt includes that token and the file path. A generated PNG is not auto-chipped.
 6. Chat turns never produce a plan-approval card and never run `tsc`.
 7. `template/chat/AGENTS.md` is the prompt body OpenCode receives for `sage-chat` (inline in `opencode.json`, kept in sync).
-8. Tests: shim path-allowlist for `sage-chat`; Thread history does not leak into Build `history.jsonl`; scratch-slug hydrates the Untitled chip; a new conversation does not provision.
+8. Tests: shim path-allowlist for `sage-chat`; Thread history does not leak into Build `history.jsonl`; Default slug hydrates the Default chip; a new conversation does not provision; New project does.
