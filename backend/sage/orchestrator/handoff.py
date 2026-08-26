@@ -46,8 +46,12 @@ _EXPLICIT_BUILD = re.compile(
     r"(?:"
     r"\bbuild me (?:an? )?(?:app|dashboard|ui|page)\b"
     r"|\bopen (?:this|it) in (?:the )?(?:builder|build)\b"
-    r"|\bturn (?:this|it) into an app\b"
-    r"|\bmake (?:this|it)(?: into)? an app\b"
+    # "convert" belongs with "turn": both name the same move, and only one of them was here. Live,
+    # "lets convert this into an app i can share" fell through to the classifier — which cannot run
+    # before a turn — so it spent the full turn timeout AND a model call to classify, then answered
+    # "Building an app is Build's job". That answer was available in the first millisecond.
+    r"|\b(?:turn|convert) (?:this|it|that) into (?:an? )?app\b"
+    r"|\bmake (?:this|it|that)(?: into)? (?:an? )?app\b"
     # A verb of intent anywhere ahead of "web app" / "website". Unlike "dashboard", nobody asks an
     # analysis question about a webapp, so the noun alone carries the intent and the gap can be
     # loose — "lets build the webapp" and "build this chart ... as a webapp" both landed on the

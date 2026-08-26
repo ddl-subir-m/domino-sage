@@ -135,6 +135,11 @@ def test_the_prompt_is_title_plus_last_turn_not_the_whole_history():
     "open it in Build",
     "turn this into an app",
     "make it an app",
+    # Live, this one fell through to the classifier — which cannot run before a turn — so it burned
+    # the whole turn timeout and a model call before answering "that is Build's job".
+    "lets convert this into an app i can share",
+    "convert it into an app",
+    "can you make that an app",
 ])
 def test_explicit_build_requests_skip_the_classifier(prompt):
     assert handoff.looks_like_build_request(prompt) is True
@@ -145,6 +150,10 @@ def test_explicit_build_requests_skip_the_classifier(prompt):
     "put this on a dashboard colleagues can open",
     "show me a chart",
     "build a pivot of this CSV",
+    # "convert" is a build verb only when what follows is an app. It is a very ordinary word.
+    "convert the timestamps to dates",
+    "turn this into a percentage",
+    "which app category converts best?",
 ])
 def test_analysis_is_not_an_explicit_build_request(prompt):
     assert handoff.looks_like_build_request(prompt) is False
