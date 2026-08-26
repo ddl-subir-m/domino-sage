@@ -57,6 +57,8 @@ examples/<threadId>/                       # Artifact files; committed
 
 Chat writes those files every turn. Git commit + push is coalesced so a burst of follow-ups does not spam the remote. Push when losing the workspace would hurt: the first message of a Thread, a turn that produced Artifacts, leaving the Thread (New conversation, a different Thread, Chat → Build / Code / Manage), ~30s idle, and container stop. Mid-stream and tool steps do not push. Reuses `_save_to_git`; commit message `sage: chat ({reason})`. Local `/tmp` workspaces are not a repo root — treat that as saved.
 
+A turn ends at `done`. What comes after it — classifying the turn for a Build offer, compacting the session, the commit + push — is aftercare, and it runs with the turn lock already released, so the next question is accepted while the last one is still tidying up. Aftercare that touches what the next turn touches takes the lock back for itself: compaction, because it rewrites the session the next prompt runs in, and the save, because it commits the whole tree. Losing that race defers the work rather than running it unguarded — compaction waits for the turn after next, the commit falls back to the idle timer.
+
 `threads.json` shape:
 
 ```json

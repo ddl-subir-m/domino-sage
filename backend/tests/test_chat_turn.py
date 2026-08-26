@@ -1092,3 +1092,54 @@ def test_a_turn_that_never_stops_talking_hits_the_ceiling(tmp_path: Path, monkey
     assert "stopped making progress" not in err["message"]  # it never stopped; that is the point
     assert next(e for e in out if e["type"] == "done") == {
         "type": "done", "ok": False, "decision": "timeout"}
+
+
+# --- Tidying up is not the turn ---
+
+
+def test_the_lock_is_free_before_the_turn_finishes_tidying_up(tmp_path: Path):
+    """`done` ends the turn; classify, compact and push are aftercare that runs after it.
+
+    All three used to run with the turn lock still held, so the next question — typed the moment
+    the answer appeared, which is when people type — was refused as busy until the tidying ended.
+    """
+    orch, _ = _orch(tmp_path, [Turn(text="Rates is the largest desk.")])
+    tid = orch.create_thread()["id"]
+    while_classifying: list[bool] = []
+
+    def spy(*_a, **_k):
+        while_classifying.append(orch.turn_busy())
+
+    orch._maybe_suggest_handoff = spy
+    at_done = None
+    for ev in orch.chat_stream(tid, "what's our gross exposure by desk?"):
+        if ev["type"] == "done":
+            at_done = orch.turn_busy()
+
+    assert at_done is False
+    # The classifier is the slow one — up to handoff.TIMEOUT_S of gateway call, every turn that
+    # has not been offered Build yet — and it needs nothing the next turn needs.
+    assert while_classifying == [False]
+
+
+def test_a_commit_waits_for_the_turn_that_beat_it_to_the_lock(tmp_path: Path):
+    """The save runs off the turn lock now, so it has to take it back: it commits the whole tree,
+    pulls, and can run the conflict turn. Losing that race defers the commit; it never drops it."""
+    orch, _ = _orch(tmp_path, [Turn(text="Rates.")])
+    calls = _track_saves(orch)
+    tid = orch.create_thread()["id"]
+
+    def next_turn_gets_there_first(*_a, **_k):
+        orch._turn_lock.acquire()
+
+    orch._maybe_suggest_handoff = next_turn_gets_there_first
+    try:
+        events = list(orch.chat_stream(tid, "what's our gross exposure by desk?"))
+    finally:
+        orch._turn_lock.release()
+
+    assert calls == []
+    assert not any(e["type"] == "saved" for e in events)
+    assert orch._chat_dirty is True
+    assert orch._chat_save_timer is not None
+    orch._cancel_chat_idle_save()

@@ -162,3 +162,31 @@ def test_does_not_recompact_the_next_short_turn(tmp_path: Path, monkeypatch):
     assert len(oc.compacts) == 1
     list(orch.chat_stream(tid, "three"))
     assert len(oc.compacts) == 1
+
+
+def test_compaction_leaves_a_session_the_next_turn_has_taken(tmp_path: Path):
+    """Compaction is aftercare: it runs after `done`, off the turn lock, so it takes the lock back
+    before it rewrites anything. Summarising a session a live turn is prompting pulls that turn's
+    context out from under it, and wait_for_idle would then sit out the whole turn."""
+    over = int(chat_compact.DEFAULT_CONTEXT * chat_compact.TOKEN_RATIO) + 1
+    orch, oc = _orch(tmp_path, [Turn(text="ok", tokens={"input": over, "output": 1})])
+    tid = orch.create_thread()["id"]
+
+    def next_turn_gets_there_first(*_a, **_k):
+        orch._turn_lock.acquire()
+
+    orch._maybe_suggest_handoff = next_turn_gets_there_first
+    try:
+        events = list(orch.chat_stream(tid, "hi"))
+    finally:
+        del orch._maybe_suggest_handoff
+        orch._turn_lock.release()
+
+    assert oc.compacts == []
+    assert next(e for e in events if e["type"] == "done")["ok"] is True
+
+    # Deferred, not dropped: the trigger is a context size, so the next turn ends over it too.
+    orch._cancel_chat_idle_save()
+    oc.turns.append(Turn(text="still ok", tokens={"input": over, "output": 1}))
+    list(orch.chat_stream(tid, "again"))
+    assert len(oc.compacts) == 1

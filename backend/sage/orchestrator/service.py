@@ -2172,11 +2172,32 @@ class Orchestrator:
         if not self._turn_lock.acquire(blocking=False):
             yield from self._busy_refusal()
             return
+        # The lock goes at `done`, not at the end of this generator. What comes after `done` is
+        # aftercare — classify the turn for a Build offer, compact the session, commit and push —
+        # and it used to run with the lock still held, so the next question was refused as busy for
+        # as long as the aftercare took. The answer is on screen by then, which is exactly when
+        # someone types again: the wait they felt was the previous turn tidying up.
+        #
+        # Not "the aftercare is safe to race". Each piece that touches something the next turn also
+        # touches takes the lock back for itself — _maybe_compact_chat, because it rewrites the
+        # OpenCode session the next prompt runs in, and _flush_chat_save, because it commits the
+        # working tree. The classifier needs neither: it calls the gateway directly and writes only
+        # this Thread's handoff.json, so it runs off the lock as it is.
+        holding = True
         try:
-            yield from self._chat_stream(thread_id, prompt, timeout_s=timeout_s)
+            for ev in self._chat_stream(thread_id, prompt, timeout_s=timeout_s):
+                if holding and ev.get("type") == "done":
+                    # Released before the yield rather than after, so a client that hangs up on
+                    # `done` still frees it here. Baseline first: it means "no turn running", and a
+                    # turn that started after the release would have set its own for us to wipe.
+                    self._clear_turn_baseline()
+                    self._turn_lock.release()
+                    holding = False
+                yield ev
         finally:
-            self._clear_turn_baseline()
-            self._turn_lock.release()
+            if holding:
+                self._clear_turn_baseline()
+                self._turn_lock.release()
 
     def flush_chat_save(self) -> dict | None:
         """Push dirty Chat files now (leaving Chat, switching Thread). No-op if nothing is dirty."""
@@ -2206,9 +2227,23 @@ class Orchestrator:
         self._cancel_chat_idle_save()
         if not self._chat_dirty:
             return None
-        if not holding_turn and self._turn_lock.locked():
+        if holding_turn:
+            return self._chat_save_now(reason)
+        # Hold the lock for the save rather than test it and let go. This walks the tree, commits,
+        # pulls, and can run the conflict-resolution turn; a turn that starts partway through gets
+        # its half-written files committed. Testing left that window open, and the post-turn save
+        # now runs off the lock (see chat_stream), so the window is the moment someone is most
+        # likely to send the next thing. Losing the race only defers the commit.
+        if not self._turn_lock.acquire(blocking=False):
             self._arm_chat_idle_save()
             return None
+        try:
+            return self._chat_save_now(reason)
+        finally:
+            self._turn_lock.release()
+
+    def _chat_save_now(self, reason: str) -> dict | None:
+        """The save itself. The caller owns the turn lock; this decides what to do with the result."""
         try:
             project = self.project(start_preview=False)
             result = self._save_to_git(project, f"chat ({reason})")
@@ -2227,7 +2262,10 @@ class Orchestrator:
         self._chat_dirty = True
         self._chat_dirty_thread = thread_id
         if immediate:
-            return self._flush_chat_save(immediate, holding_turn=True)
+            # No `holding_turn`: the turn let the lock go at `done`, so this save takes it itself.
+            # If the next turn got there first the commit waits for the idle timer, which is what
+            # an ordinary text turn already does — later is fine for a commit.
+            return self._flush_chat_save(immediate)
         self._arm_chat_idle_save()
         return None
 
@@ -2772,10 +2810,19 @@ class Orchestrator:
         summarize = getattr(client, "summarize", None)
         if summarize is None:
             return
-        state = project.control.snapshot()
-        if not state.chat_thread_id:
+        # The turn let the lock go at `done` (see chat_stream), and this is the piece of aftercare
+        # that touches what the next prompt runs in: summarising a session mid-turn rewrites that
+        # turn's context, and wait_for_idle would then sit out the whole turn. So take the lock back
+        # rather than race it, and read the arming inside it — outside, the thread_id and the Chat
+        # model could be the next turn's. Skipping is safe: the trigger is a context size, so the
+        # turn that beat us here ends over the threshold too.
+        if not self._turn_lock.acquire(blocking=False):
+            log.info("chat compact: another turn started — leaving it to that one")
             return
         try:
+            state = project.control.snapshot()
+            if not state.chat_thread_id:
+                return
             messages = client.messages(sid)
             provider, model = chat_compact.compact_model(state, project.shim.catalog)
             if not chat_compact.should_compact(messages, model):
@@ -2786,6 +2833,8 @@ class Orchestrator:
                 client.wait_for_idle(sid, appear_grace_s=2.0)
         except Exception:
             log.exception("chat compact failed; leaving the OpenCode session as-is")
+        finally:
+            self._turn_lock.release()
 
     def _recheck_app_data(self) -> None:
         """Re-derive what the agent is told about the app's data, now that the turn is over (#15).
