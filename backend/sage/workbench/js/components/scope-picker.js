@@ -29,7 +29,7 @@ window.SW = window.SW || {};
   }
 
   SW.ScopePicker = function ScopePicker({ open, onOpenChange }) {
-    const { scope, projects, scopeFlash } = SW.store.get();
+    const { scope, projects, scopeFlash, canProvision } = SW.store.get();
     const [query, setQuery] = useState('');
     const [creating, setCreating] = useState(false);
     const [name, setName] = useState('');
@@ -83,11 +83,24 @@ window.SW = window.SW || {};
             h(Button, { type: 'primary', onClick: create, disabled: !name.trim() }, 'Create')
           )
         : h(
-            'button',
-            { className: 'sw-scope-pop-new', onClick: () => setCreating(true) },
-            h(PlusOutlined, null),
-            'New project',
-            h('kbd', null, '⏎')
+            Tooltip,
+            {
+              // Say why it can't be used, rather than offering a button that fails on click.
+              title: canProvision ? '' : 'Sage can’t reach Domino from this container, '
+                + 'so it can’t create a Project.',
+              placement: 'right',
+            },
+            h(
+              'button',
+              {
+                className: 'sw-scope-pop-new',
+                disabled: !canProvision,
+                onClick: () => setCreating(true),
+              },
+              h(PlusOutlined, null),
+              'New project',
+              h('kbd', null, '⏎')
+            )
           ),
 
       h(

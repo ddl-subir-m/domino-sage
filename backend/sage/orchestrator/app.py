@@ -542,6 +542,40 @@ async def list_projects() -> JSONResponse:
     })
 
 
+@control_app.post("/api/projects")
+async def create_project(body: dict) -> JSONResponse:
+    """Create a Project from a typed name and start this viewer's Sage Builder in it (#46).
+
+    A minute of real work: a private sage-* repo, the template seeded and pushed, a git-based Domino
+    project, then the builder. The typed name is not the Domino project name — it rides into the
+    repo as the chip overlay and into the project's description — so the name a person picks can be
+    anything without breaking the lookup Sage finds Projects by.
+    """
+    if _provision is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Sage can't reach Domino from this container, so it can't create a "
+                              "Project. This build runs against the project it is bound to."},
+        )
+    from ..provision.service import workspace_is_running
+
+    name = str((body or {}).get("name") or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "Name the project to create it."})
+    try:
+        created = await run_in_threadpool(_provision.create_app, name)
+    except Exception as e:
+        log.exception("chip: couldn't create the Project %r", name)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content={
+        "open_url": created.open_url,
+        "running": workspace_is_running(created.workspace),
+        "launched": True,
+        "workspace_id": (created.workspace or {}).get("id"),
+        "project": {"id": created.project.id, "name": created.project.name},
+    })
+
+
 @control_app.post("/api/projects/{project_id}/open")
 async def open_project(project_id: str) -> JSONResponse:
     """Attach THIS viewer's Sage Builder in that Project and say where to send the browser (#47).

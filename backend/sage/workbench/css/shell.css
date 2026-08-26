@@ -215,7 +215,8 @@
   cursor: pointer;
   text-align: left;
 }
-.sw-scope-pop-new:hover { background: var(--purple-100); }
+.sw-scope-pop-new:hover:not(:disabled) { background: var(--purple-100); }
+.sw-scope-pop-new:disabled { color: var(--gray-500); cursor: not-allowed; }
 .sw-scope-pop-new kbd { margin-left: auto; }
 .sw-scope-pop-search { padding: var(--s2) var(--s4); border-top: 1px solid var(--gray-300); }
 .sw-scope-pop-list { max-height: 320px; overflow-y: auto; padding-bottom: var(--s2); }

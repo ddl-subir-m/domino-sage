@@ -28,6 +28,9 @@ window.SW = window.SW || {};
       },
     },
     projects: [],
+    // Whether this container can create or attach Projects at all (Domino + a git host).
+    // False on a laptop run, where New project has nothing to create against.
+    canProvision: false,
     scope: NO_SCOPE,
     scopeFlash: false,
 
@@ -570,6 +573,42 @@ window.SW = window.SW || {};
 
   }
 
+  // Both ways out of this builder — switching Project and creating one — end the same way: a URL
+  // in another container, and a wait while its session comes up. One Sage Builder is bound to one
+  // project volume, so there is no version of this that stays on the page.
+  //
+  // The builder being left stays running. Stopping it would have to commit, pull, resolve and push
+  // first, and could cut off a build mid-turn; coming back is then a resume instead of a reuse.
+  async function handOver({ title, detail, failure, start }) {
+    const modal = antd.Modal.info({
+      title,
+      content: detail,
+      okButtonProps: { style: { display: 'none' } },
+      closable: false,
+      maskClosable: false,
+    });
+    try {
+      const opened = await start();
+      const projectId = (opened.project && opened.project.id) || opened.project_id;
+      let url = opened.running ? opened.open_url : null;
+      // A launched or resumed workspace reports Started while its session is still booting, so
+      // going in now would land on a page that isn't ready. ~4 minutes, then say so.
+      for (let i = 0; !url && i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const s = await SW.api.projectStatus(projectId, opened.workspace_id).catch(() => null);
+        if (s && s.running && s.open_url) url = s.open_url;
+      }
+      if (!url) throw new Error('The workspace is taking longer than expected to start.');
+      modal.destroy();
+      window.location.replace(url);
+      return opened;
+    } catch (err) {
+      modal.destroy();
+      antd.Modal.error({ title: failure, content: String((err && err.message) || err) });
+      return null;
+    }
+  }
+
   const store = {
 
     get: () => state,
@@ -626,6 +665,7 @@ window.SW = window.SW || {};
         applyBrandChrome(brand);
       }
       state.projects = projects;
+      state.canProvision = !!(projects[0] && projects[0].provisioning);
       state.scope = projects[0] || state.scope;
       applyModelStatus(projects[0]);
       state.charts = charts;
@@ -678,33 +718,27 @@ window.SW = window.SW || {};
     // makes. A collaborator's builder in that Project is never taken over.
     async attachProject(project) {
       if (!project || project.current) return;
-      const modal = antd.Modal.info({
+      await handOver({
         title: `Opening ${project.name}`,
-        content: 'Starting your workspace there. This takes about a minute if it was stopped.',
-        okButtonProps: { style: { display: 'none' } },
-        closable: false,
-        maskClosable: false,
+        detail: 'Starting your workspace there. This takes about a minute if it was stopped.',
+        failure: `Sage couldn't open ${project.name}`,
+        start: () => SW.api.openProject(project.id),
       });
-      try {
-        const opened = await SW.api.openProject(project.id);
-        let url = opened.running ? opened.open_url : null;
-        // A launched or resumed workspace reports Started while its session is still booting, so
-        // going in now would land on a page that isn't ready. ~4 minutes, then say so.
-        for (let i = 0; !url && i < 80; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const s = await SW.api.projectStatus(project.id, opened.workspace_id).catch(() => null);
-          if (s && s.running && s.open_url) url = s.open_url;
-        }
-        if (!url) throw new Error('The workspace is taking longer than expected to start.');
-        modal.destroy();
-        window.location.replace(url);
-      } catch (err) {
-        modal.destroy();
-        antd.Modal.error({
-          title: `Sage couldn't open ${project.name}`,
-          content: String((err && err.message) || err),
-        });
-      }
+    },
+
+    // New project is a real verb (#46): a private sage-* repo, the template seeded and pushed, a
+    // git-based Domino project, then this viewer's builder in it. The name typed here becomes the
+    // chip there — it rides into the repo, because the Domino project has to be named sage-<slug>
+    // for Sage to find it again.
+    async createProject(name) {
+      const trimmed = String(name || '').trim();
+      if (!trimmed) return null;   // the picker disables Create, so this is only belt-and-braces
+      return handOver({
+        title: `Creating ${trimmed}`,
+        detail: 'Setting up the repository and starting your workspace. This takes about a minute.',
+        failure: `Sage couldn't create ${trimmed}`,
+        start: () => SW.api.createProject(trimmed),
+      });
     },
 
     // Opening a thread adopts its project, so you never attach a resource
@@ -725,11 +759,6 @@ window.SW = window.SW || {};
         await store.setScope(target, { silent: true });
       }
       return target;
-    },
-
-    async createProject(name) {
-      antd.message.info('This project is the current scope.');
-      return null;
     },
 
     async reloadProjects() {

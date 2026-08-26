@@ -236,7 +236,7 @@ SW.api = {
   projects: async () => {
     const [p, listing] = await Promise.all([
       request('/project'),
-      request('/projects').catch(() => ({ items: [] })),
+      request('/projects').catch(() => ({ items: [], provisioning: false })),
     ]);
     const here = {
       id: p.id,
@@ -249,6 +249,9 @@ SW.api = {
       planCount: 0,
       model: p.model,
       current: true,
+      // A fact about this container, not this project — and this row is the only one that
+      // describes the container the Workbench is running in.
+      provisioning: listing.provisioning !== false,
     };
     const elsewhere = (listing.items || [])
       .filter((it) => it && it.id && !it.current)
@@ -260,9 +263,7 @@ SW.api = {
   projectStatus: (id, workspaceId) =>
     request(`/projects/status?project_id=${encodeURIComponent(id)}` +
       (workspaceId ? `&workspace_id=${encodeURIComponent(workspaceId)}` : '')),
-  createProject: async () => {
-    throw new Error('This project is the current scope. Open Sage Builder in a git-based app project to publish a Built App.');
-  },
+  createProject: (name) => request('/projects', { method: 'POST', body: { name } }),
   resources: async () => {
     // Membership is a local file. Do not wait on the Domino listing or on /project
     // (which starts the preview) — a hard refresh otherwise paints Data (0) for seconds.

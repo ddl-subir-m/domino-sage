@@ -170,13 +170,18 @@ class ProvisionService:
             log.warning("couldn't roll back repo %s (delete it manually)", repo.full_name, exc_info=True)
 
     def create_app(self, display_name: str, *, name: str | None = None) -> AppCreated:
-        """Provision a Project. The repo is `sage-<slug of display_name>` and the Domino project
-        keeps the typed display name.
+        """Provision a Project: a private `sage-*` repo, a git-based Domino project of that same
+        name, and this caller's Sage Builder in it.
 
-        `name` overrides both: an already-`sage-`-prefixed name that becomes the repo name AND the
-        Domino project name. That is how the door creates a viewer's Default — it has to be findable
-        by `naming.default_project_name` on the next door call, and the chip's Default is a display
-        overlay that never reaches Domino.
+        The Domino project is named after the REPO, never after what the person typed (#46). Both
+        halves of Sage look a Project up by that name — the door finds a viewer's Default with
+        `naming.default_project_name`, and a `-N` collision suffix has to land on both sides — and a
+        typed name is neither unique nor stable. The readable name is seeded into the repo instead,
+        as the chip overlay the new builder will read, and sent as the project's description so the
+        Project is still findable in Domino's own UI.
+
+        `name` is an already-`sage-`-prefixed name to use instead of a slug of `display_name`; the
+        door passes the Default's computed name.
         """
         display_name = display_name.strip()
         if not display_name:
@@ -189,19 +194,13 @@ class ProvisionService:
             self._seed(
                 repo.clone_url, self._template, branch=self._branch,
                 token_provider=self._push_token_provider,
+                settings={"displayName": display_name},
             )
-            # With an explicit `name` the Domino project IS the repo name — that is what the door
-            # looks the Default up by, so there is nothing to fall back to. Otherwise the project
-            # keeps the human name, falling back to the (unique) repo name if Domino rejects it
-            # (e.g. a duplicate project name).
+            # The repo name, not `name`: _create_repo may have taken a -N candidate, and the project
+            # has to carry the same suffix.
             repo_name = repo.full_name.split("/", 1)[-1]
-            try:
-                project = self._cp.create_project(
-                    repo_name if name else display_name, git_url=repo.clone_url, branch=self._branch)
-            except Exception:
-                if name:
-                    raise
-                project = self._cp.create_project(repo_name, git_url=repo.clone_url, branch=self._branch)
+            project = self._cp.create_project(
+                repo_name, git_url=repo.clone_url, branch=self._branch, description=display_name)
         except Exception:
             self._rollback_repo(repo)
             raise

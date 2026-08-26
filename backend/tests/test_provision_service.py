@@ -26,7 +26,9 @@ def test_create_app_provisions_repo_project_workspace(tmp_path, no_network_seed)
 
     assert created.repo.full_name == "test-owner/sage-my-app"
     assert created.repo.private is True
-    assert created.project.name == "My App"
+    # The Domino project is named after the repo, never after what was typed (#46) — Sage looks a
+    # Project up by that name, and the typed name rides in as the chip overlay instead.
+    assert created.project.name == "sage-my-app"
     assert created.project.git_url == created.repo.clone_url
     assert created.workspace["id"] == f"ws-{created.project.id}"
     # seed was invoked with the new repo's clone URL
@@ -37,7 +39,7 @@ def test_create_app_returns_an_open_url_for_the_new_builder(tmp_path, no_network
     # The workspace DTO carries owner + run id and the project name comes from the ProjectRef, so
     # the caller gets a host-relative path it can send the browser to.
     created = _service(tmp_path, seed_calls=no_network_seed).create_app("My App")
-    assert created.open_url == f"/tester/My%20App/notebookSession/run-{created.project.id}/"
+    assert created.open_url == f"/tester/sage-my-app/notebookSession/run-{created.project.id}/"
 
 
 def test_create_app_resolves_repo_name_collision(tmp_path, no_network_seed):

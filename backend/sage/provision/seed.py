@@ -62,12 +62,20 @@ def seed_and_push(
     branch: str = "main",
     message: str = "Initial commit from Sage",
     token_provider: Callable[[], str] | None = None,
+    settings: dict | None = None,
 ) -> None:
     """Materialize the template into a temp repo and push it to `clone_url` on `branch`.
 
     `token_provider`, when given, supplies the HTTPS token for the push (see module docstring):
     it's injected via a one-shot credential helper and the child git process's env only. Raises
-    RuntimeError (carrying git's message, never the token) if git fails."""
+    RuntimeError (carrying git's message, never the token) if git fails.
+
+    `settings` is written to `.sage/settings.json` in the initial commit. That is how the name a
+    person typed reaches the chip of a builder that does not exist yet (#46): the Domino project is
+    named `sage-<slug>` so the door can find it, and the readable name rides in the repo, which is
+    the only thing the new container will have. `.sage/settings.json` is a committed file — the
+    template's .gitignore excludes only credentials, samples and scratch."""
+    import json
     import tempfile
 
     push_prefix: list[str] = []
@@ -81,6 +89,19 @@ def seed_and_push(
     with tempfile.TemporaryDirectory(prefix="sage-seed-") as tmp:
         repo = Path(tmp) / "repo"
         _copy_template(Path(template), repo)
+        if settings:
+            sage_dir = repo / ".sage"
+            sage_dir.mkdir(parents=True, exist_ok=True)
+            merged = {}
+            existing = sage_dir / "settings.json"
+            if existing.exists():
+                try:
+                    loaded = json.loads(existing.read_text())
+                    merged = loaded if isinstance(loaded, dict) else {}
+                except (OSError, ValueError):
+                    merged = {}
+            merged.update(settings)
+            existing.write_text(json.dumps(merged, indent=2))
         _git(repo, "init", "-q")
         _git(repo, "checkout", "-q", "-b", branch)
         _git(repo, "add", "-A")
