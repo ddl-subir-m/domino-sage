@@ -92,10 +92,28 @@ class OpenCodeClient:
         # /api/* responses wrap the resource in {"data": {...}}.
         return (payload.get("data") or payload)["id"]
 
-    def messages(self, session_id: str) -> list[dict]:
-        r = httpx.get(f"{self.base_url}/api/session/{session_id}/message", timeout=30)
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        """This session's messages, OLDEST FIRST. Pass `limit` for only the newest few.
+
+        `order` is sent explicitly because the server's default is `desc` — verified against the
+        pinned 1.18.4, which answers a two-message session as [assistant, user]. Every caller here
+        reads this list as a transcript, oldest to newest: the poll loops keep "the latest text
+        part" by letting the last assignment win, so on a desc list they kept the EARLIEST text of
+        the turn and showed an intermediate "let me try..." as the finished answer. The test double
+        appends in chronological order, so no test could see it.
+
+        `limit` exists because this is polled once a second for the length of a turn, and the whole
+        transcript came back every time — a cost that grows with the conversation rather than with
+        the question. The newest N messages are enough: a part that scrolls out of the window was
+        emitted on an earlier poll and is already in the caller's `seen` set, so nothing is lost by
+        not looking at it again.
+        """
+        params: dict = {"order": "desc", "limit": limit} if limit is not None else {"order": "asc"}
+        r = httpx.get(f"{self.base_url}/api/session/{session_id}/message",
+                      params=params, timeout=30)
         r.raise_for_status()
-        return r.json().get("data", [])
+        data = r.json().get("data", [])
+        return list(reversed(data)) if limit is not None else data
 
     def last_message_id(self, session_id: str) -> str | None:
         ms = self.messages(session_id)

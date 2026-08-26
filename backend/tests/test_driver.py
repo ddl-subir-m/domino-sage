@@ -190,3 +190,42 @@ def test_summarize_posts_provider_and_model(monkeypatch):
     url, body = calls[0]
     assert url.endswith("/api/session/s1/summarize")
     assert body == {"providerID": "sage-gateway", "modelID": "sonnet", "auto": False}
+
+
+class _JsonResp(_Resp):
+    def __init__(self, payload):
+        super().__init__(200)
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_messages_asks_for_oldest_first_because_the_server_defaults_to_newest(monkeypatch):
+    """The server's default order is `desc` — verified live against the pinned 1.18.4, which
+    answers a two-message session as [assistant, user].
+
+    Every caller reads this list as a transcript and lets the last assignment win when it keeps
+    "the latest text part". On a desc list that keeps the EARLIEST text of the turn, which is how
+    an intermediate "let me try to access that file..." was shown as the finished answer. The test
+    double appends chronologically, so nothing but this assertion can see the difference.
+    """
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: seen.update(params) or _JsonResp({"data": []}))
+    OpenCodeClient("http://x").messages("s1")
+    assert seen == {"order": "asc"}
+
+
+def test_a_bounded_poll_asks_for_the_newest_few_and_hands_them_back_oldest_first(monkeypatch):
+    # The whole transcript came back on every poll, once a second for the length of a turn, so the
+    # cost grew with the Thread rather than the question. `limit` has to page from the NEW end,
+    # which is `desc` — so the rows come back reversed to keep every caller's transcript order.
+    seen = {}
+    newest_first = [{"id": "m3"}, {"id": "m2"}, {"id": "m1"}]
+    monkeypatch.setattr(
+        "sage.driver.opencode.httpx.get",
+        lambda url, params, timeout: seen.update(params) or _JsonResp({"data": newest_first}))
+    out = OpenCodeClient("http://x").messages("s1", limit=3)
+    assert seen == {"order": "desc", "limit": 3}
+    assert [m["id"] for m in out] == ["m1", "m2", "m3"]

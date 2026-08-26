@@ -125,6 +125,12 @@ _MAX_POLL_FAILURES = 4
 # App) never goes idle, the UI stays on "Running Python…", and the turn lock blocks the next send.
 # 90s is enough for a real query + chart; the live hang ran past 20 minutes.
 _CHAT_TURN_TIMEOUT_S = 90.0
+# How many of the newest messages a Chat poll reads. The whole transcript came back on every poll,
+# once a second for the length of the turn, so the cost of asking a question grew with the length of
+# the Thread rather than with the question — and it competed for CPU with the agent it was watching,
+# on the same box. A turn writes one assistant message per step, so this is a turn many times over;
+# anything older was already emitted and is already in `seen`.
+_CHAT_POLL_MESSAGES = 20
 
 # Largest image inlined into a prompt as a data: URI. Base64 inflates by ~4/3, and the result rides
 # in the request body through OpenCode -> shim -> gateway -> provider; anything larger degrades to
@@ -2453,7 +2459,7 @@ class Orchestrator:
             sid = self._ensure_thread_session(store, thread_id, project, client)
             project.active_session_id = sid
             before = snapshot_files(project.workspace.path)
-            seen = self._seen_baseline(client, sid)
+            seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
             mentioned = self._chat_mention_files(prompt, items, project.workspace.path)
             client.send_prompt(
                 sid, self._chat_prompt(thread_id, prompt, ctx, urls,
@@ -2503,7 +2509,7 @@ class Orchestrator:
                     return
                 try:
                     running = client.is_running(sid)
-                    msgs = client.messages(sid)
+                    msgs = client.messages(sid, limit=_CHAT_POLL_MESSAGES)
                     poll_failures = 0
                 except httpx.HTTPError as e:
                     poll_failures += 1
@@ -2809,7 +2815,7 @@ class Orchestrator:
                           "then resend."}
         yield {"type": "done", "ok": False, "decision": "busy"}
 
-    def _seen_baseline(self, client, sid: str) -> set[tuple[str, object]]:
+    def _seen_baseline(self, client, sid: str, *, limit: int | None = None) -> set[tuple[str, object]]:
         """Keys of every assistant part already in the session, so a turn only emits its OWN parts.
 
         client.messages(sid) returns the ENTIRE session on every poll, and the emit-tracking `seen`
@@ -2820,7 +2826,7 @@ class Orchestrator:
         baseline (worst case is the echo, not a broken build) and let the loop retry."""
         seen: set[tuple[str, object]] = set()
         try:
-            for m in client.messages(sid):
+            for m in client.messages(sid, limit=limit) if limit else client.messages(sid):
                 if m.get("type") == "assistant":
                     for i, part in enumerate(m.get("content", [])):
                         seen.add(_part_key(m, i, part))

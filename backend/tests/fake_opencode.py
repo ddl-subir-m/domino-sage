@@ -78,10 +78,12 @@ class FakeOpenCode:
         self._by_session.setdefault(sid, [])
         return sid
 
-    def messages(self, session_id: str) -> list[dict]:
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
         # A copy: the orchestrator iterates this while its own emit-once bookkeeping mutates, and a
         # shared list would let a test's assertions and the loop's state drift apart.
-        return list(self._by_session.get(session_id, []))
+        # Oldest first, like the real client — which has to ask for that order explicitly.
+        msgs = list(self._by_session.get(session_id, []))
+        return msgs[-limit:] if limit is not None else msgs
 
     def last_message_id(self, session_id: str) -> str | None:
         msgs = self._by_session.get(session_id, [])
