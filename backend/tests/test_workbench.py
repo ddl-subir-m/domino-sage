@@ -158,3 +158,21 @@ def test_the_build_offer_answers_an_explicit_ask_in_its_own_words():
     assert "h(PlanSuggestion, { block })" in blocks           # the card can see which one it is
     # and the reason reaches it from the turn event, live and on reload
     assert store.count("{ type: 'plan_suggestion', reason: ev.reason }") == 2
+
+
+def test_the_shell_asks_before_it_reuses_its_own_javascript():
+    """The shell's JS and CSS carry no version in their filenames. With no Cache-Control a browser
+    falls back to heuristic freshness, so an open tab can keep running code from before a deploy.
+    no-cache makes it ask every time; the ETag keeps the answer a cheap 304."""
+    import sage.orchestrator.app as appmod
+
+    client = TestClient(appmod.control_app)
+    assert client.get("/").headers["cache-control"] == "no-store"
+    for path in ("/js/store.js", "/css/builder.css", "/vendor/react.production.min.js"):
+        assert client.get(path).headers["cache-control"] == "no-cache", path
+
+    etag = client.get("/js/store.js").headers["etag"]
+    assert client.get("/js/store.js", headers={"If-None-Match": etag}).status_code == 304
+
+    # The font is renamed when its bytes are replaced, so it keeps the long immutable cache.
+    assert "immutable" in client.get("/fonts/inter-latin-var.woff2").headers["cache-control"]

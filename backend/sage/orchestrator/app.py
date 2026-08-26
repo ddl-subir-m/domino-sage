@@ -1840,10 +1840,28 @@ def _preview_llm() -> tuple[str, str] | None:
 
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
                                                _preview_llm))
-control_app.mount("/css", StaticFiles(directory=_WB / "css"), name="wb-css")
-control_app.mount("/js", StaticFiles(directory=_WB / "js"), name="wb-js")
-control_app.mount("/img", StaticFiles(directory=_WB / "img"), name="wb-img")
-control_app.mount("/vendor", StaticFiles(directory=_WB / "vendor"), name="wb-vendor")
+class _RevalidatingStatic(StaticFiles):
+    """The shell's own assets carry no version in their filenames, and StaticFiles sends no
+    Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of
+    the time since Last-Modified — so a tab can keep running the JS from before a deploy without
+    ever asking. `no-cache` means "ask every time", not "do not store": the ETag StaticFiles
+    already sends turns that question into a 304 whenever the bytes are unchanged.
+
+    Deliberately not `immutable`. That belongs to /fonts, where replacing the bytes means a new
+    filename in the page that asks for them (see font()). Nothing here is renamed on an upgrade,
+    /vendor included: a year-long immutable React would survive the upgrade that replaced it.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
+control_app.mount("/css", _RevalidatingStatic(directory=_WB / "css"), name="wb-css")
+control_app.mount("/js", _RevalidatingStatic(directory=_WB / "js"), name="wb-js")
+control_app.mount("/img", _RevalidatingStatic(directory=_WB / "img"), name="wb-img")
+control_app.mount("/vendor", _RevalidatingStatic(directory=_WB / "vendor"), name="wb-vendor")
 
 
 def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
