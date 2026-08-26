@@ -13,6 +13,14 @@ def test_sage_chat_prompt_is_the_agents_md_file():
     assert cfg["agent"]["sage-chat"]["permission"]["bash"] == "allow"
 
 
+def test_sage_chat_prompt_teaches_visuals_without_being_asked():
+    prompt = (Path(__file__).resolve().parents[2] / "template" / "chat" / "AGENTS.md").read_text()
+    assert "They do not have to ask for a visual" in prompt
+    assert "heatmap PNG" in prompt
+    assert "ax.imshow" in prompt
+    assert "greeting, thanks" in prompt
+
+
 def test_chat_attachment_listing_tells_the_agent_to_read_the_file():
     out = with_attachment_listing(
         "what data is there in @desk.csv",

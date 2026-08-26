@@ -2227,8 +2227,10 @@ class Orchestrator:
         lines.append(
             "This turn answers a question about data. Do not greet by asking what to build, "
             "and do not offer an app unless the person asked to make one that other people would use. "
-            f"A chart is a PNG at examples/{thread_id}/<slug>.png — that folder already exists, "
-            "not a React file, not src/. Write the file there; do not list directories. "
+            "If a chart or table would help, write it without being asked — a PNG and/or "
+            f".table.json at examples/{thread_id}/. A matrix is a heatmap PNG plus the table. "
+            "That folder already exists, not a React file, not src/. Write the file there; "
+            "do not list directories. "
             "@name in the user's message is the file listed above; read that path."
         )
         lines.append("")
