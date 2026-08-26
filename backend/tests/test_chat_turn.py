@@ -45,13 +45,14 @@ def _no_waiting(monkeypatch):
     handoff._health.reset()
 
 
-def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: str = "Sage"):
+def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: str = "Sage",
+          client=None):
     template = tmp / "template"
     (template / "src").mkdir(parents=True)
     (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
     (template / "package.json").write_text("{}")
     ws = tmp / "mnt" / "code"
-    oc = FakeOpenCode(ws, turns or [])
+    oc = client(ws) if client is not None else FakeOpenCode(ws, turns or [])
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=gateway or ScriptedGateway(),
                         catalog=_catalog(), project_id=project_id, feedback=OkFeedback(),
                         opencode_client=oc)
@@ -792,3 +793,176 @@ def test_named_project_does_not_hydrate_untitled(tmp_path: Path):
     project = orch.project(start_preview=False)
     assert project.workspace.is_untitled() is False
     assert project.status()["name"] == "Sage"
+
+
+# --- the live event stream -----------------------------------------------------------------------
+# The turn loop reads the transcript once a second and shows nothing until the turn ends, so a
+# question that takes ninety seconds is ninety seconds of spinner. These cover the other path: the
+# answer arrives on OpenCode's /event stream while it is being written. The poll stays underneath —
+# it is what ends the turn, and it is what runs when there is no stream to be had.
+
+def _live(kind: str, **payload):
+    from sage.driver.agent_driver import AgentEvent
+    return AgentEvent(kind=kind, payload=payload)
+
+
+class _FakeStream:
+    """Stands in for SessionEvents: scripted frames, then it stays open the way /event does."""
+
+    def __init__(self, events):
+        import threading
+        self._events = list(events)
+        self.delivered = threading.Event()
+        self._closed = threading.Event()
+
+    def __iter__(self):
+        for ev in self._events:
+            yield ev
+        self.delivered.set()
+        self._closed.wait(5)
+
+    def close(self):
+        self._closed.set()
+
+
+class StreamingFake(FakeOpenCode):
+    """A FakeOpenCode that can stream. `reads` records every transcript read, which is the thing
+    the stream is supposed to make rare."""
+
+    def __init__(self, workspace, turns, events):
+        super().__init__(workspace, turns)
+        self.stream = _FakeStream(events)
+        self.reads: list = []
+        self.stream_dir = None
+        self._grace = False
+
+    def session_events(self, session_id, *, directory=None):
+        self.stream_dir = directory
+        return self.stream
+
+    def messages(self, session_id, *, limit=None):
+        self.reads.append(limit)
+        return super().messages(session_id, limit=limit)
+
+    def is_running(self, session_id):
+        # True until every scripted frame is on the tap's queue, then one poll more: a real session
+        # goes idle a moment after its last token, and the loop drains before it asks.
+        if not self.stream.delivered.is_set():
+            return True
+        if not self._grace:
+            self._grace = True
+            return True
+        return False
+
+
+_A_TURN = [
+    _live("message", delta="The ", final=False),
+    _live("tool_run", tool="bash", input={"command": "python plot.py"}, call_id="c1", status="called"),
+    _live("message", delta="answer.", final=False),
+    _live("message", text="The answer.", final=True),
+    _live("phase", finish="stop"),
+]
+
+
+def _streamed(tmp_path: Path, events=None, text: str = "The answer."):
+    def client(ws):
+        return StreamingFake(ws, [Turn(text=text)], _A_TURN if events is None else events)
+    return _orch(tmp_path, client=client)
+
+
+def test_the_answer_arrives_while_the_turn_runs_instead_of_after_it(tmp_path: Path):
+    orch, _ = _streamed(tmp_path)
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "what is it"))
+
+    deltas = [e for e in out if e.get("type") == "delta"]
+    assert [d["text"] for d in deltas] == ["The ", "answer.", "The answer."]
+    # The last one is the whole text, not the last fragment: /event cannot be replayed, so a dropped
+    # frame leaves the live copy short and this is the event that makes it whole again.
+    assert deltas[-1]["final"] is True
+    # And the spinner runs when the command starts rather than when it finishes.
+    assert {"type": "agent", "kind": "tool", "tool": "bash", "detail": "python plot.py"} in out
+
+
+def test_streaming_leaves_the_record_of_the_turn_exactly_as_it_was(tmp_path: Path):
+    """`delta` is the turn happening; the transcript is the record of it. If deltas reached
+    history.jsonl a replayed Thread would show the answer once per fragment."""
+    orch, _ = _streamed(tmp_path)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what is it"))
+
+    history = orch.get_thread(tid)["history"]
+    texts = [e for e in history if e.get("type") == "agent" and e.get("kind") == "text"]
+    assert [e["text"] for e in texts] == ["The answer."]
+    assert not [e for e in history if e.get("type") == "delta"]
+
+
+def test_a_streamed_turn_reads_the_transcript_once_instead_of_once_a_second(tmp_path: Path):
+    """The poll re-read the newest messages every second for the length of the turn, so the cost of
+    asking grew with the length of the Thread rather than with the question — on the same box the
+    agent was working on. With the stream up the transcript is read to open the turn and to close
+    it, and not in between."""
+    orch, oc = _streamed(tmp_path)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what is it"))
+
+    assert [r for r in oc.reads if r is not None] == [20, 20]
+
+
+def test_the_stream_is_asked_for_the_workspace_because_it_answers_per_directory(tmp_path: Path):
+    """/event serves only the directory the connection asks for. Omit it and the subscriber gets
+    the server's own working directory instead — a stream of heartbeats and nothing else, on a turn
+    that is running perfectly well somewhere the subscriber is not listening. Measured against the
+    pinned binary: 0 session frames without the parameter, every frame of the turn with it. Nothing
+    fails when it is wrong; Chat just quietly polls forever."""
+    orch, oc = _streamed(tmp_path)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what is it"))
+
+    assert oc.stream_dir == str(orch.project(start_preview=False).workspace.path)
+
+
+def test_a_driver_that_cannot_stream_polls_exactly_as_before(tmp_path: Path):
+    """The stream is an improvement on the poll, never a replacement for it. A tap that reports
+    itself not-ok on its first tick is what keeps the old path intact."""
+    from sage.orchestrator.service import _EventTap
+
+    class NoStream:
+        pass
+
+    assert _EventTap(NoStream(), "s").ok is False
+    assert _EventTap(NoStream(), "s").drain() == []
+
+
+def test_a_stream_that_delivers_nothing_still_answers(tmp_path: Path):
+    """A provider that does not stream must cost the turn nothing at all: the transcript read at the
+    end is what produces the answer, exactly as it did before any of this existed."""
+    orch, _ = _streamed(tmp_path, events=[], text="Still answered.")
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "what is it"))
+
+    assert not [e for e in out if e.get("type") == "delta"]
+    assert {"type": "agent", "kind": "text", "text": "Still answered."} in out
+
+
+def test_the_live_stream_shows_the_answer_and_the_command_and_nothing_else(tmp_path: Path):
+    from sage.orchestrator.service import _chat_live_event
+
+    assert _chat_live_event(_live("message", delta="Bl", final=False)) == {"type": "delta", "text": "Bl"}
+    assert _chat_live_event(_live("message", text="Blue.", final=True)) == {
+        "type": "delta", "text": "Blue.", "final": True}
+    # An empty fragment is not an event.
+    assert _chat_live_event(_live("message", delta="", final=False)) is None
+    # The shape OpenCode actually sends for bash: tool.called, command inside `input`.
+    assert _chat_live_event(_live("tool_run", tool="bash", input={"command": "echo hi"},
+                                  call_id="c1", status="called")) == {
+        "type": "agent", "kind": "tool", "tool": "bash", "detail": "echo hi"}
+    # And the shape the event catalogue advertises for shell.started, which never fired live.
+    assert _chat_live_event(_live("tool_run", tool="bash", command="ls", status="called")) == {
+        "type": "agent", "kind": "tool", "tool": "bash", "detail": "ls"}
+    # A command's completion is not a second spinner — and it arrives with no tool name anyway.
+    assert _chat_live_event(_live("tool_run", tool="", call_id="c1", status="success")) is None
+    # write/read/edit stay off Chat's Thread (see _CHAT_SHOWN_TOOLS); step frames end the turn via
+    # is_running, not via the stream, because finish="stop" does not mean the session is idle.
+    assert _chat_live_event(_live("tool_run", tool="write", status="called")) is None
+    assert _chat_live_event(_live("phase", finish="stop")) is None

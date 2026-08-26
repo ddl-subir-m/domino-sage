@@ -317,8 +317,9 @@ def test_session_events_reads_data_frames_and_never_times_out_a_quiet_turn(monke
 
     captured = {}
 
-    def fake_stream(method, url, timeout):
+    def fake_stream(method, url, params, timeout):
         captured["url"] = url
+        captured["params"] = params
         captured["timeout"] = timeout
         return _Stream([
             "data: " + _json.dumps(_frame("session.next.text.delta", delta="hi")),
@@ -329,12 +330,47 @@ def test_session_events_reads_data_frames_and_never_times_out_a_quiet_turn(monke
         ])
 
     monkeypatch.setattr("sage.driver.opencode.httpx.stream", fake_stream)
-    out = list(OpenCodeClient("http://x").session_events(_SID))
+    out = list(OpenCodeClient("http://x").session_events(_SID, directory="/mnt/code"))
 
     assert captured["url"] == "http://x/event"        # global stream, not the durable one
+    # Without this the stream answers for the SERVER's directory, not the session's: measured
+    # against the pinned binary, 0 session frames omitted vs every frame of the turn present.
+    assert captured["params"] == {"directory": "/mnt/code"}
     assert captured["timeout"].read is None           # a thinking model is not a broken stream
     assert captured["timeout"].connect == 10.0        # but an absent stream fails fast
     assert [e.payload for e in out] == [
         {"delta": "hi", "final": False},
         {"text": "hi there", "final": True},
     ]
+
+
+def test_closing_the_stream_stops_the_reader_because_event_never_ends(monkeypatch):
+    """/event has no end and no `?after=`. A watcher that merely stopped iterating would leave a
+    reader parked on a socket that goes on buffering — this session's NEXT turn, and the one after
+    that, into a queue nobody drains. A Chat session is reused across turns, so that is a leak that
+    grows with the conversation."""
+    import json as _json
+
+    frame = "data: " + _json.dumps(_frame("session.next.text.delta", delta="x"))
+    closed: list = []
+
+    class _Endless(_Stream):
+        def __init__(self):
+            super().__init__([])
+
+        def iter_lines(self):
+            while True:
+                yield frame
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("sage.driver.opencode.httpx.stream", lambda *a, **k: _Endless())
+    stream = OpenCodeClient("http://x").session_events(_SID)
+    seen = 0
+    for _ in stream:
+        seen += 1
+        if seen == 3:
+            stream.close()
+    assert seen == 3          # the frame after close() is not delivered
+    assert closed == [True]   # and the connection went with it

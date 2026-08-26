@@ -130,6 +130,69 @@ def map_session_event(raw: dict, session_id: str) -> AgentEvent | None:
     return None
 
 
+class SessionEvents:
+    """A live read of the global /event stream, narrowed to one session. Iterate for AgentEvents.
+
+    Connect is bounded but READ IS NOT: a stream that is idle because the model is thinking is
+    working exactly as intended, and a read timeout here would sever it mid-turn — the same mistake
+    that once showed up downstream as "TypeError: network error". A bounded connect is what lets a
+    caller fall back to polling quickly when the stream cannot be had at all.
+
+    `close()` is safe from another thread, and closing is not optional. /event never ends on its
+    own, so a watcher that merely stopped iterating would leave a reader parked on a socket that
+    goes on buffering — this session's NEXT turn, and the turn after that, into a queue nobody
+    drains. A Chat session is reused across turns, so one abandoned reader per turn is a leak that
+    grows with the conversation rather than with the turn.
+
+    /event has no `?after=`, so a reconnect cannot replay what was missed. That is why text.ended
+    is authoritative rather than the deltas being the only record of the answer.
+    """
+
+    def __init__(self, base_url: str, session_id: str, directory: str | None = None) -> None:
+        self.base_url = base_url
+        self.session_id = session_id
+        self.directory = directory
+        self._response: httpx.Response | None = None
+        self._closed = False
+
+    def close(self) -> None:
+        """Drop the connection so a reader blocked in iter_lines unwinds instead of parking."""
+        self._closed = True
+        r, self._response = self._response, None
+        if r is not None:
+            try:
+                r.close()
+            except Exception:  # a socket that is already gone is the goal, not an error
+                log.debug("session_events: close raced the reader", exc_info=True)
+
+    def __iter__(self) -> Iterator[AgentEvent]:
+        timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        # `directory` is not optional in practice, whatever the spec says it is. /event delivers
+        # only the events of the directory the connection asks for, so a subscriber that omits it
+        # gets the server's own working directory — and a session created for a workspace anywhere
+        # else produces a stream of nothing but heartbeats. Measured: 0 session frames without it,
+        # every frame of the turn with it. The failure is silent, which is what makes it dangerous:
+        # the caller just falls back to polling and the streaming never happens.
+        params = {"directory": self.directory} if self.directory else None
+        with httpx.stream("GET", f"{self.base_url}/event", params=params, timeout=timeout) as r:
+            r.raise_for_status()
+            self._response = r
+            for line in r.iter_lines():
+                # Checked per frame as well as by close(): a reader that wakes on other traffic
+                # should stop on its own rather than depend on the socket teardown winning a race.
+                if self._closed:
+                    return
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    raw = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+                ev = map_session_event(raw, self.session_id)
+                if ev is not None:
+                    yield ev
+
+
 def map_event(raw: dict) -> AgentEvent:
     """OpenCode SSE envelope {id,type,properties} -> our harness-agnostic AgentEvent.
 
@@ -320,32 +383,12 @@ class OpenCodeClient:
     def interrupt(self, session_id: str) -> None:
         httpx.post(f"{self.base_url}/api/session/{session_id}/interrupt", timeout=30)
 
-    def session_events(self, session_id: str) -> Iterator[AgentEvent]:
-        """This session's turn events, live, off the global /event stream. See map_session_event.
+    def session_events(self, session_id: str, *, directory: str | None = None) -> SessionEvents:
+        """This session's turn events, live, off the global /event stream. See SessionEvents.
 
-        Connect is bounded but READ IS NOT: a stream that is idle because the model is thinking is
-        working exactly as intended, and a read timeout here would sever it mid-turn — the same
-        mistake that once showed up downstream as "TypeError: network error". A bounded connect is
-        what lets a caller fall back to polling quickly when the stream cannot be had at all.
-
-        Ends when the server closes the stream. Reconnecting is the caller's business, because only
-        the caller knows whether its turn is still running — and since /event has no `?after=`,
-        a reconnect cannot replay what was missed. That is why text.ended is treated as
-        authoritative rather than the deltas being the only record of the answer.
+        `directory` is the workspace the session was created for. Omit it and the stream is silent.
         """
-        timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
-        with httpx.stream("GET", f"{self.base_url}/event", timeout=timeout) as r:
-            r.raise_for_status()
-            for line in r.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                try:
-                    raw = json.loads(line[6:])
-                except json.JSONDecodeError:
-                    continue
-                ev = map_session_event(raw, session_id)
-                if ev is not None:
-                    yield ev
+        return SessionEvents(self.base_url, session_id, directory)
 
     def events(self, session_id: str) -> Iterator[AgentEvent]:
         """The per-session DURABLE stream: resumable (?after=), but checkpoints only — it carries

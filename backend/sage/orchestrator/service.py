@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import queue
 import re
 import tempfile
 import threading
@@ -905,6 +906,86 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     time. Falls back to the index when a part carries no id, which is the old behaviour and no worse
     than it was."""
     return (m["id"], part.get("id") or i)
+
+
+class _EventTap:
+    """A turn's live event stream, drained by the turn loop without ever blocking it.
+
+    The stream is a socket read that can sit quiet for a minute while a model thinks, and the turn
+    loop has to stay responsive to Stop and to its own timeout the whole time. So the read lives on
+    its own thread and hands events over a queue; the loop takes whatever has arrived and moves on.
+
+    `ok` goes False the moment the stream fails or ends. That is the loop's signal to go back to
+    reading the transcript every second — the poll is not dead code, it is the fallback, and it is
+    also what ends the turn. A stream that never connects costs the turn nothing but a log line.
+    """
+
+    def __init__(self, client, sid: str, directory: str | None = None) -> None:
+        opener = getattr(client, "session_events", None)
+        # A driver that cannot stream is not an error. `ok` False from the first tick leaves the
+        # turn loop on exactly the path it took before any of this existed.
+        self._stream = opener(sid, directory=directory) if opener is not None else None
+        self.ok = self._stream is not None
+        self._q: queue.Queue = queue.Queue()
+        if self._stream is not None:
+            threading.Thread(target=self._read, daemon=True, name="sage-chat-events").start()
+
+    def _read(self) -> None:
+        try:
+            for ev in self._stream:
+                self._q.put(ev)
+        except Exception as e:  # any failure means "poll instead", never "fail the turn"
+            log.info("chat: event stream unavailable (%s: %s) - polling the transcript instead",
+                     type(e).__name__, e)
+        finally:
+            self.ok = False
+
+    def drain(self) -> list:
+        """Everything that has arrived since the last call. Never blocks."""
+        out = []
+        while True:
+            try:
+                out.append(self._q.get_nowait())
+            except queue.Empty:
+                return out
+
+    def close(self) -> None:
+        self.ok = False
+        if self._stream is not None:
+            self._stream.close()
+
+
+def _chat_live_event(ev) -> dict | None:
+    """One AgentEvent off the live stream -> a Chat SSE event, or None to drop it.
+
+    Text becomes `delta`, a type the transcript never contains: these are the turn as it happens,
+    not the record of it. The record is still the single text event written at the end from the
+    transcript, so history.jsonl replays exactly as it did before this existed and a client that
+    ignores `delta` sees the turn it has always seen.
+
+    `final` carries the WHOLE text rather than the last fragment, because /event cannot be replayed:
+    a dropped frame leaves the live copy short, and this is the event that makes it whole again.
+
+    bash becomes the tool event the poll loop already yields, so "Running Python…" shows up when the
+    command starts instead of when it finishes. Everything else is dropped: the other tools stay off
+    Chat's Thread (see _CHAT_SHOWN_TOOLS), and step and error frames are the poll loop's business.
+    """
+    if ev.kind == "message":
+        if ev.payload.get("final"):
+            return {"type": "delta", "text": str(ev.payload.get("text") or ""), "final": True}
+        text = str(ev.payload.get("delta") or "")
+        return {"type": "delta", "text": text} if text else None
+    if ev.kind == "tool_run" and str(ev.payload.get("tool") or "").lower() == "bash":
+        if ev.payload.get("status") != "called":
+            return None
+        # Measured: bash arrives as tool.called with the command inside `input`, and the
+        # shell.started frame that carries `command` at the top level never fired at all. Read both
+        # rather than pick, because the one that looked obvious is the one that was never sent.
+        command = ev.payload.get("command")
+        if not command and isinstance(ev.payload.get("input"), dict):
+            command = ev.payload["input"].get("command")
+        return {"type": "agent", "kind": "tool", "tool": "bash", "detail": str(command or "")}
+    return None
 
 
 # Chat's Thread shows the chart/table, not a tool log. bash still drives the
@@ -2454,6 +2535,7 @@ class Orchestrator:
         urls = _urls_in_chat(prompt, history)
         chat_token = project.control.arm_chat(thread_id)
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
+        tap: _EventTap | None = None
         try:
             client = self._ensure_opencode()
             sid = self._ensure_thread_session(store, thread_id, project, client)
@@ -2461,6 +2543,10 @@ class Orchestrator:
             before = snapshot_files(project.workspace.path)
             seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
             mentioned = self._chat_mention_files(prompt, items, project.workspace.path)
+            # Opened BEFORE the prompt: the stream has no `?after=`, so anything emitted before the
+            # reader connects is gone. The window is a local connect and text.ended repairs whatever
+            # falls in it, which is the whole reason the end event is treated as authoritative.
+            tap = _EventTap(client, sid, directory=str(project.workspace.path))
             client.send_prompt(
                 sid, self._chat_prompt(thread_id, prompt, ctx, urls,
                                        workspace=project.workspace.path,
@@ -2507,9 +2593,20 @@ class Orchestrator:
                         store.append_history(thread_id, suggestion)
                         yield suggestion
                     return
+                for ev in tap.drain():
+                    live = _chat_live_event(ev)
+                    if live is not None:
+                        yield live
                 try:
                     running = client.is_running(sid)
-                    msgs = client.messages(sid, limit=_CHAT_POLL_MESSAGES)
+                    appeared = appeared or running
+                    finished = appeared and not running
+                    # While the stream is healthy the transcript is read ONCE, at the end. The
+                    # answer is already arriving on the stream, and re-reading the newest messages
+                    # every second was the cost that grew with the length of the Thread rather than
+                    # with the question — on the same box the agent is working on.
+                    msgs = (client.messages(sid, limit=_CHAT_POLL_MESSAGES)
+                            if finished or not tap.ok else ())
                     poll_failures = 0
                 except httpx.HTTPError as e:
                     poll_failures += 1
@@ -2521,7 +2618,6 @@ class Orchestrator:
                         return
                     time.sleep(2.0)
                     continue
-                appeared = appeared or running
                 pending_text = ""
                 for m in msgs:
                     if m.get("type") != "assistant":
@@ -2549,9 +2645,12 @@ class Orchestrator:
                             if str(tool).lower() in _CHAT_SHOWN_TOOLS:
                                 store.append_history(thread_id, ev)
                                 yield ev
-                            elif str(tool).lower() == "bash":
+                            elif str(tool).lower() == "bash" and not tap.ok:
+                                # Only when the transcript IS the source. With the stream up this
+                                # line already ran when the command started, and replaying it from
+                                # the final read would flash "Running Python…" on a finished turn.
                                 yield ev
-                if appeared and not running:
+                if finished:
                     if pending_text:
                         ev = {"type": "agent", "kind": "text", "text": pending_text}
                         store.append_history(thread_id, ev)
@@ -2580,6 +2679,8 @@ class Orchestrator:
                 yield suggestion
             self._maybe_compact_chat(client, sid, project)
         finally:
+            if tap is not None:
+                tap.close()
             project.control.disarm_chat(chat_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
