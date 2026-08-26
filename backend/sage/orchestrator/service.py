@@ -955,6 +955,31 @@ class _EventTap:
             self._stream.close()
 
 
+# What Chat says it is doing, while it does it. None of this is kept: the Thread keeps the chart
+# and the answer, not a tool log (see _CHAT_SHOWN_TOOLS). This is the spinner's subject.
+#
+# Sage tells the agent exactly how to reach a Data Source and how to read a Dataset file, so both
+# arrive as bash rather than as tools of their own — and both are the slow ones. A turn that spent
+# two minutes on a 5.5M-row query looked identical to a turn that had hung.
+_CHAT_QUERY = re.compile(r"""get_datasource\(\s*['"]([^'"]+)['"]""")
+_CHAT_DATASET_READ = re.compile(r"""download_file\(\s*['"]([^'"]+)['"]""")
+
+
+def _chat_activity(tool: str, subject: str) -> tuple[str, str]:
+    """(the kind of work, the thing it is working on) for a tool call Chat should name."""
+    if tool in ("read", "write"):
+        return tool, subject
+    if tool == "bash":
+        found = _CHAT_QUERY.search(subject)
+        if found:
+            return "query", found.group(1)
+        found = _CHAT_DATASET_READ.search(subject)
+        if found:
+            return "read", found.group(1)
+        return "bash", ""
+    return "", ""
+
+
 def _chat_live_event(ev) -> dict | None:
     """One AgentEvent off the live stream -> a Chat SSE event, or None to drop it.
 
@@ -975,21 +1000,35 @@ def _chat_live_event(ev) -> dict | None:
             return {"type": "delta", "text": str(ev.payload.get("text") or ""), "final": True}
         text = str(ev.payload.get("delta") or "")
         return {"type": "delta", "text": text} if text else None
-    if ev.kind == "tool_run" and str(ev.payload.get("tool") or "").lower() == "bash":
+    if ev.kind == "tool_run":
+        tool = str(ev.payload.get("tool") or "").lower()
+        # A label has to stop being true when the work stops. "Reading clickstream.csv" left
+        # standing through a minute of thinking names the wrong thing and never moves, which is
+        # the thing that reads as a hang. So a finished call clears it, and so does a call whose
+        # tool Chat does not name.
         if ev.payload.get("status") != "called":
-            return None
-        # Measured: bash arrives as tool.called with the command inside `input`, and the
-        # shell.started frame that carries `command` at the top level never fired at all. Read both
-        # rather than pick, because the one that looked obvious is the one that was never sent.
-        command = ev.payload.get("command")
-        if not command and isinstance(ev.payload.get("input"), dict):
-            command = ev.payload["input"].get("command")
-        return {"type": "agent", "kind": "tool", "tool": "bash", "detail": str(command or "")}
+            return {"type": "agent", "kind": "tool", "doing": "idle"}
+        inp = ev.payload.get("input") if isinstance(ev.payload.get("input"), dict) else {}
+        if tool == "bash":
+            # Measured: bash arrives as tool.called with the command inside `input`, and the
+            # shell.started frame that carries `command` at the top level never fired at all. Read
+            # both rather than pick — the one that looked obvious is the one that was never sent.
+            subject = str(ev.payload.get("command") or inp.get("command") or "")
+        else:
+            # Measured live: read and write both send `path`. `filePath` is kept because the
+            # transcript's own parts use it (see _tool_detail) and this has to agree with them.
+            subject = str(inp.get("path") or inp.get("filePath") or "")
+        doing, subject = _chat_activity(tool, subject)
+        if not doing:
+            return {"type": "agent", "kind": "tool", "doing": "idle"}
+        return {"type": "agent", "kind": "tool", "tool": tool, "doing": doing, "detail": subject}
     return None
 
 
-# Chat's Thread shows the chart/table, not a tool log. bash still drives the
-# "Running Python…" spinner; write/read/edit stay off the transcript entirely.
+# Chat's Thread shows the chart/table, not a tool log — this set stays empty on purpose. What the
+# agent is doing is said while it is doing it and then let go of (see _chat_activity): a card
+# reading "Ran write examples/revenue.png" above the chart it produced is the same event twice, and
+# it would have to survive a reload to be worth keeping at all.
 _CHAT_SHOWN_TOOLS = frozenset()
 _CHAT_AT = re.compile(r"@([^\s@]+)")
 

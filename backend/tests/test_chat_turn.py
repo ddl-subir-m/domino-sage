@@ -881,7 +881,8 @@ def test_the_answer_arrives_while_the_turn_runs_instead_of_after_it(tmp_path: Pa
     # frame leaves the live copy short and this is the event that makes it whole again.
     assert deltas[-1]["final"] is True
     # And the spinner runs when the command starts rather than when it finishes.
-    assert {"type": "agent", "kind": "tool", "tool": "bash", "detail": "python plot.py"} in out
+    assert {"type": "agent", "kind": "tool", "tool": "bash",
+            "doing": "bash", "detail": ""} in out
 
 
 def test_streaming_leaves_the_record_of_the_turn_exactly_as_it_was(tmp_path: Path):
@@ -945,7 +946,7 @@ def test_a_stream_that_delivers_nothing_still_answers(tmp_path: Path):
     assert {"type": "agent", "kind": "text", "text": "Still answered."} in out
 
 
-def test_the_live_stream_shows_the_answer_and_the_command_and_nothing_else(tmp_path: Path):
+def test_the_live_stream_carries_the_answer_and_the_work_and_nothing_else():
     from sage.orchestrator.service import _chat_live_event
 
     assert _chat_live_event(_live("message", delta="Bl", final=False)) == {"type": "delta", "text": "Bl"}
@@ -953,16 +954,60 @@ def test_the_live_stream_shows_the_answer_and_the_command_and_nothing_else(tmp_p
         "type": "delta", "text": "Blue.", "final": True}
     # An empty fragment is not an event.
     assert _chat_live_event(_live("message", delta="", final=False)) is None
-    # The shape OpenCode actually sends for bash: tool.called, command inside `input`.
-    assert _chat_live_event(_live("tool_run", tool="bash", input={"command": "echo hi"},
-                                  call_id="c1", status="called")) == {
-        "type": "agent", "kind": "tool", "tool": "bash", "detail": "echo hi"}
-    # And the shape the event catalogue advertises for shell.started, which never fired live.
+    # The shape the event catalogue advertises for shell.started, which never fired live. Read
+    # anyway, because the frame that did fire was the one that looked less obvious.
     assert _chat_live_event(_live("tool_run", tool="bash", command="ls", status="called")) == {
-        "type": "agent", "kind": "tool", "tool": "bash", "detail": "ls"}
-    # A command's completion is not a second spinner — and it arrives with no tool name anyway.
-    assert _chat_live_event(_live("tool_run", tool="", call_id="c1", status="success")) is None
-    # write/read/edit stay off Chat's Thread (see _CHAT_SHOWN_TOOLS); step frames end the turn via
-    # is_running, not via the stream, because finish="stop" does not mean the session is idle.
-    assert _chat_live_event(_live("tool_run", tool="write", status="called")) is None
+        "type": "agent", "kind": "tool", "tool": "bash", "doing": "bash", "detail": ""}
+    # A turn ends through is_running, never through the stream: finish="stop" is the model's stop
+    # reason, and a step that ends on tool-calls has another step behind it.
     assert _chat_live_event(_live("phase", finish="stop")) is None
+
+
+def test_chat_names_the_two_slow_things_that_arrive_as_bash():
+    """Sage's own prompt tells the agent to reach a Data Source with `get_datasource(...)` and a
+    Dataset file with `download_file(...)`, so both run as bash. They are also the two that take
+    minutes. Naming the tool alone would have called the 5.5M-row query "Running Python…" — which
+    is exactly what it said while the turn looked hung."""
+    from sage.orchestrator.service import _chat_live_event
+
+    query = _live("tool_run", tool="bash", status="called", input={"command":
+        'python -c \'from domino_data.data_sources import DataSourceClient; '
+        'DataSourceClient().get_datasource("BigQuery_Demo").query("SELECT 1")\''})
+    assert _chat_live_event(query) == {"type": "agent", "kind": "tool", "tool": "bash",
+                                       "doing": "query", "detail": "BigQuery_Demo"}
+
+    dataset = _live("tool_run", tool="bash", status="called", input={"command":
+        'python -c \'DatasetClient().get_dataset("prices").download_file("price_data.csv", '
+        '"/tmp/price_data.csv")\''})
+    assert _chat_live_event(dataset) == {"type": "agent", "kind": "tool", "tool": "bash",
+                                         "doing": "read", "detail": "price_data.csv"}
+
+    # Everything else bash does is still just Python running.
+    plain = _live("tool_run", tool="bash", status="called", input={"command": "python plot.py"})
+    assert _chat_live_event(plain) == {"type": "agent", "kind": "tool", "tool": "bash",
+                                       "doing": "bash", "detail": ""}
+
+
+def test_a_local_file_is_named_by_the_tool_that_touches_it():
+    from sage.orchestrator.service import _chat_live_event
+
+    read = _live("tool_run", tool="read", status="called", input={"filePath": "examples/a.csv"})
+    assert _chat_live_event(read) == {"type": "agent", "kind": "tool", "tool": "read",
+                                      "doing": "read", "detail": "examples/a.csv"}
+    write = _live("tool_run", tool="write", status="called", input={"path": "examples/x.png"})
+    assert _chat_live_event(write) == {"type": "agent", "kind": "tool", "tool": "write",
+                                       "doing": "write", "detail": "examples/x.png"}
+
+
+def test_a_label_stops_being_true_the_moment_the_work_stops():
+    """A label that outlives its work names the wrong thing and never moves, which is the thing
+    that reads as a hang. Both a finished call and a call Chat does not name clear it."""
+    from sage.orchestrator.service import _chat_live_event
+
+    idle = {"type": "agent", "kind": "tool", "doing": "idle"}
+    # The completion carries no tool name at all — measured — so it can only mean "stop saying it".
+    assert _chat_live_event(_live("tool_run", tool="", call_id="c1", status="success")) == idle
+    assert _chat_live_event(_live("tool_run", tool="bash", call_id="c1", status="failed")) == idle
+    # grep and glob are not worth naming, but they still end whatever the last label said.
+    assert _chat_live_event(_live("tool_run", tool="grep", status="called",
+                                  input={"pattern": "x"})) == idle

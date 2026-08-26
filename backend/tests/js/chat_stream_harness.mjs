@@ -44,15 +44,19 @@ for (const f of ['util.js', 'api.js', 'store.js']) {
 const SW = sandbox.SW;
 SW.store.set({ thread: { id: 't1', artifacts: [] }, messages: [], scope: { id: 'p', name: 'P' } });
 const seen = [];
-SW.store.subscribe((s) => seen.push(JSON.stringify(s.messages)));
+SW.store.subscribe((s) => seen.push(JSON.stringify({ messages: s.messages, typing: s.typing })));
 await SW.store.sendMessage('q');
 
 // One line per distinct repaint: "~" is text still arriving, "=" is the recorded answer.
+// `typing` is what the spinner said, in order, which is the only account of a turn's slow parts.
 const steps = [];
+const typings = [];
 for (const snap of seen) {
-  const a = JSON.parse(snap).find((m) => m.role === 'assistant');
+  const { messages, typing } = JSON.parse(snap);
+  const a = messages.find((m) => m.role === 'assistant');
   const line = a ? a.blocks.map((b) => `${b.streaming ? '~' : '='}${b.value}`).join(' | ') : '';
   if (line !== steps[steps.length - 1]) steps.push(line);
+  if (typing && typing !== typings[typings.length - 1]) typings.push(typing);
 }
 const assistant = SW.store.get().messages.find((m) => m.role === 'assistant');
-console.log(JSON.stringify({ steps, final: (assistant ? assistant.blocks : []) }));
+console.log(JSON.stringify({ steps, typings, final: (assistant ? assistant.blocks : []) }));

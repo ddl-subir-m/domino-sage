@@ -76,3 +76,42 @@ def test_a_turn_that_dies_mid_sentence_keeps_what_it_managed_to_say():
         {"type": "text", "value": "Reading the file", "streaming": True},
         {"type": "text", "value": "This turn took too long, so it was stopped."},
     ]
+
+
+def test_the_spinner_names_the_slow_work_instead_of_just_spinning():
+    """The reported turn spent minutes on a Data Source query with nothing on screen, and looked
+    exactly like a turn that had hung. Sage tells the agent how to reach a Data Source and how to
+    read a Dataset file, so both arrive as bash — naming only the tool would have said "Running
+    Python…" for all of it."""
+    out = _turn([
+        {"type": "user", "text": "q"},
+        {"type": "agent", "kind": "tool", "tool": "bash", "doing": "read",
+         "detail": "price_data.csv"},
+        {"type": "agent", "kind": "tool", "doing": "idle"},
+        {"type": "agent", "kind": "tool", "tool": "bash", "doing": "query",
+         "detail": "BigQuery_Demo"},
+        {"type": "agent", "kind": "tool", "doing": "idle"},
+        {"type": "agent", "kind": "tool", "tool": "write", "doing": "write",
+         "detail": "examples/thr_1/revenue.png"},
+        {"type": "delta", "text": "Revenue rose.", "final": True},
+        {"type": "agent", "kind": "text", "text": "Revenue rose."},
+        {"type": "done", "ok": True, "decision": "answered"},
+    ])
+    assert out["typings"] == [
+        "Thinking…",                 # before the first tool says otherwise
+        "Reading price_data.csv…",
+        "Thinking…",                 # the read finished; the label stops claiming it has not
+        "Querying BigQuery_Demo…",
+        "Thinking…",
+        "Saving revenue.png…",       # the path is the server's; the file name is the reader's
+    ]
+
+
+def test_a_transcript_fallback_still_says_running_python():
+    """When the stream is down the tool events come from the transcript, which names bash and
+    nothing else. That path predates `doing` and has to keep working untouched."""
+    out = _turn([{"type": "user", "text": "q"},
+                 {"type": "agent", "kind": "tool", "tool": "bash", "detail": "python p.py"},
+                 {"type": "agent", "kind": "text", "text": "Done."},
+                 {"type": "done", "ok": True, "decision": "answered"}])
+    assert "Running Python…" in out["typings"]

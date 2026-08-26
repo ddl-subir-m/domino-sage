@@ -1379,7 +1379,7 @@ window.SW = window.SW || {};
                                 { type: 'text', value: ev.text }];
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
-            if (ev.tool === 'bash') state.typing = 'Running Python…';
+            state.typing = SW.util.activityLabel(ev);
             notify();
           } else if (ev.type === 'artifacts' || (ev.type === 'done' && ev.artifacts && ev.artifacts.length)) {
             state.typing = null;

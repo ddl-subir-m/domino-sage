@@ -157,6 +157,22 @@ window.SW = window.SW || {};
       return buckets.filter((b) => b.items.length);
     },
 
+    // What Chat says it is doing while it is doing it. The server names the work, because which
+    // bash command is a Data Source query is Sage's business; the sentence is the UI's. Nothing
+    // here is kept — the Thread keeps the chart and the answer, not a tool log.
+    activityLabel(ev) {
+      const name = String(ev.detail || '').split('/').pop();
+      switch (ev.doing) {
+        case 'read': return name ? `Reading ${name}…` : 'Reading the data…';
+        case 'query': return name ? `Querying ${name}…` : 'Running the query…';
+        case 'write': return name ? `Saving ${name}…` : 'Saving the results…';
+        case 'bash': return 'Running Python…';
+        case 'idle': return 'Thinking…';
+        // No `doing` at all is the transcript fallback, which only ever names bash.
+        default: return ev.tool === 'bash' ? 'Running Python…' : 'Thinking…';
+      }
+    },
+
     // Lightweight markdown — bold, inline code, lists, paragraphs. Enough for
     // scripted assistant copy without pulling in a parser.
     markdown(text) {
