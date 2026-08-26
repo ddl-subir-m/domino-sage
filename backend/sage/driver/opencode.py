@@ -58,6 +58,78 @@ def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: 
     )
 
 
+# OpenCode 1.18.4 serves TWO event streams, and only one of them streams text. Captured live
+# against the pinned binary on 2026-08-26 (the capture agent_driver.OpenCodeDriver still has a TODO
+# for), by driving a real turn and recording every frame:
+#
+#   /api/session/{id}/event   durable, resumable (?after=), one session. Checkpoints ONLY:
+#                             text.started -> text.ended. NO text.delta, ever — measured 0 deltas
+#                             on a reply that produced 24 on the other stream.
+#   /event                    global, every session, no resume. Carries the deltas AND the
+#                             authoritative end events. This is the one worth reading.
+#
+# A turn on /event runs:
+#   step.started -> text.started -> text.delta xN -> text.ended (full text) -> step.ended finish=…
+# and around a tool call:
+#   tool.input.started -> tool.input.delta xN -> tool.input.ended -> tool.called (tool name here,
+#   not before it) -> tool.success | tool.failed
+#
+# Envelope is {"id","type","properties"} — `properties`, not the durable stream's `data`. Because
+# the stream is global it also carries server.connected, plugin.added, catalog.updated and other
+# sessions' turns, so filtering on properties.sessionID is not optional.
+_TOOL_STATUS = {
+    "session.next.tool.called": "called",
+    "session.next.tool.success": "success",
+    "session.next.tool.failed": "failed",
+}
+
+
+def map_session_event(raw: dict, session_id: str) -> AgentEvent | None:
+    """One frame of the global /event stream -> an AgentEvent for THIS session, or None to skip.
+
+    None covers everything a turn watcher must ignore: another session's turn, and the stream's
+    non-session traffic (server.connected, plugin.added, catalog.updated, ...) which carries no
+    sessionID at all. Returning None rather than a "message" for those is the difference between a
+    Thread that shows one turn and a Thread that shows the whole container's.
+    """
+    t = str(raw.get("type") or "")
+    props = raw.get("properties") or {}
+    if not t.startswith("session.next.") or props.get("sessionID") != session_id:
+        return None
+
+    if t == "session.next.text.delta":
+        # The token stream. `delta` is a fragment — the caller appends; it is never the whole text.
+        return AgentEvent(kind="message", payload={"delta": str(props.get("delta") or ""),
+                                                   "final": False})
+    if t == "session.next.text.ended":
+        # Authoritative and complete, so a watcher that dropped deltas still lands the whole answer.
+        return AgentEvent(kind="message", payload={"text": str(props.get("text") or ""),
+                                                   "final": True})
+    if t in _TOOL_STATUS:
+        # Only tool.called names the tool. Measured live: a `write` that succeeded came back with
+        # tool="" and nothing but its callID, so a consumer must remember the name from the call
+        # and correlate on call_id rather than expect it again on the completion.
+        return AgentEvent(kind="tool_run", payload={
+            "tool": str(props.get("tool") or ""),
+            "input": props.get("input"),
+            "call_id": str(props.get("callID") or ""),
+            "status": _TOOL_STATUS[t],
+        })
+    if t == "session.next.shell.started":
+        # The command itself, at the moment it starts — what drives Chat's "Running Python…" line.
+        return AgentEvent(kind="tool_run", payload={"tool": "bash",
+                                                    "command": str(props.get("command") or ""),
+                                                    "call_id": str(props.get("callID") or ""),
+                                                    "status": "called"})
+    if t == "session.next.step.failed":
+        return AgentEvent(kind="error", payload={"error": props.get("error")})
+    if t == "session.next.step.ended":
+        # `finish` is the model's stop reason: "stop" ends the turn, "tool-calls" means another step
+        # follows. A turn is NOT over at the first step.ended.
+        return AgentEvent(kind="phase", payload={"finish": str(props.get("finish") or "")})
+    return None
+
+
 def map_event(raw: dict) -> AgentEvent:
     """OpenCode SSE envelope {id,type,properties} -> our harness-agnostic AgentEvent.
 
@@ -248,7 +320,36 @@ class OpenCodeClient:
     def interrupt(self, session_id: str) -> None:
         httpx.post(f"{self.base_url}/api/session/{session_id}/interrupt", timeout=30)
 
+    def session_events(self, session_id: str) -> Iterator[AgentEvent]:
+        """This session's turn events, live, off the global /event stream. See map_session_event.
+
+        Connect is bounded but READ IS NOT: a stream that is idle because the model is thinking is
+        working exactly as intended, and a read timeout here would sever it mid-turn — the same
+        mistake that once showed up downstream as "TypeError: network error". A bounded connect is
+        what lets a caller fall back to polling quickly when the stream cannot be had at all.
+
+        Ends when the server closes the stream. Reconnecting is the caller's business, because only
+        the caller knows whether its turn is still running — and since /event has no `?after=`,
+        a reconnect cannot replay what was missed. That is why text.ended is treated as
+        authoritative rather than the deltas being the only record of the answer.
+        """
+        timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        with httpx.stream("GET", f"{self.base_url}/event", timeout=timeout) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    raw = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+                ev = map_session_event(raw, session_id)
+                if ev is not None:
+                    yield ev
+
     def events(self, session_id: str) -> Iterator[AgentEvent]:
+        """The per-session DURABLE stream: resumable (?after=), but checkpoints only — it carries
+        no text.delta. Use session_events() to watch a turn; this is for replaying one."""
         with httpx.stream("GET", f"{self.base_url}/api/session/{session_id}/event", timeout=None) as r:
             for line in r.iter_lines():
                 if line.startswith("data: "):

@@ -1,7 +1,12 @@
 """OpenCode driver: event mapping + feedback-loop control flow (Step 5 wiring / Seam 3)."""
 import httpx
 
-from sage.driver.opencode import OpenCodeClient, map_event, run_feedback_loop
+from sage.driver.opencode import (
+    OpenCodeClient,
+    map_event,
+    map_session_event,
+    run_feedback_loop,
+)
 from sage.driver.server import parse_server_url
 from sage.feedback.circuit_breaker import CircuitBreaker
 from sage.feedback.runner import FeedbackError, FeedbackReport
@@ -229,3 +234,107 @@ def test_a_bounded_poll_asks_for_the_newest_few_and_hands_them_back_oldest_first
     out = OpenCodeClient("http://x").messages("s1", limit=3)
     assert seen == {"order": "desc", "limit": 3}
     assert [m["id"] for m in out] == ["m1", "m2", "m3"]
+
+
+# Frames below are the shapes captured from opencode-ai@1.18.4's global /event stream on
+# 2026-08-26, driving a real turn — not invented. `properties`, not the durable stream's `data`.
+_SID = "ses_fbfd639d0ffexISOOYnX610gNA"
+
+
+def _frame(type_: str, **props):
+    return {"id": "evt_x", "type": type_, "properties": {"sessionID": _SID, **props}}
+
+
+def test_a_text_delta_is_a_fragment_and_text_ended_is_the_whole_answer():
+    # The delta stream is what makes a turn visible while it runs; text.ended is what makes the
+    # answer correct even if deltas were missed. /event has no ?after=, so a reconnect cannot
+    # replay — the end event has to be authoritative or a dropped frame silently truncates a reply.
+    d = map_session_event(_frame("session.next.text.delta", delta="Blue"), _SID)
+    assert d.kind == "message" and d.payload == {"delta": "Blue", "final": False}
+
+    e = map_session_event(_frame("session.next.text.ended", text="Blue is calm."), _SID)
+    assert e.kind == "message" and e.payload == {"text": "Blue is calm.", "final": True}
+
+
+def test_the_tool_name_arrives_with_the_call_not_before_it():
+    # tool.input.started fires first and names nothing useful; the tool name lands on tool.called.
+    # Reading the earlier event would label every action in the Thread with an empty string.
+    assert map_session_event(_frame("session.next.tool.input.started",
+                                    callID="call_1", name="write"), _SID) is None
+    ev = map_session_event(_frame("session.next.tool.called", tool="write",
+                                  input={"path": "a.txt"}, callID="call_1"), _SID)
+    assert ev.kind == "tool_run"
+    assert ev.payload == {"tool": "write", "input": {"path": "a.txt"},
+                          "call_id": "call_1", "status": "called"}
+    # And the completion carries NO tool name at all — only the callID. Measured live: a `write`
+    # that succeeded arrived as tool="". A consumer has to remember the name from tool.called and
+    # correlate on call_id, or every finished action in the Thread is labelled with an empty string.
+    done = map_session_event(_frame("session.next.tool.success", callID="call_1"), _SID)
+    assert done.payload == {"tool": "", "input": None, "call_id": "call_1", "status": "success"}
+
+
+def test_a_step_that_ends_on_tool_calls_has_not_ended_the_turn():
+    # finish="tool-calls" means another step follows. Treating the first step.ended as the end of
+    # the turn would cut a reply off at its first tool call.
+    assert map_session_event(_frame("session.next.step.ended", finish="tool-calls"),
+                             _SID).payload == {"finish": "tool-calls"}
+    assert map_session_event(_frame("session.next.step.ended", finish="stop"),
+                             _SID).payload == {"finish": "stop"}
+
+
+def test_the_global_stream_carries_other_sessions_and_housekeeping_and_neither_is_this_turn():
+    # /event is process-wide. Without the sessionID filter a Thread would show another Thread's
+    # turn; without the type filter it would show plugin and catalog chatter as agent activity.
+    other = {"id": "evt_y", "type": "session.next.text.delta",
+             "properties": {"sessionID": "ses_someone_else", "delta": "not yours"}}
+    assert map_session_event(other, _SID) is None
+    assert map_session_event({"id": "evt_z", "type": "server.connected", "properties": {}}, _SID) is None
+    assert map_session_event({"id": "e", "type": "plugin.added", "properties": {}}, _SID) is None
+    assert map_session_event({"id": "e", "type": "catalog.updated", "properties": {}}, _SID) is None
+
+
+class _Stream:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+
+def test_session_events_reads_data_frames_and_never_times_out_a_quiet_turn(monkeypatch):
+    """A turn is silent whenever the model is thinking rather than emitting. A read timeout here
+    would sever a working stream mid-turn, so connect is bounded and read is not."""
+    import json as _json
+
+    captured = {}
+
+    def fake_stream(method, url, timeout):
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return _Stream([
+            "data: " + _json.dumps(_frame("session.next.text.delta", delta="hi")),
+            "",
+            "data: not json at all",
+            ": keepalive comment",
+            "data: " + _json.dumps(_frame("session.next.text.ended", text="hi there")),
+        ])
+
+    monkeypatch.setattr("sage.driver.opencode.httpx.stream", fake_stream)
+    out = list(OpenCodeClient("http://x").session_events(_SID))
+
+    assert captured["url"] == "http://x/event"        # global stream, not the durable one
+    assert captured["timeout"].read is None           # a thinking model is not a broken stream
+    assert captured["timeout"].connect == 10.0        # but an absent stream fails fast
+    assert [e.payload for e in out] == [
+        {"delta": "hi", "final": False},
+        {"text": "hi there", "final": True},
+    ]
