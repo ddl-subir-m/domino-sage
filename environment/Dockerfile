@@ -47,9 +47,8 @@ RUN npm install -g --include=optional opencode-ai@1.18.4 && opencode --version
 # in `domino` mode from the Environment's baked ENV (not a project-scoped var).
 # Set the value in the Environment's "Environment Variables" box; leave it blank to run offline/fake.
 # NON-SECRET ONLY: GATEWAY_BASE_URL is a URL. Do NOT bake GATEWAY_API_KEY this way — a key promoted to
-# ENV is written into an image layer. In `domino` mode leave the key unset; the per-workspace sidecar
-# token at :8899 is the fallback when no viewer JWT arrived. On the published App, extended identity
-# supplies the viewer's token.
+# ENV is written into an image layer. In `domino` mode leave the key unset; listings and model calls
+# use the sidecar token at :8899.
 ARG GATEWAY_BASE_URL=
 ENV GATEWAY_BASE_URL=${GATEWAY_BASE_URL}
 # Optional: only needed to force a non-auto mode (e.g. openai). Non-secret; safe to bake.

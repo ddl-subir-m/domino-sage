@@ -7,9 +7,8 @@ Two launch paths, same process:
 
 1. **Published App** — publish **this repo** as a Domino App. Root `app.sh` starts the workbench
    (`SAGE_PROXY_MODE=app`, port 8888). Domino's App proxy strips the mount prefix; Vite's prefix is
-   empty. `/mnt/code` is Sage source, so Chat/Build use a scratch workspace. Turn on **extended
-   identity** so Dataset / Data Source / gateway calls use the viewer's JWT. Publish of a Built App
-   is disabled here (that project id is Sage).
+   empty. `/mnt/code` is Sage source, so Chat/Build use a scratch workspace. Listings and model
+   calls use the sidecar at `:8899`. Publish of a Built App is disabled here (that project id is Sage).
 2. **Sage Builder workspace** — launch the `sageBuilder` pluggable tool in a **git-based app
    project**. [`environment/app.sh`](app.sh) starts the same orchestrator with
    `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the Built App.
@@ -47,8 +46,7 @@ commits. A published Workbench App must **not** treat that checkout as an app �
      Ours (`GATEWAY_BASE_URL`, `SAGE_GATEWAY_MODE`) are declared *and* promoted to `ENV` so they
      survive into the running container — a bare `ARG` is build-time only.
    - **Don't** put `GATEWAY_API_KEY` here: promoted to `ENV` it lands in an image layer. In `domino`
-     mode leave the key unset; the per-workspace sidecar token at `:8899` is the fallback when no
-     viewer JWT arrived. On the published App, extended identity supplies the viewer's token.
+     mode leave the key unset; listings and model calls use the sidecar token at `:8899`.
 
 ## Fast inner dev loop
 
@@ -64,8 +62,8 @@ so the source tree isn't treated as an app.
 This supersedes `spikes/domino-verify/` (which installs deps at runtime via `run.sh`). Once this
 image is verified, the spike is only kept for reference.
 
-→ **Verify (App):** publish this repo as an App on the Sage Environment with extended identity →
-open Chat → listings are the viewer's. `#/chat` / `#/build` and `./preview/` work.
+→ **Verify (App):** publish this repo as an App on the Sage Environment →
+open Chat → listings come from the sidecar. `#/chat` / `#/build` and `./preview/` work.
 
 → **Verify (workspace):** launch **Sage** (`sageBuilder`) in a git-based app project → describe an
 app → watch it build → private preview renders → Publish deploys that project as a Built App.

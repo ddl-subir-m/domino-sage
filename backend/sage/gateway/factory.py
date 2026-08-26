@@ -25,7 +25,6 @@ from .client import (
     GatewayClient,
     MultiProviderOpenAIClient,
     OpenAICompatibleClient,
-    prefer_viewer,
     sidecar_token,
     static_token,
 )
@@ -58,7 +57,5 @@ def build_gateway() -> tuple[GatewayClient, str]:
     # domino
     base_url = os.environ["GATEWAY_BASE_URL"]
     key = os.environ.get("GATEWAY_API_KEY", "")
-    fallback = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    # Extended identity (Workbench App): the viewer's JWT when the request carried one; sidecar
-    # otherwise (Sage Builder workspace, local, OpenCode /v1 after a remembered viewer).
-    return OpenAICompatibleClient(base_url, prefer_viewer(fallback), domino_tags=True), "domino"
+    token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    return OpenAICompatibleClient(base_url, token, domino_tags=True), "domino"
