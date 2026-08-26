@@ -1338,6 +1338,8 @@ def list_asset_files(dataset_id: str) -> JSONResponse:
         return JSONResponse(content={"files": orchestrator.list_asset_files(dataset_id)})
     except LookupError:
         return JSONResponse(status_code=404, content={"error": "dataset not found"})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @control_app.post("/api/project/assets/{dataset_id}/files/attach")
@@ -1348,11 +1350,13 @@ async def attach_file(dataset_id: str, request: Request) -> JSONResponse:
     try:
         return JSONResponse(content=orchestrator.attach_file(dataset_id, path))
     except LookupError:
-        return JSONResponse(status_code=404, content={"error": "dataset not mounted in this project"})
+        return JSONResponse(status_code=404, content={"error": "dataset not found"})
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": "file not found in dataset"})
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid file path"})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
     except AttachTooLarge as e:
         mb = e.cap / (1024 * 1024)
         return JSONResponse(

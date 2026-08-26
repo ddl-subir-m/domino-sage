@@ -1,6 +1,7 @@
 """Workspace module tests — single bound workspace, idempotent seed-in-place."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -255,3 +256,32 @@ def test_refresh_never_leaves_a_new_app_sh_without_its_server(
     with pytest.raises(OSError):
         mgr.refresh_entry_script()
     assert (ws.path / "serve.py").read_text() == "# v2\n"
+
+
+def test_refresh_entry_script_delivers_the_rehydrate_scripts_app_sh_calls(tmp_path: Path):
+    # app.sh calls scripts/rehydrate_data.py. An app seeded before that script existed has no
+    # scripts/ directory at all, so refreshing app.sh alone would deploy an entry script that calls
+    # a file the repo does not have.
+    tmpl = _fake_template(tmp_path)
+    (tmpl / "app.sh").write_text('"$SAGE_PYTHON" scripts/rehydrate_data.py\n')
+    (tmpl / "scripts").mkdir()
+    (tmpl / "scripts" / "rehydrate_data.py").write_text("# fetches unmounted data\n")
+    (tmpl / "scripts" / "rehydrate-data.mjs").write_text("// links mounted data\n")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
+    ws = mgr.ensure("proj1")
+    if (ws.path / "scripts").exists():
+        shutil.rmtree(ws.path / "scripts")          # an app born before either script
+
+    assert mgr.refresh_entry_script() is True
+    assert (ws.path / "scripts" / "rehydrate_data.py").read_text() == "# fetches unmounted data\n"
+    assert (ws.path / "scripts" / "rehydrate-data.mjs").read_text() == "// links mounted data\n"
+    assert mgr.refresh_entry_script() is False
+
+
+def test_app_sh_is_refreshed_after_everything_it_calls(tmp_path: Path):
+    # Order is the safety property: a refresh that dies partway must leave an app that still serves,
+    # never one whose entry script calls a script that did not land.
+    from sage.workspace.manager import _DEPLOY_FILES
+
+    assert _DEPLOY_FILES[-1] == "app.sh"
+    assert "scripts/rehydrate_data.py" in _DEPLOY_FILES

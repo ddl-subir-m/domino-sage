@@ -50,10 +50,21 @@ class Asset:
     tag_snapshots: dict[str, str] = field(default_factory=dict)
 
 
+def dataset_unique_name(asset: Asset) -> str:
+    """The identifier the Domino data library answers to for one Dataset.
+
+    Domino registers every Dataset as a Data Source named `dataset-<name>-<id>`, and that composite
+    is the only thing `DatasetClient.get_dataset` accepts — a bare name and a bare id are both
+    rejected. Verified against every Dataset on a live deployment, including two that share the name
+    `prediction_data` and are told apart only by id.
+    """
+    return f"dataset-{asset.name}-{asset.id}"
+
+
 @dataclass(frozen=True)
 class DatasetFile:
     path: str  # POSIX path relative to the dataset's mount root (e.g. "raw/train.csv")
-    size: int  # bytes
+    size: int  # bytes, or 0 when only the API listing named this file (it carries no sizes)
 
 
 def walk_files(root: Path) -> list[DatasetFile]:
@@ -75,6 +86,7 @@ def walk_files(root: Path) -> list[DatasetFile]:
 class AssetProvider(Protocol):
     def list_datasets(self, project_id: str | None) -> list[Asset]: ...
     def list_files(self, asset: Asset) -> list[DatasetFile]: ...
+    def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int: ...
 
 
 class UnconfiguredAssetProvider:
@@ -88,6 +100,11 @@ class UnconfiguredAssetProvider:
 
     def list_files(self, asset: Asset) -> list[DatasetFile]:
         return []
+
+    def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
+        raise ResourceUnavailable(
+            "Sage reads Dataset files through the Domino API, and it is not configured to reach one."
+        )
 
 
 # name -> (tags, project, {filename: contents}). Seeded to a temp dir so the file-attach flow
@@ -129,6 +146,14 @@ class FakeAssetProvider:
     def list_files(self, asset: Asset) -> list[DatasetFile]:
         return walk_files(Path(asset.mount_path)) if asset.mount_path else []
 
+    def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
+        import shutil
+
+        src = Path(asset.mount_path or "") / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        return dest.stat().st_size
+
 
 def parse_tags(raw: Any) -> list[str]:
     """Normalize Domino dataset tags to a list of tag names.
@@ -165,9 +190,11 @@ def parse_tag_snapshots(raw: Any) -> dict[str, str]:
 class DominoAssetProvider:
     """Reads datasets via the Domino public datasetrw v2 API.
 
-    Needs DOMINO_API_HOST + a token. Every dataset this caller can read is listed; `mount_path` is
-    set only when this container actually has the files (a Domino workspace). Off-Domino the rail
-    can still name them; attaching a file from one still needs the mount.
+    Needs DOMINO_API_HOST + a token. Every dataset this caller can read is listed, and every one of
+    them can be read: `mount_path` is set only when this container happens to have the files on
+    disk, and that is a fast path, not a gate. A mount covers one project and is fixed when the
+    execution starts, so most Datasets a person can read — including every Dataset shared with them
+    from another project — are never mounted here. Those are read through `domino_data` instead.
     """
 
     _PAGE = 100
@@ -179,11 +206,34 @@ class DominoAssetProvider:
         token_provider: Callable[[], str],
         timeout_s: float = 20.0,
         mount_roots: list[str] | None = None,
+        dataset_client: Any | None = None,
     ) -> None:
         self._api_host = api_host.rstrip("/")
         self._token_provider = token_provider
         self._timeout_s = timeout_s
         self._mount_roots = mount_roots if mount_roots is not None else resolve_mount_roots()
+        self._dataset_client = dataset_client  # injected in tests; built per call otherwise
+
+    def _sdk_dataset(self, asset: Asset) -> Any:
+        """A `domino_data` handle for one Dataset, whether or not it is mounted here.
+
+        `DatasetClient()` is built with no arguments on purpose. It reads DOMINO_API_PROXY — the
+        same localhost:8899 sidecar Sage already mints its own tokens from — and exchanges it for
+        the JWT the datasource-proxy wants. Passing an account API key as `token=` instead is
+        rejected with "Your role does not authorize you to perform this action", so the no-argument
+        form is not a shortcut, it is the working one. `DataSourceClient()` is constructed the same
+        way in `resources/provider.py`, and per call for the same reason: these tokens expire.
+        """
+        if self._dataset_client is not None:
+            return self._dataset_client.get_dataset(dataset_unique_name(asset))
+        try:
+            from domino_data.datasets import DatasetClient
+        except ImportError as e:
+            raise ResourceUnavailable(
+                "Sage reads Dataset files through the Domino data library, which is not installed "
+                "here. Datasets will still list, but Sage cannot look inside one."
+            ) from e
+        return DatasetClient().get_dataset(dataset_unique_name(asset))
 
     def _mount_path_for(self, name: str) -> str | None:
         for root in self._mount_roots:
@@ -235,7 +285,11 @@ class DominoAssetProvider:
             for item in items:
                 ds = item.get("dataset") or item
                 name = str(ds.get("name") or "unnamed")
-                proj = (item.get("projectInfo") or {}).get("name")
+                # `projectName`, not `name`: DatasetRwProjectInfoDtoV1 is
+                # {projectId, projectName, projectOwnerUsername}. Reading `name` here silently left
+                # every row's owning project blank, which is the one label that explains why a
+                # Dataset from someone else's project is not on this container's disk.
+                proj = (item.get("projectInfo") or {}).get("projectName")
                 found.append(
                     Asset(
                         id=str(ds.get("id") or ""),
@@ -253,4 +307,33 @@ class DominoAssetProvider:
         return found
 
     def list_files(self, asset: Asset) -> list[DatasetFile]:
-        return walk_files(Path(asset.mount_path)) if asset.mount_path else []
+        """The files in a Dataset: from the mount when this container has one, from the Domino data
+        library when it does not.
+
+        The API listing carries names but no sizes, so those files report 0 — "not known from here",
+        not "empty". Nothing renders a size; the attach cap measures the real bytes on download.
+        """
+        if asset.mount_path:
+            return walk_files(Path(asset.mount_path))
+        try:
+            names = [getattr(f, "name", "") for f in self._sdk_dataset(asset).list_files()]
+        except ResourceUnavailable:
+            raise
+        except Exception as e:
+            raise ResourceUnavailable(
+                f"Domino did not answer for the files in Dataset {asset.name} "
+                f"({type(e).__name__})."
+            ) from e
+        return [DatasetFile(n, 0) for n in names if n][:_MAX_FILES]
+
+    def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
+        """Copy one file out of a Dataset this container has no mount for. Returns bytes written."""
+        dataset = self._sdk_dataset(asset)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dataset.download_file(rel_path, str(dest))
+        except Exception as e:
+            raise ResourceUnavailable(
+                f"Domino did not send {rel_path} from Dataset {asset.name} ({type(e).__name__})."
+            ) from e
+        return dest.stat().st_size

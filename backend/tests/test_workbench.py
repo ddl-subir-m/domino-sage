@@ -94,7 +94,9 @@ def test_workbench_is_the_default_ui():
 
     tree = client.get("/js/components/resource-tree.js")
     assert tree.status_code == 200
-    assert b"Files are not mounted in this workspace" in tree.content
+    # The dead end is gone: the tree lists files for any readable Dataset, mounted or not.
+    assert b"Files are not mounted in this workspace" not in tree.content
+    assert b"No files in this Dataset." in tree.content
     assert b"SW.DatasetFileTree" in tree.content
     assert b"SW.DataSourceCascade" in tree.content
 

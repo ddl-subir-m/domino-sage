@@ -6,6 +6,11 @@
 // dataset mounts (present on the App hardware — same Domino project as the builder) so that /data/...
 // resolves in the PUBLISHED app. Runs before `vite build` (see app.sh), which then bakes the linked
 // files into dist/. Node built-ins only, no deps. No-op when the manifest is absent or empty.
+//
+// FIRST of two steps. A mount only ever covers this project and is fixed when the execution starts,
+// so an attachment from a Dataset shared out of another project has nothing here to link to. What
+// this script leaves unlinked is picked up by scripts/rehydrate_data.py, which downloads it through
+// the Domino data library — no deps is why the split exists: this half must work everywhere.
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -51,7 +56,8 @@ function main() {
     try { rmSync(rel, { force: true }); } catch { /* nothing to remove */ }
     try { symlinkSync(src, rel); linked++; } catch (err) { console.error(`[rehydrate] ${rel}: ${err.message}`); }
   }
-  console.log(`[rehydrate] linked ${linked} data file(s)${missing ? `, ${missing} unavailable` : ""}`);
+  // "left to fetch", not "unavailable": the download step runs next and usually answers for these.
+  console.log(`[rehydrate] linked ${linked} data file(s)${missing ? `, ${missing} left to fetch` : ""}`);
 }
 
 main();

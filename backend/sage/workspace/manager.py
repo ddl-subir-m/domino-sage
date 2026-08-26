@@ -41,7 +41,12 @@ _DEPS_SENTINEL = Path(".bin") / "vite"
 # What Domino runs to serve a published App: the entry script, and the Python server it execs
 # (ADR-0002). Both Sage-owned — see refresh_entry_script. serve.py comes FIRST: a refreshed app.sh
 # without it is an app that crash-loops, whereas a stale app.sh with a spare serve.py still serves.
-_DEPLOY_FILES = ("serve.py", "app.sh")
+_DEPLOY_FILES = (
+    "serve.py",
+    "scripts/rehydrate-data.mjs",
+    "scripts/rehydrate_data.py",
+    "app.sh",
+)
 # One binding writer at a time. Workspace is a frozen value object that callers re-create freely, so
 # the lock cannot live on the instance; a process-wide one is enough because a Sage process serves a
 # single project (D9) and every binding write goes through update_bindings.
@@ -618,8 +623,10 @@ class WorkspaceManager:
         order, 2026-08-07). Callers refresh at publish time so the fix travels to every app that
         deploys.
 
-        Order is load-bearing (_DEPLOY_FILES): the server lands before the script that execs it, so a
+        Order is load-bearing (_DEPLOY_FILES): app.sh lands LAST, after everything it calls, so a
         refresh that fails partway leaves an app that still serves rather than one that can't boot.
+        The rehydrate pair is on that list for the same reason app.sh is — an app born before a
+        rehydrate step existed would otherwise deploy an app.sh that calls a script it doesn't have.
         """
         changed = False
         for name in _DEPLOY_FILES:
@@ -629,6 +636,7 @@ class WorkspaceManager:
             dst = self._dir / name
             if dst.is_file() and dst.read_bytes() == src.read_bytes():
                 continue
+            dst.parent.mkdir(parents=True, exist_ok=True)  # scripts/ may predate this app
             shutil.copy2(src, dst)  # copy2 keeps the +x bit Domino needs to run app.sh
             changed = True
         return changed

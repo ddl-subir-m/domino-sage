@@ -30,32 +30,15 @@ export PATH=/usr/local/bin:/usr/bin:$PATH
 npm ci
 stage "dependencies installed"
 
-# Rebuild public/data/ from the project's dataset mounts (attached/uploaded data is gitignored, so
-# it isn't in this checkout — the committed .sage/attachments.json manifest maps it back). Must run
-# BEFORE the build so Vite copies the linked files into dist/. No-op when nothing was attached.
-node scripts/rehydrate-data.mjs
-stage "data rehydrated"
-
-# Production build -> dist/ (base "./" via vite.config, so it works under any app mount prefix).
-npm run build
-stage "build complete"
-
-# Serve the build from dist/ on the port + host Domino's app proxy expects. The proxy strips the app's
-# mount prefix BEFORE the request reaches this container, so the server serves at root — that is what
-# the replaced `vite preview --base /` was for, and why serve.py needs no prefix of its own.
-#
-# The BROWSER still sees the prefix: a published app is framed at
-# apps.<domain>/apps-internal/<app-id>/ (measured 2026-08-19). That is why the build base stays
-# relative and must NOT become "/": an absolute base would ask the apps host for /assets/... with no
-# app id in the path, breaking every route including the root page. Relative alone was not enough
-# either — it broke any route two or more segments deep (#18) — so serve.py recovers the prefix at
-# request time and stamps a <base href> into the page it serves.
-#
 # The PATH line above, which exists to beat conda's node, also puts /usr/bin/python3 ahead of the
 # conda interpreter that carries domino_data + pyarrow. That cost nothing while serve.py was
 # stdlib-only; now that it runs Data Source queries (#14), the interpreter is chosen deliberately
 # rather than left to PATH. serve.py itself imports and serves under any of them — the SDK import is
 # late and local — so a wrong choice here costs the queries, not the app.
+#
+# Chosen BEFORE the build, not just before serve: the same library fetches the attached data that
+# lives in Datasets this App has not mounted, and that has to land before Vite bakes public/ into
+# dist/. A missing interpreter still costs only data, never the build.
 #
 # Candidates, in order. First is the Sage venv, which the Environment build ASSERTS can import the
 # library; then conda, which is where the Domino base image's own copy lives; then whatever PATH
@@ -83,5 +66,31 @@ if [ -z "$SAGE_PYTHON" ]; then
   echo "[sage] no interpreter here carries the Domino data library; Data Source queries will fail"
 fi
 echo "[sage] python: $SAGE_PYTHON"
+
+# Rebuild public/data/ from the committed .sage/attachments.json manifest (attached/uploaded data is
+# gitignored, so it isn't in this checkout). Must run BEFORE the build so Vite copies the files into
+# dist/. Two steps, because a mount answers for some Datasets and not others: the first links what
+# this App's hardware already has on disk, the second downloads the rest — anything shared from
+# another project, or added to the project after this execution started. Both no-op when nothing
+# was attached, and neither can fail the publish.
+node scripts/rehydrate-data.mjs
+"$SAGE_PYTHON" scripts/rehydrate_data.py || echo "[sage] data fetch skipped"
+stage "data rehydrated"
+
+# Production build -> dist/ (base "./" via vite.config, so it works under any app mount prefix).
+npm run build
+stage "build complete"
+
+# Serve the build from dist/ on the port + host Domino's app proxy expects. The proxy strips the app's
+# mount prefix BEFORE the request reaches this container, so the server serves at root — that is what
+# the replaced `vite preview --base /` was for, and why serve.py needs no prefix of its own.
+#
+# The BROWSER still sees the prefix: a published app is framed at
+# apps.<domain>/apps-internal/<app-id>/ (measured 2026-08-19). That is why the build base stays
+# relative and must NOT become "/": an absolute base would ask the apps host for /assets/... with no
+# app id in the path, breaking every route including the root page. Relative alone was not enough
+# either — it broke any route two or more segments deep (#18) — so serve.py recovers the prefix at
+# request time and stamps a <base href> into the page it serves.
+#
 
 exec "$SAGE_PYTHON" serve.py --dir dist --host 0.0.0.0 --port 8888

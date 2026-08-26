@@ -263,6 +263,16 @@ def _bare_kind_id(value: str, kind: str) -> str:
     return s
 
 
+def _dataset_unique_name(item: dict, name: str) -> str:
+    """The `dataset-<name>-<id>` handle for a context chip, or "" when the chip carries no id.
+
+    Both halves are needed: the Domino data library rejects a bare name and a bare id alike. A chip
+    with no id is worth an honest sentence, not a call that cannot succeed.
+    """
+    ds_id = _bare_kind_id(str(item.get("id") or ""), "dataset")
+    return f"dataset-{name}-{ds_id}" if (name and ds_id) else ""
+
+
 def _list_scratch_files(workspace: Path) -> list[dict]:
     """Chat-local uploads that live in this workspace, not in a Dataset and not in git."""
     root = Path(workspace) / ".sage" / "scratch"
@@ -897,11 +907,13 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
 
 
 def _chat_context_line(item: dict, *, file_note: str = "") -> str:
-    """One Session-context row for sage-chat: identity, and whether files or a query are possible.
+    """One Session-context row for sage-chat: identity, and how its contents can be reached.
 
-    A Dataset without a mount is still a real Resource. Naming it without saying the files are
-    absent lets the agent grep this git repo for a similarly named folder and answer about the
-    wrong thing. A table chip names Scope and columns, not rows.
+    A Dataset without a mount is still readable — through the Domino data library, which is how
+    every Dataset shared from another project is reached, since a mount only ever covers this one.
+    What the row must not do is name a Dataset and leave the route to it unsaid: that is what let
+    the agent grep this git repo for a similarly named folder and answer about the wrong thing.
+    A table chip names Scope and columns, not rows.
     """
     kind = str(item.get("kind") or "resource")
     if kind == "table":
@@ -923,10 +935,19 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
                 f"- Dataset {name}{where}, files at {path}. Read those files. "
                 "Do not search the rest of this workspace for a substitute."
             )
+        unique = _dataset_unique_name(item, name)
+        if not unique:
+            return (
+                f"- Dataset {name}{where}. Sage has no identifier for it, so its files cannot be "
+                "read this turn. Tell the person that. Do not search this git repo or any other "
+                "folder for a project of the same name — that is not this Dataset."
+            )
         return (
-            f"- Dataset {name}{where}. Its files are not mounted in this workspace, so you cannot "
-            "list rows or files. Tell the person that. Do not search this git repo or any other "
-            "folder for a project of the same name — that is not this Dataset."
+            f"- Dataset {name}{where}. Not mounted here, so read it with the Domino data library: "
+            f'`from domino_data.datasets import DatasetClient` then `DatasetClient().get_dataset("{unique}")`. '
+            "`.list_files()` names its files and `.download_file(<file>, \"/tmp/<file>\")` fetches "
+            "one to read with pandas. Do not search this git repo or any other folder for a "
+            "project of the same name — that is not this Dataset."
         )
     if kind in ("file", "artifact"):
         extra = f" at {path}" if path else ""
@@ -935,10 +956,20 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
         if not path and item.get("datasetId"):
             ds = item.get("datasetName") or item.get("datasetId")
             rel = item.get("datasetRelPath") or name
+            unique = _dataset_unique_name(
+                {"id": item.get("datasetId")}, str(item.get("datasetName") or "")
+            )
+            if not unique:
+                return (
+                    f"- file {name} in Dataset {ds} ({rel}). Sage has no identifier for that "
+                    "Dataset, so this file cannot be read this turn. Tell the person that. "
+                    "Do not search this git repo for a substitute."
+                )
             return (
-                f"- file {name} in Dataset {ds} ({rel}). Its files are not mounted in this "
-                "workspace, so you cannot list rows. Tell the person that. Do not search this "
-                "git repo for a substitute."
+                f"- file {rel} in Dataset {ds}. Not mounted here, so fetch it with the Domino data "
+                "library: `from domino_data.datasets import DatasetClient` then "
+                f'`DatasetClient().get_dataset("{unique}").download_file("{rel}", "/tmp/{name}")`, '
+                f"then read /tmp/{name} with pandas. Do not search this git repo for a substitute."
             )
         line = f"- {kind}: {name}{extra}"
         if file_note:
@@ -2663,15 +2694,17 @@ class Orchestrator:
                 # Raises LookupError for a rehydrated entry with no dataset_id, which the except
                 # below treats like any other unrestorable one.
                 asset = self._find_asset(entry.get("dataset_id"))
-                if not asset.mount_path:
-                    continue        # the mount is gone; nothing to point at, and saying so is the
-                                    # describe path's job, not this one's
-                src = _safe_join(Path(asset.mount_path),
-                                 entry.get("dataset_rel_path") or entry.get("file") or "")
-                if not src.is_file():
-                    continue
+                rel_path = entry.get("dataset_rel_path") or entry.get("file") or ""
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.symlink_to(src)
+                if not asset.mount_path:
+                    # No mount to re-link to, which is not the dead end it used to be: the same
+                    # download that made this attachment can make it again.
+                    self._assets.download_file(asset, rel_path, dest)
+                else:
+                    src = _safe_join(Path(asset.mount_path), rel_path)
+                    if not src.is_file():
+                        continue
+                    dest.symlink_to(src)
                 restored.append(entry["path"])
             except (ValueError, OSError, LookupError):
                 continue            # one unrestorable attachment must not strand the others
@@ -4313,7 +4346,8 @@ class Orchestrator:
         return found["ok"]
 
     def list_assets(self) -> list[dict]:
-        """Datasets mounted in this project (the ones whose files can actually be attached)."""
+        """Every Dataset this caller can read. `mount_path` says which are also on this disk —
+        useful for uploads, which need a writable mount, and no longer a condition of reading."""
         return [
             {
                 "id": a.id,
@@ -4958,7 +4992,8 @@ class Orchestrator:
         return asset
 
     def list_asset_files(self, dataset_id: str) -> list[dict]:
-        """Files under a mounted dataset, each with its size and whether it's already attached."""
+        """Files in a Dataset, each with its size and whether it's already attached. Size is 0 for
+        a Dataset with no mount here — the API listing names files without measuring them."""
         asset = self._find_asset(dataset_id)
         attached = {e["path"] for e in self.project(start_preview=False).attached}
         out = []
@@ -4967,31 +5002,68 @@ class Orchestrator:
             out.append({"path": f.path, "size": f.size, "dest": dest, "attached": dest in attached})
         return out
 
+    def _download_attachment(self, asset: Asset, file_path: str, dest: Path, total: int,
+                             prune_root: Path) -> int:
+        """Fetch one file from a Dataset this container has no mount for. Returns its size.
+
+        The API listing carries no sizes, so the cap can only be enforced against real bytes: the
+        download lands beside its destination and is moved into place once it fits, and is deleted
+        when it does not. A partial or over-cap download never becomes an attachment — and never
+        leaves the directories it needed behind either, so a refused attach is invisible in the
+        tree the preview serves.
+        """
+        tmp = dest.with_name(dest.name + ".part")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        placed = False
+        try:
+            size = self._assets.download_file(asset, file_path, tmp)
+            if total + size > self._attach_max_bytes:
+                raise AttachTooLarge(self._attach_max_bytes, total, size)
+            if dest.is_symlink() or dest.exists():
+                dest.unlink()
+            os.replace(tmp, dest)
+            placed = True
+        finally:
+            if tmp.is_symlink() or tmp.exists():
+                tmp.unlink()          # before the prune, or the leftover keeps the dir alive
+            if not placed:
+                _prune_empty_dirs(dest.parent, prune_root)
+        return size
+
     def attach_file(self, dataset_id: str, file_path: str) -> dict:
-        """Symlink one dataset file into the workspace under public/data/ so OpenCode can @mention
-        it and the (static) preview/published app can fetch it — no byte copy, the symlink points
-        at the live Domino mount.
+        """Put one dataset file into the workspace under public/data/ so OpenCode can @mention it
+        and the (static) preview/published app can fetch it.
+
+        A mounted Dataset is symlinked — no byte copy, and the link points at the live Domino mount.
+        A Dataset this container has no mount for is downloaded through the Domino data library,
+        which is how a Dataset shared from another project becomes attachable at all: mounts are
+        fixed when the execution starts, and waiting for a restart was the old answer.
         Enforces a configurable total-size cap across all attached files."""
         project = self.project()
         asset = self._find_asset(dataset_id)
-        if not asset.mount_path:
-            raise LookupError(dataset_id)  # not mounted here -> nothing to attach
-        src = _safe_join(Path(asset.mount_path), file_path)
-        if not src.is_file():
-            raise FileNotFoundError(file_path)
         rel = _attach_dest(asset.name, file_path)  # workspace-relative posix path
         already = next((e for e in project.attached if e["path"] == rel), None)
         if already is None:
-            size = src.stat().st_size
             total = sum(e["size"] for e in project.attached)
-            if total + size > self._attach_max_bytes:
-                raise AttachTooLarge(self._attach_max_bytes, total, size)
             dest = _safe_join(project.workspace.path, rel)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.is_symlink() or dest.exists():
-                dest.unlink()
-            dest.symlink_to(src)
-            # source="dataset": bytes belong to a pre-existing dataset — delete must never remove them.
+            if not asset.mount_path:
+                size = self._download_attachment(
+                    asset, file_path, dest, total,
+                    project.workspace.path / "public" / "data",
+                )
+            else:
+                src = _safe_join(Path(asset.mount_path), file_path)
+                if not src.is_file():
+                    raise FileNotFoundError(file_path)
+                size = src.stat().st_size
+                if total + size > self._attach_max_bytes:
+                    raise AttachTooLarge(self._attach_max_bytes, total, size)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.is_symlink() or dest.exists():
+                    dest.unlink()
+                dest.symlink_to(src)
+            # source="dataset": the Dataset's own bytes are never Sage's to delete. Detach removes
+            # only what sits in the workspace — the symlink, or the copy downloaded in its place.
             project.attached.append(
                 {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel,
                  "size": size, "source": "dataset", "dataset_rel_path": file_path}

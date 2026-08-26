@@ -107,12 +107,14 @@ window.SW = window.SW || {};
   SW.DatasetFileTree = function DatasetFileTree({ resource, query, variant }) {
     const [files, setFiles] = useState(null);
     const [error, setError] = useState('');
-    const mounted = Boolean(resource && resource.path);
     const datasetId = resource ? bareId(resource.id, 'dataset') : '';
     const pins = pinSet(resource && resource.pins);
 
+    // No mount check. A Dataset this container has not mounted is still readable through the
+    // Domino data library, and a mount only ever covers this one project — so gating the tree on
+    // `resource.path` hid the files of every Dataset shared from anywhere else.
     useEffect(() => {
-      if (!resource || !mounted) {
+      if (!resource) {
         setFiles([]);
         setError('');
         return undefined;
@@ -133,15 +135,8 @@ window.SW = window.SW || {};
       return () => {
         cancelled = true;
       };
-    }, [datasetId, mounted]);
+    }, [datasetId]);
 
-    if (!mounted) {
-      return h(
-        'div',
-        { className: 'sw-tree-empty' },
-        'Files are not mounted in this workspace.'
-      );
-    }
     if (files === null) return h(Spin, { size: 'small', className: 'sw-tree-spin' });
     if (error) return h('div', { className: 'sw-tree-empty' }, error);
     const visible = (files || []).filter((f) => filterName(f.path, query));

@@ -225,14 +225,17 @@ def test_chat_keeps_only_the_last_assistant_text(tmp_path: Path):
     assert [e.get("text") for e in hist if e.get("kind") == "text"] == ["Rates is the largest desk."]
 
 
-def test_chat_prompt_tells_the_agent_an_unmounted_dataset_is_not_the_git_repo(tmp_path: Path):
+def test_chat_prompt_routes_an_unmounted_dataset_to_the_data_library(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="ok")])
     tid = orch.create_thread()["id"]
-    orch.add_thread_context(tid, {"kind": "dataset", "name": "autodoc", "project": "Sage"})
+    orch.add_thread_context(
+        tid, {"kind": "dataset", "id": "dataset:abc123", "name": "autodoc", "project": "Sage"}
+    )
     list(orch.chat_stream(tid, "whats in autodoc"))
     prompt = oc.prompts[0]["text"]
     assert "autodoc" in prompt
-    assert "not mounted" in prompt
+    # Both halves of the identifier: the data library rejects a bare name and a bare id alike.
+    assert 'get_dataset("dataset-autodoc-abc123")' in prompt
     assert "not this Dataset" in prompt
     assert "Do not greet by asking what to build" in prompt
     assert f"examples/{tid}/" in prompt
@@ -459,7 +462,7 @@ def test_chat_prompt_for_an_unmounted_dataset_file_does_not_search_git(tmp_path:
     })
     list(orch.chat_stream(tid, "whats in positions"))
     prompt = oc.prompts[0]["text"]
-    assert "not mounted" in prompt
+    assert 'get_dataset("dataset-autodoc-ds_missing").download_file("positions.csv"' in prompt
     assert "Do not search this git repo" in prompt
 
 

@@ -9,8 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from sage.assets.provider import FakeAssetProvider
-from sage.orchestrator.service import DataReferenced, Orchestrator, UploadUnavailable
+from sage.assets.provider import Asset, DatasetFile, FakeAssetProvider
+from sage.orchestrator.service import (
+    AttachTooLarge,
+    DataReferenced,
+    Orchestrator,
+    UploadUnavailable,
+)
 from sage.router.models import ModelCatalog
 
 
@@ -597,3 +602,78 @@ def test_list_asset_files_accepts_a_membership_id(tmp_path: Path):
     files = orch.list_asset_files("dataset:ds_sales_2026")
     names = {f["path"] for f in files}
     assert "train.csv" in names
+
+
+class _UnmountedAssets:
+    """One Dataset this container has no mount for — the ordinary case for anything shared.
+
+    Mounts are fixed when the execution starts and only ever cover one project, so a Dataset the
+    person can read is usually not on this disk. It is still readable through the data library.
+    """
+
+    def __init__(self, payload: bytes = b"a,b\n1,2\n"):
+        self.asset = Asset(id="ds_shared", name="Oil-and-Gas-Demo", project="Oil-and-Gas-Demo")
+        self.payload = payload
+        self.downloads: list[str] = []
+
+    def list_datasets(self, project_id):
+        return [self.asset]
+
+    def list_files(self, asset):
+        return [DatasetFile("raw/wells.csv", 0)]   # the API listing carries no sizes
+
+    def download_file(self, asset, rel_path, dest):
+        self.downloads.append(rel_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(self.payload)
+        return len(self.payload)
+
+
+def test_a_dataset_with_no_mount_still_lists_its_files(tmp_path: Path):
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    files = orch.list_asset_files("ds_shared")
+    assert [f["path"] for f in files] == ["raw/wells.csv"]
+    assert files[0]["attached"] is False
+
+
+def test_attaching_from_an_unmounted_dataset_downloads_the_bytes(tmp_path: Path):
+    assets = _UnmountedAssets()
+    orch = _orch(tmp_path, assets=assets)
+    ws = orch.project(start_preview=False).workspace.path
+
+    res = orch.attach_file("ds_shared", "raw/wells.csv")
+
+    dest = ws / res["path"]
+    assert dest.is_file() and not dest.is_symlink()      # nothing to link to; the bytes are copied
+    assert dest.read_bytes() == b"a,b\n1,2\n"
+    assert assets.downloads == ["raw/wells.csv"]
+    assert res["size"] == 8
+    assert not list(dest.parent.glob("*.part"))          # no half-written leftovers
+
+
+def test_an_over_cap_download_is_discarded_rather_than_attached(tmp_path: Path):
+    # The listing has no sizes, so the cap can only be judged after the bytes arrive. What must not
+    # happen is a file that blew the cap being left behind as an attachment.
+    assets = _UnmountedAssets(payload=b"x" * 4096)
+    orch = _orch(tmp_path, assets=assets)
+    orch._attach_max_bytes = 16
+    ws = orch.project(start_preview=False).workspace.path
+
+    with pytest.raises(AttachTooLarge):
+        orch.attach_file("ds_shared", "raw/wells.csv")
+
+    assert orch.project(start_preview=False).attached == []
+    assert not list((ws / "public" / "data").rglob("*"))
+
+
+def test_an_unmounted_attachment_is_rehydrated_by_downloading_it_again(tmp_path: Path):
+    assets = _UnmountedAssets()
+    orch = _orch(tmp_path, assets=assets)
+    ws = orch.project(start_preview=False).workspace.path
+    rel = orch.attach_file("ds_shared", "raw/wells.csv")["path"]
+
+    (ws / rel).unlink()                                   # the agent deleted it mid-turn
+    orch._restore_attachments()
+
+    assert (ws / rel).read_bytes() == b"a,b\n1,2\n"
+    assert assets.downloads == ["raw/wells.csv", "raw/wells.csv"]
