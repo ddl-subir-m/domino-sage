@@ -139,35 +139,41 @@ def test_a_turn_that_raises_still_reports_the_error():
 
 # ---- The other end of the wire ---------------------------------------------------------------
 
-UI = (Path(__file__).resolve().parents[1] / "sage" / "ui" / "index.html").read_text()
+UI = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js" / "store.js").read_text()
 
 
 def _frames(raw: str) -> list[str]:
-    """Split a stream the way runStream does, so a frame here is a frame there."""
+    """Split a stream the way readSSE does, so a frame here is a frame there."""
     frames = raw.split("\n\n")
-    frames.pop()          # the incomplete tail runStream keeps buffered
+    frames.pop()          # the incomplete tail readSSE keeps buffered
     return frames
 
 
 def test_the_browser_skips_a_keepalive_instead_of_reading_it_as_an_event():
     """Adding the keepalives made the very symptom they were added to cure, for a week.
 
-    runStream fed every frame to JSON.parse. A `: keepalive` is not JSON, so it threw — and the only
-    catch around that loop treats anything thrown as the socket dying, which is what prints "Lost the
-    connection to this build — it's still running". So a build went perfectly quiet for 15s, got a
-    keepalive, and reported itself lost. Refreshing showed the finished app, because nothing was ever
-    actually wrong (live, 2026-08-24).
+    The old builder UI fed every frame to JSON.parse. A `: keepalive` is not JSON, so it threw — and
+    the only catch around that loop treats anything thrown as the socket dying, which is what prints
+    "Lost the connection to this build — it's still running". So a build went perfectly quiet for
+    15s, got a keepalive, and reported itself lost. Refreshing showed the finished app, because
+    nothing was ever actually wrong (live, 2026-08-24).
 
-    This asserts the two halves agree rather than either alone: what `_turn_sse` puts on the wire, and
-    the rule runStream uses to decide a frame is readable.
+    The Workbench reader (`readSSE`) reaches the same end from the other side: instead of skipping
+    what isn't data, it parses only what IS. Either rule holds as long as both halves agree, so this
+    asserts them together — what `_turn_sse` puts on the wire, and the rule the browser uses to
+    decide a frame is readable.
     """
     frame = _frames(ka.KEEPALIVE.decode())[0]
     assert not frame.startswith("data: "), (
         "the keepalive now looks like an event frame, so the browser will try to parse it")
 
-    loop = UI[UI.index("const frames = buf.split"):UI.index("renderEvent(ev, turnStart)")]
-    assert "if (!f.startsWith('data: ')) continue;" in loop, (
-        "runStream parses frames it wasn't handed as data — a keepalive will reach JSON.parse")
+    loop = UI[UI.index("async function readSSE("):UI.index("const GATE_DECISIONS")]
+    assert "if (line.startsWith('data: ')) {" in loop, (
+        "readSSE parses frames it wasn't handed as data — a keepalive will reach JSON.parse")
+    # And a frame that slips past the rule anyway must not take the stream down with it: the catch
+    # sits around the one parse, inside the loop, not around the read.
+    assert "catch (err) { /* keep-alive or partial */ }" in loop, (
+        "a bad frame now escapes to the caller, which reads any throw as the connection dying")
 
 
 def test_a_real_event_survives_the_skip():
