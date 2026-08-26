@@ -466,6 +466,27 @@ def test_chat_prompt_for_an_unmounted_dataset_file_does_not_search_git(tmp_path:
     assert "Do not search this git repo" in prompt
 
 
+def test_a_dataset_file_whose_path_is_really_its_id_still_gets_the_dataset_route(tmp_path: Path):
+    # The shape the Workbench actually sent, and the reason the test above never caught this: the
+    # client recovered a missing path by stripping one prefix off `dsfile:<id>:<relPath>`, leaving
+    # `<id>:<relPath>`. Every `if path:` downstream believed it, so the turn told the agent to read
+    # a path that cannot exist instead of naming the Domino data library, and the answer never came.
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "file",
+        "name": "price_data.csv",
+        "path": "690d119f8a0ee66d0ee23533:price_data.csv",
+        "datasetId": "690d119f8a0ee66d0ee23533",
+        "datasetRelPath": "price_data.csv",
+        "datasetName": "prices",
+    })
+    list(orch.chat_stream(tid, "whats in price_data.csv"))
+    prompt = oc.prompts[0]["text"]
+    assert "690d119f8a0ee66d0ee23533:price_data.csv" not in prompt
+    assert 'download_file("price_data.csv"' in prompt
+
+
 def test_new_conversation_does_not_provision(tmp_path: Path):
     orch, _ = _orch(tmp_path)
     first = orch.create_thread()

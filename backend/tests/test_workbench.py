@@ -178,3 +178,16 @@ def test_the_shell_asks_before_it_reuses_its_own_javascript():
 
     # The font is renamed when its bytes are replaced, so it keeps the long immutable cache.
     assert "immutable" in client.get("/fonts/inter-latin-var.woff2").headers["cache-control"]
+
+
+def test_a_dataset_file_chip_does_not_invent_a_path_out_of_its_own_id():
+    """`dsfile:<datasetId>:<relPath>` is an id, not a path with a prefix on it.
+
+    Stripping one prefix left `<datasetId>:<relPath>`, which every `if path:` on the server read as
+    a real location: it skipped attaching the file, skipped offering the Domino data library, and
+    told the agent to read something that cannot be stat'd. Only a `file:<path>` id carries a path.
+    """
+    api = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js" / "api.js").read_text()
+
+    assert "kind === 'file' && kindFromPrefix(resourceId) === 'file'" in api
+    assert "path: resource.path || (kind === 'file' ? rawFromPrefix(resourceId) : undefined)" not in api

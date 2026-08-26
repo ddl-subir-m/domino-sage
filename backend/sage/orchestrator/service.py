@@ -273,6 +273,24 @@ def _dataset_unique_name(item: dict, name: str) -> str:
     return f"dataset-{name}-{ds_id}" if (name and ds_id) else ""
 
 
+def _dataset_pseudo_path(item: dict) -> bool:
+    """True when a Dataset file's `path` is really its resource id, not somewhere on disk.
+
+    A Dataset file's resource id is `dsfile:<datasetId>:<relPath>`, and the client used to recover a
+    missing path by stripping the first prefix — which yields `<datasetId>:<relPath>`, a string that
+    looks like a path to every `if path:` in this file and is not one. One fabricated value silenced
+    four things at once: add_thread_context skipped the auto-attach (it only runs when there is no
+    path), _chat_context_line skipped the Dataset-library route (same condition) and told the agent
+    to read a path that cannot exist, and the composer built its @token from it, so `@<id>:<file>`
+    never matched the file it named. Rows written before the client stopped sending it are still on
+    disk, so this is checked where a path is READ, not only where one is stored.
+    """
+    path = str(item.get("path") or "")
+    rel = str(item.get("datasetRelPath") or "")
+    ds_id = str(item.get("datasetId") or "")
+    return bool(path) and bool(ds_id) and path == f"{ds_id}:{rel}"
+
+
 def _list_scratch_files(workspace: Path) -> list[dict]:
     """Chat-local uploads that live in this workspace, not in a Dataset and not in git."""
     root = Path(workspace) / ".sage" / "scratch"
@@ -925,7 +943,7 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
     # BigQuery_Demo, and Domino answered, correctly, that no Data Source goes by that name.
     source_name = str(item.get("sourceName") or item.get("subtitle") or "").strip()
     name = source_name or str(item.get("name") or item.get("id") or "unnamed")
-    path = item.get("path")
+    path = None if _dataset_pseudo_path(item) else item.get("path")
     project = item.get("project")
     scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
     if kind == "dataset":
@@ -1950,6 +1968,8 @@ class Orchestrator:
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         row = dict(item or {})
+        if _dataset_pseudo_path(row):
+            row["path"] = None
         dataset_id = row.get("datasetId")
         rel = row.get("datasetRelPath")
         if str(row.get("kind") or "") == "file" and dataset_id and rel and not row.get("path"):

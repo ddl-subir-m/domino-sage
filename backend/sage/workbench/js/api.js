@@ -378,7 +378,15 @@ SW.api = {
     const row = await post(`/threads/${id}/context`, {
       kind,
       name: resource.name || rawFromPrefix(resourceId),
-      path: resource.path || (kind === 'file' ? rawFromPrefix(resourceId) : undefined),
+      // Recover a missing path ONLY from a `file:<path>` id, where the rest of the id IS the path.
+      // A Dataset file is `dsfile:<datasetId>:<relPath>`, so stripping one prefix yields
+      // `<datasetId>:<relPath>` — which reads as a path everywhere downstream and is not one. That
+      // fabricated value stopped the server attaching the file, stopped it offering the Domino data
+      // library route, and made the composer's @token name a file nothing could match.
+      path: resource.path
+        || (kind === 'file' && kindFromPrefix(resourceId) === 'file'
+          ? rawFromPrefix(resourceId)
+          : undefined),
       project: resource.project,
       bindingKey: resource.bindingKey,
       addedBy: addedBy || 'user',
