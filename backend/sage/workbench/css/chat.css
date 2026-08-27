@@ -220,10 +220,13 @@
   font-family: inherit;
   transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
 }
-.sw-starter:hover {
+.sw-starter:hover:not(:disabled) {
   border-color: var(--purple-500);
   box-shadow: var(--shadow-card);
 }
+/* A starter sends a question, so it is held back by a running turn for the same reason the
+   composer is — the bar above them both says why. */
+.sw-starter:disabled { cursor: default; opacity: 0.5; }
 .sw-starter-text { font-size: 13px; font-weight: 600; color: var(--dark-700); }
 .sw-starter-detail { font-size: 12px; color: var(--gray-500); line-height: 1.45; }
 .sw-starter.is-compact { padding: var(--s2) var(--s3); }
@@ -517,6 +520,19 @@
   border-radius: var(--radius);
 }
 .sw-chat-planbar .ant-btn:last-child { margin-left: auto; }
+
+/* Sits where the plan bar sits, above the composer it is explaining, so the sentence and the
+   disabled box read as one thing rather than a notice floating near an input that just broke. */
+.sw-chat-turnbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: var(--s2);
+  padding: 6px var(--s3);
+  background: var(--gray-100);
+  border-radius: var(--radius);
+}
+.sw-chat-turnbar .ant-btn { margin-left: auto; }
 
 .sw-composer-inner { width: 100%; }
 .sw-composer {

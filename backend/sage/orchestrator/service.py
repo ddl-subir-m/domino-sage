@@ -3177,8 +3177,24 @@ class Orchestrator:
             running_tools: set[str] = set()
             while True:
                 if project.stop_requested:
-                    client.interrupt(sid)
-                    yield {"type": "done", "ok": False, "decision": "stopped"}
+                    # Cleared by the turn that consumes it. Build clears it in its own handle_stop;
+                    # Chat only ever read it, so the flag outlived the turn and the NEXT question
+                    # died on this line before it ran a step.
+                    project.stop_requested = False
+                    try:
+                        client.interrupt(sid)
+                    except Exception:
+                        log.exception("chat: interrupt on stop failed")
+                    # Chat reverts nothing. A Build stop takes the turn's file changes with it
+                    # because half an app is worse than none; a Chat turn writes charts and tables
+                    # under examples/, and one already written is an answer someone can still use.
+                    stopped = {"type": "stopped",
+                               "message": "Stopped. Anything Sage had already written is kept."}
+                    done = {"type": "done", "ok": False, "decision": "stopped"}
+                    store.append_history(thread_id, stopped)
+                    store.append_history(thread_id, done)
+                    yield stopped
+                    yield done
                     return
                 now = time.monotonic()
                 quiet_limit = tool_quiet if running_tools else idle_quiet
@@ -5005,7 +5021,17 @@ class Orchestrator:
         return None
 
     def stop_build(self) -> None:
-        """Interrupt the in-flight build_stream() turn; it reverts files/history and stops."""
+        """Interrupt whichever turn is in flight — Build or Chat. Both poll `stop_requested` and
+        both clear it as they unwind; Build also reverts the files and history the turn wrote,
+        Chat keeps what it wrote (see _chat_stream, _build_stream's handle_stop).
+
+        A Stop with nothing running is a no-op rather than a flag left lying about. It used to set
+        `stop_requested` regardless, and nothing cleared it until a turn tripped over it — so a
+        Stop pressed twice, or pressed in the second a turn was already ending, silently killed the
+        NEXT question before it ran a step.
+        """
+        if not self.turn_busy():
+            return
         project = self.project()
         project.stop_requested = True
         # The LIVE session, not the project's: during a phased build the project session is idle and

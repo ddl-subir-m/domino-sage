@@ -67,14 +67,34 @@ def test_a_turn_that_never_streams_looks_exactly_as_it_did_before():
 
 def test_a_turn_that_dies_mid_sentence_keeps_what_it_managed_to_say():
     """The timeout path sends an error and no text. What arrived is still the best account of what
-    happened, and dropping it would leave the reader with a stopped turn and nothing to read."""
+    happened, and dropping it would leave the reader with a stopped turn and nothing to read.
+
+    A status line rather than a paragraph: this is Sage reporting on the turn, not answering the
+    question, and it is the shape the reload path builds from the same persisted event."""
     out = _turn([{"type": "user", "text": "q"},
                  {"type": "delta", "text": "Reading the file"},
                  {"type": "error", "message": "This turn took too long, so it was stopped."},
                  {"type": "done", "ok": False, "decision": "timeout"}])
     assert out["final"] == [
         {"type": "text", "value": "Reading the file", "streaming": True},
-        {"type": "text", "value": "This turn took too long, so it was stopped."},
+        {"type": "status", "ok": False,
+         "value": "This turn took too long, so it was stopped."},
+    ]
+
+
+def test_a_stopped_turn_says_so_and_keeps_the_half_answer():
+    """Pressing Stop used to end the turn with `done` alone: the spinner vanished and the Thread
+    was left holding a question with no reply and no reason. The server now says it, and half an
+    answer is still worth reading — a Chat stop reverts nothing."""
+    out = _turn([{"type": "user", "text": "q"},
+                 {"type": "delta", "text": "Reading the file"},
+                 {"type": "stopped",
+                  "message": "Stopped. Anything Sage had already written is kept."},
+                 {"type": "done", "ok": False, "decision": "stopped"}])
+    assert out["final"] == [
+        {"type": "text", "value": "Reading the file", "streaming": True},
+        {"type": "status", "ok": False,
+         "value": "Stopped. Anything Sage had already written is kept."},
     ]
 
 

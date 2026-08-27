@@ -18,8 +18,37 @@ window.SW = window.SW || {};
     );
   }
 
+  // What a running turn looks like from the composer. Chat had no answer to "it is still going"
+  // beyond waiting: the server refused the next question in the transcript, which read as Sage
+  // replying to a question about data with a complaint about a build, and there was nothing on
+  // screen to press. One project runs one turn, so this is also what a turn started in another
+  // conversation looks like from here — say which, because "wait" and "wait, over there" send
+  // someone to different places.
+  function TurnBar() {
+    const { chatRunning, chatTurnThread, thread } = SW.store.get();
+    if (!chatRunning) return null;
+    const here = chatTurnThread && thread && chatTurnThread === thread.id;
+
+    return h(
+      'div',
+      { className: 'sw-chat-turnbar' },
+      h(
+        'span',
+        { className: 'sw-caption' },
+        here
+          ? 'Sage is working on this conversation.'
+          : 'Sage is working elsewhere in this project. One turn runs at a time.'
+      ),
+      h(
+        Button,
+        { size: 'small', danger: true, onClick: () => SW.store.stopChat() },
+        'Stop'
+      )
+    );
+  }
+
   function Landing({ onSend, compact }) {
-    const { starters, me, scope } = SW.store.get();
+    const { starters, me, scope, chatRunning } = SW.store.get();
     const catalogue = (starters && starters.chat) || {};
     // Acme is a financial services firm; show its prompts alongside the
     // ones that make sense anywhere.
@@ -46,7 +75,8 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-landing-composer' },
-          h(SW.Composer, { onSend, autoFocus: true, placeholder })
+          h(TurnBar, null),
+          h(SW.Composer, { onSend, autoFocus: true, placeholder, disabled: chatRunning })
         ),
         h(
           'div',
@@ -57,6 +87,7 @@ window.SW = window.SW || {};
               {
                 key: prompt.title,
                 className: 'sw-starter',
+                disabled: chatRunning,
                 onClick: () => onSend(prompt.prompt),
               },
               h('span', { className: 'sw-starter-text' }, prompt.title),
@@ -69,7 +100,8 @@ window.SW = window.SW || {};
   }
 
   SW.ChatMode = function ChatMode({ threadId }) {
-    const { thread, messages, typing, pendingTurn, scope, activePlanId, planViewerId } = SW.store.get();
+    const { thread, messages, typing, pendingTurn, scope, activePlanId, planViewerId,
+            chatRunning } = SW.store.get();
     const scroller = useRef(null);
 
     useEffect(() => {
@@ -181,9 +213,11 @@ window.SW = window.SW || {};
                         thread && (thread.touched || []).length ? 'Open in Build' : 'Build this'
                       )
                     ),
+                  h(TurnBar, null),
                   h(SW.Composer, {
                     onSend: send,
                     placeholder: 'Ask about your data… use @ to bring in a resource',
+                    disabled: chatRunning,
                   })
                 )
               )

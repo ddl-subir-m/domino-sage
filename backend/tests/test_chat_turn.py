@@ -1400,3 +1400,61 @@ def test_a_commit_waits_for_the_turn_that_beat_it_to_the_lock(tmp_path: Path):
     assert orch._chat_dirty is True
     assert orch._chat_save_timer is not None
     orch._cancel_chat_idle_save()
+
+
+def test_stopping_a_chat_turn_says_so_and_keeps_what_it_wrote(tmp_path: Path):
+    """Chat had no Stop. The ten-minute ceiling on a turn was chosen as "generous, because by then
+    the person can press Stop" — true of Build, and of nothing in Chat, so a wedged question held
+    the project until it timed out and the next one was refused as busy.
+
+    Stopping is not reverting: a Build stop takes the turn's file changes with it because half an
+    app is worse than none, and a Chat turn's chart under examples/ is an answer that still reads.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="never emitted")])
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    project.stop_requested = True   # a Stop that landed while the turn was in flight
+
+    events = list(orch.chat_stream(tid, "how many rows does clickstream have?"))
+
+    assert oc.interrupted == 1
+    stopped = next(e for e in events if e["type"] == "stopped")
+    assert "kept" in stopped["message"]
+    done = next(e for e in events if e["type"] == "done")
+    assert done["ok"] is False and done["decision"] == "stopped"
+    # And it survives a reload — a stopped turn that leaves no trace is a question with no reply.
+    history = orch.thread_history(tid)
+    assert any(e.get("type") == "stopped" for e in history)
+
+
+def test_a_stopped_chat_turn_does_not_take_the_next_question_with_it(tmp_path: Path):
+    """`stop_requested` is a request, and the turn that consumes it has to clear it. Build clears it
+    in handle_stop; Chat only ever read it, so the flag outlived the turn and the NEXT question died
+    at the top of the poll loop before it ran a step — a Stop that silently ate the question after
+    the one it was pressed for."""
+    orch, oc = _orch(tmp_path, [Turn(text="never emitted"), Turn(text="Six million rows.")])
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+    orch.project(start_preview=False).stop_requested = True
+    list(orch.chat_stream(tid, "how many rows does clickstream have?"))
+    assert orch.project(start_preview=False).stop_requested is False
+
+    oc.stay_running = False
+    events = list(orch.chat_stream(tid, "ask it again"))
+    assert any(e.get("type") == "agent" and e.get("text") == "Six million rows." for e in events)
+
+
+def test_stop_with_nothing_running_is_not_a_trap_for_the_next_turn(tmp_path: Path):
+    """Stop pressed twice, or pressed in the second a turn was already ending, used to leave the
+    flag set with no turn to consume it. The next question then stopped itself before it ran. The
+    turn lock is the honest test of "there is something to interrupt"."""
+    orch, oc = _orch(tmp_path, [Turn(text="Six million rows.")])
+    tid = orch.create_thread()["id"]
+
+    orch.stop_build()
+
+    assert oc.interrupted == 0   # there was no session to interrupt, and none was
+    assert orch.project(start_preview=False).stop_requested is False
+    events = list(orch.chat_stream(tid, "how many rows does clickstream have?"))
+    assert any(e.get("type") == "agent" and e.get("text") == "Six million rows." for e in events)

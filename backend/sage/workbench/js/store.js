@@ -78,6 +78,17 @@ window.SW = window.SW || {};
     thread: null,
     messages: [],
     typing: null,
+    // A turn is running somewhere in this project. Not "in this conversation": one project runs
+    // one turn at a time (the server's turn lock), so a Chat turn, a Build turn and a turn another
+    // tab started are all the same fact here — the fact that decides whether Chat can send, and
+    // whether it offers Stop. Reading it per-conversation is what let the composer take a question
+    // it already knew the server would refuse.
+    chatRunning: false,
+    // The conversation whose Chat turn THIS tab is streaming, or null. Not the same question as
+    // `chatRunning`: a turn started in another tab, or before a reload, is running with nobody here
+    // reading it. Knowing which lets the composer say whether the turn holding it up is the one on
+    // screen — "wait" and "wait, over there" send someone to different places.
+    chatTurnThread: null,
     pendingTurn: null,
     scriptMeta: { planTemplate: 'tpl_generic' },
     assistantTurns: 0,
@@ -352,6 +363,15 @@ window.SW = window.SW || {};
         if (items.length) {
           ensureAssistant().blocks.push(...(await blocksForArtifacts(items)));
         }
+      } else if (ev.type === 'error' || ev.type === 'stopped') {
+        // Why the turn ended, on reload as well as live. The server has always persisted these —
+        // the timeout sentence that names what to try instead, and now Stop — and this loop
+        // dropped both, so reopening a Thread showed a question with no answer and no reason.
+        ensureAssistant().blocks.push({
+          type: 'status',
+          ok: false,
+          value: ev.message || (ev.type === 'stopped' ? 'Stopped.' : 'The turn failed.'),
+        });
       } else if (ev.type === 'handoff-suggest' && !hideSuggest) {
         assistant = null;
         messages.push({
@@ -732,7 +752,10 @@ window.SW = window.SW || {};
       state.ready = true;
       state.resourcesLoading = true;
       notify();
-      await Promise.all([loadScopeData(), loadThreadList()]);
+      // A reload during a turn lands here with no stream and no memory of one. Ask the lock, so
+      // the composer opens disabled with a Stop beside it rather than taking a question the
+      // server is about to refuse.
+      await Promise.all([loadScopeData(), loadThreadList(), store.refreshTurnState()]);
     },
 
     // Scope --------------------------------------------------------------
@@ -1118,6 +1141,9 @@ window.SW = window.SW || {};
       state.assistantTurns = 0;
       state.pendingTurn = null;
       state.planViewerId = null;
+      // A turn still running in the conversation being left owns its own label, not this view's.
+      // Leaving it set drew "Thinking…" under an empty new conversation that was doing nothing.
+      state.typing = null;
       notify();
       // Starting from an app copies what that app needs into the conversation,
       // so the context it opens with is the app's rather than a stranger's.
@@ -1135,6 +1161,7 @@ window.SW = window.SW || {};
       state.assistantTurns = state.messages.filter((m) => m.role === 'assistant').length;
       state.pendingTurn = null;
       state.planViewerId = null;
+      state.typing = null;
       notify();
       await refreshAttachments();
       if (thread.planId) await store.loadPlan(thread.planId);
@@ -1372,8 +1399,28 @@ window.SW = window.SW || {};
 
     async sendMessage(text) {
       if (!text.trim()) return;
+      // The server refuses a second turn and says so in the transcript, which read as Sage
+      // answering a question with a complaint about a build. Refusing here instead means the
+      // composer is already disabled and the Stop button is already on screen: the answer to
+      // "a turn is running" is a control, not a sentence.
+      if (state.chatRunning) return;
       let thread = state.thread;
       if (!thread) thread = await store.newThread();
+      // The conversation this turn belongs to. Everything below writes to the view only while it
+      // is still the one on screen: a turn keeps running when you open another conversation or
+      // start a new one, and its answer used to land in whichever Thread you had moved to.
+      const turnThread = thread.id;
+      // A latch, not a live test. Coming back to a conversation you left mid-turn re-reads the
+      // transcript from the server, so a stream that resumed writing here would be appending to a
+      // list that already contains what it wrote. Once it lets go, it stays let go, and the
+      // `finally` re-reads the Thread for whoever is looking at it by then.
+      let left = false;
+      const mine = () => {
+        if (left) return false;
+        if (state.thread && state.thread.id === turnThread) return true;
+        left = true;
+        return false;
+      };
 
       const attachments = state.attachments.map((a) => ({
         resourceId: a.resourceId,
@@ -1389,6 +1436,8 @@ window.SW = window.SW || {};
         attachments,
       });
       state.typing = 'Thinking…';
+      state.chatRunning = true;
+      state.chatTurnThread = turnThread;
       notify();
 
       const assistant = {
@@ -1438,6 +1487,10 @@ window.SW = window.SW || {};
         }
         await readSSE(res, async (ev) => {
           if (!ev || ev.type === 'user') return;
+          // Moved on. The turn is still running and the server is still writing its transcript, so
+          // nothing is lost — reopening the conversation replays it. What is not wanted is this
+          // answer appearing under a different question.
+          if (!mine()) return;
           if (ev.type === 'delta') {
             state.typing = null;
             ensurePushed();
@@ -1495,10 +1548,17 @@ window.SW = window.SW || {};
             }
             notify();
             refreshAttachments();
-          } else if (ev.type === 'error') {
+          } else if (ev.type === 'error' || ev.type === 'stopped') {
             state.typing = null;
             ensurePushed();
-            assistant.blocks = [...assistant.blocks, { type: 'text', value: ev.message || 'The turn failed.' }];
+            // A status line, not a text block: this is Sage reporting on the turn, and it should
+            // not read like the answer to the question. Same shape the reload path builds. Whatever
+            // had streamed stays above it — a stopped turn's half-answer is still worth reading.
+            assistant.blocks = [...assistant.blocks, {
+              type: 'status',
+              ok: false,
+              value: ev.message || (ev.type === 'stopped' ? 'Stopped.' : 'The turn failed.'),
+            }];
             notify();
           } else if (ev.type === 'done') {
             state.typing = null;
@@ -1514,16 +1574,84 @@ window.SW = window.SW || {};
           }
         });
       } catch (err) {
-        state.typing = null;
-        ensurePushed();
-        assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
+        if (mine()) {
+          state.typing = null;
+          ensurePushed();
+          assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
+        }
         notify();
       } finally {
-        state.typing = null;
+        // The turn is over wherever the reader is now, so the flag clears either way — it says
+        // "this project is busy", not "this conversation is busy".
+        state.chatRunning = false;
+        state.chatTurnThread = null;
+        if (mine()) state.typing = null;
         notify();
+      }
+      // Back on the conversation this turn ran in, but the stream stopped writing to the view when
+      // it was left. Re-read it, so the answer is there rather than in a Thread nobody reloaded.
+      if (left && state.thread && state.thread.id === turnThread) {
+        await store.openThread(turnThread).catch(() => {});
       }
       await loadThreadList();
       await refreshAttachments();
+    },
+
+    // Stop is the answer to a turn that will not end. Chat already caps a turn at ten minutes, and
+    // the comment that chose that number said it was generous "because by then the person can
+    // press Stop" — which was true of Build and of nothing in Chat. Same endpoint Build uses: one
+    // project runs one turn, so there is one thing to interrupt.
+    async stopChat() {
+      state.typing = 'Stopping…';
+      notify();
+      try {
+        await SW.api.stopBuild();
+      } catch (err) {
+        antd.message.error(String((err && err.message) || err));
+        state.typing = null;
+        notify();
+        return;
+      }
+      // A turn this tab is streaming reports its own stop and clears the flag as it unwinds. The
+      // watcher is for the turn it is not — after a reload, or one another tab started — and for
+      // the stop the stream never hears, so the composer never stays disabled on a freed lock.
+      store._watchTurn();
+    },
+
+    // Whether the project is mid-turn, straight from the server's turn lock. The one place the
+    // answer is authoritative — a tab that reloaded mid-turn has no stream and no memory of it,
+    // and used to offer a composer that the server would then refuse.
+    async refreshTurnState() {
+      const { running } = await SW.api.buildState().catch(() => ({ running: false }));
+      const was = state.chatRunning;
+      state.chatRunning = !!running;
+      if (running) {
+        notify();
+        store._watchTurn();
+        return;
+      }
+      // The lock is free, so nothing is running whatever this tab still believes.
+      state.chatTurnThread = null;
+      state.typing = null;
+      notify();
+      // It finished while nothing here was listening, so the transcript on screen is behind.
+      if (was && state.thread) await store.openThread(state.thread.id).catch(() => {});
+    },
+
+    // Poll the lock so the composer comes back by itself. The lock is the only thing that knows:
+    // a stream can still be reading an SSE the server has finished with, and a Stop can land on a
+    // turn that never says a word back — both look like "still running" from in here, and both end
+    // with a free lock. Errs towards running, so a poll that fails never enables a composer the
+    // server is about to refuse.
+    _watchTurn() {
+      if (store._turnWatchTimer) return;
+      store._turnWatchTimer = setInterval(async () => {
+        const { running } = await SW.api.buildState().catch(() => ({ running: true }));
+        if (running) return;
+        clearInterval(store._turnWatchTimer);
+        store._turnWatchTimer = null;
+        await store.refreshTurnState();
+      }, 2000);
     },
 
     async chooseOption(option) {

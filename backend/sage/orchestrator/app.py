@@ -1764,8 +1764,9 @@ def members() -> JSONResponse:
 
 @control_app.post("/api/project/build/stop")
 def stop_build() -> JSONResponse:
-    """Stop the in-flight build/build_stream turn: interrupts the agent, reverts any file
-    changes it made this turn, and drops the turn from history — as if it never happened."""
+    """Stop the in-flight turn, whichever mode started it — one project runs one turn at a time.
+    A Build turn is interrupted, its file changes reverted and its turn dropped from history, as if
+    it never happened. A Chat turn is interrupted and keeps what it already wrote."""
     orchestrator.stop_build()
     return JSONResponse(content={"stopped": True})
 
