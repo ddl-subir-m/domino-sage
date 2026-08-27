@@ -214,9 +214,19 @@ def draft_digest(*, title: str, asked: list[str], context: list[dict],
 
 
 def plan_prompt(thread_id: str, digest: str) -> str:
+    """The prompt sage-plan writes the first plan from (docs/workbench/handoff.md §5).
+
+    Deliberately NOT the implement line below. That line says "the plan is what to build", which
+    is true for the turn that reads an approved plan and false for this one — there is no plan yet,
+    this turn is writing it. Live, a planner given it produced a plan for a page ABOUT the work
+    ("a shareable planning page with a build brief"), and the build that followed put a "Next build"
+    roadmap card inside the app instead of building the app. So this turn is told the opposite: the
+    Thread is background, the app does not exist, write the plan for the app.
+    """
     return (
-        f"A Chat Thread produced the files under examples/{thread_id}/ and the digest in "
-        f".sage/handoff.md. The plan is what to build. The digest is background.\n\n"
+        f"A Chat Thread in this project asked the questions below and produced the files under "
+        f"examples/{thread_id}/. That work is background — no app has been built yet, and this "
+        f"turn is where the plan for one gets written.\n\n"
         f"{digest}\n\n"
         "Write a concrete build plan for an app colleagues can open from this work."
     )
@@ -229,23 +239,22 @@ _HANDOFF_LINE = (
 
 
 def implement_note(workspace: Path) -> str:
-    """Extra implement-turn context when Chat handed off. Empty if there is no digest."""
+    """Extra implement-turn context when Chat handed off. Empty if there is no digest.
+
+    One line and the digest, which is what the spec asks for and what the digest is already shaped
+    to sit under. It used to also walk `examples/` and append a second file listing. That repeated
+    the digest's own "Artifacts to treat as examples" list back to the model — and worse, it walked
+    the directory rather than reading the digest, so unchecking Artifacts on the handoff sheet
+    listed the files anyway. The checkbox is supposed to omit them (docs/workbench/handoff.md §4);
+    the digest already honours it, so reading the digest honours it too.
+    """
     digest_path = workspace / ".sage" / "handoff.md"
     if not digest_path.is_file():
         return ""
     digest = digest_path.read_text().strip()
     if not digest:
         return ""
-    listing: list[str] = []
-    examples = workspace / "examples"
-    if examples.is_dir():
-        for p in sorted(examples.rglob("*")):
-            if p.is_file():
-                listing.append(str(p.relative_to(workspace)))
-    lines = [_HANDOFF_LINE, "", digest]
-    if listing:
-        lines += ["", "Example files:", *[f"- {x}" for x in listing]]
-    return "\n".join(lines)
+    return "\n".join([_HANDOFF_LINE, "", digest])
 
 
 def plan_title(plan_md: str) -> str:
@@ -321,8 +330,7 @@ def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
         else:
             parts.append("- none")
         parts.append("")
-    parts.append(
-        "A Chat Thread produced the files under examples/ and this digest. "
-        "The plan is what to build. The digest is background."
-    )
+    # No closing "the plan is what to build" line. `implement_note` puts that sentence in front of
+    # this file, which is the one place the spec asks for it; having it here too meant the implement
+    # turn read the same instruction twice, once at each end of the same block.
     return "\n".join(parts).strip() + "\n"

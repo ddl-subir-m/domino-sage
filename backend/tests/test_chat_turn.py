@@ -753,7 +753,9 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     ws = orch.project(start_preview=False).workspace
     handoff_md = (ws.path / ".sage" / "handoff.md").read_text()
     assert "trades" in handoff_md
-    assert "The plan is what to build" in handoff_md
+    # The digest is background only. `implement_note` puts the one framing line in front of it.
+    assert "The plan is what to build" not in handoff_md
+    assert "The plan is what to build" in handoff.implement_note(ws.path)
     assert not (ws.path / ".sage" / "handoff-transcript.md").exists()
     bindings = ws.read_bindings()
     assert any(b.get("id") == "ds-trades" for b in bindings)

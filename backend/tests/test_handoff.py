@@ -183,27 +183,69 @@ def test_digest_is_one_paragraph_with_names_not_bytes():
     assert "\n\n" not in text
 
 
-def test_plan_prompt_points_at_digest_and_examples():
+def test_plan_prompt_points_at_examples_and_asks_for_a_plan():
     prompt = handoff.plan_prompt("thr_1", "Thread background.")
     assert "examples/thr_1/" in prompt
-    assert ".sage/handoff.md" in prompt
-    assert "The plan is what to build" in prompt
+    assert "Thread background." in prompt
+    assert "Write a concrete build plan" in prompt
+
+
+def test_plan_prompt_does_not_carry_the_implement_line():
+    """The plan turn is the one WRITING the plan, so "the plan is what to build" points at nothing.
+
+    Live, a planner given that sentence planned a page about the work rather than the app."""
+    prompt = handoff.plan_prompt("thr_1", "Thread background.")
+    assert "The plan is what to build" not in prompt
+    assert "no app has been built yet" in prompt
 
 
 def test_implement_note_is_empty_without_a_digest(tmp_path: Path):
     assert handoff.implement_note(tmp_path) == ""
 
 
-def test_implement_note_includes_digest_and_example_paths(tmp_path: Path):
+def test_implement_note_is_one_line_and_the_digest(tmp_path: Path):
+    digest = handoff.confirm_digest(
+        "Thread background.",
+        artifacts=[{"path": "examples/thr_1/desk.table.json"}],
+        context=[],
+        include_artifacts=True,
+        include_resources=False,
+    )
     (tmp_path / ".sage").mkdir()
-    (tmp_path / ".sage" / "handoff.md").write_text("Thread background.\n")
-    dest = tmp_path / "examples" / "thr_1"
-    dest.mkdir(parents=True)
-    (dest / "desk.table.json").write_text("[]")
+    (tmp_path / ".sage" / "handoff.md").write_text(digest)
     note = handoff.implement_note(tmp_path)
     assert "The plan is what to build" in note
     assert "Thread background." in note
+    # The paths reach the model through the digest, which is the only copy of them.
     assert "examples/thr_1/desk.table.json" in note
+    assert note.count("examples/thr_1/desk.table.json") == 1
+    assert note.count("The plan is what to build") == 1
+
+
+def test_implement_note_omits_artifacts_the_user_unchecked(tmp_path: Path):
+    """Unchecking Artifacts on the sheet omits them from the digest (handoff.md §4). The note used
+    to walk `examples/` itself, which listed them back to the model and undid the checkbox."""
+    digest = handoff.confirm_digest(
+        "Thread background.",
+        artifacts=[{"path": "examples/thr_1/desk.table.json"}],
+        context=[],
+        include_artifacts=False,
+        include_resources=False,
+    )
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "handoff.md").write_text(digest)
+    dest = tmp_path / "examples" / "thr_1"
+    dest.mkdir(parents=True)
+    (dest / "desk.table.json").write_text("[]")
+    assert "desk.table.json" not in handoff.implement_note(tmp_path)
+
+
+def test_confirm_digest_leaves_the_implement_line_to_the_note():
+    digest = handoff.confirm_digest(
+        "Thread background.", artifacts=[], context=[],
+        include_artifacts=False, include_resources=False,
+    )
+    assert "The plan is what to build" not in digest
 
 
 def test_binding_from_context_only_for_resources():
