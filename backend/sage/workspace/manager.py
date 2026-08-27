@@ -5,6 +5,13 @@ React+Vite template. Deep module, narrow interface: callers ensure the workspace
 the plan artifact; how the template is materialized (seed source + symlink the warm
 node_modules) is hidden.
 
+Two record surfaces sit over that directory, because a Project holds many Built Apps
+(ADR-0008). `Workspace` is one Built App — its code, Bindings, plan copy, architecture note and
+build log. `ProjectRecord` is the Project — its plan documents and settings, alongside the
+Threads `ThreadStore` already keeps. Both resolve the same root today: no app has moved under
+`apps/<appId>/` yet, so what is separated here is which surface answers a question, not where
+the answer is stored.
+
 node_modules is symlinked from the template rather than copied so each workspace is warm
 (deps already installed) without paying a multi-hundred-MB copy per project.
 """
@@ -72,86 +79,44 @@ _MODEL_API_HELPER = str(Path("src") / "sageModelApi.ts")
 _QUERY_HELPER = str(Path("src") / "sageQuery.ts")
 
 
+# settings.json is read and written by two surfaces. ProjectRecord owns the file — skip_planning,
+# phased_build, the display name — and Workspace keeps its own latches in it until a Built App has
+# a directory of its own to keep them in (ADR-0008). Neither reads the other's keys, and both are
+# forgiving of a missing or corrupt file: a settings read that raised would turn every caller's
+# question into an error page over a file that is optional by design.
+
+
+def _read_settings_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_settings_file(path: Path, settings: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2))
+
+
 @dataclass(frozen=True)
-class Workspace:
+class ProjectRecord:
+    """What the Project owns, as against what one Built App owns (ADR-0008).
+
+    A Project holds Threads, plan documents and its own settings. A Built App holds its code, its
+    Bindings, the plan copy its builder consumes and its build log; `Workspace` is that surface,
+    and this is the narrower one beside it. Both name the same directory today, because no app has
+    moved under `apps/<appId>/` yet — so the separation is in the surface rather than on disk, and
+    it holds only because nothing here reads an app's record and nothing on `Workspace` reads the
+    Project's.
+
+    Threads are absent because they already have a surface of their own: `ThreadStore`.
+    """
+
     project_id: str
     path: Path
-
-    @property
-    def app_entry(self) -> Path:
-        return self.path / "src" / "App.tsx"
-
-    @property
-    def plan_path(self) -> Path:
-        """The plan→implement handoff artifact (auto mode). Lives in the workspace so the
-        implement session and IDE mode can both see it."""
-        return self.path / ".sage" / "plan.md"
-
-    def write_plan(self, text: str) -> None:
-        self.plan_path.parent.mkdir(parents=True, exist_ok=True)
-        self.plan_path.write_text(text)
-
-    def read_plan(self) -> str | None:
-        return self.plan_path.read_text() if self.plan_path.exists() else None
-
-    @property
-    def architecture_path(self) -> Path:
-        """A design document the user asked for ("give me an architecture for…"). Deliberately NOT
-        plan.md: a plan is a one-shot handoff that archive_plan() moves aside as soon as a build
-        consumes it, and an architecture is a reference the user keeps coming back to."""
-        return self.path / ".sage" / "architecture.md"
-
-    def write_architecture(self, text: str) -> None:
-        self.architecture_path.parent.mkdir(parents=True, exist_ok=True)
-        self.architecture_path.write_text(text)
-
-    def read_architecture(self) -> str | None:
-        p = self.architecture_path
-        return p.read_text() if p.exists() else None
-
-    def archive_plan(self, cancelled: bool = False) -> Path | None:
-        """Move the consumed plan out of the agent's live view (SPEC P6). The plan artifact is a
-        one-shot handoff, not a living spec: once the Implement turn has built from it, a leftover
-        `.sage/plan.md` reads like *current* intent/state and can mislead a later turn — it's the
-        one .sage/ file that looks like instructions. Archived copies stay under .sage/plans/ so git
-        retains the history. Returns the archive path, or None if there was no live plan.
-
-        `cancelled` marks a plan the user dismissed without building. Same move, different filename,
-        because the two are not the same fact: `read_archived_plan` answers "what is this app built
-        from", and a plan nobody built is not an answer to that.
-        """
-        if not self.plan_path.exists():
-            return None
-        archive_dir = self.path / ".sage" / "plans"
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        suffix = "-cancelled" if cancelled else ""
-        n = len(list(archive_dir.glob("[0-9]*.md"))) + 1
-        dest = archive_dir / f"{n:03d}{suffix}.md"
-        while dest.exists():  # never clobber a prior archived plan
-            n += 1
-            dest = archive_dir / f"{n:03d}{suffix}.md"
-        self.plan_path.rename(dest)
-        return dest
-
-    def read_archived_plan(self) -> str | None:
-        """The most recently BUILT plan, or None if no build has consumed one.
-
-        The counterpart to `archive_plan`: once a build consumes a plan there is no live `plan.md`
-        left, and the app in the preview is nonetheless the thing that plan describes. The rail's
-        plan pin reads this so it can say "Working from" instead of falling back to "No plan yet"
-        the moment the first build finishes. Cancelled archives are skipped — the pin would
-        otherwise claim the app was built from a plan the user had just dismissed. Sorted
-        numerically, not lexically: `archive_plan` zero-pads to three digits and would run out at
-        1000.
-        """
-        archive_dir = self.path / ".sage" / "plans"
-        built = [p for p in archive_dir.glob("[0-9]*.md") if p.is_file() and p.stem.isdigit()]
-        if not built:
-            return None
-        try:
-            return max(built, key=lambda p: int(p.stem)).read_text()
-        except OSError:
-            return None
 
     # ---- The plan document (the durable artifact) ----
     #
@@ -295,17 +260,10 @@ class Workspace:
         return self.path / ".sage" / "settings.json"
 
     def read_settings(self) -> dict:
-        if not self.settings_path.exists():
-            return {}
-        try:
-            data = json.loads(self.settings_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        return _read_settings_file(self.settings_path)
 
     def write_settings(self, settings: dict) -> None:
-        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path.write_text(json.dumps(settings, indent=2))
+        _write_settings_file(self.settings_path, settings)
 
     def is_untitled(self) -> bool:
         return bool(self.read_settings().get("untitled"))
@@ -333,19 +291,166 @@ class Workspace:
         settings["displayName"] = name.strip()
         self.write_settings(settings)
 
+    @property
+    def project_resources_path(self) -> Path:
+        """Domino Resources the creator added to this project (the Resource Browser working set).
+
+        Browse Domino lists everything this caller can access. Add writes a row here. The rail
+        shows only these rows — listing access is not membership.
+        """
+        return self.path / ".sage" / "project-resources.json"
+
+    def read_project_resources(self) -> list[dict]:
+        if not self.project_resources_path.exists():
+            return []
+        try:
+            data = json.loads(self.project_resources_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+        if isinstance(data, dict):
+            items = data.get("items")
+            return items if isinstance(items, list) else []
+        return data if isinstance(data, list) else []
+
+    def update_project_resources(self, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
+        """Read, change and republish the project-resource working set as one step."""
+        with _PROJECT_RESOURCES_LOCK:
+            entries = change(self.read_project_resources())
+            self.project_resources_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.project_resources_path.with_name(self.project_resources_path.name + ".tmp")
+            try:
+                with open(tmp, "w") as f:
+                    json.dump({"items": entries}, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.project_resources_path)
+            finally:
+                tmp.unlink(missing_ok=True)
+            return entries
+
+
+@dataclass(frozen=True)
+class Workspace:
+    """One Built App: the directory its code lives in, and the record that belongs to it.
+
+    The Bindings manifest, the plan copy, the architecture note, the build log and the `built`
+    latch are the app's. What belongs to the Project — Threads, plan documents, settings — is
+    `ProjectRecord`, and a caller that wants one of those asks that surface for it.
+    """
+
+    project_id: str
+    path: Path
+
+    @property
+    def app_entry(self) -> Path:
+        return self.path / "src" / "App.tsx"
+
+    @property
+    def plan_path(self) -> Path:
+        """The plan→implement handoff artifact (auto mode). Lives in the workspace so the
+        implement session and IDE mode can both see it."""
+        return self.path / ".sage" / "plan.md"
+
+    def write_plan(self, text: str) -> None:
+        self.plan_path.parent.mkdir(parents=True, exist_ok=True)
+        self.plan_path.write_text(text)
+
+    def read_plan(self) -> str | None:
+        return self.plan_path.read_text() if self.plan_path.exists() else None
+
+    @property
+    def architecture_path(self) -> Path:
+        """A design document the user asked for ("give me an architecture for…"). Deliberately NOT
+        plan.md: a plan is a one-shot handoff that archive_plan() moves aside as soon as a build
+        consumes it, and an architecture is a reference the user keeps coming back to."""
+        return self.path / ".sage" / "architecture.md"
+
+    def write_architecture(self, text: str) -> None:
+        self.architecture_path.parent.mkdir(parents=True, exist_ok=True)
+        self.architecture_path.write_text(text)
+
+    def read_architecture(self) -> str | None:
+        p = self.architecture_path
+        return p.read_text() if p.exists() else None
+
+    def archive_plan(self, cancelled: bool = False) -> Path | None:
+        """Move the consumed plan out of the agent's live view (SPEC P6). The plan artifact is a
+        one-shot handoff, not a living spec: once the Implement turn has built from it, a leftover
+        `.sage/plan.md` reads like *current* intent/state and can mislead a later turn — it's the
+        one .sage/ file that looks like instructions. Archived copies stay under .sage/plans/ so git
+        retains the history. Returns the archive path, or None if there was no live plan.
+
+        `cancelled` marks a plan the user dismissed without building. Same move, different filename,
+        because the two are not the same fact: `read_archived_plan` answers "what is this app built
+        from", and a plan nobody built is not an answer to that.
+        """
+        if not self.plan_path.exists():
+            return None
+        archive_dir = self.path / ".sage" / "plans"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        suffix = "-cancelled" if cancelled else ""
+        n = len(list(archive_dir.glob("[0-9]*.md"))) + 1
+        dest = archive_dir / f"{n:03d}{suffix}.md"
+        while dest.exists():  # never clobber a prior archived plan
+            n += 1
+            dest = archive_dir / f"{n:03d}{suffix}.md"
+        self.plan_path.rename(dest)
+        return dest
+
+    def read_archived_plan(self) -> str | None:
+        """The most recently BUILT plan, or None if no build has consumed one.
+
+        The counterpart to `archive_plan`: once a build consumes a plan there is no live `plan.md`
+        left, and the app in the preview is nonetheless the thing that plan describes. The rail's
+        plan pin reads this so it can say "Working from" instead of falling back to "No plan yet"
+        the moment the first build finishes. Cancelled archives are skipped — the pin would
+        otherwise claim the app was built from a plan the user had just dismissed. Sorted
+        numerically, not lexically: `archive_plan` zero-pads to three digits and would run out at
+        1000.
+        """
+        archive_dir = self.path / ".sage" / "plans"
+        built = [p for p in archive_dir.glob("[0-9]*.md") if p.is_file() and p.stem.isdigit()]
+        if not built:
+            return None
+        try:
+            return max(built, key=lambda p: int(p.stem)).read_text()
+        except OSError:
+            return None
+
+    @property
+    def _latch_path(self) -> Path:
+        """Where this app keeps the two facts it latches: `built` and `last_turn_failed`.
+
+        The same file `ProjectRecord.settings_path` names, because no Built App has a directory of
+        its own to keep them in yet (ADR-0008). Private on purpose: sharing a file is not the same
+        as sharing a record, and a caller that wants the Project's settings asks `ProjectRecord`
+        for them rather than reaching in here.
+        """
+        return self.path / ".sage" / "settings.json"
+
     def has_built(self) -> bool:
         """True once a code-writing build has completed here. Drives the first-BUILD plan gate
         (not first-turn): questions asked before the first build must not consume the gate, and the
         gate must still fire on the first real build request no matter how many questions preceded it."""
-        return bool(self.read_settings().get("built"))
+        return bool(_read_settings_file(self._latch_path).get("built"))
 
     def mark_built(self) -> None:
         """Latch has_built() on after the first successful build. Idempotent; persisted in settings
         so it survives an orchestrator restart (a rebuilt project must not re-gate)."""
-        settings = self.read_settings()
+        settings = _read_settings_file(self._latch_path)
         if not settings.get("built"):
             settings["built"] = True
-            self.write_settings(settings)
+            _write_settings_file(self._latch_path, settings)
+
+    def clear_built(self) -> None:
+        """Un-latch has_built(), so Reset app leaves the plan gate where a fresh app has it.
+
+        The counterpart to mark_built, and the reason it is a method rather than a caller editing
+        settings: the latch is a fact about the code Reset just took away, so removing it is the
+        app's own business and not an edit to the Project's settings."""
+        settings = _read_settings_file(self._latch_path)
+        settings.pop("built", None)
+        _write_settings_file(self._latch_path, settings)
 
     def read_last_turn_failed(self) -> bool:
         """True when the previous build attempt on this project ended badly (see the failure-replan
@@ -355,8 +460,8 @@ class Workspace:
         Lives in settings.json next to `built` rather than being derived from history.jsonl: the
         transcript is append-only and replayable, so it can't record that a signal has been CONSUMED,
         and consumption is what keeps this one-shot instead of a permanent approval wall. Fails open
-        through read_settings() — missing or corrupt state reads as "didn't fail", i.e. build."""
-        return bool(self.read_settings().get("last_turn_failed"))
+        on read — missing or corrupt state reads as "didn't fail", i.e. build."""
+        return bool(_read_settings_file(self._latch_path).get("last_turn_failed"))
 
     def set_last_turn_failed(self, failed: bool) -> None:
         """Record (or clear) the previous-turn failure signal. Best-effort by design: this runs on the
@@ -364,11 +469,11 @@ class Workspace:
         into a raised exception mid-stream. A lost write just means no gate next turn — the same
         behaviour as before this feature existed."""
         try:
-            settings = self.read_settings()
+            settings = _read_settings_file(self._latch_path)
             if bool(settings.get("last_turn_failed")) == failed:
                 return
             settings["last_turn_failed"] = failed
-            self.write_settings(settings)
+            _write_settings_file(self._latch_path, settings)
         except OSError:
             pass
 
@@ -645,43 +750,6 @@ class Workspace:
                 tmp.unlink(missing_ok=True)
             return entries
 
-    @property
-    def project_resources_path(self) -> Path:
-        """Domino Resources the creator added to this project (the Resource Browser working set).
-
-        Browse Domino lists everything this caller can access. Add writes a row here. The rail
-        shows only these rows — listing access is not membership.
-        """
-        return self.path / ".sage" / "project-resources.json"
-
-    def read_project_resources(self) -> list[dict]:
-        if not self.project_resources_path.exists():
-            return []
-        try:
-            data = json.loads(self.project_resources_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return []
-        if isinstance(data, dict):
-            items = data.get("items")
-            return items if isinstance(items, list) else []
-        return data if isinstance(data, list) else []
-
-    def update_project_resources(self, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
-        """Read, change and republish the project-resource working set as one step."""
-        with _PROJECT_RESOURCES_LOCK:
-            entries = change(self.read_project_resources())
-            self.project_resources_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.project_resources_path.with_name(self.project_resources_path.name + ".tmp")
-            try:
-                with open(tmp, "w") as f:
-                    json.dump({"items": entries}, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, self.project_resources_path)
-            finally:
-                tmp.unlink(missing_ok=True)
-            return entries
-
 
 class WorkspaceManager:
     """Manages the single workspace bound to this builder's Domino project volume.
@@ -786,6 +854,14 @@ class WorkspaceManager:
         if seed_app:
             self.link_warm_deps()
         return Workspace(project_id, self._dir)
+
+    def project_record(self, project_id: str) -> ProjectRecord:
+        """The Project's own record over the same volume, alongside the Built App `ensure` returns.
+
+        Seeds nothing and starts nothing: the Project's Threads, plan documents and settings are
+        readable on a volume that carries no app at all, which is what Chat opens on.
+        """
+        return ProjectRecord(project_id, self._dir)
 
     def link_warm_deps(self) -> bool:
         """Point node_modules at the baked template copy, repairing a wrecked one. True if changed.

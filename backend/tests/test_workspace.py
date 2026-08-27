@@ -24,14 +24,14 @@ def _fake_template(tmp: Path) -> Path:
 
 def test_project_resources_start_empty_and_round_trip(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
-    ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("p")
-    assert ws.read_project_resources() == []
+    record = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).project_record("p")
+    assert record.read_project_resources() == []
     row = {"id": "dataset:1", "kind": "dataset", "name": "autodoc"}
-    out = ws.update_project_resources(lambda items: items + [row])
+    out = record.update_project_resources(lambda items: items + [row])
     assert out == [row]
-    assert ws.read_project_resources() == [row]
-    ws2 = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("p")
-    assert ws2.read_project_resources() == [row]
+    assert record.read_project_resources() == [row]
+    record2 = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).project_record("p")
+    assert record2.read_project_resources() == [row]
 
 
 def test_ensure_seeds_from_template_and_symlinks_node_modules(tmp_path: Path):
@@ -148,32 +148,36 @@ def test_has_built_latches_on_and_persists(tmp_path: Path):
 
 def test_untitled_flag_persists(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
-    ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("Untitled")
-    assert ws.is_untitled() is False
-    ws.mark_untitled(True)
-    assert ws.is_untitled() is True
-    ws.mark_untitled(False)
-    ws2 = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("Untitled")
-    assert ws2.is_untitled() is False
+    record = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).project_record("Untitled")
+    assert record.is_untitled() is False
+    record.mark_untitled(True)
+    assert record.is_untitled() is True
+    record.mark_untitled(False)
+    record2 = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).project_record("Untitled")
+    assert record2.is_untitled() is False
 
 
 def test_display_name_is_default_then_named(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
-    ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("p")
-    assert ws.display_name() == ""
-    ws.mark_untitled(True)
-    assert ws.display_name() == "Default"
-    ws.set_display_name("Rates dashboard")
-    ws.mark_untitled(False)
-    assert ws.is_untitled() is False
-    assert ws.display_name() == "Rates dashboard"
+    record = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).project_record("p")
+    assert record.display_name() == ""
+    record.mark_untitled(True)
+    assert record.display_name() == "Default"
+    record.set_display_name("Rates dashboard")
+    record.mark_untitled(False)
+    assert record.is_untitled() is False
+    assert record.display_name() == "Rates dashboard"
 
 
 def test_mark_built_preserves_other_settings(tmp_path: Path):
-    ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path)).ensure("p")
-    ws.write_settings({"skip_planning": True})
+    # The app's latch and the Project's settings share one file until a Built App has a directory
+    # of its own, so marking built must not take the opt-out with it.
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
+    ws = mgr.ensure("p")
+    record = mgr.project_record("p")
+    record.write_settings({"skip_planning": True})
     ws.mark_built()
-    settings = ws.read_settings()
+    settings = record.read_settings()
     assert settings["skip_planning"] is True and settings["built"] is True
 
 

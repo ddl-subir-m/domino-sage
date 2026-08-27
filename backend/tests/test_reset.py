@@ -37,7 +37,7 @@ def test_reset_replaces_the_app_and_keeps_what_the_user_set_up(tmp_path: Path):
     (ws / "src" / "App.tsx").write_text("export default function App() { return <b>built</b>; }")
     (ws / "src" / "Dashboard.tsx").write_text("export const D = 1;")     # a file the agent added
     (ws / ".sage" / "queries.json").write_text('{"top_regions": "select 1"}')
-    project.workspace.create_plan_doc("A dashboard.\n", title="A dashboard.")
+    project.record.create_plan_doc("A dashboard.\n", title="A dashboard.")
     project.workspace.mark_built()
 
     orch.reset_app()

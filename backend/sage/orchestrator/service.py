@@ -101,7 +101,7 @@ from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
-from ..workspace.manager import Workspace, WorkspaceManager
+from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
     ThreadStore,
@@ -1591,6 +1591,10 @@ def _tool_duration_ms(part: dict) -> int | None:
 class Project:
     id: str
     workspace: Workspace
+    # The Project's own record — Threads, plan documents, settings — beside the Built App's. Two
+    # surfaces over one volume (ADR-0008): ask this one for what the Project owns, `workspace` for
+    # what the app owns, and neither for the other's.
+    record: ProjectRecord
     supervisor: ViteSupervisor
     queries: PreviewQueries
     control: ModelControl
@@ -1656,8 +1660,8 @@ class Project:
             upstream = None
         return {
             "id": self.id,
-            "name": self.workspace.display_name() or self.id,
-            "untitled": self.workspace.is_untitled(),
+            "name": self.record.display_name() or self.id,
+            "untitled": self.record.is_untitled(),
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
             "attached": list(self.attached),
@@ -1876,15 +1880,17 @@ class Orchestrator:
         Reads the workspace WITHOUT starting the preview (`project(start_preview=False)`): the panel
         asks for this on every load, and a pin is not a reason to boot Vite.
         """
-        workspace = self.project(start_preview=False, seed_app=False).workspace
-        live = (workspace.read_plan() or "").strip()
-        markdown = live or (workspace.read_archived_plan() or "").strip()
+        project = self.project(start_preview=False, seed_app=False)
+        live = (project.workspace.read_plan() or "").strip()
+        markdown = live or (project.workspace.read_archived_plan() or "").strip()
         if not markdown:
             return {}
         # The document this plan.md was written alongside, so the pin can open the plan page rather
         # than a modal of the raw text. Newest first, and the newest is the one plan.md belongs to.
         # Empty for a workspace whose plan predates plan documents — the pin falls back to the text.
-        docs = workspace.list_plan_docs()
+        # The copy is the app's and the document is the Project's, which is why this reads two
+        # surfaces to answer one question.
+        docs = project.record.list_plan_docs()
         return {
             "title": chat_handoff.plan_title(markdown),
             "markdown": markdown,
@@ -1895,9 +1901,9 @@ class Orchestrator:
 
     # ---- Plan documents ----
     #
-    # The pin above reads plan.md, the transient copy. These read the document, which outlives it.
-    # All of them take the workspace the same cheap way the pin does: a plan page is not a reason to
-    # boot Vite or seed an app.
+    # The pin above reads plan.md, the transient copy. These read the document, which outlives it
+    # and belongs to the Project rather than to any one app. All of them take the record the same
+    # cheap way the pin does: a plan page is not a reason to boot Vite or seed an app.
 
     def list_members(self) -> dict:
         """Who can be named as a reviewer, and whose id a comment resolves to. `directory` is the
@@ -1909,23 +1915,23 @@ class Orchestrator:
         ]
         return {"members": people, "directory": people}
 
-    def _plan_docs_workspace(self) -> Workspace:
-        return self.project(start_preview=False, seed_app=False).workspace
+    def _plan_docs_record(self) -> ProjectRecord:
+        return self.project(start_preview=False, seed_app=False).record
 
     def list_plan_docs(self) -> list[dict]:
-        return self._plan_docs_workspace().list_plan_docs()
+        return self._plan_docs_record().list_plan_docs()
 
     def read_plan_doc(self, plan_id: str) -> dict | None:
-        return self._plan_docs_workspace().read_plan_doc(plan_id)
+        return self._plan_docs_record().read_plan_doc(plan_id)
 
     def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
-        return self._plan_docs_workspace().read_plan_doc_markdown(plan_id)
+        return self._plan_docs_record().read_plan_doc_markdown(plan_id)
 
     def create_plan_doc(self, body: dict | None = None) -> dict:
         """An empty document somebody fills in by hand. The planner's own documents are created in
         the gate, where there is a plan to put in them."""
         body = body or {}
-        return self._plan_docs_workspace().create_plan_doc(
+        return self._plan_docs_record().create_plan_doc(
             "",
             title=str(body.get("title") or "Untitled plan"),
             author=_viewer_id(),
@@ -1935,35 +1941,38 @@ class Orchestrator:
     def patch_plan_doc(self, plan_id: str, body: dict) -> dict | None:
         """Edit the document. Sections are rendered back to markdown and stored as a new version,
         so the text stays the source of truth and the previous draft survives the edit."""
-        workspace = self._plan_docs_workspace()
-        current = workspace.read_plan_doc(plan_id)
+        project = self.project(start_preview=False, seed_app=False)
+        current = project.record.read_plan_doc(plan_id)
         if current is None:
             return None
         body = body or {}
         if "sections" not in body and "summary" not in body:
             # Nothing about the body changed — a rename is metadata, not a new draft.
-            return workspace.patch_plan_doc_meta(
+            return project.record.patch_plan_doc_meta(
                 plan_id, **{k: v for k, v in body.items() if k in ("title", "status", "appId")})
         summary = body.get("summary", current.get("summary", ""))
         sections = {**current.get("sections", {}), **(body.get("sections") or {})}
         meta = {k: v for k, v in body.items() if k in ("title", "status", "appId")}
-        doc = workspace.write_plan_doc_version(plan_id, plan_doc.render(summary, sections), **meta)
+        doc = project.record.write_plan_doc_version(
+            plan_id, plan_doc.render(summary, sections), **meta)
 
         # An edit to the document that a live plan.md was copied from has to reach that copy, or the
         # build runs the plan as it was before the edit — and the rail's pin goes on counting the old
         # steps. Only while a handoff is actually live, and only from the document it belongs to:
         # editing an older plan after its build must not resurrect it as the thing being built.
-        if doc and workspace.read_plan() is not None:
-            newest = workspace.list_plan_docs()
+        # The document is the Project's and the copy is the app's, so this is the one place the two
+        # surfaces meet — deliberately, because copying between them is what it is for.
+        if doc and project.workspace.read_plan() is not None:
+            newest = project.record.list_plan_docs()
             if newest and newest[0]["id"] == plan_id:
-                workspace.write_plan(doc["markdown"])
+                project.workspace.write_plan(doc["markdown"])
         return doc
 
     def review_plan_doc(self, plan_id: str, body: dict) -> dict | None:
         """Reviewers, comments and approvals. None of it touches the body, so none of it makes a
         version: a comment on a plan is not a new draft of that plan."""
-        workspace = self._plan_docs_workspace()
-        doc = workspace.read_plan_doc(plan_id)
+        record = self._plan_docs_record()
+        doc = record.read_plan_doc(plan_id)
         if doc is None:
             return None
         body = body or {}
@@ -1973,7 +1982,7 @@ class Orchestrator:
 
         if action == "request":
             reviewers = [str(r) for r in (body.get("reviewers") or []) if r]
-            return workspace.patch_plan_doc_meta(
+            return record.patch_plan_doc_meta(
                 plan_id, reviewers=reviewers, status="in_review",
                 reviewNote=str(body.get("note") or ""))
         if action == "comment":
@@ -1985,13 +1994,13 @@ class Orchestrator:
                 "at": plan_doc.now(),
                 "resolved": False,
             })
-            return workspace.patch_plan_doc_meta(plan_id, comments=comments)
+            return record.patch_plan_doc_meta(plan_id, comments=comments)
         if action == "resolve":
             target = str(body.get("commentId") or "")
             for comment in comments:
                 if comment.get("id") == target:
                     comment["resolved"] = True
-            return workspace.patch_plan_doc_meta(plan_id, comments=comments)
+            return record.patch_plan_doc_meta(plan_id, comments=comments)
         if action == "approve":
             user = str(body.get("user") or _viewer_id())
             if not any(a.get("user") == user for a in approvals):
@@ -2000,7 +2009,7 @@ class Orchestrator:
             # Approved once every named reviewer has signed off. With nobody named, one approval is
             # the whole review.
             done = all(r in [a["user"] for a in approvals] for r in reviewers) if reviewers else True
-            return workspace.patch_plan_doc_meta(
+            return record.patch_plan_doc_meta(
                 plan_id, approvals=approvals, status="approved" if done else "in_review")
         return doc
 
@@ -2014,7 +2023,8 @@ class Orchestrator:
         if self._project is not None:
             return self._project
         workspace = self._wm.ensure(self._project_id, seed_app=seed_app)
-        self._hydrate_untitled(workspace)
+        record = self._wm.project_record(self._project_id)
+        self._hydrate_untitled(record)
         if seed_app:
             self._prepare_app_files()
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
@@ -2025,7 +2035,7 @@ class Orchestrator:
         if start_preview:
             supervisor.start()
             queries.start()
-        self._project = Project(self._project_id, workspace, supervisor, queries, control, shim,
+        self._project = Project(self._project_id, workspace, record, supervisor, queries, control, shim,
                                 TurnSnapshot(workspace.path),
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
@@ -2074,10 +2084,10 @@ class Orchestrator:
             raise ValueError(f"invalid reasoning_effort {effort!r}")
         project.control.pick_chat(model, effort)
 
-    def _hydrate_untitled(self, workspace: Workspace) -> None:
+    def _hydrate_untitled(self, record: ProjectRecord) -> None:
         """First boot of a scratch project: set untitled so the chip can lie. Once settings
         already has the key (true or false), never flip it from the Domino slug."""
-        if "untitled" in workspace.read_settings():
+        if "untitled" in record.read_settings():
             return
         name = (
             self._domino_project_name
@@ -2085,7 +2095,7 @@ class Orchestrator:
             or os.environ.get("DOMINO_PROJECT_NAME")
         )
         if name == naming.UNTITLED_DISPLAY:
-            workspace.mark_untitled(True)
+            record.mark_untitled(True)
             return
         username = (
             os.environ.get("DOMINO_USER_NAME")
@@ -2095,7 +2105,7 @@ class Orchestrator:
         user_id = os.environ.get("DOMINO_USER_ID") or ""
         expected = naming.default_project_name(username, user_id)
         if naming.is_default_name(name, expected):
-            workspace.mark_untitled(True)
+            record.mark_untitled(True)
 
     def _rehydrate_attached(self, project: Project) -> None:
         """Restore the attached-files list. The manifest (.sage/attachments.json) is the source of
@@ -2772,7 +2782,7 @@ class Orchestrator:
             "plan": plan_md,
             "title": chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
             "handoff": handoff,
-            "untitled": project.workspace.is_untitled(),
+            "untitled": project.record.is_untitled(),
             "artifacts": store.read_artifacts(thread_id),
             "context": store.read_context(thread_id).get("items") or [],
         }
@@ -2810,7 +2820,7 @@ class Orchestrator:
         # Same document the gate creates, but this one knows the Thread it came from, so the plan
         # page can offer the way back to the conversation that produced it.
         _warn_if_shapeless("chat handoff", plan_md)
-        plan_id = project.workspace.create_plan_doc(
+        plan_id = project.record.create_plan_doc(
             plan_md,
             title=chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
             author=_viewer_id(),
@@ -2889,17 +2899,17 @@ class Orchestrator:
                 if binding is not None:
                     self._bind_from_handoff(binding)
                 self._promote_chat_file(item)
-        if project.workspace.is_untitled():
+        if project.record.is_untitled():
             title = chat_handoff.plan_title(plan_md)
-            project.workspace.set_display_name(title)
-            project.workspace.mark_untitled(False)
+            project.record.set_display_name(title)
+            project.record.mark_untitled(False)
         handoff = store.mark_handoff_bound(thread_id)
         self._flush_chat_save("handoff", holding_turn=True)
         return {
             "ok": True,
             "threadId": thread_id,
             "handoff": handoff,
-            "untitled": project.workspace.is_untitled(),
+            "untitled": project.record.is_untitled(),
             "title": chat_handoff.plan_title(plan_md),
         }
 
@@ -3511,9 +3521,7 @@ class Orchestrator:
             self._wm.reset()
             self.write_instructions(project, instructions)
             self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
-            settings = project.workspace.read_settings()
-            settings.pop("built", None)
-            project.workspace.write_settings(settings)
+            project.workspace.clear_built()
             project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
             self._refresh_history_archive(project)
             return {"ok": True, "status": project.status()}
@@ -3788,7 +3796,7 @@ class Orchestrator:
         # typed instead of clicked, so it gates in every mode too. Ranked below arch: a prompt naming
         # both artifacts wants the heavier one, and that keeps the existing precedence untouched.
         wants_plan = not is_approval and not arch and _wants_plan(prompt)
-        settings = project.workspace.read_settings()
+        settings = project.record.read_settings()
         skip_planning = bool(settings.get("skip_planning"))
         # Only affects the SHAPE of a plan this turn writes; the phased execution itself happens on
         # the approve turn (_phased_approve). A plan written before the toggle was on simply won't
@@ -4306,7 +4314,7 @@ class Orchestrator:
                     # Architecture keeps its own file instead and gets no document — it is already
                     # a reference that nothing archives.
                     _warn_if_shapeless("plan gate", plan_md)
-                    plan_id = project.workspace.create_plan_doc(
+                    plan_id = project.record.create_plan_doc(
                         plan_md,
                         title=chat_handoff.plan_title(plan_md) or "App",
                         author=_viewer_id(),
@@ -4528,7 +4536,7 @@ class Orchestrator:
                 # A version, not an overwrite, for the same reason a document edit makes one: the
                 # draft people commented on has to survive the edit that built over it.
                 if live_plan.strip() != (doc.get("markdown") or "").strip():
-                    project.workspace.write_plan_doc_version(doc["id"], live_plan)
+                    project.record.write_plan_doc_version(doc["id"], live_plan)
                 self.review_plan_doc(doc["id"], {"action": "approve"})
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
@@ -4539,7 +4547,7 @@ class Orchestrator:
         # Phased only when the toggle is on AND the plan actually parsed into briefs. A plan written
         # before the toggle (or by a planner that ignored the format) builds the ordinary way rather
         # than half-phasing, which would be worse than not phasing at all.
-        phased = bool(project.workspace.read_settings().get("phased_build")) and is_phasable(plan_md)
+        phased = bool(project.record.read_settings().get("phased_build")) and is_phasable(plan_md)
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text)
@@ -4578,8 +4586,8 @@ class Orchestrator:
         patch_plan_doc already trust for the same question. A workspace whose plan predates plan
         documents has none at all, and gets None."""
         if plan_id:
-            return project.workspace.read_plan_doc(plan_id)
-        docs = project.workspace.list_plan_docs()
+            return project.record.read_plan_doc(plan_id)
+        docs = project.record.list_plan_docs()
         return docs[0] if docs else None
 
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None):
@@ -5075,7 +5083,7 @@ class Orchestrator:
 
     def list_project_resources(self) -> list[dict]:
         """Domino Resources the creator added to this project — the rail, not the catalogue."""
-        return self.project(start_preview=False).workspace.read_project_resources()
+        return self.project(start_preview=False).record.read_project_resources()
 
     def add_project_resource(self, item: dict) -> dict:
         """Put one Resource in this project's working set. Idempotent on id."""
@@ -5106,7 +5114,7 @@ class Orchestrator:
             added["item"] = row
             return items + [row]
 
-        self.project(start_preview=False).workspace.update_project_resources(change)
+        self.project(start_preview=False).record.update_project_resources(change)
         if (item or {}).get("pin"):
             self.pin_project_resource(rid, item["pin"])
             added["item"] = next(
@@ -5137,7 +5145,7 @@ class Orchestrator:
             found["ok"] = len(kept) != len(items)
             return kept
 
-        self.project(start_preview=False).workspace.update_project_resources(change)
+        self.project(start_preview=False).record.update_project_resources(change)
         return found["ok"]
 
     def _binding_for_membership(self, resource_id: str) -> Binding | None:
@@ -5184,7 +5192,7 @@ class Orchestrator:
                 out.append(updated)
             return out
 
-        self.project(start_preview=False).workspace.update_project_resources(change)
+        self.project(start_preview=False).record.update_project_resources(change)
         if found["item"] is None:
             raise KeyError(rid)
         return found["item"]
@@ -5218,7 +5226,7 @@ class Orchestrator:
                 out.append(updated)
             return out
 
-        self.project(start_preview=False).workspace.update_project_resources(change)
+        self.project(start_preview=False).record.update_project_resources(change)
         return found["ok"]
 
     def list_assets(self) -> list[dict]:

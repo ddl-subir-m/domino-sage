@@ -510,7 +510,7 @@ from sage.orchestrator.service import (
     _wants_plan,
 )
 from sage.router.models import Mode
-from sage.workspace.manager import Workspace
+from sage.workspace.manager import ProjectRecord, Workspace
 
 
 def test_looks_like_approval_accepts_a_bare_yes():
@@ -781,10 +781,10 @@ def test_history_md_absent_when_there_is_no_history(tmp_path: Path):
 
 
 def test_settings_roundtrip_and_default_empty(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
-    assert ws.read_settings() == {}
-    ws.write_settings({"skip_planning": True})
-    assert ws.read_settings()["skip_planning"] is True
+    record = ProjectRecord(project_id="p", path=tmp_path)
+    assert record.read_settings() == {}
+    record.write_settings({"skip_planning": True})
+    assert record.read_settings()["skip_planning"] is True
 
 
 from sage.orchestrator.service import _tidy_plan

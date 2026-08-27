@@ -15,7 +15,7 @@ from sage.provision.domino import FakeControlPlane
 from sage.provision.github import FakeRepoProvider, RepoNameConflict
 from sage.provision.seed import seed_and_push
 from sage.provision.service import ProvisionService
-from sage.workspace.manager import Workspace
+from sage.workspace.manager import ProjectRecord
 
 
 def _service(tmp_path, cp=None, repo=None, **kw) -> ProvisionService:
@@ -130,7 +130,7 @@ def test_the_seeder_commits_the_settings_file_the_builder_will_read(tmp_path):
     settings = json.loads((checkout / ".sage" / "settings.json").read_text())
     assert settings == {"displayName": "Quarterly Revenue"}
     # And the manager reads exactly that as the chip.
-    assert Workspace(project_id="new", path=checkout).display_name() == "Quarterly Revenue"
+    assert ProjectRecord(project_id="new", path=checkout).display_name() == "Quarterly Revenue"
 
 
 def test_the_seeder_leaves_the_repo_alone_when_there_is_nothing_to_plant(tmp_path):

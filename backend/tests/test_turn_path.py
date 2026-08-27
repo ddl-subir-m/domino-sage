@@ -153,12 +153,12 @@ def test_a_gated_turn_writes_a_plan_document_beside_the_handoff(tmp_path: Path):
     plan = next(e for e in events if e["type"] == "plan-proposed")
     assert plan["planId"] == "001"
 
-    workspace = orch.project(start_preview=False).workspace
-    doc = workspace.read_plan_doc("001")
+    project = orch.project(start_preview=False)
+    doc = project.record.read_plan_doc("001")
     assert doc["sections"]["problem"] == "Risk cannot see notional by desk."
     assert doc["version"] == 1
     # The gate is read-only, so the document is the only thing this turn produced besides plan.md.
-    assert not (workspace.path / "src" / "App.tsx").read_text().strip().startswith("// ")
+    assert not (project.workspace.path / "src" / "App.tsx").read_text().strip().startswith("// ")
 
 
 def test_the_document_outlives_the_build_that_reads_it(tmp_path: Path):
@@ -170,14 +170,14 @@ def test_the_document_outlives_the_build_that_reads_it(tmp_path: Path):
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
-    workspace = orch.project(start_preview=False).workspace
-    assert workspace.read_plan_doc("001") is not None
+    project = orch.project(start_preview=False)
+    assert project.record.read_plan_doc("001") is not None
 
     list(orch.approve_stream())
 
-    assert workspace.read_plan() is None            # the handoff was consumed and archived
-    assert workspace.read_archived_plan() is not None
-    assert workspace.read_plan_doc("001") is not None   # the document stayed
+    assert project.workspace.read_plan() is None    # the handoff was consumed and archived
+    assert project.workspace.read_archived_plan() is not None
+    assert project.record.read_plan_doc("001") is not None   # the document stayed
 
 
 def test_approving_marks_the_document_approved(tmp_path: Path):
@@ -190,12 +190,12 @@ def test_approving_marks_the_document_approved(tmp_path: Path):
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
-    workspace = orch.project(start_preview=False).workspace
-    assert workspace.read_plan_doc("001")["status"] == "draft"
+    record = orch.project(start_preview=False).record
+    assert record.read_plan_doc("001")["status"] == "draft"
 
     list(orch.approve_stream())
 
-    doc = workspace.read_plan_doc("001")
+    doc = record.read_plan_doc("001")
     assert doc["status"] == "approved"
     assert doc["approvals"]        # who approved it, and when, is on the record
     assert doc["version"] == 1     # a decision about the plan, not a new draft of it
@@ -257,13 +257,14 @@ def test_cancelling_a_plan_leaves_its_document_alone(tmp_path: Path):
     built, which is the difference between dismissing a card and deleting a document."""
     orch, _oc, _ = _build(tmp_path, [Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n")])
     list(orch.build_stream("build me a dashboard"))
-    workspace = orch.project(start_preview=False).workspace
+    project = orch.project(start_preview=False)
+    workspace = project.workspace
 
     archived = workspace.archive_plan(cancelled=True)
 
     assert archived is not None and archived.name.endswith("-cancelled.md")
     assert workspace.read_archived_plan() is None       # a cancelled plan is not one we built from
-    assert workspace.read_plan_doc("001") is not None
+    assert project.record.read_plan_doc("001") is not None
 
 
 def test_an_architecture_gets_no_plan_document(tmp_path: Path):
@@ -278,9 +279,9 @@ def test_an_architecture_gets_no_plan_document(tmp_path: Path):
     plan = next(e for e in events if e["type"] == "plan-proposed")
     assert plan["kind"] == "architecture"
     assert plan["planId"] == ""
-    workspace = orch.project(start_preview=False).workspace
-    assert workspace.list_plan_docs() == []
-    assert workspace.read_architecture() is not None
+    project = orch.project(start_preview=False)
+    assert project.record.list_plan_docs() == []
+    assert project.workspace.read_architecture() is not None
 
 
 def test_the_scope_classifier_gates_a_substantial_change_on_a_built_app(tmp_path: Path):

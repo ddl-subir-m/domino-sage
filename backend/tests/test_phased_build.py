@@ -93,7 +93,7 @@ def _build(tmp: Path, turns: list[Turn], *, phased: bool = True):
                         opencode_client=oc)
     project = orch.project(start_preview=False)
     if phased:
-        project.workspace.write_settings({"phased_build": True})
+        project.record.write_settings({"phased_build": True})
     project.control.set_mode(Mode.AUTO)
     return orch, oc, project
 

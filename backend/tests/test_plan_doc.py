@@ -13,7 +13,7 @@ from pathlib import Path
 from sage.orchestrator.plan_steps import parse_steps
 from sage.orchestrator.service import _count_plan_steps, _warn_if_shapeless
 from sage.workspace import plan_doc
-from sage.workspace.manager import Workspace
+from sage.workspace.manager import ProjectRecord
 
 PLAN = (
     "A desk exposure dashboard.\n\n"
@@ -59,8 +59,8 @@ PHASED = (
 )
 
 
-def _ws(tmp_path: Path) -> Workspace:
-    return Workspace("Sage", tmp_path)
+def _record(tmp_path: Path) -> ProjectRecord:
+    return ProjectRecord("Sage", tmp_path)
 
 
 # ---- the round trip ----------------------------------------------------------------------------
@@ -136,7 +136,7 @@ def test_the_pins_step_count_still_counts_the_plan_and_nothing_else():
 
 
 def test_a_document_is_created_with_its_sections_read_out(tmp_path: Path):
-    doc = _ws(tmp_path).create_plan_doc(PLAN, title="A desk exposure dashboard.", author="u-me")
+    doc = _record(tmp_path).create_plan_doc(PLAN, title="A desk exposure dashboard.", author="u-me")
     assert doc["id"] == "001"
     assert doc["version"] == 1
     assert doc["status"] == "draft"
@@ -148,10 +148,10 @@ def test_a_document_is_created_with_its_sections_read_out(tmp_path: Path):
 def test_an_edit_adds_a_version_and_leaves_the_one_before_it(tmp_path: Path):
     """Someone is reviewing the draft that is being edited. Overwriting it would rewrite the text
     their comments point at."""
-    ws = _ws(tmp_path)
-    doc = ws.create_plan_doc(PLAN, title="A dashboard")
+    record = _record(tmp_path)
+    doc = record.create_plan_doc(PLAN, title="A dashboard")
     sections = {**doc["sections"], "users": "The head of desk."}
-    after = ws.write_plan_doc_version(doc["id"], plan_doc.render(doc["summary"], sections))
+    after = record.write_plan_doc_version(doc["id"], plan_doc.render(doc["summary"], sections))
     assert after["version"] == 2
     assert after["sections"]["users"] == "The head of desk."
     first = (tmp_path / ".sage" / "plan-docs" / "001" / "v001.md").read_text()
@@ -159,30 +159,30 @@ def test_an_edit_adds_a_version_and_leaves_the_one_before_it(tmp_path: Path):
 
 
 def test_a_comment_is_not_a_new_draft(tmp_path: Path):
-    ws = _ws(tmp_path)
-    doc = ws.create_plan_doc(PLAN, title="A dashboard")
-    after = ws.patch_plan_doc_meta(doc["id"], status="in_review", reviewers=["u-a"])
+    record = _record(tmp_path)
+    doc = record.create_plan_doc(PLAN, title="A dashboard")
+    after = record.patch_plan_doc_meta(doc["id"], status="in_review", reviewers=["u-a"])
     assert after["version"] == 1
     assert after["status"] == "in_review"
 
 
 def test_an_id_that_could_climb_out_of_the_directory_is_refused(tmp_path: Path):
-    ws = _ws(tmp_path)
-    ws.create_plan_doc(PLAN, title="A dashboard")
-    assert ws.read_plan_doc("../../etc/passwd") is None
-    assert ws.read_plan_doc_markdown("../..") is None
-    assert ws.patch_plan_doc_meta("../..", status="approved") is None
+    record = _record(tmp_path)
+    record.create_plan_doc(PLAN, title="A dashboard")
+    assert record.read_plan_doc("../../etc/passwd") is None
+    assert record.read_plan_doc_markdown("../..") is None
+    assert record.patch_plan_doc_meta("../..", status="approved") is None
 
 
 def test_documents_list_newest_first(tmp_path: Path):
-    ws = _ws(tmp_path)
-    ws.create_plan_doc(PLAN, title="First")
-    ws.create_plan_doc(PLAN, title="Second")
-    assert [d["id"] for d in ws.list_plan_docs()] == ["002", "001"]
+    record = _record(tmp_path)
+    record.create_plan_doc(PLAN, title="First")
+    record.create_plan_doc(PLAN, title="Second")
+    assert [d["id"] for d in record.list_plan_docs()] == ["002", "001"]
 
 
 def test_a_workspace_with_no_documents_lists_none(tmp_path: Path):
-    assert _ws(tmp_path).list_plan_docs() == []
+    assert _record(tmp_path).list_plan_docs() == []
 
 
 # ---- the routes ------------------------------------------------------------------------------
@@ -215,7 +215,7 @@ def _routed(tmp_path: Path, monkeypatch):
 
 def test_the_plan_page_can_load_a_plan_the_gate_wrote(tmp_path: Path, monkeypatch):
     client, orch = _routed(tmp_path, monkeypatch)
-    orch.project(start_preview=False).workspace.create_plan_doc(PLAN, title="A dashboard")
+    orch.project(start_preview=False).record.create_plan_doc(PLAN, title="A dashboard")
 
     doc = client.get("/api/plans/001")
     assert doc.status_code == 200
@@ -239,8 +239,8 @@ def test_a_plan_that_does_not_exist_is_a_404_not_an_empty_page(tmp_path: Path, m
 
 def test_editing_a_section_rewrites_the_file_and_keeps_the_draft_before_it(tmp_path: Path, monkeypatch):
     client, orch = _routed(tmp_path, monkeypatch)
-    workspace = orch.project(start_preview=False).workspace
-    workspace.create_plan_doc(PLAN, title="A dashboard")
+    record = orch.project(start_preview=False).record
+    record.create_plan_doc(PLAN, title="A dashboard")
 
     r = client.patch("/api/plans/001", json={"sections": {"users": "The head of desk."}})
 
@@ -249,13 +249,13 @@ def test_editing_a_section_rewrites_the_file_and_keeps_the_draft_before_it(tmp_p
     assert r.json()["sections"]["users"] == "The head of desk."
     # The rest of the plan is untouched by an edit to one section.
     assert r.json()["sections"]["outcomes"] == ["Totals notional by desk", "Charts the daily move"]
-    assert "The desk risk analyst." in (workspace.plan_docs_dir / "001" / "v001.md").read_text()
+    assert "The desk risk analyst." in (record.plan_docs_dir / "001" / "v001.md").read_text()
 
 
 def test_a_question_can_be_resolved_on_the_page(tmp_path: Path, monkeypatch):
     """Resolving is an edit to the body, so it does make a version — unlike a comment."""
     client, orch = _routed(tmp_path, monkeypatch)
-    orch.project(start_preview=False).workspace.create_plan_doc(PLAN, title="A plan")
+    orch.project(start_preview=False).record.create_plan_doc(PLAN, title="A plan")
     r = client.patch("/api/plans/001", json={
         "sections": {"openQuestions": [{"text": "Which desks count as rates?", "resolved": True}]},
     })
@@ -266,7 +266,7 @@ def test_a_question_can_be_resolved_on_the_page(tmp_path: Path, monkeypatch):
 
 def test_review_records_comments_and_approvals_without_making_a_draft(tmp_path: Path, monkeypatch):
     client, orch = _routed(tmp_path, monkeypatch)
-    orch.project(start_preview=False).workspace.create_plan_doc(PLAN, title="A plan")
+    orch.project(start_preview=False).record.create_plan_doc(PLAN, title="A plan")
 
     sent = client.post("/api/plans/001/review",
                        json={"action": "request", "reviewers": ["u-a"], "note": "look at screens"})
@@ -290,7 +290,7 @@ def test_review_records_comments_and_approvals_without_making_a_draft(tmp_path: 
 
 def test_approving_twice_is_one_approval(tmp_path: Path, monkeypatch):
     client, orch = _routed(tmp_path, monkeypatch)
-    orch.project(start_preview=False).workspace.create_plan_doc(PLAN, title="A plan")
+    orch.project(start_preview=False).record.create_plan_doc(PLAN, title="A plan")
     client.post("/api/plans/001/review", json={"action": "approve", "user": "u-a"})
     r = client.post("/api/plans/001/review", json={"action": "approve", "user": "u-a"})
     assert len(r.json()["approvals"]) == 1
@@ -310,9 +310,9 @@ def test_editing_the_live_plan_reaches_the_build_not_just_the_page(tmp_path: Pat
     the page would build the plan as it was before the edit, and the rail would keep counting the
     steps that are no longer there."""
     client, orch = _routed(tmp_path, monkeypatch)
-    workspace = orch.project(start_preview=False).workspace
-    workspace.write_plan(PLAN)
-    workspace.create_plan_doc(PLAN, title="A dashboard")
+    project = orch.project(start_preview=False)
+    project.workspace.write_plan(PLAN)
+    project.record.create_plan_doc(PLAN, title="A dashboard")
 
     client.patch("/api/plans/001", json={"sections": {
         "plan": "1. **Desk table** — Show notional by desk.\n"
@@ -320,7 +320,7 @@ def test_editing_the_live_plan_reaches_the_build_not_just_the_page(tmp_path: Pat
                 "3. **Limit filter** — Show only desks over limit.\n",
     }})
 
-    assert "Limit filter" in workspace.read_plan()
+    assert "Limit filter" in project.workspace.read_plan()
     assert client.get("/api/project/plan").json()["steps"] == 3
 
 
@@ -328,26 +328,26 @@ def test_editing_an_older_plan_does_not_become_the_thing_being_built(tmp_path: P
     """A plan nobody is building must stay that way. Otherwise revisiting last week's plan would
     quietly hand it to the next approve."""
     client, orch = _routed(tmp_path, monkeypatch)
-    workspace = orch.project(start_preview=False).workspace
-    workspace.create_plan_doc(PLAN, title="Old")
-    workspace.write_plan(PLAN)
-    workspace.create_plan_doc(PLAN, title="Live")
+    project = orch.project(start_preview=False)
+    project.record.create_plan_doc(PLAN, title="Old")
+    project.workspace.write_plan(PLAN)
+    project.record.create_plan_doc(PLAN, title="Live")
 
     client.patch("/api/plans/001", json={"sections": {"users": "Somebody else."}})
 
-    assert "Somebody else." not in workspace.read_plan()
+    assert "Somebody else." not in project.workspace.read_plan()
 
 
 def test_an_edit_with_no_live_plan_touches_nothing_else(tmp_path: Path, monkeypatch):
     """After a build has consumed and archived the handoff, editing the document is just editing a
     document — it must not write a new plan.md and put the app back into "waiting for approval"."""
     client, orch = _routed(tmp_path, monkeypatch)
-    workspace = orch.project(start_preview=False).workspace
-    workspace.create_plan_doc(PLAN, title="A dashboard")
+    project = orch.project(start_preview=False)
+    project.record.create_plan_doc(PLAN, title="A dashboard")
 
     client.patch("/api/plans/001", json={"sections": {"users": "The head of desk."}})
 
-    assert workspace.read_plan() is None
+    assert project.workspace.read_plan() is None
 
 
 def test_a_plan_with_no_headings_is_logged(caplog):

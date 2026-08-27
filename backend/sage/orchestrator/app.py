@@ -1658,20 +1658,20 @@ def build_approve(body: dict) -> StreamingResponse:
 @control_app.get("/api/project/settings")
 def get_settings() -> JSONResponse:
     """Per-project Sage settings (e.g. skip_planning — opt out of the first-build plan gate)."""
-    return JSONResponse(content=orchestrator.project().workspace.read_settings())
+    return JSONResponse(content=orchestrator.project().record.read_settings())
 
 
 @control_app.post("/api/project/settings")
 async def set_settings(request: Request) -> JSONResponse:
     """Update per-project settings: skip_planning (SPEC P6 opt-out) and phased_build."""
     body = await request.json()
-    workspace = orchestrator.project().workspace
-    settings = workspace.read_settings()
+    record = orchestrator.project().record
+    settings = record.read_settings()
     if "skip_planning" in body:
         settings["skip_planning"] = bool(body["skip_planning"])
     if "phased_build" in body:
         settings["phased_build"] = bool(body["phased_build"])
-    workspace.write_settings(settings)
+    record.write_settings(settings)
     return JSONResponse(content=settings)
 
 

@@ -814,12 +814,13 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     orch.draft_handoff_plan(tid)
     src = orch.project(start_preview=False).workspace.path / "src" / "App.tsx"
     before = src.read_text()
-    orch.project(start_preview=False).workspace.mark_untitled(True)
+    orch.project(start_preview=False).record.mark_untitled(True)
 
     result = orch.confirm_handoff(tid, {"resources": True, "artifacts": True, "transcript": False})
     assert result["ok"] is True
     assert result["handoff"]["status"] == "bound"
-    ws = orch.project(start_preview=False).workspace
+    project = orch.project(start_preview=False)
+    ws = project.workspace
     handoff_md = (ws.path / ".sage" / "handoff.md").read_text()
     assert "trades" in handoff_md
     # The digest is background only. `implement_note` puts the one framing line in front of it.
@@ -829,10 +830,10 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     bindings = ws.read_bindings()
     assert any(b.get("id") == "ds-trades" for b in bindings)
     assert src.read_text() == before
-    assert ws.is_untitled() is False
+    assert project.record.is_untitled() is False
     assert result["untitled"] is False
     assert result["title"] == "A desk exposure dashboard."
-    assert ws.display_name() == "A desk exposure dashboard."
+    assert project.record.display_name() == "A desk exposure dashboard."
 
     orch.confirm_handoff(tid, {"transcript": True})
     assert (ws.path / ".sage" / "handoff-transcript.md").exists()
@@ -903,7 +904,7 @@ def test_default_slug_hydrates_the_default_chip(tmp_path: Path, monkeypatch):
     slug = naming.default_project_name("alice", "507f1f77bcf86cd799439011")
     orch, _ = _orch(tmp_path, project_id=slug)
     project = orch.project(start_preview=False)
-    assert project.workspace.is_untitled() is True
+    assert project.record.is_untitled() is True
     assert project.status()["untitled"] is True
     assert project.status()["name"] == "Default"  # the chip's word for the overlay (ADR-0004)
 
@@ -911,7 +912,7 @@ def test_default_slug_hydrates_the_default_chip(tmp_path: Path, monkeypatch):
 def test_named_project_does_not_hydrate_untitled(tmp_path: Path):
     orch, _ = _orch(tmp_path)
     project = orch.project(start_preview=False)
-    assert project.workspace.is_untitled() is False
+    assert project.record.is_untitled() is False
     assert project.status()["name"] == "Sage"
 
 

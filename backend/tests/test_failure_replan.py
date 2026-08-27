@@ -10,7 +10,7 @@ from pathlib import Path
 
 from sage.orchestrator.service import _failure_gate_applies
 from sage.router.models import Mode
-from sage.workspace.manager import Workspace
+from sage.workspace.manager import ProjectRecord, Workspace
 
 
 def _applies(**kw) -> bool:
@@ -75,14 +75,16 @@ def test_recording_a_failure_leaves_other_settings_alone(tmp_path: Path):
     # It shares settings.json with `built` and `skip_planning`; clobbering either would re-gate a
     # built project or silently undo the user's opt-out.
     ws = _ws(tmp_path)
-    ws.write_settings({"built": True, "skip_planning": True})
+    record = ProjectRecord(project_id="p", path=tmp_path)
+    record.write_settings({"built": True, "skip_planning": True})
     ws.set_last_turn_failed(True)
-    assert ws.read_settings() == {"built": True, "skip_planning": True, "last_turn_failed": True}
+    assert record.read_settings() == {"built": True, "skip_planning": True, "last_turn_failed": True}
 
 
 def test_corrupt_settings_read_as_no_failure(tmp_path: Path):
     # A broken feature must never become a feature that blocks builds.
     ws = _ws(tmp_path)
-    ws.settings_path.parent.mkdir(parents=True, exist_ok=True)
-    ws.settings_path.write_text("{not json")
+    settings_path = ProjectRecord(project_id="p", path=tmp_path).settings_path
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text("{not json")
     assert ws.read_last_turn_failed() is False
