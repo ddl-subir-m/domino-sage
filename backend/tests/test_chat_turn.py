@@ -779,6 +779,27 @@ def test_write_a_plan_runs_sage_plan_and_opens_sheet_payload(tmp_path: Path):
     assert sum(1 for p in oc.prompts if p["agent"] == "sage-plan") == 1
 
 
+def test_the_handoff_plan_turn_asks_for_the_plan_document_shape(tmp_path: Path):
+    """This turn writes a plan document, and the document is parsed out of these headings.
+
+    Live, asking only for "a concrete build plan" got narration back — "I'm turning that background
+    work into a concrete app brief…" — and prose has no headings to parse, so the plan page showed a
+    title over eight empty sections while the transcript held the plan in full."""
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates is the largest desk."),
+        Turn(text=_PLAN),
+    ])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+
+    sent = oc.prompts[-1]["text"]
+    assert "## Problem & outcome" in sent
+    assert "## Screens" in sent
+    assert "## Done when" in sent
+    assert "future tense" in sent          # and in the voice the approval card is read in
+
+
 def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     orch, oc = _orch(tmp_path, [
         Turn(text="Rates."),

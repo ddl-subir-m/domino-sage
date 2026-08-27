@@ -1686,6 +1686,98 @@ class Project:
         }
 
 
+def _warn_if_shapeless(where: str, plan_md: str) -> None:
+    """Say so when a plan comes back with none of the headings its document is parsed from.
+
+    Such a plan still builds — the text is all there — but parse_sections has nowhere to put it, so
+    every section comes back empty and the plan page can only show prose. Three prompts now ask for
+    the shape (the sage-plan agent, the gated turn, the handoff turn), so this should be rare. This
+    line is how we find out whether it is, before anyone pays for a repair turn to fix it.
+    """
+    if not any(plan_doc.parse_sections(plan_md)["sections"].values()):
+        log.warning("%s: the plan has none of the document's headings — its page can only show prose",
+                    where)
+
+
+# The plan's voice and shape. Module level because two turns write plans: the gated build turn
+# (build_stream) and the Chat -> Build handoff (_draft_handoff_plan). Both must ask for the same
+# headings, because both produce a plan document that is parsed out of them (plan_doc.SECTIONS).
+# The architecture shape stays inside its turn — only one turn writes designs.
+_PLAN_VOICE = ("Write the plan as a proposal for work not yet done: future tense, no claim "
+               "that anything has been built, changed, or verified. You have no write, edit, "
+               "or shell tools on this turn by design — don't look for them. Write each step "
+               "as the work itself, starting with a verb ('Define the sample data…', 'Add a "
+               "preview table…'). Never open a step with 'I will' or 'I'll' — the same "
+               "opener repeated down the list is what makes a plan unreadable.")
+# And its SHAPE. The plan lands in an approval card the user has to skim in a few seconds;
+# left to itself the planner writes one unbroken wall of prose (and sometimes restates it),
+# which is unreadable at any length. Long is fine — shapeless is not, so the structure is
+# spelled out here rather than left to the agent prompt alone.
+# Every plan shape opens the same way, and the plan document's sections sit between that
+# opening sentence and '## Plan'. Composed rather than repeated so the step list — the part
+# plan_steps.parse_steps and _count_plan_steps read — stays identical in both shapes.
+_PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
+                "- One short sentence saying what the app is.\n")
+# The sections a colleague reads to decide whether the app is worth building, and the
+# durable half of the plan document. Kept short on purpose: the plan still has to be
+# skimmable in the approval card, so each section is a line or a few bullets, not an essay.
+_PLAN_DOC_SECTIONS = (
+    "- Then a '## Problem & outcome' heading and one or two sentences: what is wrong today, "
+    "and what is true once the app exists.\n"
+    "- Then a '## Who uses this' heading and one sentence naming the person who opens it.\n"
+    "- Then a '## What it does' heading and short bullets, one capability each.\n"
+    "- Then a '## Screens' heading and one bullet per screen: a bolded name, then ' — ', "
+    "then one sentence on what it shows.\n"
+    "- Then a '## Not doing' heading and short bullets naming what is deliberately out of "
+    "scope. Leave the heading out entirely if nothing is.\n"
+    "- Then a '## Done when' heading and short bullets, each one an observable result "
+    "someone can check without reading the code.\n")
+_PLAN_SHAPE = (_PLAN_OPENER + _PLAN_DOC_SECTIONS +
+               "- Then a '## Plan' heading and a numbered list. Each step is a single line: "
+               "a bolded 2-4 word label, then ' — ', then one sentence. No paragraph steps, "
+               "no sub-lists, no code.\n"
+               "- Then, ONLY if something genuinely needs the user to decide, an '## Open "
+               "questions' heading and short bullets. Nothing to ask: leave the heading out "
+               "entirely rather than writing 'None'.\n"
+               "Never repeat a sentence or restate a step you've already written.")
+# The phased variant. Same plan, but each step becomes a self-contained handoff brief,
+# because in a phased build the model that executes step 4 is a BRAND-NEW session: it never
+# read this plan, never saw steps 1-3, and can't ask. Every field below exists because a cold
+# executor fails without it — `Files` so its first act isn't a whole-tree grep that refills
+# the context the fresh session just bought us, `Done when` so verification travels with the
+# work instead of being inferred, `Don't touch` so a later step doesn't rewrite an earlier
+# one's output it has never seen. Kept separate from _PLAN_SHAPE rather than replacing it:
+# the single-context shape is what every non-phased build still uses.
+_PLAN_SHAPE_PHASED = (
+    _PLAN_OPENER + _PLAN_DOC_SECTIONS +
+    "- Then a '## Plan' heading.\n"
+    "- Then, for each step, a '### N. Label' heading (N is 1, 2, 3…; the label is 2-4 "
+    "words), followed by exactly these bullets:\n"
+    "  - Files — the workspace-relative files this step creates or edits, comma-separated. "
+    "This is the step's allowlist, so it MUST include any earlier file the step has to edit "
+    "to connect its work up — the table that needs a row-click handler, the parent that "
+    "renders the new component. A step that cannot reach the file it needs cannot finish. "
+    "But list the FEWEST files that does it: a step licensed to edit the main screen will "
+    "rebuild the main screen, and a later step then throws that work away. A data or types "
+    "step should not name the app's main component at all. "
+    "Name them even if you are guessing; a wrong guess is cheaper than no guess.\n"
+    "  - Do — one or two sentences of the work itself, starting with a verb.\n"
+    "  - Done when — one sentence naming the observable result that proves this step is "
+    "finished (a file exports something, the preview renders something, the app compiles).\n"
+    "  - Don't touch — earlier files this step has no business editing at all, so it can't "
+    "rewrite finished work it cannot see. Never list a file that also appears in this step's "
+    "Files; that contradiction stops the step dead. Omit this bullet entirely when there are "
+    "none; never write 'None'.\n"
+    "Each step must be executable by someone who can see the code but has NOT read the "
+    "other steps: no 'as above', no 'the same table', no pronouns pointing at another step. "
+    "Aim for 3-7 steps; a step should be one coherent change, not a whole feature and not a "
+    "one-line edit.\n"
+    "- Then, ONLY if something genuinely needs the user to decide, an '## Open questions' "
+    "heading and short bullets. Nothing to ask: leave the heading out entirely rather than "
+    "writing 'None'.\n"
+    "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -2706,13 +2798,15 @@ class Orchestrator:
         handoff_path.parent.mkdir(parents=True, exist_ok=True)
         handoff_path.write_text(digest + "\n")
 
-        prompt = chat_handoff.plan_prompt(thread_id, digest)
+        prompt = chat_handoff.plan_prompt(thread_id, digest,
+                                          voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
         plan_md = self._run_sage_plan(project, prompt, conversation=thread_id)
         if not plan_md:
             raise ValueError("empty plan")
         project.workspace.write_plan(plan_md)
         # Same document the gate creates, but this one knows the Thread it came from, so the plan
         # page can offer the way back to the conversation that produced it.
+        _warn_if_shapeless("chat handoff", plan_md)
         plan_id = project.workspace.create_plan_doc(
             plan_md,
             title=chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
@@ -3749,79 +3843,7 @@ class Orchestrator:
         # narrates in the past tense ("I built a dataset explorer with…") and then hunts for a write
         # tool it doesn't have. The user reads that card as a finished build, which is the opposite
         # of what the approval gate is for: they approve without reading, or think the gate leaked.
-        _PLAN_VOICE = ("Write the plan as a proposal for work not yet done: future tense, no claim "
-                       "that anything has been built, changed, or verified. You have no write, edit, "
-                       "or shell tools on this turn by design — don't look for them. Write each step "
-                       "as the work itself, starting with a verb ('Define the sample data…', 'Add a "
-                       "preview table…'). Never open a step with 'I will' or 'I'll' — the same "
-                       "opener repeated down the list is what makes a plan unreadable.")
-        # And its SHAPE. The plan lands in an approval card the user has to skim in a few seconds;
-        # left to itself the planner writes one unbroken wall of prose (and sometimes restates it),
-        # which is unreadable at any length. Long is fine — shapeless is not, so the structure is
-        # spelled out here rather than left to the agent prompt alone.
-        # Every plan shape opens the same way, and the plan document's sections sit between that
-        # opening sentence and '## Plan'. Composed rather than repeated so the step list — the part
-        # plan_steps.parse_steps and _count_plan_steps read — stays identical in both shapes.
-        _PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
-                        "- One short sentence saying what the app is.\n")
-        # The sections a colleague reads to decide whether the app is worth building, and the
-        # durable half of the plan document. Kept short on purpose: the plan still has to be
-        # skimmable in the approval card, so each section is a line or a few bullets, not an essay.
-        _PLAN_DOC_SECTIONS = (
-            "- Then a '## Problem & outcome' heading and one or two sentences: what is wrong today, "
-            "and what is true once the app exists.\n"
-            "- Then a '## Who uses this' heading and one sentence naming the person who opens it.\n"
-            "- Then a '## What it does' heading and short bullets, one capability each.\n"
-            "- Then a '## Screens' heading and one bullet per screen: a bolded name, then ' — ', "
-            "then one sentence on what it shows.\n"
-            "- Then a '## Not doing' heading and short bullets naming what is deliberately out of "
-            "scope. Leave the heading out entirely if nothing is.\n"
-            "- Then a '## Done when' heading and short bullets, each one an observable result "
-            "someone can check without reading the code.\n")
-        _PLAN_SHAPE = (_PLAN_OPENER + _PLAN_DOC_SECTIONS +
-                       "- Then a '## Plan' heading and a numbered list. Each step is a single line: "
-                       "a bolded 2-4 word label, then ' — ', then one sentence. No paragraph steps, "
-                       "no sub-lists, no code.\n"
-                       "- Then, ONLY if something genuinely needs the user to decide, an '## Open "
-                       "questions' heading and short bullets. Nothing to ask: leave the heading out "
-                       "entirely rather than writing 'None'.\n"
-                       "Never repeat a sentence or restate a step you've already written.")
-        # The phased variant. Same plan, but each step becomes a self-contained handoff brief,
-        # because in a phased build the model that executes step 4 is a BRAND-NEW session: it never
-        # read this plan, never saw steps 1-3, and can't ask. Every field below exists because a cold
-        # executor fails without it — `Files` so its first act isn't a whole-tree grep that refills
-        # the context the fresh session just bought us, `Done when` so verification travels with the
-        # work instead of being inferred, `Don't touch` so a later step doesn't rewrite an earlier
-        # one's output it has never seen. Kept separate from _PLAN_SHAPE rather than replacing it:
-        # the single-context shape is what every non-phased build still uses.
-        _PLAN_SHAPE_PHASED = (
-            _PLAN_OPENER + _PLAN_DOC_SECTIONS +
-            "- Then a '## Plan' heading.\n"
-            "- Then, for each step, a '### N. Label' heading (N is 1, 2, 3…; the label is 2-4 "
-            "words), followed by exactly these bullets:\n"
-            "  - Files — the workspace-relative files this step creates or edits, comma-separated. "
-            "This is the step's allowlist, so it MUST include any earlier file the step has to edit "
-            "to connect its work up — the table that needs a row-click handler, the parent that "
-            "renders the new component. A step that cannot reach the file it needs cannot finish. "
-            "But list the FEWEST files that does it: a step licensed to edit the main screen will "
-            "rebuild the main screen, and a later step then throws that work away. A data or types "
-            "step should not name the app's main component at all. "
-            "Name them even if you are guessing; a wrong guess is cheaper than no guess.\n"
-            "  - Do — one or two sentences of the work itself, starting with a verb.\n"
-            "  - Done when — one sentence naming the observable result that proves this step is "
-            "finished (a file exports something, the preview renders something, the app compiles).\n"
-            "  - Don't touch — earlier files this step has no business editing at all, so it can't "
-            "rewrite finished work it cannot see. Never list a file that also appears in this step's "
-            "Files; that contradiction stops the step dead. Omit this bullet entirely when there are "
-            "none; never write 'None'.\n"
-            "Each step must be executable by someone who can see the code but has NOT read the "
-            "other steps: no 'as above', no 'the same table', no pronouns pointing at another step. "
-            "Aim for 3-7 steps; a step should be one coherent change, not a whole feature and not a "
-            "one-line edit.\n"
-            "- Then, ONLY if something genuinely needs the user to decide, an '## Open questions' "
-            "heading and short bullets. Nothing to ask: leave the heading out entirely rather than "
-            "writing 'None'.\n"
-            "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
+
         # The architecture deliverable — the same gated, read-only turn, but the artifact is a design
         # rather than a task list. The distinction is the whole point of the branch: a build plan
         # answers "what will you do", an architecture answers "what are the parts and how do they
@@ -4264,6 +4286,7 @@ class Orchestrator:
                     # what people open, edit and comment on, and it has to outlive that build.
                     # Architecture keeps its own file instead and gets no document — it is already
                     # a reference that nothing archives.
+                    _warn_if_shapeless("plan gate", plan_md)
                     plan_id = project.workspace.create_plan_doc(
                         plan_md,
                         title=chat_handoff.plan_title(plan_md) or "App",
@@ -4425,7 +4448,7 @@ class Orchestrator:
             current = report.as_agent_message()
 
     def approve_stream(self, answers: str = "", plan_edits: str | None = None,
-                       conversation: str | None = None):
+                       conversation: str | None = None, plan_id: str = ""):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
@@ -4441,14 +4464,15 @@ class Orchestrator:
             return
         try:
             self._begin_conversation(conversation)
-            yield from self._approve_locked(answers, plan_edits)
+            yield from self._approve_locked(answers, plan_edits, plan_id=plan_id)
         finally:
             self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
             self._recheck_app_data()
             self._clear_turn_baseline()
             self._turn_lock.release()
 
-    def _approve_locked(self, answers: str = "", plan_edits: str | None = None, user_text: str | None = None):
+    def _approve_locked(self, answers: str = "", plan_edits: str | None = None,
+                        user_text: str | None = None, plan_id: str = ""):
         """The approve turn itself. Assumes the caller holds _turn_lock — approval reaches here both
         from the card's Approve button and from a bare approval typed in the composer (build_stream)."""
         project = self.project()
@@ -4457,7 +4481,8 @@ class Orchestrator:
         # Fall back to the architecture when no plan is live: an architecture turn writes only
         # .sage/architecture.md (it isn't a one-shot handoff and must survive the build), so its card's
         # Build button would otherwise approve an empty plan and build nothing.
-        plan_md = project.workspace.read_plan() or project.workspace.read_architecture() or ""
+        live_plan = project.workspace.read_plan() or ""
+        plan_md = live_plan or project.workspace.read_architecture() or ""
         # Nothing live to approve. A plan is a one-shot handoff — the `finally` below archives it the
         # moment a build consumes it — so a second click on a card that already built finds an empty
         # string here. Before this guard that string still went out as an approve prompt, and the
@@ -4470,6 +4495,22 @@ class Orchestrator:
                 "That plan was already built. Type the next change you want and Sage will plan it.")}
             yield {"type": "done", "ok": False, "decision": "no plan to approve"}
             return
+        # What was approved reaches the document. Two things were going missing here. The text: an
+        # edit made in the card is written to plan.md above and built, but the document it came from
+        # kept the pre-edit draft, so the record of what got built was wrong. And the decision: plan.md
+        # is archived the moment the build consumes it (the `finally` below), so nothing else was ever
+        # going to move the document off "Draft · Waiting for approval" — it said that long after
+        # somebody approved it and watched it build. An architecture has no document, so only a live
+        # plan marks one. What approval MEANS stays the review flow's own rule: named reviewers who
+        # have not signed off keep the plan in review, because building was never their sign-off.
+        if live_plan.strip():
+            doc = self._approved_plan_doc(project, plan_id)
+            if doc:
+                # A version, not an overwrite, for the same reason a document edit makes one: the
+                # draft people commented on has to survive the edit that built over it.
+                if live_plan.strip() != (doc.get("markdown") or "").strip():
+                    project.workspace.write_plan_doc_version(doc["id"], live_plan)
+                self.review_plan_doc(doc["id"], {"action": "approve"})
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
         # pinned to this turn only (see arm_turn_mode), never written to the user's picker. The
@@ -4508,6 +4549,19 @@ class Orchestrator:
         finally:
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
             project.workspace.archive_plan()
+
+    def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
+        """The document the approved plan.md belongs to, or None.
+
+        The card sends the id it was given when the plan was proposed, which is the only answer that
+        cannot be wrong. A bare "yes, build it" typed in the composer has no card and sends nothing,
+        and there the newest document is the best available answer — the same one the plan pin and
+        patch_plan_doc already trust for the same question. A workspace whose plan predates plan
+        documents has none at all, and gets None."""
+        if plan_id:
+            return project.workspace.read_plan_doc(plan_id)
+        docs = project.workspace.list_plan_docs()
+        return docs[0] if docs else None
 
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.

@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 from sage.orchestrator import handoff
+from sage.orchestrator.service import _PLAN_SHAPE, _PLAN_VOICE
+from sage.workspace import plan_doc
 from sage.router.models import ModelCatalog
 
 CATALOG = ModelCatalog(
@@ -183,8 +185,12 @@ def test_digest_is_one_paragraph_with_names_not_bytes():
     assert "\n\n" not in text
 
 
+def _plan_prompt(digest: str = "Thread background.") -> str:
+    return handoff.plan_prompt("thr_1", digest, voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
+
+
 def test_plan_prompt_points_at_examples_and_asks_for_a_plan():
-    prompt = handoff.plan_prompt("thr_1", "Thread background.")
+    prompt = _plan_prompt()
     assert "examples/thr_1/" in prompt
     assert "Thread background." in prompt
     assert "Write a concrete build plan" in prompt
@@ -194,9 +200,28 @@ def test_plan_prompt_does_not_carry_the_implement_line():
     """The plan turn is the one WRITING the plan, so "the plan is what to build" points at nothing.
 
     Live, a planner given that sentence planned a page about the work rather than the app."""
-    prompt = handoff.plan_prompt("thr_1", "Thread background.")
+    prompt = _plan_prompt()
     assert "The plan is what to build" not in prompt
     assert "no app has been built yet" in prompt
+
+
+def test_plan_prompt_asks_for_the_headings_the_plan_document_is_parsed_from():
+    """The handoff writes a plan document, and the document IS these headings.
+
+    Asking only for "a concrete build plan" left the shape to the agent prompt alone, which did not
+    hold: sage-plan answered the digest in narration. Prose has no headings, so every section parsed
+    empty and the plan page showed a title over eight blank ones while the transcript held the whole
+    plan. docs/workbench/handoff.md §5 has always asked for the sections; this asserts the prompt does.
+    """
+    prompt = _plan_prompt()
+    for section in plan_doc.SECTIONS:
+        assert f"## {section.label}" in prompt
+
+
+def test_plan_prompt_pins_the_proposal_voice():
+    """Same reason the gated turn pins it: the narration that broke the shape was past tense."""
+    prompt = _plan_prompt()
+    assert "future tense" in prompt
 
 
 def test_implement_note_is_empty_without_a_digest(tmp_path: Path):

@@ -258,7 +258,8 @@ window.SW = window.SW || {};
               type: 'primary',
               size: 'small',
               onClick: () =>
-                SW.store.approveBuild(answers, draft !== (block.plan || '') ? draft : undefined),
+                SW.store.approveBuild(answers, draft !== (block.plan || '') ? draft : undefined,
+                                      block.planId),
             },
             block.kind === 'architecture'
               ? 'Build this'

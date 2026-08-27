@@ -213,7 +213,7 @@ def draft_digest(*, title: str, asked: list[str], context: list[dict],
     return " ".join(bits) or "An empty Chat Thread."
 
 
-def plan_prompt(thread_id: str, digest: str) -> str:
+def plan_prompt(thread_id: str, digest: str, *, voice: str, shape: str) -> str:
     """The prompt sage-plan writes the first plan from (docs/workbench/handoff.md §5).
 
     Deliberately NOT the implement line below. That line says "the plan is what to build", which
@@ -222,13 +222,23 @@ def plan_prompt(thread_id: str, digest: str) -> str:
     ("a shareable planning page with a build brief"), and the build that followed put a "Next build"
     roadmap card inside the app instead of building the app. So this turn is told the opposite: the
     Thread is background, the app does not exist, write the plan for the app.
+
+    `voice` and `shape` are the gated build turn's own (service._PLAN_VOICE, service._PLAN_SHAPE),
+    restated here because this turn writes a plan document too and the document is parsed out of
+    those headings. Asking only for "a concrete build plan" left the shape to the agent prompt
+    alone, and it did not hold: live, sage-plan answered the digest in narration ("I'm turning that
+    background work into a concrete app brief…"). Prose has no headings, so parse_sections found no
+    sections, and the plan page showed a title over eight empty ones while the same text sat whole
+    in the transcript. The spec has always asked for the sections (docs/workbench/handoff.md §5);
+    now the prompt does.
     """
     return (
         f"A Chat Thread in this project asked the questions below and produced the files under "
         f"examples/{thread_id}/. That work is background — no app has been built yet, and this "
         f"turn is where the plan for one gets written.\n\n"
         f"{digest}\n\n"
-        "Write a concrete build plan for an app colleagues can open from this work."
+        "Write a concrete build plan for an app colleagues can open from this work. "
+        + voice + "\n\n" + shape
     )
 
 

@@ -180,6 +180,78 @@ def test_the_document_outlives_the_build_that_reads_it(tmp_path: Path):
     assert workspace.read_plan_doc("001") is not None   # the document stayed
 
 
+def test_approving_marks_the_document_approved(tmp_path: Path):
+    """The pin moves on when plan.md is archived; the document has to move on with it.
+
+    Before this, a plan somebody had approved and watched build still read "Draft · Waiting for
+    approval" on its own page, because nothing on the approve path ever touched the document."""
+    orch, _oc, _ = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+    ])
+    list(orch.build_stream("build me a dashboard"))
+    workspace = orch.project(start_preview=False).workspace
+    assert workspace.read_plan_doc("001")["status"] == "draft"
+
+    list(orch.approve_stream())
+
+    doc = workspace.read_plan_doc("001")
+    assert doc["status"] == "approved"
+    assert doc["approvals"]        # who approved it, and when, is on the record
+    assert doc["version"] == 1     # a decision about the plan, not a new draft of it
+
+
+def test_approving_a_plan_still_out_for_review_leaves_it_in_review(tmp_path: Path):
+    """"You can build before they finish" is the plan page's own promise to the reviewers.
+
+    So building signs the builder's name, never theirs: a plan with a reviewer who has not answered
+    stays in review, and the page keeps saying so."""
+    orch, _oc, _ = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+    ])
+    list(orch.build_stream("build me a dashboard"))
+    orch.review_plan_doc("001", {"action": "request", "reviewers": ["u-nobody"]})
+
+    list(orch.approve_stream())
+
+    assert orch.read_plan_doc("001")["status"] == "in_review"
+
+
+def test_approving_an_edited_plan_puts_the_edit_in_the_document(tmp_path: Path):
+    """Editing the card and approving builds the edit, so the document has to hold the edit too.
+
+    It didn't: plan.md was overwritten and built while the document kept the draft nobody chose,
+    leaving the durable record of the app disagreeing with the app."""
+    orch, _oc, _ = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+    ])
+    list(orch.build_stream("build me a dashboard"))
+    edited = "A dashboard.\n\n## Plan\n1. **Chart** — Show it as a chart.\n"
+
+    list(orch.approve_stream("", edited, None, "001"))
+
+    doc = orch.read_plan_doc("001")
+    assert "Chart" in doc["markdown"]        # what was built
+    assert doc["version"] == 2               # and the draft it replaced is still there
+    assert doc["status"] == "approved"
+
+
+def test_approving_without_a_card_still_finds_the_document(tmp_path: Path):
+    """A bare "yes, build it" typed in the composer sends no plan id. The newest document is the
+    only answer available there, and it is the right one."""
+    orch, _oc, _ = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+    ])
+    list(orch.build_stream("build me a dashboard"))
+
+    list(orch.approve_stream())
+
+    assert orch.read_plan_doc("001")["status"] == "approved"
+
+
 def test_cancelling_a_plan_leaves_its_document_alone(tmp_path: Path):
     """Cancel dismisses the handoff, not the thinking. The plan page still opens on a plan nobody
     built, which is the difference between dismissing a card and deleting a document."""

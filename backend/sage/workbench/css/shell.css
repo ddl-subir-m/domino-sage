@@ -1024,6 +1024,7 @@
   color: var(--gray-600);
 }
 
+.sw-plan-lead { padding: 0 0 var(--s5); }
 .sw-plan-section { padding: 0 0 var(--s5); }
 .sw-plan-section-head {
   display: flex;

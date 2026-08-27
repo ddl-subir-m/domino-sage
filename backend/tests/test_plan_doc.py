@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sage.orchestrator.plan_steps import parse_steps
-from sage.orchestrator.service import _count_plan_steps
+from sage.orchestrator.service import _count_plan_steps, _warn_if_shapeless
 from sage.workspace import plan_doc
 from sage.workspace.manager import Workspace
 
@@ -348,3 +348,16 @@ def test_an_edit_with_no_live_plan_touches_nothing_else(tmp_path: Path, monkeypa
     client.patch("/api/plans/001", json={"sections": {"users": "The head of desk."}})
 
     assert workspace.read_plan() is None
+
+
+def test_a_plan_with_no_headings_is_logged(caplog):
+    """The one thing nothing noticed. A plan can be perfectly good prose and still leave its
+    document with eight empty sections, and until this line nothing anywhere said so."""
+    with caplog.at_level("WARNING"):
+        _warn_if_shapeless("plan gate", "I'm turning that background work into an app brief.\n")
+    assert "plan gate" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        _warn_if_shapeless("plan gate", PLAN)
+    assert caplog.text == ""

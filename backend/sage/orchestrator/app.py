@@ -1643,13 +1643,15 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
 
 @control_app.post("/api/project/build/approve")
 def build_approve(body: dict) -> StreamingResponse:
-    """Approve a gated plan (SPEC P6) and stream the resulting build. Body: {answers?, plan_edits?}."""
+    """Approve a gated plan (SPEC P6) and stream the build. Body: {answers?, plan_edits?, plan_id?}."""
     answers = (body or {}).get("answers", "") or ""
     plan_edits = (body or {}).get("plan_edits")  # None = approve the plan as proposed
     conversation = (body or {}).get("conversation") or None
+    plan_id = (body or {}).get("plan_id") or ""   # "" = no card sent one; fall back to the newest
 
     return StreamingResponse(
-        _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation), "approve_stream"),
+        _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation, plan_id),
+                  "approve_stream"),
         media_type="text/event-stream")
 
 

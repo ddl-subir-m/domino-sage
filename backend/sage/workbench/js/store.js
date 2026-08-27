@@ -1256,7 +1256,7 @@ window.SW = window.SW || {};
       return store.sendBuildPrompt(prompt, { skipResetGate: true });
     },
 
-    async approveBuild(answers, planEdits) {
+    async approveBuild(answers, planEdits, planId) {
       if (state.buildRunning) return null;
       if (!state.thread) await store.newThread();
       state.buildHistory = state.buildHistory.concat([{ type: 'user', text: 'Approved the plan.' }]);
@@ -1267,6 +1267,9 @@ window.SW = window.SW || {};
       try {
         const payload = { answers: answers || '', conversation: state.thread.id };
         if (planEdits) payload.plan_edits = planEdits;
+        // Which document this card's plan came from. Without it the server has to assume the newest
+        // document is the one being approved, and a plan drafted by hand since then breaks that.
+        if (planId) payload.plan_id = planId;
         const res = await fetch('./api/project/build/approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

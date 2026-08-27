@@ -246,6 +246,11 @@ window.SW = window.SW || {};
     const isReviewer = (plan.reviewers || []).includes(meId);
     const approved = (plan.approvals || []).map((a) => a.user);
     const unresolved = (plan.comments || []).filter((c) => !c.resolved).length;
+    // Everything the plan says above its first heading. A plan written to shape opens with one
+    // sentence, which is already the title, so this renders nothing. A plan the parser found no
+    // headings in lands here whole — and without this the page showed that title over eight empty
+    // sections while the transcript showed the same plan in full.
+    const lead = (plan.summary || '').trim();
 
     const post = async (section, body) => {
       if (body.resolve) {
@@ -430,15 +435,38 @@ window.SW = window.SW || {};
               ),
             // In the IDE you are already in the Builder, so the only offer worth
             // making is to build again from a plan that has no app yet.
+            //
+            // The plan's OWN Conversation, not whichever one happens to be open: handing off is
+            // something a Conversation does, and the no-argument call handed off the current one,
+            // so opening an old plan and pressing this built from a conversation you weren't
+            // reading. A plan the build gate wrote has no Conversation to hand off from (#54 is
+            // where it gets one), and there the call returned null and left nothing on screen —
+            // a button that does nothing and doesn't say why. Now it says why.
             !(variant === 'ide' && plan.appId) &&
               h(
-                Button,
+                Tooltip,
                 {
-                  type: 'primary',
-                  icon: h(ArrowRightOutlined, null),
-                  onClick: () => SW.store.draftHandoffPlan(),
+                  title: plan.originThreadId
+                    ? null
+                    : 'This plan was written in Build, so there is no conversation to hand off ' +
+                      'from. Build it from its card in the Build conversation.',
                 },
-                plan.appId ? 'Open in Builder' : 'Build this'
+                // A disabled button fires no mouse events, so the tooltip needs something around it
+                // that does.
+                h(
+                  'span',
+                  null,
+                  h(
+                    Button,
+                    {
+                      type: 'primary',
+                      icon: h(ArrowRightOutlined, null),
+                      disabled: !plan.originThreadId,
+                      onClick: () => SW.store.draftHandoffPlan(plan.originThreadId),
+                    },
+                    plan.appId ? 'Open in Builder' : 'Build this'
+                  )
+                )
               )
           )
         ),
@@ -470,6 +498,9 @@ window.SW = window.SW || {};
                 h('span', { className: 'sw-caption' }, `${unresolved} unresolved ${unresolved === 1 ? 'comment' : 'comments'}`)
             ),
           }),
+
+        lead && lead !== plan.title &&
+          h('div', { className: 'sw-plan-lead sw-plan-md' }, SW.util.markdown(lead)),
 
         variant === 'ide' && view === 'Markdown'
           ? h(
