@@ -666,6 +666,153 @@ def test_an_over_cap_download_is_discarded_rather_than_attached(tmp_path: Path):
     assert not list((ws / "public" / "data").rglob("*"))
 
 
+def test_a_chat_fetch_lands_in_scratch_and_leaves_the_app_alone(tmp_path: Path):
+    """A question has no app. Routing a chip through attach_file put the bytes in the published
+    app's asset tree and wrote them into the committed manifest, so asking what was in a file
+    enrolled it in every later publish of an app that may never reference it."""
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+
+    res = orch.fetch_dataset_file_for_chat(_dataset(orch, "sales_2026"), "train.csv")
+
+    assert res["path"] == ".sage/scratch/datasets/sales_2026/train.csv"
+    link = ws / res["path"]
+    assert link.is_symlink()                                  # mounted: still no byte copy
+    assert link.read_text().startswith("month,revenue")
+    assert not (ws / "public" / "data").exists()
+    assert orch.project(start_preview=False).attached == []
+    assert ".sage/scratch/" in (ws / ".gitignore").read_text()
+
+
+def test_two_chips_naming_the_same_file_fetch_it_once(tmp_path: Path):
+    assets = _UnmountedAssets()
+    orch = _orch(tmp_path, assets=assets)
+    orch.project(start_preview=False)
+
+    first = orch.fetch_dataset_file_for_chat("ds_shared", "raw/wells.csv")
+    again = orch.fetch_dataset_file_for_chat("ds_shared", "raw/wells.csv")
+
+    assert first["path"] == again["path"]
+    assert assets.downloads == ["raw/wells.csv"]
+
+
+def test_a_handoff_hands_the_scratch_bytes_over_instead_of_fetching_them_again(tmp_path: Path):
+    """The handoff is where a Thread becomes an app, so it is where the app's data tree gets the
+    file. The bytes are already here — asking Domino for them a second time is the copy this whole
+    split exists to avoid — and the scratch copy stays, because the Thread's chip still names it."""
+    assets = _UnmountedAssets()
+    orch = _orch(tmp_path, assets=assets)
+    ws = orch.project(start_preview=False).workspace.path
+    fetched = orch.fetch_dataset_file_for_chat("ds_shared", "raw/wells.csv")
+
+    orch._promote_chat_file({"kind": "file", "datasetId": "ds_shared",
+                             "datasetRelPath": "raw/wells.csv", "path": fetched["path"]})
+
+    assert assets.downloads == ["raw/wells.csv"]              # once, not once per surface
+    entry = _manifest(ws)[0]
+    assert entry["path"] == "public/data/Oil-and-Gas-Demo/raw/wells.csv"
+    served = ws / entry["path"]
+    assert served.read_bytes() == b"a,b\n1,2\n"
+    assert (ws / fetched["path"]).is_file()                   # the chip's path still resolves
+
+
+def _chip(orch, thread_id: str) -> dict:
+    return orch.add_thread_context(thread_id, {
+        "kind": "file", "name": "wells.csv",
+        "datasetId": "ds_shared", "datasetRelPath": "raw/wells.csv",
+    })
+
+
+def test_closing_the_last_chip_releases_the_bytes_it_fetched(tmp_path: Path):
+    """Nothing else releases them, and every fetch counts against the cap — so scratch filled up
+    and then quietly refused new fetches, with nothing on screen to say why."""
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    ws = orch.project(start_preview=False).workspace.path
+    tid = orch.create_thread()["id"]
+    row = _chip(orch, tid)
+    fetched = ws / row["path"]
+    assert fetched.is_file()
+
+    assert orch.remove_thread_context(tid, row["id"]) is True
+
+    assert not fetched.exists()
+    assert not fetched.parent.exists()          # and no empty folders left standing
+    assert (ws / ".sage" / "scratch" / "datasets").is_dir()
+
+
+def test_a_chip_in_another_thread_keeps_the_file(tmp_path: Path):
+    """A fetch is shared. The person closing one chip is not speaking for the other conversation."""
+    assets = _UnmountedAssets()
+    orch = _orch(tmp_path, assets=assets)
+    ws = orch.project(start_preview=False).workspace.path
+    one, two = orch.create_thread()["id"], orch.create_thread()["id"]
+    first, second = _chip(orch, one), _chip(orch, two)
+    assert first["path"] == second["path"]
+    assert assets.downloads == ["raw/wells.csv"]
+
+    orch.remove_thread_context(one, first["id"])
+
+    assert (ws / second["path"]).is_file()
+
+
+def test_a_file_the_app_now_stands_on_is_not_released(tmp_path: Path):
+    """After a handoff the app's data path is a symlink onto these bytes. Deleting them would
+    leave the app pointing at nothing."""
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    ws = orch.project(start_preview=False).workspace.path
+    tid = orch.create_thread()["id"]
+    row = _chip(orch, tid)
+    orch._promote_chat_file({"kind": "file", "datasetId": "ds_shared",
+                             "datasetRelPath": "raw/wells.csv", "path": row["path"]})
+
+    orch.remove_thread_context(tid, row["id"])
+
+    assert (ws / row["path"]).is_file()
+    assert (ws / _manifest(ws)[0]["path"]).read_bytes() == b"a,b\n1,2\n"
+
+
+def test_deleting_a_thread_releases_what_it_fetched(tmp_path: Path):
+    """The chips go with the Thread, so the only record of what it fetched goes with it too."""
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    ws = orch.project(start_preview=False).workspace.path
+    tid = orch.create_thread()["id"]
+    row = _chip(orch, tid)
+
+    orch.delete_thread(tid)
+
+    assert not (ws / row["path"]).exists()
+
+
+def test_closing_a_chip_never_touches_an_attachment_the_app_owns(tmp_path: Path):
+    """A file attached in Build can be pinned into a Thread. Closing that chip is not a detach."""
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    ds = _dataset(orch, "sales_2026")
+    res = orch.attach_file(ds, "train.csv")
+    tid = orch.create_thread()["id"]
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "train.csv", "path": res["path"],
+        "datasetId": ds, "datasetRelPath": "train.csv",
+    })
+
+    orch.remove_thread_context(tid, row["id"])
+
+    assert (ws / res["path"]).exists()
+    assert _manifest(ws)[0]["path"] == res["path"]
+
+
+def test_a_chip_that_is_not_a_dataset_file_is_not_promoted(tmp_path: Path):
+    """The handoff loop sees every chip. A Data Source has no bytes to hand over."""
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+
+    orch._promote_chat_file({"kind": "data_source", "name": "trades"})
+    orch._promote_chat_file({"kind": "file", "name": "notes.md", "path": ".sage/scratch/notes.md"})
+
+    assert orch.project(start_preview=False).attached == []
+    assert not (ws / "public" / "data").exists()
+
+
 def test_an_unmounted_attachment_is_rehydrated_by_downloading_it_again(tmp_path: Path):
     assets = _UnmountedAssets()
     orch = _orch(tmp_path, assets=assets)

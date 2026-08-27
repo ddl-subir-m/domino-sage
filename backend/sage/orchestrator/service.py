@@ -131,6 +131,13 @@ _MAX_POLL_FAILURES = 4
 # this replaces could not tell the two apart: it killed long-but-working turns at 90s, which is what
 # "convert this into an app" hit, and the live hang ran past 20 minutes because nothing capped it.
 _CHAT_QUIET_TIMEOUT_S = 90.0
+# The same silence, while a tool is in flight. A tool sends nothing between `called` and its result,
+# so one window cannot tell a hung query from a Dataset file being fetched — and `download_file` on
+# a real transactions CSV is legitimately silent for minutes. That is the turn this cap was killing:
+# the agent did the one thing it was told to do, and Chat stopped it for doing it. Splitting the two
+# keeps the hang capped without killing the work — a stalled MODEL still ends at 90s, a tool that
+# never comes back still ends here, and _CHAT_TURN_MAX_S is the backstop under both.
+_CHAT_TOOL_QUIET_TIMEOUT_S = 240.0
 # Alive is not the same as getting somewhere: an agent that loops holds the turn lock for as long as
 # it keeps talking. Generous, because by then the person can see the work and can press Stop — this
 # is the backstop for a turn nobody is watching, not the cap for a turn that is going well.
@@ -265,6 +272,44 @@ def _is_sage_upload(entry: dict) -> bool:
 
 
 _SCRATCH_PREFIX = ".sage/scratch/"
+# Where a Dataset file fetched FOR A QUESTION lands. Not `public/data/`: that tree is the published
+# app's, and attach_file also writes the file into the committed manifest, so asking "what is in
+# this file?" enrolled the bytes in every later publish of an app that may never reference them.
+# Scratch is gitignored and already linked into the chat workdir, so the path in the turn prompt
+# resolves where the agent stands. A SUBdirectory, because `_list_scratch_files` reads the top level
+# only: the chip already represents this file, and it must not also appear as a Chat upload the
+# person can delete — the bytes on the other end may be the Dataset's own.
+_CHAT_DATA_PREFIX = f"{_SCRATCH_PREFIX}datasets/"
+
+
+def _chat_data_dest(dataset_name: str, file_path: str) -> str:
+    """Workspace-relative POSIX path a Dataset file is fetched to for a Chat turn."""
+    rel = PurePosix(file_path.replace("\\", "/"))
+    parts = [p for p in rel.parts if p not in ("", ".", "..")]
+    return PurePosix(_CHAT_DATA_PREFIX.rstrip("/"), _slug(dataset_name), *parts).as_posix()
+
+
+def _links_at(workspace: Path, rel: str, target: Path) -> bool:
+    """True when an attached path is a symlink standing on `target` — the shape a handoff leaves
+    behind when it hands the scratch bytes over instead of fetching them again."""
+    p = workspace / rel
+    try:
+        return p.is_symlink() and p.resolve() == target.resolve()
+    except OSError:
+        return False
+
+
+def _copied_bytes(root: Path) -> int:
+    """Disk actually used under `root`. A symlink into a mount costs nothing and is not counted:
+    the cap is about what Sage copied here, not about how large the Dataset is."""
+    if not root.is_dir():
+        return 0
+    total = 0
+    for p in root.rglob("*"):
+        if p.is_symlink() or not p.is_file():
+            continue
+        total += p.stat().st_size
+    return total
 
 
 def _bare_kind_id(value: str, kind: str) -> str:
@@ -2256,9 +2301,15 @@ class Orchestrator:
         return row
 
     def delete_thread(self, thread_id: str) -> None:
-        store = ThreadStore(self._chat_project().workspace.path)
+        project = self._chat_project()
+        store = ThreadStore(project.workspace.path)
+        # Read the chips before the Thread goes: afterwards there is nothing left to say what it
+        # fetched, and the files would sit in scratch for the life of the project.
+        paths = [str(i.get("path") or "") for i in store.read_context(thread_id).get("items") or []]
         if not store.delete(thread_id):
             raise KeyError(thread_id)
+        for path in paths:
+            self._release_chat_file(project, path)
 
     def list_threads(self) -> list[dict]:
         return ThreadStore(self._chat_project().workspace.path).list()
@@ -2280,9 +2331,15 @@ class Orchestrator:
         rel = row.get("datasetRelPath")
         if str(row.get("kind") or "") == "file" and dataset_id and rel and not row.get("path"):
             try:
-                attached = self.attach_file(str(dataset_id), str(rel))
-                row["path"] = attached.get("path")
-            except (LookupError, FileNotFoundError, ValueError, AttachTooLarge):
+                # Fetched for the question, not for the app. `_confirm_handoff` is where a Thread
+                # says it is becoming an app, and where these bytes reach `public/data/`.
+                fetched = self.fetch_dataset_file_for_chat(str(dataset_id), str(rel))
+                row["path"] = fetched.get("path")
+            except (LookupError, FileNotFoundError, ValueError, AttachTooLarge,
+                    ResourceUnavailable):
+                # The chip is still worth adding: with no path, the turn prompt routes the agent
+                # to the Domino data library instead. A fetch Domino refused must not take the
+                # whole chip down with it.
                 pass
         scope = row.get("scope") if isinstance(row.get("scope"), dict) else None
         # "table" belongs here as much as "data_source": the panel pins a table, and the client
@@ -2336,8 +2393,52 @@ class Orchestrator:
         return [{"name": c.name, "type": c.type, "table": c.table} for c in columns]
 
     def remove_thread_context(self, thread_id: str, item_id: str) -> bool:
-        return ThreadStore(self._chat_project().workspace.path).remove_context(
-            thread_id, item_id)
+        project = self._chat_project()
+        store = ThreadStore(project.workspace.path)
+        row = next((i for i in store.read_context(thread_id).get("items") or []
+                    if i.get("id") == item_id), None)
+        removed = store.remove_context(thread_id, item_id)
+        if removed and row is not None:
+            self._release_chat_file(project, str(row.get("path") or ""))
+        return removed
+
+    def _release_chat_file(self, project: Project, path: str) -> bool:
+        """Delete a file fetched for a chip that is gone. True when the bytes were released.
+
+        A chip closed is the only signal a Chat fetch is finished with, and `_copied_bytes` counts
+        every fetch against the cap — so without this, a long-lived project fills up scratch and
+        then quietly refuses new fetches, falling back to the data-library route with nothing on
+        screen to say why.
+
+        Two things hold a file back. Another Thread still naming it: a fetch is shared, and the
+        person closing one chip is not speaking for the other conversation. And a handoff that
+        linked the app's data path at these very bytes: deleting them would leave the app pointing
+        at nothing. Only what Sage fetched is deleted — a mounted Dataset is a symlink here, so the
+        Dataset's own bytes are never what goes.
+        """
+        if not path.startswith(_CHAT_DATA_PREFIX):
+            return False
+        store = ThreadStore(project.workspace.path)
+        for thread in store.list():
+            for item in store.read_context(thread["id"]).get("items") or []:
+                if str(item.get("path") or "") == path:
+                    return False
+        try:
+            dest = _safe_join(project.workspace.path, path)
+        except ValueError:
+            return False
+        if not dest.is_symlink() and not dest.is_file():
+            return False
+        if any(_links_at(project.workspace.path, e["path"], dest) for e in project.attached):
+            return False
+        try:
+            dest.unlink()
+        except OSError:
+            log.warning("chat: could not release the fetched copy of %s", path)
+            return False
+        _prune_empty_dirs(
+            dest.parent, _safe_join(project.workspace.path, _CHAT_DATA_PREFIX.rstrip("/")))
+        return True
 
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread."""
@@ -2628,6 +2729,7 @@ class Orchestrator:
                 binding = chat_handoff.binding_from_context(item)
                 if binding is not None:
                     self._bind_from_handoff(binding)
+                self._promote_chat_file(item)
         if project.workspace.is_untitled():
             title = chat_handoff.plan_title(plan_md)
             project.workspace.set_display_name(title)
@@ -2641,6 +2743,37 @@ class Orchestrator:
             "untitled": project.workspace.is_untitled(),
             "title": chat_handoff.plan_title(plan_md),
         }
+
+    def _promote_chat_file(self, item: dict) -> None:
+        """Move a Dataset file fetched for a question into the app's own data tree.
+
+        Chat fetches into scratch because a question has no app to serve bytes to. A confirmed
+        handoff is the moment that stops being true: the app this Thread becomes is a static build
+        that fetches `data/<slug>/<name>` over HTTP, and only attach_file writes the manifest entry
+        that rehydrates the file at publish. A Dataset file chip is not a Binding — its id is a
+        `dsfile:` leaf — so it is not covered by the loop this sits in.
+
+        The scratch bytes are handed over rather than fetched again, and stay where they are: the
+        Thread's chip still names that path, and Chat goes on working after the handoff.
+        """
+        if str(item.get("kind") or "") != "file":
+            return
+        dataset_id = str(item.get("datasetId") or "")
+        rel = str(item.get("datasetRelPath") or "")
+        if not dataset_id or not rel:
+            return
+        path = str(item.get("path") or "")
+        local = None
+        if path.startswith(_CHAT_DATA_PREFIX):
+            fetched = _safe_join(self.project().workspace.path, path)
+            # A symlink there points at the mount, and attach_file makes that link itself.
+            local = fetched if fetched.is_file() and not fetched.is_symlink() else None
+        try:
+            self.attach_file(dataset_id, rel, local_source=local)
+        except (LookupError, FileNotFoundError, ValueError, AttachTooLarge, ResourceUnavailable):
+            # The handoff is worth more than one file. The app is built from the plan either way,
+            # and the Data panel still offers the attach by hand.
+            log.warning("handoff: could not attach %s from Dataset %s", rel, dataset_id)
 
     def _bind_from_handoff(self, binding: Binding) -> None:
         """Record one Chat context row as a Binding, resolving a Data Source the way the rail does.
@@ -2716,6 +2849,10 @@ class Orchestrator:
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> str:
         work = str(ensure_chat_workdir(project.workspace.path, self._chat_agents_md()))
+        # That call creates `public/data/` in order to link it into the chat workdir, so the tree
+        # can now exist before anything has been attached. It must be out of git either way: the
+        # gitignore line is what keeps Dataset bytes from ever reaching the app's repo.
+        self._ensure_gitignored(project.workspace, "public/data/")
         rec = store.read_session(thread_id) or {}
         sid = rec.get("session_id")
         if sid and rec.get("directory") == work:
@@ -2855,16 +2992,24 @@ class Orchestrator:
             # The last moment this turn showed it was moving. Everything OpenCode sends counts,
             # not only what Chat shows: `map_session_event` already drops the stream's noise, so a
             # frame arriving means the session did something. A stuck tool sends nothing between
-            # `called` and its result, which is exactly why the quiet window still expires on it.
+            # `called` and its result, which is why the window still expires on it — on the longer
+            # one, since a slow tool and a stuck tool look identical from here and only one of them
+            # deserves to be killed at 90 seconds.
             last_activity = started
             last_text = ""
-            quiet_limit = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
+            idle_quiet = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
+            tool_quiet = _CHAT_TOOL_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
+            # Calls that started and have not come back, by call id: `called` opens one and
+            # success/failed closes it. A caller-supplied timeout_s makes both windows that number,
+            # so a test forcing the cap keeps forcing it and this only picks the message.
+            running_tools: set[str] = set()
             while True:
                 if project.stop_requested:
                     client.interrupt(sid)
                     yield {"type": "done", "ok": False, "decision": "stopped"}
                     return
                 now = time.monotonic()
+                quiet_limit = tool_quiet if running_tools else idle_quiet
                 quiet = now - last_activity >= quiet_limit
                 if quiet or now - started >= _CHAT_TURN_MAX_S:
                     log.warning("chat: turn stopped after %.0fs — %s", now - started,
@@ -2884,10 +3029,18 @@ class Orchestrator:
                             "This turn took too long, so it was stopped. Building an app is Build's "
                             "job rather than Chat's — open it in Build below."
                         )
+                    elif quiet and running_tools:
+                        # A step was still open when the window closed. Blaming the turn for
+                        # stopping would be wrong twice over: it did not stop, and the person
+                        # would go looking for the wrong thing to make smaller.
+                        message = (
+                            "The step Sage was running did not finish, so the turn was stopped. "
+                            "A large Dataset file or a broad query can take longer than one Chat "
+                            "turn allows — try a narrower query."
+                        )
                     elif quiet:
                         # Say which of the two happened. The turn did not run out of time doing
-                        # work — it stopped doing any, and the thing that stops answering is
-                        # nearly always the query.
+                        # work — it stopped doing any, with nothing of its own left running.
                         message = (
                             "Sage stopped making progress, so the turn was stopped. If you were "
                             "querying a Data Source, it may be too slow to answer here — try a "
@@ -2910,6 +3063,15 @@ class Orchestrator:
                     return
                 for ev in tap.drain():
                     last_activity = time.monotonic()
+                    if ev.kind == "tool_run":
+                        # `shell.started` repeats the call id of the bash `tool.called`, so a set
+                        # makes the second one a no-op. An event with no id falls back to one
+                        # shared key, which a completion with no id then clears.
+                        call = str(ev.payload.get("call_id") or "") or "?"
+                        if str(ev.payload.get("status") or "") == "called":
+                            running_tools.add(call)
+                        else:
+                            running_tools.discard(call)
                     live = _chat_live_event(ev)
                     if live is not None:
                         yield live
@@ -2935,6 +3097,7 @@ class Orchestrator:
                     time.sleep(2.0)
                     continue
                 pending_text = ""
+                polled_running = False
                 for m in msgs:
                     if m.get("type") != "assistant":
                         continue
@@ -2953,6 +3116,7 @@ class Orchestrator:
                         if "tool" in pt:
                             status = (part.get("state") or {}).get("status")
                             if status in ("pending", "running", "in_progress"):
+                                polled_running = True
                                 continue
                             seen.add(key)
                             last_activity = time.monotonic()
@@ -2967,6 +3131,11 @@ class Orchestrator:
                                 # line already ran when the command started, and replaying it from
                                 # the final read would flash "Running Python…" on a finished turn.
                                 yield ev
+                if not tap.ok:
+                    # No stream to open and close calls on, so the transcript answers instead: a
+                    # part still pending IS a call in flight. Read fresh every poll, since nothing
+                    # here reports the end of one.
+                    running_tools = {"transcript"} if polled_running else set()
                 # Proof of life when the transcript is the only source. The same text part comes
                 # back on every poll, so it is the change that counts, not the presence.
                 if pending_text and pending_text != last_text:
@@ -5525,7 +5694,8 @@ class Orchestrator:
                 _prune_empty_dirs(dest.parent, prune_root)
         return size
 
-    def attach_file(self, dataset_id: str, file_path: str) -> dict:
+    def attach_file(self, dataset_id: str, file_path: str, *,
+                    local_source: Path | None = None) -> dict:
         """Put one dataset file into the workspace under public/data/ so OpenCode can @mention it
         and the (static) preview/published app can fetch it.
 
@@ -5533,7 +5703,14 @@ class Orchestrator:
         A Dataset this container has no mount for is downloaded through the Domino data library,
         which is how a Dataset shared from another project becomes attachable at all: mounts are
         fixed when the execution starts, and waiting for a restart was the old answer.
-        Enforces a configurable total-size cap across all attached files."""
+        Enforces a configurable total-size cap across all attached files.
+
+        `local_source` names bytes already fetched into this workspace — the scratch copy a Chat
+        turn read (see fetch_dataset_file_for_chat) — and links the app's data path at them instead
+        of asking Domino for the same file twice. The cap does not apply to it: the link adds no
+        disk, the bytes passed a cap when they were fetched, and refusing here would drop a file out
+        of a handoff the person already confirmed.
+        """
         project = self.project()
         asset = self._find_asset(dataset_id)
         rel = _attach_dest(asset.name, file_path)  # workspace-relative posix path
@@ -5541,7 +5718,13 @@ class Orchestrator:
         if already is None:
             total = sum(e["size"] for e in project.attached)
             dest = _safe_join(project.workspace.path, rel)
-            if not asset.mount_path:
+            if local_source is not None:
+                size = local_source.stat().st_size
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.is_symlink() or dest.exists():
+                    dest.unlink()
+                dest.symlink_to(local_source)
+            elif not asset.mount_path:
                 size = self._download_attachment(
                     asset, file_path, dest, total,
                     project.workspace.path / "public" / "data",
@@ -5571,6 +5754,40 @@ class Orchestrator:
         return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size,
                 "descriptor": entry.get("descriptor"),
                 "status": project.status()}
+
+    def fetch_dataset_file_for_chat(self, dataset_id: str, file_path: str) -> dict:
+        """One Dataset file, put where a Chat turn can read it and nowhere else.
+
+        attach_file is the APP's route: it lands the bytes in `public/data/` because a published app
+        is a static build that fetches them over HTTP, and it records them in the committed manifest
+        so a publish can rehydrate them. A question has no app. Adding a chip to a Thread went down
+        that route anyway, so asking what was in a file wrote it into the app's asset tree and into
+        every later publish. This is the same fetch without either consequence.
+
+        Mounted stays the fast path — a symlink, no copy. A Dataset with no mount here is
+        downloaded, because `download_file` is the only content API a Dataset has: there is no
+        server-side read to push a question down to, the way a Data Source takes SQL.
+
+        Idempotent: a chip re-added, or two chips naming the same file, fetch once.
+        """
+        project = self.project()
+        asset = self._find_asset(dataset_id)
+        rel = _chat_data_dest(asset.name, file_path)
+        dest = _safe_join(project.workspace.path, rel)
+        self._ensure_gitignored(project.workspace, _SCRATCH_PREFIX)
+        if dest.is_symlink() or dest.is_file():
+            return {"path": rel, "dataset": asset.name, "size": dest.stat().st_size}
+        if asset.mount_path:
+            src = _safe_join(Path(asset.mount_path), file_path)
+            if not src.is_file():
+                raise FileNotFoundError(file_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.symlink_to(src)
+            size = src.stat().st_size
+        else:
+            root = _safe_join(project.workspace.path, _CHAT_DATA_PREFIX.rstrip("/"))
+            size = self._download_attachment(asset, file_path, dest, _copied_bytes(root), root)
+        return {"path": rel, "dataset": asset.name, "size": size}
 
     def detach_file(self, path: str) -> dict:
         """Remove an attached file's symlink (keyed by its workspace path, so rehydrated entries

@@ -490,6 +490,54 @@ def test_a_dataset_file_whose_path_is_really_its_id_still_gets_the_dataset_route
     assert 'download_file("price_data.csv"' in prompt
 
 
+def test_a_dataset_file_chip_is_fetched_for_the_question_not_for_the_app(tmp_path: Path):
+    """The chip used to go through attach_file, so asking about a file wrote it into the published
+    app's asset tree and its committed manifest. A question has no app to serve it to."""
+    orch, oc = _orch(tmp_path, [Turn(text="Monthly revenue.")])
+    ws = orch.project(start_preview=False).workspace.path
+    ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
+    tid = orch.create_thread()["id"]
+
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "train.csv", "datasetName": "sales_2026",
+        "datasetId": ds, "datasetRelPath": "train.csv",
+    })
+    list(orch.chat_stream(tid, "whats in @train.csv"))
+
+    assert row["path"] == ".sage/scratch/datasets/sales_2026/train.csv"
+    # The app's data tree is linked into the chat workdir, so it exists — but nothing was put in it.
+    assert list((ws / "public" / "data").iterdir()) == []
+    assert "public/data/" in (ws / ".gitignore").read_text()
+    assert row["path"] in oc.prompts[0]["text"]
+    # And the path in the prompt resolves where the agent actually stands.
+    work = Path(oc.sessions[0]["directory"])
+    assert (work / row["path"]).read_text().startswith("month,revenue")
+
+
+def test_a_confirmed_handoff_puts_the_chat_file_where_the_app_reads_it(tmp_path: Path):
+    """The handoff is the moment the Thread becomes an app, so it is the moment the bytes belong
+    in `public/data/` and in the manifest a publish rehydrates from."""
+    orch, _ = _orch(tmp_path, [Turn(text="Monthly revenue."), Turn(text=_PLAN)])
+    ws = orch.project(start_preview=False).workspace.path
+    ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
+    tid = orch.create_thread()["id"]
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "train.csv", "datasetName": "sales_2026",
+        "datasetId": ds, "datasetRelPath": "train.csv",
+    })
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+
+    orch.confirm_handoff(tid, {"resources": True, "artifacts": True, "transcript": False})
+
+    served = ws / "public" / "data" / "sales_2026" / "train.csv"
+    assert served.read_text().startswith("month,revenue")
+    manifest = json.loads((ws / ".sage" / "attachments.json").read_text())
+    assert [e["path"] for e in manifest] == ["public/data/sales_2026/train.csv"]
+    # The Thread goes on working: its chip still names a file that is there.
+    assert (ws / row["path"]).exists()
+
+
 def test_new_conversation_does_not_provision(tmp_path: Path):
     orch, _ = _orch(tmp_path)
     first = orch.create_thread()
@@ -1121,6 +1169,56 @@ def test_a_tool_that_never_comes_back_still_ends_the_turn(tmp_path: Path):
     assert {"type": "agent", "kind": "tool", "tool": "bash",
             "doing": "query", "detail": "WH"} in out
     assert "narrower query" in next(e for e in out if e["type"] == "error")["message"]
+
+
+def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Path, monkeypatch):
+    """`download_file` on a real Dataset file is silent for as long as it takes. One window could
+    not tell that from a stalled model, so it killed the one thing the turn was told to do — and
+    then told the person their query was too broad."""
+    from sage.orchestrator import service
+    monkeypatch.setattr(service, "_CHAT_QUIET_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(service, "_CHAT_TOOL_QUIET_TIMEOUT_S", 1.0)
+    downloading = [
+        _live("tool_run", tool="bash", call_id="c1", status="called",
+              input={"command": 'DatasetClient().get_dataset("dataset-clickstream-ds1")'
+                                '.download_file("clean_cc_transactions.csv", "/tmp/x.csv")'}),
+    ]
+    orch, oc = _streamed(tmp_path, downloading, gap=0.05)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    started = time.monotonic()
+    out = list(orch.chat_stream(tid, "whats in @clean_cc_transactions.csv"))
+    elapsed = time.monotonic() - started
+
+    assert elapsed > 0.5, "the download died on the window it is not subject to"
+    assert oc.interrupted == 1
+    err = next(e for e in out if e["type"] == "error")
+    # It did not stop working, so it must not be reported as having stopped.
+    assert "stopped making progress" not in err["message"]
+    assert "The step Sage was running did not finish" in err["message"]
+    assert "narrower query" in err["message"]
+
+
+def test_a_finished_tool_puts_the_turn_back_on_the_short_window(tmp_path: Path, monkeypatch):
+    """The longer window belongs to the tool, not to the rest of the turn. A model that stalls
+    after its query came back is a stalled model, and it is named as one."""
+    from sage.orchestrator import service
+    monkeypatch.setattr(service, "_CHAT_QUIET_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(service, "_CHAT_TOOL_QUIET_TIMEOUT_S", 30.0)
+    came_back = [
+        _live("tool_run", tool="bash", call_id="c1", status="called",
+              input={"command": "get_datasource('WH')"}),
+        _live("tool_run", tool="", call_id="c1", status="success"),
+    ]
+    orch, oc = _streamed(tmp_path, came_back, gap=0.05)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    out = list(orch.chat_stream(tid, "how many rows"))
+
+    assert oc.interrupted == 1
+    assert "stopped making progress" in next(e for e in out if e["type"] == "error")["message"]
 
 
 def test_a_turn_that_never_stops_talking_hits_the_ceiling(tmp_path: Path, monkeypatch):

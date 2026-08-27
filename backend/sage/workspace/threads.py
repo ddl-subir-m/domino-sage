@@ -296,15 +296,31 @@ class ThreadStore:
 
 
 _SKIP_SNAPSHOT_PARTS = frozenset({"node_modules", ".git", "dist", "__pycache__", "chat-work"})
+# Where attached Dataset files live, and the one tree whose bytes are not ours to read. A mounted
+# Dataset is attached as a SYMLINK into /mnt/data, so snapshotting the tree pulled the whole file
+# across the mount — before the turn and again after it, on every Chat turn, for a file the turn
+# may never touch. A prefix, not a bare part name: `data` alone would also skip `src/data/`, which
+# IS the agent's to write and must stay revertible.
+#
+# What this gives up: a write that lands under public/data is no longer undone. It is a narrow loss
+# — the tree is gitignored, so nothing there reaches the repo — but a write THROUGH one of those
+# symlinks reaches the Dataset, and reverting it used to write the old bytes back over the mount.
+# Refusing that write at the tool boundary is the right place for it; undoing it here never was.
+_SKIP_SNAPSHOT_PREFIXES = ("public/data/",)
 
 CHAT_WORK = Path(".sage") / "chat-work"
 
 
 def ensure_chat_workdir(workspace: Path, agents_md: str) -> Path:
-    """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/ and scratch.
+    """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/, scratch and data.
 
     Chat must not use the React app clone as cwd. Paths in the prompt stay workspace-shaped
-    (`examples/<threadId>/…`, `.sage/scratch/…`) because those names are linked in here.
+    (`examples/<threadId>/…`, `.sage/scratch/…`, `public/data/<slug>/…`) because those names are
+    linked in here. `public/data` is what an attached Dataset file is named by — the context line
+    and the attachment descriptor both hand the agent that path, and without the link it resolves
+    to nothing from this cwd, so a file the person can see in the rail cannot be read at all.
+    Only `data` is linked, not the whole of `public/`: the rest of it belongs to the app, which
+    Chat has no business reading.
     """
     root = Path(workspace) / CHAT_WORK
     root.mkdir(parents=True, exist_ok=True)
@@ -315,6 +331,9 @@ def ensure_chat_workdir(workspace: Path, agents_md: str) -> Path:
     sage = root / ".sage"
     sage.mkdir(exist_ok=True)
     _ensure_dir_link(sage / "scratch", Path(workspace) / ".sage" / "scratch")
+    public = root / "public"
+    public.mkdir(exist_ok=True)
+    _ensure_dir_link(public / "data", Path(workspace) / "public" / "data")
     return root
 
 
@@ -326,8 +345,11 @@ def _ensure_dir_link(link: Path, target: Path) -> None:
 
 
 def snapshot_files(root: Path) -> dict[str, bytes]:
-    """Workspace-relative file bytes, skipping heavy/generated trees. Used to revert Chat writes
-    that landed outside the allowlist."""
+    """Workspace-relative file bytes, skipping heavy/generated trees and attached data. Used to
+    revert Chat writes that landed outside the allowlist.
+
+    `p.is_file()` follows symlinks, so what is skipped here is skipped before anything is read —
+    which is the point for public/data, where the file on the other end of the link is a Dataset."""
     out: dict[str, bytes] = {}
     root = Path(root)
     if not root.exists():
@@ -336,6 +358,8 @@ def snapshot_files(root: Path) -> dict[str, bytes]:
         if not p.is_file():
             continue
         rel = p.relative_to(root).as_posix()
+        if rel.startswith(_SKIP_SNAPSHOT_PREFIXES):
+            continue
         if any(part in _SKIP_SNAPSHOT_PARTS for part in Path(rel).parts):
             continue
         try:
