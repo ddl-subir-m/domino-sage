@@ -11,6 +11,7 @@ Handoff is a write to the project filesystem, then a mode switch. The payload is
 | Always | Path | Source |
 |--------|------|--------|
 | Plan | `.sage/plan.md` | `sage-plan` on confirm, or the plan already drafted in this Thread |
+| Plan document | `.sage/plan-docs/<id>/` | Written alongside the plan above; durable, and it survives the build ([ADR-0007](../adr/0007-the-plan-document-is-durable-the-handoff-is-not.md)) |
 | Digest | `.sage/handoff.md` | Short summary Sage writes at confirm; not the transcript |
 | Artifacts the user kept | `examples/<threadId>/` (already there) | Chat. Listed in `.sage/threads/<id>/artifacts.json` |
 | Session context that names a Resource | new rows in `.sage/bindings.json` | Chat `context.json` → Bindings |
@@ -66,7 +67,7 @@ I can write a plan so you can review it and build from it.
 - the Artifact manifest (paths + titles, not the PNG bytes)
 - Session context names
 
-The plan body is the existing `sage-plan` shape (one sentence, `## Plan`, `## Open questions`) and is written to `.sage/plan.md` the way Build already does. Then open the sheet with the plan included.
+The plan body is the existing `sage-plan` shape and is written to `.sage/plan.md` the way Build already does: one sentence, then the brief sections a colleague reads (`## Problem & outcome`, `## Who uses this`, `## What it does`, `## Screens`, `## Not doing`, `## Done when`), then `## Plan` and `## Open questions`. A plan document is created from the same text, carrying this Thread as its origin so the plan page can offer the way back to the conversation. Then open the sheet with the plan included.
 
 **Not now** suppresses. **Open in Build** on a Thread that has no plan yet is the same as Write a plan, then the sheet.
 
@@ -92,7 +93,7 @@ On confirm, in order:
 1. Write `.sage/handoff.md` (digest + list of Artifact paths that stayed included + list of context names).
 2. Optionally write `.sage/handoff-transcript.md`.
 3. For each Session context row with `kind` in `data_source | model_api | llm_alias` that is still included, upsert a Binding via `Workspace.update_bindings` (existing path). Files in context that are already Attachments stay Attachments.
-4. Set `handoff.json` `status: "bound"`, `boundAt`, `planPath: ".sage/plan.md"`.
+4. Set `handoff.json` `status: "bound"`, `boundAt`, `planPath: ".sage/plan.md"`, and `planId` (set when the plan was drafted, and kept through binding — `planPath` stops resolving once a build archives that copy, `planId` does not).
 5. Route to `#/build/<threadId>`. The Build pane is the existing builder: plan approval card if `has_built` is false (it will be), preview on the right, resource panel showing the new Bindings as IN THIS APP.
 
 The Thread id stays in the URL so Chat ↔ Build is turning your head, not starting over. Build's composer is the existing one; its history is this Thread's slice of the Build `history.jsonl`, which at this moment is empty except what the plan-approval card needs. The origin Thread is one click away in the rail, tagged with the app once `has_built` is true.
@@ -122,7 +123,7 @@ absent → suggested → planned → bound
 |--------|---------|
 | `suggested` | callout visible; classifier will not run again |
 | `suppressed` | callout gone; Open in Build still available |
-| `planned` | `.sage/plan.md` written from this Thread; sheet not yet confirmed |
+| `planned` | `.sage/plan.md` and its plan document written from this Thread; `planId` recorded; sheet not yet confirmed |
 | `bound` | sheet confirmed; Bindings upserted; user is in Build |
 
 There is no `status: built`. `Workspace.has_built()` remains the source of truth that code exists.

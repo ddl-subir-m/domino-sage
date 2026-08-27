@@ -146,6 +146,18 @@ these files play at handoff, not for the term. Handoff names Artifacts by path; 
 copy them, and it does not replay a chart object from memory.
 _Avoid_: card, chart DSL, canvas, output, widget, Domino Artifacts
 
+**Plan**:
+What Sage proposes before it builds, and the document that proposal is kept in. A plan turn
+writes one: a short brief — the problem, who opens it, what it does, the screens, what is
+deliberately out of scope, and how you know it is done — followed by the numbered build steps
+and any open questions. It is durable and versioned. People open it, edit a section, resolve a
+question, comment on one, and approve. A separate transient copy is what the build actually
+reads, and that copy is archived the moment it does; so "the plan" in conversation means the
+document, not the copy. See
+[ADR-0007](docs/adr/0007-the-plan-document-is-durable-the-handoff-is-not.md).
+_Avoid_: spec, PRD, requirements, ticket, brief, `plan.md` (that is the handoff copy, not the
+document)
+
 **Session context**:
 The Resources and Artifacts in scope for this Thread right now, shown as chips on the
 composer. Distinct from a Binding, which is what the Built App will need to run. A chip is

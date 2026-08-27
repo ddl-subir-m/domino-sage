@@ -147,8 +147,11 @@ criticals. All findings below the "held" strategic decisions are folded into thi
 ### 3. Model control (one control, two modes, one lock)
 Replaces the earlier "3 vs 4 triggers" framing. The UI exposes a single **model control**:
 - **Mode = Auto:** the pipeline drives phases — **plan** (stronger model) → context reset →
-  **implement** (cheaper model). Plan output is persisted as a structured **plan artifact**
-  in the workspace and re-injected into implement (handoff is explicit, not a flag).
+  **implement** (cheaper model). Plan output is persisted as a **plan document** in the workspace
+  (`.sage/plan-docs/<id>/`, sections parsed out of the plan's own markdown) and re-injected into
+  implement as markdown (handoff is explicit, not a flag). The document is durable; the copy the
+  implement turn consumes is not — see the locked decision below and
+  [ADR-0007](docs/adr/0007-the-plan-document-is-durable-the-handoff-is-not.md).
 - **Mode = Manual:** the user drives, via the plan/implement toggle and/or a picked model
   (modal-on-build; remembers last choice, "don't ask again").
 - **Sensitivity lock (non-overridable):** if any attached asset carries a sensitivity tag,
@@ -334,7 +337,7 @@ discipline to Auto mode *without* penalising the fast path for routine edits.
 
 ### `plan.md` is a **transient** handoff — locked decision
 `Workspace.write_plan`/`read_plan`/`plan_path` exist today but are **dead code** (never called);
-P6 is their first real use. The plan artifact is **not** a persistent or living spec:
+P6 is their first real use. `plan.md` is **not** a persistent or living spec:
 - Written at approval → consumed as context by the first Implement turn → **archived out of the
   agent's live view** (`.sage/plan.md` → `.sage/plans/<n>.md`, or deleted; git retains history
   either way). Between builds there is **no live `.sage/plan.md`**.
@@ -348,13 +351,23 @@ P6 is their first real use. The plan artifact is **not** a persistent or living 
   `plan.md` never means "cumulative spec"; git history is the record of prior plans.
 - **Belt-and-suspenders** (for weaker sovereign models that ignore subtle cues): one line in the
   template `AGENTS.md` — "`.sage/` is Sage metadata; never treat it as the current app spec or
-  state; the code in `src/` is the source of truth."
+  state; the code in `src/` is the source of truth." It names `plan-docs/` explicitly, since the
+  durable half below is the largest looks-like-instructions surface in `.sage/`.
+- **Amended, not reversed.** The durable half of a plan now exists, as its own file: the
+  **plan document** under `.sage/plan-docs/<id>/`, which people open, edit, comment on and approve,
+  and which survives the build that reads it. Every clause above still holds for `plan.md`, which
+  remains the one-shot copy handed to the implement turn and archived on consumption. Editing a
+  live document rewrites that copy, so the page and the build never disagree. Rationale and the
+  options rejected: [ADR-0007](docs/adr/0007-the-plan-document-is-durable-the-handoff-is-not.md).
 
 ### Verify criteria
 - Fresh project + build prompt → `plan-proposed` emitted, **no** `src/` edits, terminal
   `done ok:true, decision:"awaiting approval"`, nudge loop never fires. (backend test on `run()`)
 - Approve → Implement turn edits `src/`; `plan.md` consumed then archived; no live
   `.sage/plan.md` remains afterward.
+- Approve → the **plan document** is still readable afterward. This is the criterion that keeps
+  the two halves apart: a document that went with `plan.md` would be no more durable than the
+  copy it was written beside.
 - Second prompt in same project (`history_len > 0`) in Auto/Implement mode → no gate.
 - Any prompt in **Plan mode** → gate (even after the first build).
 - `skip_planning` set → no gate even on first build or in Plan mode.

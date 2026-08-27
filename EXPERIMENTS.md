@@ -178,8 +178,9 @@ eventually; neither is worth running before A vs C reports.
 ## Running one experiment
 
 1. Paste the prompt. Sage gates and proposes a plan.
-2. **Record the plan.** Save `.sage/plan.md` before approving — it's archived to `.sage/plans/NNN.md`
-   on approve. For C and D, check the Approve button reads **"Approve & build (N phases)"**. If it
+2. **Record the plan.** `.sage/plan.md` is archived to `.sage/plans/NNN.md` on approve, so copy it
+   first if you want it beside the run notes — though the plan document under `.sage/plan-docs/`
+   keeps the same text and survives the build, so a lost `plan.md` is recoverable now. For C and D, check the Approve button reads **"Approve & build (N phases)"**. If it
    just says "Approve & build", the plan didn't parse into ≥3 steps and this run is really an A/B
    run — note it and rerun rather than reporting it as phased.
 3. Approve. Don't intervene, don't send follow-ups — one turn in, one build out. If it fails, record
