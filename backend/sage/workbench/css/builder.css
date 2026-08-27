@@ -388,9 +388,12 @@
 .sw-builder-toolbar > * { flex: none; min-width: 0; }
 .sw-builder-toolbar .sw-topnav-spacer { flex: 1 1 auto; }
 
-/* The canvas holds a fixed-minimum app preview. On a narrow window it scrolls
-   rather than compressing the app into an unreadable column. */
+/* The canvas is the preview's whole height. Without `flex: 1` it falls back to the
+   iframe's intrinsic 150px and the app shows through a letterbox. `position: relative`
+   anchors the starting/failed overlay over it. */
 .sw-builder-canvas.is-live {
+  flex: 1;
+  min-height: 0;
   padding: 0;
   display: flex;
   flex-direction: column;

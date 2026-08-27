@@ -11,7 +11,7 @@ window.SW = window.SW || {};
     return h('div', { className: 'sw-rail' }, h(SW.ConversationRail, { mode: 'build' }));
   }
 
-  function PreviewPane() {
+  function PreviewPane({ resumed }) {
     const { previewSrc, previewStatus } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
@@ -32,7 +32,8 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-builder-toolbar' },
-        h('span', { className: 'sw-caption' }, 'Preview'),
+        // Unqualified, "Preview" reads as this conversation's work. It is the Project's.
+        h('span', { className: 'sw-caption' }, resumed ? 'Preview · built earlier' : 'Preview'),
         h('span', { className: 'sw-topnav-spacer' }),
         h(
           Tooltip,
@@ -74,7 +75,7 @@ window.SW = window.SW || {};
   }
 
   SW.BuildMode = function BuildMode({ conversationId }) {
-    const { thread, buildMessages, buildTyping, buildRunning } = SW.store.get();
+    const { thread, buildMessages, buildTyping, buildRunning, projectPlan } = SW.store.get();
     const scroller = useRef(null);
 
     useEffect(() => {
@@ -105,6 +106,11 @@ window.SW = window.SW || {};
     }, [buildMessages.length, buildTyping]);
 
     const empty = buildMessages.length === 0 && !buildTyping;
+    // A Project holds one Built App today, so a new conversation clears the transcript while the
+    // preview keeps serving the app already in the workspace. That is the truth, but unlabelled it
+    // reads as this conversation's work. Say whose app it is until a Project can hold more than one
+    // (ADR-0008, #67/#69/#77) and the preview can follow the app the conversation selected.
+    const resumed = empty && !!projectPlan && projectPlan.status === 'built';
 
     return h(
       'div',
@@ -131,7 +137,22 @@ window.SW = window.SW || {};
                       'div',
                       { className: 'sw-empty-detail' },
                       'Approve a plan to write the app, or describe a change. This conversation stays in the rail — Chat is one click away.'
-                    )
+                    ),
+                    resumed &&
+                      h(
+                        'div',
+                        { className: 'sw-build-resume-note' },
+                        h(
+                          'div',
+                          { className: 'sw-empty-title' },
+                          'The preview is an app you already built'
+                        ),
+                        h(
+                          'div',
+                          { className: 'sw-empty-detail' },
+                          'A new conversation clears the transcript, not the app. Describe a change to keep building on it.'
+                        )
+                      )
                   )
                 : buildMessages.map((message) => h(SW.Message, { key: message.id, message })),
               buildTyping && h(SW.TypingIndicator, { label: buildTyping })
@@ -158,7 +179,7 @@ window.SW = window.SW || {};
               })
             )
           ),
-          h(PreviewPane, null),
+          h(PreviewPane, { resumed }),
           // store.openPlanArtifact() already routes Build to the sheet rather than the plan page;
           // without this it set planViewerId and nothing appeared. Beside the preview, not over it,
           // which is where Chat puts the same sheet.
