@@ -10,10 +10,13 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-_INDEX_LOCK = threading.Lock()
+_META_LOCK = threading.Lock()
+_ID_LOCK = threading.Lock()
+_last_id_ms = 0
 _TITLE_MAX = 60
 
 _KIND_SUFFIX = {
@@ -25,8 +28,15 @@ _KIND_SUFFIX = {
 
 
 def new_id(prefix: str) -> str:
-    """Sortable id (`thr_` / `art_` / `ctx_`) without a ULID dependency: epoch-ms + random."""
-    ms = int(time.time() * 1000)
+    """Sortable id (`thr_` / `art_` / `ctx_`) without a ULID dependency: epoch-ms + random.
+
+    Strictly increasing inside the process, because the random half is not an order. Two Threads
+    made in the same millisecond would otherwise sort by coin flip, and which of them is the
+    OLDEST decides who inherits an upgraded Project's untagged Build history."""
+    global _last_id_ms
+    with _ID_LOCK:
+        ms = max(int(time.time() * 1000), _last_id_ms + 1)
+        _last_id_ms = ms
     return f"{prefix}_{ms:011x}{secrets.token_hex(5)}"
 
 
@@ -49,6 +59,11 @@ def artifact_kind(name: str) -> str:
     return "file"
 
 
+def _is_live(row: dict | None) -> bool:
+    """A Thread record that is readable and not a tombstone. See `ThreadStore.delete`."""
+    return row is not None and not row.get("deleted")
+
+
 def _is_auto_artifact(item: dict) -> bool:
     """Sage-produced charts/tables are Thread outputs, not user pins."""
     if str(item.get("kind") or "") != "artifact":
@@ -61,26 +76,36 @@ class ThreadStore:
         self._root = Path(workspace)
 
     @property
-    def index_path(self) -> Path:
+    def _legacy_index_path(self) -> Path:
+        """The single `threads.json` this store was built on, kept only long enough to read it
+        once. See `_adopt_legacy_index`."""
         return self._root / ".sage" / "threads.json"
 
     def thread_dir(self, thread_id: str) -> Path:
         return self._root / ".sage" / "threads" / thread_id
 
+    def meta_path(self, thread_id: str) -> Path:
+        return self.thread_dir(thread_id) / "meta.json"
+
     def examples_dir(self, thread_id: str) -> Path:
         return self._root / "examples" / thread_id
 
     def list(self) -> list[dict]:
-        if not self.index_path.exists():
-            return []
-        try:
-            data = json.loads(self.index_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return []
-        return data if isinstance(data, list) else []
+        """Every Thread in the Project, newest activity first.
+
+        A scan, not an index: two viewers in one Project are two Sage Builders and two Builders
+        are two processes, so a shared list rewritten whole means the second one to write drops
+        the first one's Thread while its history sits on disk (ADR-0008). Each Thread's record is
+        written only by the Builder that owns it, and no two of them are the same file."""
+        self._adopt_legacy_index()
+        rows = [r for r in (self._read_meta(d.name) for d in self._thread_dirs()) if _is_live(r)]
+        rows.sort(key=lambda r: (str(r.get("updatedAt") or ""), str(r.get("id") or "")), reverse=True)
+        return rows
 
     def get(self, thread_id: str) -> dict | None:
-        return next((t for t in self.list() if t.get("id") == thread_id), None)
+        self._adopt_legacy_index()
+        row = self._read_meta(thread_id)
+        return row if _is_live(row) else None
 
     def create(self, title: str = "") -> dict:
         now = _now()
@@ -91,28 +116,20 @@ class ThreadStore:
             "updatedAt": now,
             "pinned": False,
         }
-        with _INDEX_LOCK:
-            rows = self.list()
-            rows.insert(0, row)
-            self._write_index(rows)
         self.thread_dir(row["id"]).mkdir(parents=True, exist_ok=True)
+        self._write_json(self.meta_path(row["id"]), row)
         self.examples_dir(row["id"]).mkdir(parents=True, exist_ok=True)
         self.write_context(row["id"], {"items": []})
         self._write_json(self.thread_dir(row["id"]) / "artifacts.json", {"items": []})
         return row
 
     def touch(self, thread_id: str, *, title: str | None = None) -> dict | None:
-        with _INDEX_LOCK:
-            rows = self.list()
-            for row in rows:
-                if row.get("id") != thread_id:
-                    continue
-                row["updatedAt"] = _now()
-                if title is not None:
-                    row["title"] = title
-                self._write_index(rows)
-                return row
-        return None
+        def edit(row: dict) -> None:
+            row["updatedAt"] = _now()
+            if title is not None:
+                row["title"] = title
+
+        return self._edit_meta(thread_id, edit)
 
     def read_session_id(self, thread_id: str) -> str | None:
         rec = self.read_session(thread_id)
@@ -186,28 +203,25 @@ class ThreadStore:
         return True
 
     def update(self, thread_id: str, *, title: str | None = None, pinned: bool | None = None) -> dict | None:
-        with _INDEX_LOCK:
-            rows = self.list()
-            for row in rows:
-                if row.get("id") != thread_id:
-                    continue
-                if title is not None:
-                    row["title"] = title
-                if pinned is not None:
-                    row["pinned"] = bool(pinned)
-                row["updatedAt"] = _now()
-                self._write_index(rows)
-                return row
-        return None
+        def edit(row: dict) -> None:
+            if title is not None:
+                row["title"] = title
+            if pinned is not None:
+                row["pinned"] = bool(pinned)
+            row["updatedAt"] = _now()
+
+        return self._edit_meta(thread_id, edit)
 
     def delete(self, thread_id: str) -> bool:
-        with _INDEX_LOCK:
-            rows = self.list()
-            kept = [r for r in rows if r.get("id") != thread_id]
-            if len(kept) == len(rows):
-                return False
-            self._write_index(kept)
-        return True
+        """A tombstone, not a removal. The old delete dropped the index row and left
+        `threads/<id>/` on disk with its history, so a scan that trusted the directory alone would
+        put the Thread back in the rail. Marking the record keeps that history exactly where it
+        was and still answers False the second time."""
+        def edit(row: dict) -> None:
+            row["deleted"] = True
+            row["updatedAt"] = _now()
+
+        return self._edit_meta(thread_id, edit) is not None
 
     def read_artifacts(self, thread_id: str) -> list[dict]:
         p = self.thread_dir(thread_id) / "artifacts.json"
@@ -285,14 +299,82 @@ class ThreadStore:
         self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
         return row
 
-    def _write_index(self, rows: list[dict]) -> None:
-        self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_json(self.index_path, rows)
+    def _thread_dirs(self) -> list[Path]:
+        root = self._root / ".sage" / "threads"
+        if not root.is_dir():
+            return []
+        return [d for d in root.iterdir() if d.is_dir()]
+
+    def _read_meta(self, thread_id: str) -> dict | None:
+        p = self.meta_path(thread_id)
+        if not p.exists():
+            return None
+        try:
+            data = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _edit_meta(self, thread_id: str, edit: Callable[[dict], None]) -> dict | None:
+        """Read-modify-write of ONE Thread's record. The lock orders this Builder's own threads.
+        A second Builder renaming a DIFFERENT Thread at the same time writes a different file and
+        cannot cost this one anything, which is the whole point of the record being per Thread."""
+        self._adopt_legacy_index()
+        with _META_LOCK:
+            row = self._read_meta(thread_id)
+            if not _is_live(row):
+                return None
+            edit(row)
+            self._write_json(self.meta_path(thread_id), row)
+            return row
+
+    def _adopt_legacy_index(self) -> None:
+        """Move a Project written before ADR-0008 onto one record per Thread, once.
+
+        Titles, pins and times come across as they were. A directory with no row is a Thread the
+        old delete removed from the index and left on disk; it gets a tombstone so the scan does
+        not resurrect it. Every record is written before the index goes, so a second Builder
+        racing this one either reads the index and writes the same bytes, or finds it gone and
+        finds every record already there."""
+        if not self._legacy_index_path.exists():
+            return
+        with _META_LOCK:
+            if not self._legacy_index_path.exists():
+                return
+            self._migrate_index_rows()
+
+    def _migrate_index_rows(self) -> None:
+        # An index that will not read is NOT an empty index. The old `_write_index` truncated the
+        # file in place with two Builders racing it, so a half-written read is the very failure
+        # this change exists to end — and reading it as "no Threads" would tombstone every one of
+        # them below and then delete the only evidence. Leave it and read it again next time.
+        try:
+            rows = json.loads(self._legacy_index_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return
+        if not isinstance(rows, list):
+            return
+        in_legacy_index: set[str] = set()
+        for row in rows:
+            thread_id = str(row.get("id") or "") if isinstance(row, dict) else ""
+            if not thread_id:
+                continue
+            in_legacy_index.add(thread_id)
+            if not self.meta_path(thread_id).exists():
+                self._write_json(self.meta_path(thread_id), row)
+        for d in self._thread_dirs():
+            if d.name not in in_legacy_index and not self.meta_path(d.name).exists():
+                self._write_json(self.meta_path(d.name), {"id": d.name, "deleted": True})
+        self._legacy_index_path.unlink(missing_ok=True)
 
     @staticmethod
     def _write_json(path: Path, body: Any) -> None:
+        """Written whole or not at all: another Builder scanning the tree reads these files while
+        this one writes them, and a truncated read is a Thread that disappears for one poll."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(body, indent=2))
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+        tmp.write_text(json.dumps(body, indent=2))
+        os.replace(tmp, path)
 
 
 _SKIP_SNAPSHOT_PARTS = frozenset({"node_modules", ".git", "dist", "__pycache__", "chat-work"})

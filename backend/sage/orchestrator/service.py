@@ -2185,10 +2185,10 @@ class Orchestrator:
         rows = ThreadStore(workspace.path).list()
         if not rows:
             return
-        # createdAt has one-second resolution, so two Threads made in the same second tie. The
-        # index is newest-first (ThreadStore.create inserts at 0), so read it backwards and let the
-        # earliest insert win the tie.
-        oldest = min(reversed(rows), key=lambda r: str(r.get("createdAt") or ""))
+        # createdAt has one-second resolution, so two Threads made in the same second tie. The id
+        # carries epoch-ms and is strictly increasing, so it breaks the tie by creation order —
+        # the list itself no longer carries one, being a scan (ADR-0008).
+        oldest = min(rows, key=lambda r: (str(r.get("createdAt") or ""), str(r.get("id") or "")))
         if oldest.get("id"):
             workspace.adopt_history(str(oldest["id"]))
 

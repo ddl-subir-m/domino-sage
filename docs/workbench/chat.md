@@ -46,7 +46,7 @@ Today one OpenCode session lives at `.sage/session.json` and one transcript at `
 Chat adds:
 
 ```
-.sage/threads.json                         # index, committed
+.sage/threads/<threadId>/meta.json         # the Thread's own record, committed
 .sage/threads/<threadId>/session.json      # OpenCode session id for this Thread
 .sage/threads/<threadId>/history.jsonl     # UI replay for this Thread
 .sage/threads/<threadId>/context.json      # Session context (chips)
@@ -59,21 +59,21 @@ Chat writes those files every turn. Git commit + push is coalesced so a burst of
 
 A turn ends at `done`. What comes after it — classifying the turn for a Build offer, compacting the session, the commit + push — is aftercare, and it runs with the turn lock already released, so the next question is accepted while the last one is still tidying up. Aftercare that touches what the next turn touches takes the lock back for itself: compaction, because it rewrites the session the next prompt runs in, and the save, because it commits the whole tree. Losing that race defers the work rather than running it unguarded — compaction waits for the turn after next, the commit falls back to the idle timer.
 
-`threads.json` shape:
+`meta.json` shape:
 
 ```json
-[
-  {
-    "id": "thr_01HZX…",
-    "title": "Gross exposure by desk",
-    "createdAt": "2026-08-25T18:01:00Z",
-    "updatedAt": "2026-08-25T18:12:00Z",
-    "pinned": false
-  }
-]
+{
+  "id": "thr_01HZX…",
+  "title": "Gross exposure by desk",
+  "createdAt": "2026-08-25T18:01:00Z",
+  "updatedAt": "2026-08-25T18:12:00Z",
+  "pinned": false
+}
 ```
 
 Title: first user message, truncated to 60 characters, until the user renames. `id` is a ULID (sortable, no coordination).
+
+There is no index. The list is a scan of `.sage/threads/*/meta.json`, newest `updatedAt` first, because two viewers in one Project are two Sage Builders and two Builders are two processes: one shared file rewritten whole means the second writer drops the first one's Thread while its history is still on disk (ADR-0008). Each record has one writer. Delete marks the record `"deleted": true` rather than removing the directory, so the scan cannot resurrect a Thread the person threw away. An index that will not parse is left alone rather than read as empty: it is the tombstone path, and a bad read must not become permanent loss.
 
 `Workspace.read_session_id` / `history_path` stay Build-scoped. Chat goes through new helpers on `Workspace` (`thread_session_id`, `append_thread_history`, …) so a Chat turn cannot append to the Build transcript and a Build turn cannot append to a Thread.
 

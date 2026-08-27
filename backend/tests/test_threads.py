@@ -203,3 +203,107 @@ def test_the_chat_workdir_link_survives_a_second_turn(tmp_path: Path):
     (tmp_path / rel).write_text("a\n1\n")
     # Attached after the workdir was built: the link is to the directory, so it is already there.
     assert (work / rel).read_text() == "a\n1\n"
+
+
+# ---- one record per Thread (#64) -------------------------------------------------
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def _restore(root: Path, tree: dict[str, bytes]) -> None:
+    for p in list(root.rglob("*")):
+        if p.is_file():
+            p.unlink()
+    for rel, body in tree.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(body)
+
+
+def test_two_builders_in_one_project_both_keep_their_thread(tmp_path: Path):
+    """Two viewers in one Project are two Sage Builders, and two Builders are two processes over
+    one directory. Neither sees the other's write before making its own, and the filesystem keeps
+    the last write of each FILE. Replayed here: both Builders start from the same workspace, and
+    the second one's files land on top. One shared index meant the second list replaced the first
+    and a Thread whose history was still on disk vanished from the rail."""
+    start = _tree(tmp_path)
+    ThreadStore(tmp_path).create(title="Gross exposure")
+    mine = _tree(tmp_path)
+
+    _restore(tmp_path, start)
+    ThreadStore(tmp_path).create(title="Rates by desk")
+    for rel, body in mine.items():
+        if not (tmp_path / rel).exists():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_bytes(body)
+
+    assert {t["title"] for t in ThreadStore(tmp_path).list()} == {"Gross exposure", "Rates by desk"}
+
+
+def test_a_thread_keeps_its_title_pin_and_time_off_the_old_index(tmp_path: Path):
+    """An upgraded Project's Threads were only ever written to `.sage/threads.json`."""
+    (tmp_path / ".sage" / "threads" / "thr_old").mkdir(parents=True)
+    (tmp_path / ".sage" / "threads.json").write_text(
+        '[{"id": "thr_old", "title": "Gross exposure", "createdAt": "2026-08-01T10:00:00Z",'
+        ' "updatedAt": "2026-08-02T11:00:00Z", "pinned": true}]'
+    )
+    row = ThreadStore(tmp_path).get("thr_old")
+    assert row["title"] == "Gross exposure"
+    assert row["pinned"] is True
+    assert row["updatedAt"] == "2026-08-02T11:00:00Z"
+    assert [t["id"] for t in ThreadStore(tmp_path).list()] == ["thr_old"]
+
+
+def test_a_thread_deleted_before_the_upgrade_does_not_come_back(tmp_path: Path):
+    """The old delete dropped the index row and left `threads/<id>/` on disk, so a scan that
+    trusted the directory alone would put a deleted conversation back in the rail."""
+    (tmp_path / ".sage" / "threads" / "thr_gone").mkdir(parents=True)
+    (tmp_path / ".sage" / "threads.json").write_text("[]")
+    assert ThreadStore(tmp_path).list() == []
+    assert ThreadStore(tmp_path).get("thr_gone") is None
+
+
+def test_a_deleted_thread_does_not_come_back_from_the_scan(tmp_path: Path):
+    store = ThreadStore(tmp_path)
+    row = store.create(title="Gross exposure")
+    assert store.delete(row["id"]) is True
+    assert ThreadStore(tmp_path).list() == []
+
+
+def test_an_unreadable_old_index_is_not_an_empty_one(tmp_path: Path):
+    """The index was truncated in place with two Builders racing it, so a half-written read is
+    this change's own failure mode. Reading it as "no Threads" would tombstone every Thread and
+    then delete the only record of them, turning a bad read into permanent loss."""
+    (tmp_path / ".sage" / "threads" / "thr_a").mkdir(parents=True)
+    index = tmp_path / ".sage" / "threads.json"
+    index.write_text('[{"id": "thr_a", "title": "Gross exposure", "updat')
+
+    assert ThreadStore(tmp_path).list() == []
+    assert index.exists()
+    assert not (tmp_path / ".sage" / "threads" / "thr_a" / "meta.json").exists()
+
+    index.write_text('[{"id": "thr_a", "title": "Gross exposure", "updatedAt": "2026-08-02T11:00:00Z"}]')
+    assert [t["title"] for t in ThreadStore(tmp_path).list()] == ["Gross exposure"]
+
+
+def test_the_rail_is_ordered_by_last_update(tmp_path: Path, monkeypatch):
+    """Newest first, as the index's insertion order used to read — but a Thread answered again
+    comes back to the top, which is what the rail's day buckets already claimed."""
+    import sage.workspace.threads as threads_mod
+
+    store = ThreadStore(tmp_path)
+    first = store.create(title="first")
+    second = store.create(title="second")
+    assert [t["id"] for t in store.list()] == [second["id"], first["id"]]
+    monkeypatch.setattr(threads_mod, "_now", lambda: "2099-01-01T00:00:00Z")
+    store.touch(first["id"])
+    assert [t["id"] for t in store.list()] == [first["id"], second["id"]]
+
+
+def test_two_threads_made_in_one_millisecond_still_have_an_order(tmp_path: Path):
+    """`createdAt` has one-second resolution and two creates land in the same millisecond about a
+    third of the time, so without a strictly increasing id the OLDEST Thread — the one an upgraded
+    Project's untagged Build history is handed to — would be picked by coin flip."""
+    ids = [ThreadStore(tmp_path).create()["id"] for _ in range(20)]
+    assert ids == sorted(ids)
