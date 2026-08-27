@@ -6,9 +6,10 @@ window.SW = window.SW || {};
 // would claim a conversation belongs to exactly one, which is the thing that
 // turned out not to be true.
 //
-// The rail is identical in Chat and Build on purpose: switching mode should not
-// mean relearning the furniture. Build differs only in what it shows beside the
-// conversation, never in how you find one.
+// This is Chat's rail. Build's lists Built Apps instead (SW.AppRail): a Project
+// holds many of each, and the thing you switch between differs by mode. The
+// furniture does not — same head, same search, same rows — so turning your head
+// never means relearning where anything is.
 (function () {
   const { createElement: h, useState, Fragment } = React;
   const { Button, Tooltip, Input, Dropdown, Modal } = antd;

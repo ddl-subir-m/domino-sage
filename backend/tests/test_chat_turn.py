@@ -523,7 +523,6 @@ def test_a_confirmed_handoff_puts_the_chat_file_where_the_app_reads_it(tmp_path:
     """The handoff is the moment the Thread becomes an app, so it is the moment the bytes belong
     in `public/data/` and in the manifest a publish rehydrates from."""
     orch, _ = _orch(tmp_path, [Turn(text="Monthly revenue."), Turn(text=_PLAN)])
-    ws = orch.project(start_preview=False).workspace.path
     ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
     tid = orch.create_thread()["id"]
     row = orch.add_thread_context(tid, {
@@ -535,6 +534,9 @@ def test_a_confirmed_handoff_puts_the_chat_file_where_the_app_reads_it(tmp_path:
 
     orch.confirm_handoff(tid, {"resources": True, "artifacts": True, "transcript": False})
 
+    # Read after the confirm: that is when the app exists, and a confirm makes a NEW one, so an app
+    # named before it is not the one the file belongs in (ADR-0008, #69).
+    ws = orch.project(start_preview=False).workspace.path
     served = ws / "public" / "data" / "sales_2026" / "train.csv"
     assert served.read_text().startswith("month,revenue")
     manifest = json.loads((ws / ".sage" / "attachments.json").read_text())

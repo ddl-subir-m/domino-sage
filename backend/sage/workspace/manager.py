@@ -190,7 +190,8 @@ class ProjectRecord:
         (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     def create_plan_doc(self, markdown: str, *, title: str, author: str = "",
-                        origin_thread_id: str = "", status: str = "draft") -> dict:
+                        origin_thread_id: str = "", status: str = "draft",
+                        app_id: str = "") -> dict:
         """Store a plan's markdown as version 1 of a new document, and return the whole document."""
         self.plan_docs_dir.mkdir(parents=True, exist_ok=True)
         n = len([p for p in self.plan_docs_dir.iterdir() if p.is_dir()]) + 1
@@ -204,7 +205,10 @@ class ProjectRecord:
         (self._plan_doc_dir(plan_id) / "v001.md").write_text(markdown)
         self._write_plan_doc_meta(plan_id, {
             "id": plan_id, "title": title, "version": 1, "status": status, "author": author,
-            "createdAt": now, "updatedAt": now, "originThreadId": origin_thread_id, "appId": "",
+            # `appId` is empty for a plan drafted in Chat: the app it will build does not exist
+            # yet, and the reference is stamped on when the handoff confirms. A plan the BUILD gate
+            # writes already stands in an app, and names it here.
+            "createdAt": now, "updatedAt": now, "originThreadId": origin_thread_id, "appId": app_id,
             "reviewers": [], "approvals": [], "comments": [],
         })
         return self.read_plan_doc(plan_id)
@@ -355,28 +359,32 @@ class ProjectRecord:
                 tmp.unlink(missing_ok=True)
             return entries
 
-    @property
-    def session_path(self) -> Path:
-        """Persisted OpenCode session id, so the project re-attached after an orchestrator restart
-        (see Orchestrator.project) can resume the same conversation instead of starting a fresh
-        session with no memory of prior turns. The unscoped path: a build turn that names no
-        conversation (CLI, tests) still gets a session that survives a restart."""
-        return self.path / ".sage" / "session.json"
+    def build_session_path(self, conversation: str | None = None, app_id: str = "") -> Path:
+        """Where a Build conversation's persisted OpenCode session id lives, so a project
+        re-attached after an orchestrator restart resumes the conversation it was having instead of
+        starting a fresh session with no memory of the prior turns.
 
-    def build_session_path(self, conversation: str | None = None) -> Path:
-        """A Build conversation owns its own OpenCode session, the way a Chat Thread already does
+        A Build conversation owns its own session, the way a Chat Thread already does
         (ThreadStore.write_session_id). Both live under the same `.sage/threads/<id>/`, so a
         conversation's two halves sit together and a deleted Thread takes both with it.
 
         The session is what makes "New conversation" mean anything in Build: a fresh session has
         no memory of the earlier talk. It is not amnesia about the app — the session opens the
-        app's directory, so the agent reads every file back."""
-        if not conversation:
-            return self.session_path
-        return self.path / ".sage" / "threads" / conversation / "build-session.json"
+        app's directory, so the agent reads every file back.
 
-    def read_session_id(self, conversation: str | None = None) -> str | None:
-        p = self.build_session_path(conversation)
+        `app_id` is in the NAME because a session is opened on one directory and a conversation can
+        build into several Built Apps (ADR-0008): a session recovered for the app the person just
+        left would stand the agent in the wrong tree.
+
+        Naming neither gives `.sage/session.json`, which is what an unscoped caller (CLI, tests)
+        still gets: a build turn that names no conversation keeps a session across a restart."""
+        suffix = f"-{app_id}" if app_id else ""
+        if not conversation:
+            return self.path / ".sage" / f"session{suffix}.json"
+        return self.path / ".sage" / "threads" / conversation / f"build-session{suffix}.json"
+
+    def read_session_id(self, conversation: str | None = None, app_id: str = "") -> str | None:
+        p = self.build_session_path(conversation, app_id)
         if not p.exists():
             return None
         try:
@@ -384,8 +392,9 @@ class ProjectRecord:
         except (json.JSONDecodeError, OSError):
             return None
 
-    def write_session_id(self, session_id: str, conversation: str | None = None) -> None:
-        p = self.build_session_path(conversation)
+    def write_session_id(self, session_id: str, conversation: str | None = None,
+                         app_id: str = "") -> None:
+        p = self.build_session_path(conversation, app_id)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps({"session_id": session_id}))
 
@@ -541,8 +550,9 @@ class Workspace:
             return None
 
     @property
-    def _latch_path(self) -> Path:
-        """Where this app keeps the two facts it latches: `built` and `last_turn_failed`.
+    def _settings_path(self) -> Path:
+        """Where this app keeps what it knows about itself: the `built` and `last_turn_failed`
+        latches, and the display name a person gave it.
 
         The app's own settings file, inside the app's directory. It shares a NAME with
         `ProjectRecord.settings_path` and nothing else: a caller that wants the Project's settings
@@ -550,19 +560,34 @@ class Workspace:
         """
         return self.path / ".sage" / "settings.json"
 
+    def display_name(self) -> str:
+        """What a person calls this app in the rail, or "" if nobody has named it.
+
+        The mutable half of the app's identity: `app_id` is the directory's name and can never
+        change, so this is the half a rename moves (ADR-0008). Kept in the app's own settings, which
+        makes it one writer per app — the same reason the app list is a scan and not an index.
+        """
+        stored = _read_settings_file(self._settings_path).get("displayName")
+        return stored.strip() if isinstance(stored, str) else ""
+
+    def set_display_name(self, name: str) -> None:
+        settings = _read_settings_file(self._settings_path)
+        settings["displayName"] = name.strip()
+        _write_settings_file(self._settings_path, settings)
+
     def has_built(self) -> bool:
         """True once a code-writing build has completed here. Drives the first-BUILD plan gate
         (not first-turn): questions asked before the first build must not consume the gate, and the
         gate must still fire on the first real build request no matter how many questions preceded it."""
-        return bool(_read_settings_file(self._latch_path).get("built"))
+        return bool(_read_settings_file(self._settings_path).get("built"))
 
     def mark_built(self) -> None:
         """Latch has_built() on after the first successful build. Idempotent; persisted in settings
         so it survives an orchestrator restart (a rebuilt project must not re-gate)."""
-        settings = _read_settings_file(self._latch_path)
+        settings = _read_settings_file(self._settings_path)
         if not settings.get("built"):
             settings["built"] = True
-            _write_settings_file(self._latch_path, settings)
+            _write_settings_file(self._settings_path, settings)
 
     def clear_built(self) -> None:
         """Un-latch has_built(), so Reset app leaves the plan gate where a fresh app has it.
@@ -570,9 +595,9 @@ class Workspace:
         The counterpart to mark_built, and the reason it is a method rather than a caller editing
         settings: the latch is a fact about the code Reset just took away, so removing it is the
         app's own business and not an edit to the Project's settings."""
-        settings = _read_settings_file(self._latch_path)
+        settings = _read_settings_file(self._settings_path)
         settings.pop("built", None)
-        _write_settings_file(self._latch_path, settings)
+        _write_settings_file(self._settings_path, settings)
 
     def read_last_turn_failed(self) -> bool:
         """True when the previous build attempt on this project ended badly (see the failure-replan
@@ -583,7 +608,7 @@ class Workspace:
         transcript is append-only and replayable, so it can't record that a signal has been CONSUMED,
         and consumption is what keeps this one-shot instead of a permanent approval wall. Fails open
         on read — missing or corrupt state reads as "didn't fail", i.e. build."""
-        return bool(_read_settings_file(self._latch_path).get("last_turn_failed"))
+        return bool(_read_settings_file(self._settings_path).get("last_turn_failed"))
 
     def set_last_turn_failed(self, failed: bool) -> None:
         """Record (or clear) the previous-turn failure signal. Best-effort by design: this runs on the
@@ -591,11 +616,11 @@ class Workspace:
         into a raised exception mid-stream. A lost write just means no gate next turn — the same
         behaviour as before this feature existed."""
         try:
-            settings = _read_settings_file(self._latch_path)
+            settings = _read_settings_file(self._settings_path)
             if bool(settings.get("last_turn_failed")) == failed:
                 return
             settings["last_turn_failed"] = failed
-            _write_settings_file(self._latch_path, settings)
+            _write_settings_file(self._settings_path, settings)
         except OSError:
             pass
 
@@ -832,19 +857,25 @@ class WorkspaceManager:
     directory the first time and guarantees the warm node_modules symlink; a directory that
     already holds an app is left untouched.
 
-    One app for now — the second is the next ticket — so the id is found by scanning `apps/`
-    rather than read from an index file. An index is one file with many writers, which is the
-    thing two Sage Builders in one Project keep losing work to.
+    A Project holds several, and this manager points at one of them at a time. The list is found by
+    scanning `apps/` rather than read from an index file: an index is one file with many writers,
+    which is the thing two Sage Builders in one Project keep losing work to.
     """
 
     def __init__(self, workspace_dir: Path, template: Path) -> None:
         self._dir = Path(workspace_dir)
         self._template = Path(template)
-        # The id this process minted for an app that has no directory yet. Chat opens a volume
-        # with no app on it, and the app the handoff goes on to seed must be the one every caller
-        # in between was already naming — otherwise `_ensure_seeded` seeds a second directory
-        # beside the one the attached Project is pointing at.
-        self._minted: str | None = None
+        # The app every caller in this process means by "the app": the one selected, or the id
+        # minted for an app that has no directory yet. Chat opens a volume with no app on it, and
+        # the app a handoff goes on to seed must be the one every caller in between was already
+        # naming — otherwise `_ensure_seeded` seeds a second directory beside the one the attached
+        # Project is pointing at.
+        #
+        # Process state rather than a file. One Sage Builder shows one app at a time and the
+        # selection is that view, not a fact about the Project — writing it down would put a second
+        # writer on a shared file to record something only this browser tab cares about. A restart
+        # lands on the newest app, which is the one a confirmed handoff just made.
+        self._selected: str | None = None
 
     @property
     def template(self) -> Path:
@@ -862,33 +893,56 @@ class WorkspaceManager:
         return self._dir / _APPS
 
     def app_ids(self) -> list[str]:
-        """The Built Apps on this volume, by directory scan. One at most, today."""
+        """Every Built App on this volume, by directory scan, oldest first.
+
+        Sorted by name, which sorts by age: `new_id` leads with epoch-ms, so the directory name
+        carries the order a list would otherwise have to remember.
+        """
         if not self.apps_dir.is_dir():
             return []
         return sorted(p.name for p in self.apps_dir.iterdir() if p.is_dir() and not p.is_symlink())
 
-    def ensure_app_id(self) -> str:
-        """This Project's Built App id: the one on disk, else one minted and remembered for it.
+    def selected_app_id(self) -> str:
+        """The Built App this manager is pointed at: the selection, else the newest on disk, else
+        one minted for the app that does not exist yet.
 
-        Named for the minting, because that is what it does the first time it is asked. It never
-        changes after that — the directory IS the id, and Domino fixes a published App's
+        The minting is why this is asked rather than read: a Project with no app is the ordinary
+        state, and every caller in between has to name the same not-yet-seeded app. Once an id is
+        settled it never changes — the directory IS the id, and Domino fixes a published App's
         `entryPoint` at creation.
         """
-        existing = self.app_ids()
-        if existing:
-            self._minted = existing[0]
-        elif self._minted is None:
-            self._minted = new_id("app")
-        return self._minted
+        if self._selected is None:
+            existing = self.app_ids()
+            self._selected = existing[-1] if existing else new_id("app")
+        return self._selected
+
+    def select(self, app_id: str) -> str:
+        """Point this manager at another Built App. Raises KeyError for one that is not there."""
+        if app_id not in self.app_ids():
+            raise KeyError(app_id)
+        self._selected = app_id
+        return app_id
+
+    def create_app(self, project_id: str) -> Workspace:
+        """Mint a Built App, seed it from the template, and select it.
+
+        The one path that ADDS to `apps/`. `ensure` is get-or-seed and answers for whichever app is
+        already selected, which is what every build turn wants; this is what a confirmed handoff
+        wants, because that is where a Built App is born (ADR-0008).
+        """
+        self._selected = new_id("app")
+        return self.ensure(project_id, seed_app=True)
 
     @property
     def app_path(self) -> Path:
-        return self.apps_dir / self.ensure_app_id()
+        return self.apps_dir / self.selected_app_id()
 
-    def app_workspace(self, project_id: str) -> Workspace:
-        """The Built App's record, without seeding or starting anything. For readers that want the
-        transcript or the Bindings off the volume without attaching the project."""
-        return Workspace(project_id, self.app_path, self.ensure_app_id())
+    def app_workspace(self, project_id: str, app_id: str | None = None) -> Workspace:
+        """One Built App's record, without seeding or starting anything. For readers that want the
+        transcript, the name or the Bindings off the volume without attaching the project. Names no
+        app to get the selected one."""
+        app_id = app_id or self.selected_app_id()
+        return Workspace(project_id, self.apps_dir / app_id, app_id)
 
     def reset(self) -> None:
         """Put the app code back to the starter template, keeping everything that is the user's (#36).
@@ -977,7 +1031,7 @@ class WorkspaceManager:
                     else:
                         shutil.copy2(item, dest)
             self.link_warm_deps()
-        return Workspace(project_id, app, self.ensure_app_id())
+        return Workspace(project_id, app, self.selected_app_id())
 
     def _ensure_project_ignores(self) -> None:
         """Put the Project's own ignore rules at the volume root, and keep them there.

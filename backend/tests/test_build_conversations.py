@@ -112,7 +112,7 @@ def test_a_build_that_names_no_conversation_still_has_a_session(tmp_path: Path):
     record.write_session_id("ses_cli")
 
     assert record.read_session_id() == "ses_cli"
-    assert record.build_session_path() == record.session_path
+    assert record.build_session_path() == tmp_path / ".sage" / "session.json"
 
 
 def test_switching_conversation_drops_the_cached_session(tmp_path: Path):

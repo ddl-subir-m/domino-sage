@@ -450,11 +450,16 @@ SW.api = {
 
   handoff: (payload) => post('/handoff', payload),
 
-  apps: () => empty(),
+  // The Built Apps in this Project — the Build rail's list, as /threads is the Chat rail's. A
+  // directory scan on the server: there is no index file to keep in step (ADR-0008).
+  apps: () => request('/apps').then((r) => r.items || []),
+  // Point Build at another app. 409 while a build is streaming; the caller shows what it says.
+  selectApp: (id) => post(`/apps/${encodeURIComponent(id)}/select`, {}),
+  // Only the name is writable. The id names the app's directory and never changes.
+  patchApp: (id, body) => patch(`/apps/${encodeURIComponent(id)}`, body),
   app: async () => ({}),
   createApp: async () => ({}),
   appConversations: () => empty(),
-  patchApp: async () => ({}),
   publish: async () => ({}),
 
   addDecision: async () => ({}),

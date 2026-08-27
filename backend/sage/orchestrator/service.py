@@ -1587,6 +1587,24 @@ def _tool_duration_ms(part: dict) -> int | None:
     return ms if ms >= 0 else None
 
 
+def _app_display_name(workspace: Workspace) -> str:
+    """What to call one Built App.
+
+    The name somebody gave it, else the title of the plan it was built from, else a placeholder: a
+    rail row with no words on it is not a row anybody can pick. The plan fallback is what makes the
+    name start as the plan title (ADR-0008) without a rename having to be written at birth.
+    """
+    stored = workspace.display_name()
+    if stored:
+        return stored
+    # `plan_title` answers "App" for a plan it cannot read a title out of, which is a fine default
+    # for a card about one plan and a poor name for a row you pick between several — so an app with
+    # no plan at all is named for what it is instead of borrowing that. "Built App" in full, and
+    # not "Untitled": CONTEXT.md keeps `App` for the Domino thing and `Untitled` away from names.
+    plan = workspace.read_plan() or workspace.read_archived_plan() or ""
+    return chat_handoff.plan_title(plan) if plan.strip() else "Unnamed Built App"
+
+
 @dataclass
 class Project:
     id: str
@@ -1912,8 +1930,9 @@ class Orchestrator:
         # than a modal of the raw text. Newest first, and the newest is the one plan.md belongs to.
         # Empty for a workspace whose plan predates plan documents — the pin falls back to the text.
         # The copy is the app's and the document is the Project's, which is why this reads two
-        # surfaces to answer one question.
-        docs = project.record.list_plan_docs()
+        # surfaces to answer one question — and why it asks for this app's documents rather than
+        # the Project's, which now include other apps'.
+        docs = self._app_plan_docs(project)
         return {
             "title": chat_handoff.plan_title(markdown),
             "markdown": markdown,
@@ -1986,7 +2005,7 @@ class Orchestrator:
         # The document is the Project's and the copy is the app's, so this is the one place the two
         # surfaces meet — deliberately, because copying between them is what it is for.
         if doc and project.workspace.read_plan() is not None:
-            newest = project.record.list_plan_docs()
+            newest = self._app_plan_docs(project)
             if newest and newest[0]["id"] == plan_id:
                 project.workspace.write_plan(doc["markdown"])
         return doc
@@ -2073,7 +2092,11 @@ class Orchestrator:
         return self.project(start_preview=False, seed_app=False)
 
     def _ensure_seeded(self) -> Project:
-        """Chat may have attached an empty volume. Handoff / Build need the app template."""
+        """Chat may have attached an empty volume. Handoff / Build need the app template.
+
+        The SELECTED app, always: this is get-or-seed and never mints a second one. Adding to
+        `apps/` is `_open_app`'s job, off a confirmed handoff.
+        """
         if self._project is None:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
@@ -2081,6 +2104,122 @@ class Orchestrator:
         # The app may have been seeded just now, from a template that carries no instructions block.
         self._splice_instructions(self._project)
         return self._project
+
+    # ---- Built Apps ----
+    #
+    # A Project holds many (ADR-0008) and this Builder shows one at a time. The list is a directory
+    # scan: an index is one file with many writers, and two viewers in one Project are two Sage
+    # Builders, which is to say two processes — the same bug one `meta.json` per Thread exists to
+    # avoid. Each app's own record is written only inside its own directory.
+
+    def list_apps(self) -> list[dict]:
+        """Every Built App in this Project, oldest first, for the Build rail."""
+        project = self.project(start_preview=False, seed_app=False)
+        # Newest document wins the app it names, which is the one its plan pin already trusts.
+        plans = {str(d.get("appId") or ""): d["id"]
+                 for d in reversed(project.record.list_plan_docs())}
+        return [self._app_row(app_id, project.workspace.app_id, plans)
+                for app_id in self._wm.app_ids()]
+
+    def _app_row(self, app_id: str, selected: str, plans: dict[str, str]) -> dict:
+        """One rail row. `plans` is read once by the caller rather than per app: the documents are
+        the Project's, so asking for them inside the loop would re-read all of them per app."""
+        workspace = self._wm.app_workspace(self._project_id, app_id)
+        return {
+            "id": app_id,
+            "name": _app_display_name(workspace),
+            "built": workspace.has_built(),
+            "planId": plans.get(app_id, ""),
+            "selected": app_id == selected,
+        }
+
+    def _one_app(self, app_id: str) -> dict:
+        """The rail row for one app, for the two callers that just changed it."""
+        project = self.project(start_preview=False, seed_app=False)
+        plans = {str(d.get("appId") or ""): d["id"]
+                 for d in reversed(project.record.list_plan_docs())}
+        return self._app_row(app_id, project.workspace.app_id, plans)
+
+    def select_app(self, app_id: str) -> dict:
+        """Point Build at another Built App. Raises KeyError for one that is not there.
+
+        Refused while a turn is streaming, for the reason a Reset is: a turn holds one working tree
+        and swapping it underneath would leave the build writing into the app nobody is looking at.
+        Raised as the same `RuntimeError("busy")` every other turn-lock refusal uses, so the route
+        can tell it from a real failure.
+        """
+        project = self.project(start_preview=False, seed_app=False)
+        # Checked before the equality guard, not inside it: on a Project with no apps the selected
+        # id is one this process minted for a directory that does not exist yet, so an id equal to
+        # it names nothing and must 404 rather than fall through to a row that cannot be built.
+        if app_id not in self._wm.app_ids():
+            raise KeyError(app_id)
+        if app_id != project.workspace.app_id:
+            if not self._turn_lock.acquire(blocking=False):
+                raise RuntimeError("busy")
+            try:
+                self._wm.select(app_id)
+                self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
+            finally:
+                self._turn_lock.release()
+        return self._one_app(app_id)
+
+    def rename_app(self, app_id: str, name: str) -> dict:
+        """Change what an app is called. Its ID is not touched and cannot be: the directory is
+        named for it, and Domino fixes a published App's `entryPoint` when the App is created, so a
+        rename that moved the directory would strand the deployment (ADR-0008)."""
+        if app_id not in self._wm.app_ids():
+            raise KeyError(app_id)
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("a name is required")
+        self._wm.app_workspace(self._project_id, app_id).set_display_name(name)
+        return self._one_app(app_id)
+
+    def _bind_app(self, project: Project, workspace: Workspace) -> Project:
+        """Point the attached Project at a different Built App.
+
+        What is replaced is what belongs to an app: its code, the preview serving it, the turn
+        baseline taken over it and the attachments linked into it. The Project's own record, its
+        Threads and the model picker are untouched, because switching app is not switching Project.
+
+        The preview is STOPPED rather than restarted here. It serves whichever directory it was
+        started in, so one left running would go on serving the app the person just left;
+        `_preview_upstream` starts it again in the new directory the next time a preview is asked
+        for. The Build session goes with it — a session is opened on one directory, and the one
+        cached here belongs to the app being left.
+        """
+        if project.workspace.path != workspace.path:
+            project.supervisor.stop()
+            project.queries.stop()
+            project.supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
+            project.queries = PreviewQueries(workspace.path, self._wm.template)
+        project.workspace = workspace
+        project.snapshot = TurnSnapshot(workspace.path)
+        project.session_id = None
+        project.attached.clear()
+        self._prepare_app_files()
+        self._splice_instructions(project)
+        self._rehydrate_attached(project)
+        return project
+
+    @staticmethod
+    def _app_plan_docs(project: Project) -> list[dict]:
+        """The plan documents that belong to the app in front of us, newest first.
+
+        A document is the Project's and names the app it bound to, so once a Project holds several
+        apps "the newest document" stopped being an answer to "what is THIS app built from".
+
+        A document naming no app is a FALLBACK, not a peer: it is either one drafted in Chat and
+        not yet confirmed, or one from a Project written before documents carried the reference.
+        Mixed into one newest-first list they would outrank the real answer — a plan drafted in
+        Chat after this app was built is newer than the app's own document, and would become what
+        the plan pin names and what a bare "yes, build it" approves.
+        """
+        app_id = project.workspace.app_id
+        docs = project.record.list_plan_docs()
+        mine = [d for d in docs if str(d.get("appId") or "") == app_id]
+        return mine or [d for d in docs if not str(d.get("appId") or "")]
 
     def _prepare_app_files(self) -> None:
         self._wm.refresh_preview_config()
@@ -2234,22 +2373,26 @@ class Orchestrator:
     def _ensure_session(self, project: Project, conversation: str | None = None) -> str:
         client = self._ensure_opencode()
         self._switch_conversation(project, conversation)
+        app_id = project.workspace.app_id
         if project.session_id is None:
-            project.session_id = self._recover_session(project.record, client, conversation)
+            project.session_id = self._recover_session(project.record, client, conversation, app_id)
         if project.session_id is None:
             # No session-level model: use opencode.json's default; the shim's router enforces the
             # real model per request. (An explicit ModelRef at creation stalled turns.)
             project.session_id = client.create_session(directory=str(project.workspace.path))
-            project.record.write_session_id(project.session_id, conversation)
+            project.record.write_session_id(project.session_id, conversation, app_id)
         return project.session_id
 
     @staticmethod
     def _recover_session(record: ProjectRecord, client: OpenCodeClient,
-                         conversation: str | None = None) -> str | None:
+                         conversation: str | None = None, app_id: str = "") -> str | None:
         """A session id persisted from a prior process may point at a session the current
         OpenCode server doesn't know about (e.g. its storage was reset); validate before reusing
-        it so a stale id doesn't wedge every subsequent build call."""
-        sid = record.read_session_id(conversation)
+        it so a stale id doesn't wedge every subsequent build call.
+
+        Read per app as well as per conversation: a session is opened on one directory, so one
+        recovered for another Built App would stand the agent in the wrong tree (ADR-0008)."""
+        sid = record.read_session_id(conversation, app_id)
         if sid is None:
             return None
         try:
@@ -2920,7 +3063,7 @@ class Orchestrator:
         if not plan_md:
             raise ValueError("no plan")
         # The app: a directory named for a newly minted id, seeded from the template.
-        project = self._ensure_seeded()
+        project = self._open_app(chat, handoff_row)
         # The builder's own copies, which only have somewhere to live now. `plan.md` is the one-shot
         # handoff the implement turn consumes and archives; the plan card is what Build opens on.
         project.workspace.write_plan(plan_md)
@@ -2978,6 +3121,31 @@ class Orchestrator:
             "untitled": project.record.is_untitled(),
             "title": chat_handoff.plan_title(plan_md),
         }
+
+    def _open_app(self, project: Project, handoff_row: dict) -> Project:
+        """The Built App a confirmed handoff builds into, selected and ready.
+
+        A NEW one each time, because a Project holds many and confirming is where one is born
+        (ADR-0008): a second conversation that wants a dashboard gets a dashboard, rather than
+        writing over the one the first conversation is still using. Which app the sheet OFFERS is
+        #73; New app is its default, and this is that default.
+
+        Except on a re-confirm. A handoff that already bound stamped its app on the plan document,
+        so confirming the same sheet twice reopens that app instead of minting a twin nobody asked
+        for and nothing points at.
+        """
+        plan_id = str((handoff_row or {}).get("planId") or "")
+        doc = project.record.read_plan_doc(plan_id) if plan_id else None
+        bound = str((doc or {}).get("appId") or "")
+        if bound and bound in self._wm.app_ids():
+            self._wm.select(bound)
+            return self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
+        opened = self._bind_app(project, self._wm.create_app(self._project_id))
+        # The name starts as the plan's title, and is the person's to change from there.
+        title = str((doc or {}).get("title") or "")
+        if title:
+            opened.workspace.set_display_name(title)
+        return opened
 
     def _promote_chat_file(self, item: dict) -> None:
         """Move a Dataset file fetched for a question into the app's own data tree.
@@ -4400,6 +4568,9 @@ class Orchestrator:
                         plan_md,
                         title=chat_handoff.plan_title(plan_md) or "App",
                         author=_viewer_id(),
+                        # This gate ran inside an app, so the document knows which one from the
+                        # start — unlike a Chat handoff, which is planned before any app exists.
+                        app_id=project.workspace.app_id,
                     )["id"]
                 # `steps` is how the card says "Approve & build (6 phases)" — and, more usefully,
                 # it's the user's chance to see BEFORE approving that a phased plan actually parsed.
@@ -4669,7 +4840,7 @@ class Orchestrator:
         documents has none at all, and gets None."""
         if plan_id:
             return project.record.read_plan_doc(plan_id)
-        docs = project.record.list_plan_docs()
+        docs = self._app_plan_docs(project)
         return docs[0] if docs else None
 
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None):

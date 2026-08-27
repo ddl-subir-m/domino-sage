@@ -5,14 +5,16 @@ window.SW = window.SW || {};
   const { Button, Tooltip } = antd;
   const { ReloadOutlined, ExportOutlined } = icons;
 
+  // Build's rail lists Built Apps where Chat's lists Threads (ADR-0008). A Project holds many of
+  // each, and in Build the thing you switch between is the app.
   function Rail() {
     const { railHidden } = SW.store.get();
-    if (railHidden) return h(SW.ConversationRail, { mode: 'build' });
-    return h('div', { className: 'sw-rail' }, h(SW.ConversationRail, { mode: 'build' }));
+    if (railHidden) return h(SW.AppRail, null);
+    return h('div', { className: 'sw-rail' }, h(SW.AppRail, null));
   }
 
   function PreviewPane({ resumed }) {
-    const { previewSrc, previewStatus } = SW.store.get();
+    const { previewSrc, previewStatus, activeApp } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
 
@@ -32,8 +34,14 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-builder-toolbar' },
-        // Unqualified, "Preview" reads as this conversation's work. It is the Project's.
-        h('span', { className: 'sw-caption' }, resumed ? 'Preview · built earlier' : 'Preview'),
+        // Unqualified, "Preview" reads as this conversation's work. It is one of the Project's
+        // apps, so it is named: with several in the rail, which one is on screen is the question.
+        h(
+          'span',
+          { className: 'sw-caption' },
+          activeApp ? `Preview · ${activeApp.name}` : 'Preview',
+          resumed && ' · built earlier'
+        ),
         h('span', { className: 'sw-topnav-spacer' }),
         h(
           Tooltip,
@@ -74,9 +82,16 @@ window.SW = window.SW || {};
     );
   }
 
-  SW.BuildMode = function BuildMode({ conversationId }) {
-    const { thread, buildMessages, buildTyping, buildRunning, projectPlan } = SW.store.get();
+  SW.BuildMode = function BuildMode({ conversationId, appId }) {
+    const { thread, activeApp, buildMessages, buildTyping, buildRunning, projectPlan } = SW.store.get();
     const scroller = useRef(null);
+
+    // A deep link naming an app is a request to be looking at that one. Only when it differs from
+    // what the server is already pointed at: selecting reloads the whole of Build, and doing that
+    // on every render would be a loop.
+    useEffect(() => {
+      if (appId && (!activeApp || activeApp.id !== appId)) SW.store.selectApp(appId);
+    }, [appId, activeApp && activeApp.id]);
 
     useEffect(() => {
       if (!conversationId) {
@@ -106,10 +121,9 @@ window.SW = window.SW || {};
     }, [buildMessages.length, buildTyping]);
 
     const empty = buildMessages.length === 0 && !buildTyping;
-    // A Project holds one Built App today, so a new conversation clears the transcript while the
-    // preview keeps serving the app already in the workspace. That is the truth, but unlabelled it
-    // reads as this conversation's work. Say whose app it is until a Project can hold more than one
-    // (ADR-0008, #67/#69/#77) and the preview can follow the app the conversation selected.
+    // A new conversation clears the transcript while the preview keeps serving the app the rail
+    // has selected. That is the truth, but unlabelled it reads as this conversation's work, so say
+    // whose app it is. (The preview following the app a build is running in is #77.)
     const resumed = empty && !!projectPlan && projectPlan.status === 'built';
 
     return h(

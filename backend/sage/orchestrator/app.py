@@ -1529,6 +1529,45 @@ def build_stream(body: dict) -> StreamingResponse:
         media_type="text/event-stream")
 
 
+# The Build rail's list, as the Chat rail's is /api/threads. Two lists, one per mode: a Project
+# holds many Built Apps and many Threads, and neither is the other (ADR-0008).
+@control_app.get("/api/apps")
+def list_apps() -> JSONResponse:
+    items = orchestrator.list_apps()
+    return JSONResponse({"items": items,
+                         "selected": next((r["id"] for r in items if r["selected"]), "")})
+
+
+@control_app.post("/api/apps/{app_id}/select")
+def select_app(app_id: str) -> JSONResponse:
+    """Point Build at another Built App. Looking is free — this changes neither app."""
+    try:
+        return JSONResponse({"ok": True, "app": orchestrator.select_app(app_id)})
+    except KeyError:
+        return JSONResponse({"error": "unknown app"}, status_code=404)
+    except RuntimeError as e:
+        # Only the turn-lock refusal. Anything else RuntimeError is a real failure and must not be
+        # reported to the person as a build they can wait out.
+        if str(e) == "busy":
+            return JSONResponse(
+                {"error": "A build is running. Stop it, or wait for it to finish, then switch app."},
+                status_code=409)
+        raise
+
+
+@control_app.patch("/api/apps/{app_id}")
+async def patch_app(app_id: str, request: Request) -> JSONResponse:
+    """Rename a Built App. Only the display name is writable — the id names the directory, and a
+    published App's entry point is fixed at creation."""
+    body = await request.json()
+    try:
+        return JSONResponse(orchestrator.rename_app(app_id, str((body or {}).get("name") or "")))
+    except KeyError:
+        return JSONResponse({"error": "unknown app"}, status_code=404)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
 @control_app.get("/api/threads")
 def list_threads() -> JSONResponse:
     return JSONResponse(orchestrator.list_threads())

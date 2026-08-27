@@ -100,6 +100,10 @@ window.SW = window.SW || {};
     // shown as a badge on the project rows it points at.
     attachments: [],
     requires: [],
+    // The Built Apps in this Project, oldest first, and the one Build is pointed at. The Build
+    // rail's list, where Chat's is `threads` — a Project holds many of each and neither is the
+    // other (ADR-0008).
+    apps: [],
     activeApp: null,
     activePlanId: null,
     activePlan: null,
@@ -259,6 +263,20 @@ window.SW = window.SW || {};
 
   async function loadThreadList() {
     state.threads = await SW.api.threads(state.scope.id);
+    notify();
+  }
+
+  // The app a select is on the way to, or null. Two things ask for the same app before the first
+  // answer lands — the route asserts it on mount, and the rail's own load re-renders underneath —
+  // and the second request would be refused by the turn lock the first one is holding, which
+  // reaches the person as a warning about a build that is not running.
+  let selecting = null;
+
+  // The Build rail's list. `activeApp` follows it rather than being set beside it, so the row that
+  // is lit and the app the server is pointed at cannot drift apart.
+  async function loadAppList() {
+    state.apps = await SW.api.apps().catch(() => []);
+    state.activeApp = state.apps.find((a) => a.selected) || null;
     notify();
   }
 
@@ -772,6 +790,9 @@ window.SW = window.SW || {};
       state.scope = project;
       state.activePlanId = null;
       state.activePlan = null;
+      // The apps belong to the Project being left, and a stale list is worse than none: the rail
+      // would offer rows that select an app this Builder is not attached to.
+      state.apps = [];
       state.activeApp = null;
       state.requires = [];
       state.railAppFilter = null;
@@ -1183,16 +1204,44 @@ window.SW = window.SW || {};
       notify();
     },
 
-    // Which app Build has in the preview. Looking is free and reversible, so
-    // this changes freely and never implies a change to the app.
+    loadApps: loadAppList,
+
+    // Which app Build has in front of it. Looking is free and reversible, so this changes freely
+    // and never implies a change to either app. The server is refused while a build is streaming —
+    // it holds one working tree — and says so, which is the one case worth a message.
     async selectApp(app) {
-      state.activeApp = app;
-      state.activePlanId = (app && app.planId) || null;
-      state.activePlan = null;
-      notify();
-      await refreshRequires();
-      if (app && app.planId) await store.loadPlan(app.planId);
-      return app;
+      const id = typeof app === 'string' ? app : app && app.id;
+      // Already there, or already on the way there. `selecting` is what keeps a second asker from
+      // racing the first into the server's turn lock — see where it is declared.
+      if (!id || id === selecting || (state.activeApp && state.activeApp.id === id)) {
+        return state.activeApp;
+      }
+      selecting = id;
+      try {
+        await SW.api.selectApp(id);
+        // Reloads the app list with it: the transcript, the Bindings, the plan pin and the preview
+        // are all the app's, so switching reloads the whole of Build, not one row's flag.
+        await store.loadBuild();
+        const selected = state.activeApp;
+        state.activePlanId = (selected && selected.planId) || null;
+        state.activePlan = null;
+        notify();
+        await refreshRequires();
+        if (selected && selected.planId) await store.loadPlan(selected.planId);
+        return selected;
+      } catch (err) {
+        antd.message.warning(err.message || 'Sage could not switch to that Built App.');
+        return state.activeApp;
+      } finally {
+        selecting = null;
+      }
+    },
+
+    // The name is the mutable half of an app's identity; its id names the directory and cannot
+    // move, because a published App's entry point is fixed when the App is created.
+    async renameApp(id, name) {
+      await SW.api.patchApp(id, { name });
+      await loadAppList();
     },
 
     clearApp() {
@@ -1356,6 +1405,7 @@ window.SW = window.SW || {};
         SW.api.buildState().catch(() => ({ running: false })),
         refreshBindings(),
         refreshProjectPlan(),
+        loadAppList(),
       ]);
       state.buildHistory = hist.history || [];
       state.buildMessages = buildHistoryToMessages(state.buildHistory);
