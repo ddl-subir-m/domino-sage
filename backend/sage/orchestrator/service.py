@@ -981,6 +981,10 @@ class _EventTap:
         self._stream = opener(sid, directory=directory) if opener is not None else None
         self.ok = self._stream is not None
         self._q: queue.Queue = queue.Queue()
+        # Whether this stream has ever produced a frame. `ok` only says the socket is up, and a
+        # stream that connects and stays silent is the failure that hides: the turn keeps the fast
+        # path, never reads the transcript, and goes to the quiet cap blind to its own progress.
+        self.seen_any = False
         if self._stream is not None:
             threading.Thread(target=self._read, daemon=True, name="sage-chat-events").start()
 
@@ -1001,6 +1005,7 @@ class _EventTap:
             try:
                 out.append(self._q.get_nowait())
             except queue.Empty:
+                self.seen_any = self.seen_any or bool(out)
                 return out
 
     def close(self) -> None:
@@ -2995,6 +3000,8 @@ class Orchestrator:
         try:
             client = self._ensure_opencode()
             sid = self._ensure_thread_session(store, thread_id, project, client)
+            work = str((store.read_session(thread_id) or {}).get("directory")
+                       or project.workspace.path)
             project.active_session_id = sid
             before = snapshot_files(project.workspace.path)
             seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
@@ -3002,7 +3009,14 @@ class Orchestrator:
             # Opened BEFORE the prompt: the stream has no `?after=`, so anything emitted before the
             # reader connects is gone. The window is a local connect and text.ended repairs whatever
             # falls in it, which is the whole reason the end event is treated as authoritative.
-            tap = _EventTap(client, sid, directory=str(project.workspace.path))
+            #
+            # The directory is the SESSION's, not the workspace's. /event delivers only the events of
+            # the directory the connection asks for (see SessionEvents.__iter__, which measured it),
+            # and a Chat session is created in `.sage/chat-work` — so asking for the workspace root
+            # subscribed to a project this turn was not running in. The connection succeeded, stayed
+            # open, and carried nothing. Build never saw it because Build's session directory IS the
+            # workspace root; Chat inherited the value and not the reason for it.
+            tap = _EventTap(client, sid, directory=work)
             client.send_prompt(
                 sid, self._chat_prompt(thread_id, prompt, ctx, urls,
                                        workspace=project.workspace.path,
@@ -3122,6 +3136,11 @@ class Orchestrator:
                     if live is not None:
                         answered = answered or bool(live.get("text"))
                         yield live
+                # A stream that has said nothing is not a stream. The transcript fallback exists
+                # for a tap that failed to open, and a tap that opened onto silence needs it just as
+                # much — without it the turn cannot see its own progress and the quiet cap ends work
+                # that is going fine. One frame is enough to earn the fast path back.
+                streaming = tap.ok and tap.seen_any
                 try:
                     running = client.is_running(sid)
                     appeared = appeared or running
@@ -3131,7 +3150,7 @@ class Orchestrator:
                     # every second was the cost that grew with the length of the Thread rather than
                     # with the question — on the same box the agent is working on.
                     msgs = (client.messages(sid, limit=_CHAT_POLL_MESSAGES)
-                            if finished or not tap.ok else ())
+                            if finished or not streaming else ())
                     poll_failures = 0
                 except httpx.HTTPError as e:
                     poll_failures += 1
@@ -3178,11 +3197,15 @@ class Orchestrator:
                                 # line already ran when the command started, and replaying it from
                                 # the final read would flash "Running Python…" on a finished turn.
                                 yield ev
-                if not tap.ok:
+                if not streaming:
                     # No stream to open and close calls on, so the transcript answers instead: a
                     # part still pending IS a call in flight. Read fresh every poll, since nothing
                     # here reports the end of one.
                     running_tools = {"transcript"} if polled_running else set()
+                else:
+                    # The stream took over. Its own call ids run the set from here, and the key the
+                    # transcript left behind would otherwise hold the turn on the long window.
+                    running_tools.discard("transcript")
                 # Proof of life when the transcript is the only source. The same text part comes
                 # back on every poll, so it is the change that counts, not the presence.
                 if pending_text and pending_text != last_text:

@@ -1021,17 +1021,22 @@ def test_a_streamed_turn_reads_the_transcript_once_instead_of_once_a_second(tmp_
     assert [r for r in oc.reads if r is not None] == [20, 20]
 
 
-def test_the_stream_is_asked_for_the_workspace_because_it_answers_per_directory(tmp_path: Path):
-    """/event serves only the directory the connection asks for. Omit it and the subscriber gets
-    the server's own working directory instead — a stream of heartbeats and nothing else, on a turn
+def test_the_stream_is_asked_for_the_session_directory_because_it_answers_per_directory(tmp_path: Path):
+    """/event serves only the directory the connection asks for. Ask for the wrong one and the
+    subscriber gets another project's events — a stream of heartbeats and nothing else, on a turn
     that is running perfectly well somewhere the subscriber is not listening. Measured against the
-    pinned binary: 0 session frames without the parameter, every frame of the turn with it. Nothing
-    fails when it is wrong; Chat just quietly polls forever."""
+    pinned binary: 0 session frames without the parameter, every frame of the turn with it.
+
+    The directory that matters is the SESSION's. This asked for the workspace root, which is right
+    for Build and wrong for Chat: a Chat session is created in `.sage/chat-work`. Nothing failed
+    when it was wrong — the socket opened and stayed open — so Chat ran every turn blind to its own
+    events and killed anything longer than the quiet window."""
     orch, oc = _streamed(tmp_path)
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "what is it"))
 
-    assert oc.stream_dir == str(orch.project(start_preview=False).workspace.path)
+    assert oc.stream_dir == oc.sessions[0]["directory"]
+    assert oc.stream_dir.endswith(".sage/chat-work")
 
 
 def test_a_driver_that_cannot_stream_polls_exactly_as_before(tmp_path: Path):
@@ -1219,6 +1224,33 @@ def test_a_finished_tool_puts_the_turn_back_on_the_short_window(tmp_path: Path, 
 
     assert oc.interrupted == 1
     assert "stopped making progress" in next(e for e in out if e["type"] == "error")["message"]
+
+
+def test_a_stream_that_says_nothing_does_not_blind_the_turn(tmp_path: Path):
+    """`ok` says the socket is up, not that it carries anything. A tap that connects onto silence
+    kept the turn on the fast path — the transcript read once at the end, so nothing moved the
+    clock and nothing tracked a tool — and every turn longer than the quiet window then died
+    reporting that Sage had stopped making progress, while the agent was still working.
+
+    The mechanism is the read: a silent stream must put the turn back on the transcript WHILE it
+    runs, which is what the failed-tap fallback has always done."""
+    class Silent(StreamingFake):
+        def __init__(self, ws, turns):
+            super().__init__(ws, turns, [], 0.0)
+            self.polls = 0
+
+        def is_running(self, session_id):
+            self.polls += 1
+            return self.polls < 4
+
+    orch, oc = _orch(tmp_path, client=lambda ws: Silent(ws, [Turn(text="The answer.")]))
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "what is it"))
+
+    # Baseline plus one read per running poll, not baseline plus the single read at the end.
+    assert len([r for r in oc.reads if r == 20]) > 2
+    assert [e["text"] for e in out if e.get("kind") == "text"] == ["The answer."]
+    assert not [e for e in out if e["type"] == "error"]
 
 
 def test_a_refused_step_says_what_was_refused(tmp_path: Path):
