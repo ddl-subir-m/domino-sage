@@ -32,6 +32,11 @@ This working directory already has `examples/`. The Thread id is in the turn pro
 Do not list files, do not search, do not `cd`, and do not look for `src/`, `package.json`, or a
 React template. Do not mention paths, folders, or "chat-work" in the reply.
 
+The app's own instructions, which describe building it by editing `src/`, are not this Thread's.
+Their rule that every turn ends in an edit belongs to Build, and so does the `NOTHING_TO_BUILD`
+line that ends a turn with nothing to build — never write that line here. Answering the question
+is the finished turn.
+
 `@name` in the user's message is the file or Resource they mean; the turn prompt also lists its
 path. Read that path.
 

@@ -1062,6 +1062,25 @@ def test_a_stream_that_delivers_nothing_still_answers(tmp_path: Path):
     assert {"type": "agent", "kind": "text", "text": "Still answered."} in out
 
 
+def test_a_chat_answer_never_shows_the_build_marker(tmp_path: Path):
+    """A Chat session's directory sits inside the app repo, so the chat agent is handed the app's
+    AGENTS.md as well as its own — NOTHING_TO_BUILD included, and a Chat turn earns that line by
+    definition. It is a signal to Sage, so someone who asked how many rows a file has reads the
+    answer and not a code under it (the defect this test is named for)."""
+    from sage.orchestrator.service import _chat_live_event
+
+    orch, _ = _orch(tmp_path, [Turn(text="The file has 220 rows of adverse events.\nNOTHING_TO_BUILD")])
+    tid = orch.create_thread()["id"]
+    events = list(orch.chat_stream(tid, "how many rows does @synthetic_adverse_events.csv have?"))
+    texts = [e["text"] for e in events if e.get("type") == "agent" and e.get("kind") == "text"]
+    assert [t.strip() for t in texts] == ["The file has 220 rows of adverse events."]
+    # And not on reload either: the transcript event is the only copy the server keeps.
+    assert "NOTHING_TO_BUILD" not in json.dumps(orch.thread_history(tid))
+    # The final frame is what repairs the streamed copy, so it carries the stripped text too.
+    assert _chat_live_event(_live("message", text="220 rows.\nNOTHING_TO_BUILD\n", final=True)) == {
+        "type": "delta", "text": "220 rows.\n", "final": True}
+
+
 def test_the_live_stream_carries_the_answer_and_the_work_and_nothing_else():
     from sage.orchestrator.service import _chat_live_event
 

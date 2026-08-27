@@ -1080,7 +1080,11 @@ def _chat_live_event(ev) -> dict | None:
     """
     if ev.kind == "message":
         if ev.payload.get("final"):
-            return {"type": "delta", "text": str(ev.payload.get("text") or ""), "final": True}
+            # Marker out of the live copy too, not only out of what is kept: this event is what
+            # repairs the streamed text, so leaving it in would paint NO_BUILD_MARKER under the
+            # answer and hold it there until the transcript event replaces the block.
+            text, _ = _take_no_build_marker(str(ev.payload.get("text") or ""))
+            return {"type": "delta", "text": text, "final": True}
         text = str(ev.payload.get("delta") or "")
         return {"type": "delta", "text": text} if text else None
     if ev.kind == "tool_run":
@@ -3212,9 +3216,15 @@ class Orchestrator:
                     last_text = pending_text
                     last_activity = time.monotonic()
                 if finished:
-                    if pending_text:
+                    # NO_BUILD_MARKER is Build's signal to Sage — a Chat turn has nothing to build
+                    # by definition. It reaches here because OpenCode reads the app's AGENTS.md as
+                    # well as this session's, so the chat agent is told the rule it belongs to; the
+                    # Thread must not show it either way. Stripped here, where the reply is both
+                    # persisted and replayed, so a reload does not bring it back.
+                    body = _take_no_build_marker(pending_text)[0] if pending_text else ""
+                    if body.strip():
                         answered = True
-                        ev = {"type": "agent", "kind": "text", "text": pending_text}
+                        ev = {"type": "agent", "kind": "text", "text": body}
                         store.append_history(thread_id, ev)
                         yield ev
                     break
