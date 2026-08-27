@@ -946,16 +946,21 @@ window.SW = window.SW || {};
             try {
               await SW.api.removeFromProject(state.scope.id, resource.id);
             } catch (err) {
-              // The app still binds it, so the removal is refused. A toast saying so is a dead
-              // end — name the source that still uses it, because that is the change the creator
-              // has to make first. (Removing the record is not removing the code: an app whose
-              // Summarise button calls an Alias it no longer has keeps the button.)
+              // A Built App still binds it, so the removal is refused. A toast saying so is a
+              // dead end — name the apps that still bind it and the source that still uses it,
+              // because that is the change the creator has to make first, and the app refusing is
+              // often not the one on screen. (Removing the record is not removing the code: an app
+              // whose Summarise button calls an Alias it no longer has keeps the button.)
+              const apps = (err.payload && err.payload.apps) || [];
               const refs = (err.payload && err.payload.refs) || [];
-              if (refs.length) {
+              if (apps.length) {
+                const subject = apps.length > 1 ? 'Built Apps' : 'a Built App';
+                const fix = refs.length
+                  ? ` Used in: ${refs.join(', ')}. Remove those uses in Build, then remove it here.`
+                  : ' Unbind it in Build, then remove it here.';
                 antd.Modal.info({
-                  title: `${resource.name} is still used by this app`,
-                  content: `${err.message}, so it can't leave ${scopeName} yet. Used in: ` +
-                    `${refs.join(', ')}. Remove those uses in Build, then remove it here.`,
+                  title: `${resource.name} is still used by ${subject}`,
+                  content: `${err.message}, so it can't leave ${scopeName} yet.` + fix,
                   okText: 'Got it',
                 });
               } else {

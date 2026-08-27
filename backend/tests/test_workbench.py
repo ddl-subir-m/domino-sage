@@ -58,8 +58,10 @@ def test_workbench_is_the_default_ui():
 
     store = client.get("/js/store.js")
     assert store.status_code == 200
-    # A refused removal names the app source that still uses it, rather than a dead-end toast.
-    assert b"is still used by this app" in store.content
+    # A refused removal names the Built Apps that still bind it and the source that still uses
+    # it, rather than a dead-end toast. The app refusing is often not the one on screen (#71); what
+    # the refusal has to carry is asserted against the route, in test_project_resources.
+    assert b"err.payload && err.payload.apps" in store.content
     assert b"err.payload && err.payload.refs" in store.content
     assert b"gatewayAliases" in store.content
     assert b"resourcesLoading" in store.content

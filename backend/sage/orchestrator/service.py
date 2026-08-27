@@ -202,17 +202,25 @@ class UploadUnavailable(Exception):
 
 
 class ResourceStillBound(Exception):
-    """The Built App still records a Binding for this Resource, so membership cannot drop it.
+    """A Built App still records a Binding for this Resource, so membership cannot drop it.
 
     Carries `refs` — the app source that still uses it — for the same reason `unbind` reports them:
-    "this app still needs it" is a refusal, and a refusal a creator cannot act on is a dead end. The
+    "an app still needs it" is a refusal, and a refusal a creator cannot act on is a dead end. The
     files are what turns it into a next step.
+
+    Carries the `apps` for the same reason one level up. A Project holds many Built Apps (ADR-0008),
+    so the app that refuses is often not the one on screen, and "which app" is the first thing the
+    creator has to know before the files mean anything.
     """
 
-    def __init__(self, name: str, refs: list[str] | None = None) -> None:
+    def __init__(self, name: str, apps: list[str], refs: list[str] | None = None) -> None:
         self.name = name
+        self.apps = list(apps)
         self.refs = list(refs or [])
-        super().__init__(f"this app still needs {name}")
+        # Plural verb for a plural subject: the panel puts this sentence in front of the reader as
+        # it stands, so the agreement has to be right here rather than in the markup.
+        needs = "still needs" if len(self.apps) == 1 else "still need"
+        super().__init__(f"{', '.join(self.apps)} {needs} {name}")
 
 
 class DataReferenced(Exception):
@@ -5394,18 +5402,26 @@ class Orchestrator:
     def remove_project_resource(self, resource_id: str) -> bool:
         """Drop a Resource from this project's working set. False if it was not there.
 
-        Refuses when the Built App still records a Binding for it — membership is not a back door
-        to unbind.
+        Refuses when ANY Built App in this Project still records a Binding for it — membership is
+        not a back door to unbind. A Resource is picked once for the Project; a Binding names
+        exactly one app (ADR-0008).
         """
         rid = str(resource_id or "").strip()
         if not rid:
             return False
-        bound = self._binding_for_membership(rid)
-        if bound is not None:
-            raise ResourceStillBound(
-                bound.display_name or bound.name or rid,
-                self._resource_usage(self.project(start_preview=False), bound),
-            )
+        bound = self._apps_that_bind(rid)
+        if bound:
+            _, first = bound[0]
+            apps = [_app_display_name(ws) for ws, _ in bound]
+            # Each file is named with its app once more than one app binds. Every Built App is
+            # seeded from the same template, so `src/App.tsx` in two of them is two files and two
+            # edits — a bare path would say neither which one nor how many. With a single app the
+            # sentence above already says which, and repeating it on every line is noise.
+            many = len(bound) > 1
+            refs = [f"{app} — {ref}" if many else ref
+                    for (workspace, binding), app in zip(bound, apps)
+                    for ref in self._resource_usage(workspace, binding)]
+            raise ResourceStillBound(first.display_name or first.name or rid, apps, refs)
         found = {"ok": False}
 
         def change(items: list[dict]) -> list[dict]:
@@ -5416,11 +5432,17 @@ class Orchestrator:
         self.project(start_preview=False).record.update_project_resources(change)
         return found["ok"]
 
-    def _binding_for_membership(self, resource_id: str) -> Binding | None:
-        """The Binding this membership id names, if the Built App still records one."""
+    def _apps_that_bind(self, resource_id: str) -> list[tuple[Workspace, Binding]]:
+        """Every Built App that still records a Binding for this membership id, oldest first.
+
+        Every app rather than the selected one: a Binding belongs to one app and a Project holds
+        many (ADR-0008), so a guard that reads the manifest in front of you lets a tidy-up break an
+        app nobody was looking at. The apps come from the same directory scan the rail is built
+        from, so none can be missed by being absent from an index nobody wrote to.
+        """
         rid = str(resource_id or "").strip()
         if not rid:
-            return None
+            return []
         aliases = {rid}
         if ":" in rid:
             kind, _, rest = rid.partition(":")
@@ -5429,11 +5451,14 @@ class Orchestrator:
                 aliases.add(f"data_source:{rest}")
             elif kind == "data_source":
                 aliases.add(f"datasource:{rest}")
-        recorded = parse_bindings(self.project(start_preview=False).workspace.read_bindings())
-        for b in recorded:
-            if f"{b.kind}:{b.id}" in aliases or b.id in aliases:
-                return b
-        return None
+        out: list[tuple[Workspace, Binding]] = []
+        for app_id in self._wm.app_ids():
+            workspace = self._wm.app_workspace(self._project_id, app_id)
+            for b in parse_bindings(workspace.read_bindings()):
+                if f"{b.kind}:{b.id}" in aliases or b.id in aliases:
+                    out.append((workspace, b))
+                    break
+        return out
 
     def pin_project_resource(self, resource_id: str, pin: dict) -> dict:
         """Pin one file or table on a membership parent. Parent must already be in the project."""
@@ -5985,7 +6010,7 @@ class Orchestrator:
         _write_app_resources rewrites Sage's own files on the way out."""
         current = parse_bindings(self.project().workspace.read_bindings())
         gone = next((b for b in current if b.key == (kind, resource_id)), None)
-        refs = self._resource_usage(self.project(), gone) if gone else []
+        refs = self._resource_usage(self.project().workspace, gone) if gone else []
         def change(entries: list[dict]) -> list[dict]:
             return [b.to_dict() for b in parse_bindings(entries) if b.key != (kind, resource_id)]
         entries = self.project().workspace.update_bindings(change)
@@ -6494,12 +6519,15 @@ class Orchestrator:
         except OSError:
             log.exception("delete_upload_bytes: failed to remove %s", rel)
 
-    def _scan_app_sources(self, project: Project) -> list[tuple[str, str | None]]:
+    def _scan_app_sources(self, workspace: Workspace) -> list[tuple[str, str | None]]:
         """(workspace-relative posix path, text) for each file under the app tree — skips
         dependencies, build output, git, and public/ (the attached-data symlinks live there). Text is
         the file's contents for code files (see _SCAN_EXTS) and None otherwise, so a copied data file
-        is still listed (matched by basename) without reading megabytes of CSV."""
-        root = project.workspace.path
+        is still listed (matched by basename) without reading megabytes of CSV.
+
+        Takes the Workspace rather than the attached Project because a Built App is what it reads,
+        and the guard on Resource removal has to read apps that are not the attached one."""
+        root = workspace.path
         out: list[tuple[str, str | None]] = []
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in _SCAN_SKIP_DIRS]
@@ -6523,7 +6551,7 @@ class Orchestrator:
                    and it's why deleting the attachment leaves the dashboard still working.
         """
         if sources is None:
-            sources = self._scan_app_sources(project)
+            sources = self._scan_app_sources(project.workspace)
         served = entry["path"][len("public/"):]        # data/<slug>/uploads/<name>
         name = PurePosix(entry["path"]).name
         refs: list[str] = []
@@ -6543,7 +6571,7 @@ class Orchestrator:
                 refs.append(rel)
         return {"refs": refs, "copies": copies}
 
-    def _resource_usage(self, project: Project, binding: Binding,
+    def _resource_usage(self, workspace: Workspace, binding: Binding,
                         sources: list[tuple[str, str | None]] | None = None) -> list[str]:
         """App source that still uses a Binding, so unbind can offer to clean up after itself.
 
@@ -6559,9 +6587,9 @@ class Orchestrator:
         recorded against THIS Data Source, and the catalog itself is reported alongside them.
         """
         if sources is None:
-            sources = self._scan_app_sources(project)
+            sources = self._scan_app_sources(workspace)
         if binding.kind == KIND_DATA_SOURCE:
-            names = self._query_names_for(project, binding.id)
+            names = self._query_names_for(workspace, binding.id)
             # The catalog is a ref in its own right: its statements now run against a store this app
             # no longer records, and the agent owns that file, so the cleanup can actually fix it.
             catalog = [".sage/queries.json"] if names else []
@@ -6575,14 +6603,14 @@ class Orchestrator:
                 and any(t in text for t in tokens)]
         return catalog + sorted(set(refs))
 
-    def _query_names_for(self, project: Project, resource_id: str) -> list[str]:
+    def _query_names_for(self, workspace: Workspace, resource_id: str) -> list[str]:
         """Names of the queries in `.sage/queries.json` recorded against one Data Source.
 
         Best-effort. The agent writes this file, and a catalog that will not parse already has its
         own check (_recheck_app_data); here it only means we cannot name the queries, and an unbind
         that warns about nothing is a better outcome than one that fails."""
         try:
-            catalog = json.loads((project.workspace.path / ".sage" / "queries.json")
+            catalog = json.loads((workspace.path / ".sage" / "queries.json")
                                  .read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return []
@@ -6597,7 +6625,7 @@ class Orchestrator:
         duplicated into the app tree. Empty when nothing was copied. One source scan for all files."""
         if not project.attached:
             return []
-        sources = self._scan_app_sources(project)
+        sources = self._scan_app_sources(project.workspace)
         out: list[tuple[str, list[str]]] = []
         for e in project.attached:
             copies = self._data_usage(project, e, sources)["copies"]
