@@ -1572,6 +1572,21 @@ def _tool_detail(tool: str, part: dict) -> str:
     return ""
 
 
+def _tool_duration_ms(part: dict) -> int | None:
+    """How long a tool call took, in ms, or None when OpenCode did not time it.
+
+    A completed tool part carries `state.time = {start, end}` as epoch ms. None rather than 0 is
+    the whole point: the card used to print a hardcoded "0.0s" on every row, which reads as "this
+    took no time at all" when the truth is "nobody measured it".
+    """
+    t = (part.get("state") or {}).get("time") or {}
+    start, end = t.get("start"), t.get("end")
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return None
+    ms = int(end - start)
+    return ms if ms >= 0 else None
+
+
 @dataclass
 class Project:
     id: str
@@ -4138,7 +4153,12 @@ class Orchestrator:
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
                             if tool in ("edit", "write"):
                                 made_edits = True
-                            yield persist({"type": "agent", "kind": "tool", "tool": tool, "detail": _tool_detail(tool, part)})
+                            ev = {"type": "agent", "kind": "tool", "tool": tool,
+                                  "detail": _tool_detail(tool, part)}
+                            ms = _tool_duration_ms(part)
+                            if ms is not None:
+                                ev["durationMs"] = ms
+                            yield persist(ev)
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
                             # Take the marker out before anything else looks at this text — the

@@ -464,3 +464,17 @@ def test_an_approved_plan_builds_even_when_the_classifier_would_gate(tmp_path: P
     assert (orch.project(start_preview=False).workspace.path / "src" / "Tab.tsx").exists()
     # The failure's signature: an approval answering with another plan card.
     assert "plan-proposed" not in _kinds(events)
+
+
+def test_a_tool_card_reports_the_time_the_tool_actually_took():
+    """The card used to print a hardcoded "0.0s" on every row, so a build that ran for a minute
+    read as a build that ran for no time. A part OpenCode timed reports its real duration; a part
+    it did not time reports nothing, which the card renders as no duration rather than a zero."""
+    from sage.orchestrator.service import _tool_duration_ms
+
+    assert _tool_duration_ms({"state": {"time": {"start": 1000, "end": 3500}}}) == 2500
+    assert _tool_duration_ms({"state": {"status": "completed"}}) is None
+    assert _tool_duration_ms({"state": {"time": {"start": 1000}}}) is None
+    assert _tool_duration_ms({}) is None
+    # A clock that ran backwards is a measurement nobody should read as a duration.
+    assert _tool_duration_ms({"state": {"time": {"start": 3500, "end": 1000}}}) is None

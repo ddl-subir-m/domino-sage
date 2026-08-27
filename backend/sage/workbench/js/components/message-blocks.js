@@ -38,6 +38,13 @@ window.SW = window.SW || {};
     );
   }
 
+  // Sub-second calls are the common case for a write, and `(0.042).toFixed(1)` is "0.0s" — the
+  // same misleading zero this is here to stop showing. Milliseconds below a second, seconds above.
+  function runDuration(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '';
+    return ms < 950 ? ` · ${Math.round(ms)}ms` : ` · ${(ms / 1000).toFixed(1)}s`;
+  }
+
   function SandboxRun({ block }) {
     const [open, setOpen] = useState(false);
     return h(
@@ -47,7 +54,7 @@ window.SW = window.SW || {};
         'button',
         { className: 'sw-sandbox-toggle', onClick: () => setOpen(!open) },
         h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
-        h('span', null, `${block.label || 'Ran Python'} · ${(block.durationMs / 1000).toFixed(1)}s`),
+        h('span', null, `${block.label || 'Ran Python'}${runDuration(block.durationMs)}`),
         block.packages && h('span', { style: { color: '#8F8FA3' } }, `· ${block.packages}`)
       ),
       open &&

@@ -439,7 +439,9 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({
           type: 'sandbox_run',
           label: ev.tool === 'bash' ? 'Ran a command' : `Ran ${ev.tool || 'tool'}`,
-          durationMs: 0,
+          // Absent on turns OpenCode did not time, and on every turn recorded before Sage started
+          // reading the clock. The card leaves the duration off rather than inventing one.
+          durationMs: ev.durationMs,
           code: ev.detail || '',
         });
       } else if (ev.type === 'plan-proposed') {
