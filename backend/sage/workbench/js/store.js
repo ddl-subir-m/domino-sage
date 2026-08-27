@@ -60,6 +60,9 @@ window.SW = window.SW || {};
     resourceGroups: {},
     resourceErrors: {},
     resourceIndex: {},
+    // Every Dataset this container has mounted writable, whether or not it is in the project rail.
+    // Membership is a curated list; the promote target is a fact about the disk.
+    datasetTargets: [],
     gatewayAliases: [],
     resourcesLoading: true,
     members: [],
@@ -222,6 +225,9 @@ window.SW = window.SW || {};
           errors: listing.errors || {},
         }
       );
+      // The overlay keeps only the Datasets already in the rail. A scratch file can be promoted
+      // onto any Dataset this container mounts writable, so that set is kept whole here.
+      state.datasetTargets = ((listing.groups && listing.groups.dataset) || []).filter((d) => d.writable);
       notify();
     }).catch(() => {});
 

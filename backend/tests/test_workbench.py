@@ -90,7 +90,10 @@ def test_workbench_is_the_default_ui():
     assert b"Files in this workspace" in panel.content
     assert b"e.target.files || []).map((f) => f.name)" not in panel.content
     assert b"SW.store.uploadFile(file)" in panel.content
-    assert b"Add to a Dataset" in panel.content
+    # The promote targets are every writable mount, not the curated rail: membership never gated
+    # the server's copy, so it must not grey out the menu either.
+    assert b"SW.store.get().datasetTargets" in panel.content
+    assert b"No writable Dataset is mounted here" in panel.content
 
     tree = client.get("/js/components/resource-tree.js")
     assert tree.status_code == 200

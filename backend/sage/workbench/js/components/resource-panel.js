@@ -150,7 +150,10 @@ window.SW = window.SW || {};
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
 
-    const writableDatasets = (SW.store.get().resourceGroups.dataset || []).filter((d) => d.writable);
+    // Not the rail's Datasets: the server promotes a scratch file onto any Dataset this container
+    // mounts writable (`_default_dataset`), so offering only the ones someone added to the project
+    // greyed this out while the copy would have worked.
+    const writableDatasets = SW.store.get().datasetTargets || [];
     const items = contextItem
       ? [{ key: 'detach', label: 'Remove from this conversation' }]
       : [
@@ -172,7 +175,8 @@ window.SW = window.SW || {};
                   key: `to-dataset:${d.id}`,
                   label: `Add to ${d.name}`,
                 }))
-              : [{ key: 'to-dataset', label: 'Add to a Dataset…', disabled: true }]
+              // A disabled item never fires onClick, so the reason has to be the label itself.
+              : [{ key: 'to-dataset', label: 'No writable Dataset is mounted here', disabled: true }]
             : []),
           ...(resource.membershipParent
             ? [
@@ -190,9 +194,6 @@ window.SW = window.SW || {};
       if (key === 'promote') return SW.store.promoteResource(resource);
       if (key === 'demote') return SW.store.demoteResource(resource);
       if (key === 'remove') return SW.store.removeFromProject(resource);
-      if (key === 'to-dataset') {
-        return antd.message.info('No writable Dataset is mounted in this workspace.');
-      }
       if (key.startsWith('to-dataset:')) {
         return SW.store.addScratchToDataset(resource, key.slice('to-dataset:'.length).replace(/^dataset:/, ''));
       }
