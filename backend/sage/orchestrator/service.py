@@ -2230,6 +2230,9 @@ class Orchestrator:
         try:
             project = self._ensure_seeded()
             self._adopt_legacy_build_history(project.workspace)
+            # Same reason as the streaming turns: the archive is no longer committed, so a fresh
+            # clone reaching the agent through this route would hand it a file that isn't there.
+            self._refresh_history_archive(project)
             client = self._ensure_opencode()
             sid = self._ensure_session(project, conversation)
 
@@ -3512,7 +3515,7 @@ class Orchestrator:
             settings.pop("built", None)
             project.workspace.write_settings(settings)
             project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
-            project.workspace.render_history_md()
+            self._refresh_history_archive(project)
             return {"ok": True, "status": project.status()}
         finally:
             self._turn_lock.release()
@@ -3752,7 +3755,7 @@ class Orchestrator:
         # Refresh the agent-facing archive of earlier turns BEFORE the baseline below, so this write
         # is part of the pre-turn state. Written after it, the read-only gate would see a changed
         # working tree and fail an Ask/Plan turn that wrote nothing.
-        project.workspace.render_history_md()
+        self._refresh_history_archive(project)
         # Snapshot before touching history/files so a stop mid-turn can restore exactly this
         # state, and remember how many history entries pre-date this turn so a stop can drop
         # everything appended since (the turn disappears from the transcript entirely).
@@ -4601,7 +4604,7 @@ class Orchestrator:
             return ev
 
         # Same ordering rule as _build_stream: refresh the archive before the revert point below.
-        project.workspace.render_history_md()
+        self._refresh_history_archive(project)
         project.workspace.append_history(
             {"type": "user", "text": user_text if user_text is not None else "Approved the plan."},
             project.build_conversation)
@@ -6630,11 +6633,35 @@ class Orchestrator:
             agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
 
     @staticmethod
-    def _ensure_gitignored(workspace: Workspace, line: str) -> None:
-        gi = workspace.path / ".gitignore"
-        existing = gi.read_text() if gi.exists() else ""
+    def _ensure_ignore_line(ignore_file: Path, line: str) -> None:
+        existing = ignore_file.read_text() if ignore_file.exists() else ""
         if line not in existing.split():
-            gi.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")
+            ignore_file.write_text(
+                existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")
+
+    @classmethod
+    def _ensure_gitignored(cls, workspace: Workspace, line: str) -> None:
+        cls._ensure_ignore_line(workspace.path / ".gitignore", line)
+
+    def _refresh_history_archive(self, project: Project) -> None:
+        """Rebuild `.sage/history.md` for this turn, and keep it out of git while doing it (#65).
+
+        The archive is rendered whole from the log beside it every turn, so two Sage Builders in one
+        Project conflicted on it every turn over data either one could rebuild. Ignoring it is only
+        half the job: the agent finds this file by grepping, OpenCode's grep is ripgrep, and ripgrep
+        honours `.gitignore` — a plain ignore rule would make a project-wide grep silently return
+        nothing. `.ignore` is read by ripgrep ahead of `.gitignore` and never read by git, so the
+        negation there leaves the archive greppable and still uncommitted. The template ships both
+        rules; these two calls are what fixes a project seeded before they existed."""
+        from ..workspace import git
+
+        ws = project.workspace
+        rel = ws.history_md_path.relative_to(ws.path).as_posix()
+        self._ensure_gitignored(ws, rel)
+        self._ensure_ignore_line(ws.path / ".ignore", f"!{rel}")
+        if git.is_repo_root(ws.path):
+            git.untrack(ws.path, rel)
+        ws.render_history_md()
 
     def shutdown(self) -> None:
         # Stop-safe backstop: on a graceful SIGTERM (Domino /stop, idle cull, or the hub button),

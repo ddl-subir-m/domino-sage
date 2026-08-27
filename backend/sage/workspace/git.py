@@ -88,6 +88,17 @@ def commit_all(path: Path, message: str, exclude: list[str] | None = None) -> bo
     return True
 
 
+def untrack(path: Path, rel: str) -> bool:
+    """Drop `rel` from the index, leaving it on disk. True if git was tracking it.
+
+    An ignore rule does nothing to a file git already knows about, so a workspace that committed
+    one before it became generated state needs this once. A no-op every turn after that."""
+    if _git(path, "ls-files", "--error-unmatch", "--", rel, check=False).returncode != 0:
+        return False
+    _git(path, "rm", "--cached", "-q", "--", rel)
+    return True
+
+
 def push(path: Path) -> SaveResult:
     """Push HEAD. Returns pushed=False (not an error) when there's no remote or the push is
     rejected (e.g. a non-fast-forward — the caller should pull first)."""

@@ -1,0 +1,5 @@
+# Read by ripgrep (and only by ripgrep) ahead of .gitignore; git never reads it.
+# .sage/history.md is gitignored because it is regenerated every turn, but the agent finds it
+# by grepping and OpenCode's grep is ripgrep. Without this line a project-wide grep returns
+# nothing and the model concludes the user never asked.
+!.sage/history.md

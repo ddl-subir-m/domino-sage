@@ -500,8 +500,10 @@ class Workspace:
     def history_md_path(self) -> Path:
         """Grep-able rendering of history.jsonl, for the AGENT rather than the UI. OpenCode compacts
         a long build's context and the dropped detail is gone from the model's view; this gives it a
-        way back to what was already asked, planned, or rejected. Committed like the rest of .sage/
-        — grep skips gitignored paths, so an ignored archive would silently return no matches."""
+        way back to what was already asked, planned, or rejected. Not committed (#65): it is
+        regenerated from the log on every turn, so two Builders in one Project conflicted on it
+        every turn over data either could rebuild. The workspace `.ignore` rule is what keeps it
+        greppable once it is gitignored — see Orchestrator._refresh_history_archive."""
         return self.path / ".sage" / "history.md"
 
     # Entries worth archiving: the ones that carry a decision. Tool calls, typechecks and dividers

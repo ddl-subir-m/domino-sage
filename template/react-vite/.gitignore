@@ -39,6 +39,11 @@ __pycache__/
 # A Thread record half-written when the container died. ThreadStore._write_json renames the real
 # file into place, so one of these is never read — but `git add -A` would commit it.
 .sage/threads/*/.*.tmp
+# The agent-facing rendering of history.jsonl. Generated whole from the log beside it on every
+# turn, so with two Sage Builders in one Project it conflicted every turn over data either one
+# could rebuild. Ignored and regenerated on demand; the log itself stays committed. `.ignore` next
+# to this file is what keeps the agent's grep able to see it.
+.sage/history.md
 # The stop button's private content store (TurnSnapshot). Builder-local scratch, like the two
 # above. It is a git repo inside this one, so without this line `git add -A` records it as a
 # gitlink pointing at a SHA no remote has, changing every turn, and a fresh clone gets an empty
