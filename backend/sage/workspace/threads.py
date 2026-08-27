@@ -306,7 +306,15 @@ _SKIP_SNAPSHOT_PARTS = frozenset({"node_modules", ".git", "dist", "__pycache__",
 # — the tree is gitignored, so nothing there reaches the repo — but a write THROUGH one of those
 # symlinks reaches the Dataset, and reverting it used to write the old bytes back over the mount.
 # Refusing that write at the tool boundary is the right place for it; undoing it here never was.
-_SKIP_SNAPSHOT_PREFIXES = ("public/data/",)
+#
+# `.sage/scratch/` is the same tree under another name. Chat fetches a Dataset file there to answer
+# a question about it (see fetch_dataset_file_for_chat), and a person's upload lands there too — so
+# skipping only public/data left the whole transactions CSV being read across the mount twice per
+# turn, which is the cost this list exists to avoid. Worse, neither is a path a Chat turn may write,
+# so revert_denied_writes treated both as denied writes: a fetch or an upload the `before` snapshot
+# had not managed to read was UNLINKED at the end of the turn, taking the file out of the rail while
+# the chip that named it stayed. Nothing here is the agent's, and nothing here reaches git.
+_SKIP_SNAPSHOT_PREFIXES = ("public/data/", ".sage/scratch/")
 
 CHAT_WORK = Path(".sage") / "chat-work"
 

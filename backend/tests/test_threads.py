@@ -122,6 +122,37 @@ def test_the_turn_snapshot_does_not_read_attached_dataset_bytes(tmp_path: Path):
     assert snap["src/App.tsx"] == b"original"
 
 
+def test_the_turn_snapshot_does_not_read_a_dataset_file_fetched_for_chat(tmp_path: Path):
+    """Chat fetches a Dataset file into `.sage/scratch/datasets/` to answer a question about it, so
+    skipping only `public/data/` moved the whole transactions CSV back into every turn's snapshot —
+    read across the mount before the turn and again after it."""
+    mount = tmp_path / "mnt" / "data" / "clickstream"
+    mount.mkdir(parents=True)
+    real = mount / "transformed_cc_transactions.csv"
+    real.write_text("amount,merchant\n12.30,coffee\n")
+    fetched = tmp_path / ".sage" / "scratch" / "datasets" / "clickstream" / real.name
+    fetched.parent.mkdir(parents=True)
+    fetched.symlink_to(real)
+
+    assert ".sage/scratch/datasets/clickstream/transformed_cc_transactions.csv" not in snapshot_files(tmp_path)
+
+
+def test_revert_does_not_delete_a_fetched_or_uploaded_file(tmp_path: Path):
+    """Neither tree is a path a Chat turn may write, so revert treated both as denied writes: a file
+    the `before` snapshot had not read was unlinked at the end of the turn, taking it out of the rail
+    while the chip that named it stayed."""
+    tid = "thr_abc"
+    fetched = tmp_path / ".sage" / "scratch" / "datasets" / "clickstream" / "rows.csv"
+    fetched.parent.mkdir(parents=True)
+    fetched.write_text("a,b\n1,2\n")
+    upload = tmp_path / ".sage" / "scratch" / "notes.csv"
+    upload.write_text("x")
+
+    assert revert_denied_writes(tmp_path, tid, before={}) == []
+    assert fetched.is_file()
+    assert upload.is_file()
+
+
 def test_a_src_data_folder_is_still_snapshotted(tmp_path: Path):
     """Only the attachment tree is skipped. `src/data/` is the agent's own, and a write there is
     exactly what revert exists for."""
