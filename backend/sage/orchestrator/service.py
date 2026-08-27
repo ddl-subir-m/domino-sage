@@ -1034,6 +1034,30 @@ def _chat_activity(tool: str, subject: str) -> tuple[str, str]:
     return "", ""
 
 
+# A step OpenCode refused, rendered short enough to say to a person. Long enough to carry a
+# provider's own sentence ("context length exceeded", "model not found"), short enough that it does
+# not become the Thread.
+_CHAT_ERROR_MAX = 300
+
+
+def _chat_error_text(err: object) -> str:
+    """One plain line for a step that failed, or "" when the frame carries nothing to say.
+
+    The frame carries whatever said no, in whatever shape it said it: a bare string, or a dict with
+    the sentence under `data.message` (OpenCode's own wrapper) or `message`. `name` is the last
+    resort — a class name is a poor sentence, but it beats reporting silence, which is what Chat
+    did with these frames before.
+    """
+    if isinstance(err, str):
+        text = err
+    elif isinstance(err, dict):
+        data = err.get("data") if isinstance(err.get("data"), dict) else {}
+        text = str(data.get("message") or err.get("message") or err.get("name") or "")
+    else:
+        text = ""
+    return " ".join(text.split())[:_CHAT_ERROR_MAX]
+
+
 def _chat_live_event(ev) -> dict | None:
     """One AgentEvent off the live stream -> a Chat SSE event, or None to drop it.
 
@@ -2997,6 +3021,13 @@ class Orchestrator:
             # deserves to be killed at 90 seconds.
             last_activity = started
             last_text = ""
+            # The last thing that said no, and whether anything was ever said back to the person.
+            # A step OpenCode refused (a provider 400, a model that is not there) ends the turn
+            # without a word, and Chat used to let the quiet cap have it — so a turn that WAS told
+            # why reported that Sage "stopped making progress", and sent the person to shrink a
+            # question that was never the problem.
+            step_error = ""
+            answered = False
             idle_quiet = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
             tool_quiet = _CHAT_TOOL_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
             # Calls that started and have not come back, by call id: `called` opens one and
@@ -3029,6 +3060,10 @@ class Orchestrator:
                             "This turn took too long, so it was stopped. Building an app is Build's "
                             "job rather than Chat's — open it in Build below."
                         )
+                    elif step_error:
+                        # It did not go quiet on its own — it was refused, and then there was
+                        # nothing left to say. The refusal is the reason; the silence only followed.
+                        message = f"Sage could not finish this turn — {step_error}"
                     elif quiet and running_tools:
                         # A step was still open when the window closed. Blaming the turn for
                         # stopping would be wrong twice over: it did not stop, and the person
@@ -3063,6 +3098,17 @@ class Orchestrator:
                     return
                 for ev in tap.drain():
                     last_activity = time.monotonic()
+                    if ev.kind == "error":
+                        # Not shown as it happens — a step that fails may still be retried, and the
+                        # answer is what the Thread is for. Kept, so the end of the turn can say it,
+                        # and logged, because nothing else in Sage records this frame at all.
+                        step_error = _chat_error_text(ev.payload.get("error")) or step_error
+                        log.warning("chat: step failed — %s", ev.payload.get("error"))
+                        # A turn refused at its first step may never register as running, and
+                        # `finished` needs to have seen it run. Without this the loop cannot end on
+                        # anything but the cap, which is the 90 seconds of nothing this fixes.
+                        appeared = True
+                        continue
                     if ev.kind == "tool_run":
                         # `shell.started` repeats the call id of the bash `tool.called`, so a set
                         # makes the second one a no-op. An event with no id falls back to one
@@ -3074,6 +3120,7 @@ class Orchestrator:
                             running_tools.discard(call)
                     live = _chat_live_event(ev)
                     if live is not None:
+                        answered = answered or bool(live.get("text"))
                         yield live
                 try:
                     running = client.is_running(sid)
@@ -3143,6 +3190,7 @@ class Orchestrator:
                     last_activity = time.monotonic()
                 if finished:
                     if pending_text:
+                        answered = True
                         ev = {"type": "agent", "kind": "text", "text": pending_text}
                         store.append_history(thread_id, ev)
                         yield ev
@@ -3160,6 +3208,15 @@ class Orchestrator:
                 store.append_history(thread_id, art_ev)
                 yield art_ev
             done = {"type": "done", "ok": True, "decision": "answered"}
+            if step_error and not answered:
+                # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
+                # the shape that sends someone looking for a Sage bug when the provider had already
+                # said what was wrong. Artifacts written before the failing step are still theirs.
+                err = {"type": "error",
+                       "message": f"Sage could not finish this turn — {step_error}"}
+                store.append_history(thread_id, err)
+                yield err
+                done = {"type": "done", "ok": False, "decision": "step failed"}
             if artifacts:
                 done["artifacts"] = artifacts
             store.append_history(thread_id, done)

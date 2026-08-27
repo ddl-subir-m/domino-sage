@@ -1221,6 +1221,44 @@ def test_a_finished_tool_puts_the_turn_back_on_the_short_window(tmp_path: Path, 
     assert "stopped making progress" in next(e for e in out if e["type"] == "error")["message"]
 
 
+def test_a_refused_step_says_what_was_refused(tmp_path: Path):
+    """A step the provider says no to ends the turn with no answer in it. Chat dropped that frame,
+    waited out the quiet cap and reported that Sage "stopped making progress" — which sent the
+    person to shrink a question that was never what went wrong."""
+    refused = [_live("error", error={"data": {"message": "context length exceeded"}})]
+
+    def client(ws):
+        return StreamingFake(ws, [Turn(text="")], refused, 0.0)
+
+    orch, _ = _orch(tmp_path, client=client)
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "whats in @transformed_cc_transactions.csv"))
+
+    err = next(e for e in out if e["type"] == "error")
+    assert "context length exceeded" in err["message"]
+    assert "stopped making progress" not in err["message"]
+    assert next(e for e in out if e["type"] == "done") == {
+        "type": "done", "ok": False, "decision": "step failed"}
+    # And the Thread keeps it, so a reload still shows why.
+    assert any(e.get("type") == "error" for e in orch.get_thread(tid)["history"])
+
+
+def test_a_refused_step_the_turn_recovers_from_is_not_reported(tmp_path: Path):
+    """One step failing is not the turn failing. If an answer arrives after it, the answer is the
+    turn — the frame was a retry, and saying anything about it would be noise."""
+    recovered = [
+        _live("error", error={"name": "ProviderError"}),
+        _live("message", text="It has 12 columns.", final=True),
+        _live("phase", finish="stop"),
+    ]
+    orch, _ = _streamed(tmp_path, recovered, text="It has 12 columns.")
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "whats in it"))
+
+    assert not [e for e in out if e["type"] == "error"]
+    assert next(e for e in out if e["type"] == "done")["ok"] is True
+
+
 def test_a_turn_that_never_stops_talking_hits_the_ceiling(tmp_path: Path, monkeypatch):
     """Alive is not the same as getting anywhere. Without a ceiling an agent that loops holds the
     turn lock for as long as it keeps emitting."""
