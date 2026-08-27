@@ -437,16 +437,16 @@ SW.api = {
 
   // The plan the app is being built from: `{title, markdown, status, steps}`, or `{}` when there
   // is none. `status` is 'awaiting' while .sage/plan.md is live and 'built' once a build has
-  // archived it. There is no structured plan artifact behind this — Sage writes markdown — so the
-  // rest of this group stays stubbed rather than pretending otherwise.
+  // archived it. Markdown, because plan.md is markdown — the group below reads the same plan as a
+  // document, which is a different question and outlives the build this one describes.
   projectPlan: () => request('/project/plan').catch(() => ({})),
 
-  plans: () => empty(),
-  plan: async () => ({}),
-  planMarkdown: async () => ({ markdown: '' }),
-  createPlan: async () => ({}),
-  patchPlan: async () => ({}),
-  review: async () => ({}),
+  plans: () => request('/plans').then((r) => r.items || []),
+  plan: (id) => request(`/plans/${encodeURIComponent(id)}`),
+  planMarkdown: (id) => request(`/plans/${encodeURIComponent(id)}/markdown`),
+  createPlan: (body) => post('/plans', body),
+  patchPlan: (id, body) => patch(`/plans/${encodeURIComponent(id)}`, body),
+  review: (id, body) => post(`/plans/${encodeURIComponent(id)}/review`, body),
 
   handoff: (payload) => post('/handoff', payload),
 
@@ -489,7 +489,9 @@ SW.api = {
   remix: async () => ({}),
   requestAccess: async () => ({}),
 
-  members: async () => ({ members: [], directory: [] }),
+  // The project's collaborators. Empty off Domino, and empty when the record can't be read —
+  // the plan page then shows ids where it would show names rather than failing to load.
+  members: () => request('/members').catch(() => ({ members: [], directory: [] })),
   invite: async () => ({}),
   activity: async () => [],
   notifications: () => empty(),

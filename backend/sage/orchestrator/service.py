@@ -100,6 +100,7 @@ from ..resources.publish_guard import (
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
+from ..workspace import plan_doc
 from ..workspace.manager import Workspace, WorkspaceManager
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
@@ -1318,6 +1319,13 @@ def _count_plan_steps(plan_md: str) -> int:
     return steps
 
 
+def _viewer_id() -> str:
+    """Who a plan document is authored by. A turn runs outside any request, so there is no viewer
+    JWT to read here — this is the same container-identity fallback `/api/me` uses when extended
+    identity forwards nothing, which is the Sage Builder case and so the usual one."""
+    return os.environ.get("DOMINO_USER_ID") or "me"
+
+
 def _approve_prompt(plan_md: str, answers: str, *, handoff_note: str = "") -> str:
     """The Implement-turn prompt built from an approved plan (SPEC P6): the plan is fed in as
     context so the build turn constructs exactly what the user signed off on."""
@@ -1688,12 +1696,128 @@ class Orchestrator:
         markdown = live or (workspace.read_archived_plan() or "").strip()
         if not markdown:
             return {}
+        # The document this plan.md was written alongside, so the pin can open the plan page rather
+        # than a modal of the raw text. Newest first, and the newest is the one plan.md belongs to.
+        # Empty for a workspace whose plan predates plan documents — the pin falls back to the text.
+        docs = workspace.list_plan_docs()
         return {
             "title": chat_handoff.plan_title(markdown),
             "markdown": markdown,
             "status": "awaiting" if live else "built",
             "steps": _count_plan_steps(markdown),
+            "planId": docs[0]["id"] if docs else "",
         }
+
+    # ---- Plan documents ----
+    #
+    # The pin above reads plan.md, the transient copy. These read the document, which outlives it.
+    # All of them take the workspace the same cheap way the pin does: a plan page is not a reason to
+    # boot Vite or seed an app.
+
+    def list_members(self) -> dict:
+        """Who can be named as a reviewer, and whose id a comment resolves to. `directory` is the
+        wider set the Workbench looks names up in; here they are the same list, because Sage only
+        ever learns about the people on this project."""
+        people = [
+            {"id": p.id, "name": p.name, "title": p.title, "avatar": p.avatar}
+            for p in self._resources.list_collaborators(self._domino_project_id)
+        ]
+        return {"members": people, "directory": people}
+
+    def _plan_docs_workspace(self) -> Workspace:
+        return self.project(start_preview=False, seed_app=False).workspace
+
+    def list_plan_docs(self) -> list[dict]:
+        return self._plan_docs_workspace().list_plan_docs()
+
+    def read_plan_doc(self, plan_id: str) -> dict | None:
+        return self._plan_docs_workspace().read_plan_doc(plan_id)
+
+    def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
+        return self._plan_docs_workspace().read_plan_doc_markdown(plan_id)
+
+    def create_plan_doc(self, body: dict | None = None) -> dict:
+        """An empty document somebody fills in by hand. The planner's own documents are created in
+        the gate, where there is a plan to put in them."""
+        body = body or {}
+        return self._plan_docs_workspace().create_plan_doc(
+            "",
+            title=str(body.get("title") or "Untitled plan"),
+            author=_viewer_id(),
+            origin_thread_id=str(body.get("threadId") or ""),
+        )
+
+    def patch_plan_doc(self, plan_id: str, body: dict) -> dict | None:
+        """Edit the document. Sections are rendered back to markdown and stored as a new version,
+        so the text stays the source of truth and the previous draft survives the edit."""
+        workspace = self._plan_docs_workspace()
+        current = workspace.read_plan_doc(plan_id)
+        if current is None:
+            return None
+        body = body or {}
+        if "sections" not in body and "summary" not in body:
+            # Nothing about the body changed — a rename is metadata, not a new draft.
+            return workspace.patch_plan_doc_meta(
+                plan_id, **{k: v for k, v in body.items() if k in ("title", "status", "appId")})
+        summary = body.get("summary", current.get("summary", ""))
+        sections = {**current.get("sections", {}), **(body.get("sections") or {})}
+        meta = {k: v for k, v in body.items() if k in ("title", "status", "appId")}
+        doc = workspace.write_plan_doc_version(plan_id, plan_doc.render(summary, sections), **meta)
+
+        # An edit to the document that a live plan.md was copied from has to reach that copy, or the
+        # build runs the plan as it was before the edit — and the rail's pin goes on counting the old
+        # steps. Only while a handoff is actually live, and only from the document it belongs to:
+        # editing an older plan after its build must not resurrect it as the thing being built.
+        if doc and workspace.read_plan() is not None:
+            newest = workspace.list_plan_docs()
+            if newest and newest[0]["id"] == plan_id:
+                workspace.write_plan(doc["markdown"])
+        return doc
+
+    def review_plan_doc(self, plan_id: str, body: dict) -> dict | None:
+        """Reviewers, comments and approvals. None of it touches the body, so none of it makes a
+        version: a comment on a plan is not a new draft of that plan."""
+        workspace = self._plan_docs_workspace()
+        doc = workspace.read_plan_doc(plan_id)
+        if doc is None:
+            return None
+        body = body or {}
+        action = str(body.get("action") or "")
+        comments = list(doc.get("comments") or [])
+        approvals = list(doc.get("approvals") or [])
+
+        if action == "request":
+            reviewers = [str(r) for r in (body.get("reviewers") or []) if r]
+            return workspace.patch_plan_doc_meta(
+                plan_id, reviewers=reviewers, status="in_review",
+                reviewNote=str(body.get("note") or ""))
+        if action == "comment":
+            comments.append({
+                "id": f"c{len(comments) + 1}",
+                "section": str(body.get("section") or ""),
+                "user": _viewer_id(),
+                "text": str(body.get("text") or ""),
+                "at": plan_doc.now(),
+                "resolved": False,
+            })
+            return workspace.patch_plan_doc_meta(plan_id, comments=comments)
+        if action == "resolve":
+            target = str(body.get("commentId") or "")
+            for comment in comments:
+                if comment.get("id") == target:
+                    comment["resolved"] = True
+            return workspace.patch_plan_doc_meta(plan_id, comments=comments)
+        if action == "approve":
+            user = str(body.get("user") or _viewer_id())
+            if not any(a.get("user") == user for a in approvals):
+                approvals.append({"user": user, "at": plan_doc.now()})
+            reviewers = [str(r) for r in (doc.get("reviewers") or [])]
+            # Approved once every named reviewer has signed off. With nobody named, one approval is
+            # the whole review.
+            done = all(r in [a["user"] for a in approvals] for r in reviewers) if reviewers else True
+            return workspace.patch_plan_doc_meta(
+                plan_id, approvals=approvals, status="approved" if done else "in_review")
+        return doc
 
     def project(self, start_preview: bool = True, seed_app: bool = True) -> Project:
         """Get-or-attach the single bound project. Idempotent.
@@ -2111,6 +2235,9 @@ class Orchestrator:
             "context": store.read_context(thread_id),
             "artifacts": store.read_artifacts(thread_id),
             "handoff": store.read_handoff(thread_id),
+            # Lifted out of the handoff row so the Thread carries its plan document the way an App
+            # does, which is where the Workbench looks for it.
+            "planId": (store.read_handoff(thread_id) or {}).get("planId", ""),
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
@@ -2421,13 +2548,22 @@ class Orchestrator:
         if not plan_md:
             raise ValueError("empty plan")
         project.workspace.write_plan(plan_md)
+        # Same document the gate creates, but this one knows the Thread it came from, so the plan
+        # page can offer the way back to the conversation that produced it.
+        plan_id = project.workspace.create_plan_doc(
+            plan_md,
+            title=chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
+            author=_viewer_id(),
+            origin_thread_id=thread_id,
+        )["id"]
         # The plan card opens in the Build conversation the handoff created, not in whichever
         # one Build last had on screen.
         project.workspace.append_history(
-            {"type": "plan-proposed", "plan": plan_md, "kind": "plan", "steps": 0}, thread_id)
+            {"type": "plan-proposed", "plan": plan_md, "kind": "plan", "planId": plan_id,
+             "steps": 0}, thread_id)
         project.workspace.append_history(
             {"type": "done", "ok": True, "decision": "awaiting approval"}, thread_id)
-        handoff = store.mark_handoff_planned(thread_id)
+        handoff = store.mark_handoff_planned(thread_id, plan_id)
         self._flush_chat_save("plan", holding_turn=True)
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
@@ -3330,8 +3466,26 @@ class Orchestrator:
         # left to itself the planner writes one unbroken wall of prose (and sometimes restates it),
         # which is unreadable at any length. Long is fine — shapeless is not, so the structure is
         # spelled out here rather than left to the agent prompt alone.
-        _PLAN_SHAPE = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
-                       "- One short sentence saying what the app is.\n"
+        # Every plan shape opens the same way, and the plan document's sections sit between that
+        # opening sentence and '## Plan'. Composed rather than repeated so the step list — the part
+        # plan_steps.parse_steps and _count_plan_steps read — stays identical in both shapes.
+        _PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
+                        "- One short sentence saying what the app is.\n")
+        # The sections a colleague reads to decide whether the app is worth building, and the
+        # durable half of the plan document. Kept short on purpose: the plan still has to be
+        # skimmable in the approval card, so each section is a line or a few bullets, not an essay.
+        _PLAN_DOC_SECTIONS = (
+            "- Then a '## Problem & outcome' heading and one or two sentences: what is wrong today, "
+            "and what is true once the app exists.\n"
+            "- Then a '## Who uses this' heading and one sentence naming the person who opens it.\n"
+            "- Then a '## What it does' heading and short bullets, one capability each.\n"
+            "- Then a '## Screens' heading and one bullet per screen: a bolded name, then ' — ', "
+            "then one sentence on what it shows.\n"
+            "- Then a '## Not doing' heading and short bullets naming what is deliberately out of "
+            "scope. Leave the heading out entirely if nothing is.\n"
+            "- Then a '## Done when' heading and short bullets, each one an observable result "
+            "someone can check without reading the code.\n")
+        _PLAN_SHAPE = (_PLAN_OPENER + _PLAN_DOC_SECTIONS +
                        "- Then a '## Plan' heading and a numbered list. Each step is a single line: "
                        "a bolded 2-4 word label, then ' — ', then one sentence. No paragraph steps, "
                        "no sub-lists, no code.\n"
@@ -3348,8 +3502,7 @@ class Orchestrator:
         # one's output it has never seen. Kept separate from _PLAN_SHAPE rather than replacing it:
         # the single-context shape is what every non-phased build still uses.
         _PLAN_SHAPE_PHASED = (
-            "Format it exactly like this, in Markdown, and write nothing outside it:\n"
-            "- One short sentence saying what the app is.\n"
+            _PLAN_OPENER + _PLAN_DOC_SECTIONS +
             "- Then a '## Plan' heading.\n"
             "- Then, for each step, a '### N. Label' heading (N is 1, 2, 3…; the label is 2-4 "
             "words), followed by exactly these bullets:\n"
@@ -3803,16 +3956,28 @@ class Orchestrator:
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
                 # (see archive_plan), and a design the user wants to keep reading must not vanish
                 # because they later approved a build from it.
+                plan_id = ""
                 if arch:
                     project.workspace.write_architecture(plan_md)
                 else:
                     project.workspace.write_plan(plan_md)
+                    # The durable half of the same plan. plan.md above is the copy the builder
+                    # consumes and archive_plan() moves aside the moment it does; this document is
+                    # what people open, edit and comment on, and it has to outlive that build.
+                    # Architecture keeps its own file instead and gets no document — it is already
+                    # a reference that nothing archives.
+                    plan_id = project.workspace.create_plan_doc(
+                        plan_md,
+                        title=chat_handoff.plan_title(plan_md) or "App",
+                        author=_viewer_id(),
+                    )["id"]
                 # `steps` is how the card says "Approve & build (6 phases)" — and, more usefully,
                 # it's the user's chance to see BEFORE approving that a phased plan actually parsed.
                 # A plan the parser can't read still builds, just in one context.
                 steps = len(parse_steps(plan_md)) if (phased_build and not arch) else 0
                 yield persist({"type": "plan-proposed", "plan": plan_md,
                                "kind": "architecture" if arch else "plan",
+                               "planId": plan_id,
                                "steps": steps if steps >= MIN_STEPS else 0})
                 yield persist({"type": "done", "ok": True,
                                "decision": "architecture ready" if arch else "awaiting approval"})

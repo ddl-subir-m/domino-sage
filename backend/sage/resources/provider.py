@@ -98,6 +98,20 @@ class LlmAlias:
 
 
 @dataclass(frozen=True)
+class Person:
+    """Somebody who collaborates on the project — a name to put on a plan comment or an approval.
+
+    Not a Resource: nothing lists these in the rail and nothing binds one. Plan review is the only
+    caller, which is why this carries a display name and nothing else about the account.
+    """
+
+    id: str
+    name: str        # `fullName`, the label a comment or approval is shown under
+    title: str = ""  # `userName`, to tell two people with the same full name apart
+    avatar: str = ""
+
+
+@dataclass(frozen=True)
 class HostedEndpoint:
     """A Domino-hosted GenAI Endpoint — the vLLM deployment an LLM Alias can point at.
 
@@ -551,6 +565,12 @@ class ResourceProvider(Protocol):
     # this caller may see. Not a Resource anyone picks — preflight alone reads it, to say whether the
     # endpoint behind an Alias is serving (#21).
     def list_hosted_endpoints(self) -> list[HostedEndpoint]: ...
+
+    # Who else works on this project, for naming a plan's reviewers and attributing its comments.
+    # Takes the project explicitly for the same reason list_model_apis does. Empty is a real answer:
+    # a solo project has no collaborators, and a caller that cannot read the record gets the same
+    # empty list rather than an error, because a plan page is still usable without names on it.
+    def list_collaborators(self, project_id: str | None) -> list[Person]: ...
 
     # No project argument, unlike the two above, and that asymmetry is the finding: a Data Source is
     # permission-scoped to the person, not the project.
@@ -1073,6 +1093,35 @@ class DominoResourceProvider:
         rows = parse_model_apis([record] if isinstance(record, dict) else record)
         return rows[0] if rows else None
 
+    def list_collaborators(self, project_id: str | None) -> list[Person]:
+        """GET /v4/projects/{id}/collaborators — Domino answers with Person records directly, so
+        there is no second lookup to turn ids into names.
+
+        Degrades to empty rather than raising, the way `_member_projects` degrades to the home
+        project: the plan page works with ids in place of names, and a review panel is not worth
+        failing a page load over.
+        """
+        if not project_id or not self._api_host:
+            return []
+        try:
+            payload = self._domino_get(f"/v4/projects/{project_id}/collaborators")
+        except ResourceUnavailable:
+            return []
+        out: list[Person] = []
+        for record in payload or []:
+            if not isinstance(record, dict):
+                continue
+            uid = str(record.get("id") or "")
+            if not uid:
+                continue
+            out.append(Person(
+                id=uid,
+                name=str(record.get("fullName") or record.get("userName") or uid),
+                title=str(record.get("userName") or ""),
+                avatar=str(record.get("avatarUrl") or ""),
+            ))
+        return out
+
     def list_data_sources(self) -> list[DataSource]:
         """Data Sources this caller has permission on, SQL kinds only, with readiness asked for.
 
@@ -1462,6 +1511,7 @@ class FakeResourceProvider:
     # Empty by default: none of the fake aliases is Domino-hosted, so there is nothing for one to
     # point at, and a local run should not invent an endpoint the alias list does not reference.
     hosted_endpoints: list[HostedEndpoint] = field(default_factory=list)
+    collaborators: list[Person] = field(default_factory=list)
     data_sources: list[DataSource] = field(default_factory=lambda: list(_FAKE_DATA_SOURCES))
     # source id -> database -> schema -> tables, for the cascade (#11).
     tree: dict[str, dict[str, dict[str, list[str]]]] = field(
@@ -1487,6 +1537,11 @@ class FakeResourceProvider:
         """Answers from the same list the fan-out would have found it in. A fake that answered for
         ids absent from its own listing would let a test pass on a model Domino never had."""
         return next((m for m in self.model_apis if m.id == model_api_id), None)
+
+    def list_collaborators(self, project_id: str | None) -> list[Person]:
+        """Empty by default, like `hosted_endpoints`: a local run has no Domino directory behind it,
+        and inventing colleagues would put names on a review panel nobody can actually send to."""
+        return list(self.collaborators)
 
     def list_data_sources(self) -> list[DataSource]:
         return list(self.data_sources)

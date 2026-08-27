@@ -17,6 +17,10 @@ window.SW = window.SW || {};
     { key: 'screens', label: 'Screens', kind: 'screens' },
     { key: 'nonGoals', label: 'Not doing', kind: 'list' },
     { key: 'acceptance', label: 'Done when', kind: 'list' },
+    // The build steps, kept as markdown rather than broken into fields: this is the section
+    // plan_steps.parse_steps reads out of the file, and a phased plan writes sub-headings under it
+    // that no list of strings would survive. Same order as plan_doc.SECTIONS on the server.
+    { key: 'plan', label: 'Plan', kind: 'markdown' },
     { key: 'openQuestions', label: 'Open questions', kind: 'questions' },
   ];
 
@@ -236,7 +240,10 @@ window.SW = window.SW || {};
     }
 
     const author = userIndex[plan.author] || {};
-    const isReviewer = (plan.reviewers || []).includes(me.id);
+    // `me` is null until the shell has asked who is viewing, and the plan page is now
+    // reachable from a link, so it can render first.
+    const meId = (me || {}).id;
+    const isReviewer = (plan.reviewers || []).includes(meId);
     const approved = (plan.approvals || []).map((a) => a.user);
     const unresolved = (plan.comments || []).filter((c) => !c.resolved).length;
 
@@ -326,6 +333,8 @@ window.SW = window.SW || {};
               )
             )
           );
+        case 'markdown':
+          return h('div', { className: 'sw-plan-md' }, SW.util.markdown(value || ''));
         default:
           return h('p', { className: 'sw-plan-text' }, value);
       }
@@ -345,7 +354,7 @@ window.SW = window.SW || {};
             'div',
             { className: 'sw-plan-sheet-bar' },
             h(Tag, { bordered: false, className: 'sw-sens sw-blessed-tag' }, 'PLAN'),
-            h('span', { className: 'sw-caption' }, 'Artifact · open beside your work'),
+            h('span', { className: 'sw-caption' }, 'Document · open beside your work'),
             h('span', { style: { flex: 1 } }),
             variant === 'ide' &&
               h(antd.Segmented, {
@@ -407,12 +416,12 @@ window.SW = window.SW || {};
               h(Button, { onClick: () => setReviewOpen(true) }, 'Send for review'),
             isReviewer &&
               plan.status === 'in_review' &&
-              !approved.includes(me.id) &&
+              !approved.includes(meId) &&
               h(
                 Button,
                 {
                   onClick: async () => {
-                    await SW.api.review(plan.id, { action: 'approve', user: me.id });
+                    await SW.api.review(plan.id, { action: 'approve', user: meId });
                     load();
                     antd.message.success('Plan approved');
                   },

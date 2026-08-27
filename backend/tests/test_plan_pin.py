@@ -167,12 +167,17 @@ def test_the_panel_reads_the_plan_from_state_not_a_resource_group():
     panel = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
              / "components" / "resource-panel.js").read_text()
     assert "resourceGroups.plan" not in panel
-    assert "activePlan" in panel
+    # `projectPlan`, not `activePlan`: the pin shows plan.md, and `activePlan` is the plan document.
+    # They shared one key until plan documents were real, at which point loading a document would
+    # have blanked the pin.
+    assert "projectPlan" in panel
+    assert "activePlan" not in panel
 
 
 def test_the_pin_calls_a_real_endpoint():
-    """`projectPlan` is the wired one. The `plan`/`planMarkdown`/`createPlan` group beside it stays
-    stubbed on purpose — those belong to the prototype's structured plan artifact, which Sage does
-    not have, and a stub is more honest than a route inventing sections it cannot fill."""
+    """`projectPlan` reads plan.md. The `plan`/`planMarkdown`/`createPlan` group beside it reads the
+    plan document, and both are real now — the pin keeps its own route because it answers "what is
+    this app built from", which outlasts any one document."""
     api = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js" / "api.js").read_text()
     assert "projectPlan: () => request('/project/plan')" in api
+    assert "async () => ({})" not in api.split("plans:")[1].split("handoff:")[0]

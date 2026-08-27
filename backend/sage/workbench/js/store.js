@@ -89,6 +89,8 @@ window.SW = window.SW || {};
     activeApp: null,
     activePlanId: null,
     activePlan: null,
+    // plan.md, for the rail's pin. Not the plan document above.
+    projectPlan: null,
 
     // Apps this conversation changed, newest first. Drives the change dots on
     // the app selector and the tags in the rail.
@@ -434,6 +436,8 @@ window.SW = window.SW || {};
           type: 'build_plan',
           plan: ev.plan || '',
           kind: ev.kind || 'plan',
+          // The plan document this turn wrote. Empty for an architecture, which has no document.
+          planId: ev.planId || '',
           steps: ev.steps || 0,
           pending: true,
         };
@@ -515,9 +519,13 @@ window.SW = window.SW || {};
   // The plan the panel pins. Two moments move it and nothing else does: a gate turn or a Chat
   // handoff proposes one, and an approve consumes it (the server archives the plan the moment a
   // build reads it, which is what flips the pin from "Plan" to "Working from").
+  //
+  // `projectPlan`, not `activePlan`: this is plan.md's `{title, markdown, status, steps}`, and
+  // `activePlan` is the plan document `loadPlan` fetches. They used to share a key and only got
+  // away with it because nothing ever set `thread.planId`, so `loadPlan` never ran.
   async function refreshProjectPlan() {
     const plan = await SW.api.projectPlan();
-    state.activePlan = plan && plan.markdown ? plan : null;
+    state.projectPlan = plan && plan.markdown ? plan : null;
   }
 
   async function probePreview() {

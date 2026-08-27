@@ -158,7 +158,11 @@ window.SW = window.SW || {};
               })
             )
           ),
-          h(PreviewPane, null)
+          h(PreviewPane, null),
+          // store.openPlanArtifact() already routes Build to the sheet rather than the plan page;
+          // without this it set planViewerId and nothing appeared. Beside the preview, not over it,
+          // which is where Chat puts the same sheet.
+          h(SW.PlanSheet, null)
         )
       )
     );

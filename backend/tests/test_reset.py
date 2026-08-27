@@ -37,6 +37,7 @@ def test_reset_replaces_the_app_and_keeps_what_the_user_set_up(tmp_path: Path):
     (ws / "src" / "App.tsx").write_text("export default function App() { return <b>built</b>; }")
     (ws / "src" / "Dashboard.tsx").write_text("export const D = 1;")     # a file the agent added
     (ws / ".sage" / "queries.json").write_text('{"top_regions": "select 1"}')
+    project.workspace.create_plan_doc("A dashboard.\n", title="A dashboard.")
     project.workspace.mark_built()
 
     orch.reset_app()
@@ -50,6 +51,9 @@ def test_reset_replaces_the_app_and_keeps_what_the_user_set_up(tmp_path: Path):
     assert orch.read_instructions(project) == "Always label axes in full."
     # The app's own Sage metadata goes with the app.
     assert not (ws / ".sage" / "queries.json").exists()
+    # Including the plan documents (ADR-0007). They are durable across builds, not across a Reset:
+    # they describe the app that just went away, and the next build would be planned from them.
+    assert not (ws / ".sage" / "plan-docs").exists()
     # And the next build is planned like a first build, because the app really is new again.
     assert project.workspace.has_built() is False
 

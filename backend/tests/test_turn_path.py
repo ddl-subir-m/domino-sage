@@ -140,6 +140,77 @@ def test_a_first_build_gates_and_proposes_a_plan(tmp_path: Path):
     assert (orch.project(start_preview=False).workspace.path / ".sage" / "plan.md").exists()
 
 
+def test_a_gated_turn_writes_a_plan_document_beside_the_handoff(tmp_path: Path):
+    """Two files, two jobs. plan.md is the copy the builder consumes; the document is the one people
+    come back to, and the card carries its id so they can."""
+    orch, _oc, _ = _build(tmp_path, [Turn(text=(
+        "A desk dashboard.\n\n"
+        "## Problem & outcome\nRisk cannot see notional by desk.\n\n"
+        "## Plan\n1. **Desk table** — Show notional by desk.\n"
+    ))])
+    events = _run(orch, "build me a dashboard")
+
+    plan = next(e for e in events if e["type"] == "plan-proposed")
+    assert plan["planId"] == "001"
+
+    workspace = orch.project(start_preview=False).workspace
+    doc = workspace.read_plan_doc("001")
+    assert doc["sections"]["problem"] == "Risk cannot see notional by desk."
+    assert doc["version"] == 1
+    # The gate is read-only, so the document is the only thing this turn produced besides plan.md.
+    assert not (workspace.path / "src" / "App.tsx").read_text().strip().startswith("// ")
+
+
+def test_the_document_outlives_the_build_that_reads_it(tmp_path: Path):
+    """The whole point of keeping it apart from plan.md. archive_plan() moves the handoff out of the
+    agent's view the moment a build consumes it; a document that went with it would be no more
+    durable than the file it was copied from."""
+    orch, _oc, _ = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+    ])
+    list(orch.build_stream("build me a dashboard"))
+    workspace = orch.project(start_preview=False).workspace
+    assert workspace.read_plan_doc("001") is not None
+
+    list(orch.approve_stream())
+
+    assert workspace.read_plan() is None            # the handoff was consumed and archived
+    assert workspace.read_archived_plan() is not None
+    assert workspace.read_plan_doc("001") is not None   # the document stayed
+
+
+def test_cancelling_a_plan_leaves_its_document_alone(tmp_path: Path):
+    """Cancel dismisses the handoff, not the thinking. The plan page still opens on a plan nobody
+    built, which is the difference between dismissing a card and deleting a document."""
+    orch, _oc, _ = _build(tmp_path, [Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n")])
+    list(orch.build_stream("build me a dashboard"))
+    workspace = orch.project(start_preview=False).workspace
+
+    archived = workspace.archive_plan(cancelled=True)
+
+    assert archived is not None and archived.name.endswith("-cancelled.md")
+    assert workspace.read_archived_plan() is None       # a cancelled plan is not one we built from
+    assert workspace.read_plan_doc("001") is not None
+
+
+def test_an_architecture_gets_no_plan_document(tmp_path: Path):
+    """architecture.md is already a document nothing archives. A second copy of it under plan-docs
+    would be two places to edit the same design."""
+    orch, _oc, _ = _build(tmp_path, [Turn(text=(
+        "A design.\n\n## Diagram\n```mermaid\nflowchart TD\n  A --> B\n```\n\n"
+        "## Components\n- **Table** — holds rows.\n"
+    ))])
+    events = _run(orch, "give me an architecture to add a live upload queue")
+
+    plan = next(e for e in events if e["type"] == "plan-proposed")
+    assert plan["kind"] == "architecture"
+    assert plan["planId"] == ""
+    workspace = orch.project(start_preview=False).workspace
+    assert workspace.list_plan_docs() == []
+    assert workspace.read_architecture() is not None
+
+
 def test_the_scope_classifier_gates_a_substantial_change_on_a_built_app(tmp_path: Path):
     orch, _oc, gateway = _build(tmp_path, [
         Turn(text="1. A table\n2. A chart"),

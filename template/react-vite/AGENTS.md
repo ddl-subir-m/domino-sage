@@ -79,7 +79,7 @@ for, what you proposed, which steps ran.
   back rejected; you then re-read, re-edit, and race yourself again, and the turn makes no
   progress. Change a file, let that change land, then make the next one. Editing *different*
   files at once is fine and still worth doing.
-- **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, history, settings) as the current app spec or state — the code in `src/` is the source of truth. The one exception is `.sage/queries.json`, which you write when this app reads a Data Source: it holds the app's SQL, and there is a section below about it whenever there is a Data Source to write it for.
+- **`.sage/` is Sage metadata, not your spec.** Never read anything under `.sage/` (plan.md, plan-docs, history, settings) as the current app spec or state — the code in `src/` is the source of truth. The one exception is `.sage/queries.json`, which you write when this app reads a Data Source: it holds the app's SQL, and there is a section below about it whenever there is a Data Source to write it for.
 - **Never delete anything under `.sage/` or `public/data/`, whatever the request.** These are not
   yours and they are not "what you built": `.sage/` is Sage's own record of the project, and
   `public/data/` holds the files the user attached — each one a link the user made in the builder,

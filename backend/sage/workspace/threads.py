@@ -264,13 +264,17 @@ class ThreadStore:
         self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
         return row
 
-    def mark_handoff_planned(self, thread_id: str) -> dict:
+    def mark_handoff_planned(self, thread_id: str, plan_id: str = "") -> dict:
         row = self.read_handoff(thread_id) or {}
         if not row.get("suggestedAt"):
             row["suggestedAt"] = _now()
         row["suppressed"] = False
         row["status"] = "planned"
         row["planPath"] = ".sage/plan.md"
+        # The plan document this handoff drafted. planPath above is the transient copy the builder
+        # reads; this one still resolves after a build has archived that copy.
+        if plan_id:
+            row["planId"] = plan_id
         self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
         return row
 

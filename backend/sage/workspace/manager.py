@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import plan_doc
 
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
 # appears in a dev checkout of the template as soon as anything imports serve.py, and a workspace
@@ -37,6 +40,9 @@ _RESET_KEEP_NESTED = (Path("public") / "data",)
 _RESET_CLEAR = (Path(".sage") / "queries.json",
                 Path(".sage") / "plan.md",
                 Path(".sage") / "architecture.md")
+# Same rule, but a directory: the plan documents describe the app being replaced, so a Reset
+# that left them behind would hand the next build a plan for the app that just went away.
+_RESET_CLEAR_DIRS = (Path(".sage") / "plan-docs",)
 # Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
 _DEPS_SENTINEL = Path(".bin") / "vite"
 # What Domino runs to serve a published App: the entry script, and the Python server it execs
@@ -146,6 +152,141 @@ class Workspace:
             return max(built, key=lambda p: int(p.stem)).read_text()
         except OSError:
             return None
+
+    # ---- The plan document (the durable artifact) ----
+    #
+    # Kept apart from plan.md on purpose. `.sage/plan.md` is the one-shot handoff archive_plan()
+    # moves aside the moment a build consumes it; the document is what people read, edit and review,
+    # and it has to survive that build. Same split as architecture.md, one level up: the document is
+    # the source, plan.md is the copy handed to the builder.
+    #
+    # Under .sage/plan-docs/, NOT .sage/plans/ — that directory is the plan.md archive, and
+    # archive_plan()/read_archived_plan() glob "[0-9]*.md" in it. A doc directory sitting there
+    # would be one rename away from colliding with an archived plan.
+
+    @property
+    def plan_docs_dir(self) -> Path:
+        return self.path / ".sage" / "plan-docs"
+
+    def _plan_doc_dir(self, plan_id: str) -> Path:
+        # Ids are allocated below and never come from the caller's body, but they do arrive off the
+        # wire in a URL, so refuse anything that could climb out of plan-docs/.
+        if not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", plan_id or ""):
+            raise ValueError(f"bad plan id: {plan_id!r}")
+        return self.plan_docs_dir / plan_id
+
+    def _plan_doc_versions(self, plan_id: str) -> list[Path]:
+        d = self._plan_doc_dir(plan_id)
+        if not d.is_dir():
+            return []
+        return sorted((p for p in d.glob("v[0-9]*.md") if p.is_file()),
+                      key=lambda p: int(p.stem[1:]))
+
+    def _read_plan_doc_meta(self, plan_id: str) -> dict | None:
+        meta_path = self._plan_doc_dir(plan_id) / "meta.json"
+        if not meta_path.is_file():
+            return None
+        try:
+            data = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _write_plan_doc_meta(self, plan_id: str, meta: dict) -> None:
+        d = self._plan_doc_dir(plan_id)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+    def create_plan_doc(self, markdown: str, *, title: str, author: str = "",
+                        origin_thread_id: str = "", status: str = "draft") -> dict:
+        """Store a plan's markdown as version 1 of a new document, and return the whole document."""
+        self.plan_docs_dir.mkdir(parents=True, exist_ok=True)
+        n = len([p for p in self.plan_docs_dir.iterdir() if p.is_dir()]) + 1
+        plan_id = f"{n:03d}"
+        while self._plan_doc_dir(plan_id).exists():   # never reuse a document's id
+            n += 1
+            plan_id = f"{n:03d}"
+
+        now = plan_doc.now()
+        self._plan_doc_dir(plan_id).mkdir(parents=True, exist_ok=True)
+        (self._plan_doc_dir(plan_id) / "v001.md").write_text(markdown)
+        self._write_plan_doc_meta(plan_id, {
+            "id": plan_id, "title": title, "version": 1, "status": status, "author": author,
+            "createdAt": now, "updatedAt": now, "originThreadId": origin_thread_id, "appId": "",
+            "reviewers": [], "approvals": [], "comments": [],
+        })
+        return self.read_plan_doc(plan_id)
+
+    def read_plan_doc(self, plan_id: str) -> dict | None:
+        """The document: its metadata, plus the sections parsed out of its newest version."""
+        try:
+            meta = self._read_plan_doc_meta(plan_id)
+        except ValueError:
+            return None
+        if meta is None:
+            return None
+        versions = self._plan_doc_versions(plan_id)
+        markdown = versions[-1].read_text() if versions else ""
+        parsed = plan_doc.parse_sections(markdown)
+        return {**meta, "summary": parsed["summary"], "sections": parsed["sections"],
+                "markdown": markdown}
+
+    def list_plan_docs(self) -> list[dict]:
+        """Newest first, which is the order the panel lists them in, and which the plan pin trusts
+        to name the document plan.md belongs to.
+
+        Sorted on the id as well as the timestamp. Two documents drafted in the same second tie on
+        createdAt, and a tie there would leave the order to whatever the directory listing happened
+        to give — the ids are allocated in order, so they settle it.
+        """
+        if not self.plan_docs_dir.is_dir():
+            return []
+        docs = [self.read_plan_doc(p.name) for p in self.plan_docs_dir.iterdir() if p.is_dir()]
+        return sorted((d for d in docs if d),
+                      key=lambda d: (d.get("createdAt", ""), d.get("id", "")), reverse=True)
+
+    def write_plan_doc_version(self, plan_id: str, markdown: str, **meta_updates) -> dict | None:
+        """Add a version rather than overwrite one. Editing a section people are reviewing must not
+        rewrite the thing they commented on, and git alone can't show that inside one build."""
+        try:
+            meta = self._read_plan_doc_meta(plan_id)
+        except ValueError:
+            return None
+        if meta is None:
+            return None
+        versions = self._plan_doc_versions(plan_id)
+        n = (int(versions[-1].stem[1:]) if versions else 0) + 1
+        (self._plan_doc_dir(plan_id) / f"v{n:03d}.md").write_text(markdown)
+        meta.update(meta_updates)
+        meta["version"] = n
+        meta["updatedAt"] = plan_doc.now()
+        self._write_plan_doc_meta(plan_id, meta)
+        return self.read_plan_doc(plan_id)
+
+    def patch_plan_doc_meta(self, plan_id: str, **meta_updates) -> dict | None:
+        """Change the document's state (status, reviewers, approvals, comments) without adding a
+        version — a comment is not a new draft of the plan."""
+        try:
+            meta = self._read_plan_doc_meta(plan_id)
+        except ValueError:
+            return None
+        if meta is None:
+            return None
+        meta.update(meta_updates)
+        meta["updatedAt"] = plan_doc.now()
+        self._write_plan_doc_meta(plan_id, meta)
+        return self.read_plan_doc(plan_id)
+
+    def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
+        """The raw file behind the document, for Build's Markdown tab."""
+        try:
+            versions = self._plan_doc_versions(plan_id)
+        except ValueError:
+            return None
+        if not versions:
+            return None
+        return {"path": str(versions[-1].relative_to(self.path)),
+                "content": versions[-1].read_text()}
 
     @property
     def settings_path(self) -> Path:
@@ -606,6 +747,8 @@ class WorkspaceManager:
                     item.unlink(missing_ok=True)
         for rel in _RESET_CLEAR:
             (self._dir / rel).unlink(missing_ok=True)
+        for rel in _RESET_CLEAR_DIRS:
+            shutil.rmtree(self._dir / rel, ignore_errors=True)
         for item in self._template.iterdir():
             if item.name in _SEED_SKIP:
                 continue

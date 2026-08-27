@@ -60,9 +60,9 @@ window.SW = window.SW || {};
   };
 
   // The plan the app is being built from: `.sage/plan.md` while it waits for approval, and the
-  // plan the last build consumed once it has been. Both are markdown — Sage has no structured plan
-  // artifact, so this opens the text rather than routing to the plan page, which is still the
-  // prototype's and reads from a stubbed API.
+  // plan the last build consumed once it has been. Opens the plan document behind it. A workspace
+  // whose plan predates plan documents has no id to open, and there the raw markdown is still the
+  // whole plan, so it opens in a modal instead of sending the user to a page that cannot load.
   function PlanCard({ plan }) {
     const [open, setOpen] = useState(false);
 
@@ -89,7 +89,7 @@ window.SW = window.SW || {};
         'button',
         {
           className: `sw-plan-pin${built ? ' is-blessed' : ''}`,
-          onClick: () => setOpen(true),
+          onClick: () => (plan.planId ? SW.store.openPlanArtifact(plan.planId) : setOpen(true)),
         },
         h(
           'span',
@@ -299,7 +299,7 @@ window.SW = window.SW || {};
 
   SW.ResourcePanel = function ResourcePanel() {
     const {
-      resourceGroups, resourceErrors, requires, activeApp, panelFilter, activePlan, bindings, attachments,
+      resourceGroups, resourceErrors, requires, activeApp, panelFilter, projectPlan, bindings, attachments,
       resourcesLoading,
     } = SW.store.get();
     const [query, setQuery] = useState('');
@@ -389,7 +389,7 @@ window.SW = window.SW || {};
       { className: 'sw-panel' },
 
       inBuild &&
-        h(PlanCard, { plan: activePlan }),
+        h(PlanCard, { plan: projectPlan }),
 
       inChat &&
         h(

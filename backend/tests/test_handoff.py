@@ -268,3 +268,17 @@ def test_binding_from_context_only_for_resources():
     assert table.table == "DIM_ACCOUNT"
     assert handoff.binding_from_context({"kind": "file", "name": "a.csv", "path": "public/data/a.csv"}) is None
     assert handoff.binding_from_context({"kind": "data_source", "id": "ctx_01", "name": "x"}) is None
+
+
+def test_binding_a_handoff_keeps_the_plan_document_it_drafted(tmp_path):
+    """`mark_handoff_bound` re-runs `mark_handoff_planned` without the id, so the id has to survive
+    on the row rather than be re-supplied. Losing it would leave the Thread pointing at nothing."""
+    from sage.workspace.threads import ThreadStore
+
+    store = ThreadStore(tmp_path)
+    thread_id = store.create("A thread")["id"]
+
+    store.mark_handoff_planned(thread_id, "001")
+    store.mark_handoff_bound(thread_id)
+
+    assert store.read_handoff(thread_id)["planId"] == "001"

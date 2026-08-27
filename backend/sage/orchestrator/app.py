@@ -1676,8 +1676,8 @@ def project_plan() -> JSONResponse:
     `status` is `awaiting` while `.sage/plan.md` is live and `built` once a build has archived it,
     which is the difference between the pin saying "Plan" and "Working from". The body is the plan's
     own markdown — the same text the transcript's plan card renders — because that is what Sage
-    actually writes. There is no structured plan artifact behind this and the pin does not pretend
-    there is one."""
+    actually writes. The plan document under /api/plans holds the same text with its sections read
+    out; this stays the markdown because the pin is about the build, not about the document."""
     return JSONResponse(content=orchestrator.read_plan_pin())
 
 
@@ -1692,6 +1692,68 @@ def cancel_plan() -> JSONResponse:
     a plan the user just dismissed."""
     archived = orchestrator.project().workspace.archive_plan(cancelled=True)
     return JSONResponse(content={"cancelled": True, "archived": archived is not None})
+
+
+# ---- Plan documents ----
+#
+# `/api/project/plan` above answers "what is this app being built from", reading the transient
+# plan.md. These answer "what does this plan say", reading the document that outlives it. Both are
+# the same plan; only one of them survives the build.
+
+
+@control_app.get("/api/plans")
+def list_plans() -> JSONResponse:
+    return JSONResponse(content={"items": orchestrator.list_plan_docs()})
+
+
+@control_app.post("/api/plans")
+def create_plan(body: dict | None = None) -> JSONResponse:
+    return JSONResponse(content=orchestrator.create_plan_doc(body or {}))
+
+
+@control_app.get("/api/plans/{plan_id}")
+def get_plan(plan_id: str) -> JSONResponse:
+    doc = orchestrator.read_plan_doc(plan_id)
+    if doc is None:
+        return JSONResponse({"error": "unknown plan"}, status_code=404)
+    return JSONResponse(content=doc)
+
+
+@control_app.patch("/api/plans/{plan_id}")
+def patch_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
+    """Edit the plan. Sections are rendered back to markdown and kept as a new version, so the file
+    stays the source of truth and the draft a reviewer commented on is still there."""
+    doc = orchestrator.patch_plan_doc(plan_id, body or {})
+    if doc is None:
+        return JSONResponse({"error": "unknown plan"}, status_code=404)
+    return JSONResponse(content=doc)
+
+
+@control_app.get("/api/plans/{plan_id}/markdown")
+def get_plan_markdown(plan_id: str) -> JSONResponse:
+    """The raw file behind the document, for Build's Markdown tab."""
+    body = orchestrator.read_plan_doc_markdown(plan_id)
+    if body is None:
+        return JSONResponse({"error": "unknown plan"}, status_code=404)
+    return JSONResponse(content=body)
+
+
+@control_app.post("/api/plans/{plan_id}/review")
+def review_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
+    """Request a review, comment, resolve a comment, or approve. None of these writes a version —
+    a comment on a plan is not a new draft of that plan."""
+    doc = orchestrator.review_plan_doc(plan_id, body or {})
+    if doc is None:
+        return JSONResponse({"error": "unknown plan"}, status_code=404)
+    return JSONResponse(content=doc)
+
+
+@control_app.get("/api/members")
+def members() -> JSONResponse:
+    """The people a plan can be sent to for review. Empty off Domino, and empty when the caller
+    cannot read the project record — the plan page then shows ids where it would show names, which
+    is worse than names and better than a page that will not load."""
+    return JSONResponse(content=orchestrator.list_members())
 
 
 @control_app.post("/api/project/build/stop")

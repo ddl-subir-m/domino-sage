@@ -262,6 +262,14 @@ window.SW = window.SW || {};
             { size: 'small', onClick: () => setEditing(!editing) },
             editing ? 'Preview' : (block.kind === 'architecture' ? 'Edit design' : 'Edit plan')
           ),
+          // The card is the summary; the document is where the sections, the open questions and
+          // the comments are. An architecture has no document, so it gets no way in.
+          block.planId &&
+            h(
+              Button,
+              { size: 'small', onClick: () => SW.store.openPlanArtifact(block.planId) },
+              'Open plan'
+            ),
           h(
             Button,
             { type: 'text', size: 'small', onClick: () => SW.store.cancelBuildPlan() },
