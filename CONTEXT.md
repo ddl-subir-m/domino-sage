@@ -33,6 +33,13 @@ A Domino Dataset mounted into the project container, holding files. Predates the
 Resource and keeps its own surface in the builder.
 _Avoid_: resource, data source, volume
 
+**Domino Artifacts**:
+A separate Domino blob store, reachable at `/mnt/artifacts`, that Sage does not use. It is
+hydrated at container start and pushed back only on a manual Sync, so it cannot hold live
+shared state. Named here only so it is not mistaken for a Sage [[Artifact]], which is an
+unrelated thing.
+_Avoid_: Artifact, artifacts
+
 ### Gateways
 
 **LLM Gateway**:
@@ -134,9 +141,10 @@ _Avoid_: Untitled, sandbox, ephemeral, temporary project, scratch
 
 **Artifact**:
 A file the chat agent wrote under `examples/<threadId>/` and indexed in that Thread's
-manifest — a PNG chart, a table JSON, a query, a note. Handoff copies Artifacts; it does not
-replay a chart object from memory.
-_Avoid_: card, chart DSL, canvas, output, widget
+manifest — a PNG chart, a table JSON, a query, a note. The directory is named for the role
+these files play at handoff, not for the term. Handoff names Artifacts by path; it does not
+copy them, and it does not replay a chart object from memory.
+_Avoid_: card, chart DSL, canvas, output, widget, Domino Artifacts
 
 **Session context**:
 The Resources and Artifacts in scope for this Thread right now, shown as chips on the

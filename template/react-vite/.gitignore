@@ -36,3 +36,9 @@ __pycache__/
 # Chat-local files. They persist on this volume and do not travel with git.
 .sage/scratch/
 .sage/chat-work/
+# The stop button's private content store (TurnSnapshot). Builder-local scratch, like the two
+# above. It is a git repo inside this one, so without this line `git add -A` records it as a
+# gitlink pointing at a SHA no remote has, changing every turn, and a fresh clone gets an empty
+# directory anyway. Ignoring it also keeps `git add -A` from failing outright in the window
+# where the store exists with no commit yet.
+.sage/snapshots/

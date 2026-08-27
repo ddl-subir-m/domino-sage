@@ -21,6 +21,14 @@ export SAGE_OPENCODE_CWD="${SAGE_OPENCODE_CWD:-$SAGE_APP_HOME}"   # where openco
 # instead so we don't treat the source tree as an app, e.g. SAGE_WORKSPACE_DIR=/tmp/sage-workspaces/app.
 # The published Workbench App (root app.sh) sets SAGE_PROXY_MODE=app and a scratch dir before execing us.
 export SAGE_WORKSPACE_DIR="${SAGE_WORKSPACE_DIR:-/mnt/code}"
+
+# Let git repack the workspace on its own. Sage commits `.sage/history.jsonl` every turn, and each
+# commit writes a new full loose object for it: 100 turns leaves ~86MB loose that packs to ~2.5MB.
+# Auto-gc never fires on its own here because its default threshold is 6700 loose objects and a
+# turn makes ~3. Config does not travel with a clone, so this has to run against the checkout
+# itself, once per Builder start. Failure is not fatal — a dogfood override can point
+# SAGE_WORKSPACE_DIR at a scratch dir that is not a repo at all.
+git -C "$SAGE_WORKSPACE_DIR" config gc.auto 50 2>/dev/null || true
 export SAGE_PROXY_MODE="${SAGE_PROXY_MODE:-workspace}"
 
 # One port; bind all interfaces so Domino's tool/app proxy can reach us. Prefix is derived from env
