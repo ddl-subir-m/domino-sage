@@ -92,3 +92,16 @@ survives a restart at all (see Consequences).
   in this decision depends on which is right, because everything that matters is committed. It
   still needs settling before anything else is trusted to that volume.
 - Language: [CONTEXT.md](../../CONTEXT.md).
+
+## Revised by ADR-0008
+
+[ADR-0008](0008-a-project-holds-many-built-apps.md) keeps this decision and removes one file from
+it. The log (`history.jsonl`) and the Artifacts stay in git, for the reasons measured above. The
+**rendered `.sage/history.md` leaves git**: it is regenerated whole from the log beside it on every
+turn, so with two Sage Builders in one Project it conflicts every turn over data that can simply be
+rebuilt. Gitignored and regenerated on demand.
+
+The measurement is untouched by this — `history.md` was never the file the push-cost table was
+about — and the mechanism argument is untouched too: the log and the Artifacts still have to sit
+inside the `TurnSnapshot` work-tree, and they still do. Both also move down a level, to
+`apps/<appId>/`, which keeps them inside it.

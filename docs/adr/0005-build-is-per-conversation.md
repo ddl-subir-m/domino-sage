@@ -43,3 +43,11 @@ A Build turn belongs to a conversation.
   first conversation that builds.
 - `docs/workbench/handoff.md` §1 said "Build uses the project's existing Build session". Revised
   there.
+
+> Revised, not overturned, by [ADR-0008](0008-a-project-holds-many-built-apps.md). The split of
+> session and transcript per conversation stands. What changed is the log's *home*: a Project holds
+> many Built Apps now, so `history.jsonl` and `history.md` live under `apps/<appId>/.sage/` and the
+> agent's memory is per app rather than project-wide. The reason given here for project-wide memory
+> — that cross-conversation memory is the point — still holds, and now holds *within* an app. It
+> also fixes a bug this ADR could not see: the stop-button baseline is a position in the log, so two
+> Sage Builders appending to one file meant one viewer's stop could truncate the other's turns.

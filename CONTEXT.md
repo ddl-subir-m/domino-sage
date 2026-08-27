@@ -64,8 +64,10 @@ The panel in which a user sees and picks Resources.
 _Avoid_: resource panel, data panel, sidebar
 
 **Binding**:
-A recorded link between a Built App and a Resource it uses. Picking a Resource produces a
-Binding. A Data Source Binding also records a Scope.
+A recorded link between one Built App and a Resource it uses. Picking a Resource produces a
+Binding. A Data Source Binding also records a Scope. A Resource is picked once for the Project
+and can be bound by several of its Built Apps; a Binding always names exactly one of them, so
+"what does this app read" has an answer per app.
 _Avoid_: connection, link, reference, wiring
 
 **Scope**:
@@ -93,8 +95,18 @@ Attachment, but most do not.
 _Avoid_: upload, mount, bundled file
 
 **Built App**:
-The app Sage produces for a user and publishes on Domino, as distinct from Sage itself.
-_Avoid_: child app, generated app, output
+An app Sage produces for a user, as distinct from Sage itself. It owns its code, its Bindings,
+its plan and its build history. It exists from the moment a handoff is confirmed, so an app that
+has never been published is still a Built App — publishing gives it a URL, not its existence. A
+Project has many. See [ADR-0008](docs/adr/0008-a-project-holds-many-built-apps.md).
+_Avoid_: child app, generated app, output, App (unqualified — that is the Domino thing)
+
+**Domino App**:
+The deployment Domino runs for a Built App: a container serving it at a URL. Publishing a Built
+App creates one, and re-publishing gives that same one a new version, so the URL is stable. A
+Domino project can hold many, each started from its own entry script. Distinct from the Built
+App, which exists whether or not it has ever been deployed.
+_Avoid_: app, Built App, published app, deployment
 
 **Gallery**:
 The list of Built Apps a viewer is allowed to see — apps published from Sage Builder
@@ -111,7 +123,8 @@ Built App, Hub
 
 **Project**:
 A git-backed Domino project whose Control Plane and git name start with `sage-`. Threads,
-Artifacts, Builds, and the Built App for that work live in it. The chip lists only these.
+Artifacts, Builds, and the Built Apps for that work live in it. It has many of each; it is a
+place work lives, not one app. The chip lists only these.
 Default is a Project. New project creates another, starts Sage Builder, and lands in Chat.
 _Avoid_: folder, sandbox, scratch, workspace (that is Sage Builder)
 
@@ -129,7 +142,9 @@ _Avoid_: ask mode, assistant, sandbox, Jupyter, notebook
 
 **Thread**:
 One conversation inside a Project. A Project has many Threads; Default is one Project, not
-one Thread. Each Thread has its own OpenCode session and its own history.
+one Thread. Each Thread has its own OpenCode session and its own history. A Thread points at a
+Built App each time a handoff is confirmed: two Threads may drive one Built App, and one Thread
+may produce several over its life. It never owns one.
 _Avoid_: conversation, session (OpenCode already uses session for the harness object), chat
 (that is the mode)
 
