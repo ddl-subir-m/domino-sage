@@ -70,6 +70,10 @@ class FakeOpenCode:
 
     # --- session ---------------------------------------------------------------------------------
 
+    def _session_dir(self, session_id: str) -> Path:
+        rec = next((s for s in self.sessions if s["id"] == session_id), None)
+        return Path(rec["directory"]) if rec else self.workspace
+
     def create_session(self, directory: str, model: dict | None = None) -> str:
         # The first session keeps the historic id so every pre-existing test is untouched; phases
         # get distinct ones.
@@ -113,8 +117,12 @@ class FakeOpenCode:
         for j, tool in enumerate(turn.tools):
             parts.append({"id": f"m{n}-t{j}", "type": "tool", "tool": tool,
                           "state": {"status": "completed"}})
+        # Writes land where the real agent's would: relative to the directory the session was
+        # opened in. A Build session stands in the Built App (`apps/<appId>/`) and a Chat session
+        # in `.sage/chat-work`, whose links are what make a Chat path resolve at all.
+        base = self._session_dir(session_id)
         for j, (rel, body) in enumerate(turn.writes.items()):
-            path = self.workspace / rel
+            path = base / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body)
             parts.append({"id": f"m{n}-w{j}", "type": "tool", "tool": "write",

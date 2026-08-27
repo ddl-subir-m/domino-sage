@@ -1012,7 +1012,7 @@ def read_file(path: str) -> JSONResponse:
         target = project.workspace.path / path  # is_file()/read_text() follow the symlink to the mount
     else:
         try:
-            target = _resolve_workspace_file(project.workspace.path, path)
+            target = _resolve_workspace_file(project.root_for(path), path)
         except ValueError:
             return JSONResponse(status_code=400, content={"error": "invalid path"})
     if not target.is_file():
@@ -1032,7 +1032,7 @@ def read_file_raw(path: str) -> Response:
         target = project.workspace.path / path  # follow the symlink to the dataset mount
     else:
         try:
-            target = _resolve_workspace_file(project.workspace.path, path)
+            target = _resolve_workspace_file(project.root_for(path), path)
         except ValueError:
             return JSONResponse(status_code=400, content={"error": "invalid path"})
     if not target.is_file():

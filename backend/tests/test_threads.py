@@ -179,14 +179,16 @@ def test_handoff_suggested_once_and_suppress(tmp_path: Path):
 
 def test_an_attached_dataset_file_is_readable_from_the_chat_workdir(tmp_path: Path):
     """The turn prompt names the file `public/data/<slug>/<file>` and tells the agent to read that
-    path. Chat's cwd is not the workspace root, so without the link the path resolves to nothing
-    where the agent stands — a file the person can see in the rail cannot be opened at all."""
+    path. Chat stands at the Project root and the data belongs to the Built App one directory
+    down, so without the link the path resolves to nothing where the agent stands — a file the
+    person can see in the rail cannot be opened at all."""
+    app = tmp_path / "apps" / "app_one"
     rel = "public/data/clickstream/clean_cc_transactions.csv"
-    (tmp_path / rel).parent.mkdir(parents=True)
-    (tmp_path / rel).write_text("amount,merchant\n12.30,coffee\n")
-    (tmp_path / "public" / "vite.svg").write_text("<svg/>")
+    (app / rel).parent.mkdir(parents=True)
+    (app / rel).write_text("amount,merchant\n12.30,coffee\n")
+    (app / "public" / "vite.svg").write_text("<svg/>")
 
-    work = ensure_chat_workdir(tmp_path, "# chat")
+    work = ensure_chat_workdir(tmp_path, "# chat", data_dir=app / "public" / "data")
 
     assert (work / rel).read_text().startswith("amount,merchant")
     # Only the data is linked. The rest of public/ belongs to the app, which Chat does not read.
@@ -195,12 +197,13 @@ def test_an_attached_dataset_file_is_readable_from_the_chat_workdir(tmp_path: Pa
 
 def test_the_chat_workdir_link_survives_a_second_turn(tmp_path: Path):
     """It is built on every turn, and the second call must not trip over its own symlink."""
-    ensure_chat_workdir(tmp_path, "# chat")
-    work = ensure_chat_workdir(tmp_path, "# chat")
+    data = tmp_path / "apps" / "app_one" / "public" / "data"
+    ensure_chat_workdir(tmp_path, "# chat", data_dir=data)
+    work = ensure_chat_workdir(tmp_path, "# chat", data_dir=data)
 
     rel = "public/data/clickstream/late.csv"
-    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-    (tmp_path / rel).write_text("a\n1\n")
+    (data / "clickstream").mkdir(parents=True, exist_ok=True)
+    (data / "clickstream" / "late.csv").write_text("a\n1\n")
     # Attached after the workdir was built: the link is to the directory, so it is already there.
     assert (work / rel).read_text() == "a\n1\n"
 

@@ -7,10 +7,15 @@ node_modules) is hidden.
 
 Two record surfaces sit over that directory, because a Project holds many Built Apps
 (ADR-0008). `Workspace` is one Built App — its code, Bindings, plan copy, architecture note and
-build log. `ProjectRecord` is the Project — its plan documents and settings, alongside the
-Threads `ThreadStore` already keeps. Both resolve the same root today: no app has moved under
-`apps/<appId>/` yet, so what is separated here is which surface answers a question, not where
-the answer is stored.
+build log — and it lives in `apps/<appId>/`, seeded from the template. `ProjectRecord` is the
+Project — its plan documents, settings and OpenCode sessions, alongside the Threads
+`ThreadStore` already keeps — and it stays at the volume root.
+
+The app directory is the build agent's working directory, so from the agent's side nothing has
+moved: `AGENTS.md`, `.sage/plan.md`, `.sage/bindings.json` and the rest keep the paths they
+always had, one level down. `appId` comes from `new_id("app")` and never changes, because
+Domino fixes a published App's `entryPoint` at creation and a renamed directory would strand
+the deployment.
 
 node_modules is symlinked from the template rather than copied so each workspace is warm
 (deps already installed) without paying a multi-hundred-MB copy per project.
@@ -18,6 +23,7 @@ node_modules is symlinked from the template rather than copied so each workspace
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -28,6 +34,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import plan_doc
+from .threads import CHAT_WORK, new_id
+
+log = logging.getLogger(__name__)
+
+
+def ensure_ignore_line(path: Path, line: str) -> None:
+    """Append one rule to an ignore file, once. Shared because both surfaces have one: the app
+    carries the template's .gitignore, the Project keeps its own at the volume root, and the
+    orchestrator adds lines to both plus the `.ignore` ripgrep reads."""
+    existing = path.read_text() if path.exists() else ""
+    if line in existing.split():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")
 
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
 # appears in a dev checkout of the template as soon as anything imports serve.py, and a workspace
@@ -41,15 +61,20 @@ _RESET_KEEP = {".git", ".sage", "node_modules"}
 # Kept by path rather than by top-level name: `public/` is template content, but `public/data/` holds
 # the files the user attached, and taking those would put them back in the builder attaching again.
 _RESET_KEEP_NESTED = (Path("public") / "data",)
+# Every Built App lives one level down, in a directory named for its id (ADR-0008).
+_APPS = "apps"
+# What the PROJECT keeps out of git, at the volume root. The app carries its own .gitignore from
+# the template; these are the three trees that stayed behind when the app moved down a level, and
+# nothing seeds a file at the root to carry their rules. Chat's scratch and its OpenCode workdir
+# are builder-local, and a half-written Thread record is a file `git add -A` would otherwise
+# commit (ThreadStore._write_json renames the real one into place, so a .tmp is never read).
+_PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/*/.*.tmp")
 # Sage metadata that belongs to the APP, so it goes when the app does. queries.json is the app's SQL;
 # plan.md and architecture.md both describe the code being removed, and AGENTS.md tells the agent
 # plan.md is the live plan — a stale one would aim the next turn at an app that is gone.
 _RESET_CLEAR = (Path(".sage") / "queries.json",
                 Path(".sage") / "plan.md",
                 Path(".sage") / "architecture.md")
-# Same rule, but a directory: the plan documents describe the app being replaced, so a Reset
-# that left them behind would hand the next build a plan for the app that just went away.
-_RESET_CLEAR_DIRS = (Path(".sage") / "plan-docs",)
 # Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
 _DEPS_SENTINEL = Path(".bin") / "vite"
 # What Domino runs to serve a published App: the entry script, and the Python server it execs
@@ -105,14 +130,16 @@ def _write_settings_file(path: Path, settings: dict) -> None:
 class ProjectRecord:
     """What the Project owns, as against what one Built App owns (ADR-0008).
 
-    A Project holds Threads, plan documents and its own settings. A Built App holds its code, its
-    Bindings, the plan copy its builder consumes and its build log; `Workspace` is that surface,
-    and this is the narrower one beside it. Both name the same directory today, because no app has
-    moved under `apps/<appId>/` yet — so the separation is in the surface rather than on disk, and
-    it holds only because nothing here reads an app's record and nothing on `Workspace` reads the
-    Project's.
+    A Project holds Threads, plan documents, its own settings and the OpenCode session each
+    conversation runs in. A Built App holds its code, its Bindings, the plan copy its builder
+    consumes and its build log; `Workspace` is that surface, and this is the one beside it. This
+    one names the volume root; the app names `apps/<appId>/` inside it.
 
-    Threads are absent because they already have a surface of their own: `ThreadStore`.
+    A session is here rather than on the app because a session belongs to a conversation: it is
+    filed under `.sage/threads/<id>/` next to that Thread's chat session, so a deleted Thread
+    takes both halves with it.
+
+    Threads themselves are absent because they already have a surface of their own: `ThreadStore`.
     """
 
     project_id: str
@@ -328,18 +355,88 @@ class ProjectRecord:
                 tmp.unlink(missing_ok=True)
             return entries
 
+    @property
+    def session_path(self) -> Path:
+        """Persisted OpenCode session id, so the project re-attached after an orchestrator restart
+        (see Orchestrator.project) can resume the same conversation instead of starting a fresh
+        session with no memory of prior turns. The unscoped path: a build turn that names no
+        conversation (CLI, tests) still gets a session that survives a restart."""
+        return self.path / ".sage" / "session.json"
+
+    def build_session_path(self, conversation: str | None = None) -> Path:
+        """A Build conversation owns its own OpenCode session, the way a Chat Thread already does
+        (ThreadStore.write_session_id). Both live under the same `.sage/threads/<id>/`, so a
+        conversation's two halves sit together and a deleted Thread takes both with it.
+
+        The session is what makes "New conversation" mean anything in Build: a fresh session has
+        no memory of the earlier talk. It is not amnesia about the app — the session opens the
+        app's directory, so the agent reads every file back."""
+        if not conversation:
+            return self.session_path
+        return self.path / ".sage" / "threads" / conversation / "build-session.json"
+
+    def read_session_id(self, conversation: str | None = None) -> str | None:
+        p = self.build_session_path(conversation)
+        if not p.exists():
+            return None
+        try:
+            return json.loads(p.read_text()).get("session_id")
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def write_session_id(self, session_id: str, conversation: str | None = None) -> None:
+        p = self.build_session_path(conversation)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"session_id": session_id}))
+
+    @property
+    def catalog_overrides_path(self) -> Path:
+        """Per-project overrides of the plan/implement/sovereign/default model ids, layered on
+        top of the deployment-wide ModelCatalog so a project can retarget which model Auto uses
+        per phase without changing every other project.
+
+        The Project's, not the app's: the rail that sets these sits in both modes, and Chat has no
+        app to keep them in."""
+        return self.path / ".sage" / "model_overrides.json"
+
+    def read_catalog_overrides(self) -> dict:
+        if not self.catalog_overrides_path.exists():
+            return {}
+        return json.loads(self.catalog_overrides_path.read_text())
+
+    def write_catalog_overrides(self, overrides: dict) -> None:
+        self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        self.catalog_overrides_path.write_text(json.dumps(overrides))
+
+    def clear_plan_docs(self) -> None:
+        """Drop every plan document. Reset app's half of the Project's record: the documents
+        describe the app that was just taken away, so leaving them behind would hand the next
+        build a plan for an app that no longer exists."""
+        shutil.rmtree(self.plan_docs_dir, ignore_errors=True)
+
 
 @dataclass(frozen=True)
 class Workspace:
-    """One Built App: the directory its code lives in, and the record that belongs to it.
+    """One Built App: `apps/<appId>/`, and the record that belongs to it.
 
     The Bindings manifest, the plan copy, the architecture note, the build log and the `built`
-    latch are the app's. What belongs to the Project — Threads, plan documents, settings — is
-    `ProjectRecord`, and a caller that wants one of those asks that surface for it.
+    latch are the app's, and they sit in the app's own `.sage/`. What belongs to the Project —
+    Threads, plan documents, settings, sessions — is `ProjectRecord`, and a caller that wants one
+    of those asks that surface for it.
+
+    `app_id` is the directory's name and never changes: Domino fixes a published App's
+    `entryPoint` when the App is created, so a rename would strand the deployment (ADR-0008).
     """
 
     project_id: str
     path: Path
+    app_id: str
+
+    def exists(self) -> bool:
+        """True once this app has a directory. False is the ordinary state of a Project that has
+        only ever been talked to in Chat: an app is born when a handoff is confirmed, and until
+        then there is nothing here to read, link or ignore."""
+        return self.path.is_dir()
 
     @property
     def app_entry(self) -> Path:
@@ -421,10 +518,9 @@ class Workspace:
     def _latch_path(self) -> Path:
         """Where this app keeps the two facts it latches: `built` and `last_turn_failed`.
 
-        The same file `ProjectRecord.settings_path` names, because no Built App has a directory of
-        its own to keep them in yet (ADR-0008). Private on purpose: sharing a file is not the same
-        as sharing a record, and a caller that wants the Project's settings asks `ProjectRecord`
-        for them rather than reaching in here.
+        The app's own settings file, inside the app's directory. It shares a NAME with
+        `ProjectRecord.settings_path` and nothing else: a caller that wants the Project's settings
+        asks `ProjectRecord` for them rather than reaching in here.
         """
         return self.path / ".sage" / "settings.json"
 
@@ -476,40 +572,6 @@ class Workspace:
             _write_settings_file(self._latch_path, settings)
         except OSError:
             pass
-
-    @property
-    def session_path(self) -> Path:
-        """Persisted OpenCode session id, so the project re-attached after an orchestrator restart
-        (see Orchestrator.project) can resume the same conversation instead of starting a fresh
-        session with no memory of prior turns. The unscoped path: a build turn that names no
-        conversation (CLI, tests) still gets a session that survives a restart."""
-        return self.path / ".sage" / "session.json"
-
-    def build_session_path(self, conversation: str | None = None) -> Path:
-        """A Build conversation owns its own OpenCode session, the way a Chat Thread already does
-        (ThreadStore.write_session_id). Both live under the same `.sage/threads/<id>/`, so a
-        conversation's two halves sit together and a deleted Thread takes both with it.
-
-        The session is what makes "New conversation" mean anything in Build: a fresh session has
-        no memory of the earlier talk. It is not amnesia about the app — the session opens the
-        same workspace, so the agent reads every file back."""
-        if not conversation:
-            return self.session_path
-        return self.path / ".sage" / "threads" / conversation / "build-session.json"
-
-    def read_session_id(self, conversation: str | None = None) -> str | None:
-        p = self.build_session_path(conversation)
-        if not p.exists():
-            return None
-        try:
-            return json.loads(p.read_text()).get("session_id")
-        except (json.JSONDecodeError, OSError):
-            return None
-
-    def write_session_id(self, session_id: str, conversation: str | None = None) -> None:
-        p = self.build_session_path(conversation)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"session_id": session_id}))
 
     @property
     def history_path(self) -> Path:
@@ -672,22 +734,6 @@ class Workspace:
         return []
 
     @property
-    def catalog_overrides_path(self) -> Path:
-        """Per-project overrides of the plan/implement/sovereign/default model ids, layered on
-        top of the deployment-wide ModelCatalog so a project can retarget which model Auto uses
-        per phase without changing every other project."""
-        return self.path / ".sage" / "model_overrides.json"
-
-    def read_catalog_overrides(self) -> dict:
-        if not self.catalog_overrides_path.exists():
-            return {}
-        return json.loads(self.catalog_overrides_path.read_text())
-
-    def write_catalog_overrides(self, overrides: dict) -> None:
-        self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
-        self.catalog_overrides_path.write_text(json.dumps(overrides))
-
-    @property
     def attachments_path(self) -> Path:
         """Committed manifest of attached/uploaded data files. `public/data/` itself is gitignored
         (data never enters git), so this manifest is the source of truth that lets the PUBLISHED app
@@ -752,17 +798,27 @@ class Workspace:
 
 
 class WorkspaceManager:
-    """Manages the single workspace bound to this builder's Domino project volume.
+    """Manages the Built App inside this builder's Domino project volume.
 
-    Per D9 one container hosts one project, so the workspace IS the project's mounted directory
-    (git-based: /mnt/code), not a per-id copy under some root. `ensure` idempotently seeds the warm
-    React+Vite template into that volume the first time (when it carries no app yet) and guarantees
-    the warm node_modules symlink; a volume that already holds an app is left untouched.
+    Per D9 one container hosts one project, so the volume IS the project's mounted directory
+    (git-based: /mnt/code), not a per-id copy under some root. The app lives one level down, in
+    `apps/<appId>/` (ADR-0008): `ensure` idempotently seeds the warm React+Vite template into that
+    directory the first time and guarantees the warm node_modules symlink; a directory that
+    already holds an app is left untouched.
+
+    One app for now — the second is the next ticket — so the id is found by scanning `apps/`
+    rather than read from an index file. An index is one file with many writers, which is the
+    thing two Sage Builders in one Project keep losing work to.
     """
 
     def __init__(self, workspace_dir: Path, template: Path) -> None:
         self._dir = Path(workspace_dir)
         self._template = Path(template)
+        # The id this process minted for an app that has no directory yet. Chat opens a volume
+        # with no app on it, and the app the handoff goes on to seed must be the one every caller
+        # in between was already naming — otherwise `_ensure_seeded` seeds a second directory
+        # beside the one the attached Project is pointing at.
+        self._minted: str | None = None
 
     @property
     def template(self) -> Path:
@@ -772,7 +828,41 @@ class WorkspaceManager:
 
     @property
     def path(self) -> Path:
+        """The Project's volume: the git repo root, and where the Project's own record lives."""
         return self._dir
+
+    @property
+    def apps_dir(self) -> Path:
+        return self._dir / _APPS
+
+    def app_ids(self) -> list[str]:
+        """The Built Apps on this volume, by directory scan. One at most, today."""
+        if not self.apps_dir.is_dir():
+            return []
+        return sorted(p.name for p in self.apps_dir.iterdir() if p.is_dir() and not p.is_symlink())
+
+    def ensure_app_id(self) -> str:
+        """This Project's Built App id: the one on disk, else one minted and remembered for it.
+
+        Named for the minting, because that is what it does the first time it is asked. It never
+        changes after that — the directory IS the id, and Domino fixes a published App's
+        `entryPoint` at creation.
+        """
+        existing = self.app_ids()
+        if existing:
+            self._minted = existing[0]
+        elif self._minted is None:
+            self._minted = new_id("app")
+        return self._minted
+
+    @property
+    def app_path(self) -> Path:
+        return self.apps_dir / self.ensure_app_id()
+
+    def app_workspace(self, project_id: str) -> Workspace:
+        """The Built App's record, without seeding or starting anything. For readers that want the
+        transcript or the Bindings off the volume without attaching the project."""
+        return Workspace(project_id, self.app_path, self.ensure_app_id())
 
     def reset(self) -> None:
         """Put the app code back to the starter template, keeping everything that is the user's (#36).
@@ -782,20 +872,25 @@ class WorkspaceManager:
         "rebuild this from scratch" was only a sentence handed to the build agent — which built the
         most literal thing those words describe, a page about rebuilding.
 
-        What survives is what the user set up rather than what a build produced: `.sage/` (history,
-        settings, the attachment and Binding manifests), `public/data/` (the files they attached), the
-        project's own `.git`, and the warm `node_modules` link. What goes is the app: every other
-        top-level entry, re-seeded from the template.
+        What survives is what the user set up rather than what a build produced: the app's `.sage/`
+        (history, settings, the attachment and Binding manifests), `public/data/` (the files they
+        attached), and the warm `node_modules` link. What goes is the app: every other top-level
+        entry in the app directory, re-seeded from the template.
 
         `.sage/queries.json` goes with it — it is the app's SQL, written by the agent, and an app that
         no longer exists has no queries. So do `plan.md` and `architecture.md`: both describe the app
         that was just removed, and AGENTS.md tells the agent plan.md is the LIVE plan, so leaving one
         behind would point the next turn at a design for code that is gone.
 
+        Only the app is reset. The Project's record — Threads, settings — is not this operation's
+        to take, and the plan documents that describe the gone app are cleared through the surface
+        that owns them (`ProjectRecord.clear_plan_docs`, called by Orchestrator.reset_app).
+
         AGENTS.md is re-seeded like any other template file, so the caller is responsible for
         splicing the user's project instructions back into it (see Orchestrator.reset_app)."""
+        app = self.app_path
         keep = _RESET_KEEP | {p.parts[0] for p in _RESET_KEEP_NESTED}
-        for item in self._dir.iterdir():
+        for item in app.iterdir():
             if item.name in keep:
                 continue
             if item.is_dir() and not item.is_symlink():
@@ -805,7 +900,7 @@ class WorkspaceManager:
         # A kept top-level dir is emptied of everything but the nested path that earned it its place:
         # `public/` is template content, `public/data/` is the user's attachments living inside it.
         for nested in _RESET_KEEP_NESTED:
-            root = self._dir / nested.parts[0]
+            root = app / nested.parts[0]
             if not root.is_dir():
                 continue
             for item in root.iterdir():
@@ -816,13 +911,11 @@ class WorkspaceManager:
                 else:
                     item.unlink(missing_ok=True)
         for rel in _RESET_CLEAR:
-            (self._dir / rel).unlink(missing_ok=True)
-        for rel in _RESET_CLEAR_DIRS:
-            shutil.rmtree(self._dir / rel, ignore_errors=True)
+            (app / rel).unlink(missing_ok=True)
         for item in self._template.iterdir():
             if item.name in _SEED_SKIP:
                 continue
-            dest = self._dir / item.name
+            dest = app / item.name
             if item.is_dir():
                 # dirs_exist_ok: `public/` is still standing because it holds the attachments.
                 shutil.copytree(item, dest, ignore=_IGNORE, dirs_exist_ok=True)
@@ -831,32 +924,50 @@ class WorkspaceManager:
         self.link_warm_deps()
 
     def ensure(self, project_id: str, seed_app: bool = True) -> Workspace:
-        """Get-or-seed the bound workspace. Idempotent: seeds the template in place only when the
-        volume has no app yet (no package.json), never clobbering a pre-existing app or its .git.
+        """Get-or-seed this Project's Built App. Idempotent: seeds the template into
+        `apps/<appId>/` only when that directory has no app yet (no package.json), never
+        clobbering an app already there.
 
-        `seed_app=False` is Chat: mkdir the volume, leave the React template uncopied.
+        `seed_app=False` is Chat: attach the volume, and leave the app directory uncreated. A
+        Project with no app on it is the ordinary state — an app is born when a handoff is
+        confirmed — so this must not be the thing that creates one.
         """
         self._dir.mkdir(parents=True, exist_ok=True)
-        if seed_app and not (self._dir / "package.json").exists():
-            # Seed the template INTO the (possibly pre-existing, e.g. a fresh git checkout)
-            # directory entry by entry, so an existing .git / dotfiles are preserved.
-            for item in self._template.iterdir():
-                if item.name in _SEED_SKIP:
-                    continue
-                dest = self._dir / item.name
-                if dest.exists():
-                    continue
-                if item.is_dir():
-                    shutil.copytree(item, dest, ignore=_IGNORE)
-                else:
-                    shutil.copy2(item, dest)
-
+        self._ensure_project_ignores()
+        app = self.app_path
         if seed_app:
+            app.mkdir(parents=True, exist_ok=True)
+            if not (app / "package.json").exists():
+                # Seed the template INTO the (possibly pre-existing) directory entry by entry, so
+                # anything already there is preserved.
+                for item in self._template.iterdir():
+                    if item.name in _SEED_SKIP:
+                        continue
+                    dest = app / item.name
+                    if dest.exists():
+                        continue
+                    if item.is_dir():
+                        shutil.copytree(item, dest, ignore=_IGNORE)
+                    else:
+                        shutil.copy2(item, dest)
             self.link_warm_deps()
-        return Workspace(project_id, self._dir)
+        return Workspace(project_id, app, self.ensure_app_id())
+
+    def _ensure_project_ignores(self) -> None:
+        """Put the Project's own ignore rules at the volume root, and keep them there.
+
+        Both modes, because Chat is what writes two of the three trees and Chat never seeds an app.
+        Append-only and idempotent: the file belongs to the Project's repo and may hold rules a
+        person put there.
+        """
+        try:
+            for line in _PROJECT_IGNORE:
+                ensure_ignore_line(self._dir / ".gitignore", line)
+        except OSError:
+            log.warning("workspace: could not write the Project's .gitignore")
 
     def project_record(self, project_id: str) -> ProjectRecord:
-        """The Project's own record over the same volume, alongside the Built App `ensure` returns.
+        """The Project's own record over the volume, alongside the Built App `ensure` returns.
 
         Seeds nothing and starts nothing: the Project's Threads, plan documents and settings are
         readable on a volume that carries no app at all, which is what Chat opens on.
@@ -881,7 +992,7 @@ class WorkspaceManager:
         tmpl = self._template / "node_modules"
         if not tmpl.exists():
             return False
-        node_modules = self._dir / "node_modules"
+        node_modules = self.app_path / "node_modules"
 
         # Nothing usable there: never linked, or a link left dangling. exists() follows the link and
         # reports False while the link itself is still present, which is why the unlink comes first.
@@ -924,7 +1035,7 @@ class WorkspaceManager:
             src = self._template / name
             if not src.is_file():
                 continue
-            dst = self._dir / name
+            dst = self.app_path / name
             if dst.is_file() and dst.read_bytes() == src.read_bytes():
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)  # scripts/ may predate this app
@@ -978,7 +1089,7 @@ class WorkspaceManager:
         """Copy one Sage-owned helper in. `refresh` also replaces a copy that differs from the
         template's; without it an existing file is left alone whatever it holds."""
         src = self._template / rel
-        dst = self._dir / rel
+        dst = self.app_path / rel
         if not src.is_file():
             return False
         if dst.is_file() and (not refresh or dst.read_bytes() == src.read_bytes()):

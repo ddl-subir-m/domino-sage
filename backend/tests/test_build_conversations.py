@@ -13,12 +13,16 @@ from fastapi.testclient import TestClient
 
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
-from sage.workspace.manager import Workspace
+from sage.workspace.manager import ProjectRecord, Workspace
 from sage.workspace.threads import ThreadStore
 
 
 def _ws(tmp: Path) -> Workspace:
-    return Workspace(project_id="p", path=tmp)
+    return Workspace(project_id="p", path=tmp, app_id="app_t")
+
+
+def _record(tmp: Path) -> ProjectRecord:
+    return ProjectRecord(project_id="p", path=tmp)
 
 
 def _template(tmp: Path) -> Path:
@@ -90,23 +94,25 @@ def test_the_stop_button_baseline_survives_adoption(tmp_path: Path):
 # ---- the session ---------------------------------------------------------------------------
 
 def test_each_conversation_owns_its_build_session(tmp_path: Path):
-    ws = _ws(tmp_path)
-    ws.write_session_id("ses_a", "thr_a")
-    ws.write_session_id("ses_b", "thr_b")
+    # The Project's record, not the app's: a session belongs to a conversation, and it is filed
+    # beside that Thread's chat session so a deleted Thread takes both halves with it (ADR-0008).
+    record = _record(tmp_path)
+    record.write_session_id("ses_a", "thr_a")
+    record.write_session_id("ses_b", "thr_b")
 
-    assert ws.read_session_id("thr_a") == "ses_a"
-    assert ws.read_session_id("thr_b") == "ses_b"
-    assert ws.read_session_id() is None  # the unscoped record is its own
-    assert ws.build_session_path("thr_a") == tmp_path / ".sage" / "threads" / "thr_a" / "build-session.json"
+    assert record.read_session_id("thr_a") == "ses_a"
+    assert record.read_session_id("thr_b") == "ses_b"
+    assert record.read_session_id() is None  # the unscoped record is its own
+    assert record.build_session_path("thr_a") == tmp_path / ".sage" / "threads" / "thr_a" / "build-session.json"
 
 
 def test_a_build_that_names_no_conversation_still_has_a_session(tmp_path: Path):
     """The CLI and the tests build without a rail. They keep the pre-ADR path."""
-    ws = _ws(tmp_path)
-    ws.write_session_id("ses_cli")
+    record = _record(tmp_path)
+    record.write_session_id("ses_cli")
 
-    assert ws.read_session_id() == "ses_cli"
-    assert ws.build_session_path() == ws.session_path
+    assert record.read_session_id() == "ses_cli"
+    assert record.build_session_path() == record.session_path
 
 
 def test_switching_conversation_drops_the_cached_session(tmp_path: Path):
@@ -130,7 +136,7 @@ def test_history_written_before_tagging_lands_on_the_oldest_conversation(tmp_pat
     still opens empty — which is the whole point of the button."""
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)
-    store = ThreadStore(project.workspace.path)
+    store = ThreadStore(project.record.path)
     old = store.create(title="first")
     new = store.create(title="second")
     project.workspace.append_history({"type": "user", "text": "built before tagging"})

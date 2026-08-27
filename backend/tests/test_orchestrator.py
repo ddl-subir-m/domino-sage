@@ -44,8 +44,11 @@ def test_project_binds_to_the_volume_and_seeds_it(tmp_path: Path):
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)  # no Vite in tests
     assert project.id == "Sage"
-    assert project.workspace.path == tmp_path / "mnt" / "code"
-    assert (project.workspace.path / "package.json").exists()  # seeded in place
+    # The Project is the volume; the Built App is a directory inside it, named for an id (ADR-0008).
+    assert project.record.path == tmp_path / "mnt" / "code"
+    assert project.workspace.path.parent == tmp_path / "mnt" / "code" / "apps"
+    assert project.workspace.path.name == project.workspace.app_id
+    assert (project.workspace.path / "package.json").exists()  # seeded from the template
 
 
 def test_project_is_memoized(tmp_path: Path):
@@ -208,9 +211,12 @@ def test_sync_pulls_teammate_changes_and_pushes(tmp_path: Path):
     result = orch.sync()
     assert result["status"] == "merged"
     assert result["pushed"] is True
-    assert (ws / "mate.txt").read_text() == "from teammate"  # pulled into the workspace
-    # The template files the attach seeded were committed + pushed alongside the merge.
-    assert "package.json" in _git(bare, "ls-tree", "--name-only", "HEAD")
+    assert (ws / "mate.txt").read_text() == "from teammate"  # pulled into the volume
+    # The template files the attach seeded were committed + pushed alongside the merge. They live
+    # in the app's directory, which is what the repo tracks them under.
+    assert "apps" in _git(bare, "ls-tree", "--name-only", "HEAD")
+    app = orch.project(start_preview=False).workspace
+    assert "package.json" in _git(bare, "ls-tree", "--name-only", f"HEAD:apps/{app.app_id}")
 
 
 def test_no_multi_project_surface():
@@ -699,7 +705,7 @@ def test_approve_prompt_omits_handoff_when_blank():
 
 
 def test_archive_plan_moves_plan_out_of_live_view(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     ws.write_plan("build a queue")
     dest = ws.archive_plan()
     assert dest is not None and dest.exists()
@@ -708,12 +714,12 @@ def test_archive_plan_moves_plan_out_of_live_view(tmp_path: Path):
 
 
 def test_archive_plan_is_a_noop_without_a_live_plan(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     assert ws.archive_plan() is None
 
 
 def test_archive_plan_never_clobbers_prior_archives(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     ws.write_plan("first")
     ws.archive_plan()
     ws.write_plan("second")
@@ -728,7 +734,7 @@ def _turn(ws: Workspace, prompt: str, reply: str) -> None:
 
 
 def test_history_md_renders_the_decisions_a_later_turn_needs(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     _turn(ws, "keep the date filter", "Added the filter.")
     ws.append_history({"type": "plan-proposed", "plan": "## Plan\n1. stacked chart"})
     ws.render_history_md()
@@ -739,7 +745,7 @@ def test_history_md_renders_the_decisions_a_later_turn_needs(tmp_path: Path):
 
 
 def test_history_md_drops_tool_trace_noise(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     _turn(ws, "build it", "Done.")
     ws.append_history({"type": "agent", "kind": "tool", "tool": "edit", "detail": "src/App.tsx"})
     ws.append_history({"type": "typecheck", "ok": True})
@@ -751,7 +757,7 @@ def test_history_md_drops_tool_trace_noise(tmp_path: Path):
 def test_history_md_self_heals_after_a_stop_truncates_history(tmp_path: Path):
     """The reason the render is a full rewrite: the stop button rewinds history.jsonl, and an
     archive that kept reverted work would feed a later turn something that never happened."""
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     _turn(ws, "first ask", "first reply")
     baseline = ws.history_len()
     _turn(ws, "second ask", "second reply")
@@ -764,7 +770,7 @@ def test_history_md_self_heals_after_a_stop_truncates_history(tmp_path: Path):
 
 
 def test_history_md_caps_turns_and_says_that_it_dropped_some(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     for i in range(Workspace._MAX_ARCHIVED_TURNS + 3):
         _turn(ws, f"ask number {i}", f"reply number {i}")
     ws.render_history_md()
@@ -775,7 +781,7 @@ def test_history_md_caps_turns_and_says_that_it_dropped_some(tmp_path: Path):
 
 
 def test_history_md_absent_when_there_is_no_history(tmp_path: Path):
-    ws = Workspace(project_id="p", path=tmp_path)
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
     ws.render_history_md()
     assert not ws.history_md_path.exists()
 

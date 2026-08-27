@@ -63,20 +63,22 @@ def _turn(orch: Orchestrator, project, prompt: str, reply: str) -> None:
 def test_the_archive_is_written_but_never_tracked(tmp_path: Path):
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)
-    ws = project.workspace.path
-    _repo(ws)
+    # One repo per Project, at the volume root: the app is a directory inside it (ADR-0008), so
+    # every path git is asked about is written from here.
+    root = project.record.path
+    _repo(root)
 
     _turn(orch, project, "keep the date filter", "Added the filter.")
-    artifact = ws / "examples" / "thr_a" / "revenue.png"
+    artifact = root / "examples" / "thr_a" / "revenue.png"
     artifact.parent.mkdir(parents=True)
     artifact.write_bytes(b"\x89PNG chart")
 
     assert "keep the date filter" in project.workspace.history_md_path.read_text()
-    git.commit_all(ws, "sage: a turn")
-    tracked = _tracked(ws)
-    assert HISTORY_MD not in tracked
+    git.commit_all(root, "sage: a turn")
+    tracked = _tracked(root)
+    assert project.repo_rel(HISTORY_MD) not in tracked
     # ADR-0006 stands for the two halves that are not derived: the log and the Artifacts.
-    assert ".sage/history.jsonl" in tracked
+    assert project.repo_rel(".sage/history.jsonl") in tracked
     assert "examples/thr_a/revenue.png" in tracked
 
 
@@ -85,16 +87,16 @@ def test_a_workspace_that_already_committed_the_archive_stops_tracking_it(tmp_pa
     before this change committed one."""
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)
-    ws = project.workspace.path
+    root = project.record.path
     project.workspace.append_history({"type": "user", "text": "first ask"})
     project.workspace.render_history_md()
-    _repo(ws)
-    assert HISTORY_MD in _tracked(ws)
+    _repo(root)
+    assert project.repo_rel(HISTORY_MD) in _tracked(root)
 
     _turn(orch, project, "second ask", "second reply")
-    git.commit_all(ws, "sage: a turn")
+    git.commit_all(root, "sage: a turn")
 
-    assert HISTORY_MD not in _tracked(ws)
+    assert project.repo_rel(HISTORY_MD) not in _tracked(root)
     # Untracked, not deleted: the agent reads it on the very next turn.
     assert "second ask" in project.workspace.history_md_path.read_text()
 
@@ -115,9 +117,11 @@ def test_the_agent_can_still_grep_the_archive_once_it_is_ignored(tmp_path: Path)
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)
     ws = project.workspace.path
-    _repo(ws)
+    _repo(project.record.path)
     _turn(orch, project, "keep the date filter", "Added the filter.")
 
+    # Grepped from inside the app, which is where the agent stands and where its two ignore files
+    # are; the repo they belong to is one level up.
     assert HISTORY_MD in _grep(ws, "date filter")
     (ws / ".ignore").unlink()
     assert HISTORY_MD not in _grep(ws, "date filter")
@@ -140,36 +144,41 @@ def test_two_builders_take_a_turn_each_and_the_archive_never_conflicts(tmp_path:
 
     builders = []
     for name in ("a", "b"):
+        root = tmp_path / name / "mnt" / "code"
+        if builders:
+            # The second builder starts from a clone, BEFORE attaching: the app directory it finds
+            # in there is the first builder's, and both go on to drive that one app.
+            root.parent.mkdir(parents=True, exist_ok=True)
+            _run(tmp_path, "clone", "-q", str(bare), str(root))
+            _run(root, "config", "user.email", "dev@example.com")
+            _run(root, "config", "user.name", "Dev")
         orch = _orch(tmp_path / name)
         project = orch.project(start_preview=False)
-        ws = project.workspace.path
         if not builders:  # the first builder seeds the shared remote
-            _repo(ws)
-            _run(ws, "remote", "add", "origin", str(bare))
-            _run(ws, "push", "-q", "-u", "origin", "HEAD")
-        else:
-            shutil.rmtree(ws)
-            _run(tmp_path, "clone", "-q", str(bare), str(ws))
-            _run(ws, "config", "user.email", "dev@example.com")
-            _run(ws, "config", "user.name", "Dev")
+            _repo(root)
+            _run(root, "remote", "add", "origin", str(bare))
+            _run(root, "push", "-q", "-u", "origin", "HEAD")
         builders.append((orch, project))
 
+    assert builders[0][1].workspace.app_id == builders[1][1].workspace.app_id
+
     for i, (orch, project) in enumerate(builders):
-        ws = project.workspace.path
+        ws, root = project.workspace.path, project.record.path
         _turn(orch, project, f"builder {i} asks", f"builder {i} replies")
         (ws / "src" / f"Panel{i}.tsx").write_text(f"export const P{i} = {i};\n")
-        assert git.commit_all(ws, f"sage: turn {i}")
-        synced = git.pull(ws)
-        assert HISTORY_MD not in synced.conflicts
+        assert git.commit_all(root, f"sage: turn {i}")
+        synced = git.pull(root)
+        assert project.repo_rel(HISTORY_MD) not in synced.conflicts
         if synced.status == "conflict":
-            assert synced.conflicts == [".sage/history.jsonl"]
+            assert synced.conflicts == [project.repo_rel(".sage/history.jsonl")]
             _resolve_log_conflict(ws)
-            git.finalize_merge(ws, "sage: merge remote changes")
-        assert git.push(ws).pushed
+            git.finalize_merge(root, "sage: merge remote changes")
+        assert git.push(root).pushed
 
+    project = builders[0][1]
     remote_files = set(_run(tmp_path, "-C", str(bare), "ls-tree", "-r", "--name-only", "HEAD").split())
-    assert HISTORY_MD not in remote_files
-    assert {"src/Panel0.tsx", "src/Panel1.tsx"} <= remote_files
+    assert project.repo_rel(HISTORY_MD) not in remote_files
+    assert {project.repo_rel(f"src/Panel{i}.tsx") for i in (0, 1)} <= remote_files
     # Each builder still has an archive to read, rendered from its own copy of the log.
     for _, project in builders:
         assert project.workspace.history_md_path.exists()

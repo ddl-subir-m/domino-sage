@@ -117,7 +117,7 @@ def _of(events, kind): return [e for e in events if e.get("type") == kind]
 # --- the happy path -------------------------------------------------------------------------------
 
 def test_each_phase_runs_in_its_own_fresh_session(tmp_path: Path):
-    orch, oc, _project, _ = _plan_then_phases(tmp_path)
+    orch, oc, project, _ = _plan_then_phases(tmp_path)
     events = list(orch.approve_stream())
 
     # One project session from the plan turn, then one per phase. Distinct ids is the whole feature:
@@ -126,7 +126,7 @@ def test_each_phase_runs_in_its_own_fresh_session(tmp_path: Path):
     assert len(phase_sessions) == 3
     assert len({s["id"] for s in phase_sessions}) == 3
     # Same working tree, so a cold session can still read what earlier phases wrote.
-    assert {s["directory"] for s in oc.sessions} == {str(oc.workspace)}
+    assert {s["directory"] for s in oc.sessions} == {str(project.workspace.path)}
     assert [e["n"] for e in _of(events, "step-start")] == [1, 2, 3]
     assert all(e["ok"] for e in _of(events, "step-done"))
 
@@ -203,7 +203,7 @@ def test_a_failed_phase_aborts_the_build_but_keeps_finished_work(tmp_path: Path,
     assert "phase 2 of 3" in done[0]["decision"]
     # Phase 1's work stays: throwing away finished phases because a later one broke is the worst
     # available behaviour, and a follow-up turn is the cheapest recovery.
-    assert (oc.workspace / "src" / "data.ts").exists()
+    assert (project.workspace.path / "src" / "data.ts").exists()
     # But the build never happened, so no commit and no "built" latch.
     assert not _of(events, "saved")
     assert not project.workspace.has_built()

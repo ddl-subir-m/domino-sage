@@ -65,8 +65,11 @@ def test_chat_opencode_session_is_not_the_react_app(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="ok")])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "hi"))
-    work = orch.project(start_preview=False).workspace.path / ".sage" / "chat-work"
+    project = orch.project(start_preview=False)
+    # At the Project root, where Chat's Threads and Artifacts live — not inside the Built App.
+    work = project.record.path / ".sage" / "chat-work"
     assert oc.sessions[0]["directory"] == str(work)
+    assert not str(work).startswith(str(project.workspace.path))
     assert (work / "AGENTS.md").exists()
     assert (work / "examples").is_symlink()
 
@@ -121,7 +124,7 @@ def test_chat_turn_uses_sage_chat_skips_plan_and_tsc(tmp_path: Path):
     assert orch.project(start_preview=False).workspace.read_history() == []
 
 
-def test_chat_turn_records_artifact_and_reverts_src(tmp_path: Path):
+def test_chat_turn_records_artifact_and_reverts_a_write_outside_its_thread(tmp_path: Path):
     orch, oc = _orch(tmp_path)
     thread = orch.create_thread()
     tid = thread["id"]
@@ -129,19 +132,21 @@ def test_chat_turn_records_artifact_and_reverts_src(tmp_path: Path):
     oc.turns = [Turn(
         text="Here is gross notional by desk.",
         writes={
-            "src/App.tsx": "// hijack",
+            "examples/notes.md": "# not this Thread's",
             f"examples/{tid}/exposure.table.json": table,
         },
     )]
-    src = orch.project(start_preview=False).workspace.path / "src" / "App.tsx"
+    project = orch.project(start_preview=False)
+    src = project.workspace.path / "src" / "App.tsx"
     original = src.read_text()
     events = list(orch.chat_stream(tid, "what's in this CSV?"))
 
-    assert src.read_text() == original
+    assert src.read_text() == original  # the app is a directory Chat cannot reach at all
+    assert not (project.record.path / "examples" / "notes.md").exists()  # reverted
     arts = next(e for e in events if e.get("type") == "artifacts")["items"]
     assert arts[0]["kind"] == "table"
     assert arts[0]["path"] == f"examples/{tid}/exposure.table.json"
-    assert (orch.project(start_preview=False).workspace.path / arts[0]["path"]).read_text() == table
+    assert (project.record.path / arts[0]["path"]).read_text() == table
     hist = orch.thread_history(tid)
     assert hist[0]["type"] == "user"
     ctx = orch.thread_context(tid)["items"]
@@ -534,8 +539,9 @@ def test_a_confirmed_handoff_puts_the_chat_file_where_the_app_reads_it(tmp_path:
     assert served.read_text().startswith("month,revenue")
     manifest = json.loads((ws / ".sage" / "attachments.json").read_text())
     assert [e["path"] for e in manifest] == ["public/data/sales_2026/train.csv"]
-    # The Thread goes on working: its chip still names a file that is there.
-    assert (ws / row["path"]).exists()
+    # The Thread goes on working: its chip still names a file that is there. Chat's scratch is the
+    # Project's, so the chip's path is read from the root and not from the app.
+    assert (orch.project(start_preview=False).record.path / row["path"]).exists()
 
 
 def test_new_conversation_does_not_provision(tmp_path: Path):

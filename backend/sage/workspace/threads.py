@@ -396,21 +396,25 @@ _SKIP_SNAPSHOT_PARTS = frozenset({"node_modules", ".git", "dist", "__pycache__",
 # so revert_denied_writes treated both as denied writes: a fetch or an upload the `before` snapshot
 # had not managed to read was UNLINKED at the end of the turn, taking the file out of the rail while
 # the chip that named it stayed. Nothing here is the agent's, and nothing here reaches git.
-_SKIP_SNAPSHOT_PREFIXES = ("public/data/", ".sage/scratch/")
+# `apps/` is the third tree skipped, and for a plainer reason than the other two: the Built Apps
+# live there (ADR-0008), a Chat turn never writes one, and reverting one is not Chat's to do.
+# Without this line every Chat turn would read the whole app tree, twice.
+_SKIP_SNAPSHOT_PREFIXES = ("public/data/", ".sage/scratch/", "apps/")
 
 CHAT_WORK = Path(".sage") / "chat-work"
 
 
-def ensure_chat_workdir(workspace: Path, agents_md: str) -> Path:
+def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None = None) -> Path:
     """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/, scratch and data.
 
-    Chat must not use the React app clone as cwd. Paths in the prompt stay workspace-shaped
+    Chat must not use the Built App's directory as cwd. Paths in the prompt stay workspace-shaped
     (`examples/<threadId>/…`, `.sage/scratch/…`, `public/data/<slug>/…`) because those names are
-    linked in here. `public/data` is what an attached Dataset file is named by — the context line
+    linked in here. `workspace` is the Project root, where Chat's own trees live; `data_dir` is the
+    app's `public/data/`, which is what an attached Dataset file is named by — the context line
     and the attachment descriptor both hand the agent that path, and without the link it resolves
     to nothing from this cwd, so a file the person can see in the rail cannot be read at all.
     Only `data` is linked, not the whole of `public/`: the rest of it belongs to the app, which
-    Chat has no business reading.
+    Chat has no business reading. None means there is no app yet, so there is nothing to link.
     """
     root = Path(workspace) / CHAT_WORK
     root.mkdir(parents=True, exist_ok=True)
@@ -423,7 +427,8 @@ def ensure_chat_workdir(workspace: Path, agents_md: str) -> Path:
     _ensure_dir_link(sage / "scratch", Path(workspace) / ".sage" / "scratch")
     public = root / "public"
     public.mkdir(exist_ok=True)
-    _ensure_dir_link(public / "data", Path(workspace) / "public" / "data")
+    if data_dir is not None:
+        _ensure_dir_link(public / "data", data_dir)
     return root
 
 

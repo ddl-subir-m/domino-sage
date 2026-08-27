@@ -57,20 +57,25 @@ def test_ensure_without_seed_app_does_not_copy_the_react_template(tmp_path: Path
 def test_ensure_is_idempotent_and_never_clobbers_existing_app(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
     ws_dir = tmp_path / "ws"
-    # Pre-existing app (e.g. a fresh git checkout): its files and .git must survive.
-    ws_dir.mkdir()
-    (ws_dir / "package.json").write_text('{"name": "mine"}')
+    # A pre-existing app (a fresh git checkout of a Project that already has one): its files and
+    # the Project's .git must survive, and it must be FOUND rather than a second one minted beside
+    # it — the directory name is the app's id and never changes (ADR-0008).
+    app = ws_dir / "apps" / "app_already"
+    app.mkdir(parents=True)
     (ws_dir / ".git").mkdir()
-    (ws_dir / "src").mkdir()
-    (ws_dir / "src" / "App.tsx").write_text("my code")
+    (app / "package.json").write_text('{"name": "mine"}')
+    (app / "src").mkdir()
+    (app / "src" / "App.tsx").write_text("my code")
     mgr = WorkspaceManager(workspace_dir=ws_dir, template=tmpl)
 
-    mgr.ensure("proj1")
+    ws = mgr.ensure("proj1")
     mgr.ensure("proj1")  # second call is a no-op
 
-    assert (ws_dir / "package.json").read_text() == '{"name": "mine"}'
+    assert ws.app_id == "app_already" and ws.path == app
+    assert (app / "package.json").read_text() == '{"name": "mine"}'
     assert ws_dir / ".git" in list(ws_dir.iterdir())
-    assert (ws_dir / "src" / "App.tsx").read_text() == "my code"
+    assert (app / "src" / "App.tsx").read_text() == "my code"
+    assert mgr.app_ids() == ["app_already"]  # no second app beside it
 
 
 def test_ensure_seeds_into_preexisting_empty_dir(tmp_path: Path):
@@ -169,16 +174,17 @@ def test_display_name_is_default_then_named(tmp_path: Path):
     assert record.display_name() == "Rates dashboard"
 
 
-def test_mark_built_preserves_other_settings(tmp_path: Path):
-    # The app's latch and the Project's settings share one file until a Built App has a directory
-    # of its own, so marking built must not take the opt-out with it.
+def test_mark_built_is_the_apps_own_record_not_the_projects(tmp_path: Path):
+    # Two settings files with one name, in two directories. The latch is a fact about the app's
+    # code, so it goes in the app; the Project's opt-out stays untouched beside it.
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
     ws = mgr.ensure("p")
     record = mgr.project_record("p")
     record.write_settings({"skip_planning": True})
     ws.mark_built()
-    settings = record.read_settings()
-    assert settings["skip_planning"] is True and settings["built"] is True
+    assert record.read_settings() == {"skip_planning": True}
+    assert ws.has_built() is True
+    assert ws.path / ".sage" != record.path / ".sage"
 
 
 def test_plan_artifact_roundtrip(tmp_path: Path):

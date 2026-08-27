@@ -54,7 +54,7 @@ def test_opting_out_of_planning_opts_out_of_this_gate_too():
 
 
 def _ws(tmp_path: Path) -> Workspace:
-    return Workspace(project_id="p", path=tmp_path)
+    return Workspace(project_id="p", path=tmp_path, app_id="app_t")
 
 
 def test_a_fresh_workspace_reports_no_failure(tmp_path: Path):

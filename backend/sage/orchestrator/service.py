@@ -101,7 +101,7 @@ from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
-from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager
+from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager, ensure_ignore_line
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
     ThreadStore,
@@ -1590,10 +1590,11 @@ def _tool_duration_ms(part: dict) -> int | None:
 @dataclass
 class Project:
     id: str
+    # The Built App: `apps/<appId>/` on the volume, and everything inside it.
     workspace: Workspace
-    # The Project's own record — Threads, plan documents, settings — beside the Built App's. Two
-    # surfaces over one volume (ADR-0008): ask this one for what the Project owns, `workspace` for
-    # what the app owns, and neither for the other's.
+    # The Project's own record — Threads, plan documents, settings, sessions — at the volume root,
+    # which is also the git repo root. Two surfaces, two directories (ADR-0008): ask this one for
+    # what the Project owns, `workspace` for what the app owns, and neither for the other's.
     record: ProjectRecord
     supervisor: ViteSupervisor
     queries: PreviewQueries
@@ -1652,6 +1653,28 @@ class Project:
     cost_url: str | None = None
     cost_project: str | None = None
 
+    # Workspace-relative prefixes the PROJECT owns rather than the app: Chat's Artifacts and
+    # scratch, and the Threads and plan documents beside them. Everything else a caller names is
+    # the app's, and resolves inside `apps/<appId>/`.
+    _PROJECT_PREFIXES = ("examples/", _SCRATCH_PREFIX, ".sage/threads/", ".sage/plan-docs/")
+
+    def root_for(self, rel: str) -> Path:
+        """Which of the two directories a workspace-relative path is written against.
+
+        The UI hands back paths it was given — a Chat Artifact, an attached data file, a source
+        file in the code view — and they are all shaped the same. This is what tells them apart.
+        """
+        clean = str(rel or "").replace("\\", "/").lstrip("/")
+        return self.record.path if clean.startswith(self._PROJECT_PREFIXES) else self.workspace.path
+
+    def repo_rel(self, rel: str) -> str:
+        """An app-relative path, as the Project's git repo names it: `apps/<appId>/<rel>`.
+
+        Git runs at the Project root, so every path handed to it — an exclude, an untrack — has to
+        be written from there, while everything else in the orchestrator is app-relative. Called
+        with an empty `rel` it names the app's directory itself."""
+        return f"{self.workspace.path.relative_to(self.record.path).as_posix()}/{rel}"
+
     def status(self) -> dict:
         s = self.control.snapshot()
         try:
@@ -1665,7 +1688,7 @@ class Project:
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
             "attached": list(self.attached),
-            "scratch": _list_scratch_files(self.workspace.path),
+            "scratch": _list_scratch_files(self.record.path),
             "model": {
                 # `mode` is what routes right now — the pin, while a turn is running (see
                 # arm_turn_mode). `selected_mode` is where the user's picker actually sits, which is
@@ -2028,7 +2051,7 @@ class Orchestrator:
         if seed_app:
             self._prepare_app_files()
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
-        shim = EnforcementShim(control, self._effective_catalog(workspace), self._gateway,
+        shim = EnforcementShim(control, self._effective_catalog(record), self._gateway,
                                project_name=self._cost_project_label)
         supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
         queries = PreviewQueries(workspace.path, self._wm.template)
@@ -2181,10 +2204,10 @@ class Orchestrator:
         conversation's own session."""
         project = self.project()
         self._switch_conversation(project, conversation)
-        self._adopt_legacy_build_history(project.workspace)
+        self._adopt_legacy_build_history(project.workspace, project.record)
 
     @staticmethod
-    def _adopt_legacy_build_history(workspace: Workspace) -> None:
+    def _adopt_legacy_build_history(workspace: Workspace, record: ProjectRecord) -> None:
         """Build history predates conversation tagging (Workspace.adopt_history). Hand every
         untagged entry to the project's OLDEST conversation: an upgraded project keeps its
         transcript, and a conversation created after the upgrade — the "New conversation" the rail
@@ -2192,7 +2215,7 @@ class Orchestrator:
         for the first one that builds."""
         if not workspace.has_untagged_history():
             return
-        rows = ThreadStore(workspace.path).list()
+        rows = ThreadStore(record.path).list()
         if not rows:
             return
         # createdAt has one-second resolution, so two Threads made in the same second tie. The id
@@ -2206,21 +2229,21 @@ class Orchestrator:
         client = self._ensure_opencode()
         self._switch_conversation(project, conversation)
         if project.session_id is None:
-            project.session_id = self._recover_session(project.workspace, client, conversation)
+            project.session_id = self._recover_session(project.record, client, conversation)
         if project.session_id is None:
             # No session-level model: use opencode.json's default; the shim's router enforces the
             # real model per request. (An explicit ModelRef at creation stalled turns.)
             project.session_id = client.create_session(directory=str(project.workspace.path))
-            project.workspace.write_session_id(project.session_id, conversation)
+            project.record.write_session_id(project.session_id, conversation)
         return project.session_id
 
     @staticmethod
-    def _recover_session(workspace: Workspace, client: OpenCodeClient,
+    def _recover_session(record: ProjectRecord, client: OpenCodeClient,
                          conversation: str | None = None) -> str | None:
         """A session id persisted from a prior process may point at a session the current
         OpenCode server doesn't know about (e.g. its storage was reset); validate before reusing
         it so a stale id doesn't wedge every subsequent build call."""
-        sid = workspace.read_session_id(conversation)
+        sid = record.read_session_id(conversation)
         if sid is None:
             return None
         try:
@@ -2239,7 +2262,7 @@ class Orchestrator:
                     "message": "A build is already running. Wait for it to finish or stop it first."}
         try:
             project = self._ensure_seeded()
-            self._adopt_legacy_build_history(project.workspace)
+            self._adopt_legacy_build_history(project.workspace, project.record)
             # Same reason as the streaming turns: the archive is no longer committed, so a fresh
             # clone reaching the agent through this route would hand it a file that isn't there.
             self._refresh_history_archive(project)
@@ -2432,12 +2455,12 @@ class Orchestrator:
     def create_thread(self) -> dict:
         """A new Chat Thread in this project. Does not provision a Domino project."""
         self._flush_chat_save("leave")
-        return ThreadStore(self._chat_project().workspace.path).create()
+        return ThreadStore(self._chat_project().record.path).create()
 
     def get_thread(self, thread_id: str) -> dict:
         if self._chat_dirty_thread and self._chat_dirty_thread != thread_id:
             self._flush_chat_save("leave")
-        store = ThreadStore(self._chat_project().workspace.path)
+        store = ThreadStore(self._chat_project().record.path)
         row = store.get(thread_id)
         if row is None:
             raise KeyError(thread_id)
@@ -2453,7 +2476,7 @@ class Orchestrator:
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
-        store = ThreadStore(self._chat_project().workspace.path)
+        store = ThreadStore(self._chat_project().record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         if isinstance(body, dict) and body.get("handoff") == "suppress":
@@ -2469,7 +2492,7 @@ class Orchestrator:
 
     def delete_thread(self, thread_id: str) -> None:
         project = self._chat_project()
-        store = ThreadStore(project.workspace.path)
+        store = ThreadStore(project.record.path)
         # Read the chips before the Thread goes: afterwards there is nothing left to say what it
         # fetched, and the files would sit in scratch for the life of the project.
         paths = [str(i.get("path") or "") for i in store.read_context(thread_id).get("items") or []]
@@ -2479,16 +2502,16 @@ class Orchestrator:
             self._release_chat_file(project, path)
 
     def list_threads(self) -> list[dict]:
-        return ThreadStore(self._chat_project().workspace.path).list()
+        return ThreadStore(self._chat_project().record.path).list()
 
     def thread_history(self, thread_id: str) -> list[dict]:
-        return ThreadStore(self._chat_project().workspace.path).read_history(thread_id)
+        return ThreadStore(self._chat_project().record.path).read_history(thread_id)
 
     def thread_context(self, thread_id: str) -> dict:
-        return ThreadStore(self._chat_project().workspace.path).read_context(thread_id)
+        return ThreadStore(self._chat_project().record.path).read_context(thread_id)
 
     def add_thread_context(self, thread_id: str, item: dict) -> dict:
-        store = ThreadStore(self._chat_project().workspace.path)
+        store = ThreadStore(self._chat_project().record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         row = dict(item or {})
@@ -2561,7 +2584,7 @@ class Orchestrator:
 
     def remove_thread_context(self, thread_id: str, item_id: str) -> bool:
         project = self._chat_project()
-        store = ThreadStore(project.workspace.path)
+        store = ThreadStore(project.record.path)
         row = next((i for i in store.read_context(thread_id).get("items") or []
                     if i.get("id") == item_id), None)
         removed = store.remove_context(thread_id, item_id)
@@ -2585,13 +2608,13 @@ class Orchestrator:
         """
         if not path.startswith(_CHAT_DATA_PREFIX):
             return False
-        store = ThreadStore(project.workspace.path)
+        store = ThreadStore(project.record.path)
         for thread in store.list():
             for item in store.read_context(thread["id"]).get("items") or []:
                 if str(item.get("path") or "") == path:
                     return False
         try:
-            dest = _safe_join(project.workspace.path, path)
+            dest = _safe_join(project.record.path, path)
         except ValueError:
             return False
         if not dest.is_symlink() and not dest.is_file():
@@ -2604,7 +2627,7 @@ class Orchestrator:
             log.warning("chat: could not release the fetched copy of %s", path)
             return False
         _prune_empty_dirs(
-            dest.parent, _safe_join(project.workspace.path, _CHAT_DATA_PREFIX.rstrip("/")))
+            dest.parent, _safe_join(project.record.path, _CHAT_DATA_PREFIX.rstrip("/")))
         return True
 
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None):
@@ -2789,7 +2812,7 @@ class Orchestrator:
 
     def _draft_handoff_plan(self, thread_id: str) -> dict:
         project = self._ensure_seeded()
-        store = ThreadStore(project.workspace.path)
+        store = ThreadStore(project.record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         existing = store.read_handoff(thread_id) or {}
@@ -2863,7 +2886,7 @@ class Orchestrator:
 
     def _confirm_handoff(self, thread_id: str, include: dict) -> dict:
         project = self._ensure_seeded()
-        store = ThreadStore(project.workspace.path)
+        store = ThreadStore(project.record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         plan_md = (project.workspace.read_plan() or "").strip()
@@ -2904,6 +2927,12 @@ class Orchestrator:
             project.record.set_display_name(title)
             project.record.mark_untitled(False)
         handoff = store.mark_handoff_bound(thread_id)
+        # A plan is drafted in a Thread, before the app exists, so it cannot be born inside one —
+        # it stays with the Project and gains its app reference here, at the moment it binds
+        # (ADR-0008). This is what lets the plan page offer "Open in Builder" instead of "Build this".
+        plan_id = str((handoff or {}).get("planId") or "")
+        if plan_id:
+            project.record.patch_plan_doc_meta(plan_id, appId=project.workspace.app_id)
         self._flush_chat_save("handoff", holding_turn=True)
         return {
             "ok": True,
@@ -2934,7 +2963,7 @@ class Orchestrator:
         path = str(item.get("path") or "")
         local = None
         if path.startswith(_CHAT_DATA_PREFIX):
-            fetched = _safe_join(self.project().workspace.path, path)
+            fetched = _safe_join(self.project().record.path, path)
             # A symlink there points at the mount, and attach_file makes that link itself.
             local = fetched if fetched.is_file() and not fetched.is_symlink() else None
         try:
@@ -3017,11 +3046,19 @@ class Orchestrator:
 
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> str:
-        work = str(ensure_chat_workdir(project.workspace.path, self._chat_agents_md()))
-        # That call creates `public/data/` in order to link it into the chat workdir, so the tree
-        # can now exist before anything has been attached. It must be out of git either way: the
-        # gitignore line is what keeps Dataset bytes from ever reaching the app's repo.
-        self._ensure_gitignored(project.workspace, "public/data/")
+        # Chat stands at the Project root, where its Threads, Artifacts and scratch live. The one
+        # thing it borrows from the app is `public/data/`, and only once an app exists to borrow
+        # from: linking it would otherwise create the app directory a confirmed handoff is what
+        # creates (ADR-0008).
+        has_app = project.workspace.exists()
+        work = str(ensure_chat_workdir(
+            project.record.path, self._chat_agents_md(),
+            data_dir=project.workspace.path / "public" / "data" if has_app else None))
+        # That link creates `public/data/` in order to point at it, so the tree can now exist
+        # before anything has been attached. It must be out of git either way: the gitignore line
+        # is what keeps Dataset bytes from ever reaching the app's repo.
+        if has_app:
+            self._ensure_gitignored(project.workspace.path, "public/data/")
         rec = store.read_session(thread_id) or {}
         sid = rec.get("session_id")
         if sid and rec.get("directory") == work:
@@ -3087,7 +3124,7 @@ class Orchestrator:
         import time
 
         project = self._chat_project()
-        store = ThreadStore(project.workspace.path)
+        store = ThreadStore(project.record.path)
         thread = store.get(thread_id)
         if thread is None:
             yield {"type": "error", "message": "Unknown thread"}
@@ -3141,11 +3178,14 @@ class Orchestrator:
             client = self._ensure_opencode()
             sid = self._ensure_thread_session(store, thread_id, project, client)
             work = str((store.read_session(thread_id) or {}).get("directory")
-                       or project.workspace.path)
+                       or project.record.path)
             project.active_session_id = sid
-            before = snapshot_files(project.workspace.path)
+            before = snapshot_files(project.record.path)
             seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
-            mentioned = self._chat_mention_files(prompt, items, project.workspace.path)
+            # Resolved against the chat workdir, which is where the agent stands and the only place
+            # every path in the prompt resolves: `examples/` and `.sage/scratch/` are the Project's
+            # and `public/data/` is the app's, and all three are linked in there.
+            mentioned = self._chat_mention_files(prompt, items, Path(work))
             # Opened BEFORE the prompt: the stream has no `?after=`, so anything emitted before the
             # reader connects is gone. The window is a local connect and text.ended repairs whatever
             # falls in it, which is the whole reason the end event is treated as authoritative.
@@ -3159,7 +3199,7 @@ class Orchestrator:
             tap = _EventTap(client, sid, directory=work)
             client.send_prompt(
                 sid, self._chat_prompt(thread_id, prompt, ctx, urls,
-                                       workspace=project.workspace.path,
+                                       workspace=Path(work),
                                        artifacts=store.read_artifacts(thread_id)),
                 agent="sage-chat",
                 attachments=mentioned,
@@ -3382,10 +3422,10 @@ class Orchestrator:
                     break
                 time.sleep(1.0)
 
-            revert_denied_writes(project.workspace.path, thread_id, before)
+            revert_denied_writes(project.record.path, thread_id, before)
             artifacts = [
                 store.record_artifact(thread_id, path=rel)
-                for rel in new_artifact_paths(project.workspace.path, thread_id, before)
+                for rel in new_artifact_paths(project.record.path, thread_id, before)
             ]
             if artifacts:
                 immediate = immediate or "artifacts"
@@ -3519,6 +3559,10 @@ class Orchestrator:
             project = self.project()
             instructions = self.read_instructions(project)
             self._wm.reset()
+            # The plan documents describe the app that was just taken away, and they live with the
+            # Project rather than inside the app — so clearing them is a second call, through the
+            # surface that owns them.
+            project.record.clear_plan_docs()
             self.write_instructions(project, instructions)
             self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
             project.workspace.clear_built()
@@ -4753,12 +4797,15 @@ class Orchestrator:
             time.sleep(0.5)
 
     def _save_to_git(self, project: Project, prompt: str) -> dict | None:
-        """Commit + push the workspace after a clean build so the app and .sage/ transcript are
-        durable. Returns None when the workspace isn't the root of its own git repo (local dev / the
-        /tmp spike — no save line to show); otherwise a `saved` event. Never raises into the build."""
+        """Commit + push the Project after a clean build so the app and .sage/ transcript are
+        durable. Returns None when the volume isn't the root of its own git repo (local dev / the
+        /tmp spike — no save line to show); otherwise a `saved` event. Never raises into the build.
+
+        The Project root, not the app: one repo holds every Built App and the Project's own record,
+        so this is the only directory git has ever been runnable in."""
         from ..workspace import git
 
-        path = project.workspace.path
+        path = project.record.path
         if not git.is_repo_root(path):
             return None
         message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
@@ -4784,11 +4831,11 @@ class Orchestrator:
             return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}
 
     def _integrate_remote(self, project: Project):
-        """Pull the remote into the (already-committed, clean) workspace, resolving merge conflicts
+        """Pull the remote into the (already-committed, clean) Project, resolving merge conflicts
         with the agent. Returns a git.SyncResult, or None when there's no remote to pull from."""
         from ..workspace import git
 
-        path = project.workspace.path
+        path = project.record.path
         if not git.has_remote(path):
             return None
         result = git.pull(path)
@@ -4801,7 +4848,7 @@ class Orchestrator:
         Rolls the merge back (leaving the pre-pull state) if the agent leaves markers or errors."""
         from ..workspace import git
 
-        path = project.workspace.path
+        path = project.record.path
         client = self._ensure_opencode()
         sid = self._ensure_session(project, project.build_conversation)
         files = "\n".join(f"- {c}" for c in conflicts)
@@ -4833,7 +4880,7 @@ class Orchestrator:
         from ..workspace import git
 
         project = self.project()
-        path = project.workspace.path
+        path = project.record.path
         if not git.is_repo_root(path) or not git.has_remote(path):
             return {"status": "no-remote", "conflicts": [], "pushed": False,
                     "detail": "this app has no git remote to pull from"}
@@ -4886,8 +4933,8 @@ class Orchestrator:
         entry = project.workspace.path / _ENTRY_POINT
         if not entry.exists():
             raise RuntimeError(
-                f"'{_ENTRY_POINT}' is missing from the workspace, so Domino has no entry script to "
-                f"run. Add {_ENTRY_POINT} to the project root and rebuild, then publish again."
+                f"'{_ENTRY_POINT}' is missing from this app, so Domino has no entry script to "
+                f"run. Add {_ENTRY_POINT} to {project.repo_rel('')} and rebuild, then publish again."
             )
         # The refresh above is best-effort, so app.sh can be the current one while the server it execs
         # is absent — a deploy that reports success and then crash-loops on "can't open file
@@ -4895,9 +4942,9 @@ class Orchestrator:
         # entry script still serves the build with Node.
         if _SERVER_SCRIPT in entry.read_text() and not (project.workspace.path / _SERVER_SCRIPT).exists():
             raise RuntimeError(
-                f"'{_SERVER_SCRIPT}' is missing from the workspace, but {_ENTRY_POINT} runs it to serve "
+                f"'{_SERVER_SCRIPT}' is missing from this app, but {_ENTRY_POINT} runs it to serve "
                 f"the app, so the deploy would start and immediately fail. Restore {_SERVER_SCRIPT} to "
-                "the project root and publish again."
+                f"{project.repo_rel('')} and publish again."
             )
         # Deploy the newest code: commit + push before publishing. Best-effort — a save failure (no
         # remote, offline) must not block a publish of whatever is already committed.
@@ -4913,7 +4960,10 @@ class Orchestrator:
             app = cp.republish_app(existing.id)
             out = {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
         else:
-            app = cp.publish_app(pid, name=name)
+            # The entry point is the app's directory, and Domino fixes it when the App is created —
+            # which is why the directory is named for an id that never changes (ADR-0008).
+            app = cp.publish_app(pid, name=name,
+                                 entry_point=project.repo_rel(_ENTRY_POINT))
             out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
         out["manage_url"] = cp.app_manage_url(app.id, name)
         return out
@@ -5055,8 +5105,8 @@ class Orchestrator:
             except httpx.HTTPError:
                 pass
 
-    def _effective_catalog(self, workspace: Workspace) -> ModelCatalog:
-        overrides = workspace.read_catalog_overrides()
+    def _effective_catalog(self, record: ProjectRecord) -> ModelCatalog:
+        overrides = record.read_catalog_overrides()
         return replace(self._catalog, **overrides) if overrides else self._catalog
 
     def set_catalog(self, **fields: str | None) -> ModelCatalog:
@@ -5069,16 +5119,16 @@ class Orchestrator:
             return project.shim.catalog
         new_catalog = replace(project.shim.catalog, **changes)
         project.shim.set_catalog(new_catalog)
-        overrides = project.workspace.read_catalog_overrides()
+        overrides = project.record.read_catalog_overrides()
         overrides.update(changes)
-        project.workspace.write_catalog_overrides(overrides)
+        project.record.write_catalog_overrides(overrides)
         return new_catalog
 
     def history(self, conversation: str | None = None) -> list[dict]:
-        """Reads straight from the workspace volume, so the transcript is available without
-        starting the preview (attaching the project) — a plain GET must not spin up Vite."""
-        workspace = Workspace(self._project_id, self._wm.path)
-        self._adopt_legacy_build_history(workspace)
+        """Reads straight from the app's directory on the volume, so the transcript is available
+        without starting the preview (attaching the project) — a plain GET must not spin up Vite."""
+        workspace = self._wm.app_workspace(self._project_id)
+        self._adopt_legacy_build_history(workspace, self._wm.project_record(self._project_id))
         return workspace.read_history(conversation)
 
     def list_project_resources(self) -> list[dict]:
@@ -5575,7 +5625,7 @@ class Orchestrator:
         # picker is opened from one Data Source's row and shows one store's tables, so a save that
         # replaced the whole file would silently un-share the rows chosen from the store next to it.
         kept = [s for s in self._shared(project) if s.binding != binding.id]
-        self._ensure_gitignored(project.workspace, SAMPLES_PATH)
+        self._ensure_gitignored(project.workspace.path, SAMPLES_PATH)
         self._write_generated(project.workspace.path / SAMPLES_PATH, render_samples(kept + fresh))
         self._write_app_data(project)
         self._rebaseline_turn(project)
@@ -5766,7 +5816,7 @@ class Orchestrator:
         Reads the manifest directly rather than through `project()`, so this stays callable from
         inside the attach path without recursing through the memo it is being called from.
         """
-        workspace = self._project.workspace if self._project is not None else Workspace(self._project_id, self._wm.path)
+        workspace = self._project.workspace if self._project is not None else self._wm.app_workspace(self._project_id)
         recorded = parse_bindings(workspace.read_bindings())
         if not recorded:
             # Nothing to check, so nothing worth a call: the overwhelmingly common case at session
@@ -5966,7 +6016,7 @@ class Orchestrator:
                 {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel,
                  "size": size, "source": "dataset", "dataset_rel_path": file_path}
             )
-            self._ensure_gitignored(project.workspace, "public/data/")
+            self._ensure_gitignored(project.workspace.path, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
         size = next((e["size"] for e in project.attached if e["path"] == rel), 0)
@@ -5990,11 +6040,11 @@ class Orchestrator:
 
         Idempotent: a chip re-added, or two chips naming the same file, fetch once.
         """
-        project = self.project()
+        project = self._chat_project()
         asset = self._find_asset(dataset_id)
         rel = _chat_data_dest(asset.name, file_path)
-        dest = _safe_join(project.workspace.path, rel)
-        self._ensure_gitignored(project.workspace, _SCRATCH_PREFIX)
+        dest = _safe_join(project.record.path, rel)
+        self._ensure_gitignored(project.record.path, _SCRATCH_PREFIX)
         if dest.is_symlink() or dest.is_file():
             return {"path": rel, "dataset": asset.name, "size": dest.stat().st_size}
         if asset.mount_path:
@@ -6005,7 +6055,7 @@ class Orchestrator:
             dest.symlink_to(src)
             size = src.stat().st_size
         else:
-            root = _safe_join(project.workspace.path, _CHAT_DATA_PREFIX.rstrip("/"))
+            root = _safe_join(project.record.path, _CHAT_DATA_PREFIX.rstrip("/"))
             size = self._download_attachment(asset, file_path, dest, _copied_bytes(root), root)
         return {"path": rel, "dataset": asset.name, "size": size}
 
@@ -6085,7 +6135,7 @@ class Orchestrator:
                  "size": size, "source": "upload",
                  "dataset_rel_path": rel_in_dataset}
             )
-            self._ensure_gitignored(project.workspace, "public/data/")
+            self._ensure_gitignored(project.workspace.path, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
         except Exception:
@@ -6109,15 +6159,15 @@ class Orchestrator:
 
     def upload_scratch(self, filename: str, data: bytes) -> dict:
         """Write a Chat-local file into gitignored `.sage/scratch/`. No Dataset required."""
-        project = self.project()
+        project = self._chat_project()
         if not filename or not filename.strip():
             raise ValueError("filename required")
         name = _slug(filename)
         rel = f"{_SCRATCH_PREFIX}{name}"
-        dest = _safe_join(project.workspace.path, rel)
+        dest = _safe_join(project.record.path, rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        self._ensure_gitignored(project.workspace, _SCRATCH_PREFIX)
+        self._ensure_gitignored(project.record.path, _SCRATCH_PREFIX)
         return {"uploaded": name, "path": rel, "size": len(data), "source": "scratch",
                 "status": project.status()}
 
@@ -6128,7 +6178,7 @@ class Orchestrator:
             rel = rel[2:]
         if not rel.startswith(_SCRATCH_PREFIX):
             raise ValueError("not a scratch file")
-        src = _safe_join(self.project().workspace.path, rel)
+        src = _safe_join(self._chat_project().record.path, rel)
         if not src.is_file():
             raise FileNotFoundError(path)
         data = src.read_bytes()
@@ -6338,9 +6388,12 @@ class Orchestrator:
         return out
 
     def _leaked_copy_paths(self, project: Project) -> list[str]:
-        """Flat list of workspace-relative source files that are copies of attached data — passed to
-        commit_all(exclude=...) so the bytes are never staged into a commit."""
-        return [f for _, files in self._detect_leaks(project) for f in files]
+        """Flat list of the source files that are copies of attached data — passed to
+        commit_all(exclude=...) so the bytes are never staged into a commit.
+
+        Written from the repo root, because that is where git runs: `_detect_leaks` names them the
+        way the app does, and an exclude git cannot resolve excludes nothing."""
+        return [project.repo_rel(f) for _, files in self._detect_leaks(project) for f in files]
 
     def _attachment_bytes(self, project: Project, entry: dict) -> bytes | None:
         """Read an attached file's bytes (follows the symlink to the dataset mount). None if absent."""
@@ -6641,15 +6694,11 @@ class Orchestrator:
             agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
 
     @staticmethod
-    def _ensure_ignore_line(ignore_file: Path, line: str) -> None:
-        existing = ignore_file.read_text() if ignore_file.exists() else ""
-        if line not in existing.split():
-            ignore_file.write_text(
-                existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")
-
-    @classmethod
-    def _ensure_gitignored(cls, workspace: Workspace, line: str) -> None:
-        cls._ensure_ignore_line(workspace.path / ".gitignore", line)
+    def _ensure_gitignored(root: Path, line: str) -> None:
+        """Keep one path out of git, in the .gitignore of the directory that owns it. `root` is the
+        app for what the app owns and the Project for what the Project owns (Chat's scratch): git
+        reads a nested .gitignore, and a rule in the app's would not cover a tree above it."""
+        ensure_ignore_line(root / ".gitignore", line)
 
     def _refresh_history_archive(self, project: Project) -> None:
         """Rebuild `.sage/history.md` for this turn, and keep it out of git while doing it (#65).
@@ -6665,10 +6714,13 @@ class Orchestrator:
 
         ws = project.workspace
         rel = ws.history_md_path.relative_to(ws.path).as_posix()
-        self._ensure_gitignored(ws, rel)
-        self._ensure_ignore_line(ws.path / ".ignore", f"!{rel}")
-        if git.is_repo_root(ws.path):
-            git.untrack(ws.path, rel)
+        self._ensure_gitignored(ws.path, rel)
+        ensure_ignore_line(ws.path / ".ignore", f"!{rel}")
+        # The two ignore files are the app's, so their lines are app-relative. git is the Project's
+        # and runs at the root, so the path it is handed has to be written from there.
+        root = project.record.path
+        if git.is_repo_root(root):
+            git.untrack(root, project.repo_rel(rel))
         ws.render_history_md()
 
     def shutdown(self) -> None:

@@ -477,7 +477,7 @@ def test_a_scope_the_creator_did_not_choose_is_absent_rather_than_null(tmp_path:
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-sonnet")
     orch.bind_data_source("ds-oracle")
-    written = json.loads((tmp_path / "mnt" / "code" / ".sage" / "bindings.json").read_text())
+    written = json.loads(orch.project(start_preview=False).workspace.bindings_path.read_text())
     alias = next(e for e in written if e["kind"] == KIND_LLM_ALIAS)
     assert set(alias) == {"kind", "id", "name", "display_name"}
     source = next(e for e in written if e["kind"] == KIND_DATA_SOURCE)
@@ -489,7 +489,7 @@ def test_a_scope_the_creator_did_not_choose_is_absent_rather_than_null(tmp_path:
 def test_a_scope_survives_the_round_trip_through_the_file(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.bind_data_source("ds-mssql", "underwriting", "dbo", "claims")
-    written = (tmp_path / "mnt" / "code" / ".sage" / "bindings.json").read_text()
+    written = orch.project(start_preview=False).workspace.bindings_path.read_text()
     reread = parse_bindings(json.loads(written))
     source = next(b for b in reread if b.kind == KIND_DATA_SOURCE)
     assert (source.database, source.schema, source.table) == ("underwriting", "dbo", "claims")

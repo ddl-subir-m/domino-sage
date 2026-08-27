@@ -188,7 +188,8 @@ def test_detect_leaks_finds_copied_data_for_the_commit_backstop(tmp_path: Path):
     (proj.workspace.path / "src" / "sales.csv").write_text("a,b\n1,2\n")   # agent copied it into src/
 
     assert orch._detect_leaks(proj) == [("sales.csv", ["src/sales.csv"])]
-    assert orch._leaked_copy_paths(proj) == ["src/sales.csv"]
+    # The exclude is handed to git, which runs at the Project root, so it names the app's directory.
+    assert orch._leaked_copy_paths(proj) == [f"apps/{proj.workspace.app_id}/src/sales.csv"]
 
 
 def test_no_leak_when_app_only_fetches_from_data(tmp_path: Path):
@@ -576,12 +577,13 @@ def test_a_turn_that_deletes_nothing_restores_nothing_and_says_nothing(tmp_path:
 
 def test_scratch_upload_does_not_need_a_dataset(tmp_path: Path):
     orch = _orch(tmp_path)
-    ws = orch.project(start_preview=False).workspace.path
+    # Scratch is Chat's, so it lives with the Project rather than inside the Built App.
+    root = orch.project(start_preview=False).record.path
     res = orch.upload_scratch("my data.csv", b"a,b\n1,2\n")
     assert res["source"] == "scratch"
     assert res["path"] == ".sage/scratch/my_data.csv"
-    assert (ws / res["path"]).read_bytes() == b"a,b\n1,2\n"
-    gi = (ws / ".gitignore").read_text()
+    assert (root / res["path"]).read_bytes() == b"a,b\n1,2\n"
+    gi = (root / ".gitignore").read_text()
     assert ".sage/scratch/" in gi
     assert "scratch" in {e["source"] for e in orch.project(start_preview=False).status()["scratch"]}
 
@@ -671,17 +673,18 @@ def test_a_chat_fetch_lands_in_scratch_and_leaves_the_app_alone(tmp_path: Path):
     app's asset tree and wrote them into the committed manifest, so asking what was in a file
     enrolled it in every later publish of an app that may never reference it."""
     orch = _orch(tmp_path)
-    ws = orch.project(start_preview=False).workspace.path
+    project = orch.project(start_preview=False)
+    ws, root = project.workspace.path, project.record.path
 
     res = orch.fetch_dataset_file_for_chat(_dataset(orch, "sales_2026"), "train.csv")
 
     assert res["path"] == ".sage/scratch/datasets/sales_2026/train.csv"
-    link = ws / res["path"]
+    link = root / res["path"]
     assert link.is_symlink()                                  # mounted: still no byte copy
     assert link.read_text().startswith("month,revenue")
     assert not (ws / "public" / "data").exists()
     assert orch.project(start_preview=False).attached == []
-    assert ".sage/scratch/" in (ws / ".gitignore").read_text()
+    assert ".sage/scratch/" in (root / ".gitignore").read_text()
 
 
 def test_two_chips_naming_the_same_file_fetch_it_once(tmp_path: Path):
@@ -702,7 +705,8 @@ def test_a_handoff_hands_the_scratch_bytes_over_instead_of_fetching_them_again(t
     split exists to avoid — and the scratch copy stays, because the Thread's chip still names it."""
     assets = _UnmountedAssets()
     orch = _orch(tmp_path, assets=assets)
-    ws = orch.project(start_preview=False).workspace.path
+    project = orch.project(start_preview=False)
+    ws, root = project.workspace.path, project.record.path
     fetched = orch.fetch_dataset_file_for_chat("ds_shared", "raw/wells.csv")
 
     orch._promote_chat_file({"kind": "file", "datasetId": "ds_shared",
@@ -713,7 +717,7 @@ def test_a_handoff_hands_the_scratch_bytes_over_instead_of_fetching_them_again(t
     assert entry["path"] == "public/data/Oil-and-Gas-Demo/raw/wells.csv"
     served = ws / entry["path"]
     assert served.read_bytes() == b"a,b\n1,2\n"
-    assert (ws / fetched["path"]).is_file()                   # the chip's path still resolves
+    assert (root / fetched["path"]).is_file()                 # the chip's path still resolves
 
 
 def _chip(orch, thread_id: str) -> dict:
@@ -727,24 +731,24 @@ def test_closing_the_last_chip_releases_the_bytes_it_fetched(tmp_path: Path):
     """Nothing else releases them, and every fetch counts against the cap — so scratch filled up
     and then quietly refused new fetches, with nothing on screen to say why."""
     orch = _orch(tmp_path, assets=_UnmountedAssets())
-    ws = orch.project(start_preview=False).workspace.path
+    root = orch.project(start_preview=False).record.path
     tid = orch.create_thread()["id"]
     row = _chip(orch, tid)
-    fetched = ws / row["path"]
+    fetched = root / row["path"]
     assert fetched.is_file()
 
     assert orch.remove_thread_context(tid, row["id"]) is True
 
     assert not fetched.exists()
     assert not fetched.parent.exists()          # and no empty folders left standing
-    assert (ws / ".sage" / "scratch" / "datasets").is_dir()
+    assert (root / ".sage" / "scratch" / "datasets").is_dir()
 
 
 def test_a_chip_in_another_thread_keeps_the_file(tmp_path: Path):
     """A fetch is shared. The person closing one chip is not speaking for the other conversation."""
     assets = _UnmountedAssets()
     orch = _orch(tmp_path, assets=assets)
-    ws = orch.project(start_preview=False).workspace.path
+    root = orch.project(start_preview=False).record.path
     one, two = orch.create_thread()["id"], orch.create_thread()["id"]
     first, second = _chip(orch, one), _chip(orch, two)
     assert first["path"] == second["path"]
@@ -752,14 +756,15 @@ def test_a_chip_in_another_thread_keeps_the_file(tmp_path: Path):
 
     orch.remove_thread_context(one, first["id"])
 
-    assert (ws / second["path"]).is_file()
+    assert (root / second["path"]).is_file()
 
 
 def test_a_file_the_app_now_stands_on_is_not_released(tmp_path: Path):
     """After a handoff the app's data path is a symlink onto these bytes. Deleting them would
     leave the app pointing at nothing."""
     orch = _orch(tmp_path, assets=_UnmountedAssets())
-    ws = orch.project(start_preview=False).workspace.path
+    project = orch.project(start_preview=False)
+    ws, root = project.workspace.path, project.record.path
     tid = orch.create_thread()["id"]
     row = _chip(orch, tid)
     orch._promote_chat_file({"kind": "file", "datasetId": "ds_shared",
@@ -767,7 +772,7 @@ def test_a_file_the_app_now_stands_on_is_not_released(tmp_path: Path):
 
     orch.remove_thread_context(tid, row["id"])
 
-    assert (ws / row["path"]).is_file()
+    assert (root / row["path"]).is_file()
     assert (ws / _manifest(ws)[0]["path"]).read_bytes() == b"a,b\n1,2\n"
 
 
