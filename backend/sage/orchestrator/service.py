@@ -3976,10 +3976,16 @@ class Orchestrator:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text)
             else:
+                # The bubble is what the person did, not what we sent. Approving from the card passes
+                # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
+                # approve prompt (the plan, then the handoff digest) was landing in the transcript as
+                # if the user had typed it. _phased_approve has always written "Approved the plan."
+                # here; this is the same sentence on the path that runs when phasing is off.
                 yield from self._build_stream(
                     _approve_prompt(plan_md, answers,
                                    handoff_note=chat_handoff.implement_note(project.workspace.path)),
-                    is_approval=True, user_text=user_text, mode=run_as)
+                    is_approval=True, mode=run_as,
+                    user_text=user_text if user_text is not None else "Approved the plan.")
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs

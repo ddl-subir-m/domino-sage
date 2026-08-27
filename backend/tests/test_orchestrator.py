@@ -853,6 +853,30 @@ def test_approve_builds_in_implement_mode_from_a_read_only_mode(tmp_path: Path, 
     assert control.snapshot().mode is prior  # the user's mode was never touched to get there
 
 
+def test_the_approve_bubble_is_what_the_user_did_not_what_we_sent(tmp_path: Path):
+    # _build_stream falls back to the prompt when no user_text is given, and the Approve button gives
+    # none — so the whole approve prompt (the plan, then the Chat handoff digest) was landing in the
+    # transcript as if the user had typed it. Live, that was the repeated block of handoff plumbing
+    # a reader saw in their own chat bubble.
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.workspace.write_plan("## Plan\n1. Add a filter.")
+    seen = []
+    orch._build_stream = lambda *a, **k: (seen.append(k.get("user_text")), iter([]))[1]  # type: ignore[method-assign]
+    list(orch.approve_stream())
+    assert seen == ["Approved the plan."]
+
+
+def test_a_typed_approval_keeps_the_words_the_user_typed(tmp_path: Path):
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.workspace.write_plan("## Plan\n1. Add a filter.")
+    seen = []
+    orch._build_stream = lambda *a, **k: (seen.append(k.get("user_text")), iter([]))[1]  # type: ignore[method-assign]
+    list(orch._approve_locked(user_text="yes go ahead"))
+    assert seen == ["yes go ahead"]
+
+
 def test_approve_from_ask_warns_the_mode_is_still_read_only(tmp_path: Path):
     # Approving from Ask builds, then hands back a read-only composer. The user has just watched Ask
     # write an app, so the next change they type looks like it will build too — say otherwise.
