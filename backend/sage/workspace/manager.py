@@ -408,6 +408,32 @@ class ProjectRecord:
         self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
         self.catalog_overrides_path.write_text(json.dumps(overrides))
 
+    @property
+    def instructions_path(self) -> Path:
+        """The user's standing guidance for what gets built in this Project.
+
+        The Project's, not the app's, and this is where it is KEPT. The agent reads it as a managed
+        block in the app's `AGENTS.md`, but that block is a rendering: the app is one of possibly
+        several, it is re-seeded from the template by Reset app, and it does not exist at all until
+        a handoff is confirmed — none of which should be able to lose a sentence the person wrote
+        about their Project (ADR-0008).
+        """
+        return self.path / ".sage" / "instructions.md"
+
+    def read_instructions(self) -> str:
+        try:
+            return self.instructions_path.read_text().strip()
+        except OSError:
+            return ""
+
+    def write_instructions(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            self.instructions_path.unlink(missing_ok=True)
+            return
+        self.instructions_path.parent.mkdir(parents=True, exist_ok=True)
+        self.instructions_path.write_text(text + "\n")
+
     def clear_plan_docs(self) -> None:
         """Drop every plan document. Reset app's half of the Project's record: the documents
         describe the app that was just taken away, so leaving them behind would hand the next

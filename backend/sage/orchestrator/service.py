@@ -2062,6 +2062,10 @@ class Orchestrator:
                                 TurnSnapshot(workspace.path),
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
+        if seed_app:
+            # A freshly seeded AGENTS.md is the template's, so the Project's instructions have to be
+            # rendered back into it — they are kept on the record, not in the file (ADR-0008).
+            self._splice_instructions(self._project)
         self._rehydrate_attached(self._project)
         return self._project
 
@@ -2074,6 +2078,8 @@ class Orchestrator:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
         self._prepare_app_files()
+        # The app may have been seeded just now, from a template that carries no instructions block.
+        self._splice_instructions(self._project)
         return self._project
 
     def _prepare_app_files(self) -> None:
@@ -2777,9 +2783,10 @@ class Orchestrator:
             return None
 
     def draft_handoff_plan(self, thread_id: str) -> dict:
-        """Write a digest, run sage-plan in this Thread's Build session, persist plan.md, open-sheet payload.
+        """Write a plan document for this Thread by running sage-plan in its own session, and open
+        the sheet payload. Creates no app: that is what confirming does (ADR-0008).
 
-        Idempotent once plan.md exists for this Thread. Does not teleport into Build."""
+        Idempotent once the Thread's handoff names a plan document. Does not teleport into Build."""
         if not self._turn_lock.acquire(blocking=False):
             raise RuntimeError("busy")
         try:
@@ -2810,13 +2817,32 @@ class Orchestrator:
             "context": store.read_context(thread_id).get("items") or [],
         }
 
+    @staticmethod
+    def _handoff_plan_markdown(record: ProjectRecord, handoff: dict) -> str:
+        """The plan a Thread's handoff is holding, read from the document it lives in.
+
+        Not `.sage/plan.md`: that is the copy the BUILDER consumes, and it does not exist until the
+        handoff is confirmed, because until then there is no app to put it in (ADR-0008). The
+        document is the Project's and was written the moment the sheet was drafted, so it is the
+        only place to ask in between — and it is the copy an edit on the plan page lands in, so
+        confirming after an edit builds what the person actually approved.
+        """
+        plan_id = str((handoff or {}).get("planId") or "")
+        doc = record.read_plan_doc(plan_id) if plan_id else None
+        return str((doc or {}).get("markdown") or "").strip()
+
     def _draft_handoff_plan(self, thread_id: str) -> dict:
-        project = self._ensure_seeded()
+        # Chat's project, deliberately unseeded: drafting a plan must not create an app. Somebody
+        # who opens the sheet and closes it again has asked for nothing, and an app minted here
+        # would be one nobody asked for — a Built App is born when a handoff is CONFIRMED
+        # (ADR-0008). Everything written here is the Project's: the plan document, and the handoff
+        # row on the Thread.
+        project = self._chat_project()
         store = ThreadStore(project.record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         existing = store.read_handoff(thread_id) or {}
-        plan_md = (project.workspace.read_plan() or "").strip()
+        plan_md = self._handoff_plan_markdown(project.record, existing)
         if existing.get("status") in ("planned", "bound") and plan_md:
             return self._handoff_sheet_payload(store, thread_id, project, plan_md, existing)
 
@@ -2830,16 +2856,16 @@ class Orchestrator:
             context=context,
             artifacts=artifacts,
         )
-        handoff_path = project.workspace.path / ".sage" / "handoff.md"
-        handoff_path.parent.mkdir(parents=True, exist_ok=True)
-        handoff_path.write_text(digest + "\n")
-
+        # The digest rides in the prompt rather than through a file: `plan_prompt` embeds it, and
+        # the app that would hold `.sage/handoff.md` does not exist yet. The confirm writes that
+        # file, for the implement turn that reads it (chat_handoff.implement_note).
         prompt = chat_handoff.plan_prompt(thread_id, digest,
                                           voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
-        plan_md = self._run_sage_plan(project, prompt, conversation=thread_id)
+        client = self._ensure_opencode()
+        plan_md = self._run_sage_plan(
+            project, prompt, self._ensure_thread_session(store, thread_id, project, client))
         if not plan_md:
             raise ValueError("empty plan")
-        project.workspace.write_plan(plan_md)
         # Same document the gate creates, but this one knows the Thread it came from, so the plan
         # page can offer the way back to the conversation that produced it.
         _warn_if_shapeless("chat handoff", plan_md)
@@ -2849,21 +2875,19 @@ class Orchestrator:
             author=_viewer_id(),
             origin_thread_id=thread_id,
         )["id"]
-        # The plan card opens in the Build conversation the handoff created, not in whichever
-        # one Build last had on screen.
-        project.workspace.append_history(
-            {"type": "plan-proposed", "plan": plan_md, "kind": "plan", "planId": plan_id,
-             "steps": 0}, thread_id)
-        project.workspace.append_history(
-            {"type": "done", "ok": True, "decision": "awaiting approval"}, thread_id)
         handoff = store.mark_handoff_planned(thread_id, plan_id)
         self._flush_chat_save("plan", holding_turn=True)
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
-    def _run_sage_plan(self, project: Project, prompt: str, conversation: str | None = None) -> str:
-        """sage-plan on the conversation's Build session. No typecheck. Read-only arming so src/ stays put."""
+    def _run_sage_plan(self, project: Project, prompt: str, session_id: str) -> str:
+        """sage-plan on a session the caller picked. No typecheck. Read-only arming so src/ stays put.
+
+        The session is the caller's because the two callers stand in different places: a gated build
+        turn plans in the app, and a Chat handoff plans in the Thread — before an app exists, which
+        is a directory OpenCode could not have opened.
+        """
         client = self._ensure_opencode()
-        sid = self._ensure_session(project, conversation)
+        sid = session_id
         project.active_session_id = sid
         token = project.control.arm_read_only("plan")
         try:
@@ -2885,13 +2909,26 @@ class Orchestrator:
             project.active_session_id = None
 
     def _confirm_handoff(self, thread_id: str, include: dict) -> dict:
-        project = self._ensure_seeded()
-        store = ThreadStore(project.record.path)
+        # Read and refuse BEFORE anything is created: this is where a Built App is born (ADR-0008),
+        # and a confirm that cannot find its plan must leave no app behind.
+        chat = self._chat_project()
+        store = ThreadStore(chat.record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
-        plan_md = (project.workspace.read_plan() or "").strip()
+        handoff_row = store.read_handoff(thread_id) or {}
+        plan_md = self._handoff_plan_markdown(chat.record, handoff_row)
         if not plan_md:
             raise ValueError("no plan")
+        # The app: a directory named for a newly minted id, seeded from the template.
+        project = self._ensure_seeded()
+        # The builder's own copies, which only have somewhere to live now. `plan.md` is the one-shot
+        # handoff the implement turn consumes and archives; the plan card is what Build opens on.
+        project.workspace.write_plan(plan_md)
+        project.workspace.append_history(
+            {"type": "plan-proposed", "plan": plan_md, "kind": "plan",
+             "planId": str(handoff_row.get("planId") or ""), "steps": 0}, thread_id)
+        project.workspace.append_history(
+            {"type": "done", "ok": True, "decision": "awaiting approval"}, thread_id)
         include_resources = include.get("resources", True)
         include_artifacts = include.get("artifacts", True)
         include_transcript = include.get("transcript", False)
@@ -3557,13 +3594,14 @@ class Orchestrator:
             raise ResetBusy()
         try:
             project = self.project()
-            instructions = self.read_instructions(project)
             self._wm.reset()
             # The plan documents describe the app that was just taken away, and they live with the
             # Project rather than inside the app — so clearing them is a second call, through the
             # surface that owns them.
             project.record.clear_plan_docs()
-            self.write_instructions(project, instructions)
+            # AGENTS.md came back from the template, so the Project's instructions are rendered into
+            # it again. They were never kept in that file, so Reset had nothing to lose.
+            self._splice_instructions(project)
             self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
             project.workspace.clear_built()
             project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
@@ -6655,33 +6693,40 @@ class Orchestrator:
                     "or design-system rules above — on any conflict, the rules above win.")
 
     def read_instructions(self, project: Project) -> str:
-        """Return the user's raw project-instructions body (the managed heading + frame stripped off),
-        or "" if the block is absent or AGENTS.md is missing."""
-        agents = project.workspace.path / "AGENTS.md"
-        if not agents.exists():
-            return ""
-        existing = agents.read_text()
-        b, e = existing.find(self._INSTR_BEGIN), existing.find(self._INSTR_END)
-        if b == -1 or e == -1:
-            return ""
-        inner = existing[b + len(self._INSTR_BEGIN):e]
-        # Strip the managed heading line and the frame paragraph, leaving only the user's body.
-        prefix = f"\n{self._INSTR_HEAD}\n\n{self._INSTR_FRAME}\n\n"
-        inner = inner.removeprefix(prefix)
-        return inner.strip("\n")
+        """The user's standing guidance for this Project, or "" if they have written none.
+
+        Read from the Project's record rather than parsed back out of the app's AGENTS.md. The
+        block in AGENTS.md is a RENDERING of this, and it is gone every time the app is re-seeded
+        from the template (ADR-0008) — a Project with no app yet has instructions and no file to
+        read them out of.
+        """
+        return project.record.read_instructions()
 
     def write_instructions(self, project: Project, content: str) -> None:
-        """Splice the user's project instructions into AGENTS.md as a managed block, preserving the
-        template body and the attached-data block. Empty content removes the block."""
+        """Record the user's project instructions, and render them where the agent reads them."""
+        project.record.write_instructions(content)
+        self._splice_instructions(project)
+
+    def _splice_instructions(self, project: Project) -> None:
+        """Render the Project's instructions into the app's AGENTS.md as a managed block, preserving
+        the template body and the attached-data block. No instructions removes the block.
+
+        Runs whenever an app is seeded or reset as well as on an edit, because a freshly seeded
+        AGENTS.md is the template's and carries no block: without this, the app a handoff creates
+        would silently ignore guidance the person wrote before it existed.
+        """
         agents = project.workspace.path / "AGENTS.md"
-        content = content.strip()
+        if not agents.exists():
+            return  # no app yet, or one with no AGENTS.md — nothing to render into
+        content = project.record.read_instructions()
         if content:
             block = (f"{self._INSTR_BEGIN}\n{self._INSTR_HEAD}\n\n{self._INSTR_FRAME}\n\n"
                      f"{content}\n{self._INSTR_END}")
         else:
             block = ""
         with self._agents_lock:  # serialize with _write_agents_data_block — same file, distinct regions
-            existing = agents.read_text() if agents.exists() else ""
+            before = agents.read_text()
+            existing = before
             b, e = existing.find(self._INSTR_BEGIN), existing.find(self._INSTR_END)
             if b != -1 and e != -1:
                 existing = existing[:b] + block + existing[e + len(self._INSTR_END):]
@@ -6691,7 +6736,9 @@ class Orchestrator:
                     existing = existing[:d].rstrip() + "\n\n" + block + "\n\n" + existing[d:].lstrip()
                 else:
                     existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
-            agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+            updated = existing.strip("\n") + "\n" if existing.strip() else ""
+            if updated != before:  # this runs on every attach; an unchanged render must not churn
+                agents.write_text(updated)
 
     @staticmethod
     def _ensure_gitignored(root: Path, line: str) -> None:

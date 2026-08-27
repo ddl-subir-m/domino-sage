@@ -63,6 +63,8 @@ def _template(tmp: Path) -> Path:
     (t / "src").mkdir(parents=True, exist_ok=True)
     (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
     (t / "package.json").write_text('{"name": "template"}')
+    # The real template ships one, and it is what the Project's instructions get rendered into.
+    (t / "AGENTS.md").write_text("# Building this app\n\nSage's rules go here.\n")
     return t
 
 
@@ -100,21 +102,35 @@ def test_a_confirmed_handoff_creates_an_app_directory_seeded_from_the_template(t
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
 
-    # Minted when the sheet is DRAFTED, because the plan turn has to run somewhere and writes
-    # `.sage/plan.md` into the app. With one app per Project that is the same directory the confirm
-    # goes on to bind, so a handoff produces exactly one either way. The ticket that gives a
-    # Project a SECOND app is the one that has to move this to the confirm, or a dismissed sheet
-    # leaves an app behind.
+    # Drafting the sheet creates nothing: the plan lands in a document, which is the Project's.
+    # Somebody who opens the sheet and closes it again has asked for no app, and must not get one.
     orch.draft_handoff_plan(tid)
-    minted = orch.project(start_preview=False).workspace.app_id
+    assert not (root / "apps").exists()
+
     orch.confirm_handoff(tid, {"resources": False, "artifacts": False, "transcript": False})
 
     app = orch.project(start_preview=False).workspace
-    assert app.app_id == minted
     assert [p.name for p in (root / "apps").iterdir()] == [app.app_id]   # one app, named for its id
     assert app.path == root / "apps" / app.app_id
     assert (app.path / "package.json").read_text() == '{"name": "template"}'
     assert (app.path / "src" / "App.tsx").exists()
+    # And the builder's copy of the plan is in there with it, ready for the implement turn.
+    assert app.read_plan().startswith("A desk exposure dashboard.")
+
+
+def test_a_dismissed_handoff_sheet_leaves_no_app_behind(tmp_path: Path):
+    """A Built App is born when a handoff is CONFIRMED (ADR-0008). Drafting a sheet and walking
+    away is a person deciding not to build, and it must cost them nothing — with one app per
+    Project that is a stray directory, and with several it would be a stray app per dismissal."""
+    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN)])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "build me a desk dashboard"))
+
+    orch.draft_handoff_plan(tid)
+
+    assert not (root / "apps").exists()
+    assert orch.read_plan_doc("001")["markdown"].startswith("A desk exposure dashboard.")
+    assert orch.get_thread(tid)["handoff"]["status"] == "planned"   # the sheet is still offered
 
 
 def test_a_build_writes_its_code_in_the_app_directory(tmp_path: Path):
@@ -176,6 +192,32 @@ def test_the_file_api_reads_a_chat_artifact_from_the_root_and_app_code_from_the_
         assert client.get("/api/project/file?path=examples/thr_a/exposure.table.json"
                           ).json()["content"] == '{"title": "Desks"}'
         assert client.get("/api/project/file?path=src/App.tsx").json()["content"] == "// the app\n"
+
+
+def test_project_instructions_are_the_projects_and_survive_the_app(tmp_path: Path):
+    """Written before there is an app, rendered into every app there turns out to be. The block in
+    AGENTS.md is a rendering: the file comes back from the template on Reset, and a second app gets
+    its own copy — so the sentence the person wrote is kept on the Project instead."""
+    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN)])
+    project = orch.project(start_preview=False, seed_app=False)
+    orch.write_instructions(project, "Always label axes in full.")
+
+    # No app yet, so there is no AGENTS.md — and the instructions are kept anyway.
+    assert not (root / "apps").exists()
+    assert (root / ".sage" / "instructions.md").read_text().strip() == "Always label axes in full."
+
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "build me a desk dashboard"))
+    _handoff(orch, tid)
+
+    # The app the handoff created renders them, though its AGENTS.md came from the template.
+    app = orch.project(start_preview=False).workspace
+    assert "Always label axes in full." in (app.path / "AGENTS.md").read_text()
+    assert orch.read_instructions(orch.project(start_preview=False)) == "Always label axes in full."
+
+    # And Reset app puts the render back, having taken AGENTS.md from the template again.
+    orch.reset_app()
+    assert "Always label axes in full." in (app.path / "AGENTS.md").read_text()
 
 
 def test_the_app_id_and_its_directory_never_change(tmp_path: Path):

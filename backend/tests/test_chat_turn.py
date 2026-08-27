@@ -772,16 +772,20 @@ def test_write_a_plan_runs_sage_plan_and_opens_sheet_payload(tmp_path: Path):
     assert result["ok"] is True
     assert result["handoff"]["status"] == "planned"
     assert result["plan"].startswith("A desk exposure dashboard.")
-    ws = orch.project(start_preview=False).workspace
-    assert (ws.path / ".sage" / "plan.md").read_text().startswith("A desk exposure dashboard.")
-    assert "Asked:" in (ws.path / ".sage" / "handoff.md").read_text()
-    hist = ws.read_history()
-    assert any(e.get("type") == "plan-proposed" for e in hist)
-    src = ws.path / "src" / "App.tsx"
-    assert "return null" in src.read_text()
+    # The plan lives in the document, which is the Project's. `.sage/plan.md` and `.sage/handoff.md`
+    # are the BUILDER's copies and the builder has no app yet — the confirm writes them (ADR-0008).
+    project = orch.project(start_preview=False)
+    assert project.record.read_plan_doc("001")["markdown"].startswith("A desk exposure dashboard.")
+    assert project.workspace.read_plan() is None
+    assert not (project.workspace.path / ".sage" / "handoff.md").exists()
+    assert project.workspace.read_history() == []
+    # And it planned in the Thread's own session, not in a Build session opened on a missing app.
+    from sage.workspace.threads import ThreadStore
+    assert oc.prompts[-1]["session"] == ThreadStore(project.record.path).read_session(tid)["session_id"]
 
     again = orch.draft_handoff_plan(tid)
     assert again["handoff"]["status"] == "planned"
+    assert again["plan"].startswith("A desk exposure dashboard.")   # re-read from the document
     assert sum(1 for p in oc.prompts if p["agent"] == "sage-plan") == 1
 
 
