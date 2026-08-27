@@ -19,12 +19,14 @@ window.SW = window.SW || {};
       ],
     },
     {
-      key: 'models',
-      label: 'Models',
-      subgroups: [
-        { kind: 'model_llm', label: 'Language models' },
-        { kind: 'model_predictive', label: 'Predictive models' },
-      ],
+      key: 'model_llm',
+      label: 'Language models',
+      subgroups: [{ kind: 'model_llm' }],
+    },
+    {
+      key: 'model_predictive',
+      label: 'Predictive models',
+      subgroups: [{ kind: 'model_predictive' }],
     },
     {
       key: 'agents',
@@ -48,7 +50,8 @@ window.SW = window.SW || {};
 
   const EMPTY_HINT = {
     data: 'No data here yet.',
-    models: 'No models here yet.',
+    model_llm: 'No language models here yet.',
+    model_predictive: 'No predictive models here yet.',
     agents: 'No agents here yet.',
     skills: 'No skills here yet.',
     mcp: 'No MCPs here yet.',
@@ -56,7 +59,8 @@ window.SW = window.SW || {};
 
   const ERROR_KEYS = {
     data: ['datasets', 'data_sources'],
-    models: ['llm_aliases', 'model_apis'],
+    model_llm: ['llm_aliases'],
+    model_predictive: ['model_apis'],
   };
 
   // The plan the app is being built from: `.sage/plan.md` while it waits for approval, and the
