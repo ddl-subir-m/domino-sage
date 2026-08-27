@@ -63,6 +63,12 @@ for, what you proposed, which steps ran.
   large, unclear, or would be easier after a question.
 - **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html`. The config
   is known-good; regenerating it wastes turns and breaks the preview.
+- **Don't run the typechecker or a build yourself.** Sage typechecks this workspace the moment your
+  turn ends and sends any errors straight back to you, so `npx tsc` and `npm run build` spend a tool
+  call on a check you are getting anyway. The command you would reach for is also the wrong one:
+  `tsc -p tsconfig.json` points at a solution file that lists no inputs, so it compiles zero files
+  and passes whatever you wrote — run it and you will tell the user the app is clean while it is
+  broken. Write the code and end the turn; the real result comes back to you.
 - **Do not touch `src/sageLlm.ts` or `src/sageLlm.config.ts` either.** Sage owns both and rewrites
   them: they hold which language model this app calls, which is chosen in Sage rather than in code.
   Import from them, never edit them. If no model has been chosen, `sageLlm.config.ts` is all nulls
