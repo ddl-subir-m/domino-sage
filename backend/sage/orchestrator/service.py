@@ -2446,7 +2446,7 @@ class Orchestrator:
             for item in context:
                 binding = chat_handoff.binding_from_context(item)
                 if binding is not None:
-                    self._record(binding)
+                    self._bind_from_handoff(binding)
         if project.workspace.is_untitled():
             title = chat_handoff.plan_title(plan_md)
             project.workspace.set_display_name(title)
@@ -2460,6 +2460,35 @@ class Orchestrator:
             "untitled": project.workspace.is_untitled(),
             "title": chat_handoff.plan_title(plan_md),
         }
+
+    def _bind_from_handoff(self, binding: Binding) -> None:
+        """Record one Chat context row as a Binding, resolving a Data Source the way the rail does.
+
+        `binding_from_context` is a parser with no listing to ask, so the only name it has for a
+        Data Source row is the chip's — and for a TABLE chip that is the table's name, not the
+        source's. `Binding.name` is what a published app calls `get_datasource` with (see the
+        template's `serve.py`), so a handoff that bound a table chip shipped an app that could
+        never open its own store: `get_datasource("clickstream")` when the source is
+        `BigQuery_Demo`. It also left `connector_type` empty, which is what decides whether the
+        Scope can travel as configuration, and skipped the column read the build agent writes SQL
+        from. `bind_data_source` does all three, off the same live listing the cascade used.
+
+        A source that is no longer in the listing still gets recorded, unresolved. The creator did
+        pick it, the app names it in `IN THIS APP`, and the alternative — losing the whole handoff
+        because one source was renamed — is worse than an app that says it cannot open its data.
+        The other two kinds keep the plain record: `bind_model_api` raises when a credential is
+        missing, and a handoff is not the moment to refuse over one.
+        """
+        if binding.kind != KIND_DATA_SOURCE:
+            self._record(binding)
+            return
+        try:
+            self.bind_data_source(binding.id, binding.database or "", binding.schema or "",
+                                  binding.table or "")
+        except (LookupError, ResourceUnavailable) as e:
+            log.warning("handoff: Data Source %s did not resolve (%s) — recording it unresolved, "
+                        "the app will not be able to open it until it is re-bound", binding.id, e)
+            self._record(binding)
 
     def _chat_agents_md(self) -> str:
         from .brand import apply_voice

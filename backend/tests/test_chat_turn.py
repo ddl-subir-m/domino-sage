@@ -769,6 +769,53 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     assert (ws.path / ".sage" / "handoff-transcript.md").exists()
 
 
+def test_confirm_handoff_binds_the_data_source_a_table_chip_came_from(tmp_path: Path):
+    """A table chip carries the TABLE's name. The Binding has to carry the SOURCE's.
+
+    `Binding.name` is what the published app passes to `get_datasource` (template/serve.py), so a
+    handoff that recorded the chip's own name shipped an app that could not open its own store —
+    live, "This app could not open the Data Source it reads." Going through `bind_data_source`
+    resolves the name off the live listing, and brings the connector type with it.
+    """
+    orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text=_PLAN)])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "data_source", "name": "DIM_ACCOUNT",
+        "bindingKey": ["data_source", "ds-dwh"],
+        "resourceId": "table:ds-dwh:DWH.MARTS.DIM_ACCOUNT",
+        "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
+    })
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, {"resources": True, "artifacts": True, "transcript": False})
+
+    ws = orch.project(start_preview=False).workspace
+    bound = next(b for b in ws.read_bindings() if b.get("id") == "ds-dwh")
+    assert bound["name"] == "Snowflake-Data-Warehouse"
+    assert bound["display_name"] == "Snowflake-Data-Warehouse"
+    assert bound["connector_type"] == "SnowflakeConfig"
+    assert bound["table"] == "DIM_ACCOUNT"
+    # bind_data_source also reads the columns the build agent writes SQL from; _record never did.
+    assert (ws.path / ".sage" / "schema.json").exists()
+
+
+def test_confirm_handoff_records_a_data_source_the_listing_no_longer_has(tmp_path: Path):
+    """One renamed or revoked source must not cost the whole handoff. It is recorded unresolved."""
+    orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text=_PLAN)])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "data_source", "name": "trades",
+        "bindingKey": ["data_source", "ds-gone"],
+    })
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+    result = orch.confirm_handoff(tid, {"resources": True, "artifacts": True, "transcript": False})
+
+    assert result["ok"] is True
+    ws = orch.project(start_preview=False).workspace
+    assert any(b.get("id") == "ds-gone" for b in ws.read_bindings())
+
+
 def test_empty_plan_does_not_mark_planned(tmp_path: Path):
     orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text="")])
     tid = orch.create_thread()["id"]
