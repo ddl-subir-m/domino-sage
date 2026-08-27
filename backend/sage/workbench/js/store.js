@@ -404,7 +404,14 @@ window.SW = window.SW || {};
     }
   }
 
-  const GATE_DECISIONS = { 'awaiting approval': true, 'architecture ready': true };
+  // Decisions whose own card already says what happened and what to do next. A red "Stopped —"
+  // line under one of those reads as a failure the user has to fix, when the turn stopped exactly
+  // as designed and the thing above it is asking them a question.
+  const GATE_DECISIONS = {
+    'awaiting approval': true,
+    'architecture ready': true,
+    'reset offered': true,
+  };
 
   function buildHistoryToMessages(history) {
     const messages = [];
@@ -481,6 +488,24 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({ type: 'status', ok: !!ev.ok, value });
       } else if ((ev.type === 'ask-blocked' || ev.type === 'ask-active') && ev.message) {
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'reset-offer' && ev.message) {
+        // `live` is set only on the frame that arrived over SSE this session (see applyBuildEvent),
+        // and a reload replaces buildHistory with plain server rows that never carry it. So a
+        // replayed offer renders as text with no buttons: an old message must not be able to reset
+        // the app on a page load nobody connected it to.
+        ensureAssistant().blocks.push({
+          type: 'reset_offer',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          live: !!ev.live,
+        });
+      } else if (ev.type === 'app-reset') {
+        ensureAssistant().blocks.push({
+          type: 'status',
+          ok: true,
+          value: 'App reset to the starter template. Your attached files, Resources and this '
+            + 'conversation are unchanged.',
+        });
       }
     }
     return messages;
@@ -513,6 +538,10 @@ window.SW = window.SW || {};
     }
     if (ev.type === 'stopped') return;
     if (ev.type === 'active' || ev.type === 'phase' || ev.type === 'typecheck-start' || ev.type === 'iterate') return;
+    // The buttons on a reset offer belong to the offer the user is looking at, not to every copy of
+    // it the transcript keeps. Marking the live frame is what separates the two — the server row a
+    // reload returns has no `live`, so it replays as text (see buildHistoryToMessages).
+    if (ev.type === 'reset-offer') ev.live = true;
     state.buildHistory = state.buildHistory.concat([ev]);
     state.buildMessages = buildHistoryToMessages(state.buildHistory);
   }
@@ -1160,11 +1189,18 @@ window.SW = window.SW || {};
     // A Build turn belongs to a conversation: it opens that conversation's own OpenCode
     // session, and its events are tagged with it in `.sage/history.jsonl`. Typing is intent, so
     // it opens one, the same way Chat does.
-    async sendBuildPrompt(text) {
+    // `skipResetGate` is only ever set by a button on a reset offer (#36), and only for the prompt
+    // that offer was about: the gate already stopped this request once and the user answered it, so
+    // re-matching it would hand back the same offer forever.
+    async sendBuildPrompt(text, { skipResetGate = false } = {}) {
       if (!text.trim() || state.buildRunning) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
-      state.buildHistory = state.buildHistory.concat([{ type: 'user', text }]);
+      // Echo what the server will write to the transcript, so live and reloaded read the same. For a
+      // click that is the click, not the request — the request is already a bubble above the offer,
+      // and repeating it would say the user asked twice (see build_stream's `user_text`).
+      const bubble = skipResetGate ? 'Build it.' : text;
+      state.buildHistory = state.buildHistory.concat([{ type: 'user', text: bubble }]);
       state.buildMessages = buildHistoryToMessages(state.buildHistory);
       state.buildRunning = true;
       state.buildTyping = 'Working…';
@@ -1173,7 +1209,7 @@ window.SW = window.SW || {};
         const res = await fetch('./api/project/build/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: text, conversation: state.thread.id }),
+          body: JSON.stringify({ prompt: text, conversation: state.thread.id, skipResetGate }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -1196,6 +1232,26 @@ window.SW = window.SW || {};
         await Promise.all([probePreview(), refreshBindings()]);
         notify();
       }
+    },
+
+    // Starting over is its own action (#36). The three exits below are the answers to a reset offer,
+    // and `resetApp` is also what the composer's own Reset app control calls. Reloading the
+    // transcript afterwards is what retires the offer: the server's copy carries no `live`, so the
+    // buttons go with it and the same offer can't be answered twice.
+    async resetApp() {
+      if (state.buildRunning) throw new Error('A build is running. Stop it first, then reset.');
+      await SW.api.resetApp();
+      await store.loadBuild();
+    },
+
+    async resetAndBuild(prompt) {
+      await store.resetApp();
+      return store.sendBuildPrompt(prompt, { skipResetGate: true });
+    },
+
+    async buildWithoutReset(prompt) {
+      await store.loadBuild({ keepPreview: true });
+      return store.sendBuildPrompt(prompt, { skipResetGate: true });
     },
 
     async approveBuild(answers, planEdits) {

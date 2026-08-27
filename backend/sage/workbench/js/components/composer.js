@@ -203,14 +203,48 @@ window.SW = window.SW || {};
       }
     };
 
+    // Reset app is last and set apart on purpose: it is the one item here that throws work away, and
+    // it should not sit where a hand reaching for Upload can find it (#36). Builder only — Chat has
+    // no app code to put back. Disabled mid-build says why, because a reset would pull files out
+    // from under the running turn (the server refuses it with the same sentence).
+    // It confirms, and says in the same breath what it does NOT take — the fear when you click this
+    // is losing the attachments and the conversation, and both survive.
+    const confirmReset = () => {
+      antd.Modal.confirm({
+        title: 'Reset the app to the starter template?',
+        content: 'The code you have built is removed and can’t be recovered. Your attached files, '
+          + 'Resources, and this conversation stay.',
+        okText: 'Reset app',
+        okButtonProps: { danger: true },
+        cancelText: 'Cancel',
+        onOk: () =>
+          SW.store.resetApp().catch((err) => {
+            antd.message.error(String(err.message || err));
+            throw err;
+          }),
+      });
+    };
+
     const attachMenu = {
       items: [
         { key: 'upload', label: 'Upload a file' },
         { key: 'browse', label: 'Browse Domino…' },
+        ...(showMode
+          ? [
+              { type: 'divider' },
+              {
+                key: 'reset',
+                label: buildRunning ? 'Reset app — wait for this build to finish' : 'Reset app',
+                danger: true,
+                disabled: buildRunning,
+              },
+            ]
+          : []),
       ],
       onClick: ({ key }) => {
         if (key === 'upload') pickFile();
         if (key === 'browse') SW.store.openCatalog();
+        if (key === 'reset') confirmReset();
       },
     };
 

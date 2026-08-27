@@ -309,6 +309,62 @@ window.SW = window.SW || {};
     );
   }
 
+  // The turn asked to start over (#36). The gate stops before any inference and hands the decision
+  // back, so this card is the decision: it says what a reset does and does not take, and gives the
+  // one-click way to do it. "Reset and build this" exists because "clear everything and build X from
+  // @data" is ONE request — a reset alone answers half of it and leaves the user retyping the rest.
+  //
+  // Without `live` the buttons are gone and only the sentence is left: a replayed offer is a record
+  // of a past decision, and an old message must not be able to reset the app on a page load nobody
+  // connected it to.
+  function ResetOffer({ block }) {
+    const [busy, setBusy] = useState('');
+    const run = (key, fn) => () => {
+      setBusy(key);
+      Promise.resolve(fn())
+        .catch((err) => antd.message.error(String(err.message || err)))
+        .finally(() => setBusy(''));
+    };
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.prompt
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Space, { size: 8, wrap: true },
+                h(Button, {
+                  type: 'primary',
+                  size: 'small',
+                  loading: busy === 'both',
+                  disabled: !!busy,
+                  onClick: run('both', () => SW.store.resetAndBuild(block.prompt)),
+                }, 'Reset and build this'),
+                h(Button, {
+                  size: 'small',
+                  loading: busy === 'reset',
+                  disabled: !!busy,
+                  onClick: run('reset', () => SW.store.resetApp()),
+                }, 'Just reset'),
+                h(Button, {
+                  type: 'text',
+                  size: 'small',
+                  loading: busy === 'build',
+                  disabled: !!busy,
+                  onClick: run('build', () => SW.store.buildWithoutReset(block.prompt)),
+                }, 'Build without resetting'))
+            )
+          : null
+      )
+    );
+  }
+
   // A change that happened, attached to the app it happened to. This is where
   // Review and Publish belong: a turn can change two apps, and the preview can
   // only show one of them, so the entry — not the panel — is what makes every
@@ -442,6 +498,8 @@ window.SW = window.SW || {};
           { className: `sw-status-line${block.ok === false ? ' is-err' : ''}` },
           block.value
         );
+      case 'reset_offer':
+        return h(ResetOffer, { block });
       case 'plan_suggestion':
         return h(PlanSuggestion, { block });
       case 'graduation_nudge':

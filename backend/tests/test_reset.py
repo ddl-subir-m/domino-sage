@@ -204,8 +204,39 @@ def test_a_reset_request_offers_the_control_and_never_resets(tmp_path: Path):
 
     assert built == []                                    # no build turn ran
     assert [e["type"] for e in events] == ["reset-offer", "done"]
-    assert "Reset app" in events[0]["message"]             # names the control it is offering
+    assert "starter template" in events[0]["message"]      # says what the control it offers does
     assert (project.workspace.path / "src" / "App.tsx").read_text() == "export default () => <b>built</b>;"
+
+
+def test_the_offer_carries_the_turn_its_buttons_have_to_replay(tmp_path: Path):
+    # "clear everything and build X from @data.csv" is ONE request. The buttons on the offer re-send
+    # it after resetting, so the offer has to hand back the mentions too — an offer that returns only
+    # the prompt makes the user re-attach and retype the half the reset didn't answer.
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+    orch._build_stream = lambda *a, **k: iter([])  # type: ignore[method-assign]
+
+    prompt = "clear everything and build the dashboard from @public/data/clicks.csv"
+    offer = next(e for e in orch.build_stream(prompt, ["public/data/clicks.csv"])
+                 if e["type"] == "reset-offer")
+
+    assert offer["prompt"] == prompt
+    assert offer["mentions"] == ["public/data/clicks.csv"]
+
+
+def test_answering_the_offer_builds_instead_of_offering_again(tmp_path: Path):
+    # Without this the buttons loop: the re-sent prompt still says "clear everything", still matches,
+    # and the user gets the same offer they just answered. The gate is skipped only because it already
+    # ran for this exact prompt and a button — not a heuristic — decided what happens next.
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+    built = []
+    orch._build_stream = lambda *a, **k: (built.append(1), iter([]))[1]  # type: ignore[method-assign]
+
+    kinds = [e["type"] for e in orch.build_stream("clear everything and start again", skip_reset_gate=True)]
+
+    assert built == [1]
+    assert "reset-offer" not in kinds
 
 
 def test_the_reset_offer_beats_the_ask_mode_refusal(tmp_path: Path):
@@ -237,3 +268,26 @@ def test_the_reset_route_refuses_while_a_turn_is_streaming(tmp_path: Path):
         orch._turn_lock.release()
     assert r.status_code == 409
     assert "stop it" in r.json()["error"]
+
+
+def test_the_build_route_carries_the_answered_offer_through(tmp_path: Path):
+    """The `skipResetGate` field is the whole seam between the offer's buttons and the build, and it
+    is the kind that breaks silently: drop it in the route and the button just re-offers, with every
+    unit test below still green."""
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as app_mod
+
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+    orch._build_stream = lambda *a, **k: iter([])  # type: ignore[method-assign]
+    app_mod.orchestrator = orch
+    client = TestClient(app_mod.control_app)
+
+    prompt = "clear everything and start again"
+    gated = client.post("/api/project/build/stream", json={"prompt": prompt})
+    answered = client.post("/api/project/build/stream",
+                           json={"prompt": prompt, "skipResetGate": True})
+
+    assert "reset-offer" in gated.text          # unanswered, the gate still stops it
+    assert "reset-offer" not in answered.text   # answered, it builds

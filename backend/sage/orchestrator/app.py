@@ -1514,6 +1514,9 @@ def build_stream(body: dict) -> StreamingResponse:
     resources = (body or {}).get("resources") or None
     # Which Build conversation this turn belongs to (Thread id). Absent for an unscoped caller.
     conversation = (body or {}).get("conversation") or None
+    # Set only by the buttons on a reset-offer (#36), which is that offer being answered rather than
+    # skipped — the confirmation the gate exists to collect has already happened by then.
+    skip_reset_gate = bool((body or {}).get("skipResetGate"))
 
     if not prompt:
         def refuse():
@@ -1521,7 +1524,8 @@ def build_stream(body: dict) -> StreamingResponse:
         return StreamingResponse(refuse(), media_type="text/event-stream")
 
     return StreamingResponse(
-        _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation), "build_stream"),
+        _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
+                                            skip_reset_gate), "build_stream"),
         media_type="text/event-stream")
 
 

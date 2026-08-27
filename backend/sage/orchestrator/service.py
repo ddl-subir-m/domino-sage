@@ -2260,7 +2260,8 @@ class Orchestrator:
         return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
     def build_stream(self, prompt: str, mentions: list[str] | None = None,
-                     resources: list[dict] | None = None, conversation: str | None = None):
+                     resources: list[dict] | None = None, conversation: str | None = None,
+                     skip_reset_gate: bool = False):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time. If a turn is already streaming, refuse rather than run a second one
@@ -2268,7 +2269,11 @@ class Orchestrator:
         working tree. The refusal is a clean error + done(busy) so the UI surfaces it, not a hang.
 
         A bare approval typed while a plan is waiting ("ok build") means the same thing as clicking
-        Approve, so it runs THAT plan instead of falling into the gate and proposing a second one."""
+        Approve, so it runs THAT plan instead of falling into the gate and proposing a second one.
+
+        `skip_reset_gate` says the reset offer already ran for this exact prompt and the user answered
+        it with a button (see _reset_offer). Without it, replaying the prompt after a reset would match
+        _asks_to_reset again and re-offer the same thing, forever."""
         if not self._turn_lock.acquire(blocking=False):
             yield from self._busy_refusal()
             return
@@ -2281,14 +2286,23 @@ class Orchestrator:
             # Before the Ask check and the gate: "remove everything you have built" is a change
             # request and a build request by every rule below, which is exactly how it used to reach
             # the build agent and come back as a page ABOUT starting over.
-            if _asks_to_reset(prompt):
-                yield from self._reset_offer(prompt)
+            # `skip_reset_gate` is the offer being ANSWERED, not the gate being bypassed: it only
+            # arrives from a button the offer itself drew, so the confirmation the gate exists to
+            # get has already happened. Re-gating there would loop the same prompt forever.
+            if _asks_to_reset(prompt) and not skip_reset_gate:
+                yield from self._reset_offer(prompt, mentions, resources)
                 return
             if (self.project().control.snapshot().mode is Mode.ASK
                     and _looks_like_change_request(prompt)):
                 yield from self._ask_mode_refusal(prompt)
                 return
-            yield from self._build_stream(prompt, mentions, resources)
+            # A button answering the offer is a click, not a second typing of the request — the
+            # prompt is already a bubble in the transcript, put there by _reset_offer. So the turn
+            # gets the short line the click deserves, the way an Approve click does, instead of
+            # echoing the same sentence twice. Whether they reset first is already on the record
+            # above it as an `app-reset` marker.
+            yield from self._build_stream(prompt, mentions, resources,
+                                          user_text="Build it." if skip_reset_gate else None)
         finally:
             self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
             self._recheck_app_data()
@@ -3478,7 +3492,8 @@ class Orchestrator:
             if ev["type"] != "user":  # the composer already rendered the user's own bubble
                 yield ev
 
-    def _reset_offer(self, prompt: str):
+    def _reset_offer(self, prompt: str, mentions: list[str] | None = None,
+                     resources: list[dict] | None = None):
         """Events for "start over" — the control, not the reset (#36).
 
         Deliberately does not act. A reset throws the app away, and putting a destructive action
@@ -3491,11 +3506,15 @@ class Orchestrator:
         "Ready to rebuild from scratch", which is the most literal thing those words describe."""
         project = self.project()
         message = ("Starting over is its own action, not a build — a build agent asked to remove "
-                   "everything writes you a page about removing everything. Use Reset app under + to "
-                   "put the code back to the starter template. Your attached files, Resources, and "
-                   "this conversation all stay.")
+                   "everything writes you a page about removing everything. Resetting puts the code "
+                   "back to the starter template. Your attached files, Resources, and this "
+                   "conversation all stay.")
         for ev in ({"type": "user", "text": prompt},
-                   {"type": "reset-offer", "prompt": prompt, "message": message},
+                   # The whole turn rides along, not just the prompt: "clear everything and build X
+                   # from @clickstream" is one request, and the button that answers this offer has to
+                   # replay it intact — a reset that drops the @-mentions makes the user retype.
+                   {"type": "reset-offer", "prompt": prompt, "message": message,
+                    "mentions": mentions or [], "resources": resources or []},
                    {"type": "done", "ok": False, "decision": "reset offered"}):
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
