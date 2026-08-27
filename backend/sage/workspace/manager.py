@@ -14,7 +14,8 @@ import json
 import os
 import shutil
 import threading
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -281,19 +282,52 @@ class Workspace:
         with self.history_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
 
+    def _iter_history(self, only: str | None = None) -> Iterator[dict]:
+        """One line at a time. The log reaches megabytes on a long-lived project (~68KB per user
+        turn), and every caller below used to pay a whole-file read plus a parse of every line to
+        answer a question most of them could answer from a fraction of it.
+
+        `only` skips the parse for any line that does not contain that raw text."""
+        if not self.history_path.exists():
+            return
+        with self.history_path.open() as f:
+            for line in f:
+                if line.strip() and (only is None or only in line):
+                    yield json.loads(line)
+
+    @staticmethod
+    def _tag_text(conversation: str | None = None) -> str:
+        """The tag as append_history() writes it, so the two cannot drift: same json.dumps, same
+        separator. Naming a conversation gives the whole `"conversation": "thr_a"` pair; naming
+        none gives the key alone. JSON escapes every quote inside a string value, so neither can
+        appear in a line except as the tag itself — which makes a raw substring test on the line
+        the same answer as parsing it, and the log is megabytes."""
+        if conversation is None:
+            return json.dumps("conversation") + ":"
+        return json.dumps({"conversation": conversation})[1:-1]
+
     def read_history(self, conversation: str | None = None) -> list[dict]:
         """No conversation means the whole project: history.md and any caller that wants the log
         as written. Naming one filters to it."""
-        if not self.history_path.exists():
-            return []
-        rows = [json.loads(line) for line in self.history_path.read_text().splitlines() if line.strip()]
         if conversation is None:
-            return rows
-        return [r for r in rows if r.get("conversation") == conversation]
+            return list(self._iter_history())
+        # The pre-filter can only over-select (the equality check below still decides), so a
+        # project with several conversations parses its own turns instead of everyone's.
+        tag = self._tag_text(conversation)
+        return [r for r in self._iter_history(only=tag) if r.get("conversation") == conversation]
 
     def has_untagged_history(self) -> bool:
-        """True while entries written before conversation tagging are still unclaimed."""
-        return any(not r.get("conversation") for r in self.read_history())
+        """True while entries written before conversation tagging are still unclaimed.
+
+        Runs on every conversation switch, and the answer is no for the whole life of a project
+        after the one adoption that makes it no. append_history() is the only writer of the tag,
+        and it writes the key only for a conversation it has, so a line missing the key is an
+        untagged entry and no line has to be parsed to see that."""
+        if not self.history_path.exists():
+            return False
+        key = self._tag_text()
+        with self.history_path.open() as f:
+            return any(key not in line for line in f if line.strip())
 
     def adopt_history(self, conversation: str) -> None:
         """Give every untagged entry to `conversation`. Build history predates tagging, so an
@@ -306,7 +340,12 @@ class Workspace:
         self.history_path.write_text("".join(json.dumps(r) + "\n" for r in adopted))
 
     def history_len(self) -> int:
-        return len(self.read_history())
+        """Counts the lines truncate_history() would keep. Deliberately does not parse them: this
+        runs twice a turn, only to take the stop-button baseline, and the baseline is a position."""
+        if not self.history_path.exists():
+            return 0
+        with self.history_path.open() as f:
+            return sum(1 for line in f if line.strip())
 
     def truncate_history(self, n: int) -> None:
         """Drop everything appended after the first `n` entries (stop-button revert:
@@ -336,26 +375,31 @@ class Workspace:
         rewinds the JSONL on stop, so a from-scratch render self-heals instead of needing its own
         rollback path. Call BEFORE a turn's tree baseline is taken — writing it mid-turn would read
         as an agent edit and fail the read-only gate."""
-        turns: list[list[dict]] = []
-        for entry in self.read_history():
+        # Streams, and keeps only the turns it will actually write. The log outgrows the archive
+        # early — at 100 turns it is ~6.8MB — and holding all of it to then throw 60% away is the
+        # one part of this rewrite that grew without bound.
+        turns: deque[list[dict]] = deque(maxlen=self._MAX_ARCHIVED_TURNS)
+        total = 0
+        for entry in self._iter_history():
             if entry.get("type") not in self._ARCHIVED_EVENTS:
                 continue
-            if entry.get("type") == "user" or not turns:
+            if entry.get("type") == "user" or not total:
                 turns.append([])
+                total += 1
             turns[-1].append(entry)
 
-        if not turns:
+        if not total:
             self.history_md_path.unlink(missing_ok=True)
             return
 
-        dropped = max(0, len(turns) - self._MAX_ARCHIVED_TURNS)
+        dropped = max(0, total - self._MAX_ARCHIVED_TURNS)
         out = ["<!-- Generated by Sage from .sage/history.jsonl. Overwritten each turn — do not edit. -->",
                "", "# Earlier turns", ""]
         if dropped:
             # Say so explicitly: a model that greps and misses would otherwise conclude the user never
             # said it, which is worse than knowing the record is partial.
             out += [f"_Turns 1–{dropped} are older than this archive keeps and were dropped._", ""]
-        for i, turn in enumerate(turns[dropped:], start=dropped + 1):
+        for i, turn in enumerate(turns, start=dropped + 1):
             out += [f"## Turn {i}", ""]
             for entry in turn:
                 out += self._render_entry(entry)
