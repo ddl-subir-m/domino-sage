@@ -61,9 +61,9 @@ def _find(client: httpx.Client, host: str, headers: dict, project_id: str) -> tu
     The beta list is GLOBAL — every app on the deployment, 284 rows on cloud-dogfood — and whether
     `?projectId=` filters it has never been settled. `list_project_apps` sends the parameter AND
     matches on `project.id` client-side, but reads only the first page, so if the parameter is
-    ignored the app of a project whose rows sort past row 100 is invisible. That would not fail
-    loudly: `find_project_app` would answer None, publish would create a SECOND app rather than a
-    new version, and the visibility guard would never read a visibility at all.
+    ignored the app of a project whose rows sort past row 100 is invisible. Publish no longer asks
+    this question — each Built App records its own Domino App id (#70) — but anything that does
+    would silently be told this project has published nothing.
 
     So this pages to the end and says what it saw. The line it prints is the answer.
     """
@@ -91,8 +91,8 @@ def _find(client: httpx.Client, host: str, headers: dict, project_id: str) -> tu
           f"{'IS honored (every row was this project)' if scoped else 'is NOT honored (foreign rows came back)'}")
     if not scoped and total_seen > page:
         print("  -> list_project_apps reads only the first page of an unfiltered global list. "
-              "Past 100 rows it can miss this project's app: publish would create a second app "
-              "instead of a new version, and the visibility guard would never run. Worth an issue.")
+              "Past 100 rows it can miss this project's apps, and answer 'none published' for a "
+              "project that has. Worth an issue.")
     return found
 
 

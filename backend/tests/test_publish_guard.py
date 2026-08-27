@@ -186,9 +186,9 @@ def test_the_builder_republishes_an_app_shared_with_every_domino_user(tmp_path: 
     # Not a refusal: every viewer signed in, and #13 bounds them to the creator's named queries.
     cp = FakeControlPlane()
     cp.published["app-8"] = PublishedApp(id="app-8", url="https://fake.domino/app/app-8")
-    cp.app_projects["app-8"] = "proj-1"
     cp.app_visibilities["app-8"] = "AUTHENTICATED"
     orch = _orch(tmp_path, cp)
+    orch.project(start_preview=False).workspace.record_domino_app("app-8")
     orch.bind_data_source("ds-dwh", "ANALYTICS", "MARTS")
 
     assert orch.publish()["republished"] is True
@@ -199,9 +199,9 @@ def test_the_builder_refuses_to_republish_an_app_that_was_opened_up(tmp_path: Pa
     # it afterwards on the settings page Publish itself links to.
     cp = FakeControlPlane()
     cp.published["app-9"] = PublishedApp(id="app-9", url="https://fake.domino/app/app-9")
-    cp.app_projects["app-9"] = "proj-1"
     cp.app_visibilities["app-9"] = "PUBLIC"
     orch = _orch(tmp_path, cp)
+    orch.project(start_preview=False).workspace.record_domino_app("app-9")
     orch.bind_data_source("ds-dwh", "ANALYTICS", "MARTS")
 
     with pytest.raises(PublishRefused) as ei:
@@ -265,6 +265,24 @@ def test_publish_never_asks_the_gateway_for_aliases(tmp_path: Path):
     orch.publish()
 
     assert cp.published
+
+
+def test_the_guard_reads_the_bindings_of_the_app_being_published(tmp_path: Path):
+    # A Project holds many Built Apps and each records its own Bindings (ADR-0008), so the refusal
+    # follows the app in front of you. The second app reads nothing and publishes; the first still
+    # refuses, and neither answer leaks into the other.
+    cp = FakeControlPlane()
+    orch = _orch(tmp_path, cp)
+    bound = orch.project(start_preview=False).workspace.app_id
+    orch.bind_data_source("ds-test", "ANALYTICS", "PUBLIC")
+
+    orch.select_app(orch._wm.create_app("Sage").app_id)
+    assert orch.publish()["published"] is True
+
+    orch.select_app(bound)
+    with pytest.raises(PublishRefused) as ei:
+        orch.publish()
+    assert [p.reason for p in ei.value.problems] == [INDIVIDUAL_CREDENTIAL]
 
 
 def test_publish_from_the_workbench_app_is_refused(tmp_path: Path, monkeypatch):

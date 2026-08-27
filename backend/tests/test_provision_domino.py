@@ -269,12 +269,29 @@ def test_publish_app_rewrites_the_apps_internal_url_that_404s():
     assert app.url == "/modelproducts/6a76?scope=project"
 
 
-def test_find_project_app_matches_on_nested_project_id():
+def test_a_republish_returns_the_same_viewer_url_as_the_create_did():
+    """A Built App re-publishes to the App it recorded and the link already shared keeps working
+    (#70). The two calls answer from different places — create is handed a URL, a version response
+    carries none — so this pins that they still land on the same one."""
+    created = _cp(lambda req: httpx.Response(
+        200, json={"id": "6a76", "url": "https://apps.cloud-dogfood.domino.tech/apps-internal/6a76"}
+    )).publish_app("proj-42", name="My App")
+
+    again = _cp(lambda req: httpx.Response(200, json={"id": "ver-2"})).republish_app(created.id)
+
+    assert again.id == created.id
+    assert again.url == created.url == "/modelproducts/6a76?scope=project"
+
+
+def test_list_project_apps_filters_by_nested_project_id():
+    # Live schema: {"items": [...]}, global list, project nested under item["project"]["id"]. Only
+    # the two items nested under our project.id (and carrying an id) come back.
     seen = {}
-    # Live schema: {"items": [...]}, global list, project nested under item["project"]["id"].
     apps = {"items": [
-        {"id": "app-other", "project": {"id": "proj-99"}, "url": "https://d/other"},
-        {"id": "app-mine", "project": {"id": "proj-42"}, "url": "https://d/mine"},
+        {"id": "app-a", "project": {"id": "proj-42"}, "url": "https://d/a"},
+        {"id": "app-b", "project": {"id": "proj-99"}, "url": "https://d/b"},
+        {"id": "app-c", "project": {"id": "proj-42"}, "url": "https://d/c"},
+        {"project": {"id": "proj-42"}},  # no id -> skipped
     ], "metadata": {}}
 
     def handler(request):
@@ -282,24 +299,17 @@ def test_find_project_app_matches_on_nested_project_id():
         seen["query"] = request.url.query.decode()
         return httpx.Response(200, json=apps)
 
-    app = _cp(handler).find_project_app("proj-42")
+    out = _cp(handler).list_project_apps("proj-42")
     assert seen["path"] == "/api/apps/beta/apps"
     assert "projectId=proj-42" in seen["query"]
-    assert app is not None and app.id == "app-mine"  # matched project.id, skipped the other project's app
-    assert app.url == "https://d/mine"
-
-
-def test_list_project_apps_filters_by_nested_project_id():
-    # Global list; only the two items nested under our project.id (and carrying an id) are returned.
-    apps = {"items": [
-        {"id": "app-a", "project": {"id": "proj-42"}, "url": "https://d/a"},
-        {"id": "app-b", "project": {"id": "proj-99"}, "url": "https://d/b"},
-        {"id": "app-c", "project": {"id": "proj-42"}, "url": "https://d/c"},
-        {"project": {"id": "proj-42"}},  # no id -> skipped
-    ], "metadata": {}}
-    out = _cp(lambda req: httpx.Response(200, json=apps)).list_project_apps("proj-42")
     assert [a.id for a in out] == ["app-a", "app-c"]
     assert out[0].url == "https://d/a"
+
+
+def test_list_project_apps_is_empty_when_no_app_matches():
+    # Global list with only another project's app -> nothing for ours.
+    apps = {"items": [{"id": "app-other", "project": {"id": "proj-99"}}], "metadata": {}}
+    assert _cp(lambda req: httpx.Response(200, json=apps)).list_project_apps("proj-42") == []
 
 
 def test_delete_app_deployment_deletes_via_beta_apps_api():
@@ -364,15 +374,9 @@ def test_app_status_tolerates_missing_instance():
     assert cp.app_status("app-9") == ""
 
 
-def test_find_project_app_returns_none_when_no_app_matches():
-    # Global list with only another project's app -> no match for ours.
-    apps = {"items": [{"id": "app-other", "project": {"id": "proj-99"}}], "metadata": {}}
-    assert _cp(lambda req: httpx.Response(200, json=apps)).find_project_app("proj-42") is None
-
-
-def test_find_project_app_returns_none_when_no_apps():
+def test_list_project_apps_is_empty_when_the_deployment_has_no_apps():
     cp = _cp(lambda req: httpx.Response(200, json={"items": [], "metadata": {}}))
-    assert cp.find_project_app("proj-42") is None
+    assert cp.list_project_apps("proj-42") == []
 
 
 def test_publish_app_surfaces_error_body():

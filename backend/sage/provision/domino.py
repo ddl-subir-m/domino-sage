@@ -121,7 +121,6 @@ class ControlPlane(Protocol):
                     visibility: str = "GRANT_BASED") -> PublishedApp: ...
     def republish_app(self, app_id: str, *, git_ref_type: str = "head",
                       git_ref_value: str | None = None) -> PublishedApp: ...
-    def find_project_app(self, project_id: str) -> PublishedApp | None: ...
     def list_project_apps(self, project_id: str) -> list[PublishedApp]: ...
     def list_all_apps(self) -> list[BuiltApp]: ...
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]: ...
@@ -412,7 +411,7 @@ class DominoControlPlane:
         "not reliably honored" reading came from projects holding only classic, non-beta apps, whose
         empty answer was the truth rather than a filter failing. The client-side match stays as the
         belt to that braces: one page of 100 is all this reads, so a filter that silently stopped
-        working would otherwise mean publishing a SECOND app instead of a new version."""
+        working would otherwise hand a caller another project's App."""
         d = self._get(_APPS_PATH, params={"projectId": project_id, "offset": 0, "limit": 100})
         items = d if isinstance(d, list) else (d.get("items") or [])
         out: list[PublishedApp] = []
@@ -462,12 +461,6 @@ class DominoControlPlane:
                 break
             offset += len(items)
         return out
-
-    def find_project_app(self, project_id: str) -> PublishedApp | None:
-        """The published Domino App for this project, if one already exists — so a re-publish targets
-        it (new version, stable URL) instead of creating a duplicate App."""
-        apps = self.list_project_apps(project_id)
-        return apps[0] if apps else None
 
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]:
         """Delete a published App deployment: DELETE /api/apps/beta/apps/{app_id}. Required before the
@@ -574,7 +567,9 @@ class FakeControlPlane:
     projects: list[ProjectRef] = field(default_factory=list)
     workspaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     published: dict[str, PublishedApp] = field(default_factory=dict)  # app_id -> app
-    app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id (find_project_app)
+    app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id
+    app_names: dict[str, str] = field(default_factory=dict)  # app_id -> the name publish asked for
+    app_entry_points: dict[str, str] = field(default_factory=dict)  # app_id -> its entryPoint
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
     built: list[BuiltApp] = field(default_factory=list)  # what list_all_apps answers (Gallery)
@@ -649,6 +644,10 @@ class FakeControlPlane:
         app = PublishedApp(id=f"app-{self._seq}", url=f"https://fake.domino/app/app-{self._seq}")
         self.published[app.id] = app
         self.app_projects[app.id] = project_id
+        # Domino fixes the entry point when the App is created and a version cannot change it, so
+        # which script an App was created to run is the fact a test has to be able to read back.
+        self.app_names[app.id] = name
+        self.app_entry_points[app.id] = entry_point
         return app
 
     def republish_app(self, app_id: str, *, git_ref_type: str = "head",
@@ -662,13 +661,11 @@ class FakeControlPlane:
     def list_all_apps(self) -> list[BuiltApp]:
         return list(self.built)
 
-    def find_project_app(self, project_id: str) -> PublishedApp | None:
-        apps = self.list_project_apps(project_id)
-        return apps[0] if apps else None
-
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]:
         self.published.pop(app_id, None)
         self.app_projects.pop(app_id, None)
+        self.app_names.pop(app_id, None)
+        self.app_entry_points.pop(app_id, None)
         return {"deleted": True}
 
     def app_manage_url(self, app_id: str, project_name: str) -> str | None:

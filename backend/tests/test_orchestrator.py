@@ -268,8 +268,10 @@ def test_publish_creates_a_new_app(tmp_path: Path):
 def test_publish_republishes_an_existing_app(tmp_path: Path):
     cp = FakeControlPlane()
     cp.published["app-9"] = PublishedApp(id="app-9", url="https://fake.domino/app/app-9")
-    cp.app_projects["app-9"] = "proj-1"  # already published for this project
     orch = _domino_orch(tmp_path, cp)
+    # THIS Built App already deployed app-9 — which is a fact about the app, not about the Domino
+    # project it shares with every other Built App beside it (#70).
+    orch.project(start_preview=False).workspace.record_domino_app("app-9")
     out = orch.publish()
     assert out["republished"] is True
     assert out["app_id"] == "app-9"  # targets the existing app, stable URL

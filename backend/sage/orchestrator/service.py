@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from ..provision.domino import ControlPlane, PublishedApp
+    from ..provision.domino import ControlPlane
 
 from ..assets.provider import Asset, AssetProvider, FakeAssetProvider
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
@@ -1587,12 +1587,15 @@ def _tool_duration_ms(part: dict) -> int | None:
     return ms if ms >= 0 else None
 
 
-def _app_display_name(workspace: Workspace) -> str:
+def _app_display_name(workspace: Workspace, fallback: str = "Unnamed Built App") -> str:
     """What to call one Built App.
 
-    The name somebody gave it, else the title of the plan it was built from, else a placeholder: a
-    rail row with no words on it is not a row anybody can pick. The plan fallback is what makes the
-    name start as the plan title (ADR-0008) without a rename having to be written at birth.
+    The name somebody gave it, else the title of the plan it was built from, else `fallback`: a
+    rail row with no words on it is not a row anybody can pick. The plan title is what makes the
+    name start as the plan's (ADR-0008) without a rename having to be written at birth.
+
+    Publish passes the Domino project's name as `fallback`, because that is what it used to name
+    every App and is the better answer on the deployment side for an app nobody has named.
     """
     stored = workspace.display_name()
     if stored:
@@ -1602,7 +1605,7 @@ def _app_display_name(workspace: Workspace) -> str:
     # no plan at all is named for what it is instead of borrowing that. "Built App" in full, and
     # not "Untitled": CONTEXT.md keeps `App` for the Domino thing and `Untitled` away from names.
     plan = workspace.read_plan() or workspace.read_archived_plan() or ""
-    return chat_handoff.plan_title(plan) if plan.strip() else "Unnamed Built App"
+    return chat_handoff.plan_title(plan) if plan.strip() else fallback
 
 
 @dataclass
@@ -5123,12 +5126,14 @@ class Orchestrator:
                 "or DOMINO_PROJECT_ID)."
             )
         project = self.project()
-        # Before anything is written, pushed or deployed: a refused publish must leave nothing
-        # behind, so a creator who fixes the Binding and publishes again is publishing the same code
-        # they were looking at. Which app already exists is settled here rather than after the save
-        # because the guard needs it — an app's sharing setting is a property of the deployed App.
-        existing = self._control_plane.find_project_app(self._domino_project_id)
-        self._refuse_unsafe_publish(project, existing)
+        # Which Domino App this Built App deploys to, read from the app itself: a Project holds many
+        # and its Domino project holds one App per app, so "the project's App" names none of them
+        # in particular (ADR-0008). Settled here rather than after the save because the guard needs
+        # it — an app's sharing setting is a property of the deployed App. Before anything is
+        # written, pushed or deployed, too: a refused publish must leave nothing behind, so a
+        # creator who fixes the Binding and publishes again publishes the code they were looking at.
+        deployed_app_id = project.workspace.domino_app_id()
+        self._refuse_unsafe_publish(project, deployed_app_id)
         # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
         # app created from an older image would otherwise redeploy its original copy forever — and
         # keep hitting bugs fixed since (the Node-18 PATH order that crash-looped every build).
@@ -5164,17 +5169,21 @@ class Orchestrator:
 
         cp = self._control_plane
         pid = self._domino_project_id
-        name = self._domino_project_name or self._project_id
-        if existing and existing.id:  # already published — ship a new version, keep the URL
-            app = cp.republish_app(existing.id)
-            out = {"published": True, "app_id": app.id, "url": app.url or existing.url, "republished": True}
+        project_name = self._domino_project_name or self._project_id
+        if deployed_app_id:  # already published — ship a new version, keep the URL
+            app = cp.republish_app(deployed_app_id)
+            out = {"published": True, "app_id": app.id, "url": app.url, "republished": True}
         else:
-            # The entry point is the app's directory, and Domino fixes it when the App is created —
-            # which is why the directory is named for an id that never changes (ADR-0008).
-            app = cp.publish_app(pid, name=name,
+            # The entry point is the app's own directory, and Domino fixes it when the App is
+            # created — which is why the directory is named for an id that never changes (ADR-0008).
+            # The App is named for the Built App: several of them share this Domino project, and the
+            # project's name would list them as identical rows nobody can tell apart.
+            app = cp.publish_app(pid, name=_app_display_name(project.workspace, project_name),
                                  entry_point=project.repo_rel(_ENTRY_POINT))
+            project.workspace.record_domino_app(app.id)
             out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
-        out["manage_url"] = cp.app_manage_url(app.id, name)
+        # The deep link is /u/{owner}/{project}/apps/… — the Domino project's name, not the app's.
+        out["manage_url"] = cp.app_manage_url(app.id, project_name)
         return out
 
     def publish_check(self) -> dict:
@@ -5216,7 +5225,7 @@ class Orchestrator:
             phase = "pending"
         return {"app_id": app_id, "status": raw, "phase": phase}
 
-    def _refuse_unsafe_publish(self, project: Project, existing: PublishedApp | None) -> None:
+    def _refuse_unsafe_publish(self, project: Project, deployed_app_id: str) -> None:
         """Refuse a publish that would re-export a Data Source (#12). No-op for an app that reads
         none, which is every app Sage built before #11.
 
@@ -5241,9 +5250,9 @@ class Orchestrator:
             log.exception("publish: couldn't list Data Sources to check the credential guard")
             sources = None
         visibility: str | None = ""   # "" = nothing published yet, so nothing to read
-        if existing and existing.id:
+        if deployed_app_id:
             try:
-                visibility = self._control_plane.app_visibility(existing.id)
+                visibility = self._control_plane.app_visibility(deployed_app_id)
             except Exception:
                 log.exception("publish: couldn't read the app's visibility")
                 visibility = None

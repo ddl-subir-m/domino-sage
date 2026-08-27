@@ -575,6 +575,29 @@ class Workspace:
         settings["displayName"] = name.strip()
         _write_settings_file(self._settings_path, settings)
 
+    def domino_app_id(self) -> str:
+        """The Domino App this Built App deploys to, or "" before its first publish.
+
+        Recorded here rather than asked of the Domino project, which now holds one App per Built
+        App and so cannot answer "the app": the lookup returned the first of them, which meant
+        publishing the second app shipped its code as a new version of the first (ADR-0008, #70).
+        The id is also what keeps the URL stable, because a re-publish posts a version to it.
+        """
+        stored = _read_settings_file(self._settings_path).get("dominoAppId")
+        return stored.strip() if isinstance(stored, str) else ""
+
+    def record_domino_app(self, app_id: str) -> None:
+        """Remember which Domino App this app's first publish created, so every later publish is a
+        new version of that one. Written in the app's own settings, which makes it one writer per
+        app — the same reason the app list is a scan and not an index.
+
+        settings.json is committed, so the record travels to the other Sage Builders in this
+        Project — but only from the next save, because the id does not exist until after the
+        pre-publish one has run."""
+        settings = _read_settings_file(self._settings_path)
+        settings["dominoAppId"] = app_id
+        _write_settings_file(self._settings_path, settings)
+
     def has_built(self) -> bool:
         """True once a code-writing build has completed here. Drives the first-BUILD plan gate
         (not first-turn): questions asked before the first build must not consume the gate, and the
