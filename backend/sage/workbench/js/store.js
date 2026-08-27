@@ -496,6 +496,11 @@ window.SW = window.SW || {};
     } else if (ev.type === 'plan-proposed' || ev.type === 'done' || ev.type === 'error' || ev.type === 'stopped') {
       state.buildTyping = null;
     }
+    // A plan appearing and a plan being consumed are the two events the pin exists to show. Fired
+    // and not awaited: applyBuildEvent is called once per SSE frame and must not block the stream.
+    if (ev.type === 'plan-proposed' || ev.type === 'done') {
+      refreshProjectPlan().then(notify, () => {});
+    }
     if (ev.type === 'stopped') return;
     if (ev.type === 'active' || ev.type === 'phase' || ev.type === 'typecheck-start' || ev.type === 'iterate') return;
     state.buildHistory = state.buildHistory.concat([ev]);
@@ -505,6 +510,14 @@ window.SW = window.SW || {};
   async function refreshBindings() {
     const body = await SW.api.bindings().catch(() => ({ bindings: [] }));
     state.bindings = body.bindings || [];
+  }
+
+  // The plan the panel pins. Two moments move it and nothing else does: a gate turn or a Chat
+  // handoff proposes one, and an approve consumes it (the server archives the plan the moment a
+  // build reads it, which is what flips the pin from "Plan" to "Working from").
+  async function refreshProjectPlan() {
+    const plan = await SW.api.projectPlan();
+    state.activePlan = plan && plan.markdown ? plan : null;
   }
 
   async function probePreview() {
@@ -1217,6 +1230,7 @@ window.SW = window.SW || {};
           if (b.type === 'build_plan') b.pending = false;
         });
       }
+      await refreshProjectPlan();
       notify();
     },
 
@@ -1239,6 +1253,7 @@ window.SW = window.SW || {};
           : Promise.resolve({ history: [] }),
         SW.api.buildState().catch(() => ({ running: false })),
         refreshBindings(),
+        refreshProjectPlan(),
       ]);
       state.buildHistory = hist.history || [];
       state.buildMessages = buildHistoryToMessages(state.buildHistory);

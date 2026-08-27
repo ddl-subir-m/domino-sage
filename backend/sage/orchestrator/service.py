@@ -1296,6 +1296,28 @@ def _tidy_plan(plan_md: str) -> str:
     return _drop_empty_questions(_drop_i_will_openers("\n\n".join(out)))
 
 
+_PLAN_HEADING = re.compile(r"^#{1,6}[ \t]*plan\b", re.IGNORECASE)
+_PLAN_STEP = re.compile(r"^[ \t]*(?:\*\*[ \t]*)?\d{1,2}[.)]")
+
+
+def _count_plan_steps(plan_md: str) -> int:
+    """How many steps the `## Plan` section lists, for the pin's one-line subtitle.
+
+    Not `plan_steps.parse_steps`, which is the phased-build parser and drops any step without a
+    `Do`/`Done when` field — an ordinary plan has neither, so it would count zero. This counts what
+    a reader counts: numbered lines under the Plan heading, stopping at the next heading so
+    `## Open questions` bullets do not join in.
+    """
+    steps, inside = 0, False
+    for line in (plan_md or "").splitlines():
+        if line.lstrip().startswith("#"):
+            inside = bool(_PLAN_HEADING.match(line.strip()))
+            continue
+        if inside and _PLAN_STEP.match(line):
+            steps += 1
+    return steps
+
+
 def _approve_prompt(plan_md: str, answers: str, *, handoff_note: str = "") -> str:
     """The Implement-turn prompt built from an approved plan (SPEC P6): the plan is fed in as
     context so the build turn constructs exactly what the user signed off on."""
@@ -1649,6 +1671,29 @@ class Orchestrator:
         SSE connection (turn still running, keep showing Stop) from a finished turn — without it, a
         network blip makes the composer look idle and the next send hits _busy_refusal."""
         return self._turn_lock.locked()
+
+    def read_plan_pin(self) -> dict:
+        """The plan this app is being built from, for the rail's plan pin. `{}` when there is none.
+
+        Two states, because a plan is a one-shot handoff: `.sage/plan.md` while it is waiting to be
+        approved, and the newest `.sage/plans/NNN.md` once a build has consumed it. Both are the
+        same document and both are worth showing — before, so the pin and the transcript card agree
+        on what is pending; after, so the panel can say what the app in the preview was built from.
+
+        Reads the workspace WITHOUT starting the preview (`project(start_preview=False)`): the panel
+        asks for this on every load, and a pin is not a reason to boot Vite.
+        """
+        workspace = self.project(start_preview=False, seed_app=False).workspace
+        live = (workspace.read_plan() or "").strip()
+        markdown = live or (workspace.read_archived_plan() or "").strip()
+        if not markdown:
+            return {}
+        return {
+            "title": chat_handoff.plan_title(markdown),
+            "markdown": markdown,
+            "status": "awaiting" if live else "built",
+            "steps": _count_plan_steps(markdown),
+        }
 
     def project(self, start_preview: bool = True, seed_app: bool = True) -> Project:
         """Get-or-attach the single bound project. Idempotent.

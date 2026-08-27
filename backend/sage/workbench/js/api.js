@@ -435,6 +435,12 @@ SW.api = {
   charts: () => Promise.resolve({}),
   starters: () => Promise.resolve({ chat: { 'cross-industry': [], 'financial-services': [] } }),
 
+  // The plan the app is being built from: `{title, markdown, status, steps}`, or `{}` when there
+  // is none. `status` is 'awaiting' while .sage/plan.md is live and 'built' once a build has
+  // archived it. There is no structured plan artifact behind this — Sage writes markdown — so the
+  // rest of this group stays stubbed rather than pretending otherwise.
+  projectPlan: () => request('/project/plan').catch(() => ({})),
+
   plans: () => empty(),
   plan: async () => ({}),
   planMarkdown: async () => ({ markdown: '' }),

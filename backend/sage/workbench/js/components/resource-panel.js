@@ -59,7 +59,13 @@ window.SW = window.SW || {};
     models: ['llm_aliases', 'model_apis'],
   };
 
-  function PlanCard({ plan, blessed }) {
+  // The plan the app is being built from: `.sage/plan.md` while it waits for approval, and the
+  // plan the last build consumed once it has been. Both are markdown — Sage has no structured plan
+  // artifact, so this opens the text rather than routing to the plan page, which is still the
+  // prototype's and reads from a stubbed API.
+  function PlanCard({ plan }) {
+    const [open, setOpen] = useState(false);
+
     if (!plan) {
       return h(
         'div',
@@ -73,21 +79,48 @@ window.SW = window.SW || {};
       );
     }
 
+    const built = plan.status === 'built';
+    const steps = plan.steps === 1 ? '1 step' : `${plan.steps || 0} steps`;
+
     return h(
-      'button',
-      {
-        className: `sw-plan-pin${blessed ? ' is-blessed' : ''}`,
-        onClick: () => SW.store.openPlanArtifact(plan.id),
-      },
+      Fragment,
+      null,
       h(
-        'span',
-        { className: 'sw-plan-pin-head' },
-        h(FileTextOutlined, { style: { fontSize: 11 } }),
-        h('span', { className: 'sw-plan-pin-label' }, blessed ? 'Working from' : 'Plan'),
-        h('span', { className: 'sw-plan-pin-open' }, 'Open', h(ArrowRightOutlined, { style: { fontSize: 9 } }))
+        'button',
+        {
+          className: `sw-plan-pin${built ? ' is-blessed' : ''}`,
+          onClick: () => setOpen(true),
+        },
+        h(
+          'span',
+          { className: 'sw-plan-pin-head' },
+          h(FileTextOutlined, { style: { fontSize: 11 } }),
+          h('span', { className: 'sw-plan-pin-label' }, built ? 'Working from' : 'Plan'),
+          h('span', { className: 'sw-plan-pin-open' }, 'Open', h(ArrowRightOutlined, { style: { fontSize: 9 } }))
+        ),
+        // The name is one line and a plan title is a sentence, so it truncates. The tooltip is the
+        // only way to read the rest without opening it.
+        h('span', { className: 'sw-plan-pin-name', title: plan.title }, plan.title),
+        h(
+          'span',
+          { className: 'sw-plan-pin-sub' },
+          built ? `Built · ${steps}` : `Waiting for approval · ${steps}`
+        )
       ),
-      h('span', { className: 'sw-plan-pin-name' }, plan.name),
-      h('span', { className: 'sw-plan-pin-sub' }, plan.subtitle)
+      open &&
+        h(
+          antd.Modal,
+          {
+            open: true,
+            // Not `plan.title` — that is the plan's own first line, which the body below already
+            // renders. The transcript's plan card labels itself the same way for the same reason.
+            title: built ? 'The plan this app was built from' : 'Plan, waiting for approval',
+            footer: null,
+            width: 640,
+            onCancel: () => setOpen(false),
+          },
+          h('div', { className: 'sw-plan-md' }, SW.util.markdown(plan.markdown || ''))
+        )
     );
   }
 
@@ -266,7 +299,7 @@ window.SW = window.SW || {};
 
   SW.ResourcePanel = function ResourcePanel() {
     const {
-      resourceGroups, resourceErrors, requires, activeApp, panelFilter, activePlanId, bindings, attachments,
+      resourceGroups, resourceErrors, requires, activeApp, panelFilter, activePlan, bindings, attachments,
       resourcesLoading,
     } = SW.store.get();
     const [query, setQuery] = useState('');
@@ -286,8 +319,6 @@ window.SW = window.SW || {};
     const visible = (kind) => (resourceGroups[kind] || []).filter(matches);
     const files = (resourceGroups.file || []).filter(matches);
 
-    const plans = resourceGroups.plan || [];
-    const pinned = plans.find((p) => p.id === activePlanId) || plans[0] || null;
     const inBuild = SW.router.get().mode === 'build';
     const inChat = SW.router.get().mode === 'chat';
     const needle = query.trim().toLowerCase();
@@ -358,7 +389,7 @@ window.SW = window.SW || {};
       { className: 'sw-panel' },
 
       inBuild &&
-        h(PlanCard, { plan: pinned, blessed: Boolean(pinned && pinned.id === activePlanId) }),
+        h(PlanCard, { plan: activePlan }),
 
       inChat &&
         h(

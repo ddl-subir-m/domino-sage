@@ -102,23 +102,49 @@ class Workspace:
         p = self.architecture_path
         return p.read_text() if p.exists() else None
 
-    def archive_plan(self) -> Path | None:
+    def archive_plan(self, cancelled: bool = False) -> Path | None:
         """Move the consumed plan out of the agent's live view (SPEC P6). The plan artifact is a
         one-shot handoff, not a living spec: once the Implement turn has built from it, a leftover
         `.sage/plan.md` reads like *current* intent/state and can mislead a later turn — it's the
         one .sage/ file that looks like instructions. Archived copies stay under .sage/plans/ so git
-        retains the history. Returns the archive path, or None if there was no live plan."""
+        retains the history. Returns the archive path, or None if there was no live plan.
+
+        `cancelled` marks a plan the user dismissed without building. Same move, different filename,
+        because the two are not the same fact: `read_archived_plan` answers "what is this app built
+        from", and a plan nobody built is not an answer to that.
+        """
         if not self.plan_path.exists():
             return None
         archive_dir = self.path / ".sage" / "plans"
         archive_dir.mkdir(parents=True, exist_ok=True)
+        suffix = "-cancelled" if cancelled else ""
         n = len(list(archive_dir.glob("[0-9]*.md"))) + 1
-        dest = archive_dir / f"{n:03d}.md"
+        dest = archive_dir / f"{n:03d}{suffix}.md"
         while dest.exists():  # never clobber a prior archived plan
             n += 1
-            dest = archive_dir / f"{n:03d}.md"
+            dest = archive_dir / f"{n:03d}{suffix}.md"
         self.plan_path.rename(dest)
         return dest
+
+    def read_archived_plan(self) -> str | None:
+        """The most recently BUILT plan, or None if no build has consumed one.
+
+        The counterpart to `archive_plan`: once a build consumes a plan there is no live `plan.md`
+        left, and the app in the preview is nonetheless the thing that plan describes. The rail's
+        plan pin reads this so it can say "Working from" instead of falling back to "No plan yet"
+        the moment the first build finishes. Cancelled archives are skipped — the pin would
+        otherwise claim the app was built from a plan the user had just dismissed. Sorted
+        numerically, not lexically: `archive_plan` zero-pads to three digits and would run out at
+        1000.
+        """
+        archive_dir = self.path / ".sage" / "plans"
+        built = [p for p in archive_dir.glob("[0-9]*.md") if p.is_file() and p.stem.isdigit()]
+        if not built:
+            return None
+        try:
+            return max(built, key=lambda p: int(p.stem)).read_text()
+        except OSError:
+            return None
 
     @property
     def settings_path(self) -> Path:

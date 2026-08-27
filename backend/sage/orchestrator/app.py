@@ -1669,13 +1669,28 @@ async def set_settings(request: Request) -> JSONResponse:
     return JSONResponse(content=settings)
 
 
+@control_app.get("/api/project/plan")
+def project_plan() -> JSONResponse:
+    """The plan this app is being built from, or `{}` when there is none.
+
+    `status` is `awaiting` while `.sage/plan.md` is live and `built` once a build has archived it,
+    which is the difference between the pin saying "Plan" and "Working from". The body is the plan's
+    own markdown — the same text the transcript's plan card renders — because that is what Sage
+    actually writes. There is no structured plan artifact behind this and the pin does not pretend
+    there is one."""
+    return JSONResponse(content=orchestrator.read_plan_pin())
+
+
 @control_app.post("/api/project/plan/cancel")
 def cancel_plan() -> JSONResponse:
     """Discard an un-approved plan. When the user dismisses the plan card without building, the
     plan.md the gate turn wrote is still on disk (only an approve archives it). Left there it reads
     like live intent — the exact stray-plan case archive_plan() exists to prevent — so archive it
-    now (non-destructive; git keeps the history). Idempotent: no-op if there's no live plan."""
-    archived = orchestrator.project().workspace.archive_plan()
+    now (non-destructive; git keeps the history). Idempotent: no-op if there's no live plan.
+
+    Archived as cancelled, so the rail's plan pin does not go on to describe the app as built from
+    a plan the user just dismissed."""
+    archived = orchestrator.project().workspace.archive_plan(cancelled=True)
     return JSONResponse(content={"cancelled": True, "archived": archived is not None})
 
 
