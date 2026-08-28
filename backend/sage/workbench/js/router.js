@@ -50,4 +50,17 @@ window.SW = window.SW || {};
       handleChange();
     },
   };
+
+  // Build's route grammar. It was housed in the Build rail until the rail stopped listing apps
+  // (#82), but it never belonged to it: `store.js` calls it after a delete and after a handoff, and
+  // the transcript's app card calls it too. One grammar, beside the router that reads it.
+  //
+  // Picking an app goes through the ROUTE, never straight to the store. Build re-asserts whatever
+  // `?app=` names (see BuildMode), so a click that only told the store would be undone by the next
+  // render — the control would light up and snap back. One writer: the route says which app, the
+  // store follows it.
+  SW.appRoute = function appRoute(app) {
+    const { thread } = SW.store.get();
+    return `#/build${thread ? `/${thread.id}` : ''}?app=${app.id}`;
+  };
 })();

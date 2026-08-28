@@ -45,6 +45,12 @@ const sandbox = {
     };
   })(),
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
+  // Enough of a window for `router.js` to load. Its `SW.router` is replaced below; what this file
+  // wants from the file is `SW.appRoute`, which sits beside it.
+  location: { hash: '' },
+  history: { replaceState() {} },
+  addEventListener() {},
+  removeEventListener() {},
   React: {
     createElement: (t, p, ...c) => ({ t, p, c }),
     useState: (init) => {
@@ -76,8 +82,10 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
+// `router.js` is here for `SW.appRoute`, which used to live in the Build rail and moved out with
+// it (#82). The two route grammars a plan's back links are built from now sit one file apart.
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'components/conversation-list.js',
-                 'components/app-list.js', 'components/plan.js']) {
+                 'router.js', 'components/plan.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

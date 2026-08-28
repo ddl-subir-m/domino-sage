@@ -6,10 +6,10 @@ window.SW = window.SW || {};
 // would claim a conversation belongs to exactly one, which is the thing that
 // turned out not to be true.
 //
-// This is Chat's rail. Build's lists Built Apps instead (SW.AppRail): a Project
-// holds many of each, and the thing you switch between differs by mode. The
-// furniture does not — same head, same search, same rows — so turning your head
-// never means relearning where anything is.
+// This is the rail in BOTH modes (#82). It was Chat's alone, and Build listed Built Apps instead,
+// so crossing into Build took your history off screen while the transcript beside it claimed to be
+// one Conversation. Which Built App you are looking at is the Build header's job now. `mode` is
+// only what decides where a row goes — never what a row says.
 (function () {
   const { createElement: h, useState, Fragment } = React;
   const { Button, Tooltip, Input, Dropdown, Modal } = antd;

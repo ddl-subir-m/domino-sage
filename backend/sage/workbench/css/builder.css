@@ -388,6 +388,49 @@
 .sw-builder-toolbar > * { flex: none; min-width: 0; }
 .sw-builder-toolbar .sw-topnav-spacer { flex: 1 1 auto; }
 
+/* The header's app control (#82). It is the app's NAME first — the heaviest thing in a 44px strip
+   of captions and icon buttons — because naming which app is on screen and choosing which app is
+   on screen are the same control now that the rail lists Conversations in both modes. */
+.sw-app-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  max-width: 320px;
+  /* The toolbar clips what it cannot fit (`overflow: hidden` above) and every other child is
+     `flex: none`, so in a narrow preview a long app name would push Reload and Open past the edge
+     and out of reach. The name is the one thing here that already ellipsises, so it is the one
+     thing that gives way. */
+  flex: 0 1 auto;
+  border: none;
+  background: none;
+  padding: var(--s1) var(--s2);
+  margin-left: calc(var(--s2) * -1);
+  border-radius: var(--radius);
+  color: var(--dark-700);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sw-app-picker:hover { background: var(--gray-200); }
+.sw-app-picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Wide enough for a row that carries a name and two badges, and capped so a Project with twenty
+   apps scrolls rather than running off the bottom of the window. */
+.sw-app-picker-panel {
+  width: 300px;
+  padding: var(--s2) 0;
+  background: var(--white);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+}
+.sw-app-picker-list { max-height: 320px; overflow-y: auto; }
+
+/* What the rest of this Conversation changed. Secondary to the app on screen, which is why it
+   reads as a caption and not as a second name. */
+/* Gives way before the toolbar's buttons do, for the same reason the picker does. The tooltip
+   carries the full list, so an ellipsis here loses nothing. */
+.sw-build-others { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+
 /* The canvas is the preview's whole height. Without `flex: 1` it falls back to the
    iframe's intrinsic 150px and the app shows through a letterbox. `position: relative`
    anchors the starting/failed overlay over it. */
