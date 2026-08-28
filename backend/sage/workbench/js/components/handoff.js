@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Modal, Checkbox, Radio, Space, Tag, Input, Select, Alert, Button } = antd;
+  const { Modal, Radio, Space, Input, Select, Alert, Button } = antd;
   const { FileTextOutlined } = icons;
 
   // The date on an app row. A Project holds many Built Apps and two dashboards read the same in a
@@ -13,11 +13,27 @@ window.SW = window.SW || {};
     return `Last built ${SW.util.relativeTime(app.builtAt)}`;
   }
 
+  // The three answers the sheet used to ask for on every handoff, read from where the viewer left
+  // them (#58). The plan is not among them and never becomes a preference: a handoff without one
+  // is not this flow. Neither is the target app — the sheet still asks that, every time.
+  function crossings() {
+    return {
+      plan: true,
+      resources: SW.prefs.get('handoffResources'),
+      artifacts: SW.prefs.get('handoffArtifacts'),
+      transcript: SW.prefs.get('handoffTranscript'),
+    };
+  }
+
   // Everything that crosses from Chat to Builder is written to the project as
   // a real file, so the handoff is inspectable rather than magic.
   SW.HandoffSheet = function HandoffSheet() {
-    const { handoffOpen, handoffDraft, attachments } = SW.store.get();
-    const [include, setInclude] = useState({ plan: true, resources: true, artifacts: true, transcript: false });
+    const { handoffOpen, handoffDraft } = SW.store.get();
+    // What crosses is the viewer's saved answer now, not four checkboxes rebuilt from the same
+    // hardcoded defaults every time this opens (#58). Read while the sheet is open rather than
+    // held in state: nothing here writes it any more, so state would only be a stale copy of what
+    // Account settings already holds.
+    const include = handoffOpen ? crossings() : null;
     // Empty means New app, and it starts empty every time the sheet opens. Nothing preselects an
     // existing app, because building over an app nobody picked is a silent overwrite (#73).
     const [appId, setAppId] = useState('');
@@ -43,8 +59,6 @@ window.SW = window.SW || {};
     if (!handoffOpen || !handoffDraft) return null;
 
     const artifacts = handoffDraft.artifacts || [];
-    const context = handoffDraft.context || [];
-    const chips = attachments.length ? attachments : context;
     const apps = handoffDraft.apps || [];
     const target = apps.find((a) => a.id === appId);
     const files = [
@@ -70,11 +84,13 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-handoff' },
 
-        // Which app, above what crosses into it: the answer changes what the checkboxes below are
-        // about. New app is the default and no existing app is ever preselected, because building
-        // over an app the person did not pick is a silent overwrite (docs/workbench/handoff.md §4).
-        // Shown with nothing to choose between too, so the first handoff says where its app goes
-        // and the second one's list is a list the person has seen before.
+        // The sheet's one question, and the reason it survives a ticket that shrank everything
+        // else here to a saved answer (#58). A Project holds many Built Apps, so the target is
+        // chosen per handoff: New app is the default and no existing app is ever preselected,
+        // because building over an app the person did not pick is a silent overwrite
+        // (docs/workbench/handoff.md §4, ADR-0008). Shown with nothing to choose between too, so
+        // the first handoff says where its app goes and the second one's list is a list the person
+        // has seen before.
         h(
           'div',
           { className: 'sw-handoff-section' },
@@ -124,68 +140,6 @@ window.SW = window.SW || {};
 
         h(
           'div',
-          { className: 'sw-handoff-section' },
-          h('div', { className: 'sw-field-label' }, 'Bring across'),
-          h(
-            Space,
-            { direction: 'vertical', size: 6 },
-            h(
-              Checkbox,
-              { checked: include.plan, disabled: true },
-              h('span', null, h('strong', null, handoffDraft.title), ' ', h('span', { className: 'sw-caption' }, '.sage/plan.md'))
-            ),
-            h(
-              Checkbox,
-              {
-                checked: include.resources,
-                onChange: (e) => setInclude({ ...include, resources: e.target.checked }),
-              },
-              h(
-                'span',
-                null,
-                `What is in this conversation (${chips.length})`,
-                h('span', { className: 'sw-caption' }, ' · becomes what the app needs')
-              )
-            ),
-            include.resources &&
-              chips.length > 0 &&
-              h(
-                'div',
-                { style: { paddingLeft: 24 } },
-                h(
-                  Space,
-                  { size: 4, wrap: true },
-                  chips.map((a) =>
-                    h(
-                      Tag,
-                      { key: a.id || a.name, bordered: true, style: { display: 'inline-flex', gap: 4, alignItems: 'center' } },
-                      a.resourceName || a.name
-                    )
-                  )
-                )
-              ),
-            h(
-              Checkbox,
-              {
-                checked: include.artifacts,
-                disabled: artifacts.length === 0,
-                onChange: (e) => setInclude({ ...include, artifacts: e.target.checked }),
-              },
-              `Charts and outputs from the conversation (${artifacts.length})`
-            ),
-            h(
-              Checkbox,
-              {
-                checked: include.transcript,
-                onChange: (e) => setInclude({ ...include, transcript: e.target.checked }),
-              },
-              'Full conversation transcript'
-            )
-          )
-        ),
-
-        h(
-          'div',
           { className: 'sw-handoff-files' },
           h('div', { className: 'sw-field-label' }, 'Files written to the project'),
           files.map((file) =>
@@ -199,7 +153,8 @@ window.SW = window.SW || {};
           h(
             'div',
             { className: 'sw-caption', style: { marginTop: 6 } },
-            `Everything is a real file. ${SW.brand.assistant()} reads them in Builder, and so can you.`
+            `Everything is a real file. ${SW.brand.assistant()} reads them in Builder, and so can you. `,
+            'What crosses is yours to change in Account settings.'
           )
         )
       )

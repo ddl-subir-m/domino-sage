@@ -26,6 +26,18 @@ window.SW = window.SW || {};
     // the Workbench does today, and unified shows one transcript in both (#50). Nothing reads this
     // yet — this ticket only gives the answer somewhere to live.
     conversationView: { fallback: 'split', values: ['split', 'unified'] },
+
+    // What a confirmed handoff carries from the Conversation into the Built App (#58). These were
+    // four checkboxes rebuilt from hardcoded defaults every time the sheet opened, so the same
+    // person answered the same questions on every handoff. The fallbacks are those defaults
+    // exactly: the answer moves, what a handoff writes does not.
+    //
+    // Where the handoff LANDS is deliberately absent and stays absent. The sheet still asks which
+    // Built App every time and still preselects none, because a Project holds many and building
+    // over one the person did not choose is the silent overwrite ADR-0008 exists to close (#73).
+    handoffResources: { fallback: true, values: [true, false] },
+    handoffArtifacts: { fallback: true, values: [true, false] },
+    handoffTranscript: { fallback: false, values: [true, false] },
   };
 
   // `/api/me` answers "me" when the container has no identity to report, so the key matches what
