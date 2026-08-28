@@ -6779,8 +6779,8 @@ class Orchestrator:
         """Remove an attached file's symlink (keyed by its workspace path, so rehydrated entries
         with no dataset_id detach too) and forget it. Also deletes any standalone COPY of the file the
         agent leaked into the app tree (same basename under src/ etc.): once the entry leaves
-        project.attached the commit backstop (_detect_leaks) stops covering it, so a leaked copy would
-        otherwise get staged into the next save — pushing the bytes into git.
+        project.attached the commit backstop (_leaked_copy_paths) stops covering it, so a leaked copy
+        would otherwise get staged into the next save — pushing the bytes into git.
         Inlined-into-code copies are left in place (deleting the source file would nuke app logic) and
         reported, alongside code that fetches the served path, as `refs` so the UI can warn and offer an
         agent cleanup. Keeps the dataset bytes."""
@@ -7016,15 +7016,21 @@ class Orchestrator:
         return out
 
     def _data_usage(self, project: Project, entry: dict,
-                    sources: list[tuple[str, str | None]] | None = None) -> dict:
+                    sources: list[tuple[str, str | None]] | None = None,
+                    app: Workspace | None = None) -> dict:
         """How the app's source uses an attached file, so delete can refuse to orphan code:
           refs   — source files that fetch it by its served path/name (the intended runtime dependency)
           copies — source files that ARE a copy of the data: same basename under the app tree, or its
                    bytes inlined. This is the leak we forbid (public/data/ is gitignored on purpose),
                    and it's why deleting the attachment leaves the dashboard still working.
+
+        `app` names a Built App other than the one on screen. Detach never passes it — its answer is
+        about the app the person is deleting from — and the commit backstop always does, because the
+        commit it guards covers every app in the Project (#81).
         """
+        app = app or project.workspace
         if sources is None:
-            sources = self._scan_app_sources(project.workspace)
+            sources = self._scan_app_sources(app)
         served = entry["path"][len("public/"):]        # data/<slug>/uploads/<name>
         name = PurePosix(entry["path"]).name
         refs: list[str] = []
@@ -7037,7 +7043,7 @@ class Orchestrator:
             if text is None:                            # non-code file, nothing more to inspect
                 continue
             if raw is None:
-                raw = self._attachment_bytes(project, entry)
+                raw = self._attachment_bytes(app, entry)
             if raw is not None and _is_inlined_copy(raw, text):
                 copies.append(rel)                      # data bytes inlined into source (full or sample)
             elif served in text or name in text:
@@ -7093,36 +7099,69 @@ class Orchestrator:
                 if isinstance(q, dict) and q.get("binding") == resource_id
                 and isinstance(q.get("name"), str) and q["name"]]
 
-    def _detect_leaks(self, project: Project) -> list[tuple[str, list[str]]]:
-        """(attachment name, [source files that copy it]) for every attached file whose bytes were
-        duplicated into the app tree. Empty when nothing was copied. One source scan for all files."""
-        # The app being BUILT, not the one on screen: both callers are the turn's, and after a
-        # switch mid-build (#77) the on-screen app is neither the tree the agent copied into nor
-        # the list it copied from — so asking it would report no leak and exclude nothing.
-        attached = project.attachments_for_turn()
+    def _copies_in_app(self, project: Project, app: Workspace,
+                     attached: list[dict]) -> list[tuple[str, list[str]]]:
+        """(attachment name, [source files that copy it]) for one Built App. One source scan for all
+        of its files, and none at all for an app with nothing attached."""
         if not attached:
             return []
-        sources = self._scan_app_sources(project.app_for_turn())
+        sources = self._scan_app_sources(app)
         out: list[tuple[str, list[str]]] = []
         for e in attached:
-            copies = self._data_usage(project, e, sources)["copies"]
+            copies = self._data_usage(project, e, sources, app)["copies"]
             if copies:
                 out.append((PurePosix(e["path"]).name, copies))
+        return out
+
+    def _detect_leaks(self, project: Project) -> list[tuple[str, list[str]]]:
+        """(attachment name, [source files that copy it]) for the app a turn is BUILDING.
+
+        What the build loop nudges the agent about, so it is scoped to the tree the agent just
+        wrote — not the whole Project, whose idle apps hold copies this agent did not make and
+        cannot be asked to move. `_leaked_copy_paths` is the one that has to cover them.
+
+        The app being built, not the one on screen: after a switch mid-build (#77) the on-screen app
+        is neither the tree the agent copied into nor the list it copied from — so asking it would
+        report no leak."""
+        return self._copies_in_app(project, project.app_for_turn(), project.attachments_for_turn())
+
+    def _attached_per_app(self, project: Project) -> list[tuple[Workspace, list[dict]]]:
+        """Every Built App on the volume, paired with the attachment list to judge it by.
+
+        The manifest on disk answers for an app nobody is holding. The two apps that have a live
+        list in memory are read from memory instead: the app on screen, and the app a turn pinned
+        when the person switched away from it (#77)."""
+        live = {project.workspace.app_id: project.attached}
+        if project.turn_app is not None:
+            live[project.turn_app.app_id] = project.attachments_for_turn()
+        out: list[tuple[Workspace, list[dict]]] = []
+        for app_id in self._wm.app_ids():
+            app = self._wm.app_workspace(project.id, app_id)
+            out.append((app, live[app_id] if app_id in live else app.read_attachments()))
         return out
 
     def _leaked_copy_paths(self, project: Project) -> list[str]:
         """Flat list of the source files that are copies of attached data — passed to
         commit_all(exclude=...) so the bytes are never staged into a commit.
 
-        Written from the repo root, because that is where git runs: `_detect_leaks` names them the
-        way the app does, and an exclude git cannot resolve excludes nothing."""
-        app = project.app_for_turn()
-        return [project.repo_rel(f, app) for _, files in self._detect_leaks(project) for f in files]
+        Every Built App in the Project, because the commit is `git add -A` at the Project root and
+        stages every one of them (#81). An exclude list drawn from the app being built guards the
+        narrower thing: a copy sitting in an idle app rides out on a commit driven from another.
 
-    def _attachment_bytes(self, project: Project, entry: dict) -> bytes | None:
-        """Read an attached file's bytes (follows the symlink to the dataset mount). None if absent."""
+        Written from the repo root, because that is where git runs: the scan names files the way
+        each app does, and an exclude git cannot resolve excludes nothing."""
+        return [project.repo_rel(f, app)
+                for app, attached in self._attached_per_app(project)
+                for _, files in self._copies_in_app(project, app, attached)
+                for f in files]
+
+    def _attachment_bytes(self, app: Workspace, entry: dict) -> bytes | None:
+        """Read an attached file's bytes (follows the symlink to the dataset mount). None if absent.
+
+        The app is named rather than defaulted: the symlink lives under the app the file is attached
+        to, and the path is the same in every app while pointing at a file in only one."""
         try:
-            p = project.workspace.path / entry["path"]
+            p = app.path / entry["path"]
             return p.read_bytes() if p.is_file() else None
         except OSError:
             return None

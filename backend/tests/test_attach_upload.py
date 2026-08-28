@@ -829,3 +829,35 @@ def test_an_unmounted_attachment_is_rehydrated_by_downloading_it_again(tmp_path:
 
     assert (ws / rel).read_bytes() == b"a,b\n1,2\n"
     assert assets.downloads == ["raw/wells.csv", "raw/wells.csv"]
+
+
+def test_the_exclude_list_covers_a_copy_in_an_idle_built_app(tmp_path: Path):
+    # The commit runs `git add -A` at the Project root and stages every Built App, so an exclude
+    # list drawn from the app being built lets a copy sitting in the other one ride out with it
+    # (#81). The nudge stays narrow: this agent did not make that copy and cannot move it.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    idle = proj.workspace.app_id
+    orch.upload_file("sales.csv", b"a,b\n1,2\n")
+    (proj.workspace.path / "src" / "sales.csv").write_text("a,b\n1,2\n")   # agent copied it into src/
+
+    orch.create_app()                                    # mint a second app and build in that one
+
+    assert orch._detect_leaks(proj) == []
+    assert orch._leaked_copy_paths(proj) == [f"apps/{idle}/src/sales.csv"]
+
+
+def test_the_turns_own_app_stays_covered_after_the_person_looks_away(tmp_path: Path):
+    # #77: a build carries on in the app it started in while the person reads another. The tree the
+    # agent copied into is the pinned one, and it is still in the commit the turn ends with.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    building = proj.workspace.app_id
+    orch.upload_file("sales.csv", b"a,b\n1,2\n")
+    (proj.workspace.path / "src" / "sales.csv").write_text("a,b\n1,2\n")
+    proj.turn_app, proj.turn_attached = proj.workspace, list(proj.attached)   # what a turn pins
+
+    orch.create_app()                                                        # person looks away
+
+    assert orch._detect_leaks(proj) == [("sales.csv", ["src/sales.csv"])]
+    assert orch._leaked_copy_paths(proj) == [f"apps/{building}/src/sales.csv"]
