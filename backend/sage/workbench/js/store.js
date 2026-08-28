@@ -134,6 +134,13 @@ window.SW = window.SW || {};
     // is turning your head: the Thread stays selected, this transcript is the app's.
     buildHistory: [],
     buildMessages: [],
+    // The Conversation's Chat turns, for Build to draw above its own (#57). Empty under the split
+    // view, which is what keeps that arm the screen it is today. Kept apart from `buildMessages`
+    // rather than folded into it because the greeting asks a question only `buildMessages` can
+    // answer: has THIS app got turns yet?
+    conversationChat: [],
+    // The two above, in the order they happened — what Build actually renders.
+    buildTranscript: [],
     buildTyping: null,
     buildRunning: false,
     bindings: [],
@@ -758,16 +765,115 @@ window.SW = window.SW || {};
     return out;
   }
 
-  async function mergedHistoryToMessages(history, handoff) {
+  // The merged read, cut into the two halves their own readers know how to walk. `appId` narrows
+  // the build half to one Built App; Chat passes none, because with no preview to bind it Chat
+  // shows every app the Conversation drove (#56).
+  //
+  // A build row with no app at all is one adopted from a log written before there were per-app logs
+  // (#68), so there was only one app for it to be in. It stays, because a merged view that hid it
+  // would be strictly emptier than the split view it replaces — the failure the server adopts
+  // legacy history to avoid.
+  function splitConversationHalves(history, appId) {
     const chat = [];
     const build = [];
     (history || []).forEach((row, i) => {
-      (row.half === 'build' ? build : chat).push({ ...row, order: i });
+      if (row.half === 'build') {
+        if (!appId || !row.app || row.app === appId) build.push({ ...row, order: i });
+        return;
+      }
+      chat.push({ ...row, order: i });
     });
+    return { chat, build };
+  }
+
+  async function mergedHistoryToMessages(history, handoff) {
+    const { chat, build } = splitConversationHalves(history);
     // Each half is walked by the reader that already knows how to read it — a build turn's tool
     // cards and plan cards are not chat blocks — and `order` is what puts the two back together.
     const messages = (await historyToMessages(chat, handoff)).concat(buildRunMessages(build));
     return messages.sort((a, b) => a.order - b.order);
+  }
+
+  // ---- the same Conversation, in Build (#57) ---------------------------------------------------
+  //
+  // Build reads the merged read above rather than a second one, and it takes the halves apart
+  // instead of taking one list back, because it draws them differently to Chat.
+  //
+  // The asymmetry is deliberate. Chat has no preview, so it shows every Built App the Conversation
+  // drove. Build has a preview bound to ONE app, so its build turns are the SELECTED app's — the
+  // other app's work belongs on a screen that can show it. The Chat turns are the whole
+  // Conversation either way: that half is what this ticket exists to stop losing.
+  //
+  // Nothing here folds a run. Chat folds one because twenty raw implementation turns would bury the
+  // questions around them; Build is where those turns belong, so Build draws them.
+
+  // Where a row arriving now sits in the merged order. Null when Build is reading its own log
+  // alone, which is the split view and the fallback: there is nothing to interleave with, so the
+  // row's position in the log is its position on screen, exactly as it has always been.
+  let buildSeq = null;
+
+  // What Build renders, from what it holds. EVERY writer of `buildHistory` ends here — a load, a
+  // poll, an echoed prompt, each event of a running turn — because a writer that set
+  // `buildMessages` alone would leave the transcript on screen pointing at the list before it.
+  function applyBuildTranscript() {
+    state.buildMessages = buildHistoryToMessages(state.buildHistory);
+    state.buildTranscript = state.conversationChat.length
+      ? state.conversationChat.concat(state.buildMessages).sort((a, b) => a.order - b.order)
+      : state.buildMessages;
+  }
+
+  // One row onto the end of the log. The order stamp is what keeps a turn happening NOW below the
+  // Chat turns it came after: without it `buildHistoryToMessages` falls back to the row's index in
+  // this app's log, which is a number from a different scale entirely.
+  function appendBuildRow(ev) {
+    if (buildSeq !== null) ev.order = buildSeq++;
+    state.buildHistory = state.buildHistory.concat([ev]);
+    applyBuildTranscript();
+  }
+
+  // One read, whichever view is on. Unified wants the whole Conversation — the Chat turns and the
+  // build turns of every app it drove — and that is the read #56 already built, so this asks it for
+  // that rather than deriving a second one. Split asks the question Build has always asked: this
+  // app's log, for this Conversation.
+  //
+  // A merged read that fell over drops to the split read rather than to nothing. Build without its
+  // Chat turns is half the story; Build without its own turns is a blank screen, and a blank screen
+  // is the failure this ticket was filed about.
+  //
+  // Both keys always come back, one of them null, so the caller reads which read it got rather than
+  // guessing from which key happens to exist.
+  async function readBuildTranscript(conversation) {
+    if (SW.prefs.get('conversationView') === 'unified') {
+      const merged = await SW.api.conversation(conversation).catch(() => null);
+      if (merged) return { merged, history: null };
+    }
+    const own = await SW.api.history(conversation).catch(() => ({ history: [] }));
+    return { merged: null, history: own.history || [] };
+  }
+
+  // One read, applied. The load and the mid-build poll both come through here, so a tick during a
+  // running turn cannot quietly swap the merged transcript for this app's half alone.
+  async function applyBuildRead(read) {
+    if (read.merged) {
+      // After the app list, never before it: which app is selected decides which build turns are
+      // this pane's.
+      const halves = splitConversationHalves(read.merged, state.activeApp && state.activeApp.id);
+      // The Chat half is read by the reader that knows how — but its handoff OFFER is Chat's alone.
+      // It offers a way over to Build, and this is Build. Dropped on the block rather than the
+      // message id, because the offer arrives in two shapes: the live callout appended at the end,
+      // and a suggestion persisted mid-history. Both draw the same control.
+      const chat = await historyToMessages(halves.chat, state.thread && state.thread.handoff);
+      state.conversationChat = chat.filter(
+        (m) => !(m.blocks || []).some((b) => b.type === 'plan_suggestion')
+      );
+      state.buildHistory = halves.build;
+      buildSeq = read.merged.length;
+    } else {
+      state.conversationChat = [];
+      state.buildHistory = read.history || [];
+      buildSeq = null;
+    }
+    applyBuildTranscript();
   }
 
   function applyBuildEvent(ev) {
@@ -804,8 +910,7 @@ window.SW = window.SW || {};
     // it the transcript keeps. Marking the live frame is what separates the two — the server row a
     // reload returns has no `live`, so it replays as text (see buildHistoryToMessages).
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes') ev.live = true;
-    state.buildHistory = state.buildHistory.concat([ev]);
-    state.buildMessages = buildHistoryToMessages(state.buildHistory);
+    appendBuildRow(ev);
   }
 
   async function refreshBindings() {
@@ -1421,6 +1526,38 @@ window.SW = window.SW || {};
       return history === null ? chatOnly() : mergedHistoryToMessages(history, thread.handoff);
     },
 
+    // Which Built App a `#/build/<id>` link means when it names none: the one this Conversation
+    // bound last. Without this the link lands on whatever app the server happens to have selected,
+    // which is a different app for every viewer and every visit — so one link shows two people two
+    // different transcripts, and an old link stops going where it went.
+    //
+    // Blind to the conversation view on purpose. Which app is selected is STORED, and #52's
+    // preference decides only what is RENDERED, so the app a link resolves to cannot depend on it.
+    //
+    // A Conversation that bound no app resolves to nothing rather than guessing, and the selected
+    // app stays — which is what Build did before this ticket.
+    async resolveConversationApp(threadId) {
+      if (!threadId) return null;
+      // ADR-0009: the Conversation's newest BOUND handoff entry names the app. Only a confirmed
+      // handoff writes `appId`, so its presence is what "bound" means here. The thread is usually
+      // the one already open, and reusing it is what keeps this off the network.
+      const thread = state.thread && state.thread.id === threadId
+        ? state.thread
+        : await SW.api.thread(threadId).catch(() => null);
+      const handoff = (thread && thread.handoff) || null;
+      if (handoff && handoff.status === 'bound' && handoff.appId) return handoff.appId;
+      // A Built App started inside Build was never handed off (#74), so no entry can name it and
+      // the ADR's rule has nothing to answer with. Its turns are the only record that this
+      // Conversation drove it, so they are what names it.
+      const history = await SW.api.conversation(threadId).catch(() => null);
+      if (!history) return null;
+      let bound = '';
+      for (const row of history) {
+        if (row.half === 'build' && row.app) bound = row.app;
+      }
+      return bound || null;
+    },
+
     async openThread(threadId) {
       // Click B then A and two of these are in flight. Unguarded, whichever server response lands
       // last wins, so the store can settle on B while the route and the rail say A — and
@@ -1455,7 +1592,9 @@ window.SW = window.SW || {};
       state.thread = null;
       state.messages = [];
       state.buildHistory = [];
-      state.buildMessages = [];
+      state.conversationChat = [];
+      buildSeq = null;
+      applyBuildTranscript();
       state.attachments = [];
       state.touched = [];
       state.assistantTurns = 0;
@@ -1604,8 +1743,7 @@ window.SW = window.SW || {};
       // rail's Building mark is what reports the turn once the person has moved on.
       const turnApp = state.activeApp && state.activeApp.id;
       const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
-      state.buildHistory = state.buildHistory.concat([{ type: 'user', text: bubble }]);
-      state.buildMessages = buildHistoryToMessages(state.buildHistory);
+      appendBuildRow({ type: 'user', text: bubble });
       state.buildRunning = true;
       state.buildTyping = 'Working…';
       notify();
@@ -1696,8 +1834,7 @@ window.SW = window.SW || {};
       // another Built App while it streams (#77).
       const turnApp = state.activeApp && state.activeApp.id;
       const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
-      state.buildHistory = state.buildHistory.concat([{ type: 'user', text: 'Approved the plan.' }]);
-      state.buildMessages = buildHistoryToMessages(state.buildHistory);
+      appendBuildRow({ type: 'user', text: 'Approved the plan.' });
       state.buildRunning = true;
       state.buildTyping = 'Building…';
       notify();
@@ -1763,15 +1900,14 @@ window.SW = window.SW || {};
       const conversation = state.thread && state.thread.id;
       const [hist, running] = await Promise.all([
         conversation
-          ? SW.api.history(conversation).catch(() => ({ history: [] }))
-          : Promise.resolve({ history: [] }),
+          ? readBuildTranscript(conversation)
+          : Promise.resolve({ merged: null, history: [] }),
         SW.api.buildState().catch(() => ({ running: false })),
         refreshBindings(),
         refreshProjectPlan(),
         loadAppList(),
       ]);
-      state.buildHistory = hist.history || [];
-      state.buildMessages = buildHistoryToMessages(state.buildHistory);
+      await applyBuildRead(hist);
       state.buildRunning = !!running.running;
       state.buildTyping = state.buildRunning ? 'Working…' : null;
       if (!options.keepPreview) state.previewStatus = 'starting';
@@ -1803,15 +1939,14 @@ window.SW = window.SW || {};
         // Same scope as loadBuild: polling the whole project here would pull other
         // conversations' turns into the one on screen.
         const watched = state.thread && state.thread.id;
-        const hist = watched
-          ? await SW.api.history(watched).catch(() => ({ history: [] }))
-          : { history: [] };
+        // The same read the load makes, so a tick mid-build refreshes this app's turns without
+        // dropping the Chat turns above them. Under the split view this is the read it always was.
+        const hist = watched ? await readBuildTranscript(watched) : { merged: null, history: [] };
         // An answer that arrived out of order is stale by definition. Drop it; the next tick is
         // 2s away and carries everything this one would have.
         if (mine < settled) return;
         settled = mine;
-        state.buildHistory = hist.history || [];
-        state.buildMessages = buildHistoryToMessages(state.buildHistory);
+        await applyBuildRead(hist);
         state.buildRunning = !!running.running;
         if (!state.buildRunning) {
           state.buildTyping = null;

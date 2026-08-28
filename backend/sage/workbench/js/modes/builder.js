@@ -83,7 +83,8 @@ window.SW = window.SW || {};
   }
 
   SW.BuildMode = function BuildMode({ conversationId, appId }) {
-    const { thread, activeApp, buildMessages, buildTyping, buildRunning, projectPlan } = SW.store.get();
+    const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning,
+            projectPlan } = SW.store.get();
     const scroller = useRef(null);
 
     // A deep link naming an app is a request to be looking at that one. Only when it differs from
@@ -92,6 +93,18 @@ window.SW = window.SW || {};
     useEffect(() => {
       if (appId && (!activeApp || activeApp.id !== appId)) SW.store.selectApp(appId);
     }, [appId, activeApp && activeApp.id]);
+
+    // A link naming NO app still names one: the Built App this conversation bound last. Resolving
+    // it is what keeps an older link landing where it landed, rather than on whichever app the
+    // server happens to have selected. Once per conversation — `activeApp` is deliberately not a
+    // dependency, because selecting the resolved app would re-run this and ask again.
+    useEffect(() => {
+      if (appId || !conversationId) return;
+      SW.store
+        .resolveConversationApp(conversationId)
+        .then((bound) => bound && SW.store.selectApp(bound))
+        .catch(() => {});
+    }, [appId, conversationId]);
 
     useEffect(() => {
       if (!conversationId) {
@@ -118,13 +131,20 @@ window.SW = window.SW || {};
     useEffect(() => {
       const el = scroller.current;
       if (el) el.scrollTop = el.scrollHeight;
-    }, [buildMessages.length, buildTyping]);
+    }, [buildTranscript.length, buildTyping]);
 
-    const empty = buildMessages.length === 0 && !buildTyping;
+    // The orientation's question, which is NOT "is this pane empty". It asks whether THIS app has
+    // turns in this conversation, and since #74 a brand-new Built App can be started inside a
+    // conversation full of talk — that app has none, so the orientation fires, and there it is
+    // right: the person needs telling what to do in the app they just made. What it must not do is
+    // pretend the conversation never happened, which is why it sits under the transcript below
+    // rather than in place of it. Under the split view there is no transcript to sit under, and
+    // this is the screen Build has always drawn.
+    const noAppTurns = buildMessages.length === 0 && !buildTyping;
     // A new conversation clears the transcript while the preview keeps serving the app the rail
     // has selected. That is the truth, but unlabelled it reads as this conversation's work, so say
     // whose app it is. (The preview following the app a build is running in is #77.)
-    const resumed = empty && !!projectPlan && projectPlan.status === 'built';
+    const resumed = noAppTurns && !!projectPlan && projectPlan.status === 'built';
 
     return h(
       'div',
@@ -142,33 +162,38 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-builder-chat-messages sw-scroll', ref: scroller },
-              empty
-                ? h(
+              buildTranscript.map((message) => h(SW.Message, { key: message.id, message })),
+              noAppTurns &&
+                h(
+                  'div',
+                  { className: 'sw-build-greeting' },
+                  h('div', { className: 'sw-empty-title' }, 'Build the app from a plan'),
+                  h(
                     'div',
-                    { className: 'sw-build-greeting' },
-                    h('div', { className: 'sw-empty-title' }, 'Build the app from a plan'),
+                    { className: 'sw-empty-detail' },
+                    // Pointing at the rail is only worth saying while the conversation is somewhere
+                    // else. With it on screen above, the thing worth saying is whose turns those
+                    // are and why this app has none of them.
+                    buildTranscript.length
+                      ? 'Approve a plan to write this app, or describe a change. The turns above are this conversation — this app has none of them yet.'
+                      : 'Approve a plan to write the app, or describe a change. This conversation stays in the rail — Chat is one click away.'
+                  ),
+                  resumed &&
                     h(
                       'div',
-                      { className: 'sw-empty-detail' },
-                      'Approve a plan to write the app, or describe a change. This conversation stays in the rail — Chat is one click away.'
-                    ),
-                    resumed &&
+                      { className: 'sw-build-resume-note' },
                       h(
                         'div',
-                        { className: 'sw-build-resume-note' },
-                        h(
-                          'div',
-                          { className: 'sw-empty-title' },
-                          'The preview is an app you already built'
-                        ),
-                        h(
-                          'div',
-                          { className: 'sw-empty-detail' },
-                          'A new conversation clears the transcript, not the app. Describe a change to keep building on it.'
-                        )
+                        { className: 'sw-empty-title' },
+                        'The preview is an app you already built'
+                      ),
+                      h(
+                        'div',
+                        { className: 'sw-empty-detail' },
+                        'A new conversation clears the transcript, not the app. Describe a change to keep building on it.'
                       )
-                  )
-                : buildMessages.map((message) => h(SW.Message, { key: message.id, message })),
+                    )
+                ),
               buildTyping && h(SW.TypingIndicator, { label: buildTyping })
             ),
             h(
