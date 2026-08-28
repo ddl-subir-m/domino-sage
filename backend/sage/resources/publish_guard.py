@@ -62,6 +62,15 @@ UNLISTED_SOURCE = "unlisted-source"
 UNCHECKED_SOURCE = "unchecked-source"
 OPEN_APP = "open-visibility"
 UNCHECKED_APP = "unchecked-visibility"
+# Not a sibling of the two above but of the whole guard: this one is about the App the Built App
+# publishes TO, and it refuses an app that reads no store just as readily (#80). It is here because
+# this module is where the vocabulary of a refused publish lives, and because the answer a caller
+# gets is the same shape — a `PublishProblem` about the app itself, with no Binding to point at.
+#
+# `UNCHECKED_APP` is deliberately NOT this. "Sage couldn't read this App" and "this App isn't there"
+# were the same sentence before #80, and they lead opposite ways: the first is waited out, the
+# second is only ever fixed by publishing a new App.
+MISSING_APP = "missing-app"
 
 
 @dataclass(frozen=True)
@@ -150,6 +159,25 @@ def publish_problems(
     elif open_visibility(visibility):
         out.append(PublishProblem(OPEN_APP, _open_message(bindings, visibility)))
     return out
+
+
+def missing_app_problem(display_name: str) -> PublishProblem:
+    """The refusal for a Built App whose Domino App has been deleted outside Sage (#80).
+
+    Named for the Built App, not for the app id. The id is Domino's, was minted by the first
+    publish and never shown to anybody, so "app-68f3…" is not a thing the person reading this can
+    go and look at; the name in the rail is. The id stays out of the sentence for the same reason
+    the rail row carries `published` rather than the id itself.
+
+    The sentence has to earn the one irreversible bit in it: publishing a new App means a new URL,
+    and whoever was given the old link is not getting it back either way, because the App that
+    served it is gone.
+    """
+    return PublishProblem(MISSING_APP, (
+        f"The Domino App that {display_name} publishes to has been deleted, so there is no App to "
+        f"publish a new version of. Publish it as a new App to put it back — that gives it a new "
+        f"URL, and the old link stays dead whatever you do."
+    ))
 
 
 def _credential_problem(b: Binding, sources: list[DataSource] | None) -> PublishProblem | None:

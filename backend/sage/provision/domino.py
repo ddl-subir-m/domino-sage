@@ -67,6 +67,19 @@ def _viewer_url(raw: str, app_id: str) -> str:
     return f"/modelproducts/{app_id}?scope=project" if app_id else ""
 
 
+class NotFound(RuntimeError):
+    """Domino answered 404: the thing the call named is not there.
+
+    Split out of the generic RuntimeError for one distinction (#80). A publish has to tell "the
+    Domino App was deleted on its settings page" from "Domino is having a bad minute", and only a
+    404 is evidence of the first — treating a 502 or a timeout as a deletion would create a second
+    deployment, which is the failure #70 exists to prevent arriving by a new road.
+
+    A subclass rather than a sibling, so every caller that already catches RuntimeError (or
+    Exception) keeps catching this unchanged; only the callers that care look for it by name.
+    """
+
+
 @dataclass(frozen=True)
 class ProjectRef:
     id: str
@@ -127,6 +140,7 @@ class ControlPlane(Protocol):
     def app_manage_url(self, app_id: str, project_name: str) -> str | None: ...
     def app_status(self, app_id: str) -> str: ...
     def app_visibility(self, app_id: str) -> str: ...
+    def app_exists(self, app_id: str) -> bool: ...
 
 
 class DominoControlPlane:
@@ -170,6 +184,8 @@ class DominoControlPlane:
     def _check(r: httpx.Response, verb: str, path: str) -> Any:
         # Surface v4's response body on error — that's where the validation detail lives, which
         # raise_for_status() drops. No secrets in a v4 error body.
+        if r.status_code == 404:
+            raise NotFound(f"{verb} {path} -> 404: {r.text.strip()[:500]}")
         if r.status_code >= 400:
             raise RuntimeError(f"{verb} {path} -> {r.status_code}: {r.text.strip()[:500]}")
         # A successful DELETE answers 204 with no body, and r.json() on that raises the useless
@@ -496,6 +512,21 @@ class DominoControlPlane:
             return ""
         return str(d.get("visibility") or "")
 
+    def app_exists(self, app_id: str) -> bool:
+        """Whether the App this id names is still there (#80).
+
+        False for a 404 and NOTHING else: every other failure raises, because the one thing this
+        answer is used for is deciding whether to create a second deployment, and "Domino did not
+        answer" is not evidence that anything was deleted. The App's own settings page — the one
+        Publish links to as "Manage settings in Domino" — is where it gets deleted from, so the id
+        Sage recorded on the first publish can outlive the App it names.
+        """
+        try:
+            self._get(f"{_APPS_PATH}/{app_id}")
+        except NotFound:
+            return False
+        return True
+
     def app_manage_url(self, app_id: str, project_name: str) -> str | None:
         """Host-relative deep-link to the App's settings/overview page in Domino (tier, autoscaling,
         data, sharing), so 1-click Publish stays frictionless while the full native config is one
@@ -683,3 +714,8 @@ class FakeControlPlane:
         # Grant-based unless a test says otherwise: that is what publish_app sets, so it is what an
         # app Sage published and nobody re-shared actually has.
         return self.app_visibilities.get(app_id, "GRANT_BASED")
+
+    def app_exists(self, app_id: str) -> bool:
+        # `delete_app_deployment` already pops `published`, so deleting an App here is the same
+        # move a person makes on its settings page in Domino — which is the whole of #80.
+        return app_id in self.published

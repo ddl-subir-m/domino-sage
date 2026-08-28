@@ -883,11 +883,28 @@ async def sync_project() -> JSONResponse:
 
 
 @control_app.post("/api/publish")
-async def publish() -> JSONResponse:
+async def publish(request: Request) -> JSONResponse:
     """Publish (or republish) THIS app's project as a live Domino App. Offloaded to a thread — it
-    saves work (a git push) and makes several control-plane REST calls."""
+    saves work (a git push) and makes several control-plane REST calls.
+
+    `{"new_app": true}` publishes a FRESH Domino App instead of a new version of the recorded one,
+    which is what a `missing-app` refusal below asks for (#80). It does not clear the record on its
+    own — the successful publish replaces it — and it is refused unless that App really is gone.
+    It has to be said, and it is only ever said by somebody who read that refusal: a publish that
+    took this on itself would deploy a second copy of an app that is still serving whenever Domino
+    was slow to answer."""
+    body: object = {}
+    if await request.body():
+        try:
+            body = await request.json()
+        except ValueError:  # a body that is not JSON is a caller bug, not a 500
+            return JSONResponse(status_code=400, content={
+                "error": "Publish takes an optional JSON body, and this one isn't JSON."})
+    # Anything that is not an object carries no `new_app`, so it means the ordinary publish rather
+    # than an AttributeError on the way to a 500.
+    new_app = bool(body.get("new_app")) if isinstance(body, dict) else False
     try:
-        result = await run_in_threadpool(orchestrator.publish)
+        result = await run_in_threadpool(orchestrator.publish, new_app=new_app)
     except PublishRefused as e:
         # 409, not 400: the request is well formed and the app is fine — it is the state of what it
         # reads that is in the way. `refused` carries every problem so the UI can name them all at

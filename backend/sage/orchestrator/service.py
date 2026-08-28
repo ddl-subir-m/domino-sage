@@ -37,6 +37,9 @@ from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
 from ..preview.supervisor import ViteSupervisor
 from ..provision import naming
+# The 404 the publish path has to tell from every other failure (#80). A runtime import, unlike the
+# `ControlPlane` Protocol above, because it is caught rather than annotated with.
+from ..provision.domino import NotFound
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
     KIND_LLM_ALIAS,
@@ -95,6 +98,7 @@ from ..resources.provider import (
 from ..resources.publish_guard import (
     PublishRefused,
     data_source_bindings,
+    missing_app_problem,
     publish_problems,
 )
 from ..router.model_control import ModelControl
@@ -5496,11 +5500,25 @@ class Orchestrator:
             log.exception("sync failed")
             return {"status": "error", "conflicts": [], "pushed": False, "detail": f"{type(e).__name__}: {e}"}
 
-    def publish(self) -> dict:
+    def publish(self, *, new_app: bool = False) -> dict:
         """Publish (or republish) THIS app's project as a live Domino App, deploying the latest
         committed code on the default branch. An existing App gets a new version (stable URL);
         otherwise a new App is created + launched. Best-effort saves the current work first so the
-        deploy ships the newest code. Returns {published, app_id, url, manage_url, republished}."""
+        deploy ships the newest code. Returns {published, app_id, url, manage_url, republished}.
+
+        `new_app` creates a fresh Domino App instead of re-publishing to the recorded one — the
+        answer to a `MISSING_APP` refusal, and the only way out of an App deleted on its own
+        settings page in Domino (#80). It is a thing a person asks for, never something a failed
+        re-publish decides for itself: a publish that forgot whatever it could not reach would
+        deploy a second copy of an app whose first copy is alive and shared, every time Domino had
+        a bad minute.
+
+        It is refused unless the App really is gone, which is the same rule read from the other
+        side. `record_domino_app` OVERWRITES the one id Sage holds, so publishing beside a live App
+        would put it beyond both Publish and Delete while it went on serving old code at a URL
+        people already have. Nothing here clears the record either: it is replaced by the publish
+        that succeeds, never cleared by one that then refuses.
+        """
         if not publish_available(self._wm.path):
             raise RuntimeError(
                 "Publish is only available in a Sage Builder workspace whose app repo is /mnt/code. "
@@ -5519,6 +5537,34 @@ class Orchestrator:
         # written, pushed or deployed, too: a refused publish must leave nothing behind, so a
         # creator who fixes the Binding and publishes again publishes the code they were looking at.
         deployed_app_id = project.workspace.domino_app_id()
+        if deployed_app_id:
+            gone = self._target_is_gone(deployed_app_id)
+            if not new_app:
+                # An ordinary re-publish. Only a 404 stops it — see `_target_is_gone` for why an
+                # unreachable check carries on rather than refusing.
+                if gone:
+                    raise self._missing_app(project)
+            elif gone:
+                # The creator answered the refusal, so everything after here runs the first-publish
+                # path. Dropped from the LOCAL only: the record on disk is replaced by
+                # `record_domino_app` once a new App exists, and not before, so a
+                # `_refuse_unsafe_publish` refusal below cannot leave this app having forgotten an
+                # App that is still serving (#76's stranding, self-inflicted).
+                deployed_app_id = ""
+            else:
+                # `new_app` is the answer to one question, and this is not that question. Creating a
+                # second App while the first is alive strands it: `record_domino_app` overwrites the
+                # only id Sage has, so neither Publish nor Delete could reach the old App again, and
+                # it would go on serving old code at a URL people already hold.
+                raise RuntimeError(
+                    "This app's published App is still there, so Sage won't publish a second one "
+                    "beside it — that would leave the first serving at a URL nothing here could "
+                    "reach again. Publish normally to ship a new version to it. If you want a fresh "
+                    "App, delete that one in Domino first."
+                    if gone is False else
+                    "Sage couldn't reach Domino to confirm that this app's published App is really "
+                    "gone, and it won't create a second one on a guess. Try again in a moment."
+                )
         self._refuse_unsafe_publish(project, deployed_app_id)
         # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
         # app created from an older image would otherwise redeploy its original copy forever — and
@@ -5557,7 +5603,20 @@ class Orchestrator:
         pid = self._domino_project_id
         project_name = self._domino_project_name or self._project_id
         if deployed_app_id:  # already published — ship a new version, keep the URL
-            app = cp.republish_app(deployed_app_id)
+            try:
+                app = cp.republish_app(deployed_app_id)
+            except NotFound as e:
+                # The preflight said the App was there and the version POST says 404. Usually that
+                # is the window between them — a git push, seconds long and room enough for somebody
+                # to delete it — and then this is the same refusal, not the raw 502 naming an app id
+                # (#80). But `versions` is a sub-resource, and a deployment that does not route it
+                # would 404 every re-publish: telling every creator their App was deleted and
+                # inviting each to publish a fresh one is how one broken route becomes a deployment
+                # full of duplicates. So ASK, on the error path where a second call costs nothing,
+                # and only say "deleted" when the App itself is what is missing.
+                if self._target_is_gone(deployed_app_id):
+                    raise self._missing_app(project) from e
+                raise
             out = {"published": True, "app_id": app.id, "url": app.url, "republished": True}
         else:
             # The entry point is the app's own directory, and Domino fixes it when the App is
@@ -5611,6 +5670,39 @@ class Orchestrator:
             phase = "pending"
         return {"app_id": app_id, "status": raw, "phase": phase}
 
+    def _target_is_gone(self, deployed_app_id: str) -> bool | None:
+        """Whether the Domino App this Built App publishes to has been deleted (#80).
+
+        Three answers, and the third is the one the ticket turns on: True the App 404s, False it
+        answered, None Sage could not get an answer at all. Only True is evidence. "Domino is
+        having a bad minute" must never be read as "the App is gone", because acting on that
+        creates a duplicate deployment — the failure #70 exists to prevent, arriving by a new road.
+
+        The tri-state is here rather than a refusal because the two callers act on None in OPPOSITE
+        directions, and both are right:
+
+        - an ordinary re-publish carries on. It is posting a version to an id it already had, which
+          can deploy nothing new whatever the answer, so an unreachable check must not take away a
+          publish that worked before this preflight existed. It also must not take one away
+          PERMANENTLY: `settings.json` is committed, so a teammate re-publishing an App they hold
+          no grant on reads 403 here, not 404, and a refusal on 403 would wedge them forever —
+          the very shape of bug this is fixing.
+        - `new_app` refuses. That one CREATES an App, so an unconfirmed answer is exactly the guess
+          that strands the App still serving.
+        """
+        try:
+            return not self._control_plane.app_exists(deployed_app_id)
+        except Exception:
+            log.exception("publish: couldn't check whether Domino App %s still exists", deployed_app_id)
+            return None
+
+    def _missing_app(self, project: Project) -> PublishRefused:
+        # Same fallback chain `publish` uses to NAME an App it creates, for the same reason: on a
+        # builder that never got DOMINO_PROJECT_NAME, an unnamed app would otherwise leave a hole
+        # where the refusal's subject should be.
+        return PublishRefused([missing_app_problem(_app_display_name(
+            project.workspace, self._domino_project_name or self._project_id))])
+
     def _refuse_unsafe_publish(self, project: Project, deployed_app_id: str) -> None:
         """Refuse a publish that would re-export a Data Source (#12). No-op for an app that reads
         none, which is every app Sage built before #11.
@@ -5625,6 +5717,9 @@ class Orchestrator:
         Both reads are best-effort in the sense that a failure is caught here; what a failure MEANS
         is `publish_problems`'s decision, and the two differ (a missing listing refuses, an
         unreadable visibility does not).
+
+        One meaning is no longer among them: `_refuse_missing_target` has already established that
+        the App is there, so `UNCHECKED_APP` is now only ever the transient it reads as (#80).
         """
         recorded = parse_bindings(project.workspace.read_bindings())
         bindings = data_source_bindings(recorded)
