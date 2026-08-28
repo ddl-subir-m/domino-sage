@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import plan_doc
-from .threads import CHAT_WORK, new_id
+from .threads import CHAT_WORK, new_id, safe_id
 
 log = logging.getLogger(__name__)
 
@@ -168,9 +168,7 @@ class ProjectRecord:
     def _plan_doc_dir(self, plan_id: str) -> Path:
         # Ids are allocated below and never come from the caller's body, but they do arrive off the
         # wire in a URL, so refuse anything that could climb out of plan-docs/.
-        if not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", plan_id or ""):
-            raise ValueError(f"bad plan id: {plan_id!r}")
-        return self.plan_docs_dir / plan_id
+        return self.plan_docs_dir / safe_id(plan_id, "plan id")
 
     def _plan_doc_versions(self, plan_id: str) -> list[Path]:
         d = self._plan_doc_dir(plan_id)
@@ -382,11 +380,17 @@ class ProjectRecord:
         left would stand the agent in the wrong tree.
 
         Naming neither gives `.sage/session.json`, which is what an unscoped caller (CLI, tests)
-        still gets: a build turn that names no conversation keeps a session across a restart."""
-        suffix = f"-{app_id}" if app_id else ""
+        still gets: a build turn that names no conversation keeps a session across a restart.
+
+        Both are checked because both reach a path from the wire. `conversation` arrives in the body
+        of `/api/project/build/stream` and becomes a directory; `app_id` becomes part of a filename,
+        which is no safer — a `/` in it walks out of `.sage/` just as `..` walks out of the volume,
+        and `write_session_id` follows with `mkdir(parents=True)`."""
+        suffix = f"-{safe_id(app_id, 'app id')}" if app_id else ""
         if not conversation:
             return self.path / ".sage" / f"session{suffix}.json"
-        return self.path / ".sage" / "threads" / conversation / f"build-session{suffix}.json"
+        return (self.path / ".sage" / "threads" / safe_id(conversation, "conversation id")
+                / f"build-session{suffix}.json")
 
     def read_session_id(self, conversation: str | None = None, app_id: str = "") -> str | None:
         p = self.build_session_path(conversation, app_id)

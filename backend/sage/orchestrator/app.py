@@ -43,7 +43,7 @@ from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import (
     DEFAULT_SIDECAR_URL, GatewayUpstreamError, bearer_from_authorization, bind_viewer_token,
-    jwt_identity, sidecar_token, static_token, viewer_token,
+    jwt_identity, remembered_viewer_token, sidecar_token, static_token, viewer_token,
 )
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
@@ -60,6 +60,7 @@ from ..resources.provider import (
 from ..resources.publish_guard import PublishRefused
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
+from ..workspace.threads import safe_id
 from .service import (
     AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceStillBound, UploadUnavailable,
 )
@@ -448,7 +449,12 @@ class _ViewerIdentityMiddleware:
         headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
         extracted = bearer_from_authorization(headers.get("authorization"))
         remember = not path.startswith(self._UNPROXIED)
-        bind_viewer_token(extracted if remember else viewer_token(), remember=remember and bool(extracted))
+        # A browser request gets its OWN Authorization or nothing. Reaching for the remembered
+        # token here is what let a second viewer's header-less request act as the first — this is
+        # the only hop entitled to the previous request's viewer, because it is the only one that
+        # cannot carry a viewer at all.
+        inherited = remembered_viewer_token() if not remember else None
+        bind_viewer_token(extracted if remember else inherited, remember=remember and bool(extracted))
         try:
             await self._app(scope, receive, send)
         finally:
@@ -1542,10 +1548,22 @@ def build_stream(body: dict) -> StreamingResponse:
     # as building past it does, so both arrive here and neither is asked the same question twice.
     skip_incoming_gate = bool((body or {}).get("skipIncomingGate"))
 
-    if not prompt:
+    def refuse_with(message: str) -> StreamingResponse:
         def refuse():
-            yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
+            yield f"data: {_json.dumps({'type': 'error', 'message': message})}\n\n"
         return StreamingResponse(refuse(), media_type="text/event-stream")
+
+    if not prompt:
+        return refuse_with("prompt required")
+    # `conversation` becomes a directory under `.sage/threads/` and is written through
+    # `mkdir(parents=True)`. `safe_id` refuses anything that is not one path segment, and it is
+    # asked here as well as there so the answer is an SSE `error` the composer already renders
+    # rather than a traceback halfway into a stream the browser has begun reading.
+    if conversation is not None:
+        try:
+            safe_id(str(conversation), "conversation id")
+        except ValueError:
+            return refuse_with("unknown conversation")
 
     return StreamingResponse(
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,

@@ -60,8 +60,31 @@ def reset_viewer_token() -> None:
 
 
 def viewer_token() -> str | None:
-    """Viewer JWT for this request, else the one remembered from the last browser call."""
-    return _viewer_token.get() or _last_viewer_token
+    """The viewer JWT for THIS request, or None.
+
+    Request-scoped and nothing else. It used to fall back to `_last_viewer_token` here, which made
+    every reader inherit the fallback whether or not it was entitled to one: a second viewer's
+    header-less request found viewer A's JWT sitting in a module global and acted as A, and
+    `/api/me` answered A. On a published Workbench App, which serves many viewers by design, that
+    is one viewer wearing another's identity.
+
+    The remembered token is still real and still needed — see `remembered_viewer_token` — but it is
+    handed out at the one hop that has no viewer of its own, rather than reached for by anybody who
+    happens to ask."""
+    return _viewer_token.get()
+
+
+def remembered_viewer_token() -> str | None:
+    """The JWT from the last browser call, for the localhost hop that cannot carry one.
+
+    OpenCode dials /v1 over localhost with no Authorization header, and that request has no viewer
+    to read. It is also the one caller that legitimately wants the previous request's: it is the
+    same person's build, and it can outlive the browser request that started it (#77 — a build the
+    person walked away from goes on running), so this cannot be cleared when that request ends.
+
+    Only `_ViewerIdentityMiddleware` calls this, only for `_UNPROXIED` paths, and it binds the
+    result as that request's own token so everything downstream still reads `viewer_token()`."""
+    return _last_viewer_token
 
 
 def prefer_viewer(fallback: Callable[[], str]) -> Callable[[], str]:

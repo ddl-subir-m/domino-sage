@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -25,6 +26,25 @@ _KIND_SUFFIX = {
     ".sql": "query",
     ".md": "note",
 }
+
+
+def safe_id(value: str, what: str) -> str:
+    """`value` if it can only ever name one path segment, else ValueError.
+
+    Every id here is minted by `new_id` and could not climb out of anything. They do not stay that
+    way: a conversation id arrives in a POST body (`/api/project/build/stream`) and a thread id in a
+    URL, and from there they are joined onto a root and written through `mkdir(parents=True)`. A
+    `..` segment then walks out of the project volume and takes the write with it.
+
+    Deliberately a whitelist rather than a `..` check. `..` is one way out; an absolute path is
+    another, and on the way to a filename a `/` is a third. What the callers actually need is the
+    much smaller promise that this is one segment, which is all a minted id has ever been.
+
+    Same rule `_plan_doc_dir` has enforced since plan documents started arriving in URLs — this is
+    that rule, moved somewhere the other two callers can reach it."""
+    if not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", value or ""):
+        raise ValueError(f"bad {what}: {value!r}")
+    return value
 
 
 def new_id(prefix: str) -> str:
@@ -97,13 +117,13 @@ class ThreadStore:
         return self._root / ".sage" / "threads.json"
 
     def thread_dir(self, thread_id: str) -> Path:
-        return self._root / ".sage" / "threads" / thread_id
+        return self._root / ".sage" / "threads" / safe_id(thread_id, "thread id")
 
     def meta_path(self, thread_id: str) -> Path:
         return self.thread_dir(thread_id) / "meta.json"
 
     def examples_dir(self, thread_id: str) -> Path:
-        return self._root / "examples" / thread_id
+        return self._root / "examples" / safe_id(thread_id, "thread id")
 
     def list(self) -> list[dict]:
         """Every Thread in the Project, newest activity first.

@@ -5853,7 +5853,23 @@ class Orchestrator:
 
         path = project.record.path
         client = self._ensure_opencode()
-        sid = self._ensure_session(project, project.build_conversation)
+        # A session at the PROJECT root, not the build session.
+        #
+        # Git names conflicts from the repo root, which is the volume: a conflict in a Built App
+        # arrives as `apps/<appId>/src/App.tsx`. The build session is opened at
+        # `app_for_turn().path`, so that same name resolved to `apps/<appId>/apps/<appId>/…` and
+        # the agent edited nothing — `files_with_conflict_markers` then still found markers at the
+        # root and the pull was rolled back. There was no input for which that could succeed.
+        #
+        # Rebasing the paths onto the app directory was the other way out, and it only covers the
+        # conflicts that happen to be inside the selected app. A merge is the Project's: it can
+        # land in a second Built App, or in the Project's own files at the root, and neither is
+        # nameable from inside `apps/<appId>/`. The turn is Project-level, so the session is.
+        #
+        # Its own session rather than a re-rooted build one, because a build session belongs to a
+        # Built App and to a conversation (ADR-0008) and this turn is neither — putting a merge in
+        # it would file a Project-wide repair under whichever app happened to be on screen.
+        sid = client.create_session(directory=str(path))
         files = "\n".join(f"- {c}" for c in conflicts)
         prompt = (
             "A `git pull` brought in changes from a teammate that conflict with the current code. "
