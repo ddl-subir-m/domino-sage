@@ -649,18 +649,32 @@ class Workspace:
 
     @property
     def history_path(self) -> Path:
-        """Append-only transcript of chat-visible build events, so the UI can replay a project's
-        history after a page reload or an orchestrator restart (neither of which the in-memory
-        registry survives)."""
+        """Append-only transcript of this app's chat-visible build events, so the UI can replay
+        them after a page reload or an orchestrator restart (neither of which the in-memory
+        registry survives).
+
+        One log per Built App, not per Project (ADR-0008). The stop-button baseline below is a
+        POSITION in this file, so a log two apps shared would let one viewer's stop rewind past the
+        other's turns — and two viewers in one Project are two Sage Builders, which is to say two
+        processes with no lock between them."""
         return self.path / ".sage" / "history.jsonl"
 
     def append_history(self, entry: dict, conversation: str | None = None) -> None:
-        """`conversation` tags the entry with the Build conversation that produced it, so the UI
-        can replay one conversation rather than the whole project. The file stays one append-only
-        log: history.md renders all of it (the agent's memory is project-wide on purpose), and the
-        stop-button baseline below stays positional and therefore stays correct."""
+        """Write one event, stamped with the app and the conversation it belongs to.
+
+        `conversation` tags the entry with the Build conversation that produced it, so the UI can
+        replay one conversation rather than the app's whole log. `app` is stamped here rather than
+        passed in, because the file being written IS the app's: one Thread can hand off more than
+        once, so a conversation no longer says which app its turn built, and an entry read out of
+        the log should not need the path it came from to answer that.
+
+        The file stays one append-only log: history.md renders all of it (the agent's memory is
+        per app on purpose), and the stop-button baseline below stays positional and therefore
+        stays correct."""
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        row = {**entry, "conversation": conversation} if conversation else entry
+        row = {**entry, "app": self.app_id}
+        if conversation:
+            row["conversation"] = conversation
         with self.history_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
 
@@ -689,12 +703,13 @@ class Workspace:
         return json.dumps({"conversation": conversation})[1:-1]
 
     def read_history(self, conversation: str | None = None) -> list[dict]:
-        """No conversation means the whole project: history.md and any caller that wants the log
-        as written. Naming one filters to it."""
+        """No conversation means this app's whole log: history.md and any caller that wants the
+        log as written. Naming one filters to it. Every row is this app's either way — the file is
+        the app's — so there is nothing to filter on that side."""
         if conversation is None:
             return list(self._iter_history())
-        # The pre-filter can only over-select (the equality check below still decides), so a
-        # project with several conversations parses its own turns instead of everyone's.
+        # The pre-filter can only over-select (the equality check below still decides), so an app
+        # with several conversations parses its own turns instead of everyone's.
         tag = self._tag_text(conversation)
         return [r for r in self._iter_history(only=tag) if r.get("conversation") == conversation]
 

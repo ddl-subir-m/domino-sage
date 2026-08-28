@@ -840,7 +840,8 @@ def project_history(conversation: str = "") -> JSONResponse:
     preview.
 
     `conversation` is a Thread id: Build's transcript is per conversation (ADR-0005). Naming none
-    returns the whole project log, which is what the agent's own archive renders."""
+    returns the selected Built App's whole log, which is what the agent's own archive renders. It
+    is never another app's: the log lives in the app's directory (ADR-0008)."""
     return JSONResponse(content={"history": orchestrator.history(conversation or None)})
 
 

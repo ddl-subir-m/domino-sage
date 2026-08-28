@@ -53,7 +53,7 @@ def test_a_conversation_reads_back_only_its_own_turns(tmp_path: Path):
 
     assert [r["text"] for r in ws.read_history("thr_a")] == ["add a filter"]
     assert [r["text"] for r in ws.read_history("thr_b")] == ["make it dark"]
-    # history.md renders the whole log: the agent's memory stays project-wide on purpose.
+    # history.md renders the whole log: the agent's memory stays per app on purpose (ADR-0008).
     assert len(ws.read_history()) == 2
 
 

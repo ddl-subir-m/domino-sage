@@ -63,9 +63,10 @@ def test_history_reads_disk_without_attaching(tmp_path: Path):
     assert orch.history() == []  # no attach, no preview
     assert orch._project is None
     # After a turn writes history, it's visible without attaching either.
+    app_id = orch.project(start_preview=False).workspace.app_id
     orch.project(start_preview=False).workspace.append_history({"type": "user", "text": "hi"})
     orch2 = _orch(tmp_path)
-    assert orch2.history() == [{"type": "user", "text": "hi"}]
+    assert orch2.history() == [{"type": "user", "text": "hi", "app": app_id}]
 
 
 # --- file attach (Domino datasets) -----------------------------------------------------------
