@@ -172,10 +172,16 @@ class ThreadStore:
         return self.thread_dir(thread_id) / "history.jsonl"
 
     def append_history(self, thread_id: str, entry: dict) -> None:
+        """Write one event, stamped with the time it was written.
+
+        The stamp is applied here rather than passed in, for the same reason the Build writer
+        stamps its own entries (Workspace.append_history): a conversation's transcript is these
+        two logs merged, and one order needs one clock and one format. Left to the call sites it
+        would be neither."""
         p = self.history_path(thread_id)
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(json.dumps({**entry, "at": _now()}) + "\n")
 
     def read_history(self, thread_id: str) -> list[dict]:
         p = self.history_path(thread_id)
