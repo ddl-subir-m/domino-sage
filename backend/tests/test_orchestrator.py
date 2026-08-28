@@ -66,7 +66,8 @@ def test_history_reads_disk_without_attaching(tmp_path: Path):
     app_id = orch.project(start_preview=False).workspace.app_id
     orch.project(start_preview=False).workspace.append_history({"type": "user", "text": "hi"})
     orch2 = _orch(tmp_path)
-    assert orch2.history() == [{"type": "user", "text": "hi", "app": app_id}]
+    (row,) = orch2.history()
+    assert (row["type"], row["text"], row["app"]) == ("user", "hi", app_id)
 
 
 # --- file attach (Domino datasets) -----------------------------------------------------------

@@ -691,7 +691,13 @@ class Workspace:
         return self.path / ".sage" / "history.jsonl"
 
     def append_history(self, entry: dict, conversation: str | None = None) -> None:
-        """Write one event, stamped with the app and the conversation it belongs to.
+        """Write one event, stamped with the time, the app and the conversation it belongs to.
+
+        `at` says when the turn happened. The Build log is per Built App and a conversation can
+        drive several of them, so its own turns are spread across files that no reader can put in
+        order — and the Chat half is a third file again. Stamped here, in the Thread store's
+        format, every log answers with the same clock. Entries written before this have no stamp
+        and readers fall back rather than requiring one.
 
         `conversation` tags the entry with the Build conversation that produced it, so the UI can
         replay one conversation rather than the app's whole log. `app` is stamped here rather than
@@ -703,7 +709,7 @@ class Workspace:
         per app on purpose), and the stop-button baseline below stays positional and therefore
         stays correct."""
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        row = {**entry, "app": self.app_id}
+        row = {**entry, "app": self.app_id, "at": _now()}
         if conversation:
             row["conversation"] = conversation
         with self.history_path.open("a") as f:

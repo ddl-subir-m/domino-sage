@@ -198,6 +198,13 @@ def test_stopping_a_build_in_one_app_leaves_the_other_apps_transcript_whole(tmp_
 
 # ---- what an entry says ------------------------------------------------------------------------
 
+def _unstamped(rows: list[dict]) -> list[dict]:
+    """Every entry also carries when it was written (#51, covered by test_turn_stamps). These tests
+    are about the references an entry names, so they pin the rest of the row exactly and drop the
+    clock, which no assertion can spell out ahead of time."""
+    return [{k: v for k, v in r.items() if k != "at"} for r in rows]
+
+
 def test_a_log_entry_names_the_app_and_the_conversation_that_produced_it(tmp_path: Path):
     """A Thread can hand off more than once, so `conversation` alone no longer says which app a
     turn built. The entry says it itself rather than leaving it to whichever file it was read from."""
@@ -205,7 +212,7 @@ def test_a_log_entry_names_the_app_and_the_conversation_that_produced_it(tmp_pat
 
     ws.append_history({"type": "user", "text": "add a filter"}, "thr_a")
 
-    assert ws.read_history("thr_a") == [
+    assert _unstamped(ws.read_history("thr_a")) == [
         {"type": "user", "text": "add a filter", "conversation": "thr_a", "app": "app_a"}]
 
 
@@ -216,7 +223,7 @@ def test_an_entry_from_an_unscoped_caller_still_names_its_app(tmp_path: Path):
 
     ws.append_history({"type": "user", "text": "add a filter"})
 
-    assert ws.read_history() == [{"type": "user", "text": "add a filter", "app": "app_a"}]
+    assert _unstamped(ws.read_history()) == [{"type": "user", "text": "add a filter", "app": "app_a"}]
     assert ws.has_untagged_history() is True    # no conversation, so the adoption path still sees it
 
 
