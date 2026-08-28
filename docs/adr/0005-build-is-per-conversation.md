@@ -51,3 +51,13 @@ A Build turn belongs to a conversation.
 > — that cross-conversation memory is the point — still holds, and now holds *within* an app. It
 > also fixes a bug this ADR could not see: the stop-button baseline is a position in the log, so two
 > Sage Builders appending to one file meant one viewer's stop could truncate the other's turns.
+
+> Revised again, in a different place, by
+> [ADR-0009](0009-one-conversation-build-is-a-view.md). Every mechanism this ADR built is kept and
+> is what makes that one possible: the per-Conversation Build session, the `conversation` field on
+> each row, and `?conversation=<id>`. What is revised is where this ADR stopped. It took Chat's
+> shape as the goal — Chat is per Conversation, so Build should be too — and, having made each pane
+> right about its own half, treated the job as done. The goal was one Conversation, not two matching
+> halves, so the read grows from *slice one log* to *merge every log this Conversation touched*, and
+> the pane stops being the boundary of what a person can see. The tag it filters on is the one
+> introduced here, unchanged.
