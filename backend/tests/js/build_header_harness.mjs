@@ -188,6 +188,14 @@ function flatten(node, out = [], depth = 0) {
     }));
   }
   if (props.mode) entry.mode = props.mode;
+  // The strings directly under this element, so an assertion can ask WHICH CONTROL said a word
+  // rather than only whether the screen holds it somewhere. Two things say "Starting preview\u2026"
+  // once the header reports the preview \u2014 the canvas overlay and the header \u2014 and #87's
+  // criterion is about the second one.
+  const direct = (Array.isArray(node.c) ? node.c : [node.c]).filter(
+    (child) => typeof child === 'string' || typeof child === 'number'
+  );
+  if (direct.length) entry.texts = direct.map(String);
   out.push(entry);
 
   if (typeof node.t === 'function' && !SKIP.has(name)) {
@@ -243,6 +251,7 @@ for (const step of steps) {
     // Apps in the Project, none of them named — first paint before the reads land, and wherever
     // the store drops the selection. The header has to hold that state without claiming things.
     if (step.unselected) SW.store.clearApp();
+    if (step.preview) SW.store.set({ previewStatus: step.preview });
     const tree = SW.BuildMode({ conversationId: step.build, appId: selected });
     const nodes = flatten(tree);
     // The effects Build schedules, run so the timer it wants is a fact rather than a reading of
@@ -267,6 +276,8 @@ for (const step of steps) {
       appRails: nodes.filter((n) => n.el === 'AppRail').length,
       composerPlaceholder: composer ? composer.placeholder : null,
       words: words(nodes),
+      parts: nodes.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
+      classes: nodes.map((n) => n.className).filter(Boolean),
       menus: nodes.filter((n) => n.items).map((n) => ({ label: n.label, title: n.title, items: n.items })),
       labels: nodes.filter((n) => n.label).map((n) => n.label),
       titles: nodes.filter((n) => n.title).map((n) => n.title),

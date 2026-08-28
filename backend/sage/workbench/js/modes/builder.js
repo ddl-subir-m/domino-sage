@@ -266,7 +266,7 @@ window.SW = window.SW || {};
   // The Build header. It names the app the preview is showing, and it is where the app is chosen
   // now that the rail lists Conversations in both modes.
   function AppBar({ resumed }) {
-    const { apps, activeApp, touched } = SW.store.get();
+    const { apps, activeApp, touched, previewStatus } = SW.store.get();
 
     const newApp = h(
       Button,
@@ -324,6 +324,20 @@ window.SW = window.SW || {};
       ? (touched || []).filter((t) => t.appId !== activeApp.id)
       : [];
 
+    // What state the app the header names is really in. `Running` is the Gallery's word for a
+    // deployed App and is deliberately not borrowed: a Built App is not deployed, and the Gallery
+    // suppresses the word even on the tiles where it is true — "a card that says Running on every
+    // tile teaches nothing" (`modes/gallery.js:101`). A published App's deployment status is a
+    // different fact about a different object and arrives with publish (#70).
+    //
+    // `idle` says nothing, because it is first paint before the probe has landed and the header
+    // would be inventing the answer it exists to report.
+    const previewWord = {
+      starting: 'Starting preview…',
+      err: 'Preview didn’t start',
+      ok: 'Preview live',
+    }[previewStatus];
+
     return h(
       Fragment,
       null,
@@ -343,6 +357,25 @@ window.SW = window.SW || {};
         ),
       // Qualifies the name rather than the toolbar, so it stays beside the name (#77).
       resumed && h('span', { className: 'sw-caption' }, '· built earlier'),
+      // A build the person walked away from goes on running (#77). The app list already says so
+      // on the row, but that row is behind a click — the app in the preview is the one nobody
+      // should have to open a menu to ask about.
+      activeApp && activeApp.building &&
+        h(
+          'span',
+          { className: 'sw-build-state is-building' },
+          h(LoadingOutlined, { spin: true }),
+          'Building…'
+        ),
+      // Somebody else has pushed to this app (#78). Beside the build state rather than instead
+      // of it, on the row's precedent: the two are about different people and both still hold.
+      // The row says it too, but that row is behind a click.
+      activeApp && activeApp.behind &&
+        h('span', { className: 'sw-build-state is-behind' }, 'Changes to pull'),
+      // The third producer, and the only one that is about the process rather than the app: your
+      // turn can be writing files WHILE the preview restarts to show them, so this is said beside
+      // the two above rather than instead of either.
+      previewWord && h('span', { className: 'sw-build-state' }, previewWord),
       newApp,
       others.length > 0 &&
         h(
@@ -354,6 +387,32 @@ window.SW = window.SW || {};
             `${others.length} other app${others.length === 1 ? '' : 's'} changed here`
           )
         )
+    );
+  }
+
+  // Where the selected app's own Bindings land. Reserved here, not filled here: #85 is parked
+  // until the resource model is settled, and this ticket only guarantees it has somewhere to go,
+  // so answering #85 does not mean reopening the header.
+  //
+  // The reason the layout could not wait is the problem #85 was filed about. The composer's chips
+  // are Session context, which belongs to the Conversation and must not follow the selected app
+  // (#84, `CONTEXT.md:176-177`). Flush against an app-scoped pane with nothing between them, a
+  // Conversation-scoped row reads as the app's — somebody saw `market-data-eod` under a news app
+  // and took it for something that app uses. Two rows, two scopes, and this one says whose it is.
+  function AppScopeRow() {
+    const { activeApp } = SW.store.get();
+    // A row headed by no app is a row about nothing, and a Project with none is the one screen
+    // whose only job is `New app`.
+    if (!activeApp) return null;
+    return h(
+      'div',
+      { className: 'sw-app-scope' },
+      h('span', { className: 'sw-app-scope-label' }, `Resources ${activeApp.name} uses`),
+      h(
+        'span',
+        { className: 'sw-app-scope-empty' },
+        'Not tracked yet — the composer’s chips are this conversation’s, not this app’s.'
+      )
     );
   }
 
@@ -393,17 +452,22 @@ window.SW = window.SW || {};
             onClick: () => SW.store.refreshPreview(),
           })
         ),
+        // It opens the LOCAL preview. Unqualified, it did not say which of the two doors it is,
+        // and it becomes actively misleading the moment `Open app` lands beside it (#89, behind
+        // #70). It names its destination now, before the second door arrives.
         h(
           Tooltip,
-          { title: 'Open in a new tab' },
+          { title: 'Open preview in a new tab' },
           h(Button, {
             size: 'small',
             icon: h(ExportOutlined, null),
-            'aria-label': 'Open preview',
+            'aria-label': 'Open preview in a new tab',
             onClick: () => window.open('./preview/', '_blank'),
           })
         )
       ),
+      // Beneath the row that names the app, because it is about the app that row names.
+      h(AppScopeRow, null),
       h(
         'div',
         { className: 'sw-builder-canvas is-live' },

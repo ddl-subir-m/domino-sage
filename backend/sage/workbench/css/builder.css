@@ -431,6 +431,58 @@
    carries the full list, so an ellipsis here loses nothing. */
 .sw-build-others { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
 
+/* What state the app the header names is in (#87). Captions rather than badges: the app's name is
+   the heaviest thing in this 44px strip, and a filled pill beside it would outrank the thing it
+   qualifies. Only `Building…` takes a colour, and it is the same purple the rail's row uses for
+   the same fact — something of yours is happening here (#77). */
+.sw-build-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--gray-600);
+  white-space: nowrap;
+}
+.sw-build-state.is-building { color: var(--purple-600); font-weight: 600; }
+/* Info blue, not purple, and for the reason the rail's badge is: this one is marked because of
+   what a TEAMMATE did, and the two have to stay tellable apart at a glance (#78). */
+.sw-build-state.is-behind { color: var(--info); font-weight: 600; }
+
+/* The selected app's own Resources — reserved by #87, filled by #85. A second row BENEATH the app
+   identity row, so the header reads name, then what that app uses.
+
+   Deliberately NOT the composer's chip styling. Those chips are Session context, which belongs to
+   the Conversation and does not follow the selected app (#84); this row is the app's. Purple
+   filled tags at the foot of the left column against grey-on-grey text in the header above the
+   preview — nobody should have to work out which of the two scopes a row is in. */
+.sw-app-scope {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s1) var(--s4);
+  background: var(--gray-100);
+  border-bottom: 1px solid var(--gray-300);
+  overflow: hidden;
+}
+.sw-app-scope-label {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--dark-700);
+  white-space: nowrap;
+}
+/* Gives way before the label does: the label says whose row this is, which is the half that has
+   to survive a narrow preview. */
+.sw-app-scope-empty {
+  flex: 0 1 auto;
+  font-size: 11.5px;
+  color: var(--gray-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The canvas is the preview's whole height. Without `flex: 1` it falls back to the
    iframe's intrinsic 150px and the app shows through a letterbox. `position: relative`
    anchors the starting/failed overlay over it. */
