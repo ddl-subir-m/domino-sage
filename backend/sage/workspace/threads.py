@@ -59,6 +59,21 @@ def artifact_kind(name: str) -> str:
     return "file"
 
 
+def handoff_unresolved(row: dict | None) -> bool:
+    """True while a handoff entry is still waiting on the person (docs/workbench/handoff.md §6).
+
+    `suggested` and `planned` are unresolved. `bound` is a step finishing — the app exists, and the
+    Thread is free to hand off again. `suppressed` is the person saying stop, which ends this entry
+    too; what makes that answer permanent is that the entry stays on the record."""
+    if not row:
+        return False
+    status = str(row.get("status") or "")
+    if status:
+        return status in ("suggested", "planned")
+    # Written before entries carried a status: a date is a suggestion that was made.
+    return bool(row.get("suggestedAt"))
+
+
 def _is_live(row: dict | None) -> bool:
     """A Thread record that is readable and not a tombstone. See `ThreadStore.delete`."""
     return row is not None and not row.get("deleted")
@@ -251,37 +266,63 @@ class ThreadStore:
         self._write_json(self.thread_dir(thread_id) / "artifacts.json", {"items": items})
         return row
 
-    def read_handoff(self, thread_id: str) -> dict | None:
+    def read_handoffs(self, thread_id: str) -> list[dict]:
+        """Every handoff this Thread has made, oldest first.
+
+        A list because a Thread may hand off more than once, to a different Built App each time
+        (docs/workbench/handoff.md §6, ADR-0008). A file written before that is one bare object,
+        and it is read as the single entry it always was."""
         p = self.thread_dir(thread_id) / "handoff.json"
         if not p.exists():
-            return None
+            return []
         try:
             data = json.loads(p.read_text())
         except (json.JSONDecodeError, OSError):
-            return None
-        return data if isinstance(data, dict) else None
+            return []
+        if not isinstance(data, dict):
+            return []
+        items = data.get("items")
+        if isinstance(items, list):
+            return [i for i in items if isinstance(i, dict)]
+        return [data] if data else []
+
+    def read_handoff(self, thread_id: str) -> dict | None:
+        """The newest handoff: the one the Chat pane is showing and the sheet is about."""
+        entries = self.read_handoffs(thread_id)
+        return entries[-1] if entries else None
 
     def mark_handoff_suggested(self, thread_id: str) -> dict:
-        row = self.read_handoff(thread_id) or {}
-        if row.get("suggestedAt"):
+        entries = self.read_handoffs(thread_id)
+        row = entries[-1] if entries else None
+        if handoff_unresolved(row):
             return row
-        row = {**row, "suggestedAt": _now(), "suppressed": False, "status": "suggested"}
-        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        row = {"suggestedAt": _now(), "suppressed": False, "status": "suggested"}
+        entries.append(row)
+        self._write_handoffs(thread_id, entries)
         return row
 
     def suppress_handoff(self, thread_id: str) -> dict:
-        row = self.read_handoff(thread_id) or {}
-        if not row.get("suggestedAt"):
-            row["suggestedAt"] = _now()
+        entries = self.read_handoffs(thread_id)
+        row = entries[-1] if entries else None
+        if row is not None and row.get("status") == "suppressed":
+            return row
+        if not handoff_unresolved(row):
+            row = {"suggestedAt": _now()}
+            entries.append(row)
         row["suppressed"] = True
         row["status"] = "suppressed"
-        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        self._write_handoffs(thread_id, entries)
         return row
 
     def mark_handoff_planned(self, thread_id: str, plan_id: str = "") -> dict:
-        row = self.read_handoff(thread_id) or {}
-        if not row.get("suggestedAt"):
-            row["suggestedAt"] = _now()
+        entries = self.read_handoffs(thread_id)
+        row = entries[-1] if entries else None
+        # A finished handoff — bound, or declined — is not the one this plan belongs to. The next
+        # plan is the next handoff and gets its own entry, so neither the app the last one built nor
+        # the answer the person gave is written over.
+        if not handoff_unresolved(row):
+            row = {"suggestedAt": _now()}
+            entries.append(row)
         row["suppressed"] = False
         row["status"] = "planned"
         row["planPath"] = ".sage/plan.md"
@@ -289,15 +330,34 @@ class ThreadStore:
         # reads; this one still resolves after a build has archived that copy.
         if plan_id:
             row["planId"] = plan_id
-        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        self._write_handoffs(thread_id, entries)
         return row
 
-    def mark_handoff_bound(self, thread_id: str) -> dict:
-        row = self.mark_handoff_planned(thread_id)
+    def mark_handoff_bound(self, thread_id: str, app_id: str = "") -> dict:
+        """Confirm the newest handoff, naming the Built App it made.
+
+        Deliberately not `mark_handoff_planned` first: a re-confirm of the same sheet is one
+        handoff, and re-planning a bound entry would open a second one — a second app nobody
+        asked for."""
+        entries = self.read_handoffs(thread_id)
+        row = entries[-1] if entries else None
+        if row is None or row.get("status") == "suppressed":
+            row = {"suggestedAt": _now()}
+            entries.append(row)
+        row["suppressed"] = False
         row["status"] = "bound"
         row["boundAt"] = _now()
-        self._write_json(self.thread_dir(thread_id) / "handoff.json", row)
+        row.setdefault("planPath", ".sage/plan.md")
+        # Each entry carries its own app, because the next handoff from this Thread builds another.
+        if app_id:
+            row["appId"] = app_id
+        self._write_handoffs(thread_id, entries)
         return row
+
+    def _write_handoffs(self, thread_id: str, entries: list[dict]) -> None:
+        # `{"items": [...]}`, the shape `artifacts.json` and `context.json` next to it already use.
+        # The record is the list; the object around it is how this directory holds a list.
+        self._write_json(self.thread_dir(thread_id) / "handoff.json", {"items": entries})
 
     def _thread_dirs(self) -> list[Path]:
         root = self._root / ".sage" / "threads"

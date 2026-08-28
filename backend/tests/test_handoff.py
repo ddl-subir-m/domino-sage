@@ -161,13 +161,24 @@ def test_analysis_is_not_an_explicit_build_request(prompt):
     assert handoff.looks_like_build_request(prompt) is False
 
 
-def test_should_classify_only_when_handoff_is_absent():
+def test_should_classify_only_while_the_newest_handoff_is_unresolved():
     assert handoff.should_classify(None) is True
-    assert handoff.should_classify({}) is True
-    assert handoff.should_classify({"suggestedAt": "2026-08-25T18:20:00Z"}) is False
-    assert handoff.should_classify({"suppressed": True}) is False
-    assert handoff.should_classify({"status": "suggested"}) is False
-    assert handoff.should_classify({"status": "bound"}) is False
+    assert handoff.should_classify([]) is True
+    assert handoff.should_classify([{"suggestedAt": "2026-08-25T18:20:00Z"}]) is False
+    assert handoff.should_classify([{"suppressed": True}]) is False
+    assert handoff.should_classify([{"status": "suggested"}]) is False
+    assert handoff.should_classify([{"status": "planned"}]) is False
+
+
+def test_a_bound_thread_is_eligible_again_and_a_declined_one_never_is():
+    """Handoff spec §8, criterion 10. A conversation that built an app may drift toward another —
+    `bound` is a step finishing. `Not now` is the person saying stop, and that answer stands however
+    many handoffs come after it."""
+    assert handoff.should_classify([{"status": "bound"}]) is True
+    assert handoff.should_classify([{"status": "bound"}, {"status": "suggested"}]) is False
+    assert handoff.should_classify([{"status": "bound"}, {"status": "bound"}]) is True
+    assert handoff.should_classify([{"status": "suppressed"}]) is False
+    assert handoff.should_classify([{"status": "suppressed"}, {"status": "bound"}]) is False
 
 
 def test_digest_is_one_paragraph_with_names_not_bytes():
@@ -296,8 +307,8 @@ def test_binding_from_context_only_for_resources():
 
 
 def test_binding_a_handoff_keeps_the_plan_document_it_drafted(tmp_path):
-    """`mark_handoff_bound` re-runs `mark_handoff_planned` without the id, so the id has to survive
-    on the row rather than be re-supplied. Losing it would leave the Thread pointing at nothing."""
+    """`mark_handoff_bound` is told the app, not the plan, so the plan id has to survive on the
+    entry rather than be re-supplied. Losing it would leave the Thread pointing at nothing."""
     from sage.workspace.threads import ThreadStore
 
     store = ThreadStore(tmp_path)

@@ -355,8 +355,13 @@ window.SW = window.SW || {};
     };
     const hideSuggest = handoff && (handoff.suppressed || handoff.status === 'suppressed'
       || handoff.status === 'bound' || handoff.status === 'planned');
+    // Only the newest offer is live. A Thread may hand off more than once (ADR-0008), so the
+    // history holds one suggest event per handoff and the older ones were answered long ago —
+    // replaying them puts a dead callout back in the middle of the conversation.
+    const liveSuggest = (history || []).reduce(
+      (last, ev, i) => (ev.type === 'handoff-suggest' ? i : last), -1);
     const shownArts = new Set();
-    for (const ev of history || []) {
+    for (const [i, ev] of (history || []).entries()) {
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
@@ -390,7 +395,7 @@ window.SW = window.SW || {};
           ok: false,
           value: ev.message || (ev.type === 'stopped' ? 'Stopped.' : 'The turn failed.'),
         });
-      } else if (ev.type === 'handoff-suggest' && !hideSuggest) {
+      } else if (ev.type === 'handoff-suggest' && !hideSuggest && i === liveSuggest) {
         assistant = null;
         messages.push({
           id: `sug_${messages.length}`,

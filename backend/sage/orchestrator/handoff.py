@@ -16,6 +16,7 @@ from pathlib import Path
 from ..gateway.client import CostLabels, GatewayClient
 from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
 from ..router.models import ModelCatalog
+from ..workspace.threads import handoff_unresolved
 from .scope import _extract, _model_for
 
 log = logging.getLogger(__name__)
@@ -103,13 +104,17 @@ def looks_like_build_request(prompt: str) -> bool:
     return bool(_EXPLICIT_BUILD.search(prompt or ""))
 
 
-def should_classify(handoff: dict | None) -> bool:
-    """False once this Thread has been suggested or suppressed. Classifier runs at most once."""
-    if not handoff:
-        return True
-    if handoff.get("suggestedAt") or handoff.get("suppressed"):
+def should_classify(entries: list[dict] | None) -> bool:
+    """False while this Thread's newest handoff is unresolved, and forever once one was declined.
+
+    Not once per Thread: a Thread that already produced a Built App may produce another (ADR-0008),
+    so `bound` opens it to a fresh suggestion about a different app. `Not now` is the one permanent
+    answer — the person saying stop, rather than a step finishing (handoff spec §8, criterion 10).
+    """
+    rows = [r for r in (entries or []) if isinstance(r, dict)]
+    if any(r.get("suppressed") or r.get("status") == "suppressed" for r in rows):
         return False
-    return handoff.get("status") not in ("suggested", "suppressed", "planned", "bound")
+    return not handoff_unresolved(rows[-1] if rows else None)
 
 
 def _payload(title: str, user: str, assistant: str) -> str:

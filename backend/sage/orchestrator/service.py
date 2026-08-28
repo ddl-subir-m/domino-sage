@@ -2624,15 +2624,18 @@ class Orchestrator:
         row = store.get(thread_id)
         if row is None:
             raise KeyError(thread_id)
+        handoffs = store.read_handoffs(thread_id)
         return {
             **row,
             "history": store.read_history(thread_id),
             "context": store.read_context(thread_id),
             "artifacts": store.read_artifacts(thread_id),
-            "handoff": store.read_handoff(thread_id),
+            "handoff": handoffs[-1] if handoffs else None,
             # Lifted out of the handoff row so the Thread carries its plan document the way an App
-            # does, which is where the Workbench looks for it.
-            "planId": (store.read_handoff(thread_id) or {}).get("planId", ""),
+            # does, which is where the Workbench looks for it. The newest plan on the record rather
+            # than the newest entry's: a fresh suggestion has no plan yet, and a Thread that just
+            # got one must not lose the plan card for the app it already built.
+            "planId": next((str(e["planId"]) for e in reversed(handoffs) if e.get("planId")), ""),
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
@@ -2895,11 +2898,11 @@ class Orchestrator:
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
         """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
 
-        Silent once this Thread has been suggested or suppressed — someone who chose to stay in Chat
-        keeps asking in Chat.
+        Silent while this Thread's newest handoff is unresolved, and for good once one was
+        declined — someone who chose to stay in Chat keeps asking in Chat.
         """
         try:
-            if not chat_handoff.should_classify(store.read_handoff(thread_id)):
+            if not chat_handoff.should_classify(store.read_handoffs(thread_id)):
                 return None
             if not chat_handoff.looks_like_build_request(prompt):
                 return None
@@ -2916,7 +2919,7 @@ class Orchestrator:
             explicit = self._explicit_handoff(store, thread_id, prompt)
             if explicit:
                 return explicit
-            if not chat_handoff.should_classify(store.read_handoff(thread_id)):
+            if not chat_handoff.should_classify(store.read_handoffs(thread_id)):
                 return None
             thread = store.get(thread_id) or {}
             hit = chat_handoff.wants_an_app(
@@ -3117,7 +3120,7 @@ class Orchestrator:
             title = chat_handoff.plan_title(plan_md)
             project.record.set_display_name(title)
             project.record.mark_untitled(False)
-        handoff = store.mark_handoff_bound(thread_id)
+        handoff = store.mark_handoff_bound(thread_id, project.workspace.app_id)
         # A plan is drafted in a Thread, before the app exists, so it cannot be born inside one —
         # it stays with the Project and gains its app reference here, at the moment it binds
         # (ADR-0008). This is what lets the plan page offer "Open in Builder" instead of "Build this".
@@ -3147,7 +3150,9 @@ class Orchestrator:
         """
         plan_id = str((handoff_row or {}).get("planId") or "")
         doc = project.record.read_plan_doc(plan_id) if plan_id else None
-        bound = str((doc or {}).get("appId") or "")
+        # The entry names its own app from the moment it binds. The plan document is stamped at that
+        # same moment and answers for entries written before the record became a list.
+        bound = str((handoff_row or {}).get("appId") or (doc or {}).get("appId") or "")
         if bound and bound in self._wm.app_ids():
             self._wm.select(bound)
             return self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))

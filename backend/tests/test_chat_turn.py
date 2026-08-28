@@ -723,6 +723,34 @@ def test_app_shaped_turn_suggests_handoff_once(tmp_path: Path):
     assert orch.get_thread(tid)["handoff"]["suggestedAt"] == row["suggestedAt"]
 
 
+def test_a_bound_thread_is_offered_a_second_handoff(tmp_path: Path):
+    """Handoff spec §8, criterion 10. The conversation that produced an app keeps going, and what
+    it asks for next may be another app — the record is a list, so the entry that bound does not
+    close the Thread to a second suggestion (#72)."""
+    gw = ScriptedGateway("APP")
+    orch, _oc = _orch(tmp_path, [
+        Turn(text="A dashboard, then."),
+        Turn(text=_PLAN),
+        Turn(text="A report, then."),
+    ], gateway=gw)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, {"resources": False, "artifacts": False, "transcript": False})
+    assert orch.get_thread(tid)["handoff"]["status"] == "bound"
+
+    later = list(orch.chat_stream(tid, "we also need a daily P&L report for the desk heads"))
+
+    assert any(e.get("type") == "handoff-suggest" for e in later)
+    thread = orch.get_thread(tid)
+    assert thread["handoff"]["status"] == "suggested"
+    assert thread["handoff"]["suppressed"] is False
+    # The offer is about a second app, so it has no plan yet — and the Thread still carries the
+    # plan document of the app it already built.
+    assert "planId" not in thread["handoff"]
+    assert thread["planId"] == "001"
+
+
 def test_explicit_build_request_skips_classifier(tmp_path: Path):
     gw = ScriptedGateway("CHAT")
     orch, _ = _orch(tmp_path, [Turn(text="Ok.")], gateway=gw)

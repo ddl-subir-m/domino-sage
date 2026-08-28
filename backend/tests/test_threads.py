@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from sage.workspace.threads import (
@@ -175,6 +176,69 @@ def test_handoff_suggested_once_and_suppress(tmp_path: Path):
     assert suppressed["suppressed"] is True
     assert suppressed["status"] == "suppressed"
     assert suppressed["suggestedAt"] == first["suggestedAt"]
+
+
+def test_a_thread_hands_off_more_than_once(tmp_path: Path):
+    """One entry per handoff, each carrying its own plan and its own Built App (#72, ADR-0008).
+
+    A Thread that already produced an app may produce another, and the second must not write over
+    the first: which app the first handoff built is the only record of where its plan went."""
+    store = ThreadStore(tmp_path)
+    tid = store.create()["id"]
+    store.mark_handoff_suggested(tid)
+    store.mark_handoff_planned(tid, "001")
+    store.mark_handoff_bound(tid, "app_one")
+
+    store.mark_handoff_suggested(tid)
+    assert [e["status"] for e in store.read_handoffs(tid)] == ["bound", "suggested"]
+    assert store.read_handoff(tid)["status"] == "suggested"
+
+    store.mark_handoff_planned(tid, "002")
+    store.mark_handoff_bound(tid, "app_two")
+    assert [(e["planId"], e["appId"]) for e in store.read_handoffs(tid)] == [
+        ("001", "app_one"), ("002", "app_two")]
+
+
+def test_confirming_one_handoff_twice_binds_the_same_entry(tmp_path: Path):
+    """The same sheet confirmed twice is one handoff. The second confirm re-stamps the entry it
+    already bound rather than opening a second one that would mint a second app."""
+    store = ThreadStore(tmp_path)
+    tid = store.create()["id"]
+    store.mark_handoff_planned(tid, "001")
+    store.mark_handoff_bound(tid, "app_one")
+    store.mark_handoff_bound(tid, "app_one")
+
+    assert [e["appId"] for e in store.read_handoffs(tid)] == ["app_one"]
+    assert store.read_handoff(tid)["planId"] == "001"
+
+
+def test_a_declined_handoff_stays_on_the_record(tmp_path: Path):
+    """`Not now` is the person saying stop, so it is permanent — and pressing it twice is still one
+    answer. Drafting a plan from the overflow menu afterwards is still allowed, and it opens a new
+    entry rather than erasing the answer the person gave."""
+    store = ThreadStore(tmp_path)
+    tid = store.create()["id"]
+    store.mark_handoff_suggested(tid)
+    store.suppress_handoff(tid)
+    store.suppress_handoff(tid)
+    assert [e["status"] for e in store.read_handoffs(tid)] == ["suppressed"]
+
+    store.mark_handoff_planned(tid, "001")
+    assert [e["status"] for e in store.read_handoffs(tid)] == ["suppressed", "planned"]
+
+
+def test_a_handoff_written_before_the_record_was_a_list_reads_as_one_entry(tmp_path: Path):
+    """Threads on disk carry a bare object. It is that Thread's one handoff, and binding it has to
+    land on it rather than beside it."""
+    store = ThreadStore(tmp_path)
+    tid = store.create()["id"]
+    (store.thread_dir(tid) / "handoff.json").write_text(json.dumps(
+        {"suggestedAt": "2026-08-25T18:20:00Z", "suppressed": False,
+         "status": "planned", "planId": "001"}))
+
+    assert [e["planId"] for e in store.read_handoffs(tid)] == ["001"]
+    store.mark_handoff_bound(tid, "app_one")
+    assert [(e["status"], e["appId"]) for e in store.read_handoffs(tid)] == [("bound", "app_one")]
 
 
 def test_an_attached_dataset_file_is_readable_from_the_chat_workdir(tmp_path: Path):

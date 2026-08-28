@@ -18,6 +18,7 @@ import pytest
 from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
+from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
 
@@ -112,6 +113,36 @@ def test_a_second_confirmed_handoff_leaves_two_built_apps_side_by_side(tmp_path:
         app = root / "apps" / app_id
         assert (app / "package.json").read_text() == '{"name": "template"}'
         assert (app / ".sage" / "plan.md").read_text().startswith(title)
+
+
+def test_one_conversation_that_hands_off_twice_leaves_two_built_apps(tmp_path: Path):
+    """The second Built App does not need a second conversation (#72). A Thread's handoff record is
+    a list, so the second handoff writes its own plan into its own app and the first one's plan
+    stays where the first app can still read it."""
+    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_DESK),
+                                       Turn(text="A report, then."), Turn(text=_PNL)],
+                            verdict="APP")
+    include = {"resources": False, "artifacts": False, "transcript": False}
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "put the desk exposure on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, include)
+    first = orch.project(start_preview=False).workspace.app_id
+
+    list(orch.chat_stream(tid, "we also need a daily P&L report for the desk heads"))
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, include)
+    second = orch.project(start_preview=False).workspace.app_id
+
+    assert first != second
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
+    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith(
+        "A desk exposure dashboard.")
+    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith(
+        "A daily P&L report.")
+    # And each entry says which app it built, so neither handoff is anonymous afterwards.
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    assert [e["appId"] for e in store.read_handoffs(tid)] == [first, second]
 
 
 def test_confirming_the_same_handoff_twice_reopens_its_app_rather_than_minting_a_twin(
