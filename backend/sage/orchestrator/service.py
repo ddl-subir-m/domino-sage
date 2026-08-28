@@ -3471,6 +3471,83 @@ class Orchestrator:
         finally:
             self._turn_lock.release()
 
+    def recross_handoff(self, thread_id: str, include: dict | None = None,
+                        plan_id: str = "") -> dict:
+        """Redo a confirmed handoff's crossing with different answers (#60).
+
+        Deliberately NOT a second confirm. Confirming writes the plan card, and that card is the
+        handoff's one receipt — running the confirm again would hang a second card off the same
+        crossing, which is the thing the card exists to avoid. So this rewrites what crosses,
+        leaves the plan and the app alone, and appends a row the card folds onto the receipt it
+        already has.
+
+        The target is not a parameter and never becomes one: which Built App a handoff lands in is
+        decided once, on the sheet, per handoff (ADR-0008). `plan_id` is not a target — it names
+        WHICH of this Conversation's handoffs the card belongs to, and one Conversation may have
+        made several, into several apps. Without it the newest would answer for all of them, and
+        pressing Change on the first card would rewrite the second app's crossing.
+        """
+        if not self._turn_lock.acquire(blocking=False):
+            raise RuntimeError("busy")
+        try:
+            # `_app_lock` for the same reason confirming takes it: this selects an app and then
+            # writes into the one it selected.
+            with self._app_lock:
+                return self._recross_handoff(thread_id, include or {}, plan_id)
+        finally:
+            self._turn_lock.release()
+
+    def _recross_handoff(self, thread_id: str, include: dict, plan_id: str) -> dict:
+        chat = self._chat_project()
+        store = ThreadStore(chat.record.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        bound = [r for r in store.read_handoffs(thread_id) if r.get("status") == "bound"]
+        if plan_id:
+            bound = [r for r in bound if str(r.get("planId") or "") == plan_id]
+        if not bound:
+            raise ValueError("no crossing")
+        handoff_row = bound[-1]
+        app_id = str(handoff_row.get("appId") or "")
+        if not app_id or app_id not in self._wm.app_ids():
+            raise ValueError("unknown app")
+        self._wm.select(app_id)
+        project = self._bind_app(chat, self._wm.ensure(self._project_id, seed_app=True))
+        crossed = self._write_crossing(project, store, thread_id, include)
+        # Only what crossed. Where it went rides on the row the confirm wrote and is merged back on
+        # by the reader, so a Change can never quietly re-answer the question it does not ask.
+        project.workspace.append_history(
+            {"type": "handoff-recrossed", "planId": str(handoff_row.get("planId") or ""),
+             "crossed": crossed}, thread_id)
+        self._flush_chat_save("handoff", holding_turn=True)
+        return {"ok": True, "threadId": thread_id, "appId": app_id,
+                "planId": str(handoff_row.get("planId") or ""), "crossed": crossed}
+
+    def cancel_plan(self, conversation: str = "", plan_id: str = "") -> dict:
+        """Archive the plan awaiting approval. Idempotent: with no live plan this does nothing.
+
+        `conversation` is the Conversation whose card pressed it, and it is what makes Undo
+        readable after a reload (#60): the card is rebuilt from the transcript, so a cancel that
+        left no row there would say nothing the next time the person opened it. Recorded only when
+        a plan was actually archived, so pressing twice leaves one row rather than two — and the
+        gate's own plan card, which names no Conversation, archives exactly as it always did.
+
+        `plan_id` is the document the card is showing, and a card that names one it is no longer
+        holding cancels nothing. A tab left open on a plan another Conversation has since
+        superseded (#59) still draws it as pending, and without this that Undo would archive the
+        NEWER plan — dismissing a plan the person never looked at, on behalf of a card that was
+        already out of date.
+        """
+        workspace = self.project().workspace
+        live_doc_id = workspace.live_plan_doc_id()
+        if plan_id and plan_id != live_doc_id:
+            return {"cancelled": True, "archived": False}
+        archived = workspace.archive_plan(cancelled=True)
+        if archived is not None and conversation:
+            workspace.append_history(
+                {"type": "plan-cancelled", "planId": plan_id or live_doc_id}, conversation)
+        return {"cancelled": True, "archived": archived is not None}
+
     def _handoff_sheet_payload(self, store: ThreadStore, thread_id: str, project: Project,
                                plan_md: str, handoff: dict) -> dict:
         thread = store.get(thread_id) or {}
@@ -3597,6 +3674,10 @@ class Orchestrator:
         chosen = str(target.get("appId") or "").strip()
         if chosen and chosen not in self._wm.app_ids():
             raise ValueError("unknown app")
+        # Read before the app is opened, because opening is where one is born. "New or one you
+        # already had" is a fact the card reports (#60), and afterwards there is nothing left to
+        # tell the two apart — a minted app and a reselected one look identical on disk.
+        existing_before = set(self._wm.app_ids())
         # The app: the one the sheet named, or a directory named for a newly minted id.
         project = self._open_app(chat, handoff_row, chosen)
         # The builder's own copies, which only have somewhere to live now. `plan.md` is the one-shot
@@ -3606,11 +3687,51 @@ class Orchestrator:
         self._supersede_live_plan(project, project.workspace,
                                   str(handoff_row.get("planId") or ""), thread_id)
         project.workspace.write_plan(plan_md, str(handoff_row.get("planId") or ""))
+        # The crossing happens before the card is written, because the card carries the receipt for
+        # it (#60). One row, not two: a second row is a second card, and only one card appears for
+        # a handoff.
+        crossed = self._write_crossing(project, store, thread_id, include)
+        crossed.update({
+            "conversation": thread_id,
+            "appId": project.workspace.app_id,
+            "appName": project.workspace.display_name(),
+            "newApp": project.workspace.app_id not in existing_before,
+        })
         project.workspace.append_history(
             {"type": "plan-proposed", "plan": plan_md, "kind": "plan",
-             "planId": str(handoff_row.get("planId") or ""), "steps": 0}, thread_id)
+             "planId": str(handoff_row.get("planId") or ""), "steps": 0,
+             "crossed": crossed}, thread_id)
         project.workspace.append_history(
             {"type": "done", "ok": True, "decision": "awaiting approval"}, thread_id)
+        handoff = store.mark_handoff_bound(thread_id, project.workspace.app_id)
+        # A plan is drafted in a Thread, before the app exists, so it cannot be born inside one —
+        # it stays with the Project and gains its app reference here, at the moment it binds
+        # (ADR-0008). This is what lets the plan page offer "Open in Builder" instead of "Build this".
+        plan_id = str((handoff or {}).get("planId") or "")
+        if plan_id:
+            project.record.patch_plan_doc_meta(plan_id, appId=project.workspace.app_id)
+        self._flush_chat_save("handoff", holding_turn=True)
+        return {
+            "ok": True,
+            "threadId": thread_id,
+            "handoff": handoff,
+            "untitled": project.record.is_untitled(),
+            "title": chat_handoff.plan_title(plan_md),
+        }
+
+    def _write_crossing(self, project: Project, store: ThreadStore, thread_id: str,
+                        include: dict) -> dict:
+        """Write what this Conversation carries into a Built App, and report what went.
+
+        Two doors call it: the confirm that makes the crossing, and Change on the plan card, which
+        redoes it with different answers (#60). The receipt it returns is what that card reads, so
+        it names real files and real rows rather than repeating the answers it was handed — a
+        handoff nobody can inspect is the magic docs/workbench/handoff.md §1 forbids.
+
+        What it does NOT touch is the plan and the app. The plan is not one of the answers (a
+        handoff without one is not this flow), and the target is a per-handoff decision the sheet
+        asks every time (ADR-0008).
+        """
         include_resources = include.get("resources", True)
         include_artifacts = include.get("artifacts", True)
         include_transcript = include.get("transcript", False)
@@ -3641,20 +3762,29 @@ class Orchestrator:
                 if binding is not None:
                     self._bind_from_handoff(binding)
                 self._promote_chat_file(item)
-        handoff = store.mark_handoff_bound(thread_id, project.workspace.app_id)
-        # A plan is drafted in a Thread, before the app exists, so it cannot be born inside one —
-        # it stays with the Project and gains its app reference here, at the moment it binds
-        # (ADR-0008). This is what lets the plan page offer "Open in Builder" instead of "Build this".
-        plan_id = str((handoff or {}).get("planId") or "")
-        if plan_id:
-            project.record.patch_plan_doc_meta(plan_id, appId=project.workspace.app_id)
-        self._flush_chat_save("handoff", holding_turn=True)
+        charts = [{"title": str(a.get("title") or a.get("name") or ""),
+                   "path": str(a.get("path") or "")}
+                  for a in artifacts] if include_artifacts else []
+        # The same list the sheet showed before confirming: where to go and look. Bindings are
+        # named whenever the file is there rather than only when this crossing added a row —
+        # turning Resources off does not withdraw a Binding already made (the sheet says so), and
+        # a receipt that stopped naming the file would read as an app connected to nothing while
+        # it goes on reading those Resources.
+        files = [
+            ".sage/plan.md",
+            ".sage/handoff.md",
+            include_artifacts and charts and f"examples/{thread_id}/",
+            (project.workspace.path / ".sage" / "bindings.json").is_file()
+            and ".sage/bindings.json",
+            include_transcript and ".sage/handoff-transcript.md",
+        ]
         return {
-            "ok": True,
-            "threadId": thread_id,
-            "handoff": handoff,
-            "untitled": project.record.is_untitled(),
-            "title": chat_handoff.plan_title(plan_md),
+            "resources": include_resources,
+            "artifacts": include_artifacts,
+            "transcript": include_transcript,
+            "charts": charts,
+            "context": [str(i.get("name") or "") for i in context] if include_resources else [],
+            "files": [f for f in files if f],
         }
 
     def _open_app(self, project: Project, handoff_row: dict, chosen: str) -> Project:

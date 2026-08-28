@@ -234,10 +234,99 @@ window.SW = window.SW || {};
       : 'Another conversation planned this Built App again.';
   }
 
+  // "the plan, 2 charts and 1 thing this conversation had in context" — what a handoff carried,
+  // in the order the sheet used to ask about it. The plan is unconditional because a handoff
+  // without one is not this flow; everything after it is the viewer's saved answer (#58).
+  function carried(crossed) {
+    const charts = (crossed.charts || []).length;
+    const context = (crossed.context || []).length;
+    const parts = ['the plan'];
+    if (charts) parts.push(`${charts} ${charts === 1 ? 'chart' : 'charts'}`);
+    if (context) parts.push(`${context} ${context === 1 ? 'thing' : 'things'} this conversation `
+                            + 'had in context');
+    if (crossed.transcript) parts.push('the full transcript');
+    if (parts.length === 1) return 'the plan, and nothing else';
+    return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  }
+
+  // The receipt for a handoff (#60). #58 took the four questions off the sheet, so nobody watches
+  // the crossing happen any more — and everything that crosses is written to the Project as a real
+  // file precisely so it CAN be inspected. This is where a person is told which files those were.
+  //
+  // It extends the card the handoff already ends on rather than adding a block beside it: one
+  // handoff, one card. What the app is called and whether it was new come off the row the confirm
+  // wrote; a later Change replaces what crossed and leaves those alone (ADR-0008).
+  //
+  // Markup, not a component: the expanded/collapsed answer belongs to the card, which is the thing
+  // that survives a re-render, the same way the superseded lines below are the card's own.
+  function crossingReceipt({ crossed, open, onToggle }) {
+    const named = crossed.appName || crossed.appId || 'the Built App';
+    return h(
+      'div',
+      { className: 'sw-crossing' },
+      h(
+        'div',
+        { className: 'sw-crossing-line' },
+        'The plan crossed into ',
+        h('strong', null, `“${named}”`),
+        crossed.newApp ? ' — a new Built App.' : ' — a Built App you already had.',
+        ' It carried ',
+        carried(crossed),
+        '.'
+      ),
+      h(
+        Button,
+        { type: 'link', size: 'small', className: 'sw-crossing-toggle', onClick: onToggle },
+        open ? 'Hide what crossed' : 'What crossed'
+      ),
+      open &&
+        h(
+          'div',
+          { className: 'sw-crossing-detail' },
+          (crossed.charts || []).length > 0 &&
+            h(
+              'div',
+              { className: 'sw-crossing-group' },
+              h('div', { className: 'sw-field-label' }, 'Charts'),
+              (crossed.charts || []).map((chart) =>
+                h(
+                  'div',
+                  { key: chart.path || chart.title, className: 'sw-crossing-item' },
+                  chart.title || chart.path,
+                  chart.path && h('code', null, chart.path)
+                )
+              )
+            ),
+          (crossed.context || []).length > 0 &&
+            h(
+              'div',
+              { className: 'sw-crossing-group' },
+              h('div', { className: 'sw-field-label' }, 'In context'),
+              (crossed.context || []).map((name) =>
+                h('div', { key: name, className: 'sw-crossing-item' }, name)
+              )
+            ),
+          (crossed.files || []).length > 0 &&
+            h(
+              'div',
+              { className: 'sw-crossing-group' },
+              // Not "written into the app": `examples/` is the Project's, and the point of naming
+              // paths at all is that a person can go and open exactly what is named.
+              h('div', { className: 'sw-field-label' }, 'Files written to the project'),
+              (crossed.files || []).map((file) =>
+                h('div', { key: file, className: 'sw-crossing-item' }, h('code', null, file))
+              )
+            )
+        )
+    );
+  }
+
   function BuildPlanCard({ block }) {
     const { buildRunning } = SW.store.get();
     const [answers, setAnswers] = useState('');
     const [editing, setEditing] = useState(false);
+    const [showCrossing, setShowCrossing] = useState(false);
+    const [changing, setChanging] = useState(false);
     // An edit belongs to the plan it was typed against. This card is keyed by its message id and
     // that id counts messages (`bp_<n>`), so a rebuilt history can hand one instance a different
     // plan — and a draft seeded once by `useState` would leave the card drawing the plan it first
@@ -255,6 +344,9 @@ window.SW = window.SW || {};
     // nothing before, so it went on offering "Approve & build" for a plan the app no longer held.
     // Nothing was deleted, so what it owes the person is the fact and a way back in.
     const superseded = block.superseded;
+    // Only a plan that arrived through a handoff has a crossing to report. A plan the Build gate
+    // wrote crossed nothing, so it keeps the card it always had.
+    const crossed = block.crossed;
 
     return h(
       'div',
@@ -280,6 +372,30 @@ window.SW = window.SW || {};
         // rendering the original showed a person their own edits vanishing. `approveBuild` was
         // sending `draft` all along — only the screen disagreed.
         : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(draft)),
+      crossed &&
+        crossingReceipt({
+          crossed,
+          open: showCrossing,
+          onToggle: () => setShowCrossing(!showCrossing),
+        }),
+      // What Undo did NOT do. Removing the Built App is a deliberate action of its own, never a
+      // side effect of deciding not to build — so an app this handoff minted is still there, and
+      // saying nothing would leave the person hunting for it.
+      crossed &&
+        block.cancelled &&
+        h(
+          'div',
+          { className: 'sw-caption', style: { marginTop: 8 } },
+          `“${crossed.appName || crossed.appId}” stays, along with everything that crossed into `
+          + 'it. The plan is archived, not deleted.'
+        ),
+      crossed &&
+        h(SW.CrossingSheet, {
+          crossed,
+          planId: block.planId,
+          open: changing,
+          onClose: () => setChanging(false),
+        }),
       superseded &&
         h(
           'div',
@@ -345,10 +461,22 @@ window.SW = window.SW || {};
               { size: 'small', onClick: () => SW.store.openPlanArtifact(block.planId) },
               'Open plan'
             ),
+          // Change belongs to the crossing, not to the plan, so it sits after the plan's own
+          // controls (#60). It redoes what crosses and nothing else: the app was chosen once, on
+          // the sheet, and stays chosen (ADR-0008).
+          crossed &&
+            h(
+              Button,
+              { size: 'small', onClick: () => setChanging(true) },
+              'Change what crosses'
+            ),
           h(
             Button,
-            { type: 'text', size: 'small', onClick: () => SW.store.cancelBuildPlan() },
-            block.kind === 'architecture' ? 'Dismiss' : 'Cancel'
+            { type: 'text', size: 'small', onClick: () => SW.store.cancelBuildPlan(block.planId) },
+            // Same button, same path: Undo IS the cancel. A handoff gets the word that says what
+            // it undoes — "I am not building this" — and a Cancel beside it would be this button
+            // twice.
+            crossed ? 'Undo' : (block.kind === 'architecture' ? 'Dismiss' : 'Cancel')
           )
         )
     );

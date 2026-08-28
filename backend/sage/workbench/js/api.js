@@ -423,6 +423,11 @@ SW.api = {
   flushChat: () => post('/threads/save', {}),
   draftHandoffPlan: (id) => post(`/threads/${id}/handoff/plan`, {}),
   confirmHandoff: (id, include, target) => post(`/threads/${id}/handoff/confirm`, { include, target }),
+  // Change on the plan card: the same crossing, different answers (#60). No `target` — which
+  // Built App a handoff lands in is decided once, on the sheet (ADR-0008). `planId` says which
+  // of this Conversation's handoffs the card belongs to, since it may have made several.
+  recrossHandoff: (id, include, planId) =>
+    post(`/threads/${id}/handoff/recross`, { include, planId: planId || '' }),
   patchThread: (id, body) => patch(`/threads/${id}`, body),
   touchApp: async () => ({ touched: [] }),
   deleteThread: (id) => del(`/threads/${id}`),
@@ -488,7 +493,9 @@ SW.api = {
   setBuildMode: (mode) => post('/project/model', { mode }),
   setChatModel: (chat_model, reasoning_effort) =>
     post('/project/model', { chat_model: chat_model || null, reasoning_effort: reasoning_effort || null }),
-  cancelPlan: () => post('/project/plan/cancel'),
+  // The Conversation is optional and is what makes Undo on a handoff card readable after a
+  // reload (#60): the card is rebuilt from the transcript, so the cancel has to leave a row there.
+  cancelPlan: (body) => post('/project/plan/cancel', body || {}),
   stopBuild: () => post('/project/build/stop'),
   // Puts the SELECTED app's code back to the starter template (#36, narrowed to one Built App in
   // #75). Attachments, Resources, the transcript and every other app survive it — see

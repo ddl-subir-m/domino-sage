@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Modal, Radio, Space, Input, Select, Alert, Button } = antd;
+  const { Modal, Radio, Space, Input, Select, Alert, Button, Checkbox } = antd;
   const { FileTextOutlined } = icons;
 
   // The date on an app row. A Project holds many Built Apps and two dashboards read the same in a
@@ -155,6 +155,112 @@ window.SW = window.SW || {};
             { className: 'sw-caption', style: { marginTop: 6 } },
             `Everything is a real file. ${SW.brand.assistant()} reads them in Builder, and so can you. `,
             'What crosses is yours to change in Account settings.'
+          )
+        )
+      )
+    );
+  };
+
+  // The three answers #58 moved into preferences, asked once about a crossing that already
+  // happened — Change, on the plan card (#60). Same wording as Account settings, because they are
+  // the same three answers and a person who has seen one should recognise the other.
+  //
+  // There is no Built App in it, and there will not be one. Which app a handoff lands in is a
+  // per-handoff decision the sheet above asks every time and never remembers (ADR-0008), so this
+  // neither re-targets nor offers to remember a target. What it does offer is keeping THESE
+  // answers, which is the one thing about a crossing that is a standing preference.
+  SW.CrossingSheet = function CrossingSheet({ crossed, planId, open, onClose }) {
+    // Seeded from what actually crossed rather than from the preferences, because the person is
+    // changing this crossing: a preference edited in another tab since would otherwise show up
+    // here as an answer they never gave.
+    const [edited, setEdited] = useState(null);
+    const [remember, setRemember] = useState(false);
+    const [busy, setBusy] = useState(false);
+
+    if (!open) return null;
+
+    const answers = edited || {
+      resources: !!(crossed || {}).resources,
+      artifacts: !!(crossed || {}).artifacts,
+      transcript: !!(crossed || {}).transcript,
+    };
+    const carry = (name) => (e) => setEdited({ ...answers, [name]: e.target.checked });
+
+    // The card stays mounted, so an abandoned edit would still be sitting here the next time this
+    // opens — claiming to show what crossed while showing an answer nobody gave.
+    const close = () => {
+      setEdited(null);
+      setRemember(false);
+      onClose();
+    };
+
+    const go = async () => {
+      setBusy(true);
+      try {
+        await SW.store.recrossHandoff(answers, planId);
+        if (remember) {
+          SW.prefs.set('handoffResources', answers.resources);
+          SW.prefs.set('handoffArtifacts', answers.artifacts);
+          SW.prefs.set('handoffTranscript', answers.transcript);
+        }
+        close();
+      } catch (err) {
+        antd.message.error(String((err && err.message) || err));
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    return h(
+      Modal,
+      {
+        open: true,
+        onCancel: close,
+        title: 'Change what crosses',
+        width: 460,
+        okText: busy ? 'Redoing…' : 'Redo the crossing',
+        confirmLoading: busy,
+        onOk: go,
+      },
+      h(
+        'div',
+        { className: 'sw-handoff' },
+        h(
+          Space,
+          { direction: 'vertical', size: 8, role: 'group', 'aria-label': 'What crosses' },
+          h(
+            Checkbox,
+            { name: 'resources', checked: answers.resources, onChange: carry('resources') },
+            'What is in the conversation'
+          ),
+          h(
+            Checkbox,
+            { name: 'artifacts', checked: answers.artifacts, onChange: carry('artifacts') },
+            'Charts and outputs from the conversation'
+          ),
+          h(
+            Checkbox,
+            { name: 'transcript', checked: answers.transcript, onChange: carry('transcript') },
+            'The full conversation transcript'
+          )
+        ),
+        // The one asymmetry worth saying out loud: files are rewritten, and a Binding already made
+        // is not withdrawn. Taking a Resource away from an app that may already be reading it is a
+        // deliberate act, not a side effect of tidying a receipt.
+        h(
+          'div',
+          { className: 'sw-caption' },
+          'The files are written again. Resources already connected stay connected — remove those '
+          + 'in the Resource panel.'
+        ),
+        h(
+          Checkbox,
+          { name: 'remember', checked: remember, onChange: (e) => setRemember(e.target.checked) },
+          h(
+            'span',
+            null,
+            'Remember these answers',
+            h('span', { className: 'sw-caption' }, ' · for every handoff after this one')
           )
         )
       )
