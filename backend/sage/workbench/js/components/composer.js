@@ -103,13 +103,9 @@ window.SW = window.SW || {};
     return { start: at, query: token };
   }
 
-  // Prefer the file's basename so "@data.csv" matches the path OpenCode reads.
-  function mentionToken(resource) {
-    const fromPath = String((resource && resource.path) || '').split('/').pop();
-    const fromName = String((resource && resource.name) || '').split('/').pop();
-    const token = (fromPath || fromName || 'resource').replace(/\s+/g, '_').replace(/^@+/, '');
-    return '@' + token;
-  }
+  // Prefer the file's basename so "@data.csv" matches the path OpenCode reads. Shared with the turn
+  // that reads these tokens back out of the prompt, so the two cannot drift apart.
+  const mentionToken = (resource) => SW.util.mentionToken(resource);
 
   SW.Composer = function Composer({
     placeholder,

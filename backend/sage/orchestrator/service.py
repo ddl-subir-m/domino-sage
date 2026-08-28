@@ -172,7 +172,7 @@ _MODE_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan", Mode.IMPLEMENT: "sa
 _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
-    "reset-offer", "app-reset", "incoming-changes",
+    "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -2822,6 +2822,44 @@ class Orchestrator:
                 tables[key].append(table)
         return mention_note([Mention(known[k], tuple(tables[k])) for k in order], recorded)
 
+    def _unusable_mentions(self, project: Project, resolved: list[dict] | None,
+                           mentions: list[str] | None, resources: list[dict] | None) -> str:
+        """What this turn was @-mentioned and cannot use, as one line for the transcript, or "".
+
+        The picker offers more than a build can honor: Chat's own uploads live at the Project root,
+        outside every app, and a Resource in the rail is usable only by the app holding a Binding for
+        it. Both were dropped in silence — which is how a turn builds from the wrong file while the
+        person watches the right one sit in the panel. The two rules are not restated here; the
+        answer is read back off `_resolve_mentions` and the same Binding list `_resource_mention_note`
+        honors, so what is reported can never drift from what was used.
+        """
+        kept = {a["path"] for a in (resolved or [])}
+        missing = [m for m in (mentions or []) if m not in kept]
+        bound = {b.key for b in parse_bindings(project.app_for_turn().read_bindings())}
+        unbound = [r for r in (resources or []) if isinstance(r, dict)
+                   and (str(r.get("kind") or ""), str(r.get("id") or "")) not in bound]
+
+        def named(paths: list[str]) -> str:
+            return ", ".join("@" + PurePosix(p).name for p in paths)
+
+        # Chat's uploads, named apart from the rest: "not attached" is true of both, but only this one
+        # has a file the person can point at, and telling them to attach a file they can see beats
+        # telling them a file they can see isn't there.
+        chat_files = [m for m in missing if m.startswith(_SCRATCH_PREFIX)]
+        others = [m for m in missing if m not in chat_files]
+        lines: list[str] = []
+        if chat_files:
+            lines.append(f"Couldn't use {named(chat_files)} — a Chat file lives outside this app. "
+                         "Attach it to the app in the Data panel, then ask again.")
+        if others:
+            lines.append(f"Couldn't use {named(others)} — not attached to this app. "
+                         "Attach it in the Data panel, then ask again.")
+        if unbound:
+            shown = ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in unbound)
+            lines.append(f"Couldn't use {shown} — this app isn't connected to it. "
+                         "Connect it in the Resources panel, then ask again.")
+        return " ".join(lines)
+
     def _image_data_uri(self, real: Path) -> str | None:
         """An image inlined as `data:<mime>;base64,...` for the agent's prompt, or None if it can't
         be. Images are the one type where a descriptor isn't enough — the pixels ARE the content.
@@ -4614,6 +4652,12 @@ class Orchestrator:
             project.app_for_turn().append_history(
                 {"type": "user", "text": user_text if user_text is not None else prompt},
                 project.build_conversation)
+            # What they @-mentioned and this turn cannot use, said out loud. It goes here, right after
+            # their own bubble, because it answers what they just typed — and before the agent runs,
+            # because the whole point is to be read while the turn is still worth stopping.
+            unusable = self._unusable_mentions(project, mention_files, mentions, resources)
+            if unusable:
+                yield persist({"type": "mentions-unresolved", "message": unusable})
 
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never

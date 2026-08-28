@@ -248,3 +248,21 @@ def test_the_view_follows_a_growing_answer_but_only_from_the_bottom():
     chat = _js("modes", "chat.js")
     assert "streamedChars" in chat
     assert "el.scrollHeight - el.scrollTop - el.clientHeight < 120" in chat
+
+
+def test_a_build_turn_carries_what_its_mentions_name():
+    """The Build composer inserts "@name" and sent only the sentence, so an @mention in Build reached
+    the agent as a bare word: the file it named was never attached to the turn, and the build read
+    whatever it could find instead. The menu and the sender derive the token the same way — a token
+    only one of them can produce is a mention that silently carries nothing."""
+    store = _js("store.js")
+    assert "mentions: refs.mentions, resources: refs.resources," in store
+    assert "SW.util.mentionedIn(text, SW.util.mentionToken(row))" in store
+    # A Resource rides as its Binding identity, never as its name: an id is unique only within a kind.
+    assert "kind: row.bindingKey[0], id: row.bindingKey[1]" in store
+
+
+def test_a_mention_the_build_could_not_use_is_said_out_loud():
+    """The picker offers Chat's uploads and unbound Resources; a build honors neither. Dropped in
+    silence, that is a turn building from the wrong file while the right one sits in the panel."""
+    assert "ev.type === 'mentions-unresolved'" in _js("store.js")

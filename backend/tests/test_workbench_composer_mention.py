@@ -16,7 +16,9 @@ CSS = (WB / "css" / "chat.css").read_text()
 
 
 def test_picking_a_mention_inserts_at_name_instead_of_stripping_it():
-    assert "function mentionToken(" in UI
+    # The token itself is derived in util.js, because the turn has to read the same one back out of
+    # the prompt (see test_workbench.test_a_build_turn_carries_what_its_mentions_name).
+    assert "SW.util.mentionToken(resource)" in UI
     assert "setText(text.slice(0, mention.start) + token + pad + after)" in UI
     assert "The mention resolves into a chip rather than into text" not in UI
 

@@ -16,6 +16,7 @@ from sage.orchestrator.service import (
     Orchestrator,
     UploadUnavailable,
 )
+from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.router.models import ModelCatalog
 
 
@@ -280,6 +281,34 @@ def test_resolve_mentions_only_honors_known_attachments(tmp_path: Path):
     assert [m["path"] for m in orch._resolve_mentions(proj, [res["path"]])] == [res["path"]]
     assert orch._resolve_mentions(proj, ["public/data/not-attached.csv"]) is None  # unknown -> ignored
     assert orch._resolve_mentions(proj, None) is None
+
+
+def test_a_mention_the_turn_cannot_use_is_reported_rather_than_dropped(tmp_path: Path):
+    # The picker offers more than a build can honor — Chat's own uploads live at the Project root, and
+    # a Resource is usable only by the app holding a Binding for it — and both used to be skipped in
+    # silence. That silence is how a turn builds from the wrong file while the right one sits in the
+    # panel, so every mention the turn drops now says so, and says what to do about it.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"x")
+
+    used = orch._resolve_mentions(proj, [res["path"]])
+    assert orch._unusable_mentions(proj, used, [res["path"]], None) == ""     # it WAS used: nothing to say
+
+    chat = orch._unusable_mentions(proj, None, [".sage/scratch/events.csv"], None)
+    assert "@events.csv" in chat and "Chat file" in chat and "Data panel" in chat
+
+    plain = orch._unusable_mentions(proj, None, ["public/data/gone.csv"], None)
+    assert "@gone.csv" in plain and "not attached to this app" in plain
+
+    ref = {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"}
+    unbound = orch._unusable_mentions(proj, None, None, [ref])
+    assert "@Warehouse" in unbound and "Resources panel" in unbound
+    # And a Resource this app IS bound to is not reported — the report reads the same Binding list the
+    # turn honors, so a bound Resource must never come back as one the turn refused.
+    proj.workspace.update_bindings(
+        lambda entries: [*entries, Binding(KIND_DATA_SOURCE, "ds1", "Warehouse", "Warehouse").to_dict()])
+    assert orch._unusable_mentions(proj, None, None, [ref]) == ""
 
 
 def test_upload_is_unavailable_when_no_writable_dataset_exists(tmp_path: Path):

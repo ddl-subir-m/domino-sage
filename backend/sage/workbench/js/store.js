@@ -485,6 +485,41 @@ window.SW = window.SW || {};
     todoread: { ran: 'Read the task list', doing: 'Reading the task list' },
   };
 
+  // Map the "@name" tokens still standing in a Build prompt back to what they name: attached files as
+  // workspace paths, Resources as Binding identities (kind + id — an id is unique only within its
+  // kind). Read off the same rows the picker offered, so what a row offers and what the turn sends
+  // cannot drift apart. Chat resolves its own tokens server-side against the Thread's context; a
+  // Build turn has to carry them in the request, and carried nothing at all until this existed —
+  // which made every @mention in Build a plain word the agent had to go looking for.
+  function collectTurnRefs(text) {
+    const groups = state.resourceGroups || {};
+    const mentions = [];
+    const resources = [];
+    const seen = new Set();
+    Object.keys(groups).forEach((group) => {
+      (groups[group] || []).forEach((row) => {
+        if (!SW.util.mentionedIn(text, SW.util.mentionToken(row))) return;
+        // A bindingKey IS the Binding identity, so the rows that carry one are exactly the rows the
+        // server can honor as Resources. No second list of kinds to keep in step with that one.
+        if (row.bindingKey && row.bindingKey.length === 2) {
+          const ref = { kind: row.bindingKey[0], id: row.bindingKey[1], name: row.name || '' };
+          if (row.scope && row.scope.table) ref.table = row.scope.table;
+          const key = `${ref.kind}:${ref.id}:${ref.table || ''}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          resources.push(ref);
+          return;
+        }
+        // A Chat upload or a pinned Dataset file is offered by the menu and cannot be read by a
+        // build. Send what names it anyway rather than dropping it here: the turn reports what it
+        // could not use, and a mention nobody hears about is one nobody can fix.
+        const path = row.path || row.datasetRelPath || row.name;
+        if (path && !mentions.includes(path)) mentions.push(path);
+      });
+    });
+    return { mentions, resources };
+  }
+
   function buildHistoryToMessages(history) {
     const messages = [];
     let assistant = null;
@@ -561,6 +596,11 @@ window.SW = window.SW || {};
           : `Couldn't save — ${ev.detail || 'git error'}`;
         ensureAssistant().blocks.push({ type: 'status', ok: !!ev.ok, value });
       } else if ((ev.type === 'ask-blocked' || ev.type === 'ask-active') && ev.message) {
+        ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'mentions-unresolved' && ev.message) {
+        // Sits above the turn it belongs to rather than beside the composer: what the build could not
+        // use is part of the record of that build, and a toast would be gone by the time the app it
+        // built came back wrong.
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
       } else if (ev.type === 'reset-offer' && ev.message) {
         // `live` is set only on the frame that arrived over SSE this session (see applyBuildEvent),
@@ -1401,11 +1441,15 @@ window.SW = window.SW || {};
       state.buildTyping = 'Working…';
       notify();
       try {
+        // The whole turn, not just the sentence: an @mention names something the server has to be
+        // handed as a path or an identity, because the word alone reaches the agent as a word.
+        const refs = collectTurnRefs(text);
         const res = await fetch('./api/project/build/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: text, conversation: state.thread.id, skipResetGate, skipIncomingGate,
+            mentions: refs.mentions, resources: refs.resources,
           }),
         });
         if (!res.ok) {

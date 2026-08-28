@@ -61,6 +61,26 @@ window.SW = window.SW || {};
       return kind || 'file';
     },
 
+    // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path
+    // OpenCode reads. Lives here rather than in the composer because the menu that INSERTS a token
+    // and the turn that reads it back off the prompt have to derive it the same way — a token only
+    // one of them can produce is a mention that silently carries nothing (see store.collectTurnRefs).
+    mentionToken(resource) {
+      const fromPath = String((resource && resource.path) || '').split('/').pop();
+      const fromName = String((resource && resource.name) || '').split('/').pop();
+      const token = (fromPath || fromName || 'resource').replace(/\s+/g, '_').replace(/^@+/, '');
+      return '@' + token;
+    },
+
+    // Whether "@<token>" still stands in the text as its own word. Punctuation may follow it —
+    // people write "@data.csv, please" — but a longer name must not match a shorter one's prefix.
+    mentionedIn(text, token) {
+      const bare = String(token || '').replace(/^@+/, '');
+      if (!bare) return false;
+      const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|\\s)@${escaped}(?=[\\s,.;:!?)\\]}'"]|$)`).test(String(text || ''));
+    },
+
     // The Chat explorer is the project's pickable working set, not the repo.
     isHiddenFromExplorer(path) {
       const p = String(path || '').replace(/^\.\//, '');
