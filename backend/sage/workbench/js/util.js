@@ -190,6 +190,28 @@ window.SW = window.SW || {};
           if (!rest) return title;
           return h('div', { key: blockIndex }, title, SW.util.markdown(rest));
         }
+        // A pipe table. Without this it falls through to a paragraph, where the newlines
+        // collapse and the whole table lands as one run of pipes — worse than plain prose,
+        // and what the reader sees is the product looking broken.
+        // The header needs a pipe and the second line has to be the |---|---| rule: outer pipes
+        // are optional both ways, since a model writes the table either way. Requiring a pipe in
+        // the rule too is what keeps a paragraph followed by a --- underline out of here.
+        const isRule = (l) => /^[\s:|-]+$/.test(l) && l.includes('-') && l.includes('|');
+        if (lines.length >= 2 && lines[0].includes('|') && isRule(lines[1])) {
+          const cells = (line) => line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+          const head = cells(lines[0]);
+          return h(
+            'div',
+            { key: blockIndex, className: 'sw-md-table-wrap' },
+            h(
+              'table',
+              { className: 'sw-md-table' },
+              h('thead', null, h('tr', null, head.map((c, i) => h('th', { key: i }, SW.util.inline(c))))),
+              h('tbody', null, lines.slice(2).map((line, r) =>
+                h('tr', { key: r }, cells(line).map((c, i) => h('td', { key: i }, SW.util.inline(c))))))
+            )
+          );
+        }
         const isOrdered = lines.length > 0 && lines.every((l) => /^\s*\d+\.\s/.test(l));
         const isBullet = lines.length > 0 && lines.every((l) => /^\s*[-*]\s/.test(l));
 

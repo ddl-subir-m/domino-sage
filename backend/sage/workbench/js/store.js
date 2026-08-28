@@ -462,6 +462,29 @@ window.SW = window.SW || {};
     'incoming changes': true,
   };
 
+  // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
+  // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
+  // names the harness's plumbing rather than the step the user is watching. One entry per tool the
+  // pinned 1.18.4 binary emits, with `ran` for the finished card and `doing` for the line that says
+  // what the build is on right now. A tool that isn't here still falls back to its own name: an
+  // unrecognised step should say something odd, not say nothing.
+  const TOOL_LABELS = {
+    bash: { ran: 'Ran a command', doing: 'Running a command' },
+    edit: { ran: 'Edited a file', doing: 'Editing a file' },
+    patch: { ran: 'Edited a file', doing: 'Editing a file' },
+    multiedit: { ran: 'Edited a file', doing: 'Editing a file' },
+    write: { ran: 'Wrote a file', doing: 'Writing a file' },
+    read: { ran: 'Read a file', doing: 'Reading a file' },
+    grep: { ran: 'Searched the code', doing: 'Searching the code' },
+    glob: { ran: 'Searched for files', doing: 'Searching for files' },
+    list: { ran: 'Listed a folder', doing: 'Listing a folder' },
+    webfetch: { ran: 'Read a web page', doing: 'Reading a web page' },
+    task: { ran: 'Ran a sub-task', doing: 'Running a sub-task' },
+    skill: { ran: 'Used a skill', doing: 'Using a skill' },
+    todowrite: { ran: 'Updated the task list', doing: 'Updating the task list' },
+    todoread: { ran: 'Read the task list', doing: 'Reading the task list' },
+  };
+
   function buildHistoryToMessages(history) {
     const messages = [];
     let assistant = null;
@@ -487,7 +510,7 @@ window.SW = window.SW || {};
       } else if (ev.type === 'agent' && ev.kind === 'tool') {
         ensureAssistant().blocks.push({
           type: 'sandbox_run',
-          label: ev.tool === 'bash' ? 'Ran a command' : `Ran ${ev.tool || 'tool'}`,
+          label: (TOOL_LABELS[ev.tool] || {}).ran || `Ran ${ev.tool || 'tool'}`,
           // Absent on turns OpenCode did not time, and on every turn recorded before Sage started
           // reading the clock. The card leaves the duration off rather than inventing one.
           durationMs: ev.durationMs,
@@ -584,8 +607,11 @@ window.SW = window.SW || {};
     }
     if (ev.type === 'user') return;
     if (ev.type === 'active' || (ev.type === 'agent' && ev.kind === 'tool')) {
-      const verb = ev.tool === 'bash' ? 'Running a command' : (ev.detail || ev.tool || 'Working');
-      state.buildTyping = verb;
+      // The command a bash step ran can be a whole pipeline, so bash shows the verb; every other
+      // tool shows its subject — the file, the search pattern — which is shorter and says more.
+      // The verb is what a tool with no subject falls back to, so this line stops reading "glob".
+      const labels = TOOL_LABELS[ev.tool] || {};
+      state.buildTyping = (ev.tool === 'bash' ? labels.doing : (ev.detail || labels.doing)) || 'Working';
     } else if (ev.type === 'typecheck-start') {
       state.buildTyping = 'Typechecking…';
     } else if (ev.type === 'iterate') {

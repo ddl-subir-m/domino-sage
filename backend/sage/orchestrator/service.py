@@ -1569,13 +1569,26 @@ def _is_inlined_copy(raw: bytes, text: str) -> bool:
     return len(sample) >= _SAMPLE_MATCH_MIN_BYTES and sample in text
 
 
+def _workspace_relative(text: str) -> str:
+    """A path as the user knows it — `src/App.tsx`, not the container's /workspaces/ prefix.
+    Anything that is not a path comes back unchanged."""
+    return text.split("/workspaces/", 1)[-1] if "/workspaces/" in text else text
+
+
+# The input field that names what a call acted on, tried in order, for every tool that has no
+# branch of its own below: glob and list carry a pattern or a path, skill a name, webfetch a url.
+# A list of keys rather than a list of tools because the tools are OpenCode's to change — a
+# version that adds one still names its subject here instead of rendering a card with nothing in it.
+_SUBJECT_KEYS = ("pattern", "path", "filePath", "url", "name", "query", "description")
+
+
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
     inp = (part.get("state") or {}).get("input") or {}
     if tool in ("edit", "write", "read"):
         path = inp.get("path") or inp.get("filePath") or ""
-        return path.split("/workspaces/", 1)[-1] if "/workspaces/" in path else path
+        return _workspace_relative(path)
     if tool == "bash":
         return (inp.get("command") or "").strip()
     if tool == "grep":
@@ -1589,6 +1602,10 @@ def _tool_detail(tool: str, part: dict) -> str:
         if done:
             return f"{done}/{n} done"
         return f"{n} step" + ("" if n == 1 else "s")
+    for key in _SUBJECT_KEYS:
+        value = inp.get(key)
+        if isinstance(value, str) and value.strip():
+            return _workspace_relative(value.strip())
     return ""
 
 

@@ -308,6 +308,17 @@
   padding: 1px 5px;
 }
 
+.sw-md-table-wrap { overflow-x: auto; margin: 0 0 var(--s3); }
+.sw-md-table-wrap:last-child { margin-bottom: 0; }
+.sw-md-table { border-collapse: collapse; font-size: 13px; }
+.sw-md-table th, .sw-md-table td {
+  border: 1px solid var(--gray-300);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.sw-md-table th { background: var(--gray-100); font-weight: 600; }
+
 .sw-msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--s2); }
 
 .sw-msg-actions {
@@ -389,6 +400,11 @@
   text-align: left;
 }
 .sw-sandbox-toggle:hover { background: var(--gray-200); }
+/* A row with nothing to expand: no pointer, no hover lift, nothing that invites a click that
+   would do nothing. The spacer holds the chevron's width so the labels stay aligned. */
+.sw-sandbox-toggle-static { cursor: default; }
+.sw-sandbox-toggle-static:hover { background: none; }
+.sw-sandbox-nochevron { width: 9px; }
 .sw-sandbox-detail {
   padding: var(--s3);
   border-top: 1px solid var(--gray-300);

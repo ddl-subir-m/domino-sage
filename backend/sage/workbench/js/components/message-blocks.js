@@ -47,17 +47,29 @@ window.SW = window.SW || {};
 
   function SandboxRun({ block }) {
     const [open, setOpen] = useState(false);
+    // Some calls name nothing we can show — a tool that takes no arguments, or a card replayed
+    // from a transcript recorded before Sage read that tool's input. Those rows say what ran and
+    // stop there: the chevron used to open onto an empty grey box, which reads as detail that
+    // failed to load rather than a step with nothing to look at.
+    const hasDetail = !!String(block.code || '').trim() || !!block.stdout;
     return h(
       'div',
       { className: 'sw-sandbox-run' },
       h(
-        'button',
-        { className: 'sw-sandbox-toggle', onClick: () => setOpen(!open) },
-        h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
+        hasDetail ? 'button' : 'div',
+        {
+          className: `sw-sandbox-toggle${hasDetail ? '' : ' sw-sandbox-toggle-static'}`,
+          onClick: hasDetail ? () => setOpen(!open) : undefined,
+        },
+        // The spacer keeps every label on the same left edge, so a row without a chevron reads as
+        // one of the stack and not as a card that lost its icon.
+        hasDetail
+          ? h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } })
+          : h('span', { className: 'sw-sandbox-nochevron', 'aria-hidden': true }),
         h('span', null, `${block.label || 'Ran Python'}${runDuration(block.durationMs)}`),
         block.packages && h('span', { style: { color: '#8F8FA3' } }, `· ${block.packages}`)
       ),
-      open &&
+      hasDetail && open &&
         h(
           'div',
           { className: 'sw-sandbox-detail' },
