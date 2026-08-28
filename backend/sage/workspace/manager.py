@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -37,6 +38,10 @@ from . import plan_doc
 from .threads import CHAT_WORK, new_id
 
 log = logging.getLogger(__name__)
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def ensure_ignore_line(path: Path, line: str) -> None:
@@ -604,13 +609,24 @@ class Workspace:
         gate must still fire on the first real build request no matter how many questions preceded it."""
         return bool(_read_settings_file(self._settings_path).get("built"))
 
+    def built_at(self) -> str:
+        """When this app was last built, or "" if it never was — and "" for an app built before the
+        stamp existed, which reads as the honest "no date" rather than a wrong one.
+
+        The handoff sheet lists the Project's apps by this, because "which app do I build into" is
+        a question about which one is still alive: a name alone leaves two dashboards from March
+        and yesterday looking identical (ADR-0008, #73)."""
+        stored = _read_settings_file(self._settings_path).get("builtAt")
+        return stored.strip() if isinstance(stored, str) else ""
+
     def mark_built(self) -> None:
-        """Latch has_built() on after the first successful build. Idempotent; persisted in settings
-        so it survives an orchestrator restart (a rebuilt project must not re-gate)."""
+        """Latch has_built() on after the first successful build, and stamp the time of THIS one.
+        Persisted in settings so it survives an orchestrator restart (a rebuilt project must not
+        re-gate). The latch is idempotent; the stamp is not, because it is the LAST build's."""
         settings = _read_settings_file(self._settings_path)
-        if not settings.get("built"):
-            settings["built"] = True
-            _write_settings_file(self._settings_path, settings)
+        settings["built"] = True
+        settings["builtAt"] = _now()
+        _write_settings_file(self._settings_path, settings)
 
     def clear_built(self) -> None:
         """Un-latch has_built(), so Reset app leaves the plan gate where a fresh app has it.
@@ -620,6 +636,7 @@ class Workspace:
         app's own business and not an edit to the Project's settings."""
         settings = _read_settings_file(self._settings_path)
         settings.pop("built", None)
+        settings.pop("builtAt", None)
         _write_settings_file(self._settings_path, settings)
 
     def read_last_turn_failed(self) -> bool:

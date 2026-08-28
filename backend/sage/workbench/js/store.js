@@ -1771,19 +1771,22 @@ window.SW = window.SW || {};
       }
     },
 
-    async confirmHandoff(include) {
+    // `target` names the Built App the sheet picked, or is empty for a new one. Empty is passed
+    // through rather than resolved here: the default is the server's, so the app a confirm lands
+    // in cannot be changed by a change to the sheet's markup (#73).
+    async confirmHandoff(include, target) {
       const id = state.thread && state.thread.id;
       if (!id) return null;
-      const result = await SW.api.confirmHandoff(id, include);
+      const result = await SW.api.confirmHandoff(id, include, target || {});
       state.handoffOpen = false;
       state.handoffDraft = null;
       state.thread = { ...state.thread, handoff: result.handoff };
-      const projects = await SW.api.projects().catch(() => state.projects);
-      state.projects = projects;
-      const current = projects.find((p) => p.id === state.scope.id) || projects[0];
-      if (current) state.scope = { ...state.scope, ...current };
-      notify();
-      SW.router.go(`#/build/${id}`);
+      // The confirm made or reselected an app, so the rail and `activeApp` are both stale.
+      await loadAppList();
+      // Build lands on the app this handoff bound — a Project holds many, so "#/build/<thread>"
+      // alone would leave which one to chance. Through `appRoute`, which owns that grammar.
+      const bound = state.apps.find((a) => a.id === ((result.handoff && result.handoff.appId) || ''));
+      SW.router.go(bound ? SW.appRoute(bound) : `#/build/${id}`);
       return result;
     },
 

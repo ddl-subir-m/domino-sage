@@ -870,10 +870,13 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     bindings = ws.read_bindings()
     assert any(b.get("id") == "ds-trades" for b in bindings)
     assert src.read_text() == before
-    assert project.record.is_untitled() is False
-    assert result["untitled"] is False
+    # The plan title names the APP, and the Project keeps the name it had. Confirming used to
+    # rename the Project to the plan title, which was a Project-per-app rule: a Project holds many
+    # apps now, and two of them cannot share one name (ADR-0008, #73).
     assert result["title"] == "A desk exposure dashboard."
-    assert project.record.display_name() == "A desk exposure dashboard."
+    assert project.record.is_untitled() is True
+    assert project.record.display_name() == "Default"
+    assert ws.display_name() == "A desk exposure dashboard."
 
     orch.confirm_handoff(tid, {"transcript": True})
     assert (ws.path / ".sage" / "handoff-transcript.md").exists()

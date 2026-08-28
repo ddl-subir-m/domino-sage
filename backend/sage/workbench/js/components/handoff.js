@@ -5,19 +5,34 @@ window.SW = window.SW || {};
   const { Modal, Checkbox, Radio, Space, Tag, Input, Select, Alert, Button } = antd;
   const { FileTextOutlined } = icons;
 
+  // The date on an app row. A Project holds many Built Apps and two dashboards read the same in a
+  // list, so what separates them is which one is still alive. Through `relativeTime` like every
+  // other date in the workbench, which is where the "relative inside 7 days" rule lives.
+  function lastBuilt(app) {
+    if (!app.builtAt) return app.built ? 'Built' : 'Not built yet';
+    return `Last built ${SW.util.relativeTime(app.builtAt)}`;
+  }
+
   // Everything that crosses from Chat to Builder is written to the project as
   // a real file, so the handoff is inspectable rather than magic.
   SW.HandoffSheet = function HandoffSheet() {
-    const { handoffOpen, handoffDraft, attachments, scope } = SW.store.get();
+    const { handoffOpen, handoffDraft, attachments } = SW.store.get();
     const [include, setInclude] = useState({ plan: true, resources: true, artifacts: true, transcript: false });
+    // Empty means New app, and it starts empty every time the sheet opens. Nothing preselects an
+    // existing app, because building over an app nobody picked is a silent overwrite (#73).
+    const [appId, setAppId] = useState('');
     const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+      if (handoffOpen) setAppId('');
+    }, [handoffOpen]);
 
     const close = () => SW.store.set({ handoffOpen: false });
 
     const go = async () => {
       setBusy(true);
       try {
-        await SW.store.confirmHandoff(include);
+        await SW.store.confirmHandoff(include, { appId });
       } catch (err) {
         antd.message.error(String((err && err.message) || err));
       } finally {
@@ -30,6 +45,8 @@ window.SW = window.SW || {};
     const artifacts = handoffDraft.artifacts || [];
     const context = handoffDraft.context || [];
     const chips = attachments.length ? attachments : context;
+    const apps = handoffDraft.apps || [];
+    const target = apps.find((a) => a.id === appId);
     const files = [
       include.plan && '.sage/plan.md',
       '.sage/handoff.md',
@@ -53,14 +70,57 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-handoff' },
 
-        scope.untitled &&
-          h(Alert, {
-            type: 'info',
-            showIcon: true,
-            style: { marginBottom: 12 },
-            message: 'This app will live in this project',
-            description: `Confirming names it from the plan title (“${handoffDraft.title}”). Untitled already is a saved project.`,
-          }),
+        // Which app, above what crosses into it: the answer changes what the checkboxes below are
+        // about. New app is the default and no existing app is ever preselected, because building
+        // over an app the person did not pick is a silent overwrite (docs/workbench/handoff.md §4).
+        // Shown with nothing to choose between too, so the first handoff says where its app goes
+        // and the second one's list is a list the person has seen before.
+        h(
+          'div',
+          { className: 'sw-handoff-section' },
+          h('div', { className: 'sw-field-label' }, 'Build into'),
+          h(
+            Radio.Group,
+            { value: appId, onChange: (e) => setAppId(e.target.value) },
+            h(
+              Space,
+              { direction: 'vertical', size: 6 },
+              h(
+                Radio,
+                { value: '' },
+                h(
+                  'span',
+                  null,
+                  'A new app',
+                  ' ',
+                  h('span', { className: 'sw-caption' }, `named “${handoffDraft.title}”`)
+                )
+              ),
+              apps.map((app) =>
+                h(
+                  Radio,
+                  { key: app.id, value: app.id },
+                  h(
+                    'span',
+                    null,
+                    app.name || app.id,
+                    ' ',
+                    h('span', { className: 'sw-caption' }, lastBuilt(app))
+                  )
+                )
+              )
+            )
+          ),
+          target &&
+            h(Alert, {
+              type: 'warning',
+              showIcon: true,
+              style: { marginTop: 10 },
+              message: `This replaces the plan in “${target.name || target.id}”`,
+              description:
+                'Its code stays until you approve the plan and build. The other Built Apps in this project are untouched either way.',
+            })
+        ),
 
         h(
           'div',

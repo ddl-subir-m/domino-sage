@@ -2140,6 +2140,7 @@ class Orchestrator:
             "id": app_id,
             "name": _app_display_name(workspace),
             "built": workspace.has_built(),
+            "builtAt": workspace.built_at(),
             "planId": plans.get(app_id, ""),
             "selected": app_id == selected,
         }
@@ -2951,12 +2952,18 @@ class Orchestrator:
         finally:
             self._turn_lock.release()
 
-    def confirm_handoff(self, thread_id: str, include: dict | None = None) -> dict:
-        """Write the confirm files, upsert Bindings, mark bound. Does not run implement."""
+    def confirm_handoff(self, thread_id: str, include: dict | None = None,
+                        target: dict | None = None) -> dict:
+        """Write the confirm files, upsert Bindings, mark bound. Does not run implement.
+
+        `target` says which Built App this handoff is for: `{"appId": "app_..."}` names one that
+        already exists, and anything else — absent, empty, `{"appId": ""}` — means a new one. The
+        default lives HERE rather than in the sheet's markup, so a caller that says nothing gets a
+        new app and never someone else's (docs/workbench/handoff.md §4, #73)."""
         if not self._turn_lock.acquire(blocking=False):
             raise RuntimeError("busy")
         try:
-            return self._confirm_handoff(thread_id, include or {})
+            return self._confirm_handoff(thread_id, include or {}, target or {})
         finally:
             self._turn_lock.release()
 
@@ -2972,6 +2979,11 @@ class Orchestrator:
             "untitled": project.record.is_untitled(),
             "artifacts": store.read_artifacts(thread_id),
             "context": store.read_context(thread_id).get("items") or [],
+            # The apps this handoff could build into, so the sheet can offer them (#73). The rail's
+            # `selected` flag is dropped on the way out: the only default is New app, and a payload
+            # that named one of these would give the markup something to preselect — which is the
+            # silent overwrite this row exists to prevent (docs/workbench/handoff.md §4).
+            "apps": [{k: v for k, v in row.items() if k != "selected"} for row in self.list_apps()],
         }
 
     @staticmethod
@@ -3065,7 +3077,7 @@ class Orchestrator:
             project.control.disarm_read_only(token)
             project.active_session_id = None
 
-    def _confirm_handoff(self, thread_id: str, include: dict) -> dict:
+    def _confirm_handoff(self, thread_id: str, include: dict, target: dict) -> dict:
         # Read and refuse BEFORE anything is created: this is where a Built App is born (ADR-0008),
         # and a confirm that cannot find its plan must leave no app behind.
         chat = self._chat_project()
@@ -3076,8 +3088,13 @@ class Orchestrator:
         plan_md = self._handoff_plan_markdown(chat.record, handoff_row)
         if not plan_md:
             raise ValueError("no plan")
-        # The app: a directory named for a newly minted id, seeded from the template.
-        project = self._open_app(chat, handoff_row)
+        # A named app that is not there is refused rather than quietly turned into a new one: the
+        # person picked a target, and building somewhere else is the surprise this row prevents.
+        chosen = str(target.get("appId") or "").strip()
+        if chosen and chosen not in self._wm.app_ids():
+            raise ValueError("unknown app")
+        # The app: the one the sheet named, or a directory named for a newly minted id.
+        project = self._open_app(chat, handoff_row, chosen)
         # The builder's own copies, which only have somewhere to live now. `plan.md` is the one-shot
         # handoff the implement turn consumes and archives; the plan card is what Build opens on.
         project.workspace.write_plan(plan_md)
@@ -3116,10 +3133,6 @@ class Orchestrator:
                 if binding is not None:
                     self._bind_from_handoff(binding)
                 self._promote_chat_file(item)
-        if project.record.is_untitled():
-            title = chat_handoff.plan_title(plan_md)
-            project.record.set_display_name(title)
-            project.record.mark_untitled(False)
         handoff = store.mark_handoff_bound(thread_id, project.workspace.app_id)
         # A plan is drafted in a Thread, before the app exists, so it cannot be born inside one —
         # it stays with the Project and gains its app reference here, at the moment it binds
@@ -3136,26 +3149,33 @@ class Orchestrator:
             "title": chat_handoff.plan_title(plan_md),
         }
 
-    def _open_app(self, project: Project, handoff_row: dict) -> Project:
+    def _open_app(self, project: Project, handoff_row: dict, chosen: str) -> Project:
         """The Built App a confirmed handoff builds into, selected and ready.
 
-        A NEW one each time, because a Project holds many and confirming is where one is born
-        (ADR-0008): a second conversation that wants a dashboard gets a dashboard, rather than
-        writing over the one the first conversation is still using. Which app the sheet OFFERS is
-        #73; New app is its default, and this is that default.
+        A NEW one unless the sheet named one that already exists, because a Project holds many and
+        confirming is where one is born (ADR-0008): a second conversation that wants a dashboard
+        gets a dashboard, rather than writing over the one the first conversation is still using.
+        `chosen` is the sheet's answer, and is empty unless a person picked a row — New app is its
+        default, and this is that default (docs/workbench/handoff.md §4, #73).
 
-        Except on a re-confirm. A handoff that already bound stamped its app on the plan document,
-        so confirming the same sheet twice reopens that app instead of minting a twin nobody asked
-        for and nothing points at.
+        A handoff that already bound stamped its app on the plan document, and that app is the
+        fallback: confirming the same sheet twice reopens it instead of minting a twin nobody asked
+        for and nothing points at. A FALLBACK and not an override, because the sheet is served again
+        on a bound entry (`_draft_handoff_plan`) — so a bound app that won would quietly swallow the
+        answer to the question this row asks, which is criterion 11's failure from the other side.
+        Saying nothing is the only thing that reaches the old app, and a double-confirm says nothing.
         """
         plan_id = str((handoff_row or {}).get("planId") or "")
         doc = project.record.read_plan_doc(plan_id) if plan_id else None
         # The entry names its own app from the moment it binds. The plan document is stamped at that
         # same moment and answers for entries written before the record became a list.
         bound = str((handoff_row or {}).get("appId") or (doc or {}).get("appId") or "")
-        if bound and bound in self._wm.app_ids():
-            self._wm.select(bound)
-            return self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
+        # In order, not `chosen or bound`: an app that has since been deleted must not swallow the
+        # answer either, so each candidate has to survive the membership test on its own.
+        for candidate in (chosen, bound):
+            if candidate and candidate in self._wm.app_ids():
+                self._wm.select(candidate)
+                return self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
         opened = self._bind_app(project, self._wm.create_app(self._project_id))
         # The name starts as the plan's title, and is the person's to change from there.
         title = str((doc or {}).get("title") or "")

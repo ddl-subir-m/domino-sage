@@ -1632,7 +1632,8 @@ def draft_handoff_plan(thread_id: str) -> JSONResponse:
 @control_app.post("/api/threads/{thread_id}/handoff/confirm")
 def confirm_handoff(thread_id: str, body: dict) -> JSONResponse:
     try:
-        return JSONResponse(orchestrator.confirm_handoff(thread_id, (body or {}).get("include") or {}))
+        return JSONResponse(orchestrator.confirm_handoff(
+            thread_id, (body or {}).get("include") or {}, (body or {}).get("target") or {}))
     except KeyError:
         return JSONResponse({"error": "unknown thread"}, status_code=404)
     except RuntimeError as e:

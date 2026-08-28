@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -81,12 +82,18 @@ def _orch(tmp: Path, turns: list[Turn] | None = None, *, verdict: str = "CHAT"):
     return orch, oc, root
 
 
-def _app_from_chat(orch, ask: str) -> str:
-    """Talk, draft, confirm — the whole way a Built App is born. Returns its id."""
+_NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}
+
+
+def _app_from_chat(orch, ask: str, target: dict | None = None) -> str:
+    """Talk, draft, confirm — the whole way a Built App is born. Returns the app it landed in.
+
+    `target` is the sheet's answer to "which app": None is New app, which is what it is for every
+    caller that does not say otherwise, the same way the sheet defaults (#73)."""
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, ask))
     orch.draft_handoff_plan(tid)
-    orch.confirm_handoff(tid, {"resources": False, "artifacts": False, "transcript": False})
+    orch.confirm_handoff(tid, _NOTHING_EXTRA, target)
     return orch.project(start_preview=False).workspace.app_id
 
 
@@ -327,3 +334,179 @@ def test_the_build_rail_reads_apps_and_the_chat_rail_still_reads_threads(tmp_pat
         assert renamed.json()["name"] == "Desk exposure"
         assert client.patch(f"/api/apps/{first}", json={"name": ""}).status_code == 400
         assert client.post("/api/apps/app_nosuchthing/select").status_code == 404
+
+
+# ---- Which app a handoff builds into (#73) ----
+#
+# The sheet asks, and New app is the answer it starts on. What makes that safe is that the DEFAULT
+# lives in the contract rather than the markup: a confirm that names no app gets a new one, so a
+# change to the sheet cannot quietly point a build at somebody else's dashboard.
+
+
+def _draft(orch, ask: str) -> tuple[str, dict]:
+    """A Thread with a plan drafted and the sheet's payload, stopping short of confirming."""
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, ask))
+    return tid, orch.draft_handoff_plan(tid)
+
+
+def test_the_sheet_lists_the_projects_apps_and_preselects_none_of_them(tmp_path: Path):
+    """Criterion 11: the payload carries the apps to choose between and no choice among them."""
+    orch, _oc, _root, first, second = _two_apps(tmp_path, [Turn(text="A third, then."),
+                                                           Turn(text=_DESK)])
+
+    _tid, sheet = _draft(orch, "and one more dashboard")
+
+    assert [row["id"] for row in sheet["apps"]] == [first, second]
+    assert [row["name"] for row in sheet["apps"]] == ["A desk exposure dashboard.",
+                                                      "A daily P&L report."]
+    # Not one field naming a target. `selected` is the Build rail's, and in the sheet it would be
+    # exactly the preselect this row exists to prevent.
+    for row in sheet["apps"]:
+        assert "selected" not in row
+        assert set(row) == {"id", "name", "built", "builtAt", "planId"}
+
+
+def test_an_app_row_carries_the_date_of_its_last_build(tmp_path: Path):
+    """Two dashboards read the same in a list; which one is still alive is the date."""
+    orch, _oc, _root, _first, second = _two_apps(tmp_path, [Turn(text="Built it.",
+                                                                 writes={"src/App.tsx": "// 1\n"}),
+                                                            Turn(text="Built it again.",
+                                                                 writes={"src/App.tsx": "// 2\n"})])
+    by_id = {row["id"]: row for row in orch.list_apps()}
+    assert by_id[second]["built"] is False
+    assert by_id[second]["builtAt"] == ""  # never built, so no date rather than a wrong one
+
+    list(orch.approve_stream())
+    first_build = {row["id"]: row for row in orch.list_apps()}[second]
+    assert first_build["built"] is True
+    assert first_build["builtAt"]
+
+    # LAST built, not first: the stamp moves with every build, or the list ages while the app does not.
+    workspace = orch.project(start_preview=False).workspace
+    with mock.patch("sage.workspace.manager._now", return_value="2099-01-01T00:00:00Z"):
+        workspace.mark_built()
+    assert {row["id"]: row for row in orch.list_apps()}[second]["builtAt"] == "2099-01-01T00:00:00Z"
+
+    # And Reset takes it away with the code it described.
+    workspace.clear_built()
+    reset = {row["id"]: row for row in orch.list_apps()}[second]
+    assert (reset["built"], reset["builtAt"]) == (False, "")
+
+
+def test_confirming_with_no_target_builds_a_new_app(tmp_path: Path):
+    """Criterion 9, and the reason the default is the server's: every way of saying nothing —
+    no target, an empty one, an empty id — means New app, so a sheet that forgets to send one
+    cannot land on an existing app."""
+    orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text="A third, then."), Turn(text=_DESK),
+                                                          Turn(text="A fourth, then."), Turn(text=_PNL)])
+
+    third = _app_from_chat(orch, "a third dashboard", {})
+    fourth = _app_from_chat(orch, "a fourth dashboard", {"appId": ""})
+
+    assert len({first, second, third, fourth}) == 4
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second, third, fourth])
+    # The apps that were already there are untouched.
+    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("A desk exposure dashboard.")
+    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("A daily P&L report.")
+
+
+def test_confirming_with_an_existing_app_builds_into_that_app(tmp_path: Path):
+    """The other half of the row. Picking one is deliberate, so it replaces that app's plan and
+    mints nothing."""
+    orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text="A rewrite, then."), Turn(text=_PNL)])
+    # Work already in the app it is going to land in. Confirming replaces the plan, not the app:
+    # the code stays until the person approves that plan and builds (docs/workbench/handoff.md §4).
+    (root / "apps" / first / "src" / "App.tsx").write_text("// the desk one\n")
+
+    landed = _app_from_chat(orch, "redo the desk dashboard as a P&L one", {"appId": first})
+
+    assert landed == first
+    assert (root / "apps" / first / "src" / "App.tsx").read_text() == "// the desk one\n"
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
+    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("A daily P&L report.")
+    # The app it did not name keeps its plan, and the one it did keeps the name a person gave it.
+    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("A daily P&L report.")
+    assert {row["id"]: row["name"] for row in orch.list_apps()}[first] == "A desk exposure dashboard."
+    assert orch.project(start_preview=False).workspace.app_id == first  # Build lands on it
+
+
+def test_a_bound_sheet_answered_again_honours_the_app_it_names(tmp_path: Path):
+    """The sheet is served again on a Thread that already bound (`_draft_handoff_plan`), so the
+    app that entry bound cannot be allowed to win: it would swallow the answer to the question the
+    target row asks, which is criterion 11's failure coming the other way. The old app is the
+    FALLBACK, which is what a double-confirm — the same sheet, saying nothing — still lands on."""
+    orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text="A rewrite, then."), Turn(text=_PNL)])
+
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "build me a third dashboard"))
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, _NOTHING_EXTRA)
+    third = orch.project(start_preview=False).workspace.app_id
+    assert third not in (first, second)
+
+    # Open in Build again on the bound Thread, and this time pick an app.
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, _NOTHING_EXTRA, {"appId": first})
+    assert orch.project(start_preview=False).workspace.app_id == first
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second, third])
+
+    # Saying nothing still reaches the entry's own app rather than minting a twin.
+    orch.confirm_handoff(tid, _NOTHING_EXTRA)
+    assert orch.project(start_preview=False).workspace.app_id == first
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second, third])
+
+
+def test_confirming_into_an_app_that_is_not_there_is_refused_and_builds_nothing(tmp_path: Path):
+    """A named app that has gone is refused rather than turned into a new one: the person picked a
+    target, and building somewhere else is the surprise this whole row prevents."""
+    orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text="A third, then."), Turn(text=_DESK)])
+
+    tid, _sheet = _draft(orch, "and one more dashboard")
+    with pytest.raises(ValueError):
+        orch.confirm_handoff(tid, _NOTHING_EXTRA, {"appId": "app_nosuchthing"})
+
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    assert store.read_handoff(tid)["status"] == "planned"  # not bound, so the sheet can be answered again
+
+
+def test_confirming_leaves_the_projects_own_name_alone(tmp_path: Path):
+    """The Default rename is gone (#73). It renamed the Project to the plan title, which was a
+    Project-per-app rule: a Project holds many apps now, and two of them cannot share one name.
+    The plan title names the APP."""
+    orch, _oc, _root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_DESK)])
+    record = orch.project(start_preview=False).record
+    record.mark_untitled(True)
+
+    born = _app_from_chat(orch, "build me a desk dashboard")
+
+    assert record.is_untitled() is True
+    assert record.display_name() == "Default"
+    assert {row["id"]: row["name"] for row in orch.list_apps()}[born] == "A desk exposure dashboard."
+
+
+def test_the_confirm_route_carries_the_target_the_sheet_picked(tmp_path: Path, monkeypatch):
+    """The wire between the sheet and the rule. A target that did not reach the orchestrator would
+    fall back to New app and look like it worked, so the route is asserted rather than assumed."""
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as appmod
+
+    orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text="A rewrite, then."), Turn(text=_PNL)])
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+
+    tid, sheet = _draft(orch, "redo the desk dashboard")
+    assert [row["id"] for row in sheet["apps"]] == [first, second]
+
+    with TestClient(appmod.control_app) as client:
+        missing = client.post(f"/api/threads/{tid}/handoff/confirm",
+                              json={"include": _NOTHING_EXTRA, "target": {"appId": "app_nosuchthing"}})
+        assert missing.status_code == 400
+
+        done = client.post(f"/api/threads/{tid}/handoff/confirm",
+                           json={"include": _NOTHING_EXTRA, "target": {"appId": first}})
+        assert done.json()["handoff"]["appId"] == first
+
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
+
