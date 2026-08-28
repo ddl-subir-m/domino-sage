@@ -1992,6 +1992,21 @@ window.SW = window.SW || {};
       await probePreview();
     },
 
+    // Nothing answered on the preview port for as long as Build was prepared to wait, so it stops
+    // checking (#90). Giving up is right — 1.5s polling forever costs something and buys nothing
+    // after the first minute — but giving up while the screen still says `starting` left a person
+    // waiting on a message that had stopped meaning anything, with nothing checking behind it.
+    //
+    // A state of its own rather than `err`. `err` is the preview answering with something bad,
+    // this is it never answering at all, and the two have different causes: a first build
+    // installing dependencies is slow, a broken one is broken. `refreshPreview` is the way back,
+    // and it starts the wait over.
+    previewGaveUp() {
+      if (state.previewStatus !== 'starting') return;
+      state.previewStatus = 'stalled';
+      notify();
+    },
+
     _watchBuild() {
       if (store._watchTimer) return;
       // Ticks overlap: each awaits three calls and they are scheduled every 2s regardless. On a

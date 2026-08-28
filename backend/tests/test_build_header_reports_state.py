@@ -254,3 +254,73 @@ def test_nothing_here_adds_a_publish_control_or_an_open_app_control():
 def test_nothing_here_reads_the_conversation_view_preference():
     """#61 deletes everything that does."""
     assert "conversationView" not in (_WORKBENCH / "js" / "modes" / "builder.js").read_text()
+
+
+# ---- a preview that never comes up (#90) -------------------------------------------------------
+
+
+@needs_node
+def test_build_stops_checking_a_preview_that_never_answers():
+    """The give-up is right — polling every 1.5s forever costs something and buys nothing after the
+    first minute. What was wrong is that it stopped the polling and left `previewStatus` alone, so
+    the screen went on saying `Starting preview…` with nothing behind it checking."""
+    step = _build(select="app_a", preview="starting", giveUp=True)
+    assert 90000 in step["waits"]
+    assert step["previewStatus"] == "stalled"
+
+
+@needs_node
+def test_the_header_stops_saying_a_preview_is_starting_once_it_has_given_up():
+    said = _texts(_build(select="app_a", preview="starting", giveUp=True), "sw-build-state")
+    assert "Starting preview…" not in said
+    assert "Preview never came up" in said
+
+
+@needs_node
+def test_the_canvas_stops_saying_it_too():
+    """Both surfaces read the same status, so both had the same dead end."""
+    step = _build(select="app_a", preview="starting", giveUp=True)
+    said = _texts(step, "sw-preview-overlay")
+    assert not any("Starting preview" in t for t in said)
+    assert any("stopped checking" in t for t in said)
+
+
+@needs_node
+def test_never_came_up_is_not_the_same_answer_as_came_up_broken():
+    """`err` is the preview answering with something bad; this is it never answering. Different
+    causes — a first build installing dependencies is slow, a broken one is broken — so the two
+    do not share a word."""
+    stalled = _texts(_build(select="app_a", preview="starting", giveUp=True), "sw-build-state")
+    failed = _texts(_build(select="app_a", preview="err"), "sw-build-state")
+    assert stalled != failed
+    assert "Preview didn’t start" not in stalled
+
+
+@needs_node
+def test_the_way_to_try_again_is_on_the_overlay_not_only_the_toolbar():
+    """The person this is written for has just been told the thing they were waiting for is not
+    coming. Sending them to an icon-only Reload at the other end of the row is the part that made
+    it a dead end."""
+    step = _build(select="app_a", preview="starting", giveUp=True)
+    assert "Check again" in step["labels"] or "Check again" in step["words"]
+
+
+@needs_node
+def test_that_overlay_can_actually_be_clicked():
+    """`.sw-preview-overlay` is `pointer-events: none` on purpose — an overlay that ate clicks over
+    a live preview would be a bug of its own — so the one state carrying a button has to turn them
+    back on for itself."""
+    step = _build(select="app_a", preview="starting", giveUp=True)
+    assert any("is-stalled" in c for c in step["classes"])
+    css = (_WORKBENCH / "css" / "builder.css").read_text()
+    assert ".sw-preview-overlay.is-stalled" in css
+    assert "pointer-events: auto" in css.split(".sw-preview-overlay.is-stalled")[1][:400]
+
+
+@needs_node
+def test_a_preview_that_comes_up_in_time_is_untouched():
+    """The give-up only fires while the status is still `starting`. A preview that landed first
+    leaves it alone rather than talking over a working pane."""
+    step = _build(select="app_a", preview="ok", giveUp=False)
+    assert step["previewStatus"] == "ok"
+    assert _texts(step, "sw-build-state") == []

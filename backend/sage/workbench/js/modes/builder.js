@@ -349,6 +349,9 @@ window.SW = window.SW || {};
     const previewWord = {
       starting: 'Starting preview…',
       err: 'Preview didn’t start',
+      // Nothing answered and Build stopped waiting (#90). Its own word, because it is its own
+      // fact: `err` is the preview answering with something bad, this is it never answering.
+      stalled: 'Preview never came up',
     }[previewStatus];
 
     return h(
@@ -433,11 +436,17 @@ window.SW = window.SW || {};
     const { previewSrc, previewStatus } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
+    const stalled = previewStatus === 'stalled';
 
     useEffect(() => {
       if (previewStatus !== 'starting') return undefined;
       const id = setInterval(() => SW.store.refreshPreview(), 1500);
-      const stop = setTimeout(() => clearInterval(id), 90000);
+      // Giving up used to stop the polling and leave the status alone, so the overlay went on
+      // saying `Starting preview…` with nothing behind it checking (#90). It says so now.
+      const stop = setTimeout(() => {
+        clearInterval(id);
+        SW.store.previewGaveUp();
+      }, 90000);
       return () => {
         clearInterval(id);
         clearTimeout(stop);
@@ -489,6 +498,28 @@ window.SW = window.SW || {};
             'div',
             { className: 'sw-preview-overlay' },
             starting ? 'Starting preview…' : 'Preview didn’t start — click reload to retry.'
+          ),
+        // The way out is a button here rather than the toolbar's Reload (#90). Reload is an
+        // icon-only control at the other end of the row, and the person this overlay is written
+        // for has just been told the thing they were waiting for is not coming — sending them
+        // hunting for the fix is the part that made it a dead end.
+        stalled &&
+          h(
+            'div',
+            { className: 'sw-preview-overlay is-stalled' },
+            h('div', { className: 'sw-preview-overlay-text' },
+              'Nothing answered on the preview port for 90 seconds, so Sage stopped '
+              + 'checking. A first build installs dependencies and can take longer than that.'),
+            h(
+              Button,
+              {
+                size: 'small',
+                type: 'primary',
+                style: { marginTop: 12 },
+                onClick: () => SW.store.refreshPreview(),
+              },
+              'Check again'
+            )
           ),
         h('iframe', {
           className: 'sw-preview-frame',

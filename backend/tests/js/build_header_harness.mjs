@@ -89,13 +89,22 @@ function serve(url, init) {
 
 // --- the browser -----------------------------------------------------------
 const timers = [];
+// Long `setTimeout`s are recorded and NOT scheduled, so a test can fire the 90-second give-up
+// without waiting 90 seconds — and without leaving a real timer pending, which would hold node
+// open long after the assertions were done. Short ones still run, because promise scheduling
+// elsewhere in this file leans on them.
+const timeouts = [];
 const backing = new Map();
 const effects = [];
 const modals = [];
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, Infinity, setTimeout, clearTimeout,
+  Error, Blob, ArrayBuffer, Uint8Array, Infinity, clearTimeout,
+  setTimeout: (fn, ms) => {
+    if (ms >= 5000) { timeouts.push({ ms, fn }); return -timeouts.length; }
+    return setTimeout(fn, ms);
+  },
   // Recorded, not run. The claim is that Build schedules a repeat read of the app list; actually
   // firing it would only prove `setInterval` works.
   setInterval: (fn, ms) => { timers.push({ ms, fn }); return timers.length; },
@@ -230,6 +239,7 @@ async function arrive(threadId, appId) {
   apps = APPS;
   effects.length = 0;
   timers.length = 0;
+  timeouts.length = 0;
   calls.length = 0;
   await SW.store.openThread(threadId);
   if (appId) await SW.store.selectApp(appId);
@@ -252,20 +262,32 @@ for (const step of steps) {
     // the store drops the selection. The header has to hold that state without claiming things.
     if (step.unselected) SW.store.clearApp();
     if (step.preview) SW.store.set({ previewStatus: step.preview });
-    const tree = SW.BuildMode({ conversationId: step.build, appId: selected });
-    const nodes = flatten(tree);
+    let tree = SW.BuildMode({ conversationId: step.build, appId: selected });
+    let nodes = flatten(tree);
     // The effects Build schedules, run so the timer it wants is a fact rather than a reading of
     // the source. `loadApps` is counted rather than awaited: what matters is that Build asks.
     let loadAppCalls = 0;
     const realLoad = SW.store.loadApps;
     SW.store.loadApps = () => { loadAppCalls += 1; return realLoad(); };
+    // `giveUp` fires the 90-second timeout Build arms while the preview is starting, then paints
+    // again — the whole question in #90 is what the screen says AFTER Build has stopped checking,
+    // and a tree rendered before that has not been asked it. The effects' cleanups are skipped for
+    // this step because one of them is the `clearTimeout` that would take the timer away first.
     effects.forEach((e) => {
       try {
         const off = e.fn();
-        if (typeof off === 'function') off();
+        if (typeof off === 'function' && !step.giveUp) off();
       } catch (err) { /* the store's own fetches, which this step is not about */ }
     });
     SW.store.loadApps = realLoad;
+
+    if (step.giveUp) {
+      const waited = timeouts.find((t) => t.ms >= 90000);
+      if (!waited) throw new Error('Build armed no give-up timer while the preview was starting');
+      waited.fn();
+      tree = SW.BuildMode({ conversationId: step.build, appId: selected });
+      nodes = flatten(tree);
+    }
 
     const rail = nodes.find((n) => n.el === 'ConversationRail');
     const composer = nodes.find((n) => n.el === 'Composer');
@@ -284,6 +306,8 @@ for (const step of steps) {
       buttons: nodes.filter((n) => n.el === 'Button').map((n) => n.type),
       placeholders: nodes.filter((n) => n.placeholder).map((n) => n.placeholder),
       timers: timers.map((t) => t.ms),
+      waits: timeouts.map((t) => t.ms),
+      previewStatus: SW.store.get().previewStatus,
       loadAppCalls,
     });
     continue;

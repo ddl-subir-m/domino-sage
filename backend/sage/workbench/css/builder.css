@@ -524,6 +524,18 @@
   color: var(--gray-600);
   pointer-events: none;
 }
+/* The one overlay a person acts on rather than reads (#90). The base is deliberately
+   `pointer-events: none` — an overlay that eats clicks over a live preview would be a bug — so
+   the state that carries a button turns them back on for itself only. Column, because it is two
+   things: what happened, and what to do about it. */
+.sw-preview-overlay.is-stalled {
+  flex-direction: column;
+  text-align: center;
+  padding: 0 var(--s5);
+  max-width: 100%;
+  pointer-events: auto;
+}
+.sw-preview-overlay-text { max-width: 42ch; line-height: 1.5; }
 .sw-status-line {
   font-size: 12px;
   color: var(--gray-600);
