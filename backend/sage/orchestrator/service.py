@@ -3803,7 +3803,12 @@ class Orchestrator:
         return self._turn_lock.acquire(timeout=wait)
 
     def reset_app(self) -> dict:
-        """Put the app code back to the starter template, keeping the user's setup (#36).
+        """Put the selected app's code back to the starter template, keeping the user's setup (#36).
+
+        One Built App, the one in front of them (#75). A Project holds many, so starting one over
+        does not take the rest of the Project with it: another app's code, plan document, Bindings
+        and log are outside this operation's reach entirely — its directory is never touched, and
+        the documents that survive at the root are the ones naming some other app.
 
         Serialized on the turn lock like any build: this rewrites the working tree, and doing that
         under a streaming turn would pull the files out from under it.
@@ -3823,8 +3828,8 @@ class Orchestrator:
             self._wm.reset()
             # The plan documents describe the app that was just taken away, and they live with the
             # Project rather than inside the app — so clearing them is a second call, through the
-            # surface that owns them.
-            project.record.clear_plan_docs()
+            # surface that owns them, and it names the app so the other apps' documents stay.
+            project.record.clear_plan_docs(project.workspace.app_id)
             # AGENTS.md came back from the template, so the Project's instructions are rendered into
             # it again. They were never kept in that file, so Reset had nothing to lose.
             self._splice_instructions(project)
@@ -3950,9 +3955,9 @@ class Orchestrator:
         "Ready to rebuild from scratch", which is the most literal thing those words describe."""
         project = self.project()
         message = ("Starting over is its own action, not a build — a build agent asked to remove "
-                   "everything writes you a page about removing everything. Resetting puts the code "
-                   "back to the starter template. Your attached files, Resources, and this "
-                   "conversation all stay.")
+                   "everything writes you a page about removing everything. Resetting puts this "
+                   "app's code back to the starter template. Your attached files, Resources, this "
+                   "conversation and your other apps all stay.")
         for ev in ({"type": "user", "text": prompt},
                    # The whole turn rides along, not just the prompt: "clear everything and build X
                    # from @clickstream" is one request, and the button that answers this offer has to

@@ -1080,8 +1080,9 @@ async def write_instructions(request: Request) -> JSONResponse:
 
 @control_app.post("/api/project/reset")
 def reset_app() -> JSONResponse:
-    """Put the app code back to the starter template (#36). The user's attachments, Resources,
-    transcript and project instructions all survive — see Orchestrator.reset_app."""
+    """Put the selected app's code back to the starter template (#36). One Built App, not the
+    Project (#75): the user's attachments, Resources, transcript, project instructions and every
+    other app all survive — see Orchestrator.reset_app."""
     try:
         return JSONResponse(content=orchestrator.reset_app())
     except ResetBusy:

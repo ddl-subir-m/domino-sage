@@ -553,8 +553,8 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({
           type: 'status',
           ok: true,
-          value: 'App reset to the starter template. Your attached files, Resources and this '
-            + 'conversation are unchanged.',
+          value: 'This app is reset to the starter template. Your attached files, Resources, this '
+            + 'conversation and your other apps are unchanged.',
         });
       }
     }

@@ -480,8 +480,9 @@ SW.api = {
     post('/project/model', { chat_model: chat_model || null, reasoning_effort: reasoning_effort || null }),
   cancelPlan: () => post('/project/plan/cancel'),
   stopBuild: () => post('/project/build/stop'),
-  // Puts the app code back to the starter template (#36). Attachments, Resources and the
-  // transcript survive it — see Orchestrator.reset_app.
+  // Puts the SELECTED app's code back to the starter template (#36, narrowed to one Built App in
+  // #75). Attachments, Resources, the transcript and every other app survive it — see
+  // Orchestrator.reset_app.
   resetApp: () => post('/project/reset'),
 
   buildSteps: () => empty(),

@@ -7,6 +7,10 @@ page saying "Ready to rebuild from scratch", which is the most literal thing tho
 Two halves: a reset that keeps what the user set up, and a phrase rule that OFFERS it rather than
 running it. The second half is deliberate — a reset throws the app away, and putting a destructive
 action behind a heuristic is the shape of #29.
+
+The contract has not changed since. What narrowed is its reach (#75): a Project holds many Built
+Apps, so a reset replaces the app in front of the person and leaves the rest of the Project — the
+other apps and the plans that name them — where they were.
 """
 from __future__ import annotations
 
@@ -37,7 +41,10 @@ def test_reset_replaces_the_app_and_keeps_what_the_user_set_up(tmp_path: Path):
     (ws / "src" / "App.tsx").write_text("export default function App() { return <b>built</b>; }")
     (ws / "src" / "Dashboard.tsx").write_text("export const D = 1;")     # a file the agent added
     (ws / ".sage" / "queries.json").write_text('{"top_regions": "select 1"}')
-    project.record.create_plan_doc("A dashboard.\n", title="A dashboard.")
+    # A document that belongs to an app names it, which is what every write of one does: the BUILD
+    # gate stamps it, and a Chat handoff stamps it on confirm.
+    project.record.create_plan_doc("A dashboard.\n", title="A dashboard.",
+                                   app_id=project.workspace.app_id)
     project.workspace.mark_built()
 
     orch.reset_app()
@@ -53,9 +60,63 @@ def test_reset_replaces_the_app_and_keeps_what_the_user_set_up(tmp_path: Path):
     assert not (ws / ".sage" / "queries.json").exists()
     # Including the plan documents (ADR-0007). They are durable across builds, not across a Reset:
     # they describe the app that just went away, and the next build would be planned from them.
-    assert not (ws / ".sage" / "plan-docs").exists()
+    # They live with the Project rather than in the app, so this asks the surface that owns them.
+    assert orch.list_plan_docs() == []
     # And the next build is planned like a first build, because the app really is new again.
     assert project.workspace.has_built() is False
+
+
+def test_resetting_one_app_leaves_the_other_one_exactly_as_it_was(tmp_path: Path):
+    """Code, plan document, Bindings and log — the four things a Built App owns (ADR-0008, #75).
+
+    Reset was the only way to start over when a Project was an app, and it took that app's code,
+    its documents and its queries with it. A Project holds many now, and starting one over must not
+    be a way to lose the others.
+    """
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    first = project.workspace.app_id
+    kept = project.record.create_plan_doc("A daily P&L report.\n", title="A daily P&L report.",
+                                          app_id=first)["id"]
+    project.workspace.update_bindings(lambda rows: rows + [{"kind": "llm", "id": "gpt", "name": "gpt"}])
+    project.workspace.append_history({"type": "user", "text": "build the P&L report"})
+    (project.workspace.path / "src" / "Report.tsx").write_text("export const R = 1;")
+    project.workspace.mark_built()
+    idle = project.workspace           # a frozen value: it keeps naming this app after the switch
+
+    second = orch.create_app()["id"]   # minted, seeded and selected — the app in front of them now
+    live = orch.project(start_preview=False).workspace
+    project.record.create_plan_doc("A desk exposure dashboard.\n",
+                                   title="A desk exposure dashboard.", app_id=second)
+    (live.path / "src" / "Desk.tsx").write_text("export const D = 1;")
+
+    orch.reset_app()
+
+    # The app in front of them is the starter template again, and its document went with it.
+    assert orch.project(start_preview=False).workspace.app_id == second
+    assert not (live.path / "src" / "Desk.tsx").exists()
+    assert live.has_built() is False
+    # The other one is untouched, down to the plan document that names it.
+    assert (idle.path / "src" / "Report.tsx").read_text() == "export const R = 1;"
+    assert [d["id"] for d in orch.list_plan_docs()] == [kept]
+    assert [b["id"] for b in idle.read_bindings()] == ["gpt"]
+    assert [e["text"] for e in idle.read_history() if e["type"] == "user"] == ["build the P&L report"]
+    assert idle.has_built() is True
+
+
+def test_a_plan_drafted_in_chat_is_not_the_reset_apps_to_take(tmp_path: Path):
+    """A document that names no app has not been handed off to one, so it is nobody's to reset.
+
+    It is the FALLBACK a build reads when this app has no document of its own — and after a reset
+    the app really is new, which is the case that fallback is already for.
+    """
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    draft = project.record.create_plan_doc("A dashboard.\n", title="A dashboard.")["id"]
+
+    orch.reset_app()
+
+    assert [d["id"] for d in orch.list_plan_docs()] == [draft]
 
 
 def test_reset_leaves_a_line_in_the_transcript_it_keeps(tmp_path: Path):

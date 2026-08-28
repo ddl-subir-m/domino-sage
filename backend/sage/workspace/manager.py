@@ -448,11 +448,25 @@ class ProjectRecord:
         self.instructions_path.parent.mkdir(parents=True, exist_ok=True)
         self.instructions_path.write_text(text + "\n")
 
-    def clear_plan_docs(self) -> None:
-        """Drop every plan document. Reset app's half of the Project's record: the documents
-        describe the app that was just taken away, so leaving them behind would hand the next
-        build a plan for an app that no longer exists."""
-        shutil.rmtree(self.plan_docs_dir, ignore_errors=True)
+    def clear_plan_docs(self, app_id: str) -> None:
+        """Drop the plan documents that name one Built App. Reset app's half of the Project's
+        record: they describe the app that was just taken away, so leaving them behind would hand
+        the next build a plan for code that no longer exists.
+
+        One app's, not every one (#75). The documents live with the Project and a Project holds
+        many apps, so "every document" stopped being an answer to "this app's". A document naming
+        NO app is not one either: it is a plan drafted in Chat and not yet handed off, so a reset
+        that took it would reach outside the app in front of the person, which is the thing that
+        narrowed. Nothing is lost by leaving it — an unbound document is already the FALLBACK a
+        build reads when an app has none of its own (see Orchestrator._app_plan_docs), and after a
+        reset the app really is new again."""
+        for doc in self.list_plan_docs():
+            # Read from the document's side rather than the argument's: "names an app, and that app
+            # is this one" is the rule above, and it is also what keeps an id that named nothing
+            # from matching every unbound draft at once.
+            named = str(doc.get("appId") or "")
+            if named and named == app_id:
+                shutil.rmtree(self._plan_doc_dir(doc["id"]), ignore_errors=True)
 
 
 @dataclass(frozen=True)
