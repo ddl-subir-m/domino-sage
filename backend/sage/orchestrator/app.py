@@ -43,7 +43,7 @@ from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import (
     DEFAULT_SIDECAR_URL, GatewayUpstreamError, bearer_from_authorization, bind_viewer_token,
-    jwt_identity, remembered_viewer_token, sidecar_token, static_token, viewer_token,
+    jwt_identity, sidecar_token, static_token, viewer_token,
 )
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
@@ -430,13 +430,15 @@ control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 
 
 class _ViewerIdentityMiddleware:
-    """Bind the viewer's JWT from Authorization for `/api/me` only.
+    """Bind this request's own viewer JWT from Authorization, and clear it when the request ends.
 
-    Listings and model calls use the sidecar, same as Sage Builder. Internal /v1 and /healthz
-    never overwrite the remembered viewer.
+    `/api/me` is the only reader. Listings and model calls use the sidecar, on the door as on a
+    Sage Builder, so no path inherits a viewer from an earlier request any more (#91).
+
+    The `finally` is the load-bearing half: a ContextVar left set on a pooled worker would hand one
+    viewer's identity to the next request that arrives with no Authorization header — the leak
+    ef86bdc closed, coming back by the back door.
     """
-
-    _UNPROXIED = ("/v1/", "/healthz")
 
     def __init__(self, app) -> None:
         self._app = app
@@ -445,20 +447,12 @@ class _ViewerIdentityMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        path = scope.get("path", "") or ""
         headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
-        extracted = bearer_from_authorization(headers.get("authorization"))
-        remember = not path.startswith(self._UNPROXIED)
-        # A browser request gets its OWN Authorization or nothing. Reaching for the remembered
-        # token here is what let a second viewer's header-less request act as the first — this is
-        # the only hop entitled to the previous request's viewer, because it is the only one that
-        # cannot carry a viewer at all.
-        inherited = remembered_viewer_token() if not remember else None
-        bind_viewer_token(extracted if remember else inherited, remember=remember and bool(extracted))
+        bind_viewer_token(bearer_from_authorization(headers.get("authorization")))
         try:
             await self._app(scope, receive, send)
         finally:
-            bind_viewer_token(None, remember=False)
+            bind_viewer_token(None)
 
 
 control_app.add_middleware(_ViewerIdentityMiddleware)
