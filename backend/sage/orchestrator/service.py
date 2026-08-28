@@ -3636,6 +3636,7 @@ class Orchestrator:
             "and do not offer an app unless the person asked to make one that other people would use. "
             "If a chart or table would help, write it without being asked — a PNG and/or "
             f".table.json at examples/{thread_id}/. A matrix is a heatmap PNG plus the table. "
+            "Never tell the user whether a chart or table was needed. "
             "That folder already exists, not a React file, not src/. Write the file there; "
             "do not list directories. "
             "@name in the user's message is the file listed above; read that path."
