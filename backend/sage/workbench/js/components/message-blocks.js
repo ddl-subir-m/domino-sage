@@ -227,8 +227,18 @@ window.SW = window.SW || {};
     const { buildRunning } = SW.store.get();
     const [answers, setAnswers] = useState('');
     const [editing, setEditing] = useState(false);
-    const [draft, setDraft] = useState(block.plan || '');
-    const asks = /^#{1,6}\s*open questions\b/mi.test(block.plan || '');
+    // An edit belongs to the plan it was typed against. This card is keyed by its message id and
+    // that id counts messages (`bp_<n>`), so a rebuilt history can hand one instance a different
+    // plan — and a draft seeded once by `useState` would leave the card drawing the plan it first
+    // saw. Worse, the approve below reads `draft !== plan` as "the person edited this", so the
+    // stale text would go up as an override and quietly replace the plan that actually arrived.
+    // Keeping the base alongside the text means a plan that moves on drops the edit rather than
+    // overriding it, and there is no state left to fall out of step.
+    const [edit, setEdit] = useState(null);
+    const plan = block.plan || '';
+    const draft = edit && edit.base === plan ? edit.text : plan;
+    const setDraft = (text) => setEdit({ base: plan, text });
+    const asks = /^#{1,6}\s*open questions\b/mi.test(plan);
     const pending = block.pending && !buildRunning;
 
     return h(
@@ -273,7 +283,7 @@ window.SW = window.SW || {};
               type: 'primary',
               size: 'small',
               onClick: () =>
-                SW.store.approveBuild(answers, draft !== (block.plan || '') ? draft : undefined,
+                SW.store.approveBuild(answers, draft !== plan ? draft : undefined,
                                       block.planId),
             },
             block.kind === 'architecture'

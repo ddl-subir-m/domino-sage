@@ -152,6 +152,29 @@ if (scenario === 'planPreview') {
   tree = mount(Card, outer.p);
   const shown = find(tree, (n) => n.p && n.p.className === 'sw-plan-card-problem sw-plan-md');
   out = { preview: strings(shown).join(' ') };
+} else if (scenario === 'planReplaced') {
+  // The same card handed a different plan. Plan messages are keyed `bp_<n>` off a message count,
+  // so a rebuilt history can land a second plan on a key the first one already used. A card that
+  // seeded its draft once would keep drawing the first plan, and approve would send that stale
+  // text up as an override of the plan that actually arrived. Mounting twice against the same
+  // cells is exactly that: one instance, new props.
+  remount();
+  const first = { type: 'build_plan', plan: 'THE FIRST PLAN', pending: true, planId: 'p1' };
+  const Card = SW.MessageBlock({ block: first }).t;
+  let tree = mount(Card, { block: first });
+  labelled(tree, 'Edit plan').p.onClick();
+  tree = mount(Card, { block: first });
+  find(tree, (n) => n.t === 'Input.TextArea' && n.p && n.p.autoSize)
+    .p.onChange({ target: { value: 'AN EDIT OF THE FIRST PLAN' } });
+  const second = { ...first, plan: 'THE SECOND PLAN' };
+  tree = mount(Card, { block: second });
+  labelled(tree, 'Preview').p.onClick();
+  tree = mount(Card, { block: second });
+  const shown = find(tree, (n) => n.p && n.p.className === 'sw-plan-card-problem sw-plan-md');
+  let override = 'not called';
+  SW.store.approveBuild = (a, plan) => { override = plan; };
+  labelled(tree, 'Approve & build').p.onClick();
+  out = { preview: strings(shown).join(' '), override: override === undefined ? null : override };
 } else if (scenario === 'uploadFailures') {
   // Two files, both rejected. Two messages is the loop carrying on past the first failure; one is
   // the bare `for` abandoning the rest of the drop.

@@ -45,6 +45,22 @@ def test_the_plan_card_previews_the_edit_not_the_original():
 
 
 @needs_node
+def test_a_plan_that_moves_on_takes_its_edit_with_it():
+    """The other side of the same card. Keeping the edit fixed the vanishing typing above, but a
+    draft seeded once by `useState` outlives the plan it was typed against: plan messages are keyed
+    `bp_<n>` off a message count, so a rebuilt history can hand one card instance a second plan.
+
+    Two things go wrong then, and the second is the bad one. The card draws the plan it first saw.
+    And the approve reads `draft !== plan` as "the person edited this", so the stale text goes up as
+    an override and quietly replaces the plan that actually arrived — the person approves what they
+    are looking at and something else is built."""
+    out = _run("planReplaced")
+    assert "THE SECOND PLAN" in out["preview"]
+    assert "AN EDIT OF THE FIRST PLAN" not in out["preview"]
+    assert out["override"] is None  # nothing is sent as an edit, so the new plan is what builds
+
+
+@needs_node
 def test_one_rejected_upload_does_not_abandon_the_rest_of_the_drop():
     """Two files, both refused. Two messages: the loop carried on and named each file. One message
     would mean the first failure took the rest of the drop with it."""
