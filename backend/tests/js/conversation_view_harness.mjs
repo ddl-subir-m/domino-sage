@@ -1,4 +1,5 @@
-// Opens Conversations under each conversation view and reports what Chat would draw (#56).
+// Opens Conversations under each conversation view and reports what Chat (#56) and Build (#57)
+// would draw.
 //
 // Nothing is mounted. Almost everything this ticket decides on the client is a decision about
 // MESSAGE STATE — whether the two halves merged, in what order, whether a build run folded into one
@@ -24,13 +25,13 @@ const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
 // read has to survive: both halves, Build only, two apps in one Conversation, and nothing at all.
 const APPS = [
   { id: 'app_a', name: 'Desk dashboard', built: true, published: true,
-    publishedAt: '2026-01-02T09:00:00Z', selected: true, building: false, behind: false },
+    publishedAt: '2026-01-02T09:00:00Z', building: false, behind: false },
   { id: 'app_b', name: 'P&L report', built: true, published: false,
-    publishedAt: '', selected: false, building: false, behind: false },
+    publishedAt: '', building: false, behind: false },
   // Published before the stamp existed — which is every published app in every Project on the
   // release that added one, and any app whose stamp has not reached this Builder's clone yet.
   { id: 'app_old', name: 'Risk monitor', built: true, published: true,
-    publishedAt: '', selected: false, building: false, behind: false },
+    publishedAt: '', building: false, behind: false },
 ];
 
 // The Chat half as `/threads/<id>` returns it — which is all the split view ever reads.
@@ -51,6 +52,18 @@ const THREADS = {
   thr_broken: { id: 'thr_broken', title: 'Merge is down', artifacts: [], touched: [],
                 history: [{ type: 'user', text: 'which desks lost money?',
                             at: '2026-01-01T09:00:00Z' }] },
+  // A live handoff offer. Chat draws it; Build must not, because it offers a way over to Build.
+  thr_offer: { id: 'thr_offer', title: 'Offered', artifacts: [], touched: [],
+               handoff: { status: 'suggested' },
+               history: [{ type: 'user', text: 'chart this', at: '2026-01-01T09:00:00Z' }] },
+  // The two rules for a link with no `?app=` disagree here, which is the point of it: the handoff
+  // bound app_a, and the newest build turn is app_b's. ADR-0009 says the bound entry wins.
+  thr_bound: { id: 'thr_bound', title: 'Bound then wandered', artifacts: [], touched: [],
+               handoff: { status: 'bound', appId: 'app_a' },
+               history: [{ type: 'user', text: 'build me a dashboard',
+                           at: '2026-01-01T09:00:00Z' }] },
+  // A Project upgraded from before per-app logs: its build rows carry no app at all.
+  thr_legacy: { id: 'thr_legacy', title: 'Adopted', artifacts: [], touched: [], history: [] },
 };
 
 // The merged read as the control API returns it: ordered, and every row labelled with its half.
@@ -103,12 +116,43 @@ const CONVERSATIONS = {
       at: '2026-01-01T10:00:02Z' },
     { half: 'build', type: 'app-reset', app: 'app_a', at: '2026-01-01T11:00:00Z' },
   ],
+  // Never served as a merged read — `BROKEN` answers 500 for this one before it is looked up. It is
+  // here so `/project/history` has rows to hand back, which is the whole point of the fallback:
+  // Build short of its Chat turns still has its own.
+  thr_broken: [
+    { half: 'build', type: 'user', text: 'add a date filter', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:01Z' },
+  ],
+  thr_offer: [
+    { half: 'chat', type: 'user', text: 'chart this', at: '2026-01-01T09:00:00Z' },
+    // The offer as the Chat log persists it, beside the live one the thread's `handoff` adds. Two
+    // shapes, one control, and Build must drop both.
+    { half: 'chat', type: 'handoff-suggest', at: '2026-01-01T09:00:01Z' },
+    { half: 'build', type: 'user', text: 'add a date filter', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+  ],
+  thr_bound: [
+    { half: 'chat', type: 'user', text: 'build me a dashboard', at: '2026-01-01T09:00:00Z' },
+    { half: 'build', type: 'user', text: 'build it', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'user', text: 'now the other one', app: 'app_b', at: '2026-01-01T12:00:00Z' },
+  ],
+  // Adopted rows: tagged with the Conversation, never with an app, because when they were written
+  // there was only one app to be in.
+  thr_legacy: [
+    { half: 'build', type: 'user', text: 'the turn nobody stamped', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean',
+      at: '2026-01-01T10:00:01Z' },
+  ],
 };
 
 // The one conversation whose merged read is broken, so the store's fallback is reachable.
 const BROKEN = new Set(['thr_broken']);
 
 const calls = [];
+
+// Which app the server has selected. Build reads one app at a time (#57), so this is what decides
+// which half of a two-app Conversation its transcript is allowed to show.
+let selected = 'app_a';
 const json = (body, status = 200) => ({
   ok: status < 400, status,
   headers: { get: () => 'application/json' },
@@ -127,7 +171,22 @@ function serve(url) {
   if ((m = path.match(/^\/threads\/([^/]+)\/context$/))) return json({ items: [] });
   if ((m = path.match(/^\/threads\/([^/]+)$/))) return json(THREADS[m[1]] || { id: m[1], history: [] });
   if (path === '/threads') return json({ items: Object.values(THREADS) });
-  if (path === '/apps') return json({ items: APPS, selected: 'app_a' });
+  if ((m = path.match(/^\/apps\/([^/]+)\/select$/))) {
+    selected = m[1];
+    return json({});
+  }
+  if (path === '/apps') {
+    return json({ items: APPS.map((a) => ({ ...a, selected: a.id === selected })), selected });
+  }
+  // Build's own read, and the only one the split view makes: the SELECTED app's build log for this
+  // Conversation. The same rows the merged read labels `build`, minus the label and minus every
+  // other app — which is exactly the difference the merged read exists to close.
+  if ((m = path.match(/^\/project\/history\?conversation=(.+)$/))) {
+    const rows = (CONVERSATIONS[decodeURIComponent(m[1])] || [])
+      .filter((row) => row.half === 'build' && (!row.app || row.app === selected))
+      .map(({ half, ...row }) => row);
+    return json({ history: rows });
+  }
   return json({});
 }
 
@@ -203,12 +262,24 @@ function describe(block) {
   return block.type;
 }
 
-function view() {
-  return (SW.store.get().messages || []).map((m) => ({
+function view(messages) {
+  return (messages || []).map((m) => ({
     role: m.role,
     blocks: (m.blocks || []).map(describe),
   }));
 }
+
+// The invariant every writer of the Build log has to keep: what Build DRAWS is never behind what it
+// HOLDS. A writer that set `buildMessages` without recomputing `buildTranscript` breaks it for
+// exactly one frame — long enough for an echoed prompt to be missing from the pane until the turn's
+// first event happened to recompute it, which is why counting frames catches what a final snapshot
+// cannot.
+let behindFrames = 0;
+SW.store.subscribe(() => {
+  const now = SW.store.get();
+  const drawn = new Set((now.buildTranscript || []).map((m) => m.id));
+  if ((now.buildMessages || []).some((m) => !drawn.has(m.id))) behindFrames += 1;
+});
 
 const report = [];
 for (const step of steps) {
@@ -220,11 +291,50 @@ for (const step of steps) {
     await SW.store.openThread(step.open);
     report.push({
       step: `open ${step.open}`,
-      messages: view(),
+      messages: view(SW.store.get().messages),
       apps: (SW.store.get().apps || []).map((a) => a.id),
       // Every path this open fetched, so "one read for the transcript" is a claim and not a hope.
       calls: calls.slice(),
     });
+  } else if (step.build) {
+    // What Build does on arrival: open the Conversation, then load the app. Both, in that order,
+    // because Build's transcript is the Conversation's Chat turns and this app's build turns, and
+    // neither call knows both halves on its own.
+    calls.length = 0;
+    await SW.store.openThread(step.build);
+    await SW.store.loadBuild();
+    const now = SW.store.get();
+    report.push({
+      step: `build ${step.build}`,
+      transcript: view(now.buildTranscript),
+      // The greeting's own question, kept apart from the transcript because it IS a different
+      // question: has THIS app got turns in this Conversation? A brand-new app in a Conversation
+      // full of talk answers no, and is still right to say so (#74).
+      appTurns: (now.buildMessages || []).length,
+      app: (now.activeApp && now.activeApp.id) || null,
+      calls: calls.slice(),
+    });
+  } else if (step.echo) {
+    // A prompt echoed into the log without going near the network. The turn itself cannot run here
+    // — there is no SSE behind this fetch — but the echo is appended before the request, which is
+    // the write this step is about: every writer of the log has to leave the transcript in step
+    // with it, or Build draws the list as it was one row ago.
+    await SW.store.sendBuildPrompt(step.echo).catch(() => {});
+    const now = SW.store.get();
+    report.push({
+      step: `echo ${step.echo}`,
+      transcript: view(now.buildTranscript),
+      appTurns: (now.buildMessages || []).length,
+      behindFrames,
+    });
+  } else if (step.select) {
+    await SW.store.selectApp(step.select);
+    report.push({ step: `select ${step.select}`, app: (SW.store.get().activeApp || {}).id || null });
+  } else if (step.resolve) {
+    // Where a `#/build/<id>` link with no `?app=` lands.
+    calls.length = 0;
+    const app = await SW.store.resolveConversationApp(step.resolve);
+    report.push({ step: `resolve ${step.resolve}`, app: app || null, calls: calls.slice() });
   } else if (step.card) {
     // `mode` and `activeApp` are what decides "in the preview": the card is only ever there when
     // Build is the mode on screen and it is showing this app.
