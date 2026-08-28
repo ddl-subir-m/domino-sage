@@ -6,7 +6,7 @@ window.SW = window.SW || {};
 (function () {
   const { createElement: h, useState, useEffect, Fragment } = React;
   const { Tooltip, Input, Dropdown, Modal, Button, Checkbox } = antd;
-  const { SearchOutlined, MoreOutlined, EditOutlined, PlusOutlined, DeleteOutlined } = icons;
+  const { SearchOutlined, MoreOutlined, EditOutlined, PlusOutlined, DeleteOutlined, LoadingOutlined } = icons;
 
   function renameApp(app) {
     let value = app.name;
@@ -133,12 +133,28 @@ window.SW = window.SW || {};
       // state, not the whole row: over the actions button the answer is what that button does.
       h(
         Tooltip,
-        { title: `ID ${app.id}`, placement: 'right', mouseEnterDelay: 0.5 },
+        {
+          title: app.building
+            ? `A build is running in this app. ID ${app.id}`
+            : `ID ${app.id}`,
+          placement: 'right',
+          mouseEnterDelay: 0.5,
+        },
         h(
           'div',
           { className: 'sw-thread-main' },
           h('div', { className: 'sw-thread-title' }, app.name),
-          h('div', { className: 'sw-thread-meta' }, app.built ? 'Built' : 'Not built yet')
+          h(
+            'div',
+            { className: 'sw-thread-meta' },
+            // A build the person walked away from goes on running (#77), so the row it is running
+            // in says so. It replaces the built/not-built line rather than sitting beside it: what
+            // an app is mid-build is the more useful of the two, and the other one comes back the
+            // moment the turn ends.
+            app.building
+              ? h('span', { className: 'sw-thread-building' }, h(LoadingOutlined, { spin: true }), 'Building\u2026')
+              : app.built ? 'Built' : 'Not built yet'
+          )
         )
       ),
       h(

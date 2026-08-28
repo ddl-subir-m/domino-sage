@@ -1619,7 +1619,9 @@ def _app_display_name(workspace: Workspace, fallback: str = "Unnamed Built App")
 @dataclass
 class Project:
     id: str
-    # The Built App: `apps/<appId>/` on the volume, and everything inside it.
+    # The Built App on screen: `apps/<appId>/` on the volume, and everything inside it. The person
+    # may point this at another app while a turn is running (#77), so a turn asks `app_for_turn()` for
+    # the app it writes into rather than reading this.
     workspace: Workspace
     # The Project's own record — Threads, plan documents, settings, sessions — at the volume root,
     # which is also the git repo root. Two surfaces, two directories (ADR-0008): ask this one for
@@ -1629,7 +1631,6 @@ class Project:
     queries: PreviewQueries
     control: ModelControl
     shim: EnforcementShim
-    snapshot: TurnSnapshot
     session_id: str | None = None
     # The session a turn is CURRENTLY streaming into. Normally session_id, but a phased build runs
     # each phase in its own throwaway session, and two things must follow the live one rather than
@@ -1676,6 +1677,14 @@ class Project:
     # deletes the upload they just made. Those paths re-baseline it instead (see _rebaseline_turn).
     # Empty when no turn is running.
     turn_tree_baseline: str = ""
+    # The Built App a turn in flight is writing into, and the attachments linked into it, pinned at
+    # the top of the turn and dropped at its end. Switching Built App does not take the turn lock
+    # (#77), so `workspace` and `attached` follow the app the person SELECTED — that is what the
+    # rail, the preview, the transcript and every panel show. These hold the app the turn began in,
+    # so the build, its revert and its end-of-turn repairs all land in the tree they started in
+    # rather than in the one that appeared under them. None between turns.
+    turn_app: Workspace | None = None
+    turn_attached: list[dict] | None = None
     # Where the UI sends a user to read what this project has cost, and the tag value to filter by
     # once they land. Both None off-Domino (or in fake/openai gateway mode), which hides the link —
     # a dead link to a dashboard that has no Sage data reads as a bug.
@@ -1687,6 +1696,24 @@ class Project:
     # the app's, and resolves inside `apps/<appId>/`.
     _PROJECT_PREFIXES = ("examples/", _SCRATCH_PREFIX, ".sage/threads/", ".sage/plan-docs/")
 
+    def app_for_turn(self) -> Workspace:
+        """The Built App a turn writes into: the one it pinned at its start, else the one on screen.
+
+        Ask this anywhere a turn acts — writing code, reverting it, appending to the log, repairing
+        attachments afterwards. Ask `workspace` for what the person is looking at."""
+        return self.turn_app or self.workspace
+
+    def attachments_for_turn(self) -> list[dict]:
+        """The attachment list that belongs to `app_for_turn()`, the same way round."""
+        return self.attached if self.turn_attached is None else self.turn_attached
+
+    @property
+    def snapshot(self) -> TurnSnapshot:
+        """Turn-scoped revert over the app being built. Derived rather than stored: a TurnSnapshot
+        is two paths and a `git --git-dir` call, and a stored one is a third thing that has to be
+        kept in step with the app a switch just changed."""
+        return TurnSnapshot(self.app_for_turn().path)
+
     def root_for(self, rel: str) -> Path:
         """Which of the two directories a workspace-relative path is written against.
 
@@ -1696,13 +1723,16 @@ class Project:
         clean = str(rel or "").replace("\\", "/").lstrip("/")
         return self.record.path if clean.startswith(self._PROJECT_PREFIXES) else self.workspace.path
 
-    def repo_rel(self, rel: str) -> str:
+    def repo_rel(self, rel: str, app: Workspace | None = None) -> str:
         """An app-relative path, as the Project's git repo names it: `apps/<appId>/<rel>`.
 
         Git runs at the Project root, so every path handed to it — an exclude, an untrack — has to
         be written from there, while everything else in the orchestrator is app-relative. Called
-        with an empty `rel` it names the app's directory itself."""
-        return f"{self.workspace.path.relative_to(self.record.path).as_posix()}/{rel}"
+        with an empty `rel` it names the app's directory itself.
+
+        `app` names one other than the app on screen. Only the turn's own git excludes need it: a
+        build that carried on after a switch (#77) is committing a tree nobody is looking at."""
+        return f"{(app or self.workspace).path.relative_to(self.record.path).as_posix()}/{rel}"
 
     def status(self) -> dict:
         s = self.control.snapshot()
@@ -1909,6 +1939,13 @@ class Orchestrator:
         # overlap is refused with a clear event, not silently run. Stop stays lock-free (it only sets
         # stop_requested, which the running turn polls) so it can always interrupt the held turn.
         self._turn_lock = threading.Lock()
+        # Serializes the four operations that change WHICH Built App is bound, or what is in it:
+        # select, New app, Delete and Reset. Switching stopped taking the turn lock (#77), so it is
+        # no longer serialized against the other three by holding that — and each of them reads the
+        # selected app and then acts on it, which a switch landing in between would make a lie.
+        # Held around the rebind alone, never around a network call or a turn: a rail click must
+        # not wait on Domino (see delete_app).
+        self._app_lock = threading.Lock()
         # Chat files are written every turn; git save is coalesced (docs/workbench/chat.md).
         self._chat_dirty = False
         self._chat_dirty_thread: str | None = None
@@ -2089,7 +2126,6 @@ class Orchestrator:
             supervisor.start()
             queries.start()
         self._project = Project(self._project_id, workspace, record, supervisor, queries, control, shim,
-                                TurnSnapshot(workspace.path),
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
         if seed_app:
@@ -2129,10 +2165,18 @@ class Orchestrator:
         # Newest document wins the app it names, which is the one its plan pin already trusts.
         plans = {str(d.get("appId") or ""): d["id"]
                  for d in reversed(project.record.list_plan_docs())}
-        return [self._app_row(app_id, project.workspace.app_id, plans)
+        return [self._app_row(app_id, project.workspace.app_id, plans, self._building_app_id())
                 for app_id in self._wm.app_ids()]
 
-    def _app_row(self, app_id: str, selected: str, plans: dict[str, str]) -> dict:
+    def _building_app_id(self) -> str:
+        """The Built App a turn is streaming into right now, or "" when none is.
+
+        Asked of the pin rather than of the lock alone: a Chat turn holds the same lock and builds
+        no app, and marking a rail row for it would say a build is running when none is."""
+        pinned = self._project.turn_app if self._project is not None else None
+        return pinned.app_id if pinned is not None else ""
+
+    def _app_row(self, app_id: str, selected: str, plans: dict[str, str], building: str = "") -> dict:
         """One rail row. `plans` is read once by the caller rather than per app: the documents are
         the Project's, so asking for them inside the loop would re-read all of them per app."""
         workspace = self._wm.app_workspace(self._project_id, app_id)
@@ -2147,6 +2191,10 @@ class Orchestrator:
             # it, and a Domino App is deleted by the app that owns it, never by one named over HTTP.
             "published": bool(workspace.domino_app_id()),
             "selected": app_id == selected,
+            # A build is streaming into this one. Switching away no longer stops it (#77), so the
+            # row is where "a build is running, and this is where" gets said — the composer can
+            # only say the first half, and it says it on whichever app you happen to be reading.
+            "building": app_id == building,
         }
 
     def _one_app(self, app_id: str) -> dict:
@@ -2154,7 +2202,7 @@ class Orchestrator:
         project = self.project(start_preview=False, seed_app=False)
         plans = {str(d.get("appId") or ""): d["id"]
                  for d in reversed(project.record.list_plan_docs())}
-        return self._app_row(app_id, project.workspace.app_id, plans)
+        return self._app_row(app_id, project.workspace.app_id, plans, self._building_app_id())
 
     def create_app(self) -> dict:
         """Start a Built App from the Build rail: minted, seeded and selected, with no Thread and
@@ -2164,16 +2212,18 @@ class Orchestrator:
         built, so a fresh app lands on the plan gate by itself — the same review a handoff earns on
         the way out of Chat, reached from the other side.
 
-        Refused while a turn is streaming, for the reason a switch is: a turn holds one working
-        tree. The lock is taken BEFORE the app is minted rather than around the select, so a
-        refusal leaves no half-born app sitting in the rail with nothing pointed at it.
+        Refused while a turn is streaming, unlike a plain switch (#77): switching only changes what
+        is on screen, and this seeds a directory and points Build at it. The lock is taken BEFORE
+        the app is minted rather than around the select, so a refusal leaves no half-born app
+        sitting in the rail with nothing pointed at it.
         """
         project = self.project(start_preview=False, seed_app=False)
         if not self._turn_lock.acquire(blocking=False):
             raise RuntimeError("busy")
         try:
-            born = self._wm.create_app(self._project_id)
-            self._bind_app(project, born)
+            with self._app_lock:
+                born = self._wm.create_app(self._project_id)
+                self._bind_app(project, born)
         finally:
             self._turn_lock.release()
         return self._one_app(born.app_id)
@@ -2181,10 +2231,12 @@ class Orchestrator:
     def select_app(self, app_id: str) -> dict:
         """Point Build at another Built App. Raises KeyError for one that is not there.
 
-        Refused while a turn is streaming, for the reason a Reset is: a turn holds one working tree
-        and swapping it underneath would leave the build writing into the app nobody is looking at.
-        Raised as the same `RuntimeError("busy")` every other turn-lock refusal uses, so the route
-        can tell it from a real failure.
+        Never refused for a running build (#77). A switch takes no working tree and writes no code:
+        it changes the preview, the transcript and the panels, all of which describe the app on
+        screen. The turn lock stays one per Project and still refuses a second turn — this just
+        stops being one of the things that takes it, so a build carries on in the app it started in
+        while the person reads another. `_app_lock` is what a switch takes instead, so that a click
+        in the rail cannot land in the middle of a New app, a Delete or a Reset.
         """
         project = self.project(start_preview=False, seed_app=False)
         # Checked before the equality guard, not inside it: on a Project with no apps the selected
@@ -2192,14 +2244,10 @@ class Orchestrator:
         # it names nothing and must 404 rather than fall through to a row that cannot be built.
         if app_id not in self._wm.app_ids():
             raise KeyError(app_id)
-        if app_id != project.workspace.app_id:
-            if not self._turn_lock.acquire(blocking=False):
-                raise RuntimeError("busy")
-            try:
+        with self._app_lock:
+            if app_id != project.workspace.app_id:
                 self._wm.select(app_id)
                 self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
-            finally:
-                self._turn_lock.release()
         return self._one_app(app_id)
 
     def rename_app(self, app_id: str, name: str) -> dict:
@@ -2234,10 +2282,10 @@ class Orchestrator:
         there to try again with, which is the only outcome that leaves a way out; the other order
         loses the app and strands the Domino App in one step.
 
-        Refused rather than queued while a turn is streaming, as a New app and a switch are: a turn
-        holds one working tree and this removes one. Reset waits out a stop it can see landing;
-        there is nothing to wait for here, because the app being deleted may not be the app the
-        turn is running in.
+        Refused rather than queued while a turn is streaming, as a New app is — and unlike a plain
+        switch (#77), which takes no tree away. Reset waits out a stop it can see landing; there is
+        nothing to wait for here, because the app being deleted may not be the app the turn is
+        running in.
         """
         if app_id not in self._wm.app_ids():
             raise KeyError(app_id)
@@ -2263,14 +2311,19 @@ class Orchestrator:
                         f"App is still here, so nothing is stranded — try again, or delete the App "
                         f"in Domino first and then delete this one.") from e
                 deleted_domino_app = True
-            self._wm.delete_app(app_id)
-            project.record.clear_plan_docs(app_id)
-            # Build was looking at the app that just went, so it has to be looking at something.
-            # `ensure` answers with the newest app left, or seeds one for a Project that now has
-            # none — the same not-yet-built app a Project starts with, rather than a Build mode
-            # pointed at a directory that is not there.
-            if project.workspace.app_id == app_id:
-                self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
+            # From here down is the part a switch must not interleave with. The control-plane call
+            # above is deliberately OUTSIDE it: deleting a Domino App takes the best part of a
+            # minute, and holding the rail's own lock across that would make every click in the
+            # rail wait for Domino.
+            with self._app_lock:
+                self._wm.delete_app(app_id)
+                project.record.clear_plan_docs(app_id)
+                # Build was looking at the app that just went, so it has to be looking at something.
+                # `ensure` answers with the newest app left, or seeds one for a Project that now has
+                # none — the same not-yet-built app a Project starts with, rather than a Build mode
+                # pointed at a directory that is not there.
+                if project.workspace.app_id == app_id:
+                    self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
         finally:
             self._turn_lock.release()
         return {
@@ -2285,9 +2338,13 @@ class Orchestrator:
     def _bind_app(self, project: Project, workspace: Workspace) -> Project:
         """Point the attached Project at a different Built App.
 
-        What is replaced is what belongs to an app: its code, the preview serving it, the turn
-        baseline taken over it and the attachments linked into it. The Project's own record, its
-        Threads and the model picker are untouched, because switching app is not switching Project.
+        What is replaced is what belongs to an app: its code, the preview serving it and the
+        attachments linked into it. The Project's own record, its Threads and the model picker are
+        untouched, because switching app is not switching Project.
+
+        Safe to call while a turn is streaming, which is the point (#77): nothing here is read by a
+        turn. A turn asks `project.app_for_turn()` for its app and pinned its attachments at its start,
+        so what changes here is only what the person is looking at.
 
         The preview is STOPPED rather than restarted here. It serves whichever directory it was
         started in, so one left running would go on serving the app the person just left;
@@ -2301,9 +2358,11 @@ class Orchestrator:
             project.supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
             project.queries = PreviewQueries(workspace.path, self._wm.template)
         project.workspace = workspace
-        project.snapshot = TurnSnapshot(workspace.path)
         project.session_id = None
-        project.attached.clear()
+        # A NEW list rather than a clear: a turn in flight pinned the one it started with, and
+        # emptying that one under it would leave its end-of-turn repairs with nothing to restore
+        # from (see Project.turn_attached and _restore_attachments).
+        project.attached = []
         self._prepare_app_files()
         self._splice_instructions(project)
         self._rehydrate_attached(project)
@@ -2479,13 +2538,13 @@ class Orchestrator:
     def _ensure_session(self, project: Project, conversation: str | None = None) -> str:
         client = self._ensure_opencode()
         self._switch_conversation(project, conversation)
-        app_id = project.workspace.app_id
+        app_id = project.app_for_turn().app_id
         if project.session_id is None:
             project.session_id = self._recover_session(project.record, client, conversation, app_id)
         if project.session_id is None:
             # No session-level model: use opencode.json's default; the shim's router enforces the
             # real model per request. (An explicit ModelRef at creation stalled turns.)
-            project.session_id = client.create_session(directory=str(project.workspace.path))
+            project.session_id = client.create_session(directory=str(project.app_for_turn().path))
             project.record.write_session_id(project.session_id, conversation, app_id)
         return project.session_id
 
@@ -2517,7 +2576,8 @@ class Orchestrator:
                     "message": "A build is already running. Wait for it to finish or stop it first."}
         try:
             project = self._ensure_seeded()
-            self._adopt_legacy_build_history(project.workspace, project.record)
+            self._pin_turn_app(project)
+            self._adopt_legacy_build_history(project.app_for_turn(), project.record)
             # Same reason as the streaming turns: the archive is no longer committed, so a fresh
             # clone reaching the agent through this route would hand it a file that isn't there.
             self._refresh_history_archive(project)
@@ -2536,11 +2596,12 @@ class Orchestrator:
             report, decision = run_feedback_loop(
                 prompt,
                 send_and_wait=send_and_wait,
-                check=lambda: self._feedback.check(project.workspace.path),
+                check=lambda: self._feedback.check(project.app_for_turn().path),
                 breaker=CircuitBreaker(),
             )
             return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
         finally:
+            self._clear_turn_baseline()
             self._turn_lock.release()
 
     def _descriptor(self, project: Project, entry: dict) -> dict:
@@ -2587,7 +2648,7 @@ class Orchestrator:
             if entry is None:
                 continue
             try:
-                real = _safe_join(project.workspace.path, m).resolve()
+                real = _safe_join(project.app_for_turn().path, m).resolve()
             except (ValueError, OSError):
                 continue
             if not real.is_file():
@@ -2617,13 +2678,13 @@ class Orchestrator:
         """
         if not resources:
             return ""
-        recorded = parse_bindings(project.workspace.read_bindings())
+        recorded = parse_bindings(project.app_for_turn().read_bindings())
         known = {b.key: b for b in recorded}
         # The tables of each bound Data Source, keyed by the Binding they belong to — so a table
         # mention is honored against the Resource it was offered under, and an app reading a
         # warehouse and an app database can be pointed at either one's tables (#33).
         in_schema = {rid: {c.table for c in columns} for rid, columns
-                     in parse_schema(self._read_json(project.workspace.path / SCHEMA_PATH)).items()}
+                     in parse_schema(self._read_json(project.app_for_turn().path / SCHEMA_PATH)).items()}
         # Grouped by Binding, in the order they were mentioned: "@Snowflake-Data-Warehouse and
         # @FCT_USAGE_DAILY" names one Resource once, not twice, and the tables belong on that line.
         order: list[tuple[str, str]] = []
@@ -2677,7 +2738,9 @@ class Orchestrator:
             return
         try:
             self._begin_conversation(conversation)
-            if _looks_like_approval(prompt) and (self.project().workspace.read_plan() or "").strip():
+            project = self.project()
+            self._pin_turn_app(project)
+            if _looks_like_approval(prompt) and (project.app_for_turn().read_plan() or "").strip():
                 yield {"type": "plan-stale", "note": "Approved in chat — building this plan."}
                 yield from self._approve_locked(user_text=prompt)
                 return
@@ -2690,7 +2753,7 @@ class Orchestrator:
             if _asks_to_reset(prompt) and not skip_reset_gate:
                 yield from self._reset_offer(prompt, mentions, resources)
                 return
-            if (self.project().control.snapshot().mode is Mode.ASK
+            if (project.control.snapshot().mode is Mode.ASK
                     and _looks_like_change_request(prompt)):
                 yield from self._ask_mode_refusal(prompt)
                 return
@@ -3057,7 +3120,12 @@ class Orchestrator:
         if not self._turn_lock.acquire(blocking=False):
             raise RuntimeError("busy")
         try:
-            return self._confirm_handoff(thread_id, include or {}, target or {})
+            # `_app_lock` as well, because confirming BINDS an app and then keeps reading the one it
+            # bound — the plan, the handoff note, the `bound` mark, the plan document's `appId`. A
+            # switch is no longer refused while a turn holds the lock (#77), so without this a click
+            # in the rail could land between the bind and those writes and send them elsewhere.
+            with self._app_lock:
+                return self._confirm_handoff(thread_id, include or {}, target or {})
         finally:
             self._turn_lock.release()
 
@@ -3845,7 +3913,15 @@ class Orchestrator:
         resolved has nothing to check, and this must never be what fails a build that worked.
         """
         try:
-            self._write_app_data(self.project())
+            project = self.project()
+            # Skipped when the person switched Built App mid-build (#77). This writes the app's
+            # AGENTS.md and reads its Bindings, and both of those follow the app on screen — the
+            # same ones Bind and Unbind write. Writing the turn's answer into another app's file is
+            # worse than waiting: the next turn in the app that was built ends here too, and
+            # re-derives the same thing then.
+            if project.turn_app is not None and project.turn_app.app_id != project.workspace.app_id:
+                return
+            self._write_app_data(project)
         except Exception:
             log.exception("app data: could not re-check the query catalog")
 
@@ -3896,20 +3972,21 @@ class Orchestrator:
         if not self._acquire_for_reset():
             raise ResetBusy()
         try:
-            project = self.project()
-            self._wm.reset()
-            # The plan documents describe the app that was just taken away, and they live with the
-            # Project rather than inside the app — so clearing them is a second call, through the
-            # surface that owns them, and it names the app so the other apps' documents stay.
-            project.record.clear_plan_docs(project.workspace.app_id)
-            # AGENTS.md came back from the template, so the Project's instructions are rendered into
-            # it again. They were never kept in that file, so Reset had nothing to lose.
-            self._splice_instructions(project)
-            self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
-            project.workspace.clear_built()
-            project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
-            self._refresh_history_archive(project)
-            return {"ok": True, "status": project.status()}
+            with self._app_lock:
+                project = self.project()
+                self._wm.reset()
+                # The plan documents describe the app that was just taken away, and they live with the
+                # Project rather than inside the app — so clearing them is a second call, through the
+                # surface that owns them, and it names the app so the other apps' documents stay.
+                project.record.clear_plan_docs(project.workspace.app_id)
+                # AGENTS.md came back from the template, so the Project's instructions are rendered into
+                # it again. They were never kept in that file, so Reset had nothing to lose.
+                self._splice_instructions(project)
+                self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
+                project.workspace.clear_built()
+                project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
+                self._refresh_history_archive(project)
+                return {"ok": True, "status": project.status()}
         finally:
             self._turn_lock.release()
 
@@ -3939,10 +4016,15 @@ class Orchestrator:
             project = self.project()
         except Exception:
             return
+        # The turn's app and the turn's list, not the ones on screen: a switch mid-build (#77)
+        # leaves `project.attached` describing another app entirely, and restoring THAT here would
+        # link one app's files into another's tree.
+        app = project.app_for_turn()
+        attached = project.attachments_for_turn()
         restored: list[str] = []
-        for entry in list(project.attached):
+        for entry in list(attached):
             try:
-                dest = _safe_join(project.workspace.path, entry["path"])
+                dest = _safe_join(app.path, entry["path"])
                 if dest.is_symlink() or dest.exists():
                     continue
                 # Raises LookupError for a rehydrated entry with no dataset_id, which the except
@@ -3966,30 +4048,44 @@ class Orchestrator:
             # Unconditional, not only when `restored` is non-empty: the entry can survive on disk
             # while the manifest that carries it into the next session does not, and rewriting a
             # file that already says this is free.
-            project.workspace.write_attachments(project.attached)
+            app.write_attachments(attached)
         except OSError:
             log.exception("attachments: could not rewrite the manifest")
         if restored:
             log.warning("attachments: the turn deleted %d attachment(s); restored %s",
                         len(restored), ", ".join(restored))
             try:
-                project.workspace.append_history({"type": "attachments-restored", "paths": restored},
-                                                 project.build_conversation)
+                app.append_history({"type": "attachments-restored", "paths": restored},
+                                   project.build_conversation)
             except OSError:
                 pass
+
+    @staticmethod
+    def _pin_turn_app(project: Project) -> None:
+        """Name the Built App this turn writes into, for as long as it runs (#77).
+
+        Taken at the top of every turn, under the turn lock. The person may point the rail at
+        another app while the turn streams, and everything after this — the session's directory,
+        the log, the revert, the `built` latch, the end-of-turn repairs — has to mean the app the
+        turn began in rather than whichever one is on screen when it gets there."""
+        project.turn_app = project.workspace
+        project.turn_attached = project.attached
 
     def _clear_turn_baseline(self) -> None:
         """Mark "no turn running" so _rebaseline_turn stops touching the baseline once the turn that
         owns it is over. Best-effort — a project we can't resolve has no baseline to clear.
 
-        Also drops active_session_id. It's cleared here, at the one place that already means "the
-        turn is over", rather than at each of _build_stream's many exits — a phased build reassigns
-        it per phase, and the turn lock means no other turn can observe it mid-flight anyway."""
+        Also drops active_session_id and the app the turn pinned. They're cleared here, at the one
+        place that already means "the turn is over", rather than at each of _build_stream's many
+        exits — a phased build reassigns the session per phase, and the turn lock means no other
+        turn can observe either mid-flight anyway."""
         try:
             if self._project is None:
                 return
             self._project.turn_tree_baseline = ""
             self._project.active_session_id = None
+            self._project.turn_app = None
+            self._project.turn_attached = None
         except Exception:
             pass
 
@@ -4138,11 +4234,11 @@ class Orchestrator:
             # that failed at phase 4 would be recorded as a success by phases 1-3. _phased_approve
             # sets it once for the whole build.
             if owns_turn and ev["type"] == "done" and not answer_only and not arch:
-                project.workspace.set_last_turn_failed(not ev.get("ok"))
+                project.app_for_turn().set_last_turn_failed(not ev.get("ok"))
             # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
             # must not reach history either, or a reload would replay six "build is clean" dividers.
             if ev["type"] in _PERSISTED_EVENTS and (owns_turn or ev["type"] != "done"):
-                project.workspace.append_history(ev, project.build_conversation)
+                project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
 
         # Refresh the agent-facing archive of earlier turns BEFORE the baseline below, so this write
@@ -4153,7 +4249,7 @@ class Orchestrator:
         # state, and remember how many history entries pre-date this turn so a stop can drop
         # everything appended since (the turn disappears from the transcript entirely).
         project.snapshot.commit_before_turn()
-        history_baseline = project.workspace.history_len()
+        history_baseline = project.app_for_turn().history_len()
 
         # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
         # read-only planner and stop for the user to approve — this turn deliberately writes no code.
@@ -4167,7 +4263,7 @@ class Orchestrator:
         mode_token = project.control.arm_turn_mode(mode or project.control.snapshot().mode)
         mode_at_start = project.control.snapshot().mode
         is_question = _looks_like_question(prompt)
-        has_built = project.workspace.has_built()
+        has_built = project.app_for_turn().has_built()
         # An approval is the user saying "build this plan now" — never gate it (that would re-propose a
         # plan for an already-approved build and loop forever) and never treat it as a question.
         # An explicit request for an architecture (see _wants_architecture) produces a document, not a
@@ -4208,9 +4304,9 @@ class Orchestrator:
         # Ordered ahead of the scope classifier below on purpose: a failure has already decided this
         # turn should be planned, so there is nothing left for a model call to change and
         # _scope_gate_applies declines it on `gate`. The cheap deterministic signal shadows the paid one.
-        prev_turn_failed = project.workspace.read_last_turn_failed()
+        prev_turn_failed = project.app_for_turn().read_last_turn_failed()
         if not is_question:
-            project.workspace.set_last_turn_failed(False)
+            project.app_for_turn().set_last_turn_failed(False)
         gate = gate or _failure_gate_applies(
             mode=mode_at_start,
             is_approval=is_approval,
@@ -4237,7 +4333,7 @@ class Orchestrator:
                 prompt,
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
-                root=project.workspace.path,
+                root=project.app_for_turn().path,
                 session=project.session_id,
                 version=project.shim.version,
             )
@@ -4350,8 +4446,9 @@ class Orchestrator:
         # replay their words, not ours. A phase writes none: the user approved once, so a phased
         # build is one bubble in the transcript, not six copies of their approval.
         if owns_turn:
-            project.workspace.append_history({"type": "user", "text": user_text if user_text is not None else prompt},
-                                             project.build_conversation)
+            project.app_for_turn().append_history(
+                {"type": "user", "text": user_text if user_text is not None else prompt},
+                project.build_conversation)
 
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never
@@ -4401,7 +4498,7 @@ class Orchestrator:
             # stopping. The bare "stopped" still flows out so the caller knows to do it.
             if owns_turn:
                 project.snapshot.discard_changes()
-                project.workspace.truncate_history(history_baseline)
+                project.app_for_turn().truncate_history(history_baseline)
             restore_mode()
             return {"type": "stopped"}
 
@@ -4690,9 +4787,9 @@ class Orchestrator:
                 # because they later approved a build from it.
                 plan_id = ""
                 if arch:
-                    project.workspace.write_architecture(plan_md)
+                    project.app_for_turn().write_architecture(plan_md)
                 else:
-                    project.workspace.write_plan(plan_md)
+                    project.app_for_turn().write_plan(plan_md)
                     # The durable half of the same plan. plan.md above is the copy the builder
                     # consumes and archive_plan() moves aside the moment it does; this document is
                     # what people open, edit and comment on, and it has to outlive that build.
@@ -4705,7 +4802,7 @@ class Orchestrator:
                         author=_viewer_id(),
                         # This gate ran inside an app, so the document knows which one from the
                         # start — unlike a Chat handoff, which is planned before any app exists.
-                        app_id=project.workspace.app_id,
+                        app_id=project.app_for_turn().app_id,
                     )["id"]
                 # `steps` is how the card says "Approve & build (6 phases)" — and, more usefully,
                 # it's the user's chance to see BEFORE approving that a phased plan actually parsed.
@@ -4738,7 +4835,7 @@ class Orchestrator:
                 return
 
             yield {"type": "typecheck-start"}
-            report = self._feedback.check(project.workspace.path)
+            report = self._feedback.check(project.app_for_turn().path)
             yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
             if project.stop_requested:
                 yield handle_stop()
@@ -4854,7 +4951,7 @@ class Orchestrator:
                     #
                     # A phase does neither: one approved plan is one commit, not six, and a build that
                     # dies at phase 4 must not have been marked "built" by phase 1.
-                    project.workspace.mark_built()
+                    project.app_for_turn().mark_built()
                     saved = self._save_to_git(project, prompt)
                     if saved is not None:
                         yield persist(saved)
@@ -4879,6 +4976,7 @@ class Orchestrator:
             return
         try:
             self._begin_conversation(conversation)
+            self._pin_turn_app(self.project())
             yield from self._approve_locked(answers, plan_edits, plan_id=plan_id)
         finally:
             self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
@@ -4892,12 +4990,12 @@ class Orchestrator:
         from the card's Approve button and from a bare approval typed in the composer (build_stream)."""
         project = self.project()
         if plan_edits is not None:
-            project.workspace.write_plan(plan_edits)
+            project.app_for_turn().write_plan(plan_edits)
         # Fall back to the architecture when no plan is live: an architecture turn writes only
         # .sage/architecture.md (it isn't a one-shot handoff and must survive the build), so its card's
         # Build button would otherwise approve an empty plan and build nothing.
-        live_plan = project.workspace.read_plan() or ""
-        plan_md = live_plan or project.workspace.read_architecture() or ""
+        live_plan = project.app_for_turn().read_plan() or ""
+        plan_md = live_plan or project.app_for_turn().read_architecture() or ""
         # Nothing live to approve. A plan is a one-shot handoff — the `finally` below archives it the
         # moment a build consumes it — so a second click on a card that already built finds an empty
         # string here. Before this guard that string still went out as an approve prompt, and the
@@ -4947,7 +5045,7 @@ class Orchestrator:
                 # here; this is the same sentence on the path that runs when phasing is off.
                 yield from self._build_stream(
                     _approve_prompt(plan_md, answers,
-                                   handoff_note=chat_handoff.implement_note(project.workspace.path)),
+                                   handoff_note=chat_handoff.implement_note(project.app_for_turn().path)),
                     is_approval=True, mode=run_as,
                     user_text=user_text if user_text is not None else "Approved the plan.")
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
@@ -4959,11 +5057,11 @@ class Orchestrator:
                       "message": "Approving built this plan, but the mode is still Ask — it answers "
                                  "questions and never changes files. Switch to Auto or Implement "
                                  "before asking for your next change."}
-                project.workspace.append_history(ev, project.build_conversation)
+                project.app_for_turn().append_history(ev, project.build_conversation)
                 yield ev
         finally:
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
-            project.workspace.archive_plan()
+            project.app_for_turn().archive_plan()
 
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
         """The document the approved plan.md belongs to, or None.
@@ -4996,19 +5094,19 @@ class Orchestrator:
 
         def persist(ev: dict) -> dict:
             if ev["type"] in _PERSISTED_EVENTS:
-                project.workspace.append_history(ev, project.build_conversation)
+                project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
 
         # Same ordering rule as _build_stream: refresh the archive before the revert point below.
         self._refresh_history_archive(project)
-        project.workspace.append_history(
+        project.app_for_turn().append_history(
             {"type": "user", "text": user_text if user_text is not None else "Approved the plan."},
             project.build_conversation)
         # ONE revert point for the whole build. _build_stream still checkpoints per phase (which is
         # what gives a gate violation its correct, narrow scope), so undoing everything needs a ref
         # that reaches back past all of them — hence discard_to rather than discard_changes.
         base = project.snapshot.commit_before_turn()
-        history_baseline = project.workspace.history_len()
+        history_baseline = project.app_for_turn().history_len()
         # Per-phase circuit breakers bound each phase, not the build: 6 × (15 iterations, 600s) is an
         # hour of wall clock that nobody asked for.
         deadline = time.monotonic() + _env_int("SAGE_PHASED_MAX_SECONDS", 1800)
@@ -5027,7 +5125,7 @@ class Orchestrator:
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
                 # normal turn: the turn vanishes, files and transcript both.
                 project.snapshot.discard_to(base)
-                project.workspace.truncate_history(history_baseline)
+                project.app_for_turn().truncate_history(history_baseline)
                 yield {"type": "stopped"}
                 return
             if outcome is not True:
@@ -5047,13 +5145,13 @@ class Orchestrator:
             # minutes of good work because step 4 of 6 broke is the worst available behaviour. What
             # we do instead is skip the commit (the durable record stays clean) and flag the failure,
             # which makes the next turn plan first via the existing failure-replan gate.
-            project.workspace.set_last_turn_failed(True)
+            project.app_for_turn().set_last_turn_failed(True)
             yield persist({"type": "done", "ok": False,
                            "decision": f"phase {step.n} of {len(steps)} failed — {why}"})
             return
 
-        project.workspace.set_last_turn_failed(False)
-        project.workspace.mark_built()
+        project.app_for_turn().set_last_turn_failed(False)
+        project.app_for_turn().mark_built()
         yield persist({"type": "done", "ok": True, "decision": "typecheck clean"})
         saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
         if saved is not None:
@@ -5082,7 +5180,7 @@ class Orchestrator:
                            "detail": f"phase {step.n} failed — retrying on {project.shim.catalog.plan}"}
                 # A brand-new session even on the retry: the first attempt's failure is now sitting in
                 # that session's context, and it's the most misleading thing a retry could read.
-                sid = client.create_session(directory=str(project.workspace.path))
+                sid = client.create_session(directory=str(project.app_for_turn().path))
                 # Every phase is pinned to Implement, never the user's mode. A phase begins with a
                 # fresh user message, so the per-inference classifier would read PLAN and route the
                 # expensive plan-tier model on every phase — N times the cost this feature exists to
@@ -5118,23 +5216,33 @@ class Orchestrator:
     def record_runtime_error(self, message: str, stack: str = "") -> None:
         """Store a runtime error the live preview reported (via /api/preview/runtime-error), stamped
         so build_stream can tell this turn's crash from a stale one. Best-effort: a report that
-        arrives with no active project is simply dropped."""
+        arrives with no active project is simply dropped.
+
+        Stamped with the app too, because the preview serves whichever app is ON SCREEN and the
+        person may have switched away from the one being built (#77)."""
         import time
 
         if self._project is None:
             return
-        self._project.runtime_error = {"message": message, "stack": stack, "ts": time.monotonic()}
+        self._project.runtime_error = {"message": message, "stack": stack, "ts": time.monotonic(),
+                                       "app": self._project.workspace.app_id}
 
     def _await_runtime_error(self, project: Project, since: float, timeout: float = 4.0) -> dict | None:
         """Poll up to `timeout`s for a preview-reported runtime error newer than `since` (this turn's
-        send time). Returns it, or None if the preview stays clean. The HMR update -> re-render ->
-        report round-trip usually lands within a second or two of the agent's last write."""
+        send time), from the app this turn is building. Returns it, or None if the preview stays
+        clean. The HMR update -> re-render -> report round-trip usually lands within a second or two
+        of the agent's last write.
+
+        A crash from another app is not this turn's to fix: the person may have pointed the preview
+        at a different Built App mid-build (#77), and feeding its stack to the agent would send it
+        hunting a file that is not in the tree it can see."""
         import time
 
+        app_id = project.app_for_turn().app_id
         deadline = time.monotonic() + timeout
         while True:
             rt = project.runtime_error
-            if rt is not None and rt.get("ts", 0.0) >= since:
+            if rt is not None and rt.get("ts", 0.0) >= since and rt.get("app", app_id) == app_id:
                 return rt
             if time.monotonic() >= deadline:
                 return None
@@ -6747,11 +6855,15 @@ class Orchestrator:
     def _detect_leaks(self, project: Project) -> list[tuple[str, list[str]]]:
         """(attachment name, [source files that copy it]) for every attached file whose bytes were
         duplicated into the app tree. Empty when nothing was copied. One source scan for all files."""
-        if not project.attached:
+        # The app being BUILT, not the one on screen: both callers are the turn's, and after a
+        # switch mid-build (#77) the on-screen app is neither the tree the agent copied into nor
+        # the list it copied from — so asking it would report no leak and exclude nothing.
+        attached = project.attachments_for_turn()
+        if not attached:
             return []
-        sources = self._scan_app_sources(project.workspace)
+        sources = self._scan_app_sources(project.app_for_turn())
         out: list[tuple[str, list[str]]] = []
-        for e in project.attached:
+        for e in attached:
             copies = self._data_usage(project, e, sources)["copies"]
             if copies:
                 out.append((PurePosix(e["path"]).name, copies))
@@ -6763,7 +6875,8 @@ class Orchestrator:
 
         Written from the repo root, because that is where git runs: `_detect_leaks` names them the
         way the app does, and an exclude git cannot resolve excludes nothing."""
-        return [project.repo_rel(f) for _, files in self._detect_leaks(project) for f in files]
+        app = project.app_for_turn()
+        return [project.repo_rel(f, app) for _, files in self._detect_leaks(project) for f in files]
 
     def _attachment_bytes(self, project: Project, entry: dict) -> bytes | None:
         """Read an attached file's bytes (follows the symlink to the dataset mount). None if absent."""
@@ -7091,7 +7204,7 @@ class Orchestrator:
         rules; these two calls are what fixes a project seeded before they existed."""
         from ..workspace import git
 
-        ws = project.workspace
+        ws = project.app_for_turn()
         rel = ws.history_md_path.relative_to(ws.path).as_posix()
         self._ensure_gitignored(ws.path, rel)
         ensure_ignore_line(ws.path / ".ignore", f"!{rel}")

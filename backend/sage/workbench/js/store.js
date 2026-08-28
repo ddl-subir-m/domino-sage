@@ -1253,12 +1253,12 @@ window.SW = window.SW || {};
     },
 
     // Which app Build has in front of it. Looking is free and reversible, so this changes freely
-    // and never implies a change to either app. The server is refused while a build is streaming —
-    // it holds one working tree — and says so, which is the one case worth a message.
+    // and never implies a change to either app — a build already running is not stopped or refused
+    // by it, it goes on in the app it started in and the rail marks that row (#77).
     async selectApp(app) {
       const id = typeof app === 'string' ? app : app && app.id;
       // Already there, or already on the way there. `selecting` is what keeps a second asker from
-      // racing the first into the server's turn lock — see where it is declared.
+      // racing the first — see where it is declared.
       if (!id || id === selecting || (state.activeApp && state.activeApp.id === id)) {
         return state.activeApp;
       }
@@ -1348,6 +1348,12 @@ window.SW = window.SW || {};
       // click that is the click, not the request — the request is already a bubble above the offer,
       // and repeating it would say the user asked twice (see build_stream's `user_text`).
       const bubble = skipResetGate ? 'Build it.' : text;
+      // The app this turn is for. Switching Built App mid-build is allowed and the build carries on
+      // server-side (#77), so the events below have to be checked against this before they are
+      // appended — otherwise one app's build writes itself into another app's transcript. The
+      // rail's Building mark is what reports the turn once the person has moved on.
+      const turnApp = state.activeApp && state.activeApp.id;
+      const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
       state.buildHistory = state.buildHistory.concat([{ type: 'user', text: bubble }]);
       state.buildMessages = buildHistoryToMessages(state.buildHistory);
       state.buildRunning = true;
@@ -1367,6 +1373,8 @@ window.SW = window.SW || {};
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
+          // Once the rail has moved on, these events describe an app that is no longer on screen.
+          if (movedOn()) return;
           applyBuildEvent(ev);
           notify();
         });
@@ -1377,6 +1385,9 @@ window.SW = window.SW || {};
         state.buildRunning = false;
         state.buildTyping = null;
         notify();
+        // Reload rather than keep a half-turn on screen: the transcript showing now is the other
+        // app's, and it was deliberately never given this turn's events.
+        if (movedOn()) await store.loadBuild({ keepPreview: true });
         await Promise.all([probePreview(), refreshBindings()]);
         notify();
       }
@@ -1405,6 +1416,10 @@ window.SW = window.SW || {};
     async approveBuild(answers, planEdits, planId) {
       if (state.buildRunning) return null;
       if (!state.thread) await store.newThread();
+      // Same rule as sendBuildPrompt: an approve is a build turn, and the person can move to
+      // another Built App while it streams (#77).
+      const turnApp = state.activeApp && state.activeApp.id;
+      const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
       state.buildHistory = state.buildHistory.concat([{ type: 'user', text: 'Approved the plan.' }]);
       state.buildMessages = buildHistoryToMessages(state.buildHistory);
       state.buildRunning = true;
@@ -1429,6 +1444,7 @@ window.SW = window.SW || {};
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
+          if (movedOn()) return;
           applyBuildEvent(ev);
           notify();
         });
@@ -1439,6 +1455,7 @@ window.SW = window.SW || {};
         state.buildRunning = false;
         state.buildTyping = null;
         notify();
+        if (movedOn()) await store.loadBuild({ keepPreview: true });
         await Promise.all([probePreview(), refreshBindings(), loadThreadList()]);
         notify();
       }
@@ -1497,6 +1514,9 @@ window.SW = window.SW || {};
       if (store._watchTimer) return;
       const tick = async () => {
         const running = await SW.api.buildState().catch(() => ({ running: true }));
+        // The rail rides along: which app a build is running in is a row's state, and someone who
+        // switched away from that app has no other way to see the turn still going (#77).
+        await loadAppList();
         // Same scope as loadBuild: polling the whole project here would pull other
         // conversations' turns into the one on screen.
         const watched = state.thread && state.thread.id;

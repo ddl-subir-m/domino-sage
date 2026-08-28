@@ -85,6 +85,16 @@
   color: var(--gray-500);
   margin-top: 1px;
 }
+/* The rail row for the app a build is streaming into (#77). Purple like the active row, because
+   it is the same fact — something of yours is happening here — and it reads at a glance beside a
+   row that only says "Built". */
+.sw-thread-building {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--purple-600);
+  font-weight: 600;
+}
 .sw-thread-flag {
   background: var(--purple-100);
   color: var(--purple-600);

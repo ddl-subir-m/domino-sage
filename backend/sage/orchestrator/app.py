@@ -1561,19 +1561,13 @@ def create_app() -> JSONResponse:
 
 @control_app.post("/api/apps/{app_id}/select")
 def select_app(app_id: str) -> JSONResponse:
-    """Point Build at another Built App. Looking is free — this changes neither app."""
+    """Point Build at another Built App. Looking is free — this changes neither app, and it is never
+    refused for a running build: the build carries on in the app it started in and the rail marks
+    that row (#77)."""
     try:
         return JSONResponse({"ok": True, "app": orchestrator.select_app(app_id)})
     except KeyError:
         return JSONResponse({"error": "unknown app"}, status_code=404)
-    except RuntimeError as e:
-        # Only the turn-lock refusal. Anything else RuntimeError is a real failure and must not be
-        # reported to the person as a build they can wait out.
-        if str(e) == "busy":
-            return JSONResponse(
-                {"error": "A build is running. Stop it, or wait for it to finish, then switch app."},
-                status_code=409)
-        raise
 
 
 @control_app.delete("/api/apps/{app_id}")
