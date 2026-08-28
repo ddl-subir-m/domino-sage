@@ -459,6 +459,7 @@ window.SW = window.SW || {};
     'awaiting approval': true,
     'architecture ready': true,
     'reset offered': true,
+    'incoming changes': true,
   };
 
   function buildHistoryToMessages(history) {
@@ -549,6 +550,19 @@ window.SW = window.SW || {};
           prompt: ev.prompt || '',
           live: !!ev.live,
         });
+      } else if (ev.type === 'incoming-changes' && ev.message) {
+        // Same `live` rule as the reset offer above, and for the same reason: an offer replayed
+        // from the transcript must not be able to pull the repo on a page load nobody connected
+        // it to. The files are what makes it readable — "somebody changed this app" is a fact you
+        // can act on only once you can see what they changed.
+        ensureAssistant().blocks.push({
+          type: 'incoming_changes',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          files: ev.files || [],
+          count: ev.count || (ev.files || []).length,
+          live: !!ev.live,
+        });
       } else if (ev.type === 'app-reset') {
         ensureAssistant().blocks.push({
           type: 'status',
@@ -591,7 +605,7 @@ window.SW = window.SW || {};
     // The buttons on a reset offer belong to the offer the user is looking at, not to every copy of
     // it the transcript keeps. Marking the live frame is what separates the two — the server row a
     // reload returns has no `live`, so it replays as text (see buildHistoryToMessages).
-    if (ev.type === 'reset-offer') ev.live = true;
+    if (ev.type === 'reset-offer' || ev.type === 'incoming-changes') ev.live = true;
     state.buildHistory = state.buildHistory.concat([ev]);
     state.buildMessages = buildHistoryToMessages(state.buildHistory);
   }
@@ -1339,15 +1353,16 @@ window.SW = window.SW || {};
     // it opens one, the same way Chat does.
     // `skipResetGate` is only ever set by a button on a reset offer (#36), and only for the prompt
     // that offer was about: the gate already stopped this request once and the user answered it, so
-    // re-matching it would hand back the same offer forever.
-    async sendBuildPrompt(text, { skipResetGate = false } = {}) {
+    // re-matching it would hand back the same offer forever. `skipIncomingGate` says the same of an
+    // incoming-changes offer (#78), and is set by both of that offer's buttons.
+    async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false } = {}) {
       if (!text.trim() || state.buildRunning) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
       // Echo what the server will write to the transcript, so live and reloaded read the same. For a
       // click that is the click, not the request — the request is already a bubble above the offer,
       // and repeating it would say the user asked twice (see build_stream's `user_text`).
-      const bubble = skipResetGate ? 'Build it.' : text;
+      const bubble = skipResetGate || skipIncomingGate ? 'Build it.' : text;
       // The app this turn is for. Switching Built App mid-build is allowed and the build carries on
       // server-side (#77), so the events below have to be checked against this before they are
       // appended — otherwise one app's build writes itself into another app's transcript. The
@@ -1363,7 +1378,9 @@ window.SW = window.SW || {};
         const res = await fetch('./api/project/build/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: text, conversation: state.thread.id, skipResetGate }),
+          body: JSON.stringify({
+            prompt: text, conversation: state.thread.id, skipResetGate, skipIncomingGate,
+          }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -1406,6 +1423,26 @@ window.SW = window.SW || {};
     async resetAndBuild(prompt) {
       await store.resetApp();
       return store.sendBuildPrompt(prompt, { skipResetGate: true });
+    },
+
+    // The two answers to an incoming-changes offer (#78). Both set `skipIncomingGate`, because both
+    // ARE the answer: pulling settles the question by merging, keeping building settles it by
+    // deciding to merge later. Neither is asked again until somebody pushes something new.
+    //
+    // A pull can take a while — it resolves conflicts with the agent — and it can fail on a repo
+    // with no remote, so the build only follows a pull that worked.
+    async pullAndBuild(prompt) {
+      const result = await SW.api.syncProject();
+      if (result.status === 'conflict-unresolved' || result.status === 'error') {
+        throw new Error(result.detail || 'Sage could not pull the latest changes.');
+      }
+      await Promise.all([store.loadApps(), store.loadBuild({ keepPreview: true })]);
+      return store.sendBuildPrompt(prompt, { skipIncomingGate: true });
+    },
+
+    async buildWithIncoming(prompt) {
+      await store.loadBuild({ keepPreview: true });
+      return store.sendBuildPrompt(prompt, { skipIncomingGate: true });
     },
 
     async buildWithoutReset(prompt) {

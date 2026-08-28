@@ -489,6 +489,10 @@ SW.api = {
   // #75). Attachments, Resources, the transcript and every other app survive it — see
   // Orchestrator.reset_app.
   resetApp: () => post('/project/reset'),
+  // Pull a teammate's changes into the workspace and push the merged result, so the repo and the
+  // Project agree (#78). Conflicts are resolved by the agent on the way through, so this can take
+  // a model turn — see Orchestrator.sync.
+  syncProject: () => post('/project/sync'),
 
   buildSteps: () => empty(),
   buildRuns: () => empty(),

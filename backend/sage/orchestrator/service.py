@@ -168,8 +168,16 @@ _MODE_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan", Mode.IMPLEMENT: "sa
 _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
-    "reset-offer", "app-reset",
+    "reset-offer", "app-reset", "incoming-changes",
 })
+
+# How long the rail's reading of the remote stays good for. The check runs off the request path, so
+# this is how stale a badge may be, not how long anything waits: a turn does its own check, because
+# a turn is the moment the answer has to be right (#78).
+_REMOTE_CHECK_SECONDS = 30.0
+# How many incoming file names an offer carries. Enough to recognise what a teammate touched, and
+# short of pasting a thousand-file merge into the transcript; the full count rides beside it.
+_INCOMING_FILES_SHOWN = 20
 
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
 # tree, so publish pre-checks it exists locally before deploying (a missing one fails opaquely).
@@ -1946,6 +1954,16 @@ class Orchestrator:
         # Held around the rebind alone, never around a network call or a turn: a rail click must
         # not wait on Domino (see delete_app).
         self._app_lock = threading.Lock()
+        # What the remote has that this workspace does not (#78). Refreshed off the request path so
+        # the rail can badge it without anyone clicking, and read again by a turn on its way in.
+        # `None` until the first check lands, which is why the rail badges nothing before then.
+        self._incoming = None
+        self._incoming_at = 0.0
+        self._incoming_checking = False
+        self._incoming_lock = threading.Lock()
+        # The remote commit a person chose to build past, per Built App. A decision made once stands
+        # until the remote moves on: re-asking every turn is a wall, not a choice.
+        self._incoming_dismissed: dict[str, str] = {}
         # Chat files are written every turn; git save is coalesced (docs/workbench/chat.md).
         self._chat_dirty = False
         self._chat_dirty_thread: str | None = None
@@ -2162,11 +2180,88 @@ class Orchestrator:
     def list_apps(self) -> list[dict]:
         """Every Built App in this Project, oldest first, for the Build rail."""
         project = self.project(start_preview=False, seed_app=False)
+        # Off the request path on purpose: the rail is the first thing that draws, and it must not
+        # wait on a network round trip to do it. The badge appears on the poll after the check.
+        self._remote_check_due(project)
         # Newest document wins the app it names, which is the one its plan pin already trusts.
         plans = {str(d.get("appId") or ""): d["id"]
                  for d in reversed(project.record.list_plan_docs())}
         return [self._app_row(app_id, project.workspace.app_id, plans, self._building_app_id())
                 for app_id in self._wm.app_ids()]
+
+    # ---- what the remote has that we don't (#78) ----
+    #
+    # Git is the PROJECT's: one repo holds every Built App, so one reading of the remote answers for
+    # all of them and the rows split it by directory. Two moments, two rules — a person decides
+    # while they are here, and the save path decides for them once they have gone
+    # (see _integrate_remote).
+
+    def _check_remote(self, project: Project, *, fetch: bool = True):
+        """Fetch, then read what the remote has that this workspace does not. Caches the answer for
+        the rail and returns it. `fetch=False` re-reads the refs a caller just fetched for itself.
+
+        Never raises. This sits at the top of a turn, and a remote that can't be reached has to
+        leave the turn exactly as an up-to-date one would — refusing to build because a network was
+        down would be a worse failure than the stale code it was guarding against."""
+        import time
+
+        from ..workspace import git
+
+        found = git.Incoming("", [])
+        try:
+            root = project.record.path
+            if git.is_repo_root(root):
+                if fetch:
+                    git.fetch(root)
+                found = git.incoming(root)
+        except Exception:
+            log.exception("could not check the remote for incoming changes")
+            found = git.Incoming("", [])
+        with self._incoming_lock:
+            self._incoming = found
+            self._incoming_at = time.monotonic()
+        return found
+
+    def _remote_check_due(self, project: Project) -> None:
+        """Start a background check when the cached one has gone stale, and return immediately.
+
+        One at a time: `/api/apps` is polled while a build runs, and a fetch per poll would spend a
+        network round trip every two seconds to answer a question that changes far more slowly."""
+        import time
+
+        with self._incoming_lock:
+            if self._incoming_checking:
+                return
+            if self._incoming_at and time.monotonic() - self._incoming_at < _REMOTE_CHECK_SECONDS:
+                return
+            self._incoming_checking = True
+
+        def run() -> None:
+            try:
+                self._check_remote(project)
+            finally:
+                with self._incoming_lock:
+                    self._incoming_checking = False
+
+        threading.Thread(target=run, name="sage-remote-check", daemon=True).start()
+
+    def _incoming_now(self):
+        """The last reading of the remote, or an empty one before the first has landed."""
+        from ..workspace import git
+
+        with self._incoming_lock:
+            return self._incoming or git.Incoming("", [])
+
+    def _incoming_files(self, workspace: Workspace, found=None) -> list[str]:
+        """Of an incoming reading, the files that land inside one Built App, named as that app
+        names them.
+
+        The repo is the Project, so a teammate's commit can touch another Built App, a Thread, or
+        the Project's own record. None of those is this app's code, and this app's code is the only
+        thing a turn here would be building on top of."""
+        found = self._incoming_now() if found is None else found
+        prefix = f"{workspace.path.relative_to(self._wm.path).as_posix()}/"
+        return [f[len(prefix):] for f in found.files if f.startswith(prefix)]
 
     def _building_app_id(self) -> str:
         """The Built App a turn is streaming into right now, or "" when none is.
@@ -2195,6 +2290,9 @@ class Orchestrator:
             # row is where "a build is running, and this is where" gets said — the composer can
             # only say the first half, and it says it on whichever app you happen to be reading.
             "building": app_id == building,
+            # Somebody else has pushed changes to this app's code (#78). A background check keeps
+            # this current, so the rail says which app it is without anyone opening one to find out.
+            "behind": bool(self._incoming_files(workspace)),
         }
 
     def _one_app(self, app_id: str) -> dict:
@@ -2720,7 +2818,7 @@ class Orchestrator:
 
     def build_stream(self, prompt: str, mentions: list[str] | None = None,
                      resources: list[dict] | None = None, conversation: str | None = None,
-                     skip_reset_gate: bool = False):
+                     skip_reset_gate: bool = False, skip_incoming_gate: bool = False):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time. If a turn is already streaming, refuse rather than run a second one
@@ -2732,7 +2830,9 @@ class Orchestrator:
 
         `skip_reset_gate` says the reset offer already ran for this exact prompt and the user answered
         it with a button (see _reset_offer). Without it, replaying the prompt after a reset would match
-        _asks_to_reset again and re-offer the same thing, forever."""
+        _asks_to_reset again and re-offer the same thing, forever. `skip_incoming_gate` says the same
+        of the incoming-changes offer (see _incoming_offer), and both of its buttons set it: pulling
+        answers that offer as much as building past it does."""
         if not self._turn_lock.acquire(blocking=False):
             yield from self._busy_refusal()
             return
@@ -2757,13 +2857,30 @@ class Orchestrator:
                     and _looks_like_change_request(prompt)):
                 yield from self._ask_mode_refusal(prompt)
                 return
+            # What this turn would be built on top of (#78). Checked here rather than read from the
+            # rail's cache: the badge is a background reading and may be half a minute old, and a
+            # turn is the moment the answer has to be right. Last of the gates, so a turn that was
+            # never going to run doesn't stop to discuss the remote first.
+            app = project.app_for_turn()
+            if skip_incoming_gate:
+                # The offer ANSWERED, not the gate bypassed — the check the offer just ran is what
+                # `_incoming_now` holds. Remembered against the remote commit it was about, so a
+                # person who chose to build on stands built on rather than being asked every turn.
+                self._incoming_dismissed[app.app_id] = self._incoming_now().head
+            else:
+                found = self._check_remote(project)
+                changed = self._incoming_files(app, found)
+                if changed and self._incoming_dismissed.get(app.app_id) != found.head:
+                    yield from self._incoming_offer(prompt, changed)
+                    return
             # A button answering the offer is a click, not a second typing of the request — the
             # prompt is already a bubble in the transcript, put there by _reset_offer. So the turn
             # gets the short line the click deserves, the way an Approve click does, instead of
             # echoing the same sentence twice. Whether they reset first is already on the record
             # above it as an `app-reset` marker.
-            yield from self._build_stream(prompt, mentions, resources,
-                                          user_text="Build it." if skip_reset_gate else None)
+            yield from self._build_stream(
+                prompt, mentions, resources,
+                user_text="Build it." if skip_reset_gate or skip_incoming_gate else None)
         finally:
             self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
             self._recheck_app_data()
@@ -4137,6 +4254,32 @@ class Orchestrator:
             if ev["type"] != "user":
                 yield ev
 
+    def _incoming_offer(self, prompt: str, files: list[str]):
+        """Events for a turn that would build on top of somebody else's changes (#78).
+
+        Stops before any inference, the way the reset offer does and for the same reason: the answer
+        belongs to the person, and they are here to give it. Once they have gone the save path
+        decides for them — commit, pull, resolve, push — which is the other half of the rule.
+
+        Building anyway is a real answer, not a mistake to be talked out of. Two people editing one
+        Built App will conflict, and a conflict is what the merge is for."""
+        project = self.project()
+        shown = files[:_INCOMING_FILES_SHOWN]
+        message = ("Somebody else has pushed changes to this app. Building now works from your copy "
+                   "of the code, so their changes and yours have to be merged before either can be "
+                   "published. Pull first to build on top of their work, or keep building and merge "
+                   "when this app saves.")
+        for ev in ({"type": "user", "text": prompt},
+                   # The prompt rides along so a button can replay the request rather than making
+                   # the person retype it. `count` is the whole truth and `files` the readable part
+                   # of it, so a merge of a thousand files is still a card and not a wall of paths.
+                   {"type": "incoming-changes", "prompt": prompt, "message": message,
+                    "files": shown, "count": len(files)},
+                   {"type": "done", "ok": False, "decision": "incoming changes"}):
+            project.workspace.append_history(ev, project.build_conversation)
+            if ev["type"] != "user":
+                yield ev
+
     def _busy_refusal(self):
         """Events yielded when a turn is refused because another is already streaming."""
         yield {"type": "error", "busy": True,
@@ -5293,6 +5436,9 @@ class Orchestrator:
         result = git.pull(path)
         if result.status == "conflict":
             result = self._resolve_conflicts(project, result.conflicts)
+        # The pull already fetched, so this is a local re-read. Whatever it merged has stopped being
+        # incoming, and the rail's badge goes out with it rather than at the next check (#78).
+        self._check_remote(project, fetch=False)
         return result
 
     def _resolve_conflicts(self, project: Project, conflicts: list[str]):

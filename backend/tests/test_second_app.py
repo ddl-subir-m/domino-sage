@@ -364,10 +364,11 @@ def test_the_sheet_lists_the_projects_apps_and_preselects_none_of_them(tmp_path:
     # exactly the preselect this row exists to prevent.
     for row in sheet["apps"]:
         assert "selected" not in row
-        # `published` and `building` ride along because a row is one shape everywhere (#76, #77).
-        # Each says what is true of the app rather than what the sheet should do with it, which is
-        # why neither is stripped the way `selected` is.
-        assert set(row) == {"id", "name", "built", "builtAt", "planId", "published", "building"}
+        # `published`, `building` and `behind` ride along because a row is one shape everywhere
+        # (#76, #77, #78). Each says what is true of the app rather than what the sheet should do
+        # with it, which is why none of them is stripped the way `selected` is.
+        assert set(row) == {"id", "name", "built", "builtAt", "planId", "published", "building",
+                            "behind"}
 
 
 def test_an_app_row_carries_the_date_of_its_last_build(tmp_path: Path):

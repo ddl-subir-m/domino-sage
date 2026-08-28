@@ -134,9 +134,13 @@ window.SW = window.SW || {};
       h(
         Tooltip,
         {
-          title: app.building
-            ? `A build is running in this app. ID ${app.id}`
-            : `ID ${app.id}`,
+          title: [
+            app.building ? 'A build is running in this app.' : '',
+            // Said in words as well as shown as a badge: the badge is what you notice from across
+            // the rail, and this is what tells you what it means the first time you see one.
+            app.behind ? 'Somebody else has pushed changes to this app.' : '',
+            `ID ${app.id}`,
+          ].filter(Boolean).join(' '),
           placement: 'right',
           mouseEnterDelay: 0.5,
         },
@@ -153,7 +157,11 @@ window.SW = window.SW || {};
             // moment the turn ends.
             app.building
               ? h('span', { className: 'sw-thread-building' }, h(LoadingOutlined, { spin: true }), 'Building\u2026')
-              : app.built ? 'Built' : 'Not built yet'
+              : app.built ? 'Built' : 'Not built yet',
+            // Somebody else has pushed to this app (#78). It sits beside the build state rather
+            // than replacing it, because the two are about different people and both still hold:
+            // your build is running AND their work is waiting.
+            app.behind && h('span', { className: 'sw-thread-behind' }, 'Changes to pull')
           )
         )
       ),
@@ -196,6 +204,11 @@ window.SW = window.SW || {};
 
     useEffect(() => {
       SW.store.loadApps();
+      // The badge is the point of the check being a background one (#78): a teammate's push has to
+      // reach the rail without anyone opening an app to find out. The server does the fetching on
+      // its own schedule and this only re-reads the answer, so the interval is cheap.
+      const id = setInterval(() => SW.store.loadApps(), 30000);
+      return () => clearInterval(id);
     }, []);
 
     if (railHidden) {

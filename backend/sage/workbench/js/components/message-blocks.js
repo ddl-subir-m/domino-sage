@@ -373,6 +373,68 @@ window.SW = window.SW || {};
     );
   }
 
+  // Somebody else pushed changes to this app before the turn started (#78). The gate stops before
+  // any inference and hands the decision back, so this card IS the decision — and the file list is
+  // what makes it one: "somebody changed this app" is only actionable once you can see what they
+  // changed and recognise whether it touches what you were about to do.
+  //
+  // Two answers, both real. Pulling builds on their work; keeping building merges later, which is
+  // what the save path does anyway. Same `live` rule as the reset offer: a replayed offer is a
+  // record of a decision already made, and an old message must not pull the repo on a page load.
+  function IncomingChanges({ block }) {
+    const [busy, setBusy] = useState('');
+    const run = (key, fn) => () => {
+      setBusy(key);
+      Promise.resolve(fn())
+        .catch((err) => antd.message.error(String(err.message || err)))
+        .finally(() => setBusy(''));
+    };
+    const hidden = (block.count || 0) - (block.files || []).length;
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        (block.files || []).length
+          ? h(
+              'div',
+              { className: 'sw-incoming-files' },
+              (block.files || []).map((f) => h('div', { className: 'sw-incoming-file', key: f }, f)),
+              hidden > 0
+                ? h('div', { className: 'sw-caption' },
+                    `and ${hidden} more file${hidden === 1 ? '' : 's'}`)
+                : null
+            )
+          : null,
+        block.live && block.prompt
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Space, { size: 8, wrap: true },
+                h(Button, {
+                  type: 'primary',
+                  size: 'small',
+                  loading: busy === 'pull',
+                  disabled: !!busy,
+                  onClick: run('pull', () => SW.store.pullAndBuild(block.prompt)),
+                }, 'Pull and build this'),
+                h(Button, {
+                  type: 'text',
+                  size: 'small',
+                  loading: busy === 'keep',
+                  disabled: !!busy,
+                  onClick: run('keep', () => SW.store.buildWithIncoming(block.prompt)),
+                }, 'Keep building'))
+            )
+          : null
+      )
+    );
+  }
+
   // A change that happened, attached to the app it happened to. This is where
   // Review and Publish belong: a turn can change two apps, and the preview can
   // only show one of them, so the entry — not the panel — is what makes every
@@ -508,6 +570,8 @@ window.SW = window.SW || {};
         );
       case 'reset_offer':
         return h(ResetOffer, { block });
+      case 'incoming_changes':
+        return h(IncomingChanges, { block });
       case 'plan_suggestion':
         return h(PlanSuggestion, { block });
       case 'graduation_nudge':

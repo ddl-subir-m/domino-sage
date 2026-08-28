@@ -30,6 +30,17 @@ class SyncResult:
     detail: str
 
 
+@dataclass
+class Incoming:
+    """What the remote has that this workspace does not, as of the last fetch.
+
+    `head` is the remote commit those changes end at, and "" when there is nothing to pull. It is
+    the thing a caller remembers when somebody chooses to build anyway (#78), so the same decision
+    isn't asked for again until the remote moves on."""
+    head: str
+    files: list[str]
+
+
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=str(path), capture_output=True, text=True, check=check
@@ -181,3 +192,33 @@ def finalize_merge(path: Path, message: str) -> None:
 def abort_merge(path: Path) -> None:
     """Roll back an in-progress merge, restoring the pre-pull state."""
     _git(path, "merge", "--abort", check=False)
+
+
+def fetch(path: Path) -> bool:
+    """Refresh the remote-tracking refs. Best-effort by design, unlike `pull`'s fetch: this one runs
+    at the top of a turn and on a timer, and an unreachable remote has to leave both exactly as an
+    up-to-date one would rather than stopping the turn with a network error."""
+    if not has_remote(path):
+        return False
+    return _git(path, "fetch", "origin", check=False).returncode == 0
+
+
+def incoming(path: Path) -> Incoming:
+    """Commits on the remote branch this workspace hasn't merged, and the files they change.
+
+    Reads the refs `fetch` left behind and never touches the network itself, so the answer is a
+    local read once someone has paid for the fetch. Local commits are not incoming: `HEAD...ref`
+    diffs from the merge base, so a workspace that is merely ahead reads as nothing to pull."""
+    if not has_remote(path):
+        return Incoming("", [])
+    ref = f"origin/{current_branch(path)}"
+    if _git(path, "rev-parse", "--verify", "--quiet", ref, check=False).returncode != 0:
+        return Incoming("", [])
+    # Counted, not diffed, to decide: a commit that changes nothing back is still a commit the
+    # local branch has to merge before it can push.
+    behind = _git(path, "rev-list", "--count", f"HEAD..{ref}", check=False).stdout.strip()
+    if not behind or behind == "0":
+        return Incoming("", [])
+    changed = _git(path, "diff", "--name-only", f"HEAD...{ref}", check=False)
+    files = [f for f in changed.stdout.splitlines() if f.strip()]
+    return Incoming(_git(path, "rev-parse", ref, check=False).stdout.strip(), files)

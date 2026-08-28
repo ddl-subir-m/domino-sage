@@ -1521,6 +1521,9 @@ def build_stream(body: dict) -> StreamingResponse:
     # Set only by the buttons on a reset-offer (#36), which is that offer being answered rather than
     # skipped — the confirmation the gate exists to collect has already happened by then.
     skip_reset_gate = bool((body or {}).get("skipResetGate"))
+    # Set by either button on an incoming-changes offer (#78). Pulling answers that offer as much
+    # as building past it does, so both arrive here and neither is asked the same question twice.
+    skip_incoming_gate = bool((body or {}).get("skipIncomingGate"))
 
     if not prompt:
         def refuse():
@@ -1529,7 +1532,7 @@ def build_stream(body: dict) -> StreamingResponse:
 
     return StreamingResponse(
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
-                                            skip_reset_gate), "build_stream"),
+                                            skip_reset_gate, skip_incoming_gate), "build_stream"),
         media_type="text/event-stream")
 
 
