@@ -79,7 +79,10 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['util.js', 'api.js', 'store.js', 'components/message-blocks.js']) {
+// `prefs.js` comes along with the store: since #57, readBuildTranscript asks the viewer which
+// conversation view they are in before it reads anything. The default is split, which is the
+// path these tests are about — the plan card, not the merged transcript.
+for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'components/message-blocks.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
