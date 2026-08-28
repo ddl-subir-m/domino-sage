@@ -396,6 +396,16 @@ window.SW = window.SW || {};
               h('span', null, author.name),
               h('span', null, '·'),
               h('span', null, `Updated ${SW.util.relativeTime(plan.updatedAt)}`),
+              // One of the plan's two back-links, and the one both entry paths now record (#54).
+              // The other end is the Built App, offered by the action below. Neither implies the
+              // other — a plan may carry either, both, or neither — so this link is drawn off the
+              // origin alone and never off `appId`.
+              //
+              // Through the rail's own route grammar rather than a hardcoded `#/chat/`, so the
+              // conversation opens in the mode you are reading the plan from. That matters in
+              // Build's sheet: the same Thread is a Chat conversation and a Build conversation,
+              // and a plan the gate wrote came from the Build half, whose turns Chat does not
+              // show. On its own page there is no mode to read, so it still opens in Chat.
               plan.originThreadId &&
                 h(
                   Fragment,
@@ -407,7 +417,10 @@ window.SW = window.SW || {};
                       type: 'link',
                       size: 'small',
                       style: { padding: 0, height: 'auto' },
-                      onClick: () => SW.router.go(`#/chat/${plan.originThreadId}`),
+                      onClick: () =>
+                        SW.router.go(
+                          SW.conversationRoute({ id: plan.originThreadId }, SW.router.get().mode)
+                        ),
                     },
                     'From this conversation'
                   )
@@ -436,38 +449,57 @@ window.SW = window.SW || {};
             // In the IDE you are already in the Builder, so the only offer worth
             // making is to build again from a plan that has no app yet.
             //
+            // Two different offers wearing one button, and which one it is turns on whether the
+            // plan already stands in a Built App. With an app there is nothing to hand off — the
+            // app exists — so the offer is the way back INTO it. Without one, the offer is the
+            // handoff that would make it.
+            //
             // The plan's OWN Conversation, not whichever one happens to be open: handing off is
             // something a Conversation does, and the no-argument call handed off the current one,
             // so opening an old plan and pressing this built from a conversation you weren't
-            // reading. A plan the build gate wrote has no Conversation to hand off from (#54 is
-            // where it gets one), and there the call returned null and left nothing on screen —
-            // a button that does nothing and doesn't say why. Now it says why.
+            // reading. Since #54 both entry paths record an origin, so the disabled case is no
+            // longer "written in Build" — it is a document nobody wrote in a conversation, the
+            // blank one the plan list hands you.
             !(variant === 'ide' && plan.appId) &&
-              h(
-                Tooltip,
-                {
-                  title: plan.originThreadId
-                    ? null
-                    : 'This plan was written in Build, so there is no conversation to hand off ' +
-                      'from. Build it from its card in the Build conversation.',
-                },
-                // A disabled button fires no mouse events, so the tooltip needs something around it
-                // that does.
-                h(
-                  'span',
-                  null,
-                  h(
+              (plan.appId
+                ? h(
                     Button,
                     {
                       type: 'primary',
                       icon: h(ArrowRightOutlined, null),
-                      disabled: !plan.originThreadId,
-                      onClick: () => SW.store.draftHandoffPlan(plan.originThreadId),
+                      // Through the rail's own route grammar, which keeps the open conversation
+                      // in the route. A bare `#/build?app=` names none, and BuildMode reads that
+                      // as "a new one" and clears the transcript — so opening the app from the
+                      // sheet beside a Build conversation would throw that conversation away.
+                      onClick: () => SW.router.go(SW.appRoute({ id: plan.appId })),
                     },
-                    plan.appId ? 'Open in Builder' : 'Build this'
+                    'Open in Builder'
                   )
-                )
-              )
+                : h(
+                    Tooltip,
+                    {
+                      title: plan.originThreadId
+                        ? null
+                        : 'This plan has no conversation on record, so there is nothing to hand ' +
+                          'off from. Ask for it in a conversation to build it.',
+                    },
+                    // A disabled button fires no mouse events, so the tooltip needs something
+                    // around it that does.
+                    h(
+                      'span',
+                      null,
+                      h(
+                        Button,
+                        {
+                          type: 'primary',
+                          icon: h(ArrowRightOutlined, null),
+                          disabled: !plan.originThreadId,
+                          onClick: () => SW.store.draftHandoffPlan(plan.originThreadId),
+                        },
+                        'Build this'
+                      )
+                    )
+                  ))
           )
         ),
 

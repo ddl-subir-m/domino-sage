@@ -1424,6 +1424,25 @@ def _viewer_id() -> str:
     return os.environ.get("DOMINO_USER_ID") or "me"
 
 
+def _thread_plan_id(record: ProjectRecord, thread_id: str) -> str:
+    """The plan document this Conversation produced, or "" if it has produced none.
+
+    Read off the document's own record of where it came from, not off the Thread's handoff row:
+    both entry paths stamp the origin, but only one of them hands off (#54). A plan the Build gate
+    wrote has no handoff behind it, and reading the handoff row left it unreachable from the very
+    Conversation that asked for it.
+
+    Newest first, because one Conversation may produce several — a Thread that hands off twice, a
+    Build conversation the gate fires in again — and the plan card is about the newest. It also
+    cannot name a document that is no longer there, which the handoff row could: a reset takes the
+    documents and leaves the row pointing at one of them.
+    """
+    for doc in record.list_plan_docs():  # newest first
+        if str(doc.get("originThreadId") or "") == thread_id:
+            return str(doc.get("id") or "")
+    return ""
+
+
 def _approve_prompt(plan_md: str, answers: str, *, handoff_note: str = "") -> str:
     """The Implement-turn prompt built from an approved plan (SPEC P6): the plan is fed in as
     context so the build turn constructs exactly what the user signed off on."""
@@ -2996,7 +3015,8 @@ class Orchestrator:
     def get_thread(self, thread_id: str) -> dict:
         if self._chat_dirty_thread and self._chat_dirty_thread != thread_id:
             self._flush_chat_save("leave")
-        store = ThreadStore(self._chat_project().record.path)
+        record = self._chat_project().record
+        store = ThreadStore(record.path)
         row = store.get(thread_id)
         if row is None:
             raise KeyError(thread_id)
@@ -3007,11 +3027,7 @@ class Orchestrator:
             "context": store.read_context(thread_id),
             "artifacts": store.read_artifacts(thread_id),
             "handoff": handoffs[-1] if handoffs else None,
-            # Lifted out of the handoff row so the Thread carries its plan document the way an App
-            # does, which is where the Workbench looks for it. The newest plan on the record rather
-            # than the newest entry's: a fresh suggestion has no plan yet, and a Thread that just
-            # got one must not lose the plan card for the app it already built.
-            "planId": next((str(e["planId"]) for e in reversed(handoffs) if e.get("planId")), ""),
+            "planId": _thread_plan_id(record, thread_id),
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
@@ -3415,8 +3431,8 @@ class Orchestrator:
             project, prompt, self._ensure_thread_session(store, thread_id, project, client))
         if not plan_md:
             raise ValueError("empty plan")
-        # Same document the gate creates, but this one knows the Thread it came from, so the plan
-        # page can offer the way back to the conversation that produced it.
+        # Same document the gate creates, and it records its Thread the same way. No `app_id`: the
+        # app does not exist until the handoff is confirmed, and that is what stamps it.
         _warn_if_shapeless("chat handoff", plan_md)
         plan_id = project.record.create_plan_doc(
             plan_md,
@@ -5062,8 +5078,15 @@ class Orchestrator:
                         title=chat_handoff.plan_title(plan_md) or "App",
                         author=_viewer_id(),
                         # This gate ran inside an app, so the document knows which one from the
-                        # start — unlike a Chat handoff, which is planned before any app exists.
+                        # start — unlike a Chat handoff, which is planned before any app exists
+                        # and gains its app reference only when the handoff is confirmed.
                         app_id=project.app_for_turn().app_id,
+                        # And it knows the Conversation, which is the Build conversation this turn
+                        # was pinned to (_begin_conversation). Both ends of the back-link, where
+                        # the Chat handoff can only fill in one of them yet (#54). Empty for a
+                        # turn driven with no conversation at all — a caller the Workbench does
+                        # not have, since typing in Build opens one first.
+                        origin_thread_id=str(project.build_conversation or ""),
                     )["id"]
                 # `steps` is how the card says "Approve & build (6 phases)" — and, more usefully,
                 # it's the user's chance to see BEFORE approving that a phased plan actually parsed.
