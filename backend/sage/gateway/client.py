@@ -28,10 +28,9 @@ from .open_models import OpenModel
 # Domino workspace sidecar that mints a short-lived access token.
 DEFAULT_SIDECAR_URL = "http://localhost:8899/access-token"
 
-# Extended-identity JWT from the current (or last browser) request. OpenCode dials /v1 over
-# localhost with no Authorization header, so we remember the viewer's token across that hop.
+# Extended-identity JWT from the current request, for `/api/me` to read. Request-scoped and
+# nothing else: no hop inherits it, because no hop needs to (#91).
 _viewer_token: ContextVar[str | None] = ContextVar("sage_viewer_token", default=None)
-_last_viewer_token: str | None = None
 
 
 def bearer_from_authorization(header: str | None) -> str | None:
@@ -44,58 +43,35 @@ def bearer_from_authorization(header: str | None) -> str | None:
     return raw or None
 
 
-def bind_viewer_token(token: str | None, *, remember: bool = True) -> None:
-    """Attach a viewer JWT to this request. `remember` keeps it for later unproxied /v1 calls."""
-    global _last_viewer_token
+def bind_viewer_token(token: str | None) -> None:
+    """Attach a viewer JWT to this request, or None to clear it.
+
+    Clearing when the request ends is the load-bearing half: a ContextVar left set on a pooled
+    worker hands one viewer's identity to the next request that arrives without a header, which is
+    the leak ef86bdc closed."""
     _viewer_token.set(token)
-    if remember and token:
-        _last_viewer_token = token
 
 
 def reset_viewer_token() -> None:
-    """Tests: drop both the request-scoped and remembered viewer JWT."""
-    global _last_viewer_token
-    _last_viewer_token = None
+    """Tests: drop the request-scoped viewer JWT."""
     _viewer_token.set(None)
 
 
 def viewer_token() -> str | None:
     """The viewer JWT for THIS request, or None.
 
-    Request-scoped and nothing else. It used to fall back to `_last_viewer_token` here, which made
-    every reader inherit the fallback whether or not it was entitled to one: a second viewer's
+    Request-scoped and nothing else. It used to fall back to a process-wide remembered token, which
+    made every reader inherit the fallback whether or not it was entitled to one: a second viewer's
     header-less request found viewer A's JWT sitting in a module global and acted as A, and
     `/api/me` answered A. On a published Workbench App, which serves many viewers by design, that
     is one viewer wearing another's identity.
 
-    The remembered token is still real and still needed — see `remembered_viewer_token` — but it is
-    handed out at the one hop that has no viewer of its own, rather than reached for by anybody who
-    happens to ask."""
+    `/api/me` is the only reader, and a model call is not meant to become one (#91). On a Sage
+    Builder the sidecar token already IS the viewer — one workspace, one owner — so an extended
+    identity here would replace that identity with the same identity. On the door no model call
+    happens at all: the published App sends the viewer to their own Builder rather than building
+    against its scratch checkout (ADR-0004)."""
     return _viewer_token.get()
-
-
-def remembered_viewer_token() -> str | None:
-    """The JWT from the last browser call, for the localhost hop that cannot carry one.
-
-    OpenCode dials /v1 over localhost with no Authorization header, and that request has no viewer
-    to read. It is also the one caller that legitimately wants the previous request's: it is the
-    same person's build, and it can outlive the browser request that started it (#77 — a build the
-    person walked away from goes on running), so this cannot be cleared when that request ends.
-
-    Only `_ViewerIdentityMiddleware` calls this, only for `_UNPROXIED` paths, and it binds the
-    result as that request's own token so everything downstream still reads `viewer_token()`."""
-    return _last_viewer_token
-
-
-def prefer_viewer(fallback: Callable[[], str]) -> Callable[[], str]:
-    """Token provider: extended-identity JWT when present, otherwise the process credential."""
-    def _get() -> str:
-        tok = viewer_token()
-        if tok:
-            return tok
-        return fallback()
-
-    return _get
 
 
 def jwt_identity(token: str | None) -> dict[str, str]:
