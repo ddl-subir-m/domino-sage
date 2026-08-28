@@ -1700,6 +1700,27 @@ def confirm_handoff(thread_id: str, body: dict) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
+@control_app.post("/api/threads/{thread_id}/handoff/recross")
+def recross_handoff(thread_id: str, body: dict | None = None) -> JSONResponse:
+    """Redo a confirmed handoff's crossing with different answers — Change on the plan card (#60).
+
+    Beside the confirm rather than part of it: confirming writes a plan card, and a handoff has
+    exactly one. There is no `target` here and there never will be — ADR-0008 makes which Built App
+    a handoff lands in a per-handoff decision the sheet asks every time."""
+    try:
+        return JSONResponse(orchestrator.recross_handoff(
+            thread_id, (body or {}).get("include") or {},
+            str((body or {}).get("planId") or "")))
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+    except RuntimeError as e:
+        if str(e) == "busy":
+            return JSONResponse({"error": "a turn is already running"}, status_code=409)
+        raise
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
 @control_app.get("/api/threads/{thread_id}/history")
 def thread_history(thread_id: str) -> JSONResponse:
     return JSONResponse(orchestrator.thread_history(thread_id))
@@ -1798,16 +1819,20 @@ def project_plan() -> JSONResponse:
 
 
 @control_app.post("/api/project/plan/cancel")
-def cancel_plan() -> JSONResponse:
+def cancel_plan(body: dict | None = None) -> JSONResponse:
     """Discard an un-approved plan. When the user dismisses the plan card without building, the
     plan.md the gate turn wrote is still on disk (only an approve archives it). Left there it reads
     like live intent — the exact stray-plan case archive_plan() exists to prevent — so archive it
     now (non-destructive; git keeps the history). Idempotent: no-op if there's no live plan.
 
     Archived as cancelled, so the rail's plan pin does not go on to describe the app as built from
-    a plan the user just dismissed."""
-    archived = orchestrator.project().workspace.archive_plan(cancelled=True)
-    return JSONResponse(content={"cancelled": True, "archived": archived is not None})
+    a plan the user just dismissed.
+
+    The optional body names the Conversation whose card pressed it, which is what lets Undo on a
+    handoff card still read as undone after a reload (#60). A caller that says nothing archives
+    exactly as it always did."""
+    return JSONResponse(content=orchestrator.cancel_plan(
+        str((body or {}).get("conversation") or ""), str((body or {}).get("planId") or "")))
 
 
 # ---- Plan documents ----

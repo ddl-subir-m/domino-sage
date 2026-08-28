@@ -596,6 +596,9 @@ window.SW = window.SW || {};
           planId: ev.planId || '',
           steps: ev.steps || 0,
           pending: true,
+          // What a confirmed handoff carried in, and which Built App it went to (#60). Absent on
+          // a plan the Build gate wrote, which crossed nothing and so has nothing to report.
+          crossed: ev.crossed || null,
         };
         pendingPlan = block;
         messages.push({
@@ -614,6 +617,24 @@ window.SW = window.SW || {};
         if (pendingPlan && (!ev.planId || pendingPlan.planId === ev.planId)) {
           pendingPlan.pending = false;
           pendingPlan.superseded = { by: ev.by || '', conversation: ev.byConversation || '' };
+        }
+      } else if (ev.type === 'handoff-recrossed') {
+        // Change redid the crossing (#60). Folded onto the card the handoff already has rather
+        // than drawn as one of its own, because only one card appears for a handoff — which is
+        // also why the server writes this row instead of confirming a second time.
+        //
+        // Merged, not replaced: the row carries what crossed and says nothing about where it
+        // went, so the app and whether it was new survive a Change that never asked about them.
+        if (pendingPlan && (!ev.planId || pendingPlan.planId === ev.planId) && pendingPlan.crossed) {
+          pendingPlan.crossed = { ...pendingPlan.crossed, ...(ev.crossed || {}) };
+        }
+      } else if (ev.type === 'plan-cancelled') {
+        // Undo, or the plain Cancel on any plan card. The plan is archived rather than deleted, so
+        // the card stays and stops offering a build — and on a handoff it goes on to say the Built
+        // App it minted is still there, which is only sayable because this row survives a reload.
+        if (pendingPlan && (!ev.planId || pendingPlan.planId === ev.planId)) {
+          pendingPlan.pending = false;
+          pendingPlan.cancelled = true;
         }
       } else if (ev.type === 'typecheck') {
         ensureAssistant().blocks.push({
@@ -1883,15 +1904,55 @@ window.SW = window.SW || {};
       }
     },
 
-    async cancelBuildPlan() {
-      await SW.api.cancelPlan();
+    // The one path that stops a plan, whichever word the card puts on the button — Cancel on a
+    // plan the Build gate wrote, Undo on one a handoff carried in. `planId` names the document so
+    // the server can record it against this Conversation, which is what lets an Undo still read as
+    // undone tomorrow (#60). Safe to press twice: with no live plan the server archives nothing
+    // and records nothing.
+    async cancelBuildPlan(planId) {
+      const conversation = (state.thread && state.thread.id) || '';
+      await SW.api.cancelPlan({ conversation, planId: planId || '' });
       for (const msg of state.buildMessages) {
         (msg.blocks || []).forEach((b) => {
-          if (b.type === 'build_plan') b.pending = false;
+          if (b.type !== 'build_plan') return;
+          b.pending = false;
+          // Locally too, so the sentence about what Undo did NOT take is on screen before the
+          // reload that would fetch it back.
+          if (b.crossed && (!planId || b.planId === planId)) b.cancelled = true;
         });
       }
       await refreshProjectPlan();
       notify();
+    },
+
+    // Change on the plan card: the crossing again, with different answers (#60). It rewrites what
+    // crossed and nothing else — no second plan card, and no chance to re-target, because the app
+    // was chosen once on the sheet and a Project holds many (ADR-0008).
+    // `planId` is the card's own document, so a Conversation that handed off more than once
+    // changes the crossing the person is actually looking at rather than its newest one.
+    async recrossHandoff(include, planId) {
+      const id = state.thread && state.thread.id;
+      // Thrown rather than returned as null: the caller closes its sheet on the way back, and a
+      // quiet null would tell the person the crossing was redone when nothing was sent.
+      if (!id) throw new Error('No conversation is open.');
+      const result = await SW.api.recrossHandoff(id, include, planId);
+      for (const msg of state.buildMessages) {
+        (msg.blocks || []).forEach((b) => {
+          // Matched on the document, the way the reader matches the row this call appended: a
+          // Conversation that handed off to the same app twice has two cards, and only the
+          // newest handoff is the one being changed.
+          if (b.type !== 'build_plan' || !b.crossed) return;
+          if (result.planId && b.planId !== result.planId) return;
+          b.crossed = { ...b.crossed, ...(result.crossed || {}) };
+        });
+      }
+      // The crossing selected the app it wrote into, exactly as a confirm does — and under the
+      // merged transcript a card can be read while a different app is selected. Without this the
+      // rail would go on highlighting the app the person left, and the next build would land
+      // somewhere they were not looking.
+      await Promise.all([loadAppList(), refreshBindings()]);
+      notify();
+      return result;
     },
 
     async stopBuild() {

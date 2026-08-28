@@ -976,6 +976,25 @@
 }
 .sw-plan-card-actions { display: flex; gap: var(--s2); flex-wrap: wrap; }
 
+/* What a handoff carried, on the card the handoff ends on (#60). Tinted and inset so it reads as
+   a note about how this plan arrived rather than as part of the plan itself. */
+.sw-crossing {
+  background: var(--gray-100);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: var(--s3);
+  margin-bottom: var(--s3);
+}
+.sw-crossing-line { font-size: 13px; line-height: 1.6; color: var(--dark-700); }
+.sw-crossing-toggle.ant-btn { padding: 0; height: auto; font-size: 12px; }
+.sw-crossing-detail { margin-top: var(--s3); display: grid; gap: var(--s3); }
+.sw-crossing-group { display: grid; gap: 2px; }
+.sw-crossing-item {
+  display: flex; align-items: baseline; gap: var(--s2);
+  font-size: 12px; line-height: 1.6; color: var(--gray-600);
+}
+.sw-crossing-item code { font-family: var(--mono); font-size: 11px; color: var(--dark-700); }
+
 /* Plan page -------------------------------------------------------------- */
 
 .sw-plan-page { flex: 1; min-height: 0; overflow-y: auto; background: var(--white); }
