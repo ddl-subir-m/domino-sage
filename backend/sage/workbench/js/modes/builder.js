@@ -332,10 +332,23 @@ window.SW = window.SW || {};
     //
     // `idle` says nothing, because it is first paint before the probe has landed and the header
     // would be inventing the answer it exists to report.
+    //
+    // `ok` says nothing either, and that is the same rule rather than an exception to it.
+    // `probePreview()` runs from `loadBuild()` and `refreshPreview()` only, and the polling in
+    // `PreviewPane` stops the moment the status leaves `starting` — so nothing re-reads a preview
+    // once it is live. A process that dies mid-session leaves `ok` behind it and the word becomes a
+    // claim nobody is checking. The two states left are the two the canvas cannot show you: a pane
+    // that is blank because it is still coming up, and one that is blank because it failed. A live
+    // preview is its own evidence, and the Gallery precedent this word already answers to says the
+    // rest — "a card that says Running on every tile teaches nothing".
+    //
+    // Re-probing on a heartbeat was the alternative. It buys a truthful `ok` and pays for it twice:
+    // `probePreview` re-stamps `previewSrc` with a new cache-buster, which reloads the iframe under
+    // whoever is using it, and it maps a thrown fetch to `starting`, so one blip on a live preview
+    // would replace this stale word with a false one. Silence costs nothing and cannot go stale.
     const previewWord = {
       starting: 'Starting preview…',
       err: 'Preview didn’t start',
-      ok: 'Preview live',
     }[previewStatus];
 
     return h(

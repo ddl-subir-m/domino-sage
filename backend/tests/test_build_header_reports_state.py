@@ -86,11 +86,16 @@ def test_the_header_says_the_preview_did_not_start():
 
 
 @needs_node
-def test_the_header_says_the_preview_is_live():
-    """The one state nothing else on the screen reports. Without it a person never meets the word,
-    so they cannot read its absence as anything — and "is that thing current?" is the question the
-    header exists to answer."""
-    assert "Preview live" in _texts(_build(select="app_a", preview="ok"), "sw-build-state")
+def test_the_header_says_nothing_about_a_preview_that_is_live():
+    """The state the header must NOT report, because it is the one it cannot keep current.
+    `probePreview()` runs from `loadBuild()` and `refreshPreview()` only, and `PreviewPane`'s poll
+    stops as soon as the status leaves `starting` — so nothing re-reads a live preview. A process
+    that dies mid-session leaves `ok` behind it, and a word for `ok` is a claim nobody is checking.
+
+    The argument for keeping it was that a person who never meets the word cannot read its absence.
+    That does not hold here: `Starting preview…` is on screen during every first load, so the
+    vocabulary is met before the silence is."""
+    assert _texts(_build(select="app_a", preview="ok"), "sw-build-state") == []
 
 
 @needs_node
@@ -105,8 +110,11 @@ def test_the_header_claims_no_preview_state_while_no_app_is_named():
     """`AppBar` returns early only when the Project has NO apps, and `activeApp` is null whenever
     the server flags none selected or `clearApp()` has run — the same state #82's count test uses.
     A preview word in that row sits among app-scoped chips beside `Choose a Built App`, which
-    reads as a claim about an app nobody has picked."""
-    assert _texts(_build("thr_many", preview="ok", unselected=True), "sw-build-state") == []
+    reads as a claim about an app nobody has picked.
+
+    `starting`, not `ok`: since the header went silent on a live preview, `ok` would leave this
+    empty whether or not the `activeApp` guard is there, and the test would pass on a bug."""
+    assert _texts(_build("thr_many", preview="starting", unselected=True), "sw-build-state") == []
 
 
 @needs_node
