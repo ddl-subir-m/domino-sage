@@ -357,9 +357,15 @@ window.SW = window.SW || {};
   async function historyToMessages(history, handoff) {
     const messages = [];
     let assistant = null;
+    // Where in the read this message started. Only the merged conversation view uses it — it
+    // interleaves these with the Build half's runs, and both are produced by walking their own
+    // rows, so the position in the merged read is the only thing that can put them back in order.
+    // A plain Chat read carries `order` and nothing looks at it.
+    let pos = 0;
     const ensureAssistant = () => {
       if (!assistant) {
-        assistant = { id: `a_${messages.length}`, role: 'assistant', at: new Date().toISOString(), blocks: [] };
+        assistant = { id: `a_${messages.length}`, role: 'assistant', at: new Date().toISOString(),
+                      order: pos, blocks: [] };
         messages.push(assistant);
       }
       return assistant;
@@ -373,12 +379,14 @@ window.SW = window.SW || {};
       (last, ev, i) => (ev.type === 'handoff-suggest' ? i : last), -1);
     const shownArts = new Set();
     for (const [i, ev] of (history || []).entries()) {
+      pos = ev.order === undefined ? i : ev.order;
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
           id: `u_${messages.length}`,
           role: 'user',
           at: ev.at,
+          order: pos,
           blocks: [{ type: 'text', value: ev.text || '' }],
           contextIds: ev.contextIds,
           attachments: attachmentsFromUserEvent(ev),
@@ -411,6 +419,7 @@ window.SW = window.SW || {};
         messages.push({
           id: `sug_${messages.length}`,
           role: 'system',
+          order: pos,
           blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
         });
       }
@@ -434,6 +443,9 @@ window.SW = window.SW || {};
     return messages.concat([{
       id: 'handoff_suggest',
       role: 'system',
+      // A live offer, not a turn that happened: it belongs after everything either half has done,
+      // which is where the merged view's sort puts it too.
+      order: Infinity,
       blocks: [{ type: 'plan_suggestion' }],
     }]);
   }
@@ -535,20 +547,24 @@ window.SW = window.SW || {};
     const messages = [];
     let assistant = null;
     let pendingPlan = null;
+    let pos = 0;
     const ensureAssistant = () => {
       if (!assistant) {
-        assistant = { id: `ba_${messages.length}`, role: 'assistant', at: new Date().toISOString(), blocks: [] };
+        assistant = { id: `ba_${messages.length}`, role: 'assistant', at: new Date().toISOString(),
+                      order: pos, blocks: [] };
         messages.push(assistant);
       }
       return assistant;
     };
-    for (const ev of history || []) {
+    for (const [i, ev] of (history || []).entries()) {
+      pos = ev.order === undefined ? i : ev.order;
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
           id: `bu_${messages.length}`,
           role: 'user',
           at: ev.at,
+          order: pos,
           blocks: [{ type: 'text', value: ev.text || '' }],
         });
       } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
@@ -578,6 +594,7 @@ window.SW = window.SW || {};
         messages.push({
           id: `bp_${messages.length}`,
           role: 'assistant',
+          order: pos,
           blocks: [block],
         });
       } else if (ev.type === 'plan-stale') {
@@ -644,9 +661,113 @@ window.SW = window.SW || {};
           value: 'This app is reset to the starter template. Your attached files, Resources, this '
             + 'conversation and your other apps are unchanged.',
         });
+      } else if (ev.type === 'app_change') {
+        // What the turn changed, attached to the app it changed. Here rather than behind the
+        // conversation view, because the block belongs to the build turn and both views show it
+        // (#83): Build draws the card at the end of the turn, and Chat's merged read folds a run's
+        // cards into the row's face. The card is what survives if the folding goes away (#61).
+        ensureAssistant().blocks.push({
+          type: 'app_change',
+          appId: ev.appId || ev.app || '',
+          name: ev.name || '',
+        });
       }
     }
     return messages;
+  }
+
+  // ---- the merged conversation (#56) ---------------------------------------------------------
+  //
+  // Chat's half and Build's half are one Conversation, and `SW.api.conversation` returns them in
+  // one order, each row labelled. Turning that into messages is the UNIFIED conversation view's
+  // work — the split view still reads the two halves apart, exactly as it does today.
+  //
+  // Left here rather than in a mode, because #57 shows the same merged Conversation in Build and
+  // reuses this rather than deriving it a second time. Whichever ticket landed first was to build
+  // it; this one did.
+
+  // The apps a run changed, one entry per app rather than per card: a run that touched the same app
+  // over several turns is still one app, and the newest card is the one that names it as it was
+  // called by the end of the run.
+  function appsChangedIn(rows) {
+    const byApp = new Map();
+    for (const ev of rows) {
+      if (ev.type !== 'app_change') continue;
+      const appId = ev.appId || ev.app || '';
+      byApp.set(appId, { type: 'app_change', appId, name: ev.name || '' });
+    }
+    return [...byApp.values()];
+  }
+
+  // The Build half, folded. A RUN is a build turn: it opens on the user row that asked for it and
+  // closes on that turn's `done`, and only a run folds — the row summarises a prompt, so a stretch
+  // of log with no prompt behind it has nothing to summarise.
+  //
+  // Two kinds of row are deliberately not runs, and folding them was the same bug twice. A confirmed
+  // handoff writes the plan card and its `done` into the Build log with no user row (see
+  // Orchestrator.confirm_handoff), and that plan card is the handoff's own card (#60) — it belongs
+  // on screen, not behind "Show the turns". `app-reset` and `attachments-restored` are appended
+  // outside any turn, and swallowed into the run above them they read as something the last build
+  // prompt did. Both render in place, exactly as Build renders them.
+  function buildRunMessages(rows) {
+    const out = [];
+    let loose = [];
+    let run = null;
+    let seq = 0;
+
+    const flushLoose = () => {
+      if (!loose.length) return;
+      // Ids have to survive being concatenated with every other segment's, and each row's position
+      // in the merged read is already unique.
+      out.push(...buildHistoryToMessages(loose).map((m) => ({ ...m, id: `${m.id}_${seq}` })));
+      seq += 1;
+      loose = [];
+    };
+    const flushRun = () => {
+      if (!run) return;
+      out.push({
+        id: `run_${run.order}`,
+        role: 'assistant',
+        order: run.order,
+        blocks: [{
+          type: 'build_run',
+          prompt: run.prompt,
+          apps: appsChangedIn(run.rows),
+          // The cards are the row's FACE, so they are not repeated inside the turns it opens on.
+          messages: buildHistoryToMessages(run.rows.filter((ev) => ev.type !== 'app_change')),
+        }],
+      });
+      run = null;
+    };
+
+    for (const ev of rows) {
+      if (ev.type === 'user') {
+        flushLoose();
+        flushRun();
+        run = { order: ev.order, prompt: ev.text || '', rows: [] };
+      }
+      if (!run) {
+        loose.push(ev);
+        continue;
+      }
+      run.rows.push(ev);
+      if (ev.type === 'done') flushRun();
+    }
+    flushLoose();
+    flushRun();
+    return out;
+  }
+
+  async function mergedHistoryToMessages(history, handoff) {
+    const chat = [];
+    const build = [];
+    (history || []).forEach((row, i) => {
+      (row.half === 'build' ? build : chat).push({ ...row, order: i });
+    });
+    // Each half is walked by the reader that already knows how to read it — a build turn's tool
+    // cards and plan cards are not chat blocks — and `order` is what puts the two back together.
+    const messages = (await historyToMessages(chat, handoff)).concat(buildRunMessages(build));
+    return messages.sort((a, b) => a.order - b.order);
   }
 
   function applyBuildEvent(ev) {
@@ -1278,6 +1399,28 @@ window.SW = window.SW || {};
       return thread;
     },
 
+    // What Chat draws for one Conversation, which is where the viewer's conversation view decides
+    // something (#52). Split reads the Chat half, exactly as the Workbench does today. Unified
+    // reads both halves merged, so a Conversation that only ever happened in Build stops opening
+    // on the landing screen as if it had never happened.
+    //
+    // The rail's app list comes with it, because the app cards in a merged transcript read publish
+    // state off it — one read for the whole transcript rather than one per card. Build already
+    // loads it; Chat had no reason to until now.
+    async conversationMessages(thread) {
+      const chatOnly = () =>
+        historyToMessages(thread.history || thread.messages || [], thread.handoff);
+      if (SW.prefs.get('conversationView') !== 'unified') return chatOnly();
+      // A merged read that failed must not read as a Conversation that never happened. The Chat
+      // half is already in hand — it came with the thread — so the fallback is the split view,
+      // which is short of the Build half rather than short of everything.
+      const [history] = await Promise.all([
+        SW.api.conversation(thread.id).catch(() => null),
+        loadAppList().catch(() => {}),
+      ]);
+      return history === null ? chatOnly() : mergedHistoryToMessages(history, thread.handoff);
+    },
+
     async openThread(threadId) {
       // Click B then A and two of these are in flight. Unguarded, whichever server response lands
       // last wins, so the store can settle on B while the route and the rail say A — and
@@ -1289,7 +1432,7 @@ window.SW = window.SW || {};
       if (gen !== openSeq) return null;
       await store.adoptThreadScope(thread);
       if (gen !== openSeq) return null;
-      const messages = await historyToMessages(thread.history || thread.messages || [], thread.handoff);
+      const messages = await store.conversationMessages(thread);
       if (gen !== openSeq) return null;
       state.thread = thread;
       state.messages = messages;

@@ -1,0 +1,241 @@
+// Opens Conversations under each conversation view and reports what Chat would draw (#56).
+//
+// Nothing is mounted. Almost everything this ticket decides on the client is a decision about
+// MESSAGE STATE — whether the two halves merged, in what order, whether a build run folded into one
+// row and what that row's face is built from — and all of it is settled before React is asked to
+// draw anything. Mounting would test antd.
+//
+// The `card` step is the one exception, and it is not an exception to that rule: `createElement` is
+// stubbed to a plain object, so calling `AppChange` returns a tree of data. Three things the card
+// alone decides — published or not, whether it keeps the way through, whether it says `in the
+// preview` — have nowhere else to be asked.
+//
+// The fetch log is part of the report, because one criterion is about cost rather than content: an
+// app card reads publish state live, and a merged transcript with many cards must still cost one
+// read of the rail's list, not one per card.
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
+const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
+
+// --- the server ------------------------------------------------------------
+// Two Built Apps, two publish states, and Conversations that exercise the four shapes the merged
+// read has to survive: both halves, Build only, two apps in one Conversation, and nothing at all.
+const APPS = [
+  { id: 'app_a', name: 'Desk dashboard', built: true, published: true,
+    publishedAt: '2026-01-02T09:00:00Z', selected: true, building: false, behind: false },
+  { id: 'app_b', name: 'P&L report', built: true, published: false,
+    publishedAt: '', selected: false, building: false, behind: false },
+  // Published before the stamp existed — which is every published app in every Project on the
+  // release that added one, and any app whose stamp has not reached this Builder's clone yet.
+  { id: 'app_old', name: 'Risk monitor', built: true, published: true,
+    publishedAt: '', selected: false, building: false, behind: false },
+];
+
+// The Chat half as `/threads/<id>` returns it — which is all the split view ever reads.
+const THREADS = {
+  thr_both: { id: 'thr_both', title: 'Desks', artifacts: [], touched: [],
+              history: [{ type: 'user', text: 'which desks lost money?', at: '2026-01-01T09:00:00Z' },
+                        { type: 'user', text: 'thanks', at: '2026-01-01T11:00:00Z' }] },
+  thr_build_only: { id: 'thr_build_only', title: 'Straight into Build', artifacts: [], touched: [],
+                    history: [] },
+  thr_two_apps: { id: 'thr_two_apps', title: 'Two apps', artifacts: [], touched: [], history: [] },
+  thr_empty: { id: 'thr_empty', title: 'New chat', artifacts: [], touched: [], history: [] },
+  // The ordinary way a Conversation reaches Build: a confirmed handoff, which writes the plan card
+  // and its `done` into the Build log with no user row in front of them.
+  thr_handoff: { id: 'thr_handoff', title: 'Handed off', artifacts: [], touched: [],
+                 history: [{ type: 'user', text: 'build me a dashboard',
+                             at: '2026-01-01T09:00:00Z' }] },
+  // The merged read fails. The Chat half came with the thread and is still good.
+  thr_broken: { id: 'thr_broken', title: 'Merge is down', artifacts: [], touched: [],
+                history: [{ type: 'user', text: 'which desks lost money?',
+                            at: '2026-01-01T09:00:00Z' }] },
+};
+
+// The merged read as the control API returns it: ordered, and every row labelled with its half.
+const CONVERSATIONS = {
+  thr_both: [
+    { half: 'chat', type: 'user', text: 'which desks lost money?', at: '2026-01-01T09:00:00Z' },
+    { half: 'build', type: 'user', text: 'add a date filter', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'agent', kind: 'tool', tool: 'edit', detail: 'src/App.tsx',
+      app: 'app_a', at: '2026-01-01T10:00:01Z' },
+    { half: 'build', type: 'app_change', appId: 'app_a', name: 'Desk dashboard',
+      app: 'app_a', at: '2026-01-01T10:00:02Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:03Z' },
+    { half: 'chat', type: 'user', text: 'thanks', at: '2026-01-01T11:00:00Z' },
+  ],
+  thr_build_only: [
+    { half: 'build', type: 'user', text: 'build me a dashboard', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'app_change', appId: 'app_a', name: 'Desk dashboard as it was then',
+      app: 'app_a', at: '2026-01-01T10:00:01Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:02Z' },
+  ],
+  // One Conversation, two Built Apps, in the order the runs happened. This is the shape a merge
+  // built on the selected app's log alone cannot show.
+  thr_two_apps: [
+    { half: 'build', type: 'user', text: 'build the dashboard', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'app_change', appId: 'app_a', name: 'Desk dashboard', app: 'app_a',
+      at: '2026-01-01T10:00:01Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:02Z' },
+    { half: 'build', type: 'user', text: 'now the P&L report', app: 'app_b', at: '2026-01-01T12:00:00Z' },
+    { half: 'build', type: 'app_change', appId: 'app_b', name: 'P&L report', app: 'app_b',
+      at: '2026-01-01T12:00:01Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_b',
+      at: '2026-01-01T12:00:02Z' },
+  ],
+  thr_empty: [],
+  // A handoff, then a build, then an app reset. Only the middle one is a run: the other two were
+  // written outside any turn, and folding them makes the transcript claim a build prompt did them.
+  thr_handoff: [
+    { half: 'chat', type: 'user', text: 'build me a dashboard', at: '2026-01-01T09:00:00Z' },
+    { half: 'build', type: 'plan-proposed', plan: 'A desk exposure dashboard.', kind: 'plan',
+      planId: 'pln_1', steps: 3, app: 'app_a', at: '2026-01-01T09:30:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'awaiting approval', app: 'app_a',
+      at: '2026-01-01T09:30:01Z' },
+    { half: 'build', type: 'user', text: 'add a date filter', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'app_change', appId: 'app_a', name: 'Desk dashboard', app: 'app_a',
+      at: '2026-01-01T10:00:01Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:02Z' },
+    { half: 'build', type: 'app-reset', app: 'app_a', at: '2026-01-01T11:00:00Z' },
+  ],
+};
+
+// The one conversation whose merged read is broken, so the store's fallback is reachable.
+const BROKEN = new Set(['thr_broken']);
+
+const calls = [];
+const json = (body, status = 200) => ({
+  ok: status < 400, status,
+  headers: { get: () => 'application/json' },
+  json: async () => body,
+  text: async () => JSON.stringify(body),
+});
+
+function serve(url) {
+  const path = String(url).replace(/^\.\/api/, '');
+  calls.push(path);
+  let m;
+  if ((m = path.match(/^\/threads\/([^/]+)\/conversation$/))) {
+    if (BROKEN.has(m[1])) return json({ error: 'the merge fell over' }, 500);
+    return json({ history: CONVERSATIONS[m[1]] || [] });
+  }
+  if ((m = path.match(/^\/threads\/([^/]+)\/context$/))) return json({ items: [] });
+  if ((m = path.match(/^\/threads\/([^/]+)$/))) return json(THREADS[m[1]] || { id: m[1], history: [] });
+  if (path === '/threads') return json({ items: Object.values(THREADS) });
+  if (path === '/apps') return json({ items: APPS, selected: 'app_a' });
+  return json({});
+}
+
+const backing = new Map();
+const sandbox = {
+  console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
+  Error, Blob, ArrayBuffer, Uint8Array, Infinity, setTimeout, clearTimeout, setInterval, clearInterval,
+  requestAnimationFrame: (fn) => fn(),
+  localStorage: {
+    getItem: (k) => (backing.has(k) ? backing.get(k) : null),
+    setItem: (k, v) => backing.set(k, String(v)),
+    removeItem: (k) => backing.delete(k),
+  },
+  document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
+  // router.js reads the hash and listens for changes to it. `mode` is half of what decides whether
+  // the card says `in the preview`, so the harness has to be able to move it.
+  location: { hash: '' },
+  history: { replaceState() {} },
+  addEventListener() {},
+  removeEventListener() {},
+  React: {
+    createElement: (t, p, ...c) => ({ t, p, c }),
+    useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+    useEffect: () => {}, useRef: () => ({ current: null }), Fragment: 'Fragment',
+  },
+  antd: {
+    Input: { TextArea: 'Input.TextArea' }, Button: 'Button', Dropdown: 'Dropdown', Tag: 'Tag',
+    Tooltip: 'Tooltip', Space: 'Space', Modal: { confirm() {} },
+    message: { success() {}, error() {}, info() {}, warning() {} },
+  },
+  icons: new Proxy({}, { get: (_, name) => String(name) }),
+  fetch: async (url) => serve(url),
+};
+sandbox.window = sandbox;
+sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
+                 'components/message-blocks.js']) {
+  vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
+}
+const SW = sandbox.SW;
+
+// The app card, called as the function it is. `createElement` is stubbed to a plain object, so this
+// walks a tree of data and never mounts anything — which is what lets the three questions the card
+// alone answers (published or not, whether it keeps the control, whether it says `in the preview`)
+// be asked at all. Everything else in this file stops at the store.
+function cardText(block) {
+  const AppChange = SW.MessageBlock({ block: { type: 'app_change', ...block } }).t;
+  const words = [];
+  const walk = (node) => {
+    if (node === null || node === undefined || node === false || node === true) return;
+    if (typeof node === 'string' || typeof node === 'number') { words.push(String(node)); return; }
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node.c) walk(node.c);
+  };
+  walk(AppChange({ block: { type: 'app_change', ...block } }));
+  return words;
+}
+
+// What a block says, short enough to assert on. A build run reports its face and its fold
+// separately, because the whole question is which facts are in which.
+function describe(block) {
+  if (block.type === 'build_run') {
+    return {
+      run: block.prompt,
+      apps: (block.apps || []).map((a) => `${a.appId}:${a.name}`),
+      folded: (block.messages || []).map((m) =>
+        `${m.role}:${(m.blocks || []).map((b) => b.type).join('+')}`),
+    };
+  }
+  if (block.type === 'app_change') return { card: block.appId, name: block.name };
+  if (block.type === 'text') return block.value;
+  return block.type;
+}
+
+function view() {
+  return (SW.store.get().messages || []).map((m) => ({
+    role: m.role,
+    blocks: (m.blocks || []).map(describe),
+  }));
+}
+
+const report = [];
+for (const step of steps) {
+  if (step.pref) {
+    SW.prefs.set('conversationView', step.pref);
+    report.push({ step: `pref ${step.pref}`, view: SW.prefs.get('conversationView') });
+  } else if (step.open) {
+    calls.length = 0;
+    await SW.store.openThread(step.open);
+    report.push({
+      step: `open ${step.open}`,
+      messages: view(),
+      apps: (SW.store.get().apps || []).map((a) => a.id),
+      // Every path this open fetched, so "one read for the transcript" is a claim and not a hope.
+      calls: calls.slice(),
+    });
+  } else if (step.card) {
+    // `mode` and `activeApp` are what decides "in the preview": the card is only ever there when
+    // Build is the mode on screen and it is showing this app.
+    // Straight onto the stub, then `go` to the same place: nothing here dispatches a hashchange,
+    // and `go` re-parses when the hash it is handed is the one already there.
+    sandbox.location.hash = step.route || '#/chat';
+    SW.router.go(step.route || '#/chat');
+    SW.store.set({ activeApp: (SW.store.get().apps || []).find((a) => a.id === step.activeApp) || null });
+    report.push({ step: `card ${step.card.appId}`, words: cardText(step.card) });
+  } else {
+    throw new Error(`unknown step ${JSON.stringify(step)}`);
+  }
+}
+console.log(JSON.stringify(report));

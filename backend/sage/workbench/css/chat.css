@@ -557,6 +557,43 @@
 .sw-appchange-summary { font-size: 12.5px; color: var(--gray-600); line-height: 1.55; }
 .sw-appchange-foot { display: flex; align-items: center; gap: var(--s2); }
 
+/* One build run, folded (#56). Chat has no preview pane, so twenty implementation turns would bury
+   the questions around them: the run reads as one row and opens when it is asked to. The app cards
+   above are the row's face and stay unfolded — a receipt you have to click for is not a receipt.
+   Unified conversation view only; #61 takes this away with the folding if split wins. */
+.sw-buildrun {
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius);
+  background: var(--gray-100);
+  padding: var(--s3);
+  display: grid;
+  gap: var(--s2);
+}
+.sw-buildrun-head { display: flex; align-items: center; gap: var(--s2); }
+.sw-buildrun-label {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gray-600);
+}
+.sw-buildrun-prompt {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--dark-700);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sw-buildrun-turns {
+  display: grid;
+  gap: var(--s2);
+  border-top: 1px solid var(--gray-300);
+  padding-top: var(--s2);
+}
+
 /* Composer --------------------------------------------------------------- */
 
 .sw-composer-dock {

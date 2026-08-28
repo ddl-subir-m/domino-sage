@@ -59,6 +59,16 @@ const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, setTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
+  // `openThread` asks the viewer which conversation view they are in (#56), so the real prefs.js
+  // comes along with the store. An in-memory backing map: this harness is not about what persists.
+  localStorage: (() => {
+    const backing = new Map();
+    return {
+      getItem: (k) => (backing.has(k) ? backing.get(k) : null),
+      setItem: (k, v) => backing.set(k, String(v)),
+      removeItem: (k) => backing.delete(k),
+    };
+  })(),
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
   React: {
     createElement: (t, p, ...c) => ({ t, p, c }),
@@ -79,7 +89,7 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['util.js', 'api.js', 'store.js']) {
+for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

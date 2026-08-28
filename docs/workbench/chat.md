@@ -239,6 +239,31 @@ Minimum Chat chrome that must work (the rest of the mock can wait):
 - Resource panel (IN CONTEXT / PROJECT RESOURCES)
 - The plan-suggestion callout and Open in Build — specified in [handoff.md](handoff.md)
 
+### The conversation view (#56)
+
+A Conversation has two halves and, since #62, they live in several files: the Thread's own
+`history.jsonl`, and one log per Built App the Conversation drove. The viewer's `conversationView`
+preference (#52, `js/prefs.js`) decides which of them Chat draws.
+
+- **`split`** — the Workbench as it was. Chat reads the Chat half and nothing else.
+- **`unified`** — Chat reads `GET /api/threads/<id>/conversation`, which merges both halves in the
+  order they happened, each row labelled with the half it came from. That read is a **scan**: it
+  reads every app in the Project and filters on the conversation tag, because `Orchestrator.history`
+  answers for the selected app only and one Thread can hand off more than once (#72). Each build run
+  folds into one collapsed row — Chat has no preview pane, and twenty implementation turns would
+  bury the questions around them.
+
+`SW.prefs.get('conversationView')` has exactly one reader, `store.conversationMessages`. Everything
+downstream draws what the store handed it, so #61 can settle the question by deleting one branch.
+
+The **`app_change` block** is not part of that branch. A build turn emits one per app it changed,
+server-side and blind to the preference, into that app's own log; `AppChange`
+(`js/components/message-blocks.js`) renders it under both views. What is unified-only is the
+**folding** — the `build_run` block, its renderer, and the merged read behind them — and a collapsed
+row's face is built from the run's `app_change` blocks rather than from a second source of app facts
+(ADR-0008, #83). The card carries the app's name as it stood then and reads publish state live off
+the rail's list, so a long transcript costs one read and not one per card.
+
 ## 8. What this slice does not do
 
 - Jupyter / kernels / notebooks

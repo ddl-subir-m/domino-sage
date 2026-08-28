@@ -1705,6 +1705,17 @@ def thread_history(thread_id: str) -> JSONResponse:
     return JSONResponse(orchestrator.thread_history(thread_id))
 
 
+@control_app.get("/api/threads/{thread_id}/conversation")
+def thread_conversation(thread_id: str) -> JSONResponse:
+    """Both halves of one Conversation, merged and labelled (#56).
+
+    Beside `/history` rather than replacing it: that one answers "what did Chat say", which is what
+    the split conversation view still asks and must keep getting the same answer to. This one
+    answers "what did this Conversation do", which is a question about the Project's Built Apps as
+    well — see Orchestrator.conversation_history."""
+    return JSONResponse({"history": orchestrator.conversation_history(thread_id)})
+
+
 @control_app.get("/api/threads/{thread_id}/context")
 def thread_context(thread_id: str) -> JSONResponse:
     return JSONResponse(orchestrator.thread_context(thread_id))

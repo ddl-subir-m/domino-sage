@@ -173,6 +173,7 @@ _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
+    "app_change",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -1664,6 +1665,22 @@ def _app_display_name(workspace: Workspace, fallback: str = "Unnamed Built App")
     return chat_handoff.plan_title(plan) if plan.strip() else fallback
 
 
+def _app_change_event(workspace: Workspace) -> dict:
+    """The record that a turn changed an app, attached to the app it changed (#56, #83).
+
+    Written server-side and blind to the viewer's conversation view: the block belongs to the build
+    turn, and both views render it. What one of them adds is the FOLDING — Chat's merged read
+    collapses a run into one row whose face is built from these — and that is a view over these
+    blocks, not a second kind of block beside them.
+
+    The name is carried rather than looked up later, because it is a then-fact: a run from six weeks
+    ago names the app as it was called then, and a rename since is not something that run did.
+    Whether the app is published today is the opposite kind of question, so it is deliberately NOT
+    here — the reader asks the rail for that.
+    """
+    return {"type": "app_change", "appId": workspace.app_id, "name": _app_display_name(workspace)}
+
+
 @dataclass
 class Project:
     id: str
@@ -2339,6 +2356,10 @@ class Orchestrator:
             # take the Domino App with it (#76). The id itself stays here — the rail has no use for
             # it, and a Domino App is deleted by the app that owns it, never by one named over HTTP.
             "published": bool(workspace.domino_app_id()),
+            # When the code behind that URL last moved. The transcript's app card reads publish
+            # state off this row rather than out of the block it renders, because whether an app is
+            # published today is a now-question and a six-week-old build run cannot answer it (#56).
+            "publishedAt": workspace.published_at(),
             "selected": app_id == selected,
             # A build is streaming into this one. Switching away no longer stops it (#77), so the
             # row is where "a build is running, and this is where" gets said — the composer can
@@ -3061,6 +3082,40 @@ class Orchestrator:
 
     def thread_history(self, thread_id: str) -> list[dict]:
         return ThreadStore(self._chat_project().record.path).read_history(thread_id)
+
+    def conversation_history(self, thread_id: str) -> list[dict]:
+        """One Conversation's whole record — what was asked in Chat and what was done in Build —
+        merged into the order it happened, every row labelled with the half it came from (#56).
+
+        A SCAN, not a read of one file. The Build log is per Built App (#68) and one Thread can hand
+        off more than once (#72), so a Conversation's build turns are spread over every app it
+        drove. `history()` reads the SELECTED app's log, and a merge built on that would hide every
+        other app this Conversation changed — whichever app happens to be on screen would decide
+        what the Conversation appears to have done. Every app in the Project is read instead and
+        filtered on the conversation tag. Rows already carry `app`, so a reader can still say which
+        one each turn built.
+
+        Order comes from the `at` stamp both writers apply (#51). Entries written before the stamp
+        existed carry none: they sort first, Chat before Build. Two halves with no clock between
+        them cannot be interleaved honestly, and Chat before Build is the order a Conversation with
+        both actually had — Build only ever started after a handoff out of Chat.
+        """
+        record = self._chat_project().record
+        rows = [{**row, "half": "chat"} for row in ThreadStore(record.path).read_history(thread_id)]
+        for app_id in self._wm.app_ids():
+            workspace = self._wm.app_workspace(self._project_id, app_id)
+            # The same adoption `history()` does before it reads, and for the same reason: build
+            # history predates conversation tagging, and `read_history` filters on the tag. Without
+            # it an upgraded Project's merged view would be strictly emptier than the split view it
+            # replaces — Build's whole transcript missing, and only under unified.
+            self._adopt_legacy_build_history(workspace, record)
+            rows += [{**row, "half": "build"} for row in workspace.read_history(thread_id)]
+        # Stable, so rows sharing a stamp — a whole turn is written inside one second — keep the
+        # order the log they came from has them in. The half is only ever the tiebreak for the
+        # stampless rows above; for two stamped rows it agrees with what stability already gives,
+        # because a second is the finest this clock reads and no finer order exists to recover.
+        rows.sort(key=lambda row: (str(row.get("at") or ""), 0 if row["half"] == "chat" else 1))
+        return rows
 
     def thread_context(self, thread_id: str) -> dict:
         return ThreadStore(self._chat_project().record.path).read_context(thread_id)
@@ -5228,6 +5283,11 @@ class Orchestrator:
                         current = LEAK_FIX_NUDGE
                         continue
                 restore_mode()
+                # The receipt for what this turn changed, before the line that closes the turn.
+                # `owns_turn` because a phase is not a turn: one approved plan changed one app, and
+                # six phases would put six identical cards in the transcript (#56).
+                if wrote_code and owns_turn:
+                    yield persist(_app_change_event(project.app_for_turn()))
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok and owns_turn:
                     # A clean code-writing build succeeded (a no-edit plan/answer turn returned earlier),
@@ -5391,6 +5451,9 @@ class Orchestrator:
         # that reaches back past all of them — hence discard_to rather than discard_changes.
         base = project.snapshot.commit_before_turn()
         history_baseline = project.app_for_turn().history_len()
+        # What the app's code looked like before any phase ran, so a build that dies halfway can
+        # still say whether it changed anything — see the failure path below (#56).
+        tree_before = project.snapshot.working_tree_hash()
         # Per-phase circuit breakers bound each phase, not the build: 6 × (15 iterations, 600s) is an
         # hour of wall clock that nobody asked for.
         deadline = time.monotonic() + _env_int("SAGE_PHASED_MAX_SECONDS", 1800)
@@ -5430,12 +5493,21 @@ class Orchestrator:
             # we do instead is skip the commit (the durable record stays clean) and flag the failure,
             # which makes the next turn plan first via the existing failure-replan gate.
             project.app_for_turn().set_last_turn_failed(True)
+            # The finished phases are kept on purpose (above), so the app IS changed and still owes
+            # the receipt for it — "which app now holds forty minutes of work" is exactly what this
+            # card exists to stop people going to look for. The working tree rather than the phase
+            # count, because a phase can finish without writing anything.
+            if project.snapshot.working_tree_hash() != tree_before:
+                yield persist(_app_change_event(project.app_for_turn()))
             yield persist({"type": "done", "ok": False,
                            "decision": f"phase {step.n} of {len(steps)} failed — {why}"})
             return
 
         project.app_for_turn().set_last_turn_failed(False)
         project.app_for_turn().mark_built()
+        # One card for the whole phased build, here rather than per phase — the phases swallow their
+        # own terminal events for the same reason (#56).
+        yield persist(_app_change_event(project.app_for_turn()))
         yield persist({"type": "done", "ok": True, "decision": "typecheck clean"})
         saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
         if saved is not None:
@@ -5764,6 +5836,9 @@ class Orchestrator:
                                  entry_point=project.repo_rel(_ENTRY_POINT))
             project.workspace.record_domino_app(app.id)
             out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+        # Both branches, because both moved the code behind the URL. `record_domino_app` above runs
+        # on the first publish only, so it cannot be where the time is written (#56).
+        project.workspace.mark_published()
         # The deep link is /u/{owner}/{project}/apps/… — the Domino project's name, not the app's.
         out["manage_url"] = cp.app_manage_url(app.id, project_name)
         return out

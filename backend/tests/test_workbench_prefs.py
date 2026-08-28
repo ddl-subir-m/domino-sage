@@ -120,12 +120,14 @@ def test_the_handoffs_target_app_is_not_a_preference():
     assert "appId" not in _settings_drawer()
 
 
-def test_nothing_reads_the_preference_yet():
-    """The prefactor lands with behaviour unchanged: the surface writes the answer, and the only
-    other thing that looks at it is the surface drawing its own control."""
+def test_only_the_store_branches_on_the_preference():
+    """#52 landed this answer with nothing reading it. #56 gave it its first reader, and there is
+    exactly one: the store decides what a Conversation's messages are, once, and every component
+    downstream draws whatever it was handed. A second reader would be a second place for the two
+    views to disagree — and #61 has to be able to delete one arm by deleting one branch."""
     readers = sorted(p.relative_to(_JS).as_posix() for p in _JS.rglob("*.js")
                      if "conversationView" in p.read_text())
-    assert readers == ["components/shell.js", "prefs.js"]
+    assert readers == ["components/shell.js", "prefs.js", "store.js"]
 
 
 def _settings_drawer() -> str:

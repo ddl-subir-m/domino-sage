@@ -465,7 +465,12 @@ SW.api = {
   // serving can still be deleted and one that is gone cannot come back.
   deleteApp: (id, { deleteDominoApp = false } = {}) =>
     del(`/apps/${encodeURIComponent(id)}?domino_app=${deleteDominoApp ? 'delete' : 'keep'}`),
-  app: async () => ({}),
+  // Both halves of one Conversation, merged and labelled with the half each turn came from (#56).
+  // Beside `thread(id).history`, not instead of it: the split conversation view still asks Chat
+  // what Chat said, and this asks what the whole Conversation did — a question about the Project's
+  // Built Apps too, which is why the server scans them all rather than reading the selected one.
+  conversation: (threadId) =>
+    request(`/threads/${encodeURIComponent(threadId)}/conversation`).then((r) => r.history || []),
   appConversations: () => empty(),
   publish: async () => ({}),
 

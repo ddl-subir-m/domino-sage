@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useEffect } = React;
+  const { createElement: h, useState } = React;
   const { Button, Table, Tooltip, Tag, Space, Input } = antd;
   const {
     CopyOutlined, RightOutlined, DownOutlined, PushpinOutlined, ReloadOutlined,
@@ -464,28 +464,25 @@ window.SW = window.SW || {};
   // Review and Publish belong: a turn can change two apps, and the preview can
   // only show one of them, so the entry — not the panel — is what makes every
   // change reviewable. Nothing a turn did is left for the user to go and find.
+  //
+  // Emitted by the build turn, server-side and blind to the conversation view (#83), so this
+  // renders under BOTH: Build shows it at the end of the turn that changed the app, and Chat's
+  // merged read folds a run's cards into its collapsed row. The folding is the unified arm's work
+  // and #61 may take it away; this card is not part of it.
+  //
+  // Two facts, two ages. The NAME comes out of the block, because what an app was called is a
+  // then-fact and a run from six weeks ago should name it the way it was named then. Whether it is
+  // published is a now-question, so that is read off the rail's list — which the store loads once
+  // for the Project, so a long merged transcript costs one read and not one per row.
   function AppChange({ block }) {
-    const { activeApp, thread } = SW.store.get();
-    const [app, setApp] = useState(null);
-
-    useEffect(() => {
-      let cancelled = false;
-      SW.api
-        .app(block.appId)
-        .then((loaded) => {
-          if (!cancelled) setApp(loaded);
-        })
-        .catch(() => {});
-      return () => {
-        cancelled = true;
-      };
-    }, [block.appId]);
-
-    if (!app) return null;
+    const { activeApp, apps } = SW.store.get();
+    const live = (apps || []).find((a) => a.id === block.appId) || null;
+    const name = block.name || (live && live.name) || 'this app';
     // Chat has no preview panel, so the app can only be "in the preview" while
     // Build is the mode on screen — otherwise the card offers to take you there.
     const showing =
-      SW.router.get().mode === 'build' && activeApp && activeApp.id === app.id;
+      SW.router.get().mode === 'build' && activeApp && activeApp.id === block.appId;
+    const status = !live ? 'draft' : live.building ? 'building' : live.published ? 'running' : 'draft';
 
     return h(
       'div',
@@ -493,32 +490,86 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-appchange-head' },
-        h(SW.StatusDot, { status: app.status }),
-        h('span', { className: 'sw-appchange-name' }, app.name),
+        h(SW.StatusDot, { status }),
+        h('span', { className: 'sw-appchange-name' }, name),
         showing && h('span', { className: 'sw-appchange-here' }, 'in the preview')
       ),
       block.summary && h('div', { className: 'sw-appchange-summary' }, block.summary),
       h(
         'div',
         { className: 'sw-appchange-foot' },
+        // An app that was never published keeps this control rather than losing it to a URL: it
+        // has nowhere else to be looked at, so the preview is the only door (ADR-0008). Dropped
+        // only when Build is already showing the app, because a button that navigates to where
+        // you already are is the dead end this card replaces.
         !showing &&
           h(
             Button,
             {
+              // The rail's own grammar, not a second one that looks like it: `?app=` is the single
+              // lever that moves preview, code and composer target together, and one writer of the
+              // string is what keeps this card, the rail row and the route agreeing (#83).
               size: 'small',
-              onClick: () =>
-                SW.router.go(`#/build${thread ? `/${thread.id}` : ''}?app=${app.id}`),
+              onClick: () => SW.router.go(SW.appRoute({ id: block.appId })),
             },
             'Open in preview'
           ),
-        h(
-          'span',
-          { className: 'sw-caption' },
-          app.visibility === 'private'
-            ? 'Not published yet'
-            : `Published · ${SW.util.relativeTime(app.lastDeploy)}`
-        )
+        // Silent rather than wrong while the rail's answer is not in yet, and for an app that has
+        // since left the Project: "Not published yet" is a claim, and this is the one place that
+        // has no business guessing it.
+        live &&
+          h(
+            'span',
+            { className: 'sw-caption' },
+            // An app published before the stamp existed has no date, and so does every app in
+            // every Project on the release that added one. "Published · " with nothing after it
+            // reads as a date that failed to load; "Published" is the whole of what is known.
+            !live.published
+              ? 'Not published yet'
+              : live.publishedAt
+                ? `Published · ${SW.util.relativeTime(live.publishedAt)}`
+                : 'Published'
+          )
       )
+    );
+  }
+
+  // Chat's fold of one build run (#56, unified conversation view only — #61 takes this and its
+  // `build_run` case away if split wins; `AppChange` above stays either way).
+  //
+  // Chat has no preview pane, so twenty raw implementation turns would bury the questions around
+  // them. The run collapses to one row and opens when it is asked to. Its face is the run's
+  // `app_change` cards — one per distinct app the run changed — because that IS the app card, and
+  // building the row on a second source of app facts is what would strand the card in this branch.
+  function BuildRun({ block }) {
+    const [open, setOpen] = useState(false);
+    const apps = block.apps || [];
+    const turns = block.messages || [];
+
+    return h(
+      'div',
+      { className: 'sw-buildrun' },
+      h(
+        'div',
+        { className: 'sw-buildrun-head' },
+        h('span', { className: 'sw-buildrun-label' }, 'Build run'),
+        h('span', { className: 'sw-buildrun-prompt' }, block.prompt),
+        // A run whose turns all folded away has nothing to open, and a control that opens nothing
+        // is the dead end the rest of this card exists to avoid.
+        turns.length > 0 &&
+          h(
+            Button,
+            { type: 'link', size: 'small', onClick: () => setOpen(!open) },
+            open ? 'Hide the turns' : `Show the ${turns.length} turn${turns.length === 1 ? '' : 's'}`
+          )
+      ),
+      apps.map((app) => h(AppChange, { key: app.appId, block: app })),
+      open &&
+        h(
+          'div',
+          { className: 'sw-buildrun-turns' },
+          turns.map((message) => h(SW.Message, { key: message.id, message }))
+        )
     );
   }
 
@@ -583,6 +634,8 @@ window.SW = window.SW || {};
         });
       case 'app_change':
         return h(AppChange, { block });
+      case 'build_run':
+        return h(BuildRun, { block });
       case 'plan_card':
         return h(SW.PlanCard, { planId: block.planId });
       case 'build_plan':

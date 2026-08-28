@@ -213,6 +213,36 @@ def test_a_failed_phase_aborts_the_build_but_keeps_finished_work(tmp_path: Path,
     assert not any("Add a currency dropdown" in p["text"] for p in oc.prompts)
 
 
+def test_a_failed_phase_still_reports_which_app_it_changed(tmp_path: Path, monkeypatch):
+    """The finished phases are kept on purpose (above), so the app IS changed — and the change is
+    owed a receipt (#56). Without one the transcript says the build failed and nothing says where
+    the work that survived it landed, which is the "go and find it yourself" the card closes."""
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    turns = [Turn(text=PHASED_PLAN), _writes("src/data.ts"),
+             Turn(text="I looked around."), Turn(text="Still stuck.")]  # phase 2 both attempts
+    orch, _oc, project = _build(tmp_path, turns)
+    list(orch.build_stream("build me a trades dashboard"))
+
+    events = list(orch.approve_stream())
+
+    assert [c["appId"] for c in _of(events, "app_change")] == [project.workspace.app_id]
+
+
+def test_a_phased_build_that_wrote_nothing_reports_no_change(tmp_path: Path, monkeypatch):
+    """The working tree rather than the phase count: a phase can finish without writing, and a card
+    for a build that changed nothing is a receipt for work nobody did."""
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    turns = [Turn(text=PHASED_PLAN),
+             Turn(text="I looked around."), Turn(text="Still stuck.")]  # phase 1 both attempts
+    orch, _oc, _project = _build(tmp_path, turns)
+    list(orch.build_stream("build me a trades dashboard"))
+
+    events = list(orch.approve_stream())
+
+    assert "phase 1 of 3" in _of(events, "done")[0]["decision"]
+    assert _of(events, "app_change") == []
+
+
 def test_a_failed_phase_retries_once_in_another_session(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     turns = [Turn(text=PHASED_PLAN), Turn(text="stuck"), _writes("src/data.ts"),

@@ -617,6 +617,30 @@ class Workspace:
         settings["dominoAppId"] = app_id
         _write_settings_file(self._settings_path, settings)
 
+    def published_at(self) -> str:
+        """When this app was last published, or "" if it never was — and "" for an app published
+        before the stamp existed, which reads as the honest "no date" rather than a wrong one.
+
+        `dominoAppId` already says WHETHER an app is published, and it is written once, on the
+        first publish. "Published · when" is a different question: a re-publish ships a new version
+        to the same App, so the id it keeps says nothing about when the code behind the URL last
+        moved. Stamped here, beside the id it qualifies, for the same reason `builtAt` sits beside
+        `built` (#56)."""
+        stored = _read_settings_file(self._settings_path).get("publishedAt")
+        return stored.strip() if isinstance(stored, str) else ""
+
+    def mark_published(self) -> None:
+        """Stamp the time of THIS publish. Called on every one, first and re-publish alike —
+        unlike `record_domino_app`, which only the first has anything to say to.
+
+        Written after the pre-publish save, like the id beside it, so it reaches the other Sage
+        Builders in this Project from the NEXT save rather than this one. A reader that has not had
+        that save yet sees `published` with no date, which is why the card says plain "Published"
+        rather than a separator with nothing after it."""
+        settings = _read_settings_file(self._settings_path)
+        settings["publishedAt"] = _now()
+        _write_settings_file(self._settings_path, settings)
+
     def has_built(self) -> bool:
         """True once a code-writing build has completed here. Drives the first-BUILD plan gate
         (not first-turn): questions asked before the first build must not consume the gate, and the
