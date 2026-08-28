@@ -460,6 +460,11 @@ SW.api = {
   // New app in the Build rail: minted, seeded and selected server-side, with no Thread and no plan
   // behind it. 409 while a build is streaming, because a turn holds one working tree.
   createApp: () => post('/apps', {}),
+  // Take a Built App out of the Project. `deleteDominoApp` is the answer to the offer a published
+  // app earns — the default is the one that destroys less, because a Domino App that is still
+  // serving can still be deleted and one that is gone cannot come back.
+  deleteApp: (id, { deleteDominoApp = false } = {}) =>
+    del(`/apps/${encodeURIComponent(id)}?domino_app=${deleteDominoApp ? 'delete' : 'keep'}`),
   app: async () => ({}),
   appConversations: () => empty(),
   publish: async () => ({}),

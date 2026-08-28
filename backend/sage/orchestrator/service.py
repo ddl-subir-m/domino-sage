@@ -2142,6 +2142,10 @@ class Orchestrator:
             "built": workspace.has_built(),
             "builtAt": workspace.built_at(),
             "planId": plans.get(app_id, ""),
+            # Whether there is a deployment behind this app, which is what makes Delete offer to
+            # take the Domino App with it (#76). The id itself stays here — the rail has no use for
+            # it, and a Domino App is deleted by the app that owns it, never by one named over HTTP.
+            "published": bool(workspace.domino_app_id()),
             "selected": app_id == selected,
         }
 
@@ -2209,6 +2213,74 @@ class Orchestrator:
             raise ValueError("a name is required")
         self._wm.app_workspace(self._project_id, app_id).set_display_name(name)
         return self._one_app(app_id)
+
+    def delete_app(self, app_id: str, *, delete_domino_app: bool = False) -> dict:
+        """Take a Built App out of the Project, so a rail of abandoned experiments can be cleared
+        (#76). Raises KeyError for an app that is not there.
+
+        The mirror of `create_app`, and deliberately NOT of Reset: Reset empties an app and keeps
+        it, this takes the app away. Everything the app owns goes — its code, its Bindings, its
+        queries and its log, all of which live in its directory — and so do the plan documents that
+        name it, which is the same rule Reset applies to the documents it clears. A document naming
+        no app is a plan drafted in Chat and nobody's to take.
+
+        A published app is offered its Domino App, because a live URL nobody can find or fix is the
+        same stranding in a different costume: the Domino App's id is kept in the app's own
+        settings, so once the directory goes Sage cannot update or delete that App either. The offer
+        is the caller's to make — `delete_domino_app` is what the person answered — and an app that
+        was never published makes no control-plane call at all.
+
+        The control plane is asked FIRST and its failure stops the delete. The Built App is still
+        there to try again with, which is the only outcome that leaves a way out; the other order
+        loses the app and strands the Domino App in one step.
+
+        Refused rather than queued while a turn is streaming, as a New app and a switch are: a turn
+        holds one working tree and this removes one. Reset waits out a stop it can see landing;
+        there is nothing to wait for here, because the app being deleted may not be the app the
+        turn is running in.
+        """
+        if app_id not in self._wm.app_ids():
+            raise KeyError(app_id)
+        project = self.project(start_preview=False, seed_app=False)
+        if not self._turn_lock.acquire(blocking=False):
+            raise RuntimeError("busy")
+        try:
+            # Read before the directory goes: the id that reaches the Domino App is in the app's
+            # own settings, and afterwards there is nothing left to ask.
+            deployed = self._wm.app_workspace(self._project_id, app_id).domino_app_id()
+            deleted_domino_app = False
+            if deployed and delete_domino_app:
+                if self._control_plane is None:
+                    raise RuntimeError(
+                        "This app has a published Domino App, but this builder has no connection to "
+                        "Domino to delete it with. Delete the App in Domino, then delete this app.")
+                try:
+                    self._control_plane.delete_app_deployment(deployed)
+                except Exception as e:
+                    log.exception("delete_app: couldn't delete Domino App %s", deployed)
+                    raise RuntimeError(
+                        f"Sage couldn't delete this app's Domino App ({deployed}): {e}. The Built "
+                        f"App is still here, so nothing is stranded — try again, or delete the App "
+                        f"in Domino first and then delete this one.") from e
+                deleted_domino_app = True
+            self._wm.delete_app(app_id)
+            project.record.clear_plan_docs(app_id)
+            # Build was looking at the app that just went, so it has to be looking at something.
+            # `ensure` answers with the newest app left, or seeds one for a Project that now has
+            # none — the same not-yet-built app a Project starts with, rather than a Build mode
+            # pointed at a directory that is not there.
+            if project.workspace.app_id == app_id:
+                self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
+        finally:
+            self._turn_lock.release()
+        return {
+            "ok": True,
+            "id": app_id,
+            # Three answers, not two: an app that was never published has no Domino App to speak
+            # of, and saying "running" of one would be a sentence about something that never was.
+            "dominoApp": "deleted" if deleted_domino_app else ("running" if deployed else "none"),
+            "selected": self._wm.selected_app_id(),
+        }
 
     def _bind_app(self, project: Project, workspace: Workspace) -> Project:
         """Point the attached Project at a different Built App.

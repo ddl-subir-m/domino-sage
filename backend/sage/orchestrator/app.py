@@ -1576,6 +1576,30 @@ def select_app(app_id: str) -> JSONResponse:
         raise
 
 
+@control_app.delete("/api/apps/{app_id}")
+def delete_app(app_id: str, domino_app: str = "keep") -> JSONResponse:
+    """Remove a Built App from the Project (#76). `domino_app=delete` also deletes the Domino App
+    this one publishes to; anything else leaves that App running — see Orchestrator.delete_app.
+
+    The default is `keep` because it is the answer that destroys less: a request that forgot to say
+    leaves a URL serving, and a URL that is still serving can still be deleted."""
+    try:
+        return JSONResponse(orchestrator.delete_app(app_id,
+                                                    delete_domino_app=domino_app == "delete"))
+    except KeyError:
+        return JSONResponse({"error": "unknown app"}, status_code=404)
+    except RuntimeError as e:
+        # The turn-lock refusal is the one a person can wait out. Anything else here is a real
+        # failure — the control plane refusing to delete the Domino App, most of all, and that one
+        # has to reach them as itself, because the Built App is still there.
+        if str(e) == "busy":
+            return JSONResponse(
+                {"error": "A build is running. Stop it, or wait for it to finish, "
+                          "then delete the app."},
+                status_code=409)
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
 @control_app.patch("/api/apps/{app_id}")
 async def patch_app(app_id: str, request: Request) -> JSONResponse:
     """Rename a Built App. Only the display name is writable — the id names the directory, and a

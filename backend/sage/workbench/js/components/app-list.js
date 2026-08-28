@@ -5,8 +5,8 @@ window.SW = window.SW || {};
 // relearn when you turn your head is a rail that costs more than it lists.
 (function () {
   const { createElement: h, useState, useEffect, Fragment } = React;
-  const { Tooltip, Input, Dropdown, Modal, Button } = antd;
-  const { SearchOutlined, MoreOutlined, EditOutlined, PlusOutlined } = icons;
+  const { Tooltip, Input, Dropdown, Modal, Button, Checkbox } = antd;
+  const { SearchOutlined, MoreOutlined, EditOutlined, PlusOutlined, DeleteOutlined } = icons;
 
   function renameApp(app) {
     let value = app.name;
@@ -36,6 +36,77 @@ window.SW = window.SW || {};
         }
         return SW.store.renameApp(app.id, value.trim());
       },
+    });
+  }
+
+  // Delete takes the app away; Reset — in the composer, a different word in a different place —
+  // empties it and keeps it. The copy carries that difference rather than leaning on the labels:
+  // "removed and can't be recovered" is the whole reason the two must never be mistaken (#76).
+  //
+  // A published app is offered its Domino App, UNCHECKED. Both answers are irreversible, so the one
+  // that arrives by not reading is the one that destroys less: a Domino App still serving can be
+  // deleted later, and one already deleted cannot come back. It is also what makes the offer an
+  // offer — the criterion is that Sage deletes the App "if accepted", and a box already ticked is
+  // not something anybody accepted. The cost of the safe answer is a Domino App Sage can no longer
+  // reach, so that outcome is said out loud afterwards rather than defaulted around.
+  function deleteApp(app) {
+    let alsoDelete = false;
+    Modal.confirm({
+      title: `Delete “${app.name}”?`,
+      okText: 'Delete app',
+      okButtonProps: { danger: true },
+      cancelText: 'Cancel',
+      content: h(
+        Fragment,
+        null,
+        h('div', null, 'This app’s code, its plan and its Bindings are removed and can’t be '
+          + 'recovered. Your other Built Apps and this conversation stay.'),
+        app.published &&
+          h(
+            'div',
+            { style: { marginTop: 12 } },
+            h(
+              Checkbox,
+              {
+                onChange: (e) => {
+                  alsoDelete = e.target.checked;
+                },
+              },
+              'Also delete the published Domino App'
+            ),
+            h(
+              'div',
+              { className: 'sw-caption', style: { marginTop: 4, marginLeft: 24 } },
+              'Leave this and its URL goes on serving the version you last published — but Sage '
+                + 'can’t update or delete it after this, so you’d do that in Domino.'
+            )
+          )
+      ),
+      onOk: () =>
+        SW.store
+          .deleteApp(app.id, { deleteDominoApp: alsoDelete })
+          .then((out) => {
+            if (out.dominoApp === 'deleted') {
+              antd.message.success(`Deleted “${app.name}” and its Domino App.`);
+            } else if (out.dominoApp === 'running') {
+              // The one outcome worth saying out loud, and worth holding on screen: the Domino App
+              // is still costing a container and serving a URL, Sage is no longer the thing that
+              // can stop it, and the person has somewhere to go if that is not what they wanted.
+              antd.message.warning({
+                content: `Deleted “${app.name}”. Its Domino App is still running — delete it in `
+                  + 'Domino if you don’t want it, because Sage can no longer reach it.',
+                duration: 10,
+              });
+            } else {
+              antd.message.success(`Deleted “${app.name}”.`);
+            }
+          })
+          .catch((err) => {
+            // Held open rather than closed on the failure: the app is still there, and the answer
+            // to a control plane that refused may well be to delete it without the deployment.
+            antd.message.warning(err.message || 'Sage could not delete this Built App.');
+            return Promise.reject(err);
+          }),
     });
   }
 
@@ -74,10 +145,17 @@ window.SW = window.SW || {};
         Dropdown,
         {
           menu: {
-            items: [{ key: 'rename', label: 'Rename', icon: h(EditOutlined, null) }],
-            onClick: ({ domEvent }) => {
+            items: [
+              { key: 'rename', label: 'Rename', icon: h(EditOutlined, null) },
+              // Danger-styled and last, the way Delete conversation is in the Chat rail. It is
+              // also the only place Delete lives: Reset is in the composer, so the action that
+              // ends an app and the action that starts it over are never side by side (#76).
+              { key: 'delete', label: 'Delete', danger: true, icon: h(DeleteOutlined, null) },
+            ],
+            onClick: ({ key, domEvent }) => {
               domEvent.stopPropagation();
-              renameApp(app);
+              if (key === 'rename') renameApp(app);
+              if (key === 'delete') deleteApp(app);
             },
           },
           trigger: ['click'],

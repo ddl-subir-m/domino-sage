@@ -574,6 +574,7 @@ class FakeControlPlane:
     app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
     built: list[BuiltApp] = field(default_factory=list)  # what list_all_apps answers (Gallery)
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
+    deleted_apps: list[str] = field(default_factory=list)  # app_ids a deployment delete was asked for
     user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
     _seq: int = 0
 
@@ -662,6 +663,10 @@ class FakeControlPlane:
         return list(self.built)
 
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]:
+        # Recorded as well as applied: "deleting an app that was never published makes no
+        # control-plane call" is a claim about the call, and popping nothing looks the same as
+        # never being asked.
+        self.deleted_apps.append(app_id)
         self.published.pop(app_id, None)
         self.app_projects.pop(app_id, None)
         self.app_names.pop(app_id, None)

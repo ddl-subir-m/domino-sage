@@ -1290,6 +1290,30 @@ window.SW = window.SW || {};
       await loadAppList();
     },
 
+    // Delete a Built App (#76). Nothing here decides anything: the offer was made in the rail and
+    // `deleteDominoApp` is the answer the person gave, and what actually happened comes back from
+    // the server rather than being assumed from what was asked.
+    //
+    // The whole of Build is reloaded, not one row: the server moves Build onto the app that is left
+    // when the deleted one was in front of you, and the transcript, Bindings, plan pin and preview
+    // all belong to whichever app that is. The route is told LAST and names the new app, because
+    // the one in `?app=` no longer exists — left alone, BuildMode's effect would ask to select a
+    // deleted app and get a 404 for its trouble.
+    async deleteApp(id, { deleteDominoApp = false } = {}) {
+      const out = await SW.api.deleteApp(id, { deleteDominoApp });
+      await store.loadBuild();
+      const selected = state.activeApp;
+      state.activePlanId = (selected && selected.planId) || null;
+      state.activePlan = null;
+      notify();
+      await refreshRequires();
+      if (selected && selected.planId) await store.loadPlan(selected.planId);
+      // Through the rail's own route grammar, so the conversation on screen survives: deleting an
+      // abandoned app is not a reason to close the Thread somebody is talking in.
+      if (selected) SW.router.go(SW.appRoute(selected));
+      return out;
+    },
+
     clearApp() {
       state.activeApp = null;
       state.requires = [];

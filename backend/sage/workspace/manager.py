@@ -1002,6 +1002,27 @@ class WorkspaceManager:
         self._selected = new_id("app")
         return self.ensure(project_id, seed_app=True)
 
+    def delete_app(self, app_id: str) -> None:
+        """Take a Built App off the volume. Raises KeyError for one that is not there.
+
+        The one path that REMOVES from `apps/`, and the mirror of `create_app` rather than of
+        `reset` — reset empties an app and keeps it, this takes the app away (#76). Everything the
+        app owns is inside its directory, so everything it owns goes with the directory: its code,
+        its Bindings, its queries, its build log and its `built` latch. What lives with the Project
+        is not this operation's to touch.
+
+        The selection is DROPPED rather than moved when it named this app. `selected_app_id` already
+        answers with the newest app on disk, and mints one for a Project that has none — which is
+        the state a Project starts in, so a Project whose last app was deleted needs no second rule.
+        """
+        if app_id not in self.app_ids():
+            raise KeyError(app_id)
+        # `node_modules` is a symlink into the warm tree. rmtree unlinks a symlink rather than
+        # following it, so the shared dependencies survive an app that pointed at them.
+        shutil.rmtree(self.apps_dir / app_id, ignore_errors=True)
+        if self._selected == app_id:
+            self._selected = None
+
     @property
     def app_path(self) -> Path:
         return self.apps_dir / self.selected_app_id()
