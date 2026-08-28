@@ -64,10 +64,15 @@ The panel in which a user sees and picks Resources.
 _Avoid_: resource panel, data panel, sidebar
 
 **Binding**:
-A recorded link between one Built App and a Resource it uses. Picking a Resource produces a
-Binding. A Data Source Binding also records a Scope. A Resource is picked once for the Project
-and can be bound by several of its Built Apps; a Binding always names exactly one of them, so
-"what does this app read" has an answer per app.
+A recorded link between one Built App and a Resource it uses, and the app's permission to reach
+that Resource when it runs: a published app refuses to read a Data Source it holds no Binding for.
+A Binding is always declared — a person picks a Resource, and picking produces the Binding. It is
+never inferred from what the app's code turns out to touch, so the two can disagree and the
+declaration is the one that publishes
+([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md)). A Data Source Binding
+also records a Scope. A Resource is picked once for the Project and can be bound by several of its
+Built Apps; a Binding always names exactly one of them, so "what does this app read" has an answer
+per app.
 _Avoid_: connection, link, reference, wiring
 
 **Scope**:
@@ -90,7 +95,8 @@ from column names and types, which is fully supported.
 _Avoid_: preview, sample data, examples, peek
 
 **Attachment**:
-A file bound into the Built App, reachable by the app's code. A Binding may also produce an
+A file bound into the Built App, reachable by the app's code. A file never becomes a Binding, so
+what one Built App carries is two named things and not one. A Binding may also produce an
 Attachment, but most do not.
 _Avoid_: upload, mount, bundled file
 
@@ -179,8 +185,8 @@ document)
 
 **Session context**:
 The Resources and Artifacts in scope for this Conversation right now, shown as chips on the
-composer. Distinct from a Binding, which is what the Built App will need to run. A chip is
-the Session context row the user can see and remove.
+composer. Distinct from a Binding, which is what the Built App needs to run and is permitted to
+reach. A chip is the Session context row the user can see and remove.
 _Avoid_: attachment (that is a file in the Built App), binding (durable app dependency)
 
 ### Handling rules
