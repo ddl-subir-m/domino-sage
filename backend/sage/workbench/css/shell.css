@@ -882,6 +882,32 @@
 .sw-drawer-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--s4); }
 .sw-sovereign-callout { margin-bottom: var(--s4); }
 
+/* Settings drawer -------------------------------------------------------- */
+
+/* Label, explanation and control read as one setting; the gap below the group is twice the gap
+   inside it, so a second setting will separate from this one without a rule between them. */
+.sw-setting { margin-bottom: var(--s5); }
+.sw-setting-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dark-700);
+  margin-bottom: var(--s1);
+}
+.sw-setting-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gray-600);
+  margin: 0 0 var(--s2);
+}
+.sw-setting-scope {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gray-600);
+  margin: 0;
+  padding-top: var(--s3);
+  border-top: 1px solid var(--gray-200);
+}
+
 .sw-version-row {
   display: flex;
   gap: var(--s3);

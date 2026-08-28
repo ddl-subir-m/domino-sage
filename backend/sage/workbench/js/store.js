@@ -55,6 +55,7 @@ window.SW = window.SW || {};
     paletteOpen: false,
     scopePickerOpen: false,
     helpOpen: false,
+    settingsOpen: false,
 
     // Project-scoped data
     resourceGroups: {},

@@ -38,14 +38,15 @@ window.SW = window.SW || {};
           e.preventDefault();
           SW.store.newThread().then((thread) => SW.router.go(`#/chat/${thread.id}`));
         } else if (e.key === 'Escape' && !typing) {
-          const { previewResourceId, handoffOpen, paletteOpen, inviteOpen, graduationOpen, helpOpen } =
-            SW.store.get();
+          const { previewResourceId, handoffOpen, paletteOpen, inviteOpen, graduationOpen, helpOpen,
+                  settingsOpen } = SW.store.get();
           if (paletteOpen) SW.store.set({ paletteOpen: false });
           else if (previewResourceId) SW.store.set({ previewResourceId: null });
           else if (handoffOpen) SW.store.set({ handoffOpen: false });
           else if (graduationOpen) SW.store.set({ graduationOpen: false });
           else if (inviteOpen) SW.store.set({ inviteOpen: false });
           else if (helpOpen) SW.store.set({ helpOpen: false });
+          else if (settingsOpen) SW.store.set({ settingsOpen: false });
         }
       };
       window.addEventListener('keydown', onKey);

@@ -78,7 +78,13 @@ window.SW = window.SW || {};
         { type: 'divider' },
         { key: 'signout', label: 'Sign out' },
       ],
-      onClick: () => antd.message.info('Account screens are not part of this prototype.'),
+      onClick: ({ key }) => {
+        // What is the viewer's rather than the Project's belongs where a person already looks for
+        // their own things, so Account settings is the door onto the preferences (#52). The other
+        // two entries are still Domino screens this prototype does not stand in for.
+        if (key === 'account') SW.store.set({ settingsOpen: true });
+        else antd.message.info('Account screens are not part of this prototype.');
+      },
     };
 
     return h(
@@ -335,7 +341,73 @@ window.SW = window.SW || {};
       h(SW.GraduationModal, null),
       h(SW.InviteModal, null),
       h(SW.CommandPalette, null),
+      h(SW.SettingsDrawer, null),
       h(SW.HelpDrawer, null)
+    );
+  };
+
+  // Preferences describe how this person works, not how the Project is set up, so a collaborator
+  // changing theirs never changes yours and the answer follows you into every Project (#52). The
+  // Conversation view is the only one here today; the handoff's target app is deliberately not a
+  // preference and never becomes one, because preselecting an app nobody chose is how a build
+  // silently overwrites an existing one (#73, ADR-0008).
+  SW.SettingsDrawer = function SettingsDrawer() {
+    const { settingsOpen } = SW.store.get();
+    const [conversationView, setConversationView] = useState('split');
+
+    // Read on open rather than once at mount, so a choice made in another tab is not overwritten
+    // by a stale copy of this one.
+    useEffect(() => {
+      if (settingsOpen) setConversationView(SW.prefs.get('conversationView'));
+    }, [settingsOpen]);
+
+    const choose = (value) => {
+      setConversationView(value);
+      // A browser that refuses storage takes the click and forgets it. Saying so is better than a
+      // control that looks settled and resets on the next load.
+      if (!SW.prefs.set('conversationView', value)) {
+        antd.message.warning('This browser is not storing the choice, so it will not be here next time.');
+      }
+    };
+
+    return h(
+      antd.Drawer,
+      {
+        open: Boolean(settingsOpen),
+        onClose: () => SW.store.set({ settingsOpen: false }),
+        title: 'Account settings',
+        width: 360,
+      },
+      h(
+        'div',
+        { className: 'sw-setting' },
+        h('div', { className: 'sw-setting-label' }, 'Conversation view'),
+        h(
+          'p',
+          { className: 'sw-setting-hint' },
+          'Split keeps Chat and Build as separate halves of a conversation, the way the ',
+          'Workbench works today. Unified shows one transcript in both.'
+        ),
+        h(antd.Radio.Group, {
+          // antd renders the group as a plain div, so without the role the label is not announced
+          // and the buttons read as two loose radios belonging to nothing.
+          role: 'radiogroup',
+          'aria-label': 'Conversation view',
+          value: conversationView,
+          onChange: (e) => choose(e.target.value),
+          optionType: 'button',
+          options: [
+            { label: 'Split', value: 'split' },
+            { label: 'Unified', value: 'unified' },
+          ],
+        })
+      ),
+      h(
+        'p',
+        { className: 'sw-setting-scope' },
+        'These settings are yours. They follow you into every Project, and they do not change ',
+        'what anyone else sees.'
+      )
     );
   };
 
