@@ -101,6 +101,15 @@ def test_the_header_claims_nothing_about_a_preview_that_was_never_asked_for():
 
 
 @needs_node
+def test_the_header_claims_no_preview_state_while_no_app_is_named():
+    """`AppBar` returns early only when the Project has NO apps, and `activeApp` is null whenever
+    the server flags none selected or `clearApp()` has run — the same state #82's count test uses.
+    A preview word in that row sits among app-scoped chips beside `Choose a Built App`, which
+    reads as a claim about an app nobody has picked."""
+    assert _texts(_build("thr_many", preview="ok", unselected=True), "sw-build-state") == []
+
+
+@needs_node
 def test_the_header_says_when_a_build_is_running_in_the_selected_app():
     """#77: a build the person walked away from goes on running. The app list says so on the row,
     but that row is behind a click — the app in the preview is the one you did not have to open a

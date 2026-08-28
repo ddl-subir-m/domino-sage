@@ -411,6 +411,9 @@
   font-weight: 600;
   cursor: pointer;
 }
+/* A floor under the identity: whatever else has to give way, enough of the name to recognise it
+   stays on screen. */
+.sw-app-picker { min-width: 7ch; }
 .sw-app-picker:hover { background: var(--gray-200); }
 .sw-app-picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -442,6 +445,13 @@
   font-size: 11.5px;
   color: var(--gray-600);
   white-space: nowrap;
+  /* Gives way before the app's name does, and faster. `.sw-builder-toolbar > *` makes every child
+     `flex: none`, so without this all three chips at once — building, behind and a preview
+     starting — squeezed the picker down to its caret in a narrow Build pane. The name is the
+     heaviest thing in the strip and the one fact the rest of the row cannot reconstruct. */
+  flex: 0 6 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 .sw-build-state.is-building { color: var(--purple-600); font-weight: 600; }
 /* Info blue, not purple, and for the reason the rail's badge is: this one is marked because of

@@ -375,7 +375,7 @@ window.SW = window.SW || {};
       // The third producer, and the only one that is about the process rather than the app: your
       // turn can be writing files WHILE the preview restarts to show them, so this is said beside
       // the two above rather than instead of either.
-      previewWord && h('span', { className: 'sw-build-state' }, previewWord),
+      activeApp && previewWord && h('span', { className: 'sw-build-state' }, previewWord),
       newApp,
       others.length > 0 &&
         h(
