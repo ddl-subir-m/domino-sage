@@ -458,8 +458,8 @@
    what a TEAMMATE did, and the two have to stay tellable apart at a glance (#78). */
 .sw-build-state.is-behind { color: var(--info); font-weight: 600; }
 
-/* The selected app's own Resources — reserved by #87, filled by #85. A second row BENEATH the app
-   identity row, so the header reads name, then what that app uses.
+/* What the selected app ships — reserved by #87, filled by #92. A second row BENEATH the app
+   identity row, so the header reads name, then what that app ships.
 
    Deliberately NOT the composer's chip styling. Those chips are Session context, which belongs to
    the Conversation and does not follow the selected app (#84); this row is the app's. Purple
@@ -488,6 +488,36 @@
   flex: 0 1 auto;
   font-size: 11.5px;
   color: var(--gray-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Two kinds, two records, two consumers (ADR-0010), so they are two groups rather than one run of
+   names under one heading. The margin lands on top of the row's own `gap`, so groups sit 16px
+   apart against 4px inside one — which is what says `Bindings` heads the names beside it and not
+   the ones after the next heading. */
+.sw-app-scope-kind {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s1);
+  min-width: 0;
+  overflow: hidden;
+}
+.sw-app-scope-kind + .sw-app-scope-kind { margin-left: var(--s2); }
+.sw-app-scope-kind-label {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--gray-500);
+}
+/* The names are what gives way, in this order: the label says whose row this is, the kind label
+   says what the names ARE, and a truncated name is still readable in the group's own tooltip —
+   which carries the full list beside the pointer to where that kind is managed. */
+.sw-app-scope-names {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--dark-700);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

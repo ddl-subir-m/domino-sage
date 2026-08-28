@@ -53,6 +53,23 @@ const THREADS = {
   thr_none: { id: 'thr_none', title: 'Nothing built here', artifacts: [], history: [], touched: [] },
 };
 
+// What each app has RECORDED, per app, because the row's whole claim is that two apps under the
+// same conversation ship different things (#92). Read off disk by the server in real life — here,
+// two flat tables keyed by app, served the way `/api/bindings` and `/api/project` serve them.
+const BINDINGS = {
+  app_a: [
+    { kind: 'llm_alias', id: 'al_1', name: 'claude-sonnet-4', display_name: 'Claude Sonnet 4' },
+    { kind: 'data_source', id: 'ds_1', name: 'market-data-eod', display_name: 'Market data EOD' },
+  ],
+  app_c: [{ kind: 'llm_alias', id: 'al_2', name: 'qwen-2-5', display_name: 'Qwen 2.5' }],
+};
+// `app_d` carries files and no Bindings, `app_c` the reverse: a kind with nothing in it is not the
+// same state as an app with nothing at all, and only the second one gets the empty state.
+const ATTACHED = {
+  app_a: [{ path: 'public/data/desks/margins.csv', file: 'margins.csv', dataset: 'desks', size: 12 }],
+  app_d: [{ path: 'public/data/risk/limits.csv', file: 'limits.csv', dataset: 'risk', size: 34 }],
+};
+
 const calls = [];
 let selected = 'app_a';
 // Emptied by the `noapps` step: a brand-new Project, which is the one state the empty state is
@@ -77,6 +94,10 @@ function serve(url, init) {
   if (path === '/apps') {
     return json({ items: apps.map((a) => ({ ...a, selected: a.id === selected })), selected });
   }
+  // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
+  // being a fixture the whole run shares.
+  if (path === '/bindings') return json({ bindings: BINDINGS[selected] || [] });
+  if (path === '/project') return json({ attached: ATTACHED[selected] || [] });
   if (path.match(/^\/threads\/([^/]+)\/conversation$/)) return json({ history: [] });
   if (path.match(/^\/threads\/([^/]+)\/context$/)) return json({ items: [] });
   if ((m = path.match(/^\/threads\/([^/?]+)$/))) {
@@ -262,8 +283,13 @@ for (const step of steps) {
     // the store drops the selection. The header has to hold that state without claiming things.
     if (step.unselected) SW.store.clearApp();
     if (step.preview) SW.store.set({ previewStatus: step.preview });
+    // Emptied here rather than in `arrive`, so what survives is the traffic the RENDER itself
+    // caused. A row that reads a written record answers out of the store; one that fetches shows
+    // up as a call between these two lines (#92).
+    calls.length = 0;
     let tree = SW.BuildMode({ conversationId: step.build, appId: selected });
     let nodes = flatten(tree);
+    const renderCalls = calls.slice();
     // The effects Build schedules, run so the timer it wants is a fact rather than a reading of
     // the source. `loadApps` is counted rather than awaited: what matters is that Build asks.
     let loadAppCalls = 0;
@@ -294,6 +320,7 @@ for (const step of steps) {
     report.push({
       step: `build ${step.build}`,
       app: (SW.store.get().activeApp || {}).id || null,
+      renderCalls,
       railMode: rail ? rail.mode || null : null,
       appRails: nodes.filter((n) => n.el === 'AppRail').length,
       composerPlaceholder: composer ? composer.placeholder : null,
