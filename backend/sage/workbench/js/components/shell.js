@@ -347,27 +347,50 @@ window.SW = window.SW || {};
   };
 
   // Preferences describe how this person works, not how the Project is set up, so a collaborator
-  // changing theirs never changes yours and the answer follows you into every Project (#52). The
-  // Conversation view is the only one here today; the handoff's target app is deliberately not a
-  // preference and never becomes one, because preselecting an app nobody chose is how a build
-  // silently overwrites an existing one (#73, ADR-0008).
+  // changing theirs never changes yours and the answer follows you into every Project (#52).
+  //
+  // What a handoff CARRIES lives here (#58): it was four checkboxes the sheet rebuilt from the same
+  // defaults on every build, so the same person answered the same questions every time. Where a
+  // handoff LANDS does not and never will, because preselecting an app nobody chose is how a build
+  // silently overwrites an existing one (#73, ADR-0008) — the sheet still asks that, every time.
   SW.SettingsDrawer = function SettingsDrawer() {
     const { settingsOpen } = SW.store.get();
     const [conversationView, setConversationView] = useState('split');
+    const [crossings, setCrossings] = useState({
+      handoffResources: true,
+      handoffArtifacts: true,
+      handoffTranscript: false,
+    });
 
     // Read on open rather than once at mount, so a choice made in another tab is not overwritten
     // by a stale copy of this one.
     useEffect(() => {
-      if (settingsOpen) setConversationView(SW.prefs.get('conversationView'));
+      if (!settingsOpen) return;
+      setConversationView(SW.prefs.get('conversationView'));
+      setCrossings({
+        handoffResources: SW.prefs.get('handoffResources'),
+        handoffArtifacts: SW.prefs.get('handoffArtifacts'),
+        handoffTranscript: SW.prefs.get('handoffTranscript'),
+      });
     }, [settingsOpen]);
+
+    // A browser that refuses storage takes the click and forgets it. Saying so is better than a
+    // control that looks settled and resets on the next load. One writer for every control here,
+    // because that is true of all of them.
+    const save = (name, value) => {
+      if (!SW.prefs.set(name, value)) {
+        antd.message.warning('This browser is not storing the choice, so it will not be here next time.');
+      }
+    };
 
     const choose = (value) => {
       setConversationView(value);
-      // A browser that refuses storage takes the click and forgets it. Saying so is better than a
-      // control that looks settled and resets on the next load.
-      if (!SW.prefs.set('conversationView', value)) {
-        antd.message.warning('This browser is not storing the choice, so it will not be here next time.');
-      }
+      save('conversationView', value);
+    };
+
+    const carry = (name) => (e) => {
+      setCrossings({ ...crossings, [name]: e.target.checked });
+      save(name, e.target.checked);
     };
 
     return h(
@@ -401,6 +424,48 @@ window.SW = window.SW || {};
             { label: 'Unified', value: 'unified' },
           ],
         })
+      ),
+      h(
+        'div',
+        { className: 'sw-setting' },
+        h('div', { className: 'sw-setting-label' }, 'What a build carries across'),
+        h(
+          'p',
+          { className: 'sw-setting-hint' },
+          'When you build an app from a conversation, this is what crosses with the plan. Building ',
+          'still asks which app to build into.'
+        ),
+        h(
+          Space,
+          {
+            direction: 'vertical',
+            size: 6,
+            // antd renders Space as a plain div, so without these the three boxes read as loose
+            // checkboxes belonging to nothing — the same gap the Radio.Group above has to fill.
+            role: 'group',
+            'aria-label': 'What a build carries across',
+          },
+          h(
+            antd.Checkbox,
+            { checked: crossings.handoffResources, onChange: carry('handoffResources') },
+            h(
+              'span',
+              null,
+              'What is in the conversation',
+              h('span', { className: 'sw-caption' }, ' · becomes what the app needs')
+            )
+          ),
+          h(
+            antd.Checkbox,
+            { checked: crossings.handoffArtifacts, onChange: carry('handoffArtifacts') },
+            'Charts and outputs from the conversation'
+          ),
+          h(
+            antd.Checkbox,
+            { checked: crossings.handoffTranscript, onChange: carry('handoffTranscript') },
+            'The full conversation transcript'
+          )
+        )
       ),
       h(
         'p',

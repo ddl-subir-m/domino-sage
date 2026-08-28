@@ -18,7 +18,7 @@ Handoff is a write to the project filesystem, then a mode switch. The payload is
 
 | Default off | Path | Why |
 |-------------|------|-----|
-| Transcript | `apps/<appId>/.sage/handoff-transcript.md` | Half a Thread is dead ends. Off unless the user checks it on the sheet. |
+| Transcript | `apps/<appId>/.sage/handoff-transcript.md` | Half a Thread is dead ends. Off unless the viewer turns it on in Account settings (§4). |
 
 Do not copy OpenCode session state. Build opens **this Thread's own** Build session (`.sage/threads/<threadId>/build-session.json`), which is a **new** OpenCode session the first time this Thread builds. Continuity for the human is the Thread still listed in the rail and reachable from `#/chat/<threadId>` — not one harness session spanning both modes.
 
@@ -82,18 +82,33 @@ The callout is not a plan card. The plan card is Build's existing approval UI, s
 
 Modal. Title: **Build from this plan**. Primary: **Open Builder**.
 
-Checkboxes, matching the prototype:
+One question: **which app**. Default **New app**. Below it, the Project's existing Built Apps with
+their last-built date. **Never preselect an existing app** — building over an app the person did
+not choose is the silent overwrite ADR-0008 exists to close. Choosing one raises a warning that the
+build replaces that app's plan, which appears nowhere else in the Workbench.
 
-| Row | Default | Locked |
-|-----|---------|--------|
-| The plan (title + version) | on | yes — handoff without a plan is not this flow |
-| What is in this conversation → becomes what the app needs | on | no |
-| Artifacts → stay in `examples/` | on | no — unchecking does not delete files; it omits them from `.sage/handoff.md` so implement does not treat them as required examples |
-| Transcript → `.sage/handoff-transcript.md` | off | no |
+The sheet then lists the files this confirm writes, and that is all it does. The target is asked
+every time and is never remembered.
 
-One more row, above the checkboxes: **which app**. Default **New app**. Below it, the Project's
-existing Built Apps with their last-built date. **Never preselect an existing app** — building over
-an app the person did not choose is the silent overwrite ADR-0008 exists to close.
+What crosses is not asked. It is the viewer's saved answer, held in the Workbench's preferences
+next to the conversation view (#52, `js/prefs.js`) and edited in Account settings:
+
+| Preference | Default | Effect |
+|------------|---------|--------|
+| `handoffResources` | on | Session context becomes Bindings — step 3 below |
+| `handoffArtifacts` | on | Artifacts stay in `examples/` and are named in `.sage/handoff.md`. Off does not delete files; it omits them, so implement does not treat them as required examples |
+| `handoffTranscript` | off | Writes `.sage/handoff-transcript.md` — step 2 below |
+
+The plan itself is not among them: a handoff without a plan is not this flow.
+
+These were four checkboxes rebuilt from the same hardcoded defaults every time the sheet opened, so
+one person answered the same questions on every handoff (#58). The defaults above are those
+defaults exactly, so what a handoff writes for someone who never opens the drawer is unchanged. A
+preference lives in the browser rather than the Project, for the reasons `js/prefs.js` gives. The
+server keeps the same three defaults for a confirm that sends no `include` at all, and the two sets
+have to stay in step.
+
+**The target app must never join that table.** Persist what crosses, never where it lands.
 
 The Project keeps its name, and Default stays Default. The **plan title names the Built App**, not
 the Project. The old rule here renamed the Project on confirm and set `default: false`; it was a
@@ -162,7 +177,7 @@ Out of scope. "Ask about this app" from Build can wait. A user who wants Chat af
 
 1. Three analysis turns that never mention an app produce **no** callout. A fourth that says "put this on a dashboard colleagues can open" produces exactly one callout. Reload does not show it again as a new suggestion (`suggestedAt` is set).
 2. **Not now** hides the callout permanently for that Thread. Overflow **Open in Build** still opens the sheet (and drafts a plan if none exists).
-3. Confirm with transcript unchecked writes `plan.md` and `handoff.md`, does not write `handoff-transcript.md`, upserts Bindings for Data Sources that were chips, leaves `src/` still untouched until Approve & build.
+3. Confirm with the transcript preference off writes `plan.md` and `handoff.md`, does not write `handoff-transcript.md`, upserts Bindings for Data Sources that were chips, leaves `src/` still untouched until Approve & build.
 4. After confirm, `#/build/<threadId>` shows the existing plan approval card, the preview pane, and IN THIS APP containing those Bindings. The Chat rail still has the Thread. Switching to Chat shows the same Thread, not a blank greeting.
 5. Approve & build on that card runs `sage-implement`, which reads `plan.md`, sees `handoff.md`, and edits `src/`. Typecheck loop runs. Chat's `examples/` files are still there.
 6. The Project's name is unchanged by confirm, and Default is still Default. The new Built App's display name is the plan title.
