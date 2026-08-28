@@ -144,6 +144,10 @@ window.SW = window.SW || {};
     buildTyping: null,
     buildRunning: false,
     bindings: [],
+    // The selected app's own files, which is NOT `attachments` above: that list is the
+    // Conversation's and must not follow the app (#84). This one is read off the app's own
+    // manifest, so switching app replaces it — see `loadBuild` (#92).
+    appAttachments: [],
     previewSrc: './preview/',
     previewStatus: 'idle',
   };
@@ -229,6 +233,11 @@ window.SW = window.SW || {};
       SW.api.resourceListing(),
     ]).then(([project, listing]) => {
       if (gen !== scopeLoad) return;
+      // Off the same read, because this is the other moment the app's manifest changes: adding a
+      // scratch file to a Dataset attaches it, and the panel refreshes through here rather than
+      // through `loadBuild`. Without this the Build header would go on saying the app ships
+      // nothing until the next app switch (#92).
+      state.appAttachments = project.attached || [];
       const files = [
         ...(project.scratch || []).map((e) => ({
           id: `file:${e.path}`,
@@ -1965,6 +1974,10 @@ window.SW = window.SW || {};
     async loadBuild(options = {}) {
       const project = await SW.api.project().catch(() => ({}));
       applyModelStatus(project);
+      // Off the read that was already happening. The header's row renders per app switch, so it
+      // has to answer out of the store rather than fetch (ADR-0010) — and `loadBuild` is what
+      // `selectApp` already runs, so the switch reloads it with everything else app-scoped.
+      state.appAttachments = project.attached || [];
       // No conversation open means a new one: nothing to replay. Asking for the whole project
       // here is what used to make "New conversation" look dead — the transcript never changed.
       const conversation = state.thread && state.thread.id;

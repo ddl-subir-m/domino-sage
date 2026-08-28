@@ -406,29 +406,80 @@ window.SW = window.SW || {};
     );
   }
 
-  // Where the selected app's own Bindings land. Reserved here, not filled here: #85 is parked
-  // until the resource model is settled, and this ticket only guarantees it has somewhere to go,
-  // so answering #85 does not mean reopening the header.
+  // What the selected app ships (#92), in the row #87 reserved for it.
   //
   // The reason the layout could not wait is the problem #85 was filed about. The composer's chips
   // are Session context, which belongs to the Conversation and must not follow the selected app
   // (#84, `CONTEXT.md:176-177`). Flush against an app-scoped pane with nothing between them, a
   // Conversation-scoped row reads as the app's — somebody saw `market-data-eod` under a news app
   // and took it for something that app uses. Two rows, two scopes, and this one says whose it is.
+  //
+  // `ships`, not `uses`. What is read here is the DECLARED record — the Bindings someone picked
+  // and the files someone attached, both written per app, both re-read by `loadBuild` when the
+  // control above changes app. Whether the app's code actually calls any of it is the derived
+  // answer, which ADR-0010 keeps advisory and off any surface that has to gate: a Binding made two
+  // minutes ago, before the agent wrote its first query, is used by nothing and still publishes.
+  // The usage label that would say so is #93, and the scan behind it walks the whole app tree.
+  //
+  // Two names rather than one umbrella (#85 Q3): `.sage/bindings.json` is read at run time by the
+  // published app's own server to decide what a query may touch, `.sage/attachments.json` at
+  // deploy time to rebuild `public/data/`. Different consumers, different moments.
   function AppScopeRow() {
-    const { activeApp } = SW.store.get();
+    const { activeApp, bindings, appAttachments } = SW.store.get();
     // A row headed by no app is a row about nothing, and a Project with none is the one screen
     // whose only job is `New app`.
     if (!activeApp) return null;
+
+    const bound = (bindings || []).map((b) => b.display_name || b.name || b.id);
+    // Two Datasets can each hold a `margins.csv`, and the row has room for the leaf name only. So
+    // the strip shows the name and the tooltip carries the path that tells the two apart — without
+    // it the row would print the same word twice and offer nothing that says why.
+    const paths = (appAttachments || []).map((a) => a.path || a.file || '');
+    const files = paths.map((p) => p.split('/').pop());
+
+    // Read-only, and said so rather than left to be discovered: a row that reports a Binding and
+    // says nothing about where it is dealt with is the same dead end the empty state below avoids.
+    // The pointer is where the kind is LISTED, not a second Remove — unbind and detach each report
+    // the app source that still uses what just went, and a second copy of either here would be a
+    // second guard to keep in step with the first.
+    const kindRow = (label, names, where, full) =>
+      h(
+        Tooltip,
+        { key: label, title: `${(full || names).join(', ')} · ${where}` },
+        h(
+          'span',
+          { className: 'sw-app-scope-kind' },
+          h('span', { className: 'sw-app-scope-kind-label' }, label),
+          h('span', { className: 'sw-app-scope-names' }, names.join(', '))
+        )
+      );
+
     return h(
       'div',
       { className: 'sw-app-scope' },
-      h('span', { className: 'sw-app-scope-label' }, `Resources ${activeApp.name} uses`),
-      h(
-        'span',
-        { className: 'sw-app-scope-empty' },
-        'Not tracked yet — the composer’s chips are this conversation’s, not this app’s.'
-      )
+      h('span', { className: 'sw-app-scope-label' }, `${activeApp.name} ships`),
+      // Always here, including for a brand-new app with neither: hiding the row would make the
+      // header jump the moment the first Binding lands, and would teach a first-time creator
+      // nothing at the one moment they have not seen either word yet.
+      // Named the way the panel's own empty state names it, and for the reason it does: the
+      // handoff is what actually fills BOTH lists. `_promote_chat_file` turns a Dataset chip into
+      // an app Attachment and `_bind_from_handoff` records the Bindings, so a sentence telling a
+      // first-timer to attach a file in Build would send them to the composer's upload — which
+      // writes scratch and a Conversation chip, and leaves this row still saying nothing yet.
+      bound.length === 0 && files.length === 0
+        ? h(
+            'span',
+            { className: 'sw-app-scope-empty' },
+            'nothing yet. Resources and data files from Chat land here after Open Builder.'
+          )
+        // A kind with nothing in it is not the same state, so it is not named. `Attachments —`
+        // over an empty list says the app ships a kind of thing it does not.
+        : [
+            bound.length > 0 && kindRow('Bindings', bound,
+              'listed in Project resources, under “In this app”'),
+            files.length > 0 && kindRow('Attachments', files,
+              'listed in Project resources, with the app’s files', paths),
+          ]
     );
   }
 
