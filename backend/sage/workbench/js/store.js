@@ -172,6 +172,11 @@ window.SW = window.SW || {};
   }
 
   let scopeLoad = 0;
+  // Which open is the current one. `selectApp` guards with `selecting`, which makes a second
+  // asker bail — right there, because you are already going where it asked. Wrong here: clicking
+  // A after B must land on A, not be ignored. So this is a generation counter like `scopeLoad`,
+  // and a superseded open drops its answer instead of writing it.
+  let openSeq = 0;
 
   function applyResourceGroups(groups, extras = {}) {
     state.resourceGroups = groups;
@@ -446,7 +451,12 @@ window.SW = window.SW || {};
       for (const part of parts) {
         for (const line of part.split('\n')) {
           if (line.startsWith('data: ')) {
-            try { onEvent(JSON.parse(line.slice(6))); } catch (err) { /* keep-alive or partial */ }
+            // Awaited, because `sendMessage` passes an async handler that fetches artifact
+            // bodies. Unawaited, the next frame re-entered it while that fetch was still in
+            // flight, and the dedupe Set was built from blocks the first call had not appended
+            // yet — so a table artifact rendered twice. Awaiting also puts a handler's own
+            // rejection inside this catch, where it was previously invisible.
+            try { await onEvent(JSON.parse(line.slice(6))); } catch (err) { /* keep-alive or partial */ }
           }
         }
       }
@@ -1269,10 +1279,20 @@ window.SW = window.SW || {};
     },
 
     async openThread(threadId) {
+      // Click B then A and two of these are in flight. Unguarded, whichever server response lands
+      // last wins, so the store can settle on B while the route and the rail say A — and
+      // `sendMessage` reads `state.thread`, so the next message is posted into the conversation
+      // nobody is looking at. Every await re-checks, and the view is written in one go afterwards
+      // so a superseded open can never leave half of itself on screen.
+      const gen = ++openSeq;
       const thread = await SW.api.thread(threadId);
+      if (gen !== openSeq) return null;
       await store.adoptThreadScope(thread);
+      if (gen !== openSeq) return null;
+      const messages = await historyToMessages(thread.history || thread.messages || [], thread.handoff);
+      if (gen !== openSeq) return null;
       state.thread = thread;
-      state.messages = await historyToMessages(thread.history || thread.messages || [], thread.handoff);
+      state.messages = messages;
       state.activePlanId = thread.planId || null;
       state.touched = thread.touched || [];
       state.assistantTurns = state.messages.filter((m) => m.role === 'assistant').length;
@@ -1281,6 +1301,7 @@ window.SW = window.SW || {};
       state.typing = null;
       notify();
       await refreshAttachments();
+      if (gen !== openSeq) return thread;
       if (thread.planId) await store.loadPlan(thread.planId);
       return thread;
     },
@@ -1391,7 +1412,11 @@ window.SW = window.SW || {};
       if (selected && selected.planId) await store.loadPlan(selected.planId);
       // Through the rail's own route grammar, so the conversation on screen survives: deleting an
       // abandoned app is not a reason to close the Thread somebody is talking in.
+      // Delete the ONLY app and there is no app left to name. Leaving `?app=<deletedId>` in the
+      // hash sends BuildMode's effect off to select an app the server no longer has, so the 404
+      // toast lands right after the delete succeeded.
       if (selected) SW.router.go(SW.appRoute(selected));
+      else SW.router.go(`#/build${state.thread ? `/${state.thread.id}` : ''}`);
       return out;
     },
 
@@ -1620,7 +1645,14 @@ window.SW = window.SW || {};
 
     _watchBuild() {
       if (store._watchTimer) return;
+      // Ticks overlap: each awaits three calls and they are scheduled every 2s regardless. On a
+      // large transcript a tick's `history` can land after a later tick's, and installing it
+      // rolls the Build transcript back to an older snapshot until the next poll — losing the
+      // newest tool cards, and the `live: true` flag the reset-offer buttons render from.
+      let polled = 0;
+      let settled = 0;
       const tick = async () => {
+        const mine = ++polled;
         const running = await SW.api.buildState().catch(() => ({ running: true }));
         // The rail rides along: which app a build is running in is a row's state, and someone who
         // switched away from that app has no other way to see the turn still going (#77).
@@ -1631,6 +1663,10 @@ window.SW = window.SW || {};
         const hist = watched
           ? await SW.api.history(watched).catch(() => ({ history: [] }))
           : { history: [] };
+        // An answer that arrived out of order is stale by definition. Drop it; the next tick is
+        // 2s away and carries everything this one would have.
+        if (mine < settled) return;
+        settled = mine;
         state.buildHistory = hist.history || [];
         state.buildMessages = buildHistoryToMessages(state.buildHistory);
         state.buildRunning = !!running.running;

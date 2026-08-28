@@ -249,7 +249,10 @@ window.SW = window.SW || {};
             autoSize: { minRows: 8, maxRows: 20 },
             onChange: (e) => setDraft(e.target.value),
           })
-        : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(block.plan || '')),
+        // `draft`, not `block.plan`. The button that leaves edit mode is labelled "Preview", so
+        // rendering the original showed a person their own edits vanishing. `approveBuild` was
+        // sending `draft` all along — only the screen disagreed.
+        : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(draft)),
       pending &&
         h(Input.TextArea, {
           value: answers,

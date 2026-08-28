@@ -182,6 +182,10 @@ window.SW = window.SW || {};
 
     // Keep @name in the box (and the sent prompt) and add the chip. Context
     // without the token meant OpenCode saw "what's in this" with no file name.
+    // Every one of these updates the UI first — the token typed, the chip drawn, the picker
+    // closed — so a rejected call leaves the screen claiming something that never happened.
+    const sayFailed = (err) => antd.message.error(String((err && err.message) || err));
+
     const pickMention = async (resource) => {
       if (!mention) return;
       const token = mentionToken(resource);
@@ -189,14 +193,23 @@ window.SW = window.SW || {};
       const pad = after === '' || /^\s/.test(after) ? '' : ' ';
       setText(text.slice(0, mention.start) + token + pad + after);
       setMention(null);
-      await SW.store.addToContext(resource, { quiet: true });
+      // The @name is already in the box. Unreported, this sends a prompt mentioning a file that
+      // was never attached.
+      await SW.store.addToContext(resource, { quiet: true }).catch(sayFailed);
     };
 
     const pickFile = () => fileRef.current && fileRef.current.click();
 
     const handleFiles = async (files) => {
       for (const file of Array.from(files || [])) {
-        await SW.store.uploadFile(file);
+        // Per file, so one rejection does not abandon the rest of the drop. Both callers invoke
+        // this as a floating promise, so without the catch a failed upload was an unhandled
+        // rejection and the composer simply looked like it had ignored the file.
+        try {
+          await SW.store.uploadFile(file);
+        } catch (err) {
+          antd.message.error(`${file.name}: ${String((err && err.message) || err)}`);
+        }
       }
     };
 
@@ -323,7 +336,7 @@ window.SW = window.SW || {};
             setDragOver(false);
             const resourceId = e.dataTransfer.getData('text/sw-resource');
             if (resourceId && resourceIndex[resourceId]) {
-              SW.store.addToContext(resourceIndex[resourceId], { quiet: true });
+              SW.store.addToContext(resourceIndex[resourceId], { quiet: true }).catch(sayFailed);
             } else if (e.dataTransfer.files && e.dataTransfer.files.length) {
               handleFiles(e.dataTransfer.files);
             }
@@ -356,7 +369,9 @@ window.SW = window.SW || {};
                     closeIcon: h(CloseOutlined, { style: { fontSize: 10 } }),
                     onClose: (e) => {
                       e.preventDefault();
-                      SW.store.detach(att);
+                      // A failed detach leaves the chip on screen, so silence reads as a dead
+                      // close button.
+                      SW.store.detach(att).catch(sayFailed);
                     },
                     className: 'sw-chip',
                   },

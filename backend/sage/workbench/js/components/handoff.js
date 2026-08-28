@@ -232,6 +232,10 @@ window.SW = window.SW || {};
           mode === 'new' ? { name: name.trim() || 'New project' } : { projectId }
         );
         close();
+      } catch (err) {
+        // Without this the modal stays open saying nothing, and Enter retries into the same
+        // silence. Same shape as HandoffSheet.go above.
+        antd.message.error(String((err && err.message) || err));
       } finally {
         setBusy(false);
       }
