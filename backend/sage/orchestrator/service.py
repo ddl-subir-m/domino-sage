@@ -1892,6 +1892,20 @@ _PLAN_SHAPE_PHASED = (
     "writing 'None'.\n"
     "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
 
+# What a Build turn is told to DO with the Chat half of its Conversation (#53). The transcript
+# itself is rendered by chat_compact.chat_summary; this is the framing, which lives here with the
+# turn's other preambles.
+#
+# The last sentence is the load-bearing one. Handed a conversation with no instruction about it, a
+# model reads the questions in it as a backlog and starts answering them — which on a build turn
+# means building things nobody asked for on this turn. The background is here to resolve pronouns,
+# not to be worked through.
+_CHAT_CONTEXT_PREAMBLE = (
+    "Earlier in this same conversation the person was talking to you in Chat, and this is the tail "
+    "of what you both said. It is background for the request above: when the request points at "
+    "something without naming it — \"that chart\", \"the table we looked at\" — this is what it "
+    "points at. It is not a list of work to do. Build only what the request above asks for.")
+
 
 class Orchestrator:
     def __init__(
@@ -2859,6 +2873,34 @@ class Orchestrator:
             lines.append(f"Couldn't use {shown} — this app isn't connected to it. "
                          "Connect it in the Resources panel, then ask again.")
         return " ".join(lines)
+
+    def _chat_context_note(self, project: Project) -> str:
+        """The Chat half of THIS turn's Conversation, rebuilt for this turn. "" when there is none.
+
+        Attribution is the whole subtlety here. A Build turn belongs to a pair — a Conversation and
+        a Built App (`app_for_turn`) — and two Conversations can drive the same app (#73). So this
+        is keyed on the Conversation that drove the turn, never on the app: keyed on the app, the
+        second Conversation to build would be handed the first one's Chat and would resolve "that
+        chart" against a chart it had never seen.
+
+        Read from the Thread's own `history.jsonl`, which is never rewritten, rather than from the
+        Chat OpenCode session — that session is compacted as it grows (see chat_compact), so what
+        Build hears would otherwise depend on whether Chat had compacted yet.
+
+        Empty for a caller with no conversation (the CLI, tests) and for a Conversation that has
+        never been in Chat. The caller then writes no section at all rather than an empty heading.
+        """
+        conversation = project.build_conversation
+        if not conversation:
+            return ""
+        try:
+            history = ThreadStore(project.record.path).read_history(conversation)
+        except (OSError, ValueError):
+            # A transcript we cannot read is background, not the turn: build without it.
+            log.exception("chat context: could not read conversation %s", conversation)
+            return ""
+        summary = chat_compact.chat_summary(history)
+        return f"{_CHAT_CONTEXT_PREAMBLE}\n\n{summary}" if summary else ""
 
     def _image_data_uri(self, real: Path) -> str | None:
         """An image inlined as `data:<mime>;base64,...` for the agent's prompt, or None if it can't
@@ -4409,6 +4451,12 @@ class Orchestrator:
         # forks wrap `current` in their own preamble, and the block has to stay at the end of what
         # the agent reads — beside the attachment listing, which is rendered the same way.
         resource_note = self._resource_mention_note(project, resources)
+        # What was said in the Chat half of this Conversation (#53). Rides the prompt text beside
+        # `resource_note`, and for the same reason: the gate/answer/plan forks below wrap `current`
+        # in their own preamble, so a block that has to sit at the END of what the agent reads
+        # cannot be glued on here. Built now rather than at the send so it is this turn's answer —
+        # a Chat turn arriving mid-build belongs to the next Build turn, not this one.
+        chat_note = self._chat_context_note(project)
         # What the turn actually carries. An attachment that silently arrives without its pixels
         # (image too large, wrong kind, unreadable) is indistinguishable from a normal descriptor
         # once it reaches the agent, so record it here where /api/diag can show it.
@@ -4811,12 +4859,16 @@ class Orchestrator:
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
-            client.send_prompt(sid, f"{current}\n\n{resource_note}" if resource_note else current,
+            client.send_prompt(sid,
+                               "\n\n".join(p for p in (current, chat_note, resource_note) if p),
                                agent=agent, attachments=mention_files)
-            # Both ride the first (user) turn only, not the nudge/fix follow-ups: those carry no new
-            # user reference, and a repeated block reads as a second request for the same Resource.
+            # All three ride the first (user) turn only, not the nudge/fix follow-ups: those carry
+            # no new user reference, and a repeated block reads as a second request for the same
+            # Resource. The Chat background goes with them — a nudge is Sage talking to itself
+            # about the code it just failed to write, and the conversation behind it hasn't moved.
             mention_files = None
             resource_note = ""
+            chat_note = ""
             appeared = False
             start = time.monotonic()
             # The shim classifies plan/implement per model call (phase_classifier). We only observe

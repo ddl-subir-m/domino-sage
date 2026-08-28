@@ -1,7 +1,14 @@
-"""When a Chat OpenCode session should be compacted, and which model to ask OpenCode to use.
+"""Keeping a Chat conversation small enough to fit in a prompt — its own, and Build's.
+
+Two jobs, one subject. `should_compact` / `compact_model` decide when a Chat OpenCode session has
+grown too big and which model to ask OpenCode to shrink it with. `chat_summary` renders the same
+conversation down to a few hundred characters so a BUILD turn can be told what was said in Chat
+(#53) — the two harness sessions are deliberately not merged, so this is the only way across.
 
 Sage `history.jsonl` is the UI replay and is never rewritten. Compaction only shrinks what the
-model sees on the next Chat turn (docs/workbench/chat.md).
+model sees on the next Chat turn (docs/workbench/chat.md), and `chat_summary` reads that untouched
+replay rather than the compacted session, so what Build hears does not depend on whether Chat has
+compacted yet.
 """
 from __future__ import annotations
 
@@ -151,3 +158,70 @@ def _tokens(m: dict) -> int | None:
                 pass
         return n
     return None
+
+
+# --- What a Build turn hears of the Chat half of its Conversation (#53) --------------------------
+#
+# A Conversation has two harness sessions and the Build one cannot see the Chat one. The only
+# bridge used to be `.sage/handoff.md`, written once when the person crossed over, so a chart
+# discussed a minute after the crossing was not in it and "make that chart bigger" had nothing to
+# resolve against. This renders the transcript instead, freshly on every Build turn, which is what
+# stops it going stale — and bounded, which is what stops the cost growing with the Conversation.
+
+# Characters of transcript a Build turn carries. Roughly 500 tokens: enough for the last handful of
+# exchanges, small enough that turn fifty costs the same as turn five.
+SUMMARY_BUDGET = 2000
+# One turn's share of it. Long turns are truncated rather than dropped — a 3000-character answer
+# that ate the whole budget would push out the exchanges around it, and its first two sentences say
+# what it was about anyway.
+SUMMARY_TURN_CHARS = 400
+
+
+def chat_summary(history: list[dict]) -> str:
+    """One Thread's Chat transcript, newest turns first into a fixed budget, oldest dropped.
+
+    Newest wins because that is what a follow-up points at: "make that chart bigger" is about the
+    chart just discussed, not the opening question. Rendered back in the order it was said, so the
+    agent reads a conversation rather than a reversed one.
+
+    Only what was SAID — the person's turns and Sage's prose. Tool calls, artifact cards and turn
+    dividers are transcript furniture, and a Build turn can read the files themselves.
+
+    Empty string for a Conversation with no Chat turns, so the caller can leave the section out
+    entirely rather than write an empty heading.
+    """
+    lines: list[str] = []
+    used = 0
+    for entry in reversed(history or []):
+        line = _said(entry)
+        if not line:
+            continue
+        # Counting the newline that will join it keeps `used` equal to the length of the string
+        # this returns, so the budget is the real cap and not the cap minus one line's worth.
+        cost = len(line) + (1 if lines else 0)
+        if used + cost > SUMMARY_BUDGET:
+            break
+        lines.append(line)
+        used += cost
+    lines.reverse()
+    return "\n".join(lines)
+
+
+def _said(entry: dict) -> str:
+    """One transcript line, or "" for an entry that is not something somebody said."""
+    if not isinstance(entry, dict):
+        return ""
+    if entry.get("type") == "user":
+        who = "They said"
+    elif entry.get("type") == "agent" and entry.get("kind") == "text":
+        who = "You said"
+    else:
+        return ""
+    # Collapsed to one line: a pasted table or a multi-paragraph answer would otherwise spend the
+    # budget on its own blank lines, and the bullet list has to stay readable as a list.
+    text = " ".join(str(entry.get("text") or "").split())
+    if not text:
+        return ""
+    if len(text) > SUMMARY_TURN_CHARS:
+        text = text[: SUMMARY_TURN_CHARS - 1].rstrip() + "…"
+    return f"- {who}: {text}"
