@@ -272,6 +272,11 @@ window.SW = window.SW || {};
   // reaches the person as a warning about a build that is not running.
   let selecting = null;
 
+  // Whether a New app is in flight. The turn lock is released before `create_app` returns, so
+  // nothing downstream refuses a second click — it mints a SECOND app, and the person is left
+  // deleting one they never asked for. Same shape as `selecting`, for the same reason.
+  let creating = false;
+
   // The Build rail's list. `activeApp` follows it rather than being set beside it, so the row that
   // is lit and the app the server is pointed at cannot drift apart.
   async function loadAppList() {
@@ -1215,6 +1220,37 @@ window.SW = window.SW || {};
     },
 
     loadApps: loadAppList,
+
+    // New app in the Build rail. The server mints, seeds and selects it, so this reloads the whole
+    // of Build the way selectApp does rather than lighting a row: the transcript, the Bindings, the
+    // plan pin and the preview all belong to the app, and the one being left owns none of the new
+    // one's. Reloading here rather than leaving it to the route is deliberate — arriving from a
+    // conversation-less `#/build` changes neither of BuildMode's effect keys, so nothing would fire.
+    //
+    // The route is told LAST, and carries `?app=` with no conversation segment: the app is what is
+    // new and it starts with no Thread behind it. Typing opens one (see sendBuildPrompt), and the
+    // plan gate fires on that first turn because the app has not been built (#74).
+    async createApp() {
+      if (creating) return null;
+      creating = true;
+      try {
+        const app = await SW.api.createApp();
+        store.clearConversation();
+        await store.loadBuild();
+        state.activePlanId = null;
+        state.activePlan = null;
+        notify();
+        await refreshRequires();
+        SW.router.go(`#/build?app=${app.id}`);
+        return app;
+      } catch (err) {
+        // The one refusal worth a sentence is the turn lock's, and the server writes it.
+        antd.message.warning(err.message || 'Sage could not start a new Built App.');
+        return null;
+      } finally {
+        creating = false;
+      }
+    },
 
     // Which app Build has in front of it. Looking is free and reversible, so this changes freely
     // and never implies a change to either app. The server is refused while a build is streaming —

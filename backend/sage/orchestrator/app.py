@@ -1541,6 +1541,23 @@ def list_apps() -> JSONResponse:
                          "selected": next((r["id"] for r in items if r["selected"]), "")})
 
 
+@control_app.post("/api/apps")
+def create_app() -> JSONResponse:
+    """New app in the Build rail: minted, seeded and selected, with no Thread and no plan behind
+    it. The plan gate fires on its first turn because it has not been built (#74)."""
+    try:
+        return JSONResponse(orchestrator.create_app())
+    except RuntimeError as e:
+        # Only the turn-lock refusal, as in `select_app` — anything else is a real failure and must
+        # not be reported to the person as a build they can wait out.
+        if str(e) == "busy":
+            return JSONResponse(
+                {"error": "A build is running. Stop it, or wait for it to finish, "
+                          "then start a new app."},
+                status_code=409)
+        raise
+
+
 @control_app.post("/api/apps/{app_id}/select")
 def select_app(app_id: str) -> JSONResponse:
     """Point Build at another Built App. Looking is free — this changes neither app."""

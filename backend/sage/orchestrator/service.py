@@ -2152,6 +2152,28 @@ class Orchestrator:
                  for d in reversed(project.record.list_plan_docs())}
         return self._app_row(app_id, project.workspace.app_id, plans)
 
+    def create_app(self) -> dict:
+        """Start a Built App from the Build rail: minted, seeded and selected, with no Thread and
+        no plan behind it (#74).
+
+        No new gate is needed. `_should_gate` fires on the first BUILD of an app that has not been
+        built, so a fresh app lands on the plan gate by itself — the same review a handoff earns on
+        the way out of Chat, reached from the other side.
+
+        Refused while a turn is streaming, for the reason a switch is: a turn holds one working
+        tree. The lock is taken BEFORE the app is minted rather than around the select, so a
+        refusal leaves no half-born app sitting in the rail with nothing pointed at it.
+        """
+        project = self.project(start_preview=False, seed_app=False)
+        if not self._turn_lock.acquire(blocking=False):
+            raise RuntimeError("busy")
+        try:
+            born = self._wm.create_app(self._project_id)
+            self._bind_app(project, born)
+        finally:
+            self._turn_lock.release()
+        return self._one_app(born.app_id)
+
     def select_app(self, app_id: str) -> dict:
         """Point Build at another Built App. Raises KeyError for one that is not there.
 

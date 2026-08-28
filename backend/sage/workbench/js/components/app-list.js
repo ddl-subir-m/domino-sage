@@ -5,8 +5,8 @@ window.SW = window.SW || {};
 // relearn when you turn your head is a rail that costs more than it lists.
 (function () {
   const { createElement: h, useState, useEffect, Fragment } = React;
-  const { Tooltip, Input, Dropdown, Modal } = antd;
-  const { SearchOutlined, MoreOutlined, EditOutlined } = icons;
+  const { Tooltip, Input, Dropdown, Modal, Button } = antd;
+  const { SearchOutlined, MoreOutlined, EditOutlined, PlusOutlined } = icons;
 
   function renameApp(app) {
     let value = app.name;
@@ -133,7 +133,19 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-rail-head' },
-        h('div', { className: 'sw-group-label', style: { flex: 1 } }, 'Built Apps in this Project'),
+        // Where Chat's rail puts New conversation, so neither rail has to be relearned. Nothing is
+        // asked for on the way in: no Thread and no plan, because the plan gate fires on the first
+        // turn of an app that has not been built and that is the review (#74).
+        h(
+          Button,
+          {
+            type: 'primary',
+            icon: h(PlusOutlined, null),
+            block: true,
+            onClick: () => SW.store.createApp(),
+          },
+          'New app'
+        ),
         h(
           Tooltip,
           { title: 'Hide Built Apps' },
@@ -164,13 +176,16 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-rail-list sw-scroll' },
+        // The label the head used to carry. It says what this rail lists, which is the one thing
+        // that changes when you cross between modes.
+        h('div', { className: 'sw-rail-group sw-group-label' }, 'Built Apps in this Project'),
         filtered.length === 0
           ? h(
               'div',
               { className: 'sw-rail-empty sw-secondary' },
               needle
                 ? `No Built Apps match "${query}".`
-                : 'No Built Apps yet. Approve a plan in Chat and Sage builds one here.'
+                : 'No Built Apps yet. Start one with New app, or approve a plan in Chat.'
             )
           : filtered.map((app) =>
               h(AppRow, {

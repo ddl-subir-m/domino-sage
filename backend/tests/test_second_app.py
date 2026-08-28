@@ -510,3 +510,124 @@ def test_the_confirm_route_carries_the_target_the_sheet_picked(tmp_path: Path, m
 
     assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
 
+
+
+# ---- New app from the Build rail (#74) ----
+#
+# A person already in Build starts something new without going to Chat first to earn the right.
+# No new gate comes with it: the plan gate fires on the first build of an app that has not been
+# built, so a fresh app lands on the same review a handoff earns, reached from the other side.
+
+
+_CHART = _plan("A burndown chart.", "Burndown chart")
+
+
+def test_new_app_in_the_build_rail_creates_and_selects_one_with_no_thread_behind_it(tmp_path: Path):
+    """Criterion 1. Nothing is asked for on the way in — no Thread, no plan, no handoff."""
+    orch, _oc, root, first, second = _two_apps(tmp_path)
+
+    row = orch.create_app()
+
+    born = row["id"]
+    assert born not in (first, second)
+    assert (root / "apps" / born / "src" / "App.tsx").exists()      # seeded from the template
+    assert row["selected"] is True
+    assert row["built"] is False
+    assert orch.project(start_preview=False).workspace.app_id == born
+    # Two Threads went into the two apps that came from a handoff. This one added none.
+    assert len(ThreadStore(orch.project(start_preview=False).record.path).list()) == 2
+    assert row["planId"] == ""
+
+
+def test_an_app_started_from_build_sits_in_the_rail_beside_the_ones_from_a_handoff(tmp_path: Path):
+    """Criterion 4. The list is a directory scan, so where an app came from is not a thing the
+    rail can tell — which is the point: one kind of app, several ways in."""
+    orch, _oc, _root, first, second = _two_apps(tmp_path)
+
+    born = orch.create_app()["id"]
+
+    rows = orch.list_apps()
+    assert [r["id"] for r in rows] == [first, second, born]
+    assert [r["id"] for r in rows if r["selected"]] == [born]
+    # Named for what it is, because there is no plan to borrow a title from yet.
+    assert {r["id"]: r["name"] for r in rows}[born] == "Unnamed Built App"
+    # And it survives a restart, because the app is a directory rather than a row in an index.
+    restarted, _oc2, _root2 = _orch(tmp_path)
+    assert [r["id"] for r in restarted.list_apps()] == [first, second, born]
+
+
+def test_the_first_turn_on_an_app_started_from_build_gates_on_a_plan(tmp_path: Path):
+    """Criterion 2. `_should_gate` keys on has_built, and a minted app has built nothing — so the
+    existing gate does the work and this ticket adds no second one."""
+    orch, _oc, root, _first, second = _two_apps(
+        tmp_path, [Turn(text=_CHART), Turn(text="Built it.", writes={"src/App.tsx": "// burndown\n"})])
+    born = orch.create_app()["id"]
+
+    events = list(orch.build_stream("build me a burndown chart"))
+
+    assert next(e for e in events if e["type"] == "done")["decision"] == "awaiting approval"
+    assert "Burndown chart" in next(e for e in events if e["type"] == "plan-proposed")["plan"]
+    # Read-only, as a gated turn is: the plan is written, the app is not.
+    app = root / "apps" / born
+    assert (app / ".sage" / "plan.md").read_text().startswith("A burndown chart.")
+    assert "burndown" not in (app / "src" / "App.tsx").read_text()
+    # The gate stamped the app it stood in, so the document belongs to this app and no other.
+    assert orch.read_plan_doc("003")["appId"] == born
+    assert orch.read_plan_doc("002")["appId"] == second
+
+
+def test_approving_that_plan_builds_into_the_new_app_and_no_other(tmp_path: Path):
+    """Criterion 3. The whole reason to mint an app rather than build into the one on screen."""
+    orch, oc, root, first, second = _two_apps(
+        tmp_path, [Turn(text=_CHART), Turn(text="Built it.", writes={"src/App.tsx": "// burndown\n"})])
+    born = orch.create_app()["id"]
+    idle = {app_id: (root / "apps" / app_id / "src" / "App.tsx").read_text()
+            for app_id in (first, second)}
+
+    list(orch.build_stream("build me a burndown chart"))
+    list(orch.approve_stream())
+
+    assert (root / "apps" / born / "src" / "App.tsx").read_text() == "// burndown\n"
+    assert oc.sessions[-1]["directory"] == str(root / "apps" / born)   # where the agent stood
+    for app_id, before in idle.items():
+        assert (root / "apps" / app_id / "src" / "App.tsx").read_text() == before
+
+
+def test_new_app_is_refused_while_a_build_is_running_and_mints_nothing(tmp_path: Path):
+    """A turn holds one working tree, so starting an app is refused the way switching to one is.
+    Refused BEFORE the mint: a half-born app would sit in the rail with nothing pointed at it."""
+    orch, _oc, root, first, second = _two_apps(tmp_path)
+
+    assert orch._turn_lock.acquire(blocking=False)      # simulate a turn in flight
+    try:
+        with pytest.raises(RuntimeError, match="busy"):
+            orch.create_app()
+    finally:
+        orch._turn_lock.release()
+
+    assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
+    assert orch.project(start_preview=False).workspace.app_id == second
+
+
+def test_the_rail_starts_an_app_over_the_route_that_lists_them(tmp_path: Path, monkeypatch):
+    """The button's wire. A refusal answers 409, which is the one thing the rail has to tell from a
+    failure it cannot wait out."""
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as appmod
+
+    orch, _oc, _root, first, second = _two_apps(tmp_path)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    with TestClient(appmod.control_app) as client:
+        born = client.post("/api/apps").json()["id"]
+
+        assert [row["id"] for row in client.get("/api/apps").json()["items"]] == [first, second, born]
+        assert client.get("/api/apps").json()["selected"] == born
+
+        assert orch._turn_lock.acquire(blocking=False)
+        try:
+            refused = client.post("/api/apps")
+        finally:
+            orch._turn_lock.release()
+        assert refused.status_code == 409
+        assert "A build is running" in refused.json()["error"]

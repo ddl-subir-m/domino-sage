@@ -457,8 +457,10 @@ SW.api = {
   selectApp: (id) => post(`/apps/${encodeURIComponent(id)}/select`, {}),
   // Only the name is writable. The id names the app's directory and never changes.
   patchApp: (id, body) => patch(`/apps/${encodeURIComponent(id)}`, body),
+  // New app in the Build rail: minted, seeded and selected server-side, with no Thread and no plan
+  // behind it. 409 while a build is streaming, because a turn holds one working tree.
+  createApp: () => post('/apps', {}),
   app: async () => ({}),
-  createApp: async () => ({}),
   appConversations: () => empty(),
   publish: async () => ({}),
 
