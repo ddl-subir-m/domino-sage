@@ -122,7 +122,7 @@ _Avoid_: workspace (that word already means the Domino builder session), studio,
 Built App, Hub
 
 **Project**:
-A git-backed Domino project whose Control Plane and git name start with `sage-`. Threads,
+A git-backed Domino project whose Control Plane and git name start with `sage-`. Conversations,
 Artifacts, Builds, and the Built Apps for that work live in it. It has many of each; it is a
 place work lives, not one app. The chip lists only these.
 Default is a Project. New project creates another, starts Sage Builder, and lands in Chat.
@@ -140,13 +140,17 @@ The Workbench mode for open-ended questions and analysis. It produces Artifacts.
 edit `src/`. Driven by the OpenCode agent `sage-chat`.
 _Avoid_: ask mode, assistant, sandbox, Jupyter, notebook
 
-**Thread**:
-One conversation inside a Project. A Project has many Threads; Default is one Project, not
-one Thread. Each Thread has its own OpenCode session and its own history. A Thread points at a
-Built App each time a handoff is confirmed: two Threads may drive one Built App, and one Thread
-may produce several over its life. It never owns one.
-_Avoid_: conversation, session (OpenCode already uses session for the harness object), chat
-(that is the mode)
+**Conversation**:
+One line of talk inside a Project, and one row in the rail. A Project has many Conversations;
+Default is one Project, not one Conversation. Its history is not one thing: a Conversation has
+its Chat history, plus one Build history for each Built App it drove. A Conversation points at
+a Built App each time a handoff is confirmed: two Conversations may drive one Built App, and
+one Conversation may produce several over its life. It never owns one. What a person is shown
+is one transcript over all of those halves. See
+[ADR-0009](docs/adr/0009-one-conversation-build-is-a-view.md).
+_Avoid_: Thread (what this used to be called; identifiers and stored paths still say `thread`
+and are not being renamed), session (OpenCode already uses session for the harness object),
+chat (that is the mode)
 
 **Default**:
 The Sage display name of the caller's one persistent personal Project, created the first
@@ -155,7 +159,7 @@ this viewer's Default. The Domino/git name is `sage-<user-slug>-<id>`, not the w
 _Avoid_: Untitled, sandbox, ephemeral, temporary project, scratch
 
 **Artifact**:
-A file the chat agent wrote under `examples/<threadId>/` and indexed in that Thread's
+A file the chat agent wrote under `examples/<threadId>/` and indexed in that Conversation's
 manifest — a PNG chart, a table JSON, a query, a note. The directory is named for the role
 these files play at handoff, not for the term. Handoff names Artifacts by path; it does not
 copy them, and it does not replay a chart object from memory.
@@ -174,7 +178,7 @@ _Avoid_: spec, PRD, requirements, ticket, brief, `plan.md` (that is the handoff 
 document)
 
 **Session context**:
-The Resources and Artifacts in scope for this Thread right now, shown as chips on the
+The Resources and Artifacts in scope for this Conversation right now, shown as chips on the
 composer. Distinct from a Binding, which is what the Built App will need to run. A chip is
 the Session context row the user can see and remove.
 _Avoid_: attachment (that is a file in the Built App), binding (durable app dependency)
