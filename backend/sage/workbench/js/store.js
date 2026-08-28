@@ -599,6 +599,15 @@ window.SW = window.SW || {};
         });
       } else if (ev.type === 'plan-stale') {
         if (pendingPlan) pendingPlan.pending = false;
+      } else if (ev.type === 'plan-superseded') {
+        // Written into THIS conversation's transcript by a turn in ANOTHER one, which handed off
+        // into the same Built App (#59). Without it the card here goes on offering "Approve &
+        // build" for a plan the app stopped holding, which is the whole defect. Matched on the
+        // document so a log with several plans in it corrects the right card.
+        if (pendingPlan && (!ev.planId || pendingPlan.planId === ev.planId)) {
+          pendingPlan.pending = false;
+          pendingPlan.superseded = { by: ev.by || '', conversation: ev.byConversation || '' };
+        }
       } else if (ev.type === 'typecheck') {
         ensureAssistant().blocks.push({
           type: 'status',

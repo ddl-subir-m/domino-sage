@@ -502,9 +502,31 @@ class Workspace:
         implement session and IDE mode can both see it."""
         return self.path / ".sage" / "plan.md"
 
-    def write_plan(self, text: str) -> None:
+    def write_plan(self, text: str, plan_id: str = "") -> None:
+        """Write the live plan, and record which plan document it was written from.
+
+        Recorded rather than worked out later, because "the newest document" is a different
+        question and gives a different answer (#59): a plan drafted in Chat is created when the
+        sheet is drafted and only becomes this app's live plan when the handoff is confirmed,
+        which can be long after a Build conversation wrote a newer one into the same app. A caller
+        with no document behind it — the CLI, the tests — records none and readers fall back."""
         self.plan_path.parent.mkdir(parents=True, exist_ok=True)
         self.plan_path.write_text(text)
+        self._set_live_plan_doc_id(plan_id)
+
+    def live_plan_doc_id(self) -> str:
+        """The plan document `plan.md` was written from, or "" if it was written without one —
+        which is every plan that predates this and every plan written off a bare CLI turn."""
+        stored = _read_settings_file(self._settings_path).get("livePlanDocId")
+        return stored.strip() if isinstance(stored, str) else ""
+
+    def _set_live_plan_doc_id(self, plan_id: str) -> None:
+        settings = _read_settings_file(self._settings_path)
+        if plan_id:
+            settings["livePlanDocId"] = plan_id
+        else:
+            settings.pop("livePlanDocId", None)
+        _write_settings_file(self._settings_path, settings)
 
     def read_plan(self) -> str | None:
         return self.plan_path.read_text() if self.plan_path.exists() else None
@@ -524,28 +546,31 @@ class Workspace:
         p = self.architecture_path
         return p.read_text() if p.exists() else None
 
-    def archive_plan(self, cancelled: bool = False) -> Path | None:
+    def archive_plan(self, cancelled: bool = False, *, superseded: bool = False) -> Path | None:
         """Move the consumed plan out of the agent's live view (SPEC P6). The plan artifact is a
         one-shot handoff, not a living spec: once the Implement turn has built from it, a leftover
         `.sage/plan.md` reads like *current* intent/state and can mislead a later turn — it's the
         one .sage/ file that looks like instructions. Archived copies stay under .sage/plans/ so git
         retains the history. Returns the archive path, or None if there was no live plan.
 
-        `cancelled` marks a plan the user dismissed without building. Same move, different filename,
-        because the two are not the same fact: `read_archived_plan` answers "what is this app built
-        from", and a plan nobody built is not an answer to that.
+        `cancelled` marks a plan the user dismissed without building. `superseded` marks one a
+        newer plan replaced while it was still awaiting approval (#59). Same move, three
+        filenames, because the three are not the same fact: `read_archived_plan` answers "what is
+        this app built from", and neither a plan nobody built nor a plan nobody kept is an answer
+        to that.
         """
         if not self.plan_path.exists():
             return None
         archive_dir = self.path / ".sage" / "plans"
         archive_dir.mkdir(parents=True, exist_ok=True)
-        suffix = "-cancelled" if cancelled else ""
+        suffix = "-cancelled" if cancelled else "-superseded" if superseded else ""
         n = len(list(archive_dir.glob("[0-9]*.md"))) + 1
         dest = archive_dir / f"{n:03d}{suffix}.md"
         while dest.exists():  # never clobber a prior archived plan
             n += 1
             dest = archive_dir / f"{n:03d}{suffix}.md"
         self.plan_path.rename(dest)
+        self._set_live_plan_doc_id("")   # nothing is live here now, so no document is the live one
         return dest
 
     def read_archived_plan(self) -> str | None:
@@ -554,8 +579,9 @@ class Workspace:
         The counterpart to `archive_plan`: once a build consumes a plan there is no live `plan.md`
         left, and the app in the preview is nonetheless the thing that plan describes. The rail's
         plan pin reads this so it can say "Working from" instead of falling back to "No plan yet"
-        the moment the first build finishes. Cancelled archives are skipped — the pin would
-        otherwise claim the app was built from a plan the user had just dismissed. Sorted
+        the moment the first build finishes. Cancelled and superseded archives are skipped — the
+        pin would otherwise claim the app was built from a plan the user had just dismissed, or
+        from one a later Conversation replaced before anybody approved it. Sorted
         numerically, not lexically: `archive_plan` zero-pads to three digits and would run out at
         1000.
         """

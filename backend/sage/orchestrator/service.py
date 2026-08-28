@@ -2144,7 +2144,7 @@ class Orchestrator:
         if doc and project.workspace.read_plan() is not None:
             newest = self._app_plan_docs(project)
             if newest and newest[0]["id"] == plan_id:
-                project.workspace.write_plan(doc["markdown"])
+                project.workspace.write_plan(doc["markdown"], plan_id)
         return doc
 
     def review_plan_doc(self, plan_id: str, body: dict) -> dict | None:
@@ -2553,11 +2553,64 @@ class Orchestrator:
         Mixed into one newest-first list they would outrank the real answer — a plan drafted in
         Chat after this app was built is newer than the app's own document, and would become what
         the plan pin names and what a bare "yes, build it" approves.
+
+        A superseded document is not a candidate at all. It named this app and it lost its live
+        copy to a newer plan (#59), so answering "what is this app's plan" with it would pin the
+        rail to one document beside another one's markdown, and would copy an edit made to the
+        plan nobody is building over the plan somebody is.
         """
         app_id = project.workspace.app_id
         docs = project.record.list_plan_docs()
-        mine = [d for d in docs if str(d.get("appId") or "") == app_id]
+        mine = [d for d in docs if str(d.get("appId") or "") == app_id
+                and str(d.get("status") or "") != "superseded"]
         return mine or [d for d in docs if not str(d.get("appId") or "")]
+
+    @staticmethod
+    def _supersede_live_plan(project: Project, workspace: Workspace, new_plan_id: str,
+                             conversation: str) -> None:
+        """Step the plan that is awaiting approval in this app aside, instead of writing over it.
+
+        Called from both doors into a Built App just before its `plan.md` is written: the BUILD
+        gate and a confirmed Chat handoff. With no live plan there is nothing to move, which is
+        every ordinary first plan, and this does nothing at all.
+
+        Nothing is deleted (#59). The live copy is archived by the path that already keeps that
+        history, and the document behind it keeps every version and every comment — it only gains
+        a note saying what became of it. That holds even for a plan.md with no document behind it
+        at all, which is what an upgraded project has: it is archived, there is simply nothing to
+        note it on.
+
+        Which document lost its live copy is read off the app (`live_plan_doc_id`) rather than
+        guessed from the document list, because "the newest document for this app" is a different
+        question with a different answer — see `write_plan`.
+        """
+        if workspace.read_plan() is None:
+            return
+        live_doc_id = workspace.live_plan_doc_id()
+        if live_doc_id and live_doc_id == new_plan_id:
+            # Confirming one sheet twice writes the same document's plan back over itself. There
+            # is no earlier plan standing here, so nothing steps aside.
+            return
+        workspace.archive_plan(superseded=True)
+        # The document the live copy was WRITTEN FROM, not the newest one for this app. A plan
+        # drafted in Chat is confirmed long after it was drafted, so the two are different
+        # documents and only the first is the one that just lost its live copy.
+        earlier = project.record.read_plan_doc(live_doc_id) if live_doc_id else None
+        if earlier is None:
+            return
+        origin = str(earlier.get("originThreadId") or "")
+        project.record.patch_plan_doc_meta(earlier["id"], status="superseded",
+                                           supersededBy=new_plan_id,
+                                           supersededByThreadId=conversation)
+        # Told in the earlier Conversation's own transcript, which is what its plan card is
+        # rebuilt from. A plan with no Conversation behind it (the CLI path) has no card to
+        # correct, and an untagged entry would later be adopted by whoever switched next. A
+        # conversation replanning over its own plan is not told either — the newer card is already
+        # right there under the older one — but its document still says what became of it.
+        if origin and origin != conversation:
+            workspace.append_history(
+                {"type": "plan-superseded", "planId": earlier["id"], "by": new_plan_id,
+                 "byConversation": conversation}, origin)
 
     def _prepare_app_files(self) -> None:
         self._wm.refresh_preview_config()
@@ -3548,7 +3601,11 @@ class Orchestrator:
         project = self._open_app(chat, handoff_row, chosen)
         # The builder's own copies, which only have somewhere to live now. `plan.md` is the one-shot
         # handoff the implement turn consumes and archives; the plan card is what Build opens on.
-        project.workspace.write_plan(plan_md)
+        # An existing app may already hold a plan awaiting approval, which the sheet warns about
+        # and this steps aside rather than overwrites (#59).
+        self._supersede_live_plan(project, project.workspace,
+                                  str(handoff_row.get("planId") or ""), thread_id)
+        project.workspace.write_plan(plan_md, str(handoff_row.get("planId") or ""))
         project.workspace.append_history(
             {"type": "plan-proposed", "plan": plan_md, "kind": "plan",
              "planId": str(handoff_row.get("planId") or ""), "steps": 0}, thread_id)
@@ -5121,8 +5178,8 @@ class Orchestrator:
                 if arch:
                     project.app_for_turn().write_architecture(plan_md)
                 else:
-                    project.app_for_turn().write_plan(plan_md)
-                    # The durable half of the same plan. plan.md above is the copy the builder
+                    # The durable half of the same plan, written first because superseding an
+                    # earlier one below has to be able to name it. plan.md is the copy the builder
                     # consumes and archive_plan() moves aside the moment it does; this document is
                     # what people open, edit and comment on, and it has to outlive that build.
                     # Architecture keeps its own file instead and gets no document — it is already
@@ -5143,6 +5200,11 @@ class Orchestrator:
                         # not have, since typing in Build opens one first.
                         origin_thread_id=str(project.build_conversation or ""),
                     )["id"]
+                    # A plan another Conversation left awaiting approval in this same app steps
+                    # aside rather than being written over (#59).
+                    self._supersede_live_plan(project, project.app_for_turn(), plan_id,
+                                              str(project.build_conversation or ""))
+                    project.app_for_turn().write_plan(plan_md, plan_id)
                 # `steps` is how the card says "Approve & build (6 phases)" — and, more usefully,
                 # it's the user's chance to see BEFORE approving that a phased plan actually parsed.
                 # A plan the parser can't read still builds, just in one context.

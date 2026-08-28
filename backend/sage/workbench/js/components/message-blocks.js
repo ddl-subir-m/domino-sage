@@ -223,6 +223,17 @@ window.SW = window.SW || {};
     );
   }
 
+  // Who replaced this plan, in the words the person picked. A plan records the Conversation that
+  // produced it (#54), so the newer one can be named rather than pointed at — and a Conversation
+  // the rail has not loaded, or one since deleted, still leaves a sentence that reads.
+  function supersededBy(superseded) {
+    const { threads } = SW.store.get();
+    const by = (threads || []).find((t) => t.id === superseded.conversation);
+    return by && by.title
+      ? `“${by.title}” planned this Built App again.`
+      : 'Another conversation planned this Built App again.';
+  }
+
   function BuildPlanCard({ block }) {
     const { buildRunning } = SW.store.get();
     const [answers, setAnswers] = useState('');
@@ -240,6 +251,10 @@ window.SW = window.SW || {};
     const setDraft = (text) => setEdit({ base: plan, text });
     const asks = /^#{1,6}\s*open questions\b/mi.test(plan);
     const pending = block.pending && !buildRunning;
+    // A newer plan from another Conversation took this app's live plan.md (#59). The card said
+    // nothing before, so it went on offering "Approve & build" for a plan the app no longer held.
+    // Nothing was deleted, so what it owes the person is the fact and a way back in.
+    const superseded = block.superseded;
 
     return h(
       'div',
@@ -250,7 +265,9 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-plan-card-title' },
-          block.kind === 'architecture' ? 'Architecture' : 'Review the plan before building'
+          superseded
+            ? 'Superseded by a newer plan'
+            : (block.kind === 'architecture' ? 'Architecture' : 'Review the plan before building')
         )
       ),
       editing
@@ -263,6 +280,31 @@ window.SW = window.SW || {};
         // rendering the original showed a person their own edits vanishing. `approveBuild` was
         // sending `draft` all along — only the screen disagreed.
         : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(draft)),
+      superseded &&
+        h(
+          'div',
+          { className: 'sw-caption', style: { marginTop: 8 } },
+          `${supersededBy(superseded)} This plan is kept, with its comments and every version.`
+        ),
+      superseded &&
+        h(
+          'div',
+          { className: 'sw-plan-card-actions', style: { marginTop: 10 } },
+          // No primary here on purpose: the plan that is live now has the card below, and that is
+          // where the one action worth pressing lives. These two are ways back in, not decisions.
+          block.planId &&
+            h(
+              Button,
+              { size: 'small', onClick: () => SW.store.openPlanArtifact(block.planId) },
+              'Reopen this plan'
+            ),
+          superseded.by &&
+            h(
+              Button,
+              { size: 'small', onClick: () => SW.store.openPlanArtifact(superseded.by) },
+              'Open the newer plan'
+            )
+        ),
       pending &&
         h(Input.TextArea, {
           value: answers,
