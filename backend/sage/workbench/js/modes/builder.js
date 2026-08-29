@@ -598,12 +598,43 @@ window.SW = window.SW || {};
       return () => clearInterval(id);
     }, []);
 
-    // A deep link naming an app is a request to be looking at that one. Only when it differs from
-    // what the server is already pointed at: selecting reloads the whole of Build, and doing that
-    // on every render would be a loop.
+    // A deep link naming an app SEEDS the selection, once, and the server holds it from there
+    // (#100). `selectApp` WRITES — it moves the per-Project selection every other tab reads and
+    // reloads the whole of Build — so an effect that re-asserted `?app=` whenever `activeApp`
+    // drifted was not holding a view, it was overwriting the app the other tab is looking at. Two
+    // tabs naming different apps traded the selection back and forth every 30 seconds, because
+    // each one's poll saw the other's write as drift. Fires on the app the URL NAMES changing,
+    // never on the app the server has: the same shape as the resolution effect below, for the same
+    // reason it gives.
+    //
+    // Picking an app still goes through the route (see `SW.appRoute`), and that is a change to
+    // `appId`, so the click is honoured exactly as before.
+    const followed = useRef(null);
     useEffect(() => {
-      if (appId && (!activeApp || activeApp.id !== appId)) SW.store.selectApp(appId);
-    }, [appId, activeApp && activeApp.id]);
+      // A rewrite this tab made to follow the server is not somebody asking for an app. Selecting
+      // on it would put the selection back where it had just come from.
+      if (!appId || appId === followed.current) return;
+      SW.store.selectApp(appId);
+    }, [appId]);
+
+    // The other half of it, and not optional: server-wins on its own picks a winner and leaves the
+    // address bar naming the loser. When the selection moves under this tab, the URL moves with it.
+    // `replaceState` rather than a push, because following somebody else's selection is not a place
+    // the Back button should be able to return to.
+    //
+    // Only when the URL NAMES an app that is not the one on screen. A link naming none disagrees
+    // with nothing, and pinning one into it would take the resolution below away from the next
+    // person to open it.
+    useEffect(() => {
+      const shown = activeApp && activeApp.id;
+      if (!appId || !shown || shown === appId) return;
+      // `SW.appRoute` names the conversation off the STORE's thread. While the route names one that
+      // is still opening, the grammar would name the conversation being left and this would send
+      // the tab back to it.
+      if ((thread ? thread.id : null) !== (conversationId || null)) return;
+      followed.current = shown;
+      SW.router.replace(SW.appRoute(activeApp));
+    }, [appId, activeApp && activeApp.id, conversationId, thread && thread.id]);
 
     // A link naming NO app still names one: the Built App this conversation bound last. Resolving
     // it is what keeps an older link landing where it landed, rather than on whichever app the
