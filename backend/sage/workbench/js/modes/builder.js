@@ -5,7 +5,7 @@ window.SW = window.SW || {};
   const { Button, Tooltip, Input, Dropdown, Modal, Checkbox, Alert } = antd;
   const {
     ReloadOutlined, ExportOutlined, SearchOutlined, MoreOutlined, PlusOutlined, DownOutlined,
-    LoadingOutlined,
+    LoadingOutlined, HistoryOutlined,
   } = icons;
 
   // One rail, both modes (#82). It used to swap its contents — Threads in Chat, Built Apps here —
@@ -720,7 +720,7 @@ window.SW = window.SW || {};
   }
 
   function PreviewPane({ resumed }) {
-    const { previewSrc, previewStatus } = SW.store.get();
+    const { previewSrc, previewStatus, activeApp } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
     const stalled = previewStatus === 'stalled';
@@ -751,6 +751,27 @@ window.SW = window.SW || {};
         // WHICH one is on screen is. Naming it and choosing it are now the same control (#82).
         h(AppBar, { resumed }),
         h('span', { className: 'sw-topnav-spacer' }),
+        // Where #86's proposal put a History TAB, and doing the same job without the cost that
+        // refused the Plan tab: what it opens overlays the preview instead of replacing it, so the
+        // builds stay readable against the app they built (#88).
+        //
+        // Labelled rather than icon-only. The two controls to its right are about the preview and
+        // are recognisable from their icons; "the app's build log" is not a thing an icon says, and
+        // an icon-only control here would be a tooltip standing in for a name.
+        //
+        // Hidden with no app rather than disabled: a Project with nothing built has no builds to
+        // list, and the header already says so in words beside `New app`.
+        activeApp &&
+          h(
+            Button,
+            {
+              size: 'small',
+              icon: h(HistoryOutlined, null),
+              'aria-label': 'Build history',
+              onClick: () => SW.store.openBuildHistory(),
+            },
+            'Build history'
+          ),
         h(
           Tooltip,
           { title: 'Reload preview' },
@@ -1003,7 +1024,12 @@ window.SW = window.SW || {};
           // store.openPlanArtifact() already routes Build to the sheet rather than the plan page;
           // without this it set planViewerId and nothing appeared. Beside the preview, not over it,
           // which is where Chat puts the same sheet.
-          h(SW.PlanSheet, null)
+          h(SW.PlanSheet, null),
+          // OVER the preview, not beside it, which is the opposite of the sheet above and for the
+          // opposite reason (#88). The sheet is checked against the app while you keep building;
+          // the history is read, then closed. It overlays so the preview is never displaced to
+          // reach it, and it is mounted here — inside Build — so it goes when Build does.
+          h(SW.BuildHistoryDrawer, null)
         )
       )
     );

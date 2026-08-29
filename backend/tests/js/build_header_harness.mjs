@@ -142,8 +142,49 @@ const RESOURCE_GROUPS = {
   model_predictive: [], tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
 };
 
+// Each app's own build log, as `/api/project/history` hands it back with no conversation named:
+// raw rows off the app's directory, in the order they were appended (#88).
+//
+// Four things this fixture has to be able to show, and a simpler one could not:
+//   - `app_a`'s two runs were asked for in DIFFERENT conversations, so a list that filtered by
+//     conversation would be short one build — the failure #72 makes possible.
+//   - the first run carries NO `at` on any row. Stamping was added recently, and a row with no
+//     time has to show none rather than borrow one.
+//   - the trailing `plan-proposed` belongs to no run at all (a confirmed handoff writes one with
+//     no user row above it), and a LIST OF BUILDS has nothing to list it as.
+//   - `app_c` has its own, so "the builds of the app you are looking at" is a claim with two
+//     possible answers rather than one.
+// No `order` on any row, because the route stamps none: `order` is added by the merged read (#56),
+// and a log read straight off disk has never had it.
+const AGO = (ms) => new Date(Date.now() - ms).toISOString();
+const HISTORY = {
+  app_a: [
+    { type: 'user', text: 'Add a margin column', app: 'app_a', conversation: 'thr_many' },
+    { type: 'agent', kind: 'tool', tool: 'edit', detail: 'src/App.tsx',
+      app: 'app_a', conversation: 'thr_many' },
+    { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_many' },
+    { type: 'user', text: 'Sort the desks by P&L', app: 'app_a', conversation: 'thr_two',
+      at: AGO(2 * 3600e3) },
+    { type: 'agent', kind: 'text', text: 'Sorted them.', app: 'app_a', conversation: 'thr_two',
+      at: AGO(2 * 3600e3 - 4000) },
+    { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_two',
+      at: AGO(2 * 3600e3 - 5000) },
+    { type: 'plan-proposed', plan: '# Desk dashboard', planId: 'pl_1', steps: 3, app: 'app_a' },
+  ],
+  app_c: [
+    { type: 'user', text: 'Draw the rate curve', app: 'app_c', conversation: 'thr_many',
+      at: AGO(3 * 3600e3) },
+    { type: 'done', ok: true, decision: 'built', app: 'app_c', conversation: 'thr_many',
+      at: AGO(3 * 3600e3 - 9000) },
+  ],
+};
+
 const calls = [];
 let selected = 'app_a';
+// Every `useState(false)` starts open, for the step that reads what a fold holds.
+let expanded = false;
+// A 500 on the app's build log, which is not the same answer as an app nobody has built in.
+let historyFails = false;
 // A 500 on the app list, which is not the same answer as a Project with no apps (#95).
 let appsFail = false;
 // A refused publish, as the sentence the server would send with the 409. Nothing is published on
@@ -241,6 +282,19 @@ function route(path, init) {
     if (egressHangs) return NEVER;
     return egressFails ? json({ error: 'no' }, 502) : json(egressAnswer);
   }
+  // The app's whole build log, which is the question this route answers when no conversation is
+  // named. Filtered when one IS named, exactly as the server filters — so a caller that started
+  // naming one would come back short a build rather than answering the same list either way.
+  if (path.startsWith('/project/history')) {
+    if (historyFails) return json({ error: 'unavailable' }, 500);
+    const rows = HISTORY[selected] || [];
+    const named = path.match(/[?&]conversation=([^&]+)/);
+    return json({
+      history: named
+        ? rows.filter((r) => r.conversation === decodeURIComponent(named[1]))
+        : rows,
+    });
+  }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
   if (path === '/bindings') return json({ bindings: bound[selected] || [] });
@@ -322,14 +376,32 @@ const sandbox = {
   removeEventListener() {},
   React: {
     createElement: (t, p, ...c) => ({ t, p: p || {}, c }),
-    useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+    // The setter is a no-op, so a control whose only effect is its own `useState` cannot be driven
+    // by clicking it here. `expanded` is how a step asks for the opened branch instead: the build
+    // history's turns are rendered behind one, and a branch nothing ever renders is a branch
+    // nothing tests.
+    //
+    // Only a state that STARTS `false` flips. A blunter switch turns `AppPicker`'s search query
+    // from `''` into `true` and the header stops rendering at all, which is a harness fault
+    // reported as a product one.
+    useState: (init) => [
+      expanded && init === false ? true : (typeof init === 'function' ? init() : init),
+      () => {},
+    ],
     useEffect: (fn, deps) => { effects.push({ fn, deps }); },
+    // Called through, not cached: a stub that remembered would have to model React's dep
+    // comparison, and every claim here is about WHAT IS DRAWN rather than about how often.
+    useMemo: (fn) => fn(),
     useRef: () => ({ current: null }),
     Fragment: 'Fragment',
   },
   antd: {
     Input: Object.assign(function Input() {}, { TextArea: 'Input.TextArea' }),
     Button: 'Button', Dropdown: 'Dropdown', Tag: 'Tag', Tooltip: 'Tooltip', Space: 'Space',
+    // The overlay the build history opens in, and what it draws while its read is out. Strings,
+    // like every other antd element here: what is asserted is which props it was given — the mask,
+    // the close button, the Escape key — and mounting would test antd.
+    Drawer: 'Drawer', Skeleton: 'Skeleton',
     Checkbox: 'Checkbox', Alert: 'Alert',
     // `confirm` answers with the instance antd answers with, because #35's notice arrives AFTER the
     // modal is on screen and `update` is the only way in: `Modal.confirm` renders its config once,
@@ -360,7 +432,7 @@ vm.createContext(sandbox);
 // same `bindings` the header does, so the two surfaces are one claim and belong in one harness.
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
                  'components/conversation-list.js', 'components/resource-panel.js',
-                 'modes/builder.js']) {
+                 'components/build-history.js', 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
@@ -407,6 +479,17 @@ function flatten(node, out = [], depth = 0) {
     danger: !!props.danger,
     type: typeof props.type === 'string' ? props.type : '',
   };
+  // An overlay's own props. "There is a way out" is three separate ones — the backdrop, the close
+  // button and the Escape key — and a drawer can be missing any one of them and look identical in
+  // the tree otherwise. `open` is here for the sharper reason: children are in the tree whether or
+  // not the thing is open, so without it "the drawer shows X" would pass on a closed drawer.
+  ['open', 'mask', 'maskClosable', 'closable', 'keyboard', 'width', 'placement'].forEach((k) => {
+    if (k in props) entry[k] = props[k];
+  });
+  // The React key, which a stub can see because it is an ordinary prop here. Two rows in one list
+  // sharing a key is not a rendering detail — React draws them as one — and a list built off a
+  // field the server does not send is exactly how every row ends up with the same one.
+  if (props.key !== undefined) entry.key = String(props.key);
   // Menus are data, not children — the `…` overflow's items never appear in the tree otherwise,
   // and the whole criterion is about their order and their styling.
   if (props.menu && props.menu.items) {
@@ -455,6 +538,28 @@ function flatten(node, out = [], depth = 0) {
 
 // The strings a person would read, in order.
 const words = (nodes) => nodes.filter((n) => n.text).map((n) => n.text);
+
+// One element's own subtree, found by name. The build history's claims are about what THE DRAWER
+// says — a flat list of every string on the screen holds the transcript, the composer and the
+// header too, and could not tell "this app has no builds" from the greeting behind it.
+function subtree(node, el, depth = 0) {
+  if (!node || depth > 60) return null;
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const found = subtree(n, el, depth);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof node !== 'object' || !node.t) return null;
+  const name = tag(node);
+  if (name === el) return node;
+  if (typeof node.t === 'function' && !SKIP.has(name)) {
+    const found = subtree(node.t(Object.assign({}, node.p || {}, { children: node.c })), el, depth + 1);
+    if (found) return found;
+  }
+  return subtree(node.c, el, depth + 1);
+}
 
 // Every handler a click could reach, by the app it acts on. `data-app` is what makes a row in the
 // header's list findable without mounting it.
@@ -508,6 +613,48 @@ function panelContents(tree) {
   return out;
 }
 
+// What the build history drawer IS, and what it says. Its overlay props are read off the element
+// itself — the mask, the X and the Escape key are the criterion, and each is its own prop — and its
+// list is read out of its own subtree so the pane behind it cannot answer for it.
+function readDrawer(tree) {
+  const node = subtree(tree, 'Drawer');
+  if (!node) return null;
+  const nodes = flatten(node);
+  const head = nodes[0];
+  const textsOf = (cls) => nodes.filter((n) => n.className === cls).flatMap((n) => n.texts || []);
+  return {
+    open: !!head.open,
+    mask: head.mask,
+    maskClosable: head.maskClosable,
+    closable: head.closable,
+    keyboard: head.keyboard,
+    width: head.width,
+    placement: head.placement,
+    title: head.title,
+    words: words(nodes),
+    // One entry per run, headed by the prompt that started it. The times are separate because the
+    // claim about them is that a row with no `at` has NO time element rather than an empty one.
+    runs: nodes.filter((n) => n.className === 'sw-bh-run').length,
+    // One per entry, in order. A log read straight off disk carries no `order`, so a list that
+    // built its keys from one would hand every row the same key.
+    keys: nodes.filter((n) => n.el === 'BuildRunRow').map((n) => n.key),
+    prompts: textsOf('sw-bh-run-prompt'),
+    times: textsOf('sw-bh-run-at'),
+    // The control that opens a run's turns, and the count in its label — the entry is the build,
+    // and the turns are behind it rather than listed as builds of their own.
+    folds: nodes
+      .filter((n) => n.el === 'Button' && (n.texts || []).some((t) => /turn/.test(t)))
+      .flatMap((n) => n.texts || []),
+    // The turns themselves, once a step has asked for the opened branch. They are the transcript's
+    // own rows, drawn by the reader that already knows how — which is what makes "the turns are
+    // behind the entry" a claim about where they are rather than about whether they exist.
+    turns: nodes.filter((n) => n.el === 'Message').length,
+    skeletons: nodes.filter((n) => n.el === 'Skeleton').length,
+    // Every control the drawer offers, so a failed read can be asked whether it left a way back.
+    buttons: nodes.filter((n) => n.el === 'Button').flatMap((n) => n.texts || []),
+  };
+}
+
 async function arrive(threadId, appId) {
   // Copies, for the reason `bound` and `attached` are copies: publishing WRITES to a row, and the
   // fixture is shared by every step in the run.
@@ -523,6 +670,9 @@ async function arrive(threadId, appId) {
   calls.length = 0;
   holding = null;
   held.length = 0;
+  // Every step arrives at Build with the history shut, the way a page load does. The store is one
+  // object for the whole run, so a step that opened it would otherwise leave it open for the next.
+  SW.store.closeBuildHistory();
   await SW.store.openThread(threadId);
   if (appId) await SW.store.selectApp(appId);
   await SW.store.loadApps();
@@ -762,6 +912,117 @@ for (const step of steps) {
     });
     continue;
   }
+  // The build history, opened the way a person opens it: find the control in the Build header and
+  // click it. The step knows no store method and no route — a control that stopped being in the
+  // header would not be found at all, rather than quietly asserted around.
+  if (step.history) {
+    await arrive(step.history, step.select);
+
+    // Rendering is what CALLS the drawer, and calling it is what records the effect that makes its
+    // read. So a paint is: draw, run what the draw scheduled, let it settle, draw again.
+    const paint = async () => {
+      effects.length = 0;
+      flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+      for (const e of effects) {
+        try {
+          const off = e.fn();
+          if (typeof off === 'function') off();
+        } catch (err) { /* the store's own fetches, which this step is not about */ }
+      }
+      await settle();
+      await settle();
+      return SW.BuildMode({ conversationId: step.history, appId: selected });
+    };
+
+    expanded = !!step.expand;
+    historyFails = !!step.readFails;
+    calls.length = 0;
+    const control = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }))
+      .find((n) => n.onClick && n.label === 'Build history');
+    if (!control && !step.closed) {
+      throw new Error('nothing in the Build header opens the build history');
+    }
+    if (control && !step.closed) control.onClick();
+
+    let tree = await paint();
+    // What the drawer said before whatever the step does next. Null unless the step moves the
+    // selection, which is the only case with a "before" worth reporting.
+    let mid = null;
+
+    if (step.moveTo) {
+      // The selection moving with the drawer OPEN, and nobody clicking: a second tab choosing
+      // another app is enough (#95). Nothing is held here — this is the plain case, and the
+      // question is whether the list on screen follows the header or goes on describing the app
+      // that has gone.
+      mid = readDrawer(tree);
+      calls.length = 0;
+      selected = step.moveTo;
+      await SW.store.loadApps();
+      tree = await paint();
+    }
+
+    if (step.switchTo) {
+      // The read still out, the selection moving underneath it, and the app you LEFT answering
+      // last. `/project/history` carries no app id, so its answer is only ever "whichever app was
+      // selected when it was asked" — and it is asked while `step.select` still is.
+      holding = new Set(['/project/history']);
+      calls.length = 0;
+      SW.store.openBuildHistory();
+      const read = SW.store.readAppHistory();
+      await settle();
+      const stale = held.shift();
+      if (!stale) throw new Error('the drawer never asked for the app history');
+      // The selection moves the way a second tab moves it: `/apps` simply starts answering
+      // differently, and the poll cascades onto the new app.
+      selected = step.switchTo;
+      await SW.store.loadApps();
+      stale.release();
+      await read;
+      holding = null;
+      held.length = 0;
+      mid = readDrawer(SW.BuildMode({ conversationId: step.history, appId: selected }));
+      tree = await paint();
+    }
+
+    if (step.reopen) {
+      // Shut, then opened again on the SAME app. Nothing dropped the list on the way — the
+      // selection never moved, so the app-scope gate had no reason to — which leaves
+      // `openBuildHistory`'s own clear as the only thing that can send the drawer back to the log.
+      // Without it the second look IS the first look, and a build that finished in between is
+      // missing from a list whose whole job is to hold every build.
+      mid = readDrawer(tree);
+      SW.store.closeBuildHistory();
+      await paint();
+      calls.length = 0;
+      const again = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }))
+        .find((n) => n.onClick && n.label === 'Build history');
+      if (!again) throw new Error('nothing in the Build header re-opens the build history');
+      again.onClick();
+      tree = await paint();
+    }
+
+    const whole = flatten(tree);
+    report.push({
+      step: `history ${step.select || selected}`,
+      app: (SW.store.get().activeApp || {}).id || null,
+      control: control ? { label: control.label, texts: control.texts || [] } : null,
+      calls: calls.slice(),
+      drawer: readDrawer(tree),
+      mid,
+      // Both still on screen behind the overlay, which is the whole of "it does not displace the
+      // preview to be read".
+      previewFrames: whole.filter((n) => n.className === 'sw-preview-frame').length,
+      transcripts: whole.filter(
+        (n) => String(n.className || '').startsWith('sw-builder-chat-messages')
+      ).length,
+    });
+    // After the report, not before it: `readDrawer` calls the components again to read the tree,
+    // so a switch turned off here would be off for the render the report is built from.
+    expanded = false;
+    historyFails = false;
+    continue;
+  }
+
   // One tick of the 30s poll Build arms (#95). The server's selection is moved WITHOUT a request,
   // because that is what another tab selecting a different app looks like from here: `/apps`
   // simply starts answering differently. `step.poll` names the app the server now reports, so

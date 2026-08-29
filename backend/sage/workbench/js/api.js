@@ -499,6 +499,16 @@ SW.api = {
   // means the whole project — the agent's view, not the rail's.
   history: (conversation) =>
     request(`/project/history${conversation ? `?conversation=${encodeURIComponent(conversation)}` : ''}`),
+  // The SELECTED Built App's whole build log, every conversation that drove it included (#88).
+  // The same route, asked the other question it has always been able to answer and nobody asked:
+  // no conversation on the wire, deliberately. One Conversation can drive several apps (#72), so a
+  // history filtered to one would leave out the builds that made this app what it is — and the log
+  // is never another app's, because it lives in the app's own directory (ADR-0008).
+  //
+  // Its own entry rather than a bare `history()`: the rule that this call names no conversation is
+  // the whole of what tells the two questions apart, and a rule kept in the caller is a rule the
+  // next caller does not read.
+  appHistory: () => request('/project/history').then((r) => r.history || []),
   bindings: () => request('/bindings'),
   // The two app-scoped removals (ADR-0011). Both answer with the app source that STILL uses what
   // just went — read by the route before the record goes, because a Data Source's queries are found
