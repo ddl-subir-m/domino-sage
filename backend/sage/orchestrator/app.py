@@ -26,6 +26,7 @@ load_dotenv()
 from fastapi import FastAPI, Request
 from fastapi.responses import (
     FileResponse,
+    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     Response,
@@ -460,17 +461,28 @@ control_app.add_middleware(_ViewerIdentityMiddleware)
 
 
 @control_app.get("/")
-def ui() -> FileResponse:
+def ui() -> HTMLResponse:
     """The Workbench shell (Chat / Build), or the door.
 
     In the published Workbench App this is the door (ADR-0004): it does not run Chat or Build
     against the App's scratch checkout — it sends the viewer to their own Sage Builder, where their
     files live in a real git Project. A Sage Builder serves the shell itself, unchanged.
 
+    Both pages come through here, so the brand pack is substituted here and reaches both (#116).
+    Server-side, never from JS on boot: the browser paints whatever the HTML literally said first,
+    and the flash lands on the door — the first page a viewer ever sees — where it would show our
+    name over a partner's product. `text()` leaves an unknown token as written, so a page keeps
+    booting whatever the pack says — and that is also what protects the rest of the document, which
+    is templated wholesale: a `{word}` in the CSS or the inline JS resolves only if it happens to
+    name a pack key, and otherwise comes through untouched.
+
     no-store so the current HTML is always served.
     """
+    from .brand import text as brand_text
+
     page = _DOOR_UI if proxy_is_app() else _UI
-    return FileResponse(page, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(brand_text(page.read_text(encoding="utf-8")),
+                        headers={"Cache-Control": "no-store"})
 
 
 @control_app.post("/api/door")

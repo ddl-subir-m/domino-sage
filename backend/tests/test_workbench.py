@@ -7,10 +7,14 @@ def test_the_published_app_serves_the_door_not_the_chat_shell(monkeypatch):
     """ADR-0004: the Workbench App is a door. It must not serve Chat from its scratch checkout —
     it sends the viewer to their own Sage Builder, where their files are in a real git Project."""
     import sage.orchestrator.app as appmod
+    from sage.orchestrator.brand import text as brand_text
 
-    assert Path(appmod.ui().path) == appmod._UI  # a Sage Builder serves the shell, unchanged
+    # The route templates the page it picks (#116), so which one it picked is read off the body.
+    served = lambda: appmod.ui().body.decode()
+
+    assert served() == brand_text(appmod._UI.read_text())  # a Sage Builder serves the shell, unchanged
     monkeypatch.setattr(appmod, "proxy_is_app", lambda: True)
-    assert Path(appmod.ui().path) == appmod._DOOR_UI
+    assert served() == brand_text(appmod._DOOR_UI.read_text())
 
     door = Path(appmod._DOOR_UI).read_text()
     assert "/door" in door and "location.replace" in door  # it opens the builder and goes there

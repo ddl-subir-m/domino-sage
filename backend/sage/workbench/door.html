@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Opening your workspace</title>
+  <title>{pageTitle}</title>
+  <link rel="icon" href="./img/domino-logo.svg" />
   <style>
     /* Inter from Sage's own origin (#19). Do not <link> Google fonts. */
     @font-face {
@@ -166,7 +167,6 @@
             logo.src = b.logoUrl;
             logo.alt = b.logoAlt || '';
           }
-          if (b.pageTitle) document.title = b.pageTitle;
         } catch (e) { /* no brand pack — Domino default */ }
       }
 
