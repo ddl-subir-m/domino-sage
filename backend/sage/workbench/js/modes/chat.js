@@ -39,8 +39,10 @@ window.SW = window.SW || {};
         'span',
         { className: 'sw-caption' },
         here
-          ? 'Sage is working on this conversation.'
-          : 'Sage is working elsewhere in this project. One turn runs at a time.'
+          ? SW.brand.text('{assistantName} is working on this conversation.')
+          : SW.brand.text(
+            '{assistantName} is working elsewhere in this project. One turn runs at a time.'
+          )
       ),
       h(
         Button,
@@ -171,7 +173,10 @@ window.SW = window.SW || {};
                     h(
                       'div',
                       { className: 'sw-waiting' },
-                      `Waiting for you to attach a ${SW.util.labelFor(pendingTurn.turn.waitsForAttachment)}.`,
+                      // The kind's label is a pack noun now, and there is no article engine, so
+                      // "one Dataset" rather than "a Dataset" — a pack renaming the noun to
+                      // something vowel-initial would have made the article wrong.
+                      `Waiting for you to attach one ${SW.util.labelFor(pendingTurn.turn.waitsForAttachment)}.`,
                       h(
                         Button,
                         {
