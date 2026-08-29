@@ -145,8 +145,14 @@ def _scripted_clock(monkeypatch):
 @pytest.fixture(autouse=True)
 def _short_windows(monkeypatch):
     """Five polls of silence rather than five minutes of it. The rule under test is which polls
-    reset the clock, and that is the same rule at either scale."""
+    reset the clock, and that is the same rule at either scale.
+
+    Both windows, at the same ratio as the real pair (#98): the shorter one for a turn with
+    nothing outstanding, the longer one while a tool call is still open. Patching only the first
+    would leave the tool window at its real ten minutes, and every test below that waits one out
+    would sit there for six hundred scripted polls before reporting anything."""
     monkeypatch.setattr(svc, "_BUILD_QUIET_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(svc, "_BUILD_TOOL_QUIET_TIMEOUT_S", 20.0)
     monkeypatch.setattr(svc, "_BUILD_STOP_GRACE_S", 5.0)
 
 
@@ -392,6 +398,92 @@ def test_a_step_that_starts_counts_even_with_nothing_to_show_for_it(tmp_path: Pa
 
     assert _of(events, "build-stalled") == []
     assert oc.started == 12
+
+
+class OneLongToolOpenCode(FakeOpenCode):
+    """One tool call that outlives the idle window and then comes back (#98).
+
+    The transcript shows the SAME in-progress part poll after poll — no new key, no changing
+    detail — which is the one shape the quiet clock cannot tell from a wedge, and the shape a
+    `npm run build` or a broad test run has from here. `SilentStepsOpenCode` next door is the
+    opposite case: twelve calls that each start is twelve things OpenCode sent, and the clock
+    has always counted those. This is one call and nothing else, ever."""
+
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None, *, polls: int = 12) -> None:
+        super().__init__(workspace, turns)
+        self.polls = 0
+        self.busy_polls = polls
+
+    def is_running(self, session_id: str) -> bool:
+        if self._next == 0:
+            return False
+        self.polls += 1
+        return self.polls <= self.busy_polls
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if self._next > 0:
+            msgs = self._by_session.setdefault(session_id, [])
+            call = next((m for m in msgs if m["id"] == "long"), None)
+            if call is None:
+                call = {"id": "long", "type": "assistant",
+                        "content": [{"id": "long-t", "type": "tool", "tool": "bash",
+                                     "state": {"status": "running"}}]}
+                msgs.append(call)
+            if self.polls > self.busy_polls:
+                call["content"][0]["state"] = {"status": "completed"}
+        return super().messages(session_id, limit=limit)
+
+
+class StuckToolOpenCode(WedgedOpenCode):
+    """The same one call, on a session that never comes back. The longer window is a window, not
+    an exemption: a tool that hangs is still given up on, only later."""
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if self._next > 0:
+            msgs = self._by_session.setdefault(session_id, [])
+            if not any(m["id"] == "stuck" for m in msgs):
+                msgs.append({"id": "stuck", "type": "assistant",
+                             "content": [{"id": "stuck-t", "type": "tool", "tool": "bash",
+                                          "state": {"status": "running"}}]})
+        return super().messages(session_id, limit=limit)
+
+
+def test_a_turn_with_a_call_still_open_gets_the_longer_window(tmp_path: Path):
+    """Twelve polls of one silent `bash` against a five-poll idle window. Under one window this
+    turn was killed at poll six and the person was offered a retry for a build that was working."""
+    ws = tmp_path / "mnt" / "code"
+    oc = OneLongToolOpenCode(ws, [Turn(text="done", writes={"src/chart.tsx": "chart\n"})], polls=12)
+    orch = _orch(tmp_path, oc)
+
+    events = list(orch.build_stream("add a chart"))
+
+    assert _of(events, "build-stalled") == []
+    assert _of(events, "done")[0]["ok"] is True
+    assert oc.polls > 6            # it really did outlive the idle window
+
+
+def test_a_call_that_never_comes_back_is_still_given_up_on(tmp_path: Path):
+    """The longer window is the whole difference. It is not a way for a turn to run for ever."""
+    ws = tmp_path / "mnt" / "code"
+    oc = StuckToolOpenCode(ws, [Turn(text="running the build")])
+    orch = _orch(tmp_path, oc)
+    oc.orch = orch
+
+    offer = _of(list(orch.build_stream("add a chart")), "build-stalled")[0]
+
+    assert offer["quietForS"] >= 20         # waited the tool window, not the idle one
+    assert "step Sage was running" in offer["message"]
+
+
+def test_a_turn_with_nothing_open_is_given_up_on_inside_the_shorter_window(tmp_path: Path):
+    """The half of the split that is a strict improvement: silence with no call outstanding is
+    not a slow tool, and waiting the tool window on it would be the old bug made worse."""
+    orch, _ = _wedged(tmp_path)
+
+    offer = _of(list(orch.build_stream("add a chart")), "build-stalled")[0]
+
+    assert offer["quietForS"] < 20
+    assert "went quiet for 5 seconds" in offer["message"]
 
 
 def test_a_slow_interrupt_does_not_spend_the_whole_grace_window(tmp_path: Path):

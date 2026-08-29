@@ -131,12 +131,31 @@ _MAX_POLL_FAILURES = 4
 # large file is legitimately quiet for a minute, and a phased build for far longer, so a deadline on
 # the turn's total length kills healthy work. This one is measured from the last thing OpenCode
 # produced — text, a tool call, a phase change — so any turn still making progress resets it and is
-# never at risk however long it runs in total. Five minutes is an order of magnitude above the quiet
-# stretches a real turn has, and far below the 36 minutes the live incident sat wedged.
+# never at risk however long it runs in total.
+#
+# This is the IDLE window: nothing is open, so what is being waited on is the model taking its next
+# step. Two minutes is several times the longest of those gaps, and far below the 36 minutes the
+# live incident sat wedged. It was five minutes until #98 split the slow-tool case out into
+# _BUILD_TOOL_QUIET_TIMEOUT_S below — five was sized for a case this window no longer has, and
+# leaving it there would have made the wedge it exists to catch wait three minutes longer than it
+# has any reason to.
 #
 # The 12-second deadline in the poll loop is a different rule and stays as it is: it covers a turn
 # that never appeared at all, and this one only starts to matter once one has.
-_BUILD_QUIET_TIMEOUT_S = 300.0
+_BUILD_QUIET_TIMEOUT_S = 120.0
+
+# The same silence, while a tool call is still open (#98). One window over both cases had to be the
+# worst of the two: a `npm run build` or a broad test run sends nothing between `called` and its
+# result, so covering it meant a genuinely wedged turn — model stopped, nothing running — sat for
+# the length of the slowest tool anyone might run. Splitting them lets each be sized for what it
+# is. The idle window came DOWN from five minutes to two: with slow calls out of it, what is left
+# is the gap between steps, and four times the longest of those is already generous. This one went
+# up to ten minutes, which is the ceiling on a tool rather than on a wedge — a `task` sub-agent is
+# one outstanding call for however long it runs, and killing that was the reported bug.
+#
+# Build has no wall-clock backstop the way Chat has _CHAT_TURN_MAX_S, deliberately (see above), so
+# this is the only cap on a call that never returns.
+_BUILD_TOOL_QUIET_TIMEOUT_S = 600.0
 
 # How long we wait for a wedged session to confirm it actually stopped, after asking it to. Only
 # a session that confirms lets the turn lock go — see _stop_wedged_session.
@@ -5183,7 +5202,7 @@ class Orchestrator:
             restore_mode()
             return {"type": "stopped"}
 
-        def stalled_offer(quiet_for: float):
+        def stalled_offer(quiet_for: float, *, in_tool: bool):
             """The transcript's half of giving up on a wedged turn (#39).
 
             An offer, not a bare error row, on the precedent of the reset offer (#36) and the
@@ -5202,8 +5221,10 @@ class Orchestrator:
             internal nudge by now. An approve turn and a phase of a phased build have no such
             sentence of the person's to replay, so they get the message and no button.
             """
-            waited = (f"{_BUILD_QUIET_TIMEOUT_S / 60:.0f} minutes" if _BUILD_QUIET_TIMEOUT_S >= 90
-                      else f"{_BUILD_QUIET_TIMEOUT_S:.0f} seconds")
+            # Measured, not the constant: there are two windows now (#98) and naming the wrong
+            # one would put a number in front of the person that nothing they can see produced.
+            waited = (f"{quiet_for / 60:.0f} minutes" if quiet_for >= 90
+                      else f"{quiet_for:.0f} seconds")
             kept = agent_wrote()
             if kept and (gate or answer_only):
                 # A read-only turn that wrote broke the guarantee it exists to give, and stalling
@@ -5228,8 +5249,15 @@ class Orchestrator:
             if owns_turn:
                 yield persist({
                     "type": "build-stalled",
-                    "message": f"The build stopped responding. It went quiet for {waited}, so Sage "
-                               f"stopped it. {fate}",
+                    # Which silence it was, in the person's terms. "It went quiet" is the wrong
+                    # sentence for a step that was running the whole time — it sends them looking
+                    # at the model when the thing that hung was their build command, and a step
+                    # that never returns is the one case where asking again unchanged may not be
+                    # the move. Chat draws the same line for the same reason.
+                    "message": (f"The step Sage was running didn't finish. It waited {waited} and "
+                                f"then stopped the build. {fate}" if in_tool else
+                                f"The build stopped responding. It went quiet for {waited}, so Sage "
+                                f"stopped it. {fate}"),
                     "prompt": "" if is_approval else prompt,
                     "quietForS": round(quiet_for),
                     "kept": kept,
@@ -5400,6 +5428,14 @@ class Orchestrator:
                 seen_before = len(seen)
                 active_before = last_active
                 in_flight_before = len(in_flight)
+                # Whether a call is open RIGHT NOW, which decides the quiet window below. Read
+                # fresh from the transcript every poll, the way Chat reads it when no event stream
+                # is up (`running_tools = {"transcript"} if polled_running else set()`) — Build has
+                # no stream at all, so the transcript is the only thing that could answer. It can:
+                # an in-progress part is never marked `seen`, so it comes back around on every poll
+                # until the state that closes it arrives. `in_flight` cannot answer instead; it
+                # only ever grows, because all it is asked is whether this poll added to it.
+                tool_open = False
                 for m in msgs:
                     if m.get("type") != "assistant":
                         continue
@@ -5417,6 +5453,7 @@ class Orchestrator:
                             tool = part.get("tool") or part.get("name") or pt
                             if status in ("pending", "running", "in_progress"):
                                 in_flight.add(key)
+                                tool_open = True
                                 # Live "active" hint so a long step names what it's doing instead of
                                 # dead air. Only for tools whose streaming input already carries a
                                 # useful detail (a file path, a command); this deliberately skips
@@ -5494,9 +5531,13 @@ class Orchestrator:
                 # registered as running has its own deadline twelve lines up and its own answer;
                 # this one is for the case that had none — a session that says it is running and
                 # has stopped saying anything else (#39).
-                if appeared and time.monotonic() - last_event >= _BUILD_QUIET_TIMEOUT_S:
+                # Which of the two silences this is (#98). A call still open is a step that has
+                # not come back; nothing open is a turn that stopped taking them.
+                quiet_limit = _BUILD_TOOL_QUIET_TIMEOUT_S if tool_open else _BUILD_QUIET_TIMEOUT_S
+                if appeared and time.monotonic() - last_event >= quiet_limit:
                     quiet_for = time.monotonic() - last_event
-                    log.error("build turn wedged: no OpenCode output for %.0fs — giving up", quiet_for)
+                    log.error("build turn wedged: no OpenCode output for %.0fs (%s) — giving up",
+                              quiet_for, "a call was still open" if tool_open else "nothing open")
                     stopped = self._stop_wedged_session(client, sid)
                     # Before the branch, because it is true of both: nothing was built either way.
                     self._turn_gave_up = True
@@ -5541,7 +5582,7 @@ class Orchestrator:
                     # idle — so the flag has done its job.
                     project.stop_requested = False
                     restore_mode()
-                    yield from stalled_offer(quiet_for)
+                    yield from stalled_offer(quiet_for, in_tool=tool_open)
                     return
                 time.sleep(1.0)
 
