@@ -583,7 +583,7 @@ def test_after_a_wedge_every_non_streaming_entry_point_names_the_restart(tmp_pat
     list(orch.build_stream("add a chart"))
 
     said = _refusal_messages(orch)
-    streamed = _of(list(orch._busy_refusal()), "error")[0]["message"]
+    streamed = _of(list(orch._wedged_refusal()), "error")[0]["message"]
 
     assert set(said) == {"create_app", "delete_app", "draft_handoff_plan", "confirm_handoff",
                          "recross_handoff", "reset_app", "build"}

@@ -372,23 +372,56 @@ def test_stop_uses_explicit_workspace_id_override(tmp_path: Path):
     assert cp.workspaces["proj-1"][0]["state"] == "Stopped"
 
 
-def test_overlapping_turn_is_refused_not_run(tmp_path: Path):
-    # A turn already streaming holds _turn_lock. A second build_stream must refuse (busy) instead of
-    # running a concurrent turn — that overlap is what clears the read-only gate mid-flight and makes
-    # a gated planner write code, then self-destruct as a "gate violation". gateway is object() and no
-    # OpenCode client is wired, so if the turn actually ran it would blow up, not yield a clean refusal.
+def _stream_in_background(events):
+    """Drain a turn generator on its own thread, the way the SSE route does (app.py `_turn_sse`).
+
+    A queued turn blocks until the lock frees, so `list()`ing one here would hang the suite rather
+    than fail it."""
+    import threading
+
+    seen: list[dict] = []
+    finished = threading.Event()
+
+    def pump() -> None:
+        try:
+            for ev in events:
+                seen.append(ev)   # noqa: PERF402 — one at a time, so a test can read it as it fills
+        finally:
+            finished.set()
+
+    threading.Thread(target=pump, daemon=True).start()
+    return seen, finished
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for the turn queue")
+
+
+def test_an_overlapping_turn_waits_rather_than_running_concurrently(tmp_path: Path):
+    """Turns still run one at a time; what changed is what happens to the second one (#79).
+
+    Nothing of it runs while the first turn holds the lock: gateway is `object()` and no OpenCode
+    client is wired here, so a turn that actually started would blow up rather than sit quietly."""
     orch = _orch(tmp_path)
     assert orch._turn_lock.acquire(blocking=False)  # simulate a turn in flight
+    events, finished = _stream_in_background(orch.build_stream("build me a thing"))
     try:
-        events = list(orch.build_stream("build me a thing"))
+        _wait_for(lambda: len(events) == 1)
+        assert events[0]["type"] == "pending"        # accepted, not refused
+        assert finished.wait(0.3) is False           # and still waiting, not running
+        assert orch.cancel_pending_turn(events[0]["ticket"]) is True
+        assert finished.wait(5) is True
     finally:
-        orch._turn_lock.release()
-    assert [e["type"] for e in events] == ["error", "done"]
-    assert events[-1] == {"type": "done", "ok": False, "decision": "busy"}
-    assert "already running" in events[0]["message"]
-    # Machine-readable marker: the UI requeues a refused turn instead of showing the user an error
-    # they can't act on, so it must not have to string-match the message to recognise a refusal.
-    assert events[0]["busy"] is True
+        orch._release_turn()
+    assert [e["type"] for e in events] == ["pending", "done"]
+    assert events[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
 
 
 def test_turn_busy_tracks_the_turn_lock(tmp_path: Path):
@@ -422,25 +455,36 @@ def test_history_is_readable_mid_turn(tmp_path: Path):
         orch._turn_lock.release()
 
 
-def test_approve_is_refused_while_a_turn_streams(tmp_path: Path):
+def test_an_approve_asked_for_mid_turn_waits_like_any_other_turn(tmp_path: Path):
     # Same guard on the approve path: approving mid-turn would overlap two turns on one working tree.
+    # It queues rather than refusing, because an approve IS a build turn — a Workbench that queued
+    # one and refused the other is a rule people would have to learn instead of guess (#79).
     orch = _orch(tmp_path)
     assert orch._turn_lock.acquire(blocking=False)
+    events, finished = _stream_in_background(orch.approve_stream())
     try:
-        events = list(orch.approve_stream())
+        _wait_for(lambda: len(events) == 1)
+        assert events[0]["type"] == "pending"
+        assert orch.cancel_pending_turn(events[0]["ticket"]) is True
+        assert finished.wait(5) is True
     finally:
-        orch._turn_lock.release()
-    assert events[-1] == {"type": "done", "ok": False, "decision": "busy"}
+        orch._release_turn()
+    assert events[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
 
 
-def test_turn_lock_is_released_after_a_refusal(tmp_path: Path):
-    # A refused turn must not leak the lock — the next turn can still acquire it once the holder frees it.
+def test_a_turn_that_never_ran_does_not_leak_the_turn_lock(tmp_path: Path):
+    # A queued turn that is cancelled must not touch the lock it never took, and one that IS granted
+    # must hand it back — otherwise the next turn answers "a build is already running" for ever with
+    # no build behind it.
     orch = _orch(tmp_path)
     orch._turn_lock.acquire()
-    list(orch.build_stream("first"))  # refused; must not touch the lock it didn't take
-    orch._turn_lock.release()
+    events, finished = _stream_in_background(orch.build_stream("first"))
+    _wait_for(lambda: len(events) == 1)
+    assert orch.cancel_pending_turn(events[0]["ticket"]) is True
+    assert finished.wait(5) is True
+    orch._release_turn()
     assert orch._turn_lock.acquire(blocking=False)  # free again
-    orch._turn_lock.release()
+    orch._release_turn()
 
 
 class _FakeOC:

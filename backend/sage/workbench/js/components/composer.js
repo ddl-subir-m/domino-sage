@@ -118,7 +118,7 @@ window.SW = window.SW || {};
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
-      apps, activeApp, composerSeed,
+      apps, activeApp, composerSeed, queuedTurns,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -330,6 +330,38 @@ window.SW = window.SW || {};
     return h(
       'div',
       { className: 'sw-composer-inner' },
+
+      // Questions asked and not started yet (#79). Above the box rather than in the transcript, and
+      // deliberately: the transcript is the receipt, and a pending turn is an intention rather than
+      // a commitment — nothing of it has run, and Cancel drops it without touching what is running.
+      // Its own sentence comes from the server, so the queue explains itself in one voice wherever
+      // it is drawn.
+      queuedTurns.length > 0 &&
+        h(
+          'div',
+          { className: 'sw-composer-queued' },
+          queuedTurns.map((queued) =>
+            h(
+              'div',
+              { key: queued.ticket, className: 'sw-composer-queued-row' },
+              h(
+                'div',
+                { className: 'sw-composer-queued-text' },
+                h('div', { className: 'sw-composer-queued-prompt' }, queued.text),
+                h('div', { className: 'sw-caption' }, queued.message)
+              ),
+              h(
+                Button,
+                {
+                  size: 'small',
+                  type: 'text',
+                  onClick: () => SW.store.cancelQueuedTurn(queued.ticket).catch(sayFailed),
+                },
+                'Cancel'
+              )
+            )
+          )
+        ),
 
       h(
         'div',

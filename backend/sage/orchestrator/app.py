@@ -1928,19 +1928,38 @@ def members() -> JSONResponse:
 
 @control_app.post("/api/project/build/stop")
 def stop_build() -> JSONResponse:
-    """Stop the in-flight turn, whichever mode started it — one project runs one turn at a time.
-    A Build turn is interrupted, its file changes reverted and its turn dropped from history, as if
-    it never happened. A Chat turn is interrupted and keeps what it already wrote."""
+    """Stop the in-flight turn, whichever mode started it. A Build turn is interrupted, its file
+    changes reverted and its turn dropped from history, as if it never happened. A Chat turn is
+    interrupted and keeps what it already wrote.
+
+    Stop ends ONE turn and the queue behind it advances (#79): you stopped that answer, not your
+    other questions. Dropping a question you have changed your mind about is Cancel's job, below."""
     orchestrator.stop_build()
     return JSONResponse(content={"stopped": True})
 
 
 @control_app.get("/api/project/build/state")
 def build_state() -> JSONResponse:
-    """Whether a turn is running right now. Cheap enough to poll: it reads the turn lock and does
-    not attach the project. The UI calls this after its SSE stream drops, to tell "the connection
-    broke but the build is still going" from "the turn is over"."""
-    return JSONResponse(content={"running": orchestrator.turn_busy()})
+    """What the turn lock is doing right now. Cheap enough to poll: it reads the lock and does not
+    attach the project. The UI calls this after its SSE stream drops, to tell "the connection broke
+    but the build is still going" from "the turn is over".
+
+    Three fields, not one. `wedged` is a prerequisite for the queue rather than a nicety: a wedged
+    lock reads as "not running" here on purpose (#39), which was a fine answer while the next send
+    got an immediate refusal naming the restart, and is a spinner nobody can resolve once turns wait
+    in line instead (#79). `pending` is how many are waiting."""
+    return JSONResponse(content=orchestrator.turn_state())
+
+
+@control_app.post("/api/project/turn/cancel")
+def cancel_turn(body: dict) -> JSONResponse:
+    """Drop a turn that is still waiting in line (#79). Not Stop: what is running is untouched.
+
+    The ticket comes from the `pending` event the queued turn's own stream yielded. Nothing to
+    cancel is `{"cancelled": false}` and not an error — the turn it names may have started, or
+    finished, between the click and this call, and neither is a mistake anybody made."""
+    ticket = str((body or {}).get("ticket") or "")
+    return JSONResponse(content={"cancelled": orchestrator.cancel_pending_turn(ticket)})
 
 
 @control_app.post("/api/project/build")

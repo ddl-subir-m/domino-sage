@@ -17,6 +17,7 @@ import queue
 import re
 import tempfile
 import threading
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from pathlib import PurePosixPath as PurePosix
@@ -116,6 +117,7 @@ from ..workspace.threads import (
     ThreadStore,
     ensure_chat_workdir,
     new_artifact_paths,
+    new_id,
     revert_denied_writes,
     snapshot_files,
     title_from_prompt,
@@ -289,6 +291,147 @@ class TurnWedged(Exception):
     from the fix instead of from the bug — a wedged workspace someone can restart beats a corrupted
     working tree nobody can detect. The turn has already said so in its own stream before this is
     raised, so nothing above needs to report it a second time."""
+
+
+def turn_pending_message(ahead: int) -> str:
+    """The sentence a QUEUED turn answers with, beside the one a refused turn gets (#79).
+
+    Here rather than at the call site for the same reason `turn_busy_message` is: the hard part is
+    which of the three things happened to somebody's question — refused, queued, or dropped — and a
+    hand-written copy per entry point is another chance to get that wrong.
+
+    It has one job the busy sentence never had, which is to say a pending turn is an intention and
+    not a commitment. "Nothing has run yet" is that promise in the only terms that matter: no file
+    written, no model called, nothing to undo if they change their mind."""
+    turns = "the turn that is running" if ahead <= 1 else f"{ahead} turns"
+    return (f"Queued behind {turns}. Sage runs one turn at a time and will start this when they "
+            "finish. Nothing has run yet, so you can cancel it.")
+
+
+def turn_context_changed_message() -> str:
+    """Why a pending turn was dropped instead of run: what it was written against has moved (#79).
+
+    Both alternatives produce a turn that quietly did something other than what was on screen.
+    Running against the snapshot resurrects a chip the person deliberately removed; running against
+    live context makes the transcript bubble a lie about what the turn was given. So the turn does
+    not run and the text goes back where they typed it (ADR-0013)."""
+    return ("Your context changed since you asked this, so Sage did not run it. The text is back in "
+            "the composer — send it again to run it against what is there now.")
+
+
+class _TurnTicket:
+    """One turn's place in the queue, and what it was written against (#79).
+
+    `snapshot` is taken when the turn joins the queue and compared to the live context when it
+    reaches the front. A turn that never waited carries none: it was written against the context it
+    is about to run in, and reading it twice to prove that would cost every turn in the Project a
+    pair of file reads for a comparison that cannot fail."""
+
+    __slots__ = ("granted", "id", "outcome", "snapshot")
+
+    def __init__(self, ticket_id: str) -> None:
+        self.id = ticket_id
+        self.snapshot: dict = {}
+        self.outcome = ""       # "" while waiting, then "ready" | "cancelled" | "wedged"
+        self.granted = False    # the verdict the entry point reads: did this turn get to run?
+
+
+class _TurnQueue:
+    """FIFO admission to the turn lock, for the three streaming turn entry points (#79).
+
+    `threading.Lock` hands a freed lock to whichever waiter the OS picked, which was fine while the
+    only waiters were about to be refused and is wrong the moment turns wait in line. Drain order is
+    "in the order you asked", across the whole Project rather than round-robin per Conversation:
+    there are no tenants here, every pending turn was asked by the same person, and any other rule
+    reorders their own questions against each other for no benefit they can perceive (ADR-0013). So
+    a ticket goes on a deque when the turn is asked for, and only the head may take the lock.
+
+    The lock stays a plain `threading.Lock` and is NOT owned by this class, because most of what
+    takes it does not queue: publish, reset, create and delete app, the non-streaming build and the
+    coalesced Chat save all keep their immediate refusal, since a control that sat silently until a
+    long build finished would look like a control that did nothing (#89). This sits in front of the
+    lock for the callers that queue; it does not replace it.
+
+    Which is also why the wait has a poll interval rather than trusting a notify. A holder that
+    never learned about the queue — or a test holding the raw lock — releases it without waking
+    anybody, so the head ticket re-tests it on a short timer. Every release that goes through
+    `release()` wakes it at once, so the timer is the backstop and not the mechanism."""
+
+    def __init__(self, lock: threading.Lock, poll_s: float = 0.05) -> None:
+        self._lock = lock
+        self._poll_s = poll_s
+        self._cond = threading.Condition()
+        self._waiting: deque[_TurnTicket] = deque()
+
+    def admit(self, ticket: _TurnTicket) -> bool:
+        """Join the queue, taking the lock straight away if nothing else is asking for it."""
+        with self._cond:
+            self._waiting.append(ticket)
+            return self._take(ticket)
+
+    def _take(self, ticket: _TurnTicket) -> bool:
+        """Caller holds `_cond`. True once this ticket owns the turn lock."""
+        if self._waiting[0] is not ticket or not self._lock.acquire(blocking=False):
+            return False
+        self._waiting.popleft()
+        ticket.outcome = "ready"
+        return True
+
+    def wait(self, ticket: _TurnTicket) -> str:
+        """Block on the client's own connection until this ticket runs, is cancelled, or wedges."""
+        with self._cond:
+            while ticket.outcome == "":
+                if self._take(ticket):
+                    break
+                self._cond.wait(self._poll_s)
+            return ticket.outcome
+
+    def cancel(self, ticket_id: str) -> bool:
+        """Drop one pending turn. Cancel is not Stop: what is running is not touched (ADR-0013)."""
+        with self._cond:
+            for ticket in self._waiting:
+                if ticket.id != ticket_id:
+                    continue
+                ticket.outcome = "cancelled"
+                self._waiting.remove(ticket)
+                self._cond.notify_all()
+                return True
+        return False
+
+    def fail_pending(self) -> int:
+        """Fail every waiting turn at once, for a lock that is never coming back (#39).
+
+        A wedge is the one exit that keeps the lock for the life of the process, so the turns behind
+        it are waiting on a release that will not happen. Left alone they are held connections and a
+        spinner; failed, each one says what happened and names the restart."""
+        with self._cond:
+            failed = len(self._waiting)
+            for ticket in self._waiting:
+                ticket.outcome = "wedged"
+            self._waiting.clear()
+            self._cond.notify_all()
+            return failed
+
+    def release(self) -> None:
+        """Hand the turn lock back and wake whoever is next in line."""
+        with self._cond:
+            self._lock.release()
+            self._cond.notify_all()
+
+    def ahead_of(self, ticket: _TurnTicket) -> int:
+        """How many turns have to finish before this one starts, for the sentence it answers with.
+
+        The turn holding the lock is one of them and is not on the deque, so the head ticket is
+        behind one turn rather than none."""
+        with self._cond:
+            try:
+                return self._waiting.index(ticket) + 1
+            except ValueError:
+                return 1
+
+    def depth(self) -> int:
+        with self._cond:
+            return len(self._waiting)
 
 
 class AttachTooLarge(Exception):
@@ -2105,13 +2248,16 @@ class Orchestrator:
         # per-project state (read_only_turn, mode) and mutates one working tree; a second overlapping
         # turn would clear the first turn's read-only gate mid-flight (making the gated planner write
         # code, which then self-destructs as a "gate violation") and interleave edits on one tree.
-        # The UI refuses a composer send behind a live turn rather than queueing it (`store.js`,
-        # `state.buildRunning`) — there is no queue, and ADR-0013 is where one would come from. That
-        # refusal is also client-side, and uploads, an approve, or a second client can still overlap,
-        # so this is the backend backstop. Non-blocking: a would-be
-        # overlap is refused with a clear event, not silently run. Stop stays lock-free (it only sets
-        # stop_requested, which the running turn polls) so it can always interrupt the held turn.
+        # Turns still run ONE AT A TIME under the queue below (#79): what changed is what happens to
+        # the second one, not how many run. A streaming turn waits its turn; everything else is
+        # refused on the spot, because a control with no composer behind it that sat silently until
+        # a long build finished would look like a control that did nothing (#89). Stop stays
+        # lock-free (it only sets stop_requested, which the running turn polls) so it can always
+        # interrupt the held turn.
         self._turn_lock = threading.Lock()
+        # The order the streaming turns take that lock in. Only build_stream, chat_stream and
+        # approve_stream go through it — see _TurnQueue for why the lock stays a plain Lock.
+        self._turns = _TurnQueue(self._turn_lock)
         # Set when a turn was given up on and its OpenCode session would not confirm it stopped
         # (#39). The lock above is then deliberately never released, so every later turn is refused
         # rather than run over a session that may still be writing. Nothing clears this: restarting
@@ -2148,12 +2294,46 @@ class Orchestrator:
     def turn_busy(self) -> bool:
         """True while a build/approve turn holds the turn lock. The UI polls this to tell a dropped
         SSE connection (turn still running, keep showing Stop) from a finished turn — without it, a
-        network blip makes the composer look idle and the next send hits _busy_refusal."""
+        network blip makes the composer look idle and the next send offers Stop for nothing."""
         # A wedged workspace holds the lock for good (#39) and has no turn in it. Reading that as
         # "running" would leave the header spinning on a build nobody can stop and the composer
         # disabled against it — the exact screen this fixes, put back by the fix. It is refused at
         # the lock either way; what changes is that the refusal can be reached and reads true.
         return self._turn_lock.locked() and not self._turn_wedged
+
+    def turn_state(self) -> dict:
+        """What the turn lock is doing, for the one route the UI polls (#79).
+
+        `running` on its own was enough while a refusal was immediate: a client that saw "not
+        running" and could not see why still got a sentence the moment it sent anything. A queue
+        turns that blind spot into a spinner nobody can resolve — the pending turns behind a wedged
+        lock are waiting on a release that is never coming (#39) — so the wedge is reported here
+        rather than inferred from a refusal that no longer arrives.
+
+        `pending` is how many turns are waiting in line. Without it the composer's own queued rows
+        are the only account of the queue, and a second tab's are invisible."""
+        return {"running": self.turn_busy(), "wedged": self._turn_wedged,
+                "pending": self._turns.depth()}
+
+    def cancel_pending_turn(self, ticket_id: str) -> bool:
+        """Drop a turn that is still waiting in line. False when there is no such turn (#79).
+
+        A separate control from Stop, because they answer different questions. Stop is "I have seen
+        enough of this answer"; Cancel is "I have changed my mind about asking". Pressing one where
+        the other was meant is the mistake worth making impossible: a Stop that also emptied the
+        queue would throw away questions somebody still wants answered, and a Cancel that
+        interrupted the running turn would throw away work in progress."""
+        return self._turns.cancel(ticket_id)
+
+    def _release_turn(self) -> None:
+        """Hand the turn lock back, waking whatever queued behind it (#79).
+
+        Every release goes through here rather than through the lock directly, including the ones no
+        queued turn is waiting on. The queue polls as a backstop, so a missed wake-up costs latency
+        rather than correctness — but the sites that hold the lock longest are exactly the ones a
+        queue waits behind, and half of them are not the streaming turns (publish, reset, the Chat
+        save), so picking which ones to wake would be a rule to maintain and this is not."""
+        self._turns.release()
 
     def read_plan_pin(self) -> dict:
         """The plan this app is being built from, for the rail's plan pin. `{}` when there is none.
@@ -2519,7 +2699,7 @@ class Orchestrator:
                 born = self._wm.create_app(self._project_id)
                 self._bind_app(project, born)
         finally:
-            self._turn_lock.release()
+            self._release_turn()
         return self._one_app(born.app_id)
 
     def select_app(self, app_id: str) -> dict:
@@ -2619,7 +2799,7 @@ class Orchestrator:
                 if project.workspace.app_id == app_id:
                     self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
         finally:
-            self._turn_lock.release()
+            self._release_turn()
         return {
             "ok": True,
             "id": app_id,
@@ -2953,7 +3133,7 @@ class Orchestrator:
             return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
         finally:
             self._clear_turn_baseline()
-            self._turn_lock.release()
+            self._release_turn()
 
     def _descriptor(self, project: Project, entry: dict) -> dict:
         """Typed shape summary (kind/summary/detail/size) for one attachment, cached in the manifest.
@@ -3140,9 +3320,11 @@ class Orchestrator:
                      skip_reset_gate: bool = False, skip_incoming_gate: bool = False):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
-        One turn at a time. If a turn is already streaming, refuse rather than run a second one
-        concurrently (see _turn_lock) — overlapping turns corrupt the shared read-only gate and
-        working tree. The refusal is a clean error + done(busy) so the UI surfaces it, not a hang.
+        One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
+        running concurrently (see _TurnQueue) — overlapping turns corrupt the shared read-only gate
+        and working tree, and nothing here changes that. What changed is that the second turn is
+        accepted and pending instead of refused (#79): the wait is held on this request's own
+        connection, and everything below it runs exactly as it did when it won the lock outright.
 
         A bare approval typed while a plan is waiting ("ok build") means the same thing as clicking
         Approve, so it runs THAT plan instead of falling into the gate and proposing a second one.
@@ -3152,8 +3334,11 @@ class Orchestrator:
         _asks_to_reset again and re-offer the same thing, forever. `skip_incoming_gate` says the same
         of the incoming-changes offer (see _incoming_offer), and both of its buttons set it: pulling
         answers that offer as much as building past it does."""
-        if not self._turn_lock.acquire(blocking=False):
-            yield from self._busy_refusal()
+        # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
+        # pending one is a context change like any other (see _turn_snapshot).
+        ticket = _TurnTicket(new_id("turn"))
+        yield from self._acquire_turn(ticket, conversation=conversation, prompt=prompt, app=True)
+        if not ticket.granted:
             return
         try:
             self._turn_gave_up = False
@@ -3220,7 +3405,7 @@ class Orchestrator:
                 self._recheck_app_data()
                 self._record_resource_usage()
                 self._clear_turn_baseline()
-                self._turn_lock.release()
+                self._release_turn()
 
     def create_thread(self) -> dict:
         """A new Chat Thread in this project. Does not provision a Domino project."""
@@ -3436,8 +3621,12 @@ class Orchestrator:
 
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread."""
-        if not self._turn_lock.acquire(blocking=False):
-            yield from self._busy_refusal()
+        # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
+        # Thread's own `examples/`, so which Built App the rail points at is not something this turn
+        # was written against.
+        ticket = _TurnTicket(new_id("turn"))
+        yield from self._acquire_turn(ticket, conversation=thread_id, prompt=prompt, app=False)
+        if not ticket.granted:
             return
         # The lock goes at `done`, not at the end of this generator. What comes after `done` is
         # aftercare — classify the turn for a Build offer, compact the session, commit and push —
@@ -3458,13 +3647,13 @@ class Orchestrator:
                     # `done` still frees it here. Baseline first: it means "no turn running", and a
                     # turn that started after the release would have set its own for us to wipe.
                     self._clear_turn_baseline()
-                    self._turn_lock.release()
+                    self._release_turn()
                     holding = False
                 yield ev
         finally:
             if holding:
                 self._clear_turn_baseline()
-                self._turn_lock.release()
+                self._release_turn()
 
     def flush_chat_save(self) -> dict | None:
         """Push dirty Chat files now (leaving Chat, switching Thread). No-op if nothing is dirty."""
@@ -3516,7 +3705,7 @@ class Orchestrator:
         try:
             return self._chat_save_now(reason)
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def _chat_save_now(self, reason: str) -> dict | None:
         """The save itself. The caller owns the turn lock; this decides what to do with the result."""
@@ -3599,7 +3788,7 @@ class Orchestrator:
         try:
             return self._draft_handoff_plan(thread_id)
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def confirm_handoff(self, thread_id: str, include: dict | None = None,
                         target: dict | None = None) -> dict:
@@ -3619,7 +3808,7 @@ class Orchestrator:
             with self._app_lock:
                 return self._confirm_handoff(thread_id, include or {}, target or {})
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def recross_handoff(self, thread_id: str, include: dict | None = None,
                         plan_id: str = "") -> dict:
@@ -3645,7 +3834,7 @@ class Orchestrator:
             with self._app_lock:
                 return self._recross_handoff(thread_id, include or {}, plan_id)
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def _recross_handoff(self, thread_id: str, include: dict, plan_id: str) -> dict:
         chat = self._chat_project()
@@ -4525,7 +4714,7 @@ class Orchestrator:
         except Exception:
             log.exception("chat compact failed; leaving the OpenCode session as-is")
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def _recheck_app_data(self) -> None:
         """Re-derive what the agent is told about the app's data, now that the turn is over (#15).
@@ -4625,7 +4814,7 @@ class Orchestrator:
                 self._refresh_history_archive(project)
                 return {"ok": True, "status": project.status()}
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def _restore_attachments(self) -> None:
         """Put back any attachment the turn just deleted (#37).
@@ -4800,22 +4989,99 @@ class Orchestrator:
             if ev["type"] != "user":
                 yield ev
 
-    def _busy_refusal(self):
-        """Events yielded when a turn is refused because another is already streaming.
+    def _wedged_refusal(self):
+        """Events yielded when a streaming turn cannot run because the workspace is wedged (#39).
 
-        A wedged workspace gets its own sentence (#39). It is refused by the same held lock, but
-        "wait for it to finish or stop it first" is true and useless there — there is nothing left
-        to wait for and nothing left to stop, and the only thing that clears it is a restart."""
+        The only refusal a streaming turn still has. "A build is already running — wait for it or
+        stop it first" used to be the other one, and a queue is what retired it: a turn behind a
+        turn now waits instead of being told to come back (#79). A turn behind a WEDGE cannot,
+        because the lock it would wait on is held for the life of the process, and there is nothing
+        left to wait for and nothing left to stop. The restart is the whole answer.
+
+        No `busy` flag, because the UI drops every event carrying one and substitutes its own line
+        about a build still running — true of the lock, and the one thing that is useless here."""
+        yield {"type": "error", "message": turn_busy_message(wedged=True)}
+        yield {"type": "done", "ok": False, "decision": "wedged"}
+
+    def _turn_snapshot(self, conversation: str | None, *, app: bool) -> dict:
+        """What a pending turn was written against, to be compared with the live context when it
+        reaches the front of the queue (#79).
+
+        Two things move under a waiting turn and each makes its answer a lie in its own way. The
+        chips are the Conversation's context: read server-side when the turn RUNS
+        (`read_context`), echoed into the transcript bubble client-side when it was SENT. Queue
+        those apart and the bubble describes a turn that was given something else. The Built App is
+        the rail, which a person is free to move while a turn streams (#77) — a build that resolved
+        its target on the way out of the queue would land in whatever app the rail had drifted to,
+        which is the failure #77 fixed for a running turn arriving through the queue instead.
+
+        Best-effort, and deliberately so. A snapshot that could not be read compares equal to the
+        next one that could not be read either, which lands on the old behaviour — the turn runs —
+        rather than on a refusal nobody can act on."""
+        snapshot: dict = {}
+        try:
+            if conversation:
+                store = ThreadStore(self._chat_project().record.path)
+                snapshot["context"] = [str(item.get("id") or "")
+                                       for item in store.read_context(conversation).get("items") or []]
+            if app:
+                # Not `_ensure_seeded`: a turn waiting in line must not mint the app it is waiting
+                # to build. An unseeded Project answers "" here and again at the front of the queue,
+                # which compares equal and lets the turn seed it the way it always did.
+                snapshot["app"] = self.project(start_preview=False, seed_app=False).workspace.app_id
+        except Exception:
+            log.exception("turn queue: could not read the context this turn was written against")
+        return snapshot
+
+    def _acquire_turn(self, ticket: _TurnTicket, *, conversation: str | None, prompt: str,
+                      app: bool):
+        """Take the turn lock for a streaming turn, waiting in line rather than refusing (#79).
+
+        Yields what the wait owes the client — a `pending` row the moment the turn joins the queue,
+        and the refusal if it never gets to run — and sets `ticket.granted`, which is the verdict
+        the entry point reads. The wait is held on the client's own connection: a turn IS its HTTP
+        request here, so a queued turn that nobody was connected to would have nowhere to stream.
+
+        A wedged workspace is refused at the door instead of queued. The lock is held for good
+        there (#39), so a queue behind it is a spinner that never resolves."""
         if self._turn_wedged:
-            # No `busy` flag, unlike the refusal below: the UI drops every event carrying one and
-            # answers with "Another build is still running" — true of the lock, and the one thing
-            # that is useless here. This sentence is the whole point of the refusal, so it goes
-            # through the ordinary error path where it is actually read.
-            yield {"type": "error", "message": turn_busy_message(wedged=True)}
-            yield {"type": "done", "ok": False, "decision": "wedged"}
+            yield from self._wedged_refusal()
             return
-        yield {"type": "error", "busy": True, "message": turn_busy_message(wedged=False)}
-        yield {"type": "done", "ok": False, "decision": "busy"}
+        if self._turns.admit(ticket):
+            ticket.granted = True
+            return
+        ticket.snapshot = self._turn_snapshot(conversation, app=app)
+        try:
+            yield {"type": "pending", "ticket": ticket.id, "prompt": prompt,
+                   "message": turn_pending_message(self._turns.ahead_of(ticket))}
+            outcome = self._turns.wait(ticket)
+            if outcome == "cancelled":
+                yield {"type": "done", "ok": False, "decision": "cancelled"}
+                return
+            if outcome == "wedged":
+                yield from self._wedged_refusal()
+                return
+            if self._turn_snapshot(conversation, app=app) != ticket.snapshot:
+                # Hand the lock straight back: this turn is not running, and the next one in line has
+                # been waiting for it. The prompt rides along so the composer can put the text back
+                # rather than making somebody retype what they already typed.
+                self._release_turn()
+                # `contextChanged` is a machine-readable marker, the way the old busy refusal carried
+                # one: this refusal belongs in the composer beside the text it hands back, not in the
+                # transcript as something Sage answered, and the UI should not have to match on prose
+                # to tell the difference.
+                yield {"type": "error", "contextChanged": True, "prompt": prompt,
+                       "message": turn_context_changed_message()}
+                yield {"type": "done", "ok": False, "decision": "context changed"}
+                return
+            ticket.granted = True
+        finally:
+            # A generator abandoned at one of those yields — a client that hung up, a caller that
+            # stopped reading — is a place in the queue nobody is standing in. Left on the deque it
+            # would sit at the head for ever and every turn behind it would wait on it. A no-op on
+            # every path that reached the front of the queue under its own steam.
+            if not ticket.granted:
+                self._turns.cancel(ticket.id)
 
     def _stop_wedged_session(self, client, sid: str) -> bool:
         """Ask a wedged session to stop, and report whether it confirmed that it did (#39).
@@ -5592,6 +5858,13 @@ class Orchestrator:
                         # stays held and this workspace takes no more turns until it is restarted.
                         # Saying that is the whole of what is left to do for the person.
                         self._turn_wedged = True
+                        # Everything queued behind this turn is waiting on a release that is never
+                        # coming, so fail it here rather than leave held connections and spinners
+                        # (#79). Loudly: each one answers with the restart sentence of its own.
+                        failed = self._turns.fail_pending()
+                        if failed:
+                            log.error("turn wedged: failed %d pending turn(s) — restart to clear",
+                                      failed)
                         # The same persisted card the clean give-up leaves, not an `error` frame:
                         # `error` is not in _PERSISTED_EVENTS, and this is the one outcome
                         # guaranteed to outlive the tab — it ends in a restart. No prompt rides
@@ -5923,9 +6196,13 @@ class Orchestrator:
         has history, so it's never re-gated regardless."""
         # Serialize like build_stream: approving while a turn already streams would overlap two turns
         # on one working tree and read-only gate. We hold the lock across the whole approve (plan
-        # write + mode swap + build) and call _build_stream directly so it doesn't re-acquire.
-        if not self._turn_lock.acquire(blocking=False):
-            yield from self._busy_refusal()
+        # write + mode swap + build) and call _build_stream directly so it doesn't re-acquire — and
+        # an approve asked for mid-turn queues behind it (#79) rather than being refused, because an
+        # approve IS a build turn and a Workbench that queued one and refused the other is a rule
+        # people would have to learn instead of guess.
+        ticket = _TurnTicket(new_id("turn"))
+        yield from self._acquire_turn(ticket, conversation=conversation, prompt="", app=True)
+        if not ticket.granted:
             return
         try:
             self._turn_gave_up = False
@@ -5951,7 +6228,7 @@ class Orchestrator:
                 self._recheck_app_data()
                 self._record_resource_usage()
                 self._clear_turn_baseline()
-                self._turn_lock.release()
+                self._release_turn()
 
     def _approve_locked(self, answers: str = "", plan_edits: str | None = None,
                         user_text: str | None = None, plan_id: str = ""):
@@ -6379,7 +6656,7 @@ class Orchestrator:
             log.exception("sync failed")
             return {"status": "error", "conflicts": [], "pushed": False, "detail": f"{type(e).__name__}: {e}"}
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def publish(self, *, new_app: bool = False) -> dict:
         """Publish (or republish) THIS app's project as a live Domino App, deploying the latest
@@ -6530,7 +6807,7 @@ class Orchestrator:
             out["manage_url"] = cp.app_manage_url(app.id, project_name)
             return out
         finally:
-            self._turn_lock.release()
+            self._release_turn()
 
     def publish_check(self) -> dict:
         """What the published app is going to refuse to answer, asked BEFORE it is published (#26).

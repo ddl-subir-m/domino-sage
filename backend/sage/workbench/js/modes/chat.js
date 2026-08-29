@@ -24,6 +24,9 @@ window.SW = window.SW || {};
   // screen to press. One project runs one turn, so this is also what a turn started in another
   // conversation looks like from here — say which, because "wait" and "wait, over there" send
   // someone to different places.
+  //
+  // It no longer means "you cannot ask anything else": a second question queues (#79), and the
+  // composer below stays open. What it still means is that there is one turn to Stop.
   function TurnBar() {
     const { chatRunning, chatTurnThread, thread } = SW.store.get();
     if (!chatRunning) return null;
@@ -48,7 +51,7 @@ window.SW = window.SW || {};
   }
 
   function Landing({ onSend, compact }) {
-    const { starters, me, scope, chatRunning } = SW.store.get();
+    const { starters, me, scope, turnWedged } = SW.store.get();
     const catalogue = (starters && starters.chat) || {};
     // Acme is a financial services firm; show its prompts alongside the
     // ones that make sense anywhere.
@@ -76,7 +79,7 @@ window.SW = window.SW || {};
           'div',
           { className: 'sw-landing-composer' },
           h(TurnBar, null),
-          h(SW.Composer, { onSend, autoFocus: true, placeholder, disabled: chatRunning })
+          h(SW.Composer, { onSend, autoFocus: true, placeholder, disabled: turnWedged })
         ),
         h(
           'div',
@@ -87,7 +90,7 @@ window.SW = window.SW || {};
               {
                 key: prompt.title,
                 className: 'sw-starter',
-                disabled: chatRunning,
+                disabled: turnWedged,
                 onClick: () => onSend(prompt.prompt),
               },
               h('span', { className: 'sw-starter-text' }, prompt.title),
@@ -101,7 +104,7 @@ window.SW = window.SW || {};
 
   SW.ChatMode = function ChatMode({ threadId }) {
     const { thread, messages, typing, pendingTurn, scope, activePlanId, planViewerId,
-            chatRunning } = SW.store.get();
+            turnWedged } = SW.store.get();
     const scroller = useRef(null);
 
     useEffect(() => {
@@ -217,7 +220,7 @@ window.SW = window.SW || {};
                   h(SW.Composer, {
                     onSend: send,
                     placeholder: 'Ask about your data… use @ to bring in a resource',
-                    disabled: chatRunning,
+                    disabled: turnWedged,
                   })
                 )
               )
