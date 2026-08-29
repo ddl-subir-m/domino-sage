@@ -512,6 +512,44 @@ window.SW = window.SW || {};
     );
   }
 
+  // A build that stopped saying anything and was given up on (#39). The same card shape as the two
+  // offers below it, because it is the same kind of moment: something needs a decision, and the
+  // person is the only one who can make it. The message carries what happened and what was kept —
+  // the files are still there — so all this adds is the way to ask again. A turn with nothing of
+  // the person's to replay (an approve, a phase) arrives with no prompt and is the message alone.
+  function BuildStalled({ block }) {
+    const [busy, setBusy] = useState(false);
+    const retry = () => {
+      setBusy(true);
+      Promise.resolve(SW.store.retryStalledBuild(block.prompt))
+        .catch((err) => antd.message.error(String(err.message || err)))
+        .finally(() => setBusy(false));
+    };
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.prompt
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Button, {
+                type: 'primary',
+                size: 'small',
+                loading: busy,
+                disabled: busy,
+                onClick: retry,
+              }, 'Try again')
+            )
+          : null
+      )
+    );
+  }
+
   // The turn asked to start over (#36). The gate stops before any inference and hands the decision
   // back, so this card is the decision: it says what a reset does and does not take, and gives the
   // one-click way to do it. "Reset and build this" exists because "clear everything and build X from
@@ -820,6 +858,8 @@ window.SW = window.SW || {};
         return h(ResetOffer, { block });
       case 'incoming_changes':
         return h(IncomingChanges, { block });
+      case 'build_stalled':
+        return h(BuildStalled, { block });
       case 'plan_suggestion':
         return h(PlanSuggestion, { block });
       case 'graduation_nudge':
