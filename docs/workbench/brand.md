@@ -16,7 +16,8 @@ Shipped in v1 (`40ecb14`): the pack loader and its fallbacks, `GET /api/brand`, 
 strings through `SW.brand.*`, and `apply_voice()` / `apply_agent_voice()`.
 
 Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`;
-`platformName`; `nouns`; and `faviconUrl` with the `/brand` image mount.
+`platformName`; `nouns`; `faviconUrl` with the `/brand` image mount; and the lint over marked
+positions.
 
 Everything else below is designed and unbuilt. Sections carry the marker.
 
@@ -119,8 +120,8 @@ Domino's own whitelabel renames its nouns, and nothing exposes that vocabulary t
 so the pack carries a copy. **This will drift.** It is accepted only until an API exists.
 
 **Built:** the map, both forms through `brand.text()` / `SW.brand.text()`, the Title Case warning,
-and `nouns` on `GET /api/brand`. **Not built:** the lint below, and rendering a passed-through
-platform error as a quotation.
+`nouns` on `GET /api/brand`, the lint below, and rendering a passed-through platform error as a
+quotation.
 
 The default keys are `dataset`, `dataSource`, `modelApi`, `llmAlias`, `builtApp` and `gallery`. A
 key the pack invents is ignored — a token Sage never emits is not a rename. A key set to only one
@@ -181,18 +182,22 @@ The repo is a surface — the partner's own customer can read it.
 - **Commit prefix is `build: `.** Nothing parses it. `seed.py:63` → `"Initial commit"`.
 - **Built App chrome stays out.** That is the user's product.
 
-## Proof — not built
+## Proof — partly built
 
 Two tests, different jobs, both block CI. A grep over the source is not one of them — it breaks the
 moment somebody writes a code comment.
 
-- **Lint over marked positions.** `detail=` on `HTTPException`, the Python substitution helper,
-  `SW.brand.*` in JS. No bare `Sage` / `Domino` / `ML Studio` / unmapped noun in a string literal at
-  one of those positions. Comments are invisible to it.
-- **Paranoid pack.** Boot with `ZZQQ-PRODUCT` / `ZZQQ-PLATFORM` sentinels and assert nothing leaks
-  across a **checked-in coverage list**: `GET /api/brand`, both templated entry pages, the shell's
-  rendered DOM, `HTTPException` details, the generated `AGENTS.md`, the OpenCode system prompt, the
-  commit message. Adding a surface without listing it is itself the failure.
+- **Lint over marked positions — built.** `sage/tools/brand_lint.py`, run in CI by
+  `tests/test_the_lint_over_marked_positions.py` and by hand as `python -m sage.tools.brand_lint`.
+  `detail=` on `HTTPException`, the Python substitution helper, `SW.brand.*` in JS. No bare `Sage` /
+  `Domino` / `ML Studio` / unmapped noun in a string literal at one of those positions. Comments are
+  invisible to it. The forbidden words are read out of `brand.DEFAULT`, and which `CONTEXT.md` terms
+  owe a noun key is computed from the tokens the marked positions write — neither is a list anybody
+  maintains. A new marked position goes into the lint, never into an exclusion list.
+- **Paranoid pack — not built.** Boot with `ZZQQ-PRODUCT` / `ZZQQ-PLATFORM` sentinels and assert
+  nothing leaks across a **checked-in coverage list**: `GET /api/brand`, both templated entry
+  pages, the shell's rendered DOM, `HTTPException` details, the generated `AGENTS.md`, the OpenCode
+  system prompt, the commit message. Adding a surface without listing it is itself the failure.
 
 ## Attribution
 
