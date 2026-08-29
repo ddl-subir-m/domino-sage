@@ -3146,14 +3146,43 @@ window.SW = window.SW || {};
   // surfaces that draw it differently.
   SW.buildRuns = buildRunMessages;
 
+  // The Workbench half of orchestrator/brand.py's `text()`. Substitution is author-time
+  // (ADR-0014): a user-visible string is a template resolved when it is read, so a new string is
+  // branded because whoever wrote it wrote it that way. Never a filter over what the server sent —
+  // by then provenance is gone, and a filter cannot tell our word for the platform from a Resource
+  // a user named after the company.
+  //
+  // The shell paints before /api/brand answers, so every token has a Domino default here too.
+  const BRAND_FALLBACK = {
+    productName: 'AI Workbench',
+    assistantName: 'Sage',
+  };
+  const BRAND_TOKEN = /\{([A-Za-z][A-Za-z0-9]*)\}/g;
+
+  function brandTokens() {
+    const pack = store.get().brand || {};
+    const table = Object.assign({}, BRAND_FALLBACK);
+    for (const [key, value] of Object.entries(pack)) {
+      if (typeof value === 'string' && value) table[key] = value;
+    }
+    return table;
+  }
+
   SW.brand = {
     assistant() {
-      const brand = store.get().brand || {};
-      return brand.assistantName || 'Sage';
+      return brandTokens().assistantName;
     },
     product() {
-      const brand = store.get().brand || {};
-      return brand.productName || 'AI Workbench';
+      return brandTokens().productName;
+    },
+    // An unknown token is left as it was written rather than throwing: a typo in a string must
+    // never stop the Workbench booting.
+    text(template) {
+      if (!template || template.indexOf('{') < 0) return template;
+      const table = brandTokens();
+      return String(template).replace(BRAND_TOKEN, (raw, key) =>
+        Object.prototype.hasOwnProperty.call(table, key) ? table[key] : raw
+      );
     },
   };
 })();

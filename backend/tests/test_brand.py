@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from sage.orchestrator.brand import DEFAULT, apply_agent_voice, apply_voice, load
+from sage.orchestrator.brand import DEFAULT, apply_agent_voice, apply_voice, load, text
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
@@ -184,3 +187,84 @@ def test_install_opencode_config_voices_the_global_copy_only(tmp_path, monkeypat
     assert global_cfg["agent"]["sage-chat"]["prompt"] == "You are Acme's chat agent."
     assert global_cfg["provider"]["sage-gateway"]["name"] == "Sage Enforcement Shim"
     assert ":9999" in global_cfg["provider"]["sage-gateway"]["options"]["baseURL"]
+
+
+# --- The author-time substitution helper (#102) ---------------------------------------------
+#
+# Every user-visible string is a template resolved when it is read, so a new string is branded
+# because whoever wrote it wrote it that way (ADR-0014). These tests pin the helper's contract;
+# no call site changes in this ticket.
+
+
+def test_a_token_resolves_to_the_packs_value(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("Ask {assistantName} in {productName}.") == "Ask Ada in Acme."
+
+
+def test_a_token_resolves_to_the_domino_default_with_no_pack():
+    assert text("Ask {assistantName} in {productName}.") == "Ask Sage in AI Workbench."
+
+
+def test_an_unknown_token_is_left_alone():
+    """A typo in a string must never stop the Workbench booting, and a passed-through error body
+    can carry braces of its own."""
+    assert text("{notABrandKey} said {\"ok\": 1}") == "{notABrandKey} said {\"ok\": 1}"
+
+
+def test_a_string_without_a_token_comes_back_unchanged():
+    assert text("Nothing to substitute here.") == "Nothing to substitute here."
+
+
+def test_values_fill_the_rest_of_the_sentence(tmp_path, monkeypatch):
+    """The whole sentence stays one literal, so the lint over marked positions can read it."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"productName": "Acme"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("{productName} answered {code}.", code=500) == "Acme answered 500."
+
+
+def test_a_value_carrying_braces_is_not_resolved_again():
+    """A Resource the user named after us arrives as a value, not as a template."""
+    assert text("Missing {name}.", name="{productName}") == "Missing {productName}."
+
+
+# --- The Workbench half of the same helper (#102) --------------------------------------------
+
+
+def _brand_js(calls: list[dict], pack: dict | None = None) -> list:
+    """Run SW.brand against a pack the way /api/brand delivers one."""
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH (it is in the Sage image)")
+    harness = Path(__file__).resolve().parent / "js" / "brand_harness.mjs"
+    out = subprocess.run(
+        ["node", str(harness)],
+        input=json.dumps({"pack": pack, "calls": calls}),
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_the_workbench_resolves_the_same_tokens_from_the_pack():
+    """The accessor reads the pack GET /api/brand already returns, so both halves of the wire
+    answer with one word."""
+    answers = _brand_js(
+        [{"op": "text", "template": "Ask {assistantName} in {productName}."}],
+        pack={"productName": "Acme", "assistantName": "Ada"},
+    )
+    assert answers == ["Ask Ada in Acme."]
+
+
+def test_the_workbench_falls_back_before_the_pack_arrives():
+    """The shell paints before /api/brand answers. What it paints has to be the Domino default,
+    not an unresolved token."""
+    answers = _brand_js([{"op": "text", "template": "Ask {assistantName} in {productName}."}])
+    assert answers == ["Ask Sage in AI Workbench."]
+
+
+def test_the_workbench_leaves_an_unknown_token_alone():
+    answers = _brand_js([{"op": "text", "template": "{notABrandKey} stays."}],
+                        pack={"productName": "Acme"})
+    assert answers == ["{notABrandKey} stays."]

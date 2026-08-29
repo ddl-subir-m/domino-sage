@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 _BAKED = Path("/opt/sage/brand.json")
+_TOKEN = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
 _HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 
 DEFAULT: dict[str, Any] = {
@@ -38,6 +39,27 @@ def load() -> dict[str, Any]:
     return pack
 
 
+def text(template: str, **values: object) -> str:
+    """Resolve the brand tokens in a user-visible string, where the string is written.
+
+    Substitution is author-time (ADR-0014): a new string is branded because whoever wrote it wrote
+    it that way. A filter over outgoing bytes was rejected — by then provenance is gone, so it
+    cannot tell our word for the platform from a Resource a user named after the company.
+
+    `{productName}` and friends come from the pack. `values` fill the rest of the sentence, so the
+    whole sentence stays one literal that the lint over marked positions can read. A substituted
+    value is not scanned again, so a Resource name carrying braces passes through untouched.
+
+    An unknown token is left as it was written rather than raising: a typo in a string must never
+    stop the Workbench booting, and a passed-through platform error can carry braces of its own.
+    """
+    if not template or "{" not in template:
+        return template
+    table = _tokens(load())
+    table.update({key: str(value) for key, value in values.items()})
+    return _TOKEN.sub(lambda m: table.get(m.group(1), m.group(0)), template)
+
+
 def apply_voice(text: str, assistant_name: str | None = None) -> str:
     """Swap the default speaker name in a prompt or AGENTS.md body."""
     name = (assistant_name if assistant_name is not None else load()["assistantName"]).strip()
@@ -56,6 +78,11 @@ def apply_agent_voice(cfg: dict, assistant_name: str | None = None) -> dict:
         if isinstance(spec, dict) and isinstance(spec.get("prompt"), str):
             spec["prompt"] = apply_voice(spec["prompt"], name)
     return cfg
+
+
+def _tokens(pack: dict[str, Any]) -> dict[str, str]:
+    """The pack flattened to the token names a string may use."""
+    return {key: value for key, value in pack.items() if isinstance(value, str)}
 
 
 def _read(path: Path) -> dict | None:

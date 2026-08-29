@@ -15,6 +15,8 @@ Shipped in v1 (`40ecb14`): the pack loader and its fallbacks, `GET /api/brand`, 
 `assistantName`, `pageTitle`, `logoUrl`, `logoAlt`, `colors`, the antd theme, about fourteen UI
 strings through `SW.brand.*`, and `apply_voice()` / `apply_agent_voice()`.
 
+Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`.
+
 Everything else below is designed and unbuilt. Sections carry the marker.
 
 ## Locked
@@ -27,6 +29,28 @@ Everything else below is designed and unbuilt. Sections carry the marker.
   this” = `Sage`. Page title = `Sage Workspace`. Platform = `Domino`.
 - **Substitution is author-time.** Every user-visible string is a template resolved when read. Never
   a filter over outgoing responses — a filter cannot tell our word from a Resource the user named.
+
+## Substitution helper — built
+
+`sage.orchestrator.brand.text()` on the backend and `SW.brand.text()` in the Workbench. Both resolve
+`{token}` against the resolved pack at the moment the string is read.
+
+```python
+brand.text("Ask {assistantName} in {productName}.")
+brand.text("{productName} answered {code}.", code=r.status_code)
+```
+
+```js
+SW.brand.text('Ask {assistantName} in {productName}.');
+```
+
+- A token is a pack key. Keyword values fill the rest of the sentence, so the whole sentence stays
+  one literal the lint can read. A substituted value is **not scanned again**, so a Resource name
+  carrying braces passes through untouched.
+- An **unknown token is left as written**, never raised. A typo must not stop the Workbench booting,
+  and a passed-through platform error can carry braces of its own.
+- Nothing is migrated by the helper existing. The roughly 137 strings that still name Sage or Domino
+  move in their own batches.
 
 ## Pack — partly built
 
