@@ -174,8 +174,10 @@ def test_one_other_app_is_singular():
 
 @needs_node
 def test_picking_an_app_writes_the_route_and_never_the_store():
-    """The one-writer rule (#78, and the reason the rail's rows worked this way). Build re-asserts
-    whatever `?app=` names, so a click that only told the store would be undone by the next render.
+    """The one-writer rule (#78, and the reason the rail's rows worked this way). The route says
+    which app and the store follows it, so a click that only told the store would be a second
+    writer — and since #100 the URL rewrite that keeps the address bar honest would then be
+    covering for the picker rather than for the server.
     `activeApp` also has a second reader: the transcript's app card computes `showing` from it
     (#56), and a picker that set it directly would flip that card without moving the preview."""
     step = _run([{"pick": "app_d", "thread": "thr_many", "select": "app_a"}])[-1]
