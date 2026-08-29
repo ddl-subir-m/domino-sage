@@ -104,9 +104,21 @@ window.SW = window.SW || {};
     );
   }
 
+  // Both trees fail the same way — the platform refused and handed back a body — so they say it
+  // the same way: our reason and our fix in the pack's words, its words quoted between them (#121).
+  function treeFailure(error, reason, fix) {
+    return h('div', { className: 'sw-tree-empty' }, h(SW.PlatformError, {
+      reason: SW.brand.text(reason),
+      body: error.body,
+      fix: SW.brand.text(fix),
+    }));
+  }
+
   SW.DatasetFileTree = function DatasetFileTree({ resource, query, variant }) {
     const [files, setFiles] = useState(null);
-    const [error, setError] = useState('');
+    // The platform's own body, held apart from our copy so it can be quoted rather than retold
+    // (#121). `null` is "nothing failed"; a failure with a silent platform is `{ body: '' }`.
+    const [error, setError] = useState(null);
     const datasetId = resource ? bareId(resource.id, 'dataset') : '';
     const pins = pinSet(resource && resource.pins);
 
@@ -116,7 +128,7 @@ window.SW = window.SW || {};
     useEffect(() => {
       if (!resource) {
         setFiles([]);
-        setError('');
+        setError(null);
         return undefined;
       }
       let cancelled = false;
@@ -129,7 +141,7 @@ window.SW = window.SW || {};
         .catch((err) => {
           if (!cancelled) {
             setFiles([]);
-            setError(err.message || 'Could not list files.');
+            setError({ body: err.message || '' });
           }
         });
       return () => {
@@ -138,7 +150,13 @@ window.SW = window.SW || {};
     }, [datasetId]);
 
     if (files === null) return h(Spin, { size: 'small', className: 'sw-tree-spin' });
-    if (error) return h('div', { className: 'sw-tree-empty' }, error);
+    if (error) {
+      return treeFailure(
+        error,
+        '{assistantName} couldn’t list the files in this {dataset}.',
+        'Check it is still shared with this project in {platformName}, then reopen this panel.',
+      );
+    }
     const visible = (files || []).filter((f) => filterName(f.path, query));
     if (!visible.length) {
       return h(
@@ -205,7 +223,7 @@ window.SW = window.SW || {};
     const [database, setDatabase] = useState(defaults.database || '');
     const [schema, setSchema] = useState(defaults.schema || '');
     const [items, setItems] = useState(null);
-    const [error, setError] = useState('');
+    const [error, setError] = useState(null);
     const pins = pinSet(resource && resource.pins);
 
     const hasDatabase = levels.includes('database');
@@ -218,12 +236,12 @@ window.SW = window.SW || {};
       if (!resource) return undefined;
       if (!levels.length) {
         setItems([]);
-        setError('');
+        setError(null);
         return undefined;
       }
       let cancelled = false;
       setItems(null);
-      setError('');
+      setError(null);
       const load =
         stage === 'database'
           ? SW.api.dataSourceDatabases(sourceId)
@@ -237,7 +255,7 @@ window.SW = window.SW || {};
         .catch((err) => {
           if (!cancelled) {
             setItems([]);
-            setError(err.message || 'Could not look inside this Data Source.');
+            setError({ body: err.message || '' });
           }
         });
       return () => {
@@ -266,7 +284,13 @@ window.SW = window.SW || {};
     ].filter(Boolean);
 
     if (items === null) return h(Spin, { size: 'small', className: 'sw-tree-spin' });
-    if (error) return h('div', { className: 'sw-tree-empty' }, error);
+    if (error) {
+      return treeFailure(
+        error,
+        '{assistantName} couldn’t look inside this {dataSource}.',
+        'Check your credentials for it in {platformName}, then reopen this panel.',
+      );
+    }
 
     const visible = (items || []).filter((n) => filterName(n, query));
     if (!visible.length) {

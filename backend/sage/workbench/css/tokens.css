@@ -285,6 +285,40 @@ kbd {
 .sw-tok-com { color: var(--gray-500); font-style: italic; }
 .sw-tok-num { color: var(--info); }
 
+/* A platform error we passed through (#121) ------------------------------ */
+
+/* Its words are the platform's, not ours, so it is marked as borrowed rather than blended into
+   Sage's copy — quieter than .sw-code, which means "this is code", and set apart from the sentence
+   above it, which means "this is us". */
+.sw-passthrough {
+  margin: 0;
+  max-width: 100%;
+  padding: var(--s2) var(--s3);
+  border-left: 3px solid var(--gray-300);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--gray-100);
+  /* Explicit, because one of its homes is antd's Result subtitle, which centres its text — and
+     centred raw output is unreadable. */
+  text-align: left;
+}
+/* A body can arrive as one 500-character line. It scrolls inside this box, and never widens the
+   page — at laptop width or on a monitor. */
+.sw-passthrough pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--gray-600);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: auto;
+  max-height: 12em;
+  overflow-y: auto;
+}
+.sw-platform-error { display: flex; flex-direction: column; gap: var(--s2); }
+.sw-platform-error-say { margin: 0; }
+.sw-platform-error-say.is-fix { color: var(--gray-600); }
+
 /* Boot and fatal states -------------------------------------------------- */
 
 .sw-boot {

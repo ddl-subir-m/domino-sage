@@ -105,10 +105,15 @@ window.SW = window.SW || {};
     const shellMode = SUBROUTES[route.mode] || route.mode;
     let body;
     if (error) {
+      // Whatever came back is quoted rather than retold (#121): the title and the reason are ours,
+      // the body is the platform's and keeps its own words.
       body = h(Result, {
         status: 'error',
         title: 'The workspace could not load',
-        subTitle: String(error.message || error),
+        subTitle: h(SW.PlatformError, {
+          reason: SW.brand.text('{productName} could not finish starting up.'),
+          body: String(error.message || error),
+        }),
         extra: h(Button, { type: 'primary', onClick: () => window.location.reload() }, 'Reload'),
       });
     } else if (!state.ready) {

@@ -40,10 +40,16 @@ window.SW = window.SW || {};
     }
 
     if (state.error) {
+      // Title and reason are ours and carry the pack's words; what came back is the platform's and
+      // is quoted rather than retold (#121). Reload is the resolution step.
       return h(Result, {
         status: 'warning',
-        title: 'Sage couldn’t list the Built Apps',
-        subTitle: state.error,
+        title: SW.brand.text('{assistantName} couldn’t list the {builtAppPlural}'),
+        subTitle: h(SW.PlatformError, {
+          reason: SW.brand.text('{platformName} answered with an error.'),
+          body: state.error,
+          fix: SW.brand.text('Try again. If it keeps happening, check your access in {platformName}.'),
+        }),
         extra: h(Button, { onClick: () => window.location.reload() }, 'Try again'),
       });
     }

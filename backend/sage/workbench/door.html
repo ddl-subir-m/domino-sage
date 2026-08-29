@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Opening your workspace</title>
+  <title>{pageTitle}</title>
+  <link rel="icon" href="./img/domino-logo.svg" />
   <style>
     /* Inter from Sage's own origin (#19). Do not <link> Google fonts. */
     @font-face {
@@ -23,6 +24,11 @@
       --body: #7F8385;
       --border: #DBE4E8;
       --err: #C20A29;
+      /* tokens.css values, for the one block this page shares with the shell. */
+      --gray-300: #E0E0E0;
+      --gray-100: #FAFAFA;
+      --gray-600: #65657B;
+      --mono: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
     }
 
     * { box-sizing: border-box; }
@@ -104,6 +110,33 @@
     }
 
     button:hover { filter: brightness(1.08); }
+
+    /* A platform error we passed through keeps the platform's words (ADR-0014), so it is drawn as
+       a quotation rather than blended into ours (#121). The door loads none of the shell's CSS, so
+       this is tokens.css `.sw-passthrough` spelled out here — and it is spelled out with the same
+       values, so the two copies do not drift into two different-looking quotations. */
+    .sw-passthrough {
+      margin: 16px 0 0;
+      max-width: 100%;
+      padding: 8px 12px;
+      border-left: 3px solid var(--gray-300);
+      border-radius: 0 4px 4px 0;
+      background: var(--gray-100);
+      text-align: left;
+    }
+    /* A body can arrive as one 500-character line. It scrolls in here, never sideways on the page. */
+    .sw-passthrough pre {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: var(--gray-600);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      overflow-x: auto;
+      max-height: 12em;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -111,6 +144,7 @@
     <img class="logo" id="logo" src="./img/domino-logo.svg" alt="" />
     <h1 id="title">Opening your workspace…</h1>
     <p id="detail">Finding your Default project.</p>
+    <blockquote class="sw-passthrough" id="quote" hidden><pre id="quote-body"></pre></blockquote>
     <div class="track"><i></i></div>
     <div class="actions"><button id="retry" type="button">Try again</button></div>
   </main>
@@ -122,17 +156,30 @@
       var card = document.getElementById('card');
       var title = document.getElementById('title');
       var detail = document.getElementById('detail');
+      var quote = document.getElementById('quote');
+      var quoteBody = document.getElementById('quote-body');
       var api = new URL('.', location.href).pathname.replace(/\/$/, '') + '/api';
+      // Our half of an error names us, so it comes from the pack the door already fetches for its
+      // colours and logo. Best-effort in exactly the same way: /api/brand can answer after a
+      // failure has been drawn, and the Domino default reads correctly on its own until it does.
+      var pack = { assistantName: 'Sage' };
 
       function say(head, sub) {
         if (head) title.textContent = head;
         detail.textContent = sub;
+        quote.hidden = true;
       }
 
-      function fail(message) {
+      // `said` is what the platform handed back, and it is shown as it came — quoted, not retold
+      // (#121). Nothing here can tell our word for the platform from a project a user named after
+      // the company, so nothing here rewrites it. `message` is ours, and the Try again button below
+      // is the resolution step.
+      function fail(message, said) {
         card.classList.add('is-error');
-        title.textContent = 'Sage couldn’t open your workspace';
+        title.textContent = pack.assistantName + ' couldn’t open your workspace';
         detail.textContent = message;
+        quoteBody.textContent = said || '';
+        quote.hidden = !said;
       }
 
       // A running builder lives on the MAIN Domino host. A published App is served from
@@ -158,6 +205,7 @@
           var r = await fetch(api + '/brand');
           if (!r.ok) return;
           var b = await r.json();
+          if (b.assistantName) pack.assistantName = b.assistantName;
           if (b.colors && b.colors.primary) {
             document.documentElement.style.setProperty('--primary', b.colors.primary);
           }
@@ -166,7 +214,6 @@
             logo.src = b.logoUrl;
             logo.alt = b.logoAlt || '';
           }
-          if (b.pageTitle) document.title = b.pageTitle;
         } catch (e) { /* no brand pack — Domino default */ }
       }
 
@@ -196,11 +243,12 @@
           r = await fetch(api + '/door', { method: 'POST' });
           data = await readJson(r);
         } catch (e) {
-          fail('Sage is unreachable from this page. Reload to try again.');
+          fail(pack.assistantName + ' is unreachable from this page. Reload to try again.');
           return;
         }
         if (!r.ok) {
-          fail(data.error || 'Request failed (' + r.status + ')');
+          fail('Setting it up failed. Try again — if it keeps failing, ask your administrator.',
+               data.error || 'Request failed (' + r.status + ')');
           return;
         }
 
