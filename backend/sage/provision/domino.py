@@ -67,6 +67,18 @@ def _viewer_url(raw: str, app_id: str) -> str:
     return f"/modelproducts/{app_id}?scope=project" if app_id else ""
 
 
+def app_viewer_url(app_id: str) -> str:
+    """The page a browser can open for a published App, from its id alone — "" for no id.
+
+    `_viewer_url`'s fallback under a public name, for the callers holding a recorded id rather than
+    a response from the apps API: the Build rail reads what each Built App wrote down, and re-reads
+    it on a 30-second tick, so asking the control plane per row would make a list that says
+    "published" cost one request per app to say it. Pure, and it stays the one place that knows the
+    grammar — that rewrite has already been re-learned from live Domino once.
+    """
+    return _viewer_url("", app_id)
+
+
 class NotFound(RuntimeError):
     """Domino answered 404: the thing the call named is not there.
 

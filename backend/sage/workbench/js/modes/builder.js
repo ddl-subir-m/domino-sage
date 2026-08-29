@@ -120,6 +120,76 @@ window.SW = window.SW || {};
     });
   }
 
+  // Publishing is consequential, so it confirms on Reset's and Delete's pattern (#76): say what it
+  // does, and say in the same breath what it does NOT touch. The fear on the way to this button is
+  // that the whole Project goes out, or that shipping the app moves the files and the conversation
+  // it was built from — neither happens, and a confirm is the only place anybody is reading.
+  //
+  // Two sentences for the two states of one act, because the creator's question is different on
+  // each side of the first publish: before it, "where does this end up"; after it, "does the link
+  // I already sent people change". The control above stays one control (#86) — it is the sentence
+  // that moves, not the word on the item.
+  //
+  // The name is QUOTED for the reason Reset quotes it: a display name starts as the title of the
+  // plan the app was built from, and those end in a full stop, which unquoted lands one in the
+  // middle of this question.
+  function publishApp(app) {
+    const again = !!app.published;
+    Modal.confirm({
+      title: again ? `Publish a new version of “${app.name}”?` : `Publish “${app.name}”?`,
+      okText: again ? 'Publish new version' : 'Publish',
+      cancelText: 'Cancel',
+      content: h(
+        Fragment,
+        null,
+        h(
+          'div',
+          null,
+          again
+            ? 'The Domino App you published before starts serving this app’s latest code. The URL '
+              + 'doesn’t change, so anybody already holding it sees the new version.'
+            : 'This app’s code is saved and deployed as a Domino App with a URL of its own. Who '
+              + 'can open it is set in Domino, so nobody sees it until you share it.'
+        ),
+        // Deliberately silent about the attached files. `public/data/` is gitignored, so the push
+        // does not carry the bytes and the deployed app rehydrates them from the manifest — which
+        // makes "your files are published" and "your files stay here" both wrong, and a confirm is
+        // the last place to be approximately right. What publishing does to data is its own
+        // question with its own answer to find.
+        h(
+          'div',
+          { style: { marginTop: 12 } },
+          'Only this app goes out. Your other Built Apps and this conversation stay where they are.'
+        )
+      ),
+      onOk: () =>
+        SW.store
+          // The app this confirm NAMED, not whichever one is selected when it is answered. The
+          // request carries no app id, so the store refuses if the selection moved underneath.
+          .publishApp(app)
+          .then((out) => {
+            // A deploy is not done when the call answers — Domino is still bringing the container
+            // up. Saying so is what stops the first click on `Open app` reading as a broken app.
+            antd.message.success(
+              out && out.republished
+                ? `Published a new version of “${app.name}”. It takes a few minutes to serve the new code.`
+                : `Published “${app.name}”. It takes a few minutes to come up — Open app opens it.`
+            );
+          })
+          .catch((err) => {
+            // Held open rather than closed on the failure, on Delete's precedent: nothing was
+            // published, the app is exactly as it was, and the answer to a refusal is usually to
+            // read it and press this again.
+            antd.message.warning(err.message || 'Sage could not publish this Built App.');
+            // Unless the app it named is no longer the selected one. Then the question itself is
+            // void — pressing again would only earn the same sentence — so the modal goes and the
+            // creator is left looking at the app they actually moved to.
+            if (err && err.moved) return undefined;
+            return Promise.reject(err);
+          }),
+    });
+  }
+
   // A row of the header's app list — the rail's row, unchanged apart from where it lives. It keeps
   // its per-app facts because they are the reason this control is a list rather than a line: a
   // selector naming only the app you already have open would throw away every badge below.
@@ -266,7 +336,7 @@ window.SW = window.SW || {};
   // The Build header. It names the app the preview is showing, and it is where the app is chosen
   // now that the rail lists Conversations in both modes.
   function AppBar({ resumed }) {
-    const { apps, activeApp, touched, previewStatus } = SW.store.get();
+    const { apps, activeApp, touched, previewStatus, buildRunning } = SW.store.get();
 
     const newApp = h(
       Button,
@@ -301,14 +371,61 @@ window.SW = window.SW || {};
     // Delete danger-styled and last below a divider. Not a per-row `…` inside the picker, which
     // would be a menu inside a menu — and beside the app the header names there is no ambiguity
     // about which app they act on, which is what the per-row `…` was solving.
+    //
+    // Publish and Open app join them on the same shape (#89), above Rename because both are about
+    // the App outside in Domino while the two below are about the app in here — its name, and
+    // whether it stays. Delete keeps the three things Reset's shape is made of: danger, last, and
+    // below the divider.
     const appMenu = activeApp && {
       items: [
+        // ONE control, not a Rebuild/Update pair (#86): describing a change in the composer is
+        // what rebuilds an app, so a second control under a second word would be a second way to
+        // do one thing. The first publish and every one after are the same act on the same object
+        // — what differs is what the creator already has out there, which the confirm says and
+        // the control does not have to.
+        //
+        // Refused mid-build, and it says why rather than going quiet. Publishing commits and
+        // pushes the working tree, and a turn writing files into it has not finished writing them:
+        // this would commit half an edit and merge on top of it. The server refuses it too, with
+        // the same sentence and for the same reason — this is the half that says so before the
+        // click, which is the shape the composer's Reset already has.
+        //
+        // Two signals, because one build is visible two ways and neither sees the other. `building`
+        // is the row's, so it survives a reload and catches a turn another tab started in THIS app.
+        // `buildRunning` is this tab's, and it is the one that catches the hazard the row cannot
+        // name: the commit is the PROJECT's, so a turn streaming into another app is equally in the
+        // way, and that app's row is not the one being read here.
+        {
+          key: 'publish',
+          label: activeApp.building || buildRunning
+            ? 'Publish — wait for this build to finish' : 'Publish',
+          disabled: !!(activeApp.building || buildRunning),
+        },
+        // A second door, never the first one wearing another word: the control in the toolbar
+        // opens the LOCAL preview and this opens the deployed App. Two items, two labels, two
+        // destinations — one button that changed where it went would be unreadable in exactly
+        // the moment the difference matters.
+        //
+        // Unpublished, it stays and says why. Vanishing would leave the creator to work out on
+        // their own that there is nothing to open yet, which is the dead end Reset's disabled
+        // label avoids in the composer.
+        {
+          key: 'open',
+          label: activeApp.published ? 'Open app' : 'Open app — publish it first',
+          disabled: !activeApp.published,
+        },
         { key: 'rename', label: 'Rename' },
         { type: 'divider' },
         { key: 'delete', label: 'Delete', danger: true },
       ],
       onClick: ({ key, domEvent }) => {
         domEvent.stopPropagation();
+        if (key === 'publish') publishApp(activeApp);
+        // A new tab, so the Build you published from is still behind it — Gallery's cards open
+        // the same way for the same reason. The URL arrives host-relative and the browser resolves
+        // it against this page's origin, which is the host Domino serves the App's page from.
+        // Opened as given: nothing here builds it, which is why nothing here knows its grammar.
+        if (key === 'open' && activeApp.url) window.open(activeApp.url, '_blank', 'noopener');
         if (key === 'rename') renameApp(activeApp);
         if (key === 'delete') deleteApp(activeApp);
       },
@@ -566,9 +683,10 @@ window.SW = window.SW || {};
             onClick: () => SW.store.refreshPreview(),
           })
         ),
-        // It opens the LOCAL preview. Unqualified, it did not say which of the two doors it is,
-        // and it becomes actively misleading the moment `Open app` lands beside it (#89, behind
-        // #70). It names its destination now, before the second door arrives.
+        // It opens the LOCAL preview; `Open app`, in the header's `…`, opens the deployed App.
+        // Two controls, two labels, two destinations — never one button that changes where it
+        // goes. Unqualified, this one turned actively misleading the moment the second door
+        // landed beside it (#89), which is why it was named before that happened.
         h(
           Tooltip,
           { title: 'Open preview in a new tab' },

@@ -179,6 +179,23 @@ def test_an_app_that_was_never_published_has_no_publish_time(tmp_path: Path):
 
     assert row["published"] is False
     assert row["publishedAt"] == ""
+    # And nowhere to go, which is the same answer said a third way: `Open app` has no door yet.
+    assert row["url"] == ""
+
+
+def test_publishing_gives_the_row_the_door_open_app_opens(tmp_path: Path):
+    """The row carries a URL, not a `dominoAppId` field for the browser to build one from (#89).
+    The id is inside that string and this does not pretend otherwise — what it is not is a handle
+    the UI reads out and hands back, and the rewrite that turns an id into a page a browser can
+    open stays in the one file that has already had to re-learn it from live Domino."""
+    orch = _orch(tmp_path, control_plane=FakeControlPlane())
+
+    published = orch.publish()
+
+    row = orch.list_apps()[0]
+    assert row["url"] == f"/modelproducts/{published['app_id']}?scope=project"
+    # No field of its own beside it, which is the whole reason the URL is the one that crosses.
+    assert published["app_id"] not in {v for k, v in row.items() if k != "url"}
 
 
 def test_publishing_stamps_the_row_the_card_reads(tmp_path: Path):

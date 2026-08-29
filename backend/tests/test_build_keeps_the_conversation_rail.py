@@ -217,7 +217,10 @@ def test_rename_and_delete_are_text_items_in_the_overflow_beside_the_app_name():
     menus = [m for m in step["menus"] if any(i["key"] == "delete" for i in m["items"])]
     assert len(menus) == 1, step["menus"]
     items = menus[0]["items"]
-    assert [i["label"] for i in items if not i["divider"]] == ["Rename", "Delete"]
+    # Publish and Open app joined them above Rename (#89) on the same shape, which is the point:
+    # the menu grew and none of it turned into an icon.
+    assert [i["key"] for i in items if not i["divider"]] == ["publish", "open", "rename", "delete"]
+    assert all(i["label"] for i in items if not i["divider"]), items
     # Danger, last, and below a divider — the three things Reset's shape is made of.
     assert items[-1]["key"] == "delete"
     assert items[-1]["danger"] is True

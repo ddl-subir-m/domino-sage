@@ -240,14 +240,9 @@ def test_that_place_sits_between_the_app_identity_row_and_the_preview():
 # ---- what this ticket must not do -------------------------------------------------------------
 
 
-@needs_node
-def test_nothing_here_adds_a_publish_control_or_an_open_app_control():
-    """Both wait for #70 (#89). A publish button with no publish flow behind it is a dead control,
-    and `Open app` with nothing deployed is a door onto nothing."""
-    step = _build(select="app_a")
-    surfaces = step["words"] + step["labels"] + step["titles"]
-    assert not any("Publish" in s for s in surfaces), surfaces
-    assert not any("Open app" in s for s in surfaces), surfaces
+# Both controls this ticket held back have since landed: #70 made publish per-app, and #89 wired
+# the header's `…` to it. What they do now is asserted in
+# `test_the_build_header_publishes_the_selected_app.py`.
 
 
 @needs_node
