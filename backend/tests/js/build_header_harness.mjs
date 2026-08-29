@@ -60,11 +60,17 @@ const THREADS = {
 // re-pick (ADR-0011): the Data Source's Scope goes with the record, and the Model API's access
 // token does NOT — it lives in its own store keyed by model id — so the confirm has to say
 // different things over them and a fixture with one kind could not tell.
+//
+// `used` is the advisory label the end-of-turn scan leaves (#93), served exactly as the backend
+// serves it: `true`/`false` once a build turn has looked at that app, and ABSENT for an app no
+// turn has scanned — `app_c`, which is the case that must draw no mark rather than call its one
+// Binding unused. Only `app_a` has a mixed answer, which is the only one that can show that the
+// mark lands on the right name.
 const BINDINGS = {
   app_a: [
-    { kind: 'llm_alias', id: 'al_1', name: 'claude-sonnet-4', display_name: 'Claude Sonnet 4' },
-    { kind: 'data_source', id: 'ds_1', name: 'market-data-eod', display_name: 'Market data EOD' },
-    { kind: 'model_api', id: 'ma_1', name: 'churn-risk', display_name: 'Churn risk' },
+    { kind: 'llm_alias', id: 'al_1', name: 'claude-sonnet-4', display_name: 'Claude Sonnet 4', used: true },
+    { kind: 'data_source', id: 'ds_1', name: 'market-data-eod', display_name: 'Market data EOD', used: false },
+    { kind: 'model_api', id: 'ma_1', name: 'churn-risk', display_name: 'Churn risk', used: true },
   ],
   app_c: [{ kind: 'llm_alias', id: 'al_2', name: 'qwen-2-5', display_name: 'Qwen 2.5' }],
 };

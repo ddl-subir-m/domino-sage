@@ -1649,6 +1649,9 @@ _SAMPLE_MATCH_MIN_BYTES = 64
 # rewrites them itself whenever the Bindings change (_write_app_resources), so a Binding found in one
 # is not a dangling reference anybody has to act on. Excluded from _resource_usage for that reason:
 # reporting them would send the creator to edit files AGENTS.md tells the agent never to touch.
+# The end-of-turn scan's answer about the Bindings (#93). Gitignored where it is written — see
+# Workspace.usage_path for why this one is not a committed manifest like the two beside it.
+_USAGE_PATH = ".sage/usage.json"
 _SAGE_OWNED_SOURCES = frozenset({
     "src/sageLlm.ts", "src/sageLlm.config.ts",
     "src/sageModelApi.ts", "src/sageModelApi.config.ts",
@@ -3195,6 +3198,7 @@ class Orchestrator:
             if not self._turn_wedged:
                 self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
                 self._recheck_app_data()
+                self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._turn_lock.release()
 
@@ -4594,6 +4598,9 @@ class Orchestrator:
                 self._splice_instructions(project)
                 self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
                 project.workspace.clear_built()
+                # The usage label is derived from the source Reset just put back to the template, so
+                # it goes with it (#93). Unlike the Bindings themselves, which are setup and survive.
+                project.workspace.clear_resource_usage()
                 project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
                 self._refresh_history_archive(project)
                 return {"ok": True, "status": project.status()}
@@ -5882,6 +5889,7 @@ class Orchestrator:
             if not self._turn_wedged:
                 self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
                 self._recheck_app_data()
+                self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._turn_lock.release()
 
@@ -6917,7 +6925,8 @@ class Orchestrator:
     def list_bindings(self) -> list[dict]:
         """Read from the manifest rather than the gateway, so this still answers "what does this app
         depend on" when the gateway is unreachable — which is when the question gets asked."""
-        return [b.to_dict() for b in parse_bindings(self.project().workspace.read_bindings())]
+        return self._labelled_bindings(
+            [b.to_dict() for b in parse_bindings(self.project().workspace.read_bindings())])
 
     def bind_llm_alias(self, alias_id: str) -> list[dict]:
         """Record that this app uses one LLM Alias, and return the new Binding list.
@@ -7272,7 +7281,7 @@ class Orchestrator:
             return [b.to_dict() for b in [*current, new]]
         entries = self.project().workspace.update_bindings(change)
         self._write_app_resources(self.project())
-        return entries
+        return self._labelled_bindings(entries)
 
     def unbind(self, kind: str, resource_id: str) -> dict:
         """Drop one Binding. Removing a record that is already gone is not an error: the creator
@@ -7289,7 +7298,7 @@ class Orchestrator:
             return [b.to_dict() for b in parse_bindings(entries) if b.key != (kind, resource_id)]
         entries = self.project().workspace.update_bindings(change)
         self._write_app_resources(self.project())
-        return {"bindings": entries, "refs": refs, "kind": kind,
+        return {"bindings": self._labelled_bindings(entries), "refs": refs, "kind": kind,
                 "name": gone.name if gone else resource_id}
 
     # ---- Preflight: what a build will need, checked before it needs it (#17) ----
@@ -7882,6 +7891,61 @@ class Orchestrator:
                 if text is not None and rel not in _SAGE_OWNED_SOURCES
                 and any(t in text for t in tokens)]
         return catalog + sorted(set(refs))
+
+    def _record_resource_usage(self) -> None:
+        """Write which of the app's Bindings its own source uses, for the header row to read (#93).
+
+        End of turn, never on render. `_scan_app_sources` walks the whole app tree and reads every
+        code file into memory, and the row it feeds redraws on every app switch — so the row reads
+        this answer off the disk instead, on `publish_check`'s discipline: local, pure, no network
+        (ADR-0010). Unbind keeps its live scan; that is one deliberate act and can afford one.
+
+        The turn's app, not the one on screen, and with no #77 skip like `_recheck_app_data`'s
+        beside it: this writes into the tree it scanned and reads that same tree's Bindings, so a
+        switch mid-build leaves both halves describing one app. The app switched TO keeps whatever
+        its own last turn wrote, which is the answer for it.
+
+        `_resource_usage` is the scanner — an LLM Alias by its name in the source, a Data Source by
+        the names of the queries recorded against it. NOT `_data_usage`, which scans for uses of an
+        attached FILE. Its answer counts as used whenever it is non-empty, including the
+        `.sage/queries.json` entry it reports for a Data Source that has queries written against it
+        but no component calling them yet: that errs towards "used", which is the quiet direction
+        for a label that must never gate anything.
+
+        Staleness errs true. A Binding bound since this last ran is absent from the list and reads
+        as unused, which it is — nothing has been written against it yet.
+
+        Best-effort, like the two cleanups it stands beside: this must never fail a build that
+        otherwise worked.
+        """
+        try:
+            app = self.project().app_for_turn()
+            bindings = parse_bindings(app.read_bindings())
+            # No Binding, no walk — it is the expensive half and it could label nothing. The empty
+            # answer is still WRITTEN, because "checked, and nothing is used" is what makes the
+            # first Binding bound after this turn read as unused rather than as unknown.
+            sources = self._scan_app_sources(app) if bindings else []
+            self._ensure_gitignored(app.path, _USAGE_PATH)
+            app.write_resource_usage(
+                [f"{b.kind}:{b.id}" for b in bindings if self._resource_usage(app, b, sources)])
+        except Exception:
+            log.exception("bindings: could not record what the app's source uses")
+
+    def _labelled_bindings(self, entries: list[dict]) -> list[dict]:
+        """Manifest entries plus the advisory `used` label the header row draws (#93).
+
+        `used` is None — not False — when no build turn has left an answer for this app, so the row
+        can draw no label at all rather than call every Binding unused. The label is added here and
+        never in `Binding.to_dict`, which is the manifest entry as well as the HTTP row: a derived
+        answer written into `.sage/bindings.json` would outlive the scan that produced it.
+
+        Every route that hands the list back goes through this — bind and unbind as much as the
+        plain read — because a list arriving with no labels would blank the ones on screen until the
+        next refresh put them back.
+        """
+        used = self.project().workspace.read_resource_usage()
+        return [{**e, "used": None if used is None
+                 else f"{e.get('kind')}:{e.get('id')}" in used} for e in entries]
 
     def _query_names_for(self, workspace: Workspace, resource_id: str) -> list[str]:
         """Names of the queries in `.sage/queries.json` recorded against one Data Source.

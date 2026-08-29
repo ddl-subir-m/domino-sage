@@ -991,6 +991,54 @@ class Workspace:
                 tmp.unlink(missing_ok=True)
             return entries
 
+    @property
+    def usage_path(self) -> Path:
+        """Where the end-of-turn scan leaves what this app's own source says about its Bindings (#93).
+
+        Gitignored, unlike the two manifests above, and for `.sage/history.md`'s reasons rather than
+        for secrecy: it is derived whole from the tree beside it on every build turn, so two Sage
+        Builders in one Project would conflict over it every turn on an answer either one can
+        rebuild — and it is written AFTER the turn's commit, so committing it would leave the app
+        dirty for a file nobody edited. It also has nothing to say to the published app, which is
+        what the rest of `.sage/` rides into the container for.
+        """
+        return self.path / ".sage" / "usage.json"
+
+    def read_resource_usage(self) -> list[str] | None:
+        """The `kind:id` of every Binding the app's source used at the end of the last build turn,
+        or None when no turn has left an answer here.
+
+        None is not `[]`, and the distinction is the whole point. A missing file means nobody has
+        looked yet, and reporting that as "nothing is used" would label every Binding of an app
+        built before this scan existed as unused — a wrong answer, where "not checked" is a true
+        one. It is the same line `publish_check` draws with `checked`.
+        """
+        try:
+            data = json.loads(self.usage_path.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("used"), list):
+            return None
+        return [k for k in data["used"] if isinstance(k, str)]
+
+    def clear_resource_usage(self) -> None:
+        """Forget the scan's answer, because the code it was an answer about has gone.
+
+        Reset keeps `.sage/`, which is right for every record beside this one — they are the setup a
+        reset is supposed to survive. This one is derived from the source that just went back to the
+        template, so keeping it would have the row calling a Binding used on the strength of a file
+        that no longer exists. Cleared rather than recomputed: nobody has looked at the new tree yet,
+        and that is exactly what "no answer" says.
+        """
+        self.usage_path.unlink(missing_ok=True)
+
+    def write_resource_usage(self, used: list[str]) -> None:
+        """Record the scan's answer. An object rather than a bare array, which is the shape the two
+        manifests beside it use: those are records of what a person chose, and this is a derived
+        answer about them — reading alike would invite them to be read alike."""
+        self.usage_path.parent.mkdir(parents=True, exist_ok=True)
+        self.usage_path.write_text(json.dumps({"used": used}, indent=2))
+
 
 class WorkspaceManager:
     """Manages the Built App inside this builder's Domino project volume.

@@ -416,10 +416,16 @@ window.SW = window.SW || {};
   //
   // `ships`, not `uses`. What is read here is the DECLARED record — the Bindings someone picked
   // and the files someone attached, both written per app, both re-read by `loadBuild` when the
-  // control above changes app. Whether the app's code actually calls any of it is the derived
-  // answer, which ADR-0010 keeps advisory and off any surface that has to gate: a Binding made two
-  // minutes ago, before the agent wrote its first query, is used by nothing and still publishes.
-  // The usage label that would say so is #93, and the scan behind it walks the whole app tree.
+  // control above changes app. Whether the app's code actually calls a Binding is the DERIVED
+  // answer, and it rides in beside the record as `used` (#93): a written answer off the disk, not
+  // a scan this row could ever run. `_scan_app_sources` walks the whole app tree, and this redraws
+  // on every app switch.
+  //
+  // It marks the exception and nothing else. ADR-0010 keeps the derived answer advisory and off
+  // every gate — a Binding made two minutes ago, before the agent wrote its first query, is used
+  // by nothing and still publishes — so the mark is a word beside a name, never a warning and
+  // never a control. `used === false` is the scan having looked; `undefined`/`null` is no turn
+  // having left an answer for this app, which draws no mark rather than calling everything unused.
   //
   // Two names rather than one umbrella (#85 Q3): `.sage/bindings.json` is read at run time by the
   // published app's own server to decide what a query may touch, `.sage/attachments.json` at
@@ -431,6 +437,9 @@ window.SW = window.SW || {};
     if (!activeApp) return null;
 
     const bound = (bindings || []).map((b) => b.display_name || b.name || b.id);
+    // Which of them the last build turn found nothing calling. Positional, against `bound`, so the
+    // mark cannot drift onto the name beside it.
+    const unused = (bindings || []).map((b) => b.used === false);
     // Two Datasets can each hold a `margins.csv`, and the row has room for the leaf name only. So
     // the strip shows the name and the tooltip carries the path that tells the two apart — without
     // it the row would print the same word twice and offer nothing that says why.
@@ -448,15 +457,42 @@ window.SW = window.SW || {};
     // the Attachments one pointed at a group that did not exist.
     const pointer = `in Project resources, under ${activeApp.name} — remove it there`;
 
-    const kindRow = (label, names, where, full) =>
+    // One span per name, so one of them can carry a mark the others do not. The separator sits
+    // INSIDE the span that follows it rather than between spans: `sw-app-scope-names` truncates the
+    // run with an ellipsis, and a comma of its own would be the thing left dangling at the cut.
+    const nameNodes = (names, marks) =>
+      names.map((name, i) =>
+        h(
+          'span',
+          { key: `${name}-${i}`, className: 'sw-app-scope-name' },
+          i > 0 ? ', ' : '',
+          name,
+          (marks || [])[i] && h('span', { className: 'sw-app-scope-unused' }, ' (not used)')
+        )
+      );
+
+    const kindRow = (label, names, where, full, marks) =>
       h(
         Tooltip,
-        { key: label, title: `${(full || names).join(', ')} · ${where}` },
+        {
+          key: label,
+          // The marks go in the tooltip too, because the strip truncates and the tooltip is where a
+          // narrow preview's reader finds out which name the mark was on. The clause after them is
+          // what two words beside a name cannot say: what looked, when, and that nothing is blocked
+          // by the answer (ADR-0010). It sits BEFORE the pointer, which stays last in both kinds'
+          // tooltips because it is the only half the reader can act on.
+          title:
+            `${(full || names).map((n, i) => ((marks || [])[i] ? `${n} (not used)` : n)).join(', ')}`
+            + ((marks || []).some(Boolean)
+              ? ' · “not used” is what this app’s source said at the last build, and it publishes either way'
+              : '')
+            + ` · ${where}`,
+        },
         h(
           'span',
           { className: 'sw-app-scope-kind' },
           h('span', { className: 'sw-app-scope-kind-label' }, label),
-          h('span', { className: 'sw-app-scope-names' }, names.join(', '))
+          h('span', { className: 'sw-app-scope-names' }, nameNodes(names, marks))
         )
       );
 
@@ -479,7 +515,10 @@ window.SW = window.SW || {};
         // over an empty list says the app ships a kind of thing it does not. The panel does name
         // it, because a destination someone arrived at intending to act is not a glance.
         : [
-            bound.length > 0 && kindRow('Bindings', bound, pointer),
+            bound.length > 0 && kindRow('Bindings', bound, pointer, null, unused),
+            // No marks for the files. Whether the source uses an ATTACHMENT is `_data_usage`'s
+            // question, which detach and delete ask live because they refuse on the answer — a
+            // different scanner for a different job, and #85 named it in place of this one.
             files.length > 0 && kindRow('Attachments', files, pointer, paths),
           ]
     );
