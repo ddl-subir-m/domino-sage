@@ -249,3 +249,25 @@ def test_the_rewrite_uses_the_one_route_grammar():
     body, _ = _effect_calling("SW.router.replace")
     assert "SW.appRoute(" in body
     assert "#/build" not in body
+
+
+def test_picking_the_app_a_rewrite_once_named_still_selects_it():
+    """The guard that stops a followed rewrite asking for its own app back is a ref, and a ref
+    survives renders. Every other test here mounts its own tab, so each gets a fresh one.
+
+    Drive three acts against ONE tab: follow the server to `app_b`, which records `app_b`; pick
+    `app_a`; then pick `app_b` back. If that record were still `app_b` the last click would be
+    swallowed as the rewrite it is not, the selection would never move, and the URL would snap back
+    to the app the server still has — a picker click doing nothing, which is #100's disagreement
+    reached from the other side."""
+    step = _run([{"at": "#/build/thr_many?app=app_a", "sequence": [
+        {"moveTo": "app_b"},
+        {"pick": "#/build/thr_many?app=app_a"},
+        {"pick": "#/build/thr_many?app=app_b"},
+    ]}])[-1]
+
+    followed, picked_away, picked_back = step["acts"]
+    assert followed["writes"] == [], "following the server must not write the selection back"
+    assert picked_away["writes"] == ["t1 POST /apps/app_a/select"]
+    assert picked_back["writes"] == ["t1 POST /apps/app_b/select"], step["acts"]
+    assert picked_back["view"]["hash"].endswith("app=app_b")

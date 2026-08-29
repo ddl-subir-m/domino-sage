@@ -294,6 +294,31 @@ for (const step of steps) {
 
   // The picker's path, which writes the ROUTE. The seed effect is what turns that into a
   // selection, so a seed that stopped listening to the URL would break the control.
+  // Several actions against ONE tab, which every step above cannot do: each of them mounts its own
+  // and throws it away, so a ref that survives a render — and the guard against a followed rewrite
+  // asking for its own app back is one — is fresh for each. This is where a stale one would show.
+  if (step.sequence) {
+    const tab = makeTab('t1', step.at);
+    await tab.settle();
+    const acts = [];
+    for (const act of step.sequence) {
+      const mark = calls.length;
+      if (act.moveTo) {
+        selected = act.moveTo;
+        await tab.poll();
+        await tab.poll();
+      } else {
+        tab.go(act.pick);
+        await tab.settle();
+      }
+      acts.push({ act: act.moveTo ? `moveTo ${act.moveTo}` : `pick ${act.pick}`,
+                  writes: writes(mark), view: tab.view(), selected });
+    }
+    tab.unmount();
+    report.push({ step: 'sequence', acts });
+    continue;
+  }
+
   if (step.pick) {
     const tab = makeTab('t1', step.at);
     await tab.settle();
