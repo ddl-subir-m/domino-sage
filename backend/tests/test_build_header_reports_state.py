@@ -324,3 +324,13 @@ def test_a_preview_that_comes_up_in_time_is_untouched():
     step = _build(select="app_a", preview="ok", giveUp=False)
     assert step["previewStatus"] == "ok"
     assert _texts(step, "sw-build-state") == []
+
+
+@needs_node
+def test_new_app_lands_on_the_app_it_just_made():
+    """The route is built by interpolation, and a template that loses its expression still renders a
+    URL that looks fine: `#/build?app=` is well-formed and points Build at no app at all. Nothing
+    else in the suite reads this line, so it was one careless edit away from shipping."""
+    out = _run([{"newapp": True}])
+
+    assert out[0]["went"] == ["#/build?app=app_new"]

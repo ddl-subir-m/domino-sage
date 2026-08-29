@@ -122,6 +122,11 @@ function serve(url, init) {
     selected = m[1];
     return json({});
   }
+  if (path === '/apps' && init && init.method === 'POST') {
+    // Minted, not in the fixture: the route under test is built from the id the SERVER answers
+    // with, so a fixture app would let the assertion pass on the wrong value.
+    return json({ id: 'app_new', name: 'Untitled app' });
+  }
   if (path === '/apps') {
     if (appsFail) return json({ error: 'unavailable' }, 500);
     return json({ items: apps.map((a) => ({ ...a, selected: a.id === selected })), selected });
@@ -512,6 +517,19 @@ for (const step of steps) {
     calls.length = 0;
     await SW.store.selectApp(step.switchTo);
     report.push({ step: `switch ${step.select} -> ${step.switchTo}`, calls: calls.slice() });
+    continue;
+  }
+
+  if (step.newapp) {
+    // Where New app leaves you. Asserted because the route is built by interpolation and a template
+    // that silently loses its expression still renders a valid-looking URL — `#/build?app=` points
+    // Build at no app at all, and nothing else in the suite reads this line.
+    const went = [];
+    const realGo = SW.router.go;
+    SW.router.go = (h) => { went.push(h); };
+    await SW.store.createApp();
+    SW.router.go = realGo;
+    report.push({ step: 'newapp', went });
     continue;
   }
 

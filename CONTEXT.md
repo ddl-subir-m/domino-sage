@@ -75,6 +75,8 @@ Built Apps; a Binding always names exactly one of them, so "what does this app r
 per app. Removing a Binding takes the grant and the Scope with it. There is no undo: the Resource
 stays in the Project and is picked again
 ([ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md)).
+On screen a Binding is named by what it does for the app rather than by the word itself: a Resource
+the selected app holds one for reads "Required by <app>".
 _Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
 
 **Scope**:
