@@ -59,14 +59,23 @@ window.SW = window.SW || {};
     const level = manageLevel(route);
 
     const product = SW.brand.product();
+    // The other products this bar can switch to, from the pack (#115). Empty is the answer for a
+    // partner who has only one product AND the answer before GET /api/brand has come back, and
+    // both want the same thing: no switcher at all. A control offering a choice that does not
+    // exist reads as broken, and a disabled one would need explaining.
+    const peers = Array.isArray(brand.peerProducts) ? brand.peerProducts : [];
     const productMenu = {
-      items: [
-        { key: 'workbench', label: product },
-        { key: 'studio', label: 'ML Studio' },
-      ],
+      items: [{ key: 'workbench', label: product }].concat(
+        peers.map((peer) => ({ key: peer.key, label: peer.label }))
+      ),
       onClick: ({ key }) => {
-        if (key !== 'workbench') {
-          antd.message.info(`ML Studio is the classic Domino experience. Only ${product} is built out here.`);
+        const peer = peers.find((item) => item.key === key);
+        // The label is the partner's word, not ours, so it is dropped in beside the sentence
+        // rather than through the token table — the same rule as a Resource the user named.
+        if (peer) {
+          antd.message.info(
+            `${peer.label} ${SW.brand.text('is another {platformName} product. Only {productName} is built out here.')}`
+          );
         }
       },
     };
@@ -95,16 +104,28 @@ window.SW = window.SW || {};
         alt: brand.logoAlt || 'Domino',
         className: 'sw-logo',
       }),
-      h(
-        Dropdown,
-        { menu: productMenu, trigger: ['click'] },
-        h(
-          'button',
-          { className: 'sw-topnav-product' },
-          product,
-          h(DownOutlined, { style: { fontSize: 9 } })
-        )
-      ),
+      peers.length
+        ? h(
+            Dropdown,
+            { menu: productMenu, trigger: ['click'] },
+            h(
+              'button',
+              { className: 'sw-topnav-product' },
+              product,
+              h(DownOutlined, { style: { fontSize: 9 } })
+            )
+          )
+        // Nowhere to go, so the product is a label and looks like one. The chip's fill and its
+        // pointer are dropped inline because they live on a class and on its `:hover`, and an
+        // inline declaration is what outranks a hover rule.
+        : h(
+            'span',
+            {
+              className: 'sw-topnav-product',
+              style: { background: 'none', cursor: 'default' },
+            },
+            product
+          ),
       h('span', { className: 'sw-topnav-sep' }),
       h(
         'nav',

@@ -17,7 +17,7 @@ log = logging.getLogger("sage.orchestrator.brand")
 
 _BAKED = Path("/opt/sage/brand.json")
 _TOKEN = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
-_WARNED: set[str] = set()   # Title Case complaints already made, so each is made once
+_WARNED: set[str] = set()   # complaints already made, so each is made once
 _HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 
 DEFAULT: dict[str, Any] = {
@@ -28,6 +28,10 @@ DEFAULT: dict[str, Any] = {
     # /admin/whitelabel — Sage renames the word, not the page it links to.
     "platformName": "Domino",
     "pageTitle": "Sage Workspace",
+    # The other products the top bar can switch to. A list rather than a name, so a partner with
+    # no second product sets `[]` and the switcher collapses to a plain label: a switcher with one
+    # item is not a switcher, it offers a choice that does not exist.
+    "peerProducts": [{"key": "studio", "label": "ML Studio"}],
     "logoUrl": "./img/domino-logo.svg",
     "logoAlt": "Domino",
     # The platform's own whitelabel renames its nouns and no API exposes that vocabulary to a
@@ -54,10 +58,10 @@ DEFAULT: dict[str, Any] = {
 
 def load() -> dict[str, Any]:
     pack = deepcopy(DEFAULT)
-    pack = _merge(pack, _read(_BAKED))
+    pack = _merge(pack, _overlay(_BAKED))
     extra = (os.environ.get("SAGE_BRAND_FILE") or "").strip()
     if extra:
-        pack = _merge(pack, _read(Path(extra)))
+        pack = _merge(pack, _overlay(Path(extra)))
     return pack
 
 
@@ -112,6 +116,37 @@ def _tokens(pack: dict[str, Any]) -> dict[str, str]:
     return table
 
 
+def _overlay(path: Path) -> dict | None:
+    """One pack file, read and complained about before it is merged."""
+    overlay = _read(path)
+    _warn_unknown_keys(overlay, path)
+    return overlay
+
+
+def _warn_unknown_keys(overlay: dict | None, path: Path) -> None:
+    """A key Sage does not recognise is ignored, and saying so out loud is the whole
+    forward-compatibility story: the pack carries no `version` field and never will, so a partner's
+    typo is findable only if the log names it. It stays a warning and never a refusal — a brand pack
+    must not be able to stop the product booting.
+
+    What counts as recognised is `DEFAULT`'s own keys rather than a second list beside them, so a
+    key stops warning by being implemented and the two cannot drift apart.
+
+    Said once per key per file, because `load()` runs per request: the complaint belongs to the pack
+    the process booted with, not to whoever happened to ask for it first.
+    """
+    if not overlay:
+        return
+    for key in overlay:
+        if key in DEFAULT:
+            continue
+        seen = f"{path}:{key}"
+        if seen in _WARNED:
+            continue
+        _WARNED.add(seen)
+        log.warning("brand pack %s has unknown key %r — ignoring it.", path, key)
+
+
 def _read(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text())
@@ -135,6 +170,15 @@ def _merge(base: dict, overlay: dict | None) -> dict:
         value = _nonempty(overlay.get(key))
         if value:
             out[key] = value
+    peers = overlay.get("peerProducts")
+    if isinstance(peers, list):
+        # An empty list is the point of the key, so it is honoured rather than treated as unset:
+        # `[]` is a partner saying there is nowhere else to go, and it must reach the shell.
+        out["peerProducts"] = [
+            {"key": _nonempty(peer.get("key")), "label": _nonempty(peer.get("label"))}
+            for peer in peers
+            if isinstance(peer, dict) and _nonempty(peer.get("key")) and _nonempty(peer.get("label"))
+        ]
     nouns = overlay.get("nouns")
     if isinstance(nouns, dict):
         merged_nouns = {key: dict(forms) for key, forms in out["nouns"].items()}
