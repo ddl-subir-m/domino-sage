@@ -301,9 +301,28 @@ window.SW = window.SW || {};
 
   // The Build rail's list. `activeApp` follows it rather than being set beside it, so the row that
   // is lit and the app the server is pointed at cannot drift apart.
-  async function loadAppList() {
-    state.apps = await SW.api.apps().catch(() => []);
-    state.activeApp = state.apps.find((a) => a.selected) || null;
+  //
+  // What hangs off the app follows it too (#95). This is the read Build polls every 30s, and every
+  // 2s mid-build, so the selected app can move here with nobody clicking — a second tab choosing a
+  // different app is enough. Until this cascaded, `bindings`, `appAttachments` and `requires` went
+  // on describing the app selected before, and the header's scope row names the app over those
+  // lists outright, so the wrong pairing was printed rather than implied.
+  //
+  // Guarded on the id, not run every tick: unguarded, a poll costing one request would cost three,
+  // forever, in every open Build tab. `cascade: false` is for the callers that refresh app-scoped
+  // state themselves straight after — without it `loadBuild` would read `/bindings` twice on every
+  // app switch.
+  async function loadAppList({ cascade = true } = {}) {
+    const apps = await SW.api.apps().catch(() => null);
+    state.apps = apps || [];
+    const next = state.apps.find((a) => a.selected) || null;
+    const moved = (next && next.id) !== (state.activeApp && state.activeApp.id);
+    // A read that FAILED is not an app that moved. `apps()` answers empty for a 500 as readily as
+    // for a Project with no apps, so without this one blip fires the whole cascade, and the tick
+    // that recovers fires it again — and it would take `requires` with it, which is written by
+    // `promote` alone and has no server to be read back from.
+    if (apps && moved && cascade) await refreshAppScope(next);
+    else state.activeApp = next;
     notify();
   }
 
@@ -317,6 +336,29 @@ window.SW = window.SW || {};
     const appId = state.activeApp && state.activeApp.id;
     state.requires = appId ? await SW.api.appRequires(appId) : [];
     notify();
+  }
+
+  // Everything read per app, refetched rather than blanked. Blanking on an app change is cheaper
+  // and never shows a wrong pairing, but it drops the header's row to an empty state reading
+  // "nothing yet", which for an app that ships two Bindings is a lie.
+  //
+  // The app and its three lists are assigned TOGETHER, once every read has landed — which is why
+  // this reads `/bindings` itself rather than going through `refreshBindings`. Assigning the app
+  // first would put the new name over the old lists for the length of the reads, and that window
+  // is not private: `refreshPreview`'s interval and every SSE build frame call `notify()`, so
+  // mid-build the row WOULD be repainted inside it, saying exactly what #95 is about.
+  async function refreshAppScope(app) {
+    const [project, bound, requires] = await Promise.all([
+      SW.api.project().catch(() => null),
+      SW.api.bindings().catch(() => null),
+      app ? SW.api.appRequires(app.id).catch(() => []) : Promise.resolve([]),
+    ]);
+    state.activeApp = app;
+    // A read that failed keeps what is on screen. Emptying on a 502 would have the row report an
+    // app that ships nothing — the same lie as blanking, arrived at by accident.
+    if (project) state.appAttachments = project.attached || [];
+    if (bound) state.bindings = bound.bindings || [];
+    state.requires = requires;
   }
 
   // ---------------------------------------------------------------------
@@ -1866,7 +1908,7 @@ window.SW = window.SW || {};
       if (result.status === 'conflict-unresolved' || result.status === 'error') {
         throw new Error(result.detail || 'Sage could not pull the latest changes.');
       }
-      await Promise.all([store.loadApps(), store.loadBuild({ keepPreview: true })]);
+      await Promise.all([store.loadApps({ cascade: false }), store.loadBuild({ keepPreview: true })]);
       return store.sendBuildPrompt(prompt, { skipIncomingGate: true });
     },
 
@@ -1981,7 +2023,13 @@ window.SW = window.SW || {};
       // merged transcript a card can be read while a different app is selected. Without this the
       // rail would go on highlighting the app the person left, and the next build would land
       // somewhere they were not looking.
-      await Promise.all([loadAppList(), refreshBindings()]);
+      // Unconditional, not the id-guarded cascade: a recross rewrites this app's records whether
+      // or not it moved the selection, so "the app did not change" is not "nothing changed".
+      await loadAppList({ cascade: false });
+      // Passed the app the read above just settled on, not left to default: `refreshAppScope`
+      // assigns whatever it is given, so calling it bare puts the selection down — on the one path
+      // whose whole point is that the crossing's app stays selected.
+      await refreshAppScope(state.activeApp);
       notify();
       return result;
     },
@@ -2010,7 +2058,9 @@ window.SW = window.SW || {};
         SW.api.buildState().catch(() => ({ running: false })),
         refreshBindings(),
         refreshProjectPlan(),
-        loadAppList(),
+        // The cascade would be this function's own work done twice: `attached` is off the read
+        // above and `/bindings` is in this very list.
+        loadAppList({ cascade: false }),
       ]);
       await applyBuildRead(hist);
       state.buildRunning = !!running.running;

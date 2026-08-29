@@ -30,7 +30,10 @@ const json = (body) => ({
 function serve(url) {
   const path = String(url).replace(/^\.\/api/, '');
   if (path.startsWith('/project/history')) return json({ history });
-  if (path.startsWith('/apps')) return json({ items: [] });
+  // The app the seed below says is selected, because an empty list here made `loadAppList` put the
+  // selection down before anything under test could — which hid #95's recross bug rather than
+  // proving its absence.
+  if (path.startsWith('/apps')) return json({ items: [{ id: 'app_a', name: 'Desk exposure', selected: true }] });
   if (path.startsWith('/bindings')) return json({ bindings: [] });
   return json({});
 }
@@ -190,6 +193,9 @@ console.log(JSON.stringify({
   posted: posts.map((p) => p.path),
   cancelled: posts.filter((p) => p.path === '/project/plan/cancel').map((p) => p.body),
   recrossed: posts.filter((p) => p.path.endsWith('/handoff/recross')).map((p) => p.body),
+  // The app the rail is highlighting, after everything the press set off has settled. A recross
+  // refreshes what the app ships, and refreshing that must not put the selection down.
+  activeApp: (SW.store.get().activeApp || {}).id || null,
   prefs,
   sheet: {
     open: Boolean(sheet),
