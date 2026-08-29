@@ -413,10 +413,6 @@ SW.api = {
   },
   removeFromConversation: (id, attachmentId) => del(`/threads/${id}/context/${attachmentId}`),
 
-  appRequires: () => empty(),
-  addRequirement: async () => ({}),
-  removeRequirement: async () => ({}),
-
   threads: async () => request('/threads'),
   thread: (id) => request(`/threads/${id}`),
   createThread: () => post('/threads', {}),

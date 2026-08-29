@@ -147,7 +147,6 @@ window.SW = window.SW || {};
     onOpen,
     contextItem,
     attached,
-    allowAppActs,
     expandable,
     expanded,
     onToggleExpand,
@@ -159,20 +158,12 @@ window.SW = window.SW || {};
     // greyed this out while the copy would have worked.
     const writableDatasets = SW.store.get().datasetTargets || [];
     const items = contextItem
-      ? [{ key: 'detach', label: 'Remove from this conversation' }]
+      ? [{ key: 'remove-from-conversation', label: 'Remove from this conversation' }]
       : [
           {
-            key: attached ? 'detach-resource' : 'mention',
+            key: attached ? 'remove-resource-from-conversation' : 'mention',
             label: attached ? 'Remove from this conversation' : 'Add to this conversation',
           },
-          ...(allowAppActs && app
-            ? [
-                {
-                  key: required ? 'demote' : 'promote',
-                  label: required ? `${app.name} no longer needs this` : `${app.name} needs this to run`,
-                },
-              ]
-            : []),
           ...(resource.source === 'scratch'
             ? writableDatasets.length
               ? writableDatasets.map((d) => ({
@@ -193,10 +184,10 @@ window.SW = window.SW || {};
     const onMenu = ({ key }) => {
       setMenuOpen(false);
       if (key === 'mention') return SW.store.addToContext(resource, { quiet: true });
-      if (key === 'detach') return SW.store.detach(contextItem);
-      if (key === 'detach-resource') return SW.store.detachResource(resource.id);
-      if (key === 'promote') return SW.store.promoteResource(resource);
-      if (key === 'demote') return SW.store.demoteResource(resource);
+      if (key === 'remove-from-conversation') return SW.store.removeFromConversation(contextItem);
+      if (key === 'remove-resource-from-conversation') {
+        return SW.store.removeResourceFromConversation(resource.id);
+      }
       if (key === 'remove') return SW.store.removeFromProject(resource);
       if (key.startsWith('to-dataset:')) {
         return SW.store.addScratchToDataset(resource, key.slice('to-dataset:'.length).replace(/^dataset:/, ''));
@@ -279,7 +270,7 @@ window.SW = window.SW || {};
               onClick: (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                SW.store.detach(contextItem);
+                SW.store.removeFromConversation(contextItem);
               },
             },
             h(CloseOutlined, { style: { fontSize: 10 } })
@@ -304,7 +295,7 @@ window.SW = window.SW || {};
 
   SW.ResourcePanel = function ResourcePanel() {
     const {
-      resourceGroups, resourceErrors, requires, activeApp, panelFilter, projectPlan, bindings, attachments,
+      resourceGroups, resourceErrors, activeApp, panelFilter, projectPlan, bindings, attachments,
       resourcesLoading,
     } = SW.store.get();
     const [query, setQuery] = useState('');
@@ -314,7 +305,11 @@ window.SW = window.SW || {};
 
     const [expandedId, setExpandedId] = useState(null);
 
-    const requiredIds = new Set(requires.map((r) => r.resourceId));
+    // What the selected app is bound to, keyed the way a Project row is (#99) — see
+    // `SW.util.bindingId`. The "In this app" rows below take the same key, and they have to: the
+    // two sections describe one list from two sides, so a Resource marked required up here and a
+    // row down there are the same record or the panel is contradicting itself.
+    const requiredIds = new Set((bindings || []).map((b) => SW.util.bindingId(b)));
     const attachedIds = new Set((attachments || []).map((a) => a.resourceId));
     const filterGroup = panelFilter && SW.util.RESOURCE_META[panelFilter]
       ? SW.util.RESOURCE_META[panelFilter].group
@@ -376,7 +371,6 @@ window.SW = window.SW || {};
           required: requiredIds.has(resource.id),
           app: activeApp,
           attached: attachedIds.has(resource.id),
-          allowAppActs: inBuild,
           highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
             && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
           onOpen: inChat ? addFromPanel : openResource,
@@ -438,16 +432,18 @@ window.SW = window.SW || {};
             ? h('div', { className: 'sw-caption' }, 'Nothing recorded yet. Bindings from Chat land here after Open Builder.')
             : inApp.map((b) =>
                 h(SW.ResourceRow, {
-                  key: `${b.kind}:${b.id}`,
+                  key: SW.util.bindingId(b),
                   resource: {
-                    id: `${b.kind}:${b.id}`,
+                    id: SW.util.bindingId(b),
                     name: b.display_name || b.name,
                     kind: kindForBinding(b.kind),
                     subtitle: (b.kind || '').replace(/_/g, ' '),
                   },
+                  // These rows ARE the app's list — the literal is them describing themselves, and
+                  // it keeps the marker the Project rows get. No `app`, though: with one, the
+                  // subtitle would read "Required by this app" under a head already saying "In this
+                  // app", so the row would repeat its own section instead of naming its kind (#99).
                   required: true,
-                  app: { name: 'this app' },
-                  allowAppActs: false,
                   onOpen: () => {},
                 })
               )

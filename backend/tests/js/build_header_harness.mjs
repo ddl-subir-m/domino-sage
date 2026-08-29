@@ -70,12 +70,31 @@ const ATTACHED = {
   app_d: [{ path: 'public/data/risk/limits.csv', file: 'limits.csv', dataset: 'risk', size: 34 }],
 };
 
-// The third app-scoped list (#95). `appRequires` is a client-side stub that fetches nothing, so
-// the fixture hangs off the same `selected` the other two follow — otherwise a refresh that never
-// ran and one that did would leave `requires` looking identical.
-const REQUIRES = {
-  app_a: [{ resourceId: 'ds_1', name: 'market-data-eod' }],
-  app_c: [{ resourceId: 'al_2', name: 'qwen-2-5' }],
+// One Conversation's chips, in the id space the server actually answers in (#99). `resourceId` is
+// the prefixed Project Resource id — `data_source:ds_1`, not the bare `ds_1` a Binding carries —
+// which is the whole reason a Binding has to be joined on `${kind}:${id}` rather than on `id`.
+//
+// `ctx_source` names the Data Source `app_a` is bound to and `ctx_dataset` names nothing any app
+// records, so dropping one chip and dropping the other are the two different sentences.
+const CONTEXT = {
+  thr_many: [
+    { id: 'ctx_source', kind: 'data_source', name: 'Market data EOD',
+      resourceId: 'data_source:ds_1', bindingKey: ['data_source', 'ds_1'], addedBy: 'user' },
+    { id: 'ctx_dataset', kind: 'dataset', name: 'Desk margins',
+      resourceId: 'dataset:desks', addedBy: 'user' },
+  ],
+};
+
+// What the Project holds, in the same id space, so the panel's Project rows and the app's Bindings
+// are joinable at all. `data_source:ds_1` and `llm_alias:al_1` are both `app_a`'s; `data_source:ds_9`
+// is in the Project and bound by nobody, which is what stops "Required by" reading as decoration.
+const RESOURCE_GROUPS = {
+  dataset: [], table: [], datasource: [
+    { id: 'data_source:ds_1', name: 'Market data EOD', kind: 'datasource' },
+    { id: 'data_source:ds_9', name: 'Risk warehouse', kind: 'datasource' },
+  ],
+  model_llm: [{ id: 'llm_alias:al_1', name: 'Claude Sonnet 4', kind: 'model_llm' }],
+  model_predictive: [], tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
 };
 
 const calls = [];
@@ -85,6 +104,8 @@ let appsFail = false;
 // Emptied by the `noapps` step: a brand-new Project, which is the one state the empty state is
 // written for and the one state a picker cannot show it in.
 let apps = APPS;
+// Chips come off the server and go back to it, so dropping one is a DELETE the next read sees.
+let context = {};
 
 const json = (body, status = 200) => ({
   ok: status < 400, status,
@@ -110,7 +131,11 @@ function serve(url, init) {
   if (path === '/bindings') return json({ bindings: BINDINGS[selected] || [] });
   if (path === '/project') return json({ attached: ATTACHED[selected] || [] });
   if (path.match(/^\/threads\/([^/]+)\/conversation$/)) return json({ history: [] });
-  if (path.match(/^\/threads\/([^/]+)\/context$/)) return json({ items: [] });
+  if ((m = path.match(/^\/threads\/([^/]+)\/context$/))) return json({ items: context[m[1]] || [] });
+  if ((m = path.match(/^\/threads\/([^/]+)\/context\/([^/]+)$/))) {
+    context[m[1]] = (context[m[1]] || []).filter((i) => i.id !== decodeURIComponent(m[2]));
+    return json({});
+  }
   if ((m = path.match(/^\/threads\/([^/?]+)$/))) {
     return json(THREADS[m[1]] || { id: m[1], history: [], touched: [] });
   }
@@ -129,6 +154,8 @@ const timeouts = [];
 const backing = new Map();
 const effects = [];
 const modals = [];
+// Every toast, in order. A message is the only place some of these decisions land.
+const said = [];
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
@@ -163,7 +190,12 @@ const sandbox = {
     Input: Object.assign(function Input() {}, { TextArea: 'Input.TextArea' }),
     Button: 'Button', Dropdown: 'Dropdown', Tag: 'Tag', Tooltip: 'Tooltip', Space: 'Space',
     Checkbox: 'Checkbox', Modal: { confirm: (cfg) => { modals.push(cfg); } },
-    message: { success() {}, error() {}, info() {}, warning() {} },
+    // Recorded, because one of #99's two claims is a SENTENCE: dropping a chip for a Resource the
+    // selected app is bound to has to say the app still needs it, and nothing on screen says that.
+    message: {
+      success: (t) => said.push(String(t)), error: (t) => said.push(String(t)),
+      info: (t) => said.push(String(t)), warning: (t) => said.push(String(t)),
+    },
   },
   icons: new Proxy({}, { get: (_, name) => String(name) }),
   fetch: async (url, init) => serve(url, init),
@@ -172,8 +204,11 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
+// `resource-panel.js` joins the list: since #99 the panel's "Required by {app}" subtitle reads the
+// same `bindings` the header does, so the two surfaces are one claim and belong in one harness.
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
-                 'components/conversation-list.js', 'modes/builder.js']) {
+                 'components/conversation-list.js', 'components/resource-panel.js',
+                 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
@@ -185,14 +220,6 @@ SW.Composer = function Composer() { return null; };
 SW.Message = function Message() { return null; };
 SW.TypingIndicator = function TypingIndicator() { return null; };
 SW.PlanSheet = function PlanSheet() { return null; };
-
-// Recorded in `calls` like the two real fetches, so one ledger answers both halves of #95: whether
-// a tick that moved the app refreshed what hangs off it, and whether a tick that moved nothing
-// stayed silent.
-SW.api.appRequires = async (appId) => {
-  calls.push(`GET /apps/${appId}/requires`);
-  return REQUIRES[appId] || [];
-};
 
 // --- walking the tree ------------------------------------------------------
 // Function components are called rather than stepped over, which is what makes a header assembled
@@ -275,8 +302,38 @@ function rowsOf(node, rows = [], depth = 0) {
   return rows;
 }
 
+// The panel's rows, each under the section head it was drawn beneath and with the words it drew.
+// Grouped rather than flattened, because every #99 claim is about WHICH row said "Required by" —
+// a flat list of every string on the panel cannot tell a subtitle from a section head.
+//
+// Text is collected only while the walk is still inside a `sw-res-*` element, so a group label or a
+// section count between two rows cannot be read as the previous row's subtitle.
+function panelContents(tree) {
+  const out = [];
+  let section = null;
+  let row = null;
+  for (const n of flatten(tree)) {
+    const cls = String(n.className || '');
+    if (cls.startsWith('sw-res-row')) {
+      row = { section, className: cls, texts: [] };
+      out.push(row);
+      continue;
+    }
+    if (cls === 'sw-panel-section-title') {
+      section = (n.texts || []).join('');
+      row = null;
+      continue;
+    }
+    if (cls && !cls.startsWith('sw-res-')) { row = null; continue; }
+    if (row && n.text) row.texts.push(n.text);
+  }
+  return out;
+}
+
 async function arrive(threadId, appId) {
   apps = APPS;
+  context = JSON.parse(JSON.stringify(CONTEXT));
+  said.length = 0;
   effects.length = 0;
   timers.length = 0;
   timeouts.length = 0;
@@ -358,6 +415,38 @@ for (const step of steps) {
     });
     continue;
   }
+  // The resource panel, drawn over the app the step selected. The Project's own rows are seeded
+  // here rather than served, because `/project/resources` is not what this harness is about and the
+  // only thing the panel needs from it is ids in the space Bindings can be joined on (#99).
+  if (step.panel) {
+    await arrive(step.panel, step.select);
+    await SW.store.reloadAttachments();
+    SW.store.set({ resourceGroups: RESOURCE_GROUPS, resourcesLoading: false });
+    report.push({
+      step: `panel ${step.select || selected}`,
+      app: (SW.store.get().activeApp || {}).name || null,
+      rows: panelContents(SW.ResourcePanel()),
+    });
+    continue;
+  }
+
+  // A chip leaving the Conversation. The claim is the sentence it draws: the Resource is out of
+  // context, and whether the selected app is still bound to it changes what the second half says.
+  if (step.dropChip) {
+    await arrive(step.thread, step.select);
+    await SW.store.reloadAttachments();
+    said.length = 0;
+    const chip = SW.store.get().attachments.find((a) => a.id === step.dropChip);
+    if (!chip) throw new Error(`no chip ${step.dropChip} in this conversation`);
+    await SW.store.removeFromConversation(chip);
+    report.push({
+      step: `dropChip ${step.dropChip}`,
+      said: said.slice(),
+      left: SW.store.get().attachments.map((a) => a.id),
+    });
+    continue;
+  }
+
   if (step.rail) {
     // The rail itself, in each mode, so "the same rows in Build as in Chat" is a comparison rather
     // than a promise.
@@ -408,7 +497,6 @@ for (const step of steps) {
       activeName: (s.activeApp || {}).name || null,
       bindings: (s.bindings || []).map((b) => b.display_name || b.name),
       attachments: (s.appAttachments || []).map((a) => a.file),
-      requires: (s.requires || []).map((r) => r.name),
       parts: nodes
         .filter((n) => n.className && n.texts)
         .map((n) => ({ className: n.className, texts: n.texts })),

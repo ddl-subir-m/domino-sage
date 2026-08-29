@@ -97,10 +97,9 @@ window.SW = window.SW || {};
 
     // Context has an owner. `attachments` is this conversation's — disposable,
     // and nobody else's, rendered as chips in the composer and nowhere else.
-    // `requires` is the previewed app's — durable, part of the artifact, and
-    // shown as a badge on the project rows it points at.
+    // What the previewed app durably depends on is `bindings`, which is the
+    // app's and is read per app.
     attachments: [],
-    requires: [],
     // The Built Apps in this Project, oldest first, and the one Build is pointed at. The Build
     // rail's list, where Chat's is `threads` — a Project holds many of each and neither is the
     // other (ADR-0008).
@@ -304,9 +303,9 @@ window.SW = window.SW || {};
   //
   // What hangs off the app follows it too (#95). This is the read Build polls every 30s, and every
   // 2s mid-build, so the selected app can move here with nobody clicking — a second tab choosing a
-  // different app is enough. Until this cascaded, `bindings`, `appAttachments` and `requires` went
-  // on describing the app selected before, and the header's scope row names the app over those
-  // lists outright, so the wrong pairing was printed rather than implied.
+  // different app is enough. Until this cascaded, `bindings` and `appAttachments` went on
+  // describing the app selected before, and the header's scope row names the app over those lists
+  // outright, so the wrong pairing was printed rather than implied.
   //
   // Guarded on the id, not run every tick: unguarded, a poll costing one request would cost three,
   // forever, in every open Build tab. `cascade: false` is for the callers that refresh app-scoped
@@ -319,8 +318,7 @@ window.SW = window.SW || {};
     const moved = (next && next.id) !== (state.activeApp && state.activeApp.id);
     // A read that FAILED is not an app that moved. `apps()` answers empty for a 500 as readily as
     // for a Project with no apps, so without this one blip fires the whole cascade, and the tick
-    // that recovers fires it again — and it would take `requires` with it, which is written by
-    // `promote` alone and has no server to be read back from.
+    // that recovers fires it again.
     if (apps && moved && cascade) await refreshAppScope(next);
     else state.activeApp = next;
     notify();
@@ -332,33 +330,25 @@ window.SW = window.SW || {};
     notify();
   }
 
-  async function refreshRequires() {
-    const appId = state.activeApp && state.activeApp.id;
-    state.requires = appId ? await SW.api.appRequires(appId) : [];
-    notify();
-  }
-
   // Everything read per app, refetched rather than blanked. Blanking on an app change is cheaper
   // and never shows a wrong pairing, but it drops the header's row to an empty state reading
   // "nothing yet", which for an app that ships two Bindings is a lie.
   //
-  // The app and its three lists are assigned TOGETHER, once every read has landed — which is why
+  // The app and both lists are assigned TOGETHER, once every read has landed — which is why
   // this reads `/bindings` itself rather than going through `refreshBindings`. Assigning the app
   // first would put the new name over the old lists for the length of the reads, and that window
   // is not private: `refreshPreview`'s interval and every SSE build frame call `notify()`, so
   // mid-build the row WOULD be repainted inside it, saying exactly what #95 is about.
   async function refreshAppScope(app) {
-    const [project, bound, requires] = await Promise.all([
+    const [project, bound] = await Promise.all([
       SW.api.project().catch(() => null),
       SW.api.bindings().catch(() => null),
-      app ? SW.api.appRequires(app.id).catch(() => []) : Promise.resolve([]),
     ]);
     state.activeApp = app;
     // A read that failed keeps what is on screen. Emptying on a 502 would have the row report an
     // app that ships nothing — the same lie as blanking, arrived at by accident.
     if (project) state.appAttachments = project.attached || [];
     if (bound) state.bindings = bound.bindings || [];
-    state.requires = requires;
   }
 
   // ---------------------------------------------------------------------
@@ -1216,7 +1206,6 @@ window.SW = window.SW || {};
       // would offer rows that select an app this Builder is not attached to.
       state.apps = [];
       state.activeApp = null;
-      state.requires = [];
       state.railAppFilter = null;
       if (!keepThread) {
         state.thread = null;
@@ -1345,7 +1334,7 @@ window.SW = window.SW || {};
     // Project membership ---------------------------------------------------
 
     // The only way anything becomes usable here. Everything else — chips,
-    // @-mentions, an app's requirements — points at something that already
+    // @-mentions, an app's Bindings — points at something that already
     // went through this.
     async addToProject(resource, options = {}) {
       const result = await SW.api.addToProject(state.scope.id, resource);
@@ -1449,81 +1438,31 @@ window.SW = window.SW || {};
 
     // Out of this conversation's context. The resource stays in the project, and
     // the app keeps needing it — that separation is the whole point of the split.
-    async detach(attachment) {
+    //
+    // Named for the call it makes, and for the scope it acts on. It used to be `detach`, which is
+    // also the backend's word for removing an app Attachment — one word over the two scopes #84
+    // and the glossary's **Session context** entry exist to keep apart (ADR-0011).
+    async removeFromConversation(attachment) {
       await SW.api.removeFromConversation(conversationId(), attachment.id);
       state.attachments = state.attachments.filter((a) => a.id !== attachment.id);
       notify();
-      const stillNeeded = state.requires.some((r) => r.resourceId === attachment.resourceId);
+      // The one moment the two scopes visibly disagree, said out loud so it does not read as a
+      // leak: the chip is gone and the selected app goes on being allowed to reach the Resource.
+      // See `SW.util.bindingId` for why this is a join rather than an id comparison.
+      const app = state.activeApp;
+      const stillNeeded = app
+        && (state.bindings || []).some((b) => SW.util.bindingId(b) === attachment.resourceId);
       antd.message.info(
         stillNeeded
-          ? `${attachment.resourceName} is out of this conversation. ${state.activeApp.name} still needs it.`
+          ? `${attachment.resourceName} is out of this conversation. ${app.name} still needs it.`
           : `${attachment.resourceName} is out of context — still in ${state.scope.name}.`
       );
     },
 
-    detachResource(resourceId) {
+    removeResourceFromConversation(resourceId) {
       const attachment = state.attachments.find((a) => a.resourceId === resourceId);
-      if (attachment) return store.detach(attachment);
+      if (attachment) return store.removeFromConversation(attachment);
       return Promise.resolve();
-    },
-
-    // App requirements ---------------------------------------------------
-
-    // Promotion changes the artifact, so it is its own act with its own
-    // feedback rather than a side effect of working in a conversation.
-    async promote(attachment) {
-      const app = state.activeApp;
-      if (!app) return null;
-      const requirement = await SW.api.addRequirement(
-        app.id,
-        attachment.resourceId,
-        attachment.addedBy,
-        attachment.rationale
-      );
-      if (!state.requires.some((r) => r.id === requirement.id)) {
-        state.requires = [...state.requires, requirement];
-      }
-      notify();
-      antd.message.success(`${attachment.resourceName} is now part of ${app.name}.`);
-      return requirement;
-    },
-
-    async demote(requirement) {
-      const app = state.activeApp;
-      if (!app) return;
-      await SW.api.removeRequirement(app.id, requirement.id);
-      state.requires = state.requires.filter((r) => r.id !== requirement.id);
-      notify();
-      antd.message.info(`${app.name} no longer needs ${requirement.resourceName}.`);
-    },
-
-    // The panel acts on resources rather than on attachment records, because a
-    // row there is a project member first and a dependency second.
-    async promoteResource(resource) {
-      const app = state.activeApp;
-      if (!app) return null;
-      const requirement = await SW.api.addRequirement(app.id, resource.id, 'user');
-      if (!state.requires.some((r) => r.id === requirement.id)) {
-        state.requires = [...state.requires, requirement];
-      }
-      notify();
-      await loadScopeData();
-      antd.message.success(`${app.name} now needs ${resource.name} to run.`);
-      return requirement;
-    },
-
-    async demoteResource(resource) {
-      const requirement = state.requires.find((r) => r.resourceId === resource.id);
-      if (!requirement) return;
-      await store.demote(requirement);
-      await loadScopeData();
-    },
-
-    // Bring one of the app's requirements back into a conversation that dropped it.
-    async restore(requirement) {
-      return store.attach(requirement.resourceId, requirement.addedBy, requirement.rationale, {
-        silent: true,
-      });
     },
 
     // @-mentions and panel picks land in the same place: this conversation's context.
@@ -1719,7 +1658,6 @@ window.SW = window.SW || {};
         state.activePlanId = null;
         state.activePlan = null;
         notify();
-        await refreshRequires();
         SW.router.go(`#/build?app=${app.id}`);
         return app;
       } catch (err) {
@@ -1751,7 +1689,6 @@ window.SW = window.SW || {};
         state.activePlanId = (selected && selected.planId) || null;
         state.activePlan = null;
         notify();
-        await refreshRequires();
         if (selected && selected.planId) await store.loadPlan(selected.planId);
         return selected;
       } catch (err) {
@@ -1785,7 +1722,6 @@ window.SW = window.SW || {};
       state.activePlanId = (selected && selected.planId) || null;
       state.activePlan = null;
       notify();
-      await refreshRequires();
       if (selected && selected.planId) await store.loadPlan(selected.planId);
       // Through the rail's own route grammar, so the conversation on screen survives: deleting an
       // abandoned app is not a reason to close the Thread somebody is talking in.
@@ -1799,7 +1735,6 @@ window.SW = window.SW || {};
 
     clearApp() {
       state.activeApp = null;
-      state.requires = [];
       state.activePlanId = null;
       state.activePlan = null;
       notify();
@@ -2614,7 +2549,6 @@ window.SW = window.SW || {};
     reloadScopeData: loadScopeData,
     reloadThreads: loadThreadList,
     reloadAttachments: refreshAttachments,
-    reloadRequires: refreshRequires,
 
     async reloadNotifications() {
       state.notifications = await SW.api.notifications();

@@ -61,6 +61,21 @@ window.SW = window.SW || {};
       return kind || 'file';
     },
 
+    // A Binding, in the id space everything else keys a Resource on.
+    //
+    // A Binding records the BARE Domino id beside its kind (`{kind: 'data_source', id: 'ds_1'}`),
+    // while a Project Resource id and an attachment's `resourceId` both carry the kind as a prefix
+    // (`data_source:ds_1`). So asking "is this row the thing the app is bound to" is a join, and a
+    // join on `b.id` alone matches nothing — silently, and looking exactly like the empty state.
+    //
+    // Lives here because three surfaces now have to agree on it: the panel's "Required by {app}"
+    // subtitle, its "In this app" rows, and the sentence `removeFromConversation` draws when a chip
+    // leaves a Conversation the app still depends on. This is the same join `api.js` already makes
+    // when it recovers a missing `resourceId` from `bindingKey.join(':')`.
+    bindingId(binding) {
+      return `${binding.kind}:${binding.id}`;
+    },
+
     // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path
     // OpenCode reads. Lives here rather than in the composer because the menu that INSERTS a token
     // and the turn that reads it back off the prompt have to derive it the same way — a token only

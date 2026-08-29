@@ -369,9 +369,9 @@ window.SW = window.SW || {};
                     closeIcon: h(CloseOutlined, { style: { fontSize: 10 } }),
                     onClose: (e) => {
                       e.preventDefault();
-                      // A failed detach leaves the chip on screen, so silence reads as a dead
+                      // A failed removal leaves the chip on screen, so silence reads as a dead
                       // close button.
-                      SW.store.detach(att).catch(sayFailed);
+                      SW.store.removeFromConversation(att).catch(sayFailed);
                     },
                     className: 'sw-chip',
                   },

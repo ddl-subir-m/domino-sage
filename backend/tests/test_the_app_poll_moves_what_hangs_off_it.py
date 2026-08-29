@@ -2,8 +2,8 @@
 
 Build arms a 30-second `loadApps` poll so a teammate's push, a build running in another app,
 and a selection made in a second tab all reach the screen without anyone clicking. It moved
-`activeApp` and nothing else, so the three app-scoped lists — `bindings`, `appAttachments`,
-`requires` — went on describing the app that was selected before. Two surfaces then paired one
+`activeApp` and nothing else, so both app-scoped lists — `bindings` and `appAttachments` —
+went on describing the app that was selected before. Two surfaces then paired one
 app's name with another app's resources: the header's scope row (#92), which heads its lists
 with the app name outright, and the resource panel's "In app" grouping.
 
@@ -93,15 +93,14 @@ def _said(step: dict) -> str:
 
 
 @needs_node
-def test_a_poll_that_moves_the_app_moves_its_bindings_attachments_and_requires():
-    """The whole of #95. All three lists are read per app and all three were left behind."""
+def test_a_poll_that_moves_the_app_moves_its_bindings_and_attachments():
+    """The whole of #95. Both lists are read per app and both were left behind."""
     moved, _ = _ticks()
     assert moved["activeApp"] == "app_a"
     assert moved["activeName"] == "Desk dashboard"
     # app_a's records, not app_c's. `qwen-2-5` was the Binding a moment ago.
     assert moved["bindings"] == ["Claude Sonnet 4", "Market data EOD"]
     assert moved["attachments"] == ["margins.csv"]
-    assert moved["requires"] == ["market-data-eod"]
 
 
 @needs_node
@@ -111,7 +110,6 @@ def test_the_move_refetches_rather_than_blanking_the_lists():
     moved, _ = _ticks()
     assert "GET /bindings" in moved["calls"]
     assert "GET /project" in moved["calls"]
-    assert "GET /apps/app_a/requires" in moved["calls"]
 
 
 # ---- the tick that moves nothing ---------------------------------------------------------
@@ -132,23 +130,19 @@ def test_a_poll_that_changes_nothing_leaves_the_lists_where_they_were():
     assert still["activeApp"] == "app_a"
     assert still["bindings"] == ["Claude Sonnet 4", "Market data EOD"]
     assert still["attachments"] == ["margins.csv"]
-    # `requires` is the one of the three no server restores — `appRequires` answers empty and
-    # `promote` is what fills it — so a refresh that ran here would destroy rather than reload.
-    assert still["requires"] == ["market-data-eod"]
 
 
 @needs_node
 def test_a_failed_read_of_the_app_list_is_not_an_app_that_moved():
     """`apps()` answers empty for a 500 as readily as for a Project with no apps, so an id guard
-    that trusts it treats every blip as an app change: three requests instead of one, twice over
-    once the next tick recovers, and `requires` gone for an app nobody switched away from."""
+    that trusts it treats every blip as an app change: three requests instead of one, and twice
+    over once the next tick recovers."""
     step = _run(
         [{"thread": "thr_many", "select": "app_a", "poll": "app_c", "readFails": True}]
     )[-1]
     assert step["calls"] == ["GET /apps"]
     assert step["bindings"] == ["Claude Sonnet 4", "Market data EOD"]
     assert step["attachments"] == ["margins.csv"]
-    assert step["requires"] == ["market-data-eod"]
 
 
 # ---- the paths that already refreshed --------------------------------------------------
@@ -156,13 +150,12 @@ def test_a_failed_read_of_the_app_list_is_not_an_app_that_moved():
 
 @needs_node
 def test_switching_apps_by_hand_still_reads_each_record_once():
-    """`selectApp` reloads the whole of Build, which refreshes all three already. The cascade is
+    """`selectApp` reloads the whole of Build, which refreshes both already. The cascade is
     off down that path, so this fix costs a hand-made app switch nothing — it fills the gap the
     poll had, and adds no second read to the moment that never had one."""
     step = _run([{"thread": "thr_many", "select": "app_c", "switchTo": "app_a"}])[-1]
     assert step["calls"].count("GET /bindings") == 1
     assert step["calls"].count("GET /project") == 1
-    assert step["calls"].count("GET /apps/app_a/requires") == 1
 
 
 # ---- the two surfaces that showed it -----------------------------------------------------
@@ -182,11 +175,11 @@ def test_the_header_row_names_the_new_app_over_the_new_apps_records():
 
 def test_the_resource_panel_reads_the_same_assignment_the_poll_writes():
     """The panel's "In app" grouping is the second surface. It is covered by the store fix only
-    because it holds no app-scoped read of its own — it takes `activeApp`, `bindings` and
-    `requires` off one `store.get()`. A panel that fetched its own would need its own fix."""
+    because it holds no app-scoped read of its own — it takes `activeApp` and `bindings` off one
+    `store.get()`. A panel that fetched its own would need its own fix."""
     body = _body_of("components/resource-panel.js", "SW.ResourcePanel = function ResourcePanel(")
     read = body[: body.index("useState")]
     assert "SW.store.get()" in read
-    for name in ("activeApp", "bindings", "requires"):
+    for name in ("activeApp", "bindings"):
         assert re.search(rf"\b{name}\b", read), name
-    assert not re.search(r"SW\.api\.(appRequires|bindings|project)\b", body)
+    assert not re.search(r"SW\.api\.(bindings|project)\b", body)
