@@ -943,6 +943,24 @@ async def publish_check() -> JSONResponse:
     return JSONResponse(content=result)
 
 
+@control_app.get("/api/publish-egress")
+async def publish_egress() -> JSONResponse:
+    """What of this app's data leaves Domino when it calls a model, read before publishing (#35):
+    {checked, notice}. Beside `publish-check` rather than inside it — this one may reach the gateway
+    for the Alias listing, and that check promises it never reaches anything. The UI asks both at
+    once so a slow listing cannot hold up the query warnings.
+
+    A notice, never a refusal (ADR-0012): `POST /api/publish` neither calls this nor cares whether
+    the UI did. A 502 reads as nothing to say, which is the same thing `checked: false` means to a
+    creator — the failure is loud in the log and silent on screen, on purpose."""
+    try:
+        result = await run_in_threadpool(orchestrator.publish_egress)
+    except Exception as e:
+        log.exception("publish-egress failed")
+        return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
+    return JSONResponse(content=result)
+
+
 @control_app.get("/api/publish-status")
 async def publish_status(app_id: str) -> JSONResponse:
     """Deploy status of a published app so the UI can poll after Publish: {phase, status, app_id}."""

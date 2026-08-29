@@ -136,11 +136,11 @@ def test_the_no_model_config_is_byte_identical_to_the_one_shipped_in_the_templat
 
 def test_the_agent_is_told_nothing_when_no_model_is_pinned():
     # An agent told about a model that is not there writes a call that cannot run.
-    assert agents_block([]) == ""
+    assert agents_block([], []) == ""
 
 
 def test_the_agent_is_given_the_import_the_display_name_and_the_load_check():
-    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")])
+    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [])
     assert "Claude Sonnet 4.6" in block
     assert 'from "./sageLlm"' in block
     assert "checkModel" in block          # the check whose absence only breaks for OTHER people

@@ -91,12 +91,14 @@ from ..resources.provider import (
     Column,
     DataSource,
     FakeResourceProvider,
+    LlmAlias,
     ResourceProvider,
     ResourceUnavailable,
     alias_reasoning_efforts,
     cascade_levels,
     safe_identifier,
 )
+from ..resources.publish_egress import egress_notice, needs_listing
 from ..resources.publish_guard import (
     PublishRefused,
     data_source_bindings,
@@ -6511,6 +6513,38 @@ class Orchestrator:
         problems = catalog_problems(self._wm.template, project.workspace.path)
         return {"checked": problems is not None, "queries": problems or []}
 
+    def publish_egress(self) -> dict:
+        """What of this app's data leaves Domino when it calls a model, asked before publishing (#35).
+
+        BESIDE `publish_check`, not inside it, and the two routes are fired in parallel. Telling a
+        vendor-backed Alias from a Domino-hosted one needs the gateway's Alias listing, and
+        `publish_check`'s "local and pure ... no network" is load-bearing — it is why the common
+        case costs the publish flow nothing. Folding a listing into it would make every publish wait
+        on the network for a sentence most apps do not earn, and a slow listing would hold up the
+        query warnings that were already sitting on the disk.
+
+        The join is checked on the manifest FIRST, so an app with no store bound, or no Alias bound,
+        makes no request at all. That is most apps, and they pay nothing for this.
+
+        Never a refusal. ADR-0012 settled that no combination is refused, so this returns prose or
+        nothing and `publish` neither calls it nor cares whether the UI did.
+
+        `checked` is false when the listing could not be fetched, and `notice` is None either way:
+        "checked and nothing to say" and "could not check" are different answers and must not
+        collapse, even though a creator sees the same silence. The silence is deliberate — see
+        `egress_notice`.
+        """
+        project = self.project()
+        bindings = parse_bindings(project.workspace.read_bindings())
+        if not needs_listing(bindings):
+            return {"checked": True, "notice": None}
+        try:
+            aliases: list[LlmAlias] | None = self._resources.list_llm_aliases()
+        except Exception:
+            log.exception("publish-egress: couldn't list LLM Aliases to say where this app's data goes")
+            aliases = None
+        return {"checked": aliases is not None, "notice": egress_notice(bindings, aliases)}
+
     def publish_status(self, app_id: str) -> dict:
         """Deploy status of a published app so the UI can poll after Publish. Maps the raw instance
         status to a phase: running (live) / failed / pending (still deploying)."""
@@ -8156,12 +8190,17 @@ class Orchestrator:
         rewrite with identical content would still show up as a dirty file in the turn's tree
         comparison and in their git history.
         """
-        aliases = bound_aliases(parse_bindings(project.workspace.read_bindings()))
+        recorded = parse_bindings(project.workspace.read_bindings())
+        aliases = bound_aliases(recorded)
         if aliases:
             self._wm.ensure_llm_helper()
         self._write_generated(project.workspace.path / CONFIG_PATH,
                               render_config(aliases, self._browser_gateway_base, self._cost_project_label))
-        self._splice_agents(project, self._MODEL_BEGIN, self._MODEL_END, agents_block(aliases))
+        # The stores go in beside the Aliases only to decide the closing paragraph (#35): what the
+        # agent is told about where the app's data goes is a fact about the JOIN, and the join is
+        # readable off this one manifest.
+        self._splice_agents(project, self._MODEL_BEGIN, self._MODEL_END,
+                            agents_block(aliases, data_source_bindings(recorded)))
 
     def _write_app_model_api(self, project: Project) -> None:
         """Pin the app's Model API into its own source, and tell the agent it is there (#9).

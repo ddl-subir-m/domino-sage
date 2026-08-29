@@ -149,6 +149,19 @@ let appsFail = false;
 // A refused publish, as the sentence the server would send with the 409. Nothing is published on
 // this path, and the confirm has to stay open on it.
 let publishFails = '';
+// What the two pre-publish reads answer (#35), and whether either one answers at all. Both are set
+// per step, because the notice's whole behaviour is a function of these two — including the case
+// where a read fails, which must leave the confirm exactly as it opened.
+let checkAnswer = { checked: true, queries: [] };
+let egressAnswer = { checked: true, notice: null };
+let checkFails = false;
+let egressFails = false;
+// A read that never answers — the gateway hanging rather than refusing. It is the case the two
+// routes exist for: the query check is local disk and must render whatever the listing is doing,
+// so a hang here has to be expressible or "fired in parallel" is untested prose.
+let checkHangs = false;
+let egressHangs = false;
+const NEVER = new Promise(() => {});
 // Emptied by the `noapps` step: a brand-new Project, which is the one state the empty state is
 // written for and the one state a picker cannot show it in.
 let apps = APPS;
@@ -215,6 +228,18 @@ function route(path, init) {
       row.url = `/modelproducts/da_${row.id.replace('app_', '')}?scope=project`;
     }
     return json({ published: true, app_id: `da_${selected}`, url: row ? row.url : '', republished: again });
+  }
+  // The two reads behind the pre-publish notice (#35). Two routes rather than one, the way the
+  // server has them: the query check is local disk and the egress read may reach the gateway, so a
+  // slow listing must not hold up warnings that were already on the disk. A failure is a 502 here
+  // and nothing on screen there.
+  if (path === '/publish-check') {
+    if (checkHangs) return NEVER;
+    return checkFails ? json({ error: 'no' }, 502) : json(checkAnswer);
+  }
+  if (path === '/publish-egress') {
+    if (egressHangs) return NEVER;
+    return egressFails ? json({ error: 'no' }, 502) : json(egressAnswer);
   }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
@@ -305,7 +330,18 @@ const sandbox = {
   antd: {
     Input: Object.assign(function Input() {}, { TextArea: 'Input.TextArea' }),
     Button: 'Button', Dropdown: 'Dropdown', Tag: 'Tag', Tooltip: 'Tooltip', Space: 'Space',
-    Checkbox: 'Checkbox', Modal: { confirm: (cfg) => { modals.push(cfg); } },
+    Checkbox: 'Checkbox', Alert: 'Alert',
+    // `confirm` answers with the instance antd answers with, because #35's notice arrives AFTER the
+    // modal is on screen and `update` is the only way in: `Modal.confirm` renders its config once,
+    // outside any tree this file can re-render, and the stubbed `useState` setter below is a no-op —
+    // so a component nested in `content` could never show a second answer here. `update` merges into
+    // the recorded config the way antd's does, which is what makes the filled-in content readable.
+    Modal: {
+      confirm: (cfg) => {
+        modals.push(cfg);
+        return { update: (next) => Object.assign(cfg, next), destroy: () => {} };
+      },
+    },
     // Recorded, because one of #99's two claims is a SENTENCE: dropping a chip for a Resource the
     // selected app is bound to has to say the app still needs it, and nothing on screen says that.
     message: {
@@ -408,6 +444,11 @@ function flatten(node, out = [], depth = 0) {
   }
   if (typeof props.dropdownRender === 'function') flatten(props.dropdownRender(), out, depth + 1);
   flatten(props.title, out, depth + 1);
+  // An `Alert` carries its words in `message` and `description` rather than in children, and #35's
+  // whole notice is two of them. Walked like `title` for the same reason: a claim about what a
+  // screen SAYS cannot be asked of a prop the walk steps over.
+  flatten(props.message, out, depth + 1);
+  flatten(props.description, out, depth + 1);
   flatten(node.c, out, depth + 1);
   return out;
 }
@@ -942,6 +983,12 @@ for (const step of steps) {
     modals.length = 0;
     opened.length = 0;
     publishFails = step.refuse || '';
+    checkAnswer = { checked: true, queries: step.queries || [] };
+    egressAnswer = { checked: true, notice: step.notice || null };
+    checkFails = !!step.checkFails;
+    egressFails = !!step.egressFails;
+    checkHangs = !!step.checkHangs;
+    egressHangs = !!step.egressHangs;
     if (step.buildRunning) SW.store.set({ buildRunning: true });
     calls.length = 0;
     const menuOf = () => {
@@ -955,6 +1002,14 @@ for (const step of steps) {
     // A disabled item is not clicked, the way antd would not click it. What it says is the claim.
     if (!item.disabled) menu.onMenu({ key: 'publish', domEvent: { stopPropagation() {} } });
     const confirm = item.disabled ? null : modals[modals.length - 1];
+    // What the confirm said BEFORE the two reads landed. Kept, because #35's criterion is that the
+    // modal opens without waiting on either of them — a notice already present here would mean the
+    // click had awaited a network read, which is the control-that-did-nothing this must not be.
+    const openedWith = confirm ? words(flatten(confirm.content)).join(' ') : '';
+    // Two turns of the queue: one for the pair of reads, one for the `.then` that updates. After
+    // this the notice has arrived or has decided not to, and either way the modal is settled.
+    await settle();
+    await settle();
     // A modal can sit open for as long as somebody leaves it there, and the 30-second app poll
     // moves the selection underneath — which the request cannot notice, because it carries no id.
     // Its own key: `switchTo` is the switch step's, one branch above this one.
@@ -975,6 +1030,11 @@ for (const step of steps) {
         cancelText: String(confirm.cancelText || ''),
         danger: !!(confirm.okButtonProps || {}).danger,
         content: words(flatten(confirm.content)).join(' '),
+        openedWith,
+        // Every Alert the settled content holds, by the kind it is drawn as: a query that will fail
+        // is a warning and where the data goes is not, and one type standing in for the other is a
+        // change nothing else here would catch.
+        alerts: flatten(confirm.content).filter((n) => n.el === 'Alert').map((n) => n.type),
       } : null,
       acted,
       calls: calls.slice(),

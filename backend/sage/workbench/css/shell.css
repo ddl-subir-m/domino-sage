@@ -882,6 +882,11 @@
 .sw-drawer-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--s4); }
 .sw-sovereign-callout { margin-bottom: var(--s4); }
 
+/* The pre-publish notice's list of refused queries (#35). Each entry is the app's own sentence and
+   runs to a line or two, so the browser's default indent is kept and only the margins go. */
+.sw-publish-warnings { margin: 0; padding-left: 18px; }
+.sw-publish-warnings li + li { margin-top: var(--s1); }
+
 /* Settings drawer -------------------------------------------------------- */
 
 /* Label, explanation and control read as one setting; the gap below the group is twice the gap

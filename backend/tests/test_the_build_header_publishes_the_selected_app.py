@@ -22,9 +22,10 @@ before the first, "where does this end up"; after it, "does the link I already s
 TWO DOORS, NEVER ONE THAT MOVES. `Open app` opens the deployed App and the toolbar's control opens
 the local preview. Two controls, two labels, two destinations, asserted by where each one went.
 
-WHAT THIS TICKET MUST NOT DO. The pre-publish notice is #35, which is blocked on this landing.
-`GET /api/publish-check` exists and stays uncalled until then: a warning rendered here would be
-the next ticket, built early and without its own criteria.
+WHAT THIS TICKET DID NOT DO. The pre-publish notice was #35, which was blocked on this landing:
+`GET /api/publish-check` existed and stayed uncalled, because a warning rendered here would have
+been the next ticket built early and without its own criteria. #35 has since landed on the confirm
+this ticket opened, so the last test below asserts that rather than its absence.
 
 Nothing is mounted — see `js/build_header_harness.mjs` for why.
 """
@@ -161,8 +162,11 @@ def test_the_confirm_is_not_dressed_as_a_destructive_one():
 
 @needs_node
 def test_cancelling_publishes_nothing():
+    # The two GETs are #35's pre-publish notice, which is READ on the way into the question — a
+    # notice that arrived only after you agreed would be a notice about something already done.
+    # They take nothing and change nothing, and neither is a `POST /publish`, which is the claim.
     step = _publish("app_b", confirm=False)
-    assert step["calls"] == [], step["calls"]
+    assert step["calls"] == ["GET /publish-check", "GET /publish-egress"], step["calls"]
     assert _published(step) == ["app_a", "app_d"]
 
 
@@ -194,7 +198,8 @@ def test_a_publish_that_fails_still_re_reads_the_row():
     recorded. Re-reading only on success would leave `Open app — publish it first` on an app that
     is already deployed, until something else happened to reload the list."""
     step = _publish("app_b", refuse="Domino answered 502.")
-    assert step["calls"] == ["POST /publish", "GET /apps"], step["calls"]
+    assert step["calls"] == ["GET /publish-check", "GET /publish-egress",
+                             "POST /publish", "GET /apps"], step["calls"]
 
 
 @needs_node
@@ -203,7 +208,10 @@ def test_publishing_re_reads_the_row_rather_than_guessing_at_it():
     `Open app` opens — and the header reads every one of them off the row. Patching it from the
     response would leave the fourth reader of that row to find out on the next tick."""
     step = _publish("app_b")
-    assert step["calls"] == ["POST /publish", "GET /apps"], step["calls"]
+    # Written out rather than filtered down to the two that write: the two reads in front are #35's
+    # pre-publish notice, and asking for either one twice is a regression this exactness catches.
+    assert step["calls"] == ["GET /publish-check", "GET /publish-egress",
+                             "POST /publish", "GET /apps"], step["calls"]
     assert [a["url"] for a in step["apps"] if a["id"] == "app_b"] == ["/modelproducts/da_b?scope=project"]
 
 
@@ -328,16 +336,21 @@ def test_the_row_carries_the_url_and_not_the_domino_app_id():
         assert "dominoAppId" not in text, source
 
 
-# ---- what this ticket must not do --------------------------------------------------------------
+# ---- what this ticket did not do, and what came after it ----------------------------------------
 
 
 @needs_node
-def test_nothing_here_warns_before_a_publish():
-    """The pre-publish notice is #35, which is blocked on this landing. `GET /api/publish-check`
-    exists and is tested and stays uncalled until then — a warning rendered here would be the next
-    ticket, built early and without its own criteria."""
+def test_the_confirm_this_ticket_opened_is_where_the_pre_publish_notice_landed():
+    """This was the placeholder that kept #35 from being built early: it asserted the confirm asked
+    `GET /api/publish-check` nowhere, because a warning rendered here would have been the next
+    ticket without its own criteria. #35 has landed, so the claim inverts — the confirm this ticket
+    opened is exactly the surface the notice attaches to, and it asks BOTH reads.
+
+    What survives is the shape, not the silence: the two reads are asked in parallel and neither is
+    awaited before the confirm appears. What the notice then SAYS is #35's own file's business —
+    `test_a_publish_says_what_leaves_domino.py`."""
     step = _publish("app_b")
-    assert not any("publish-check" in c for c in step["calls"]), step["calls"]
-    for source in ("js/api.js", "js/store.js", "js/modes/builder.js"):
-        assert "publish-check" not in (_WORKBENCH / source).read_text(), source
-        assert "publishCheck" not in (_WORKBENCH / source).read_text(), source
+    assert "GET /publish-check" in step["calls"], step["calls"]
+    assert "GET /publish-egress" in step["calls"], step["calls"]
+    # The confirm was already on screen with its own two paragraphs before either read answered.
+    assert "Only this app goes out." in step["confirm"]["openedWith"]

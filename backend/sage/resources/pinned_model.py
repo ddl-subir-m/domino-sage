@@ -96,11 +96,16 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None)
     )
 
 
-def agents_block(aliases: list[Binding]) -> str:
+def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
     """What the agent is told about the app's models, for the managed AGENTS.md region.
 
     Empty when nothing is bound: an agent told about a model that is not there would write a call
     that cannot run, and describing the machinery costs context on every turn for nothing.
+
+    `sources` is the app's Data Source Bindings, and it only ever decides whether the closing
+    paragraph is written. That paragraph fires on the LOCAL join — at least one store and at least
+    one Alias — and is worded as a conditional, because this file is a function of the disk and the
+    disk cannot say whether an Alias is Domino-hosted. See `_egress_note`.
 
     Prescriptive about the two things an agent gets wrong when left to itself. It invents a `fetch`
     with a hardcoded model name, URL and — worst — a placeholder API key, none of which can work from
@@ -187,4 +192,41 @@ def agents_block(aliases: list[Binding]) -> str:
         ("- **Do not edit or re-create `src/sageLlm.ts` or `src/sageLlm.config.ts`.** Sage owns both, "
          "rewrites them, and which models this app uses is chosen in Sage, not in code."), "",
     ]
-    return "\n".join(head + code + rules)
+    return "\n".join(head + code + rules + _egress_note(sources))
+
+
+def _egress_note(sources: list[Binding]) -> list[str]:
+    """Where this app's data goes when it calls a model — the consequence, not a rule (#35).
+
+    A CONSEQUENCE because ADR-0012 left no rule to state: no store-and-Alias combination is refused,
+    the administrator who registered that Alias made it callable on purpose, and the creator is told
+    at publish and decides. An agent handed a prohibition it can see the app violating on every turn
+    learns to route around the block, which is the failure the ADR rejected a blanket refusal over.
+
+    CONDITIONAL because it is honest at this precision and no more. `_write_app_model` runs on every
+    Binding change and is deliberately a function of the disk, so it is handed no listing and cannot
+    tell a vendor-backed Alias from a Domino-hosted one. The fix is NOT a `sovereign` field on the
+    Binding record: an Alias's hosting is a live fact and `.sage/bindings.json` is committed to the
+    creator's repo, so it would go stale in the one place nobody re-reads. (`connector_type` is the
+    counter-precedent and does not carry — a connector's shape does not change under you.)
+
+    Fires on the join alone. An app with a model and no store has nothing to send it, and an app
+    with a store and no model never leaves the platform, so neither pays for this paragraph — the
+    Alias half of the join is `agents_block`'s own early return, which is why only the store half is
+    asked here.
+    """
+    if not sources:
+        return []
+    return [
+        "### Where this app's data goes",
+        "",
+        ("This app reads a Data Source and calls a model, so rows from that store go wherever the "
+         "model runs. An LLM Alias hosted on Domino answers inside the platform; one that is not — "
+         "which most are — answers outside it, and whatever a prompt carries goes with it. Once the "
+         "app is published that happens for every viewer, unattended, rather than under the "
+         "creator's eye. The creator is told this before publishing and decides."),
+        "",
+        ("A screen that sends whole rows sends more than one that sends the columns it shows. Both "
+         "are allowed, and they are not the same amount of data leaving Domino."),
+        "",
+    ]
