@@ -12,21 +12,39 @@ window.SW = window.SW || {};
     memberCount: 1,
   };
 
+  // The pack's documented defaults (docs/workbench/brand.md), which are Domino's. The shell paints
+  // before /api/brand answers, so the Workbench carries them — but as ONE copy: this is both what
+  // the store opens on and what an absent key falls back to when a token is resolved. A second
+  // table beside the accessors would be the same fact in two places, drifting apart silently.
+  //
+  // A noun carries both forms — `{dataset}` and `{datasetPlural}` — because a plural is read from
+  // the pack, never derived. Copy that would need `a`/`an` is reworded instead.
+  const BRAND_DEFAULT = {
+    productName: 'AI Workbench',
+    assistantName: 'Sage',
+    platformName: 'Domino',
+    pageTitle: 'Sage Workspace',
+    logoUrl: './img/domino-logo.svg',
+    logoAlt: 'Domino',
+    nouns: {
+      dataset: { singular: 'Dataset', plural: 'Datasets' },
+      dataSource: { singular: 'Data Source', plural: 'Data Sources' },
+      modelApi: { singular: 'Model API', plural: 'Model APIs' },
+      llmAlias: { singular: 'LLM Alias', plural: 'LLM Aliases' },
+      builtApp: { singular: 'Built App', plural: 'Built Apps' },
+      gallery: { singular: 'Gallery', plural: 'Galleries' },
+    },
+    colors: {
+      primary: '#543FDE',
+      primaryDark: '#311EAE',
+      primaryLight: '#EEEBFC',
+    },
+  };
+
   const state = {
     ready: false,
     me: null,
-    brand: {
-      productName: 'AI Workbench',
-      assistantName: 'Sage',
-      pageTitle: 'Sage Workspace',
-      logoUrl: './img/domino-logo.svg',
-      logoAlt: 'Domino',
-      colors: {
-        primary: '#543FDE',
-        primaryDark: '#311EAE',
-        primaryLight: '#EEEBFC',
-      },
-    },
+    brand: BRAND_DEFAULT,
     projects: [],
     // Whether this container can create or attach Projects at all (Domino + a git host).
     // False on a laptop run, where New project has nothing to create against.
@@ -930,7 +948,10 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({
           type: 'status',
           ok: false,
-          value: `${ev.file} calls Domino's LLM Gateway directly — rewriting it to use askModel`,
+          value: SW.brand.text(
+            "{file} calls {platformName}'s LLM Gateway directly — rewriting it to use askModel",
+            { file: ev.file }
+          ),
         });
       } else if (ev.type === 'gateway-alias-unbound' && ev.message) {
         // The half of that the agent cannot finish: only a person can bind an Alias (ADR-0010), so
@@ -1542,7 +1563,7 @@ window.SW = window.SW || {};
       await handOver({
         title: `Opening ${project.name}`,
         detail: 'Starting your workspace there. This takes about a minute if it was stopped.',
-        failure: `Sage couldn't open ${project.name}`,
+        failure: SW.brand.text("{assistantName} couldn't open {name}", { name: project.name }),
         start: () => SW.api.openProject(project.id),
       });
     },
@@ -1557,7 +1578,7 @@ window.SW = window.SW || {};
       return handOver({
         title: `Creating ${trimmed}`,
         detail: 'Setting up the repository and starting your workspace. This takes about a minute.',
-        failure: `Sage couldn't create ${trimmed}`,
+        failure: SW.brand.text("{assistantName} couldn't create {name}", { name: trimmed }),
         start: () => SW.api.createProject(trimmed),
       });
     },
@@ -1658,7 +1679,9 @@ window.SW = window.SW || {};
       return new Promise((resolve) => {
         antd.Modal.confirm({
           title: `Remove ${resource.name} from ${scopeName}?`,
-          content: 'It leaves this project. You can add it again from Browse Domino.',
+          content: SW.brand.text(
+            'It leaves this project. You can add it again from Browse {platformName}.'
+          ),
           okText: 'Remove',
           okButtonProps: { danger: true },
           onOk: async () => {
@@ -1673,7 +1696,9 @@ window.SW = window.SW || {};
               const apps = (err.payload && err.payload.apps) || [];
               const refs = (err.payload && err.payload.refs) || [];
               if (apps.length) {
-                const subject = apps.length > 1 ? 'Built Apps' : 'a Built App';
+                const subject = SW.brand.text(
+                  apps.length > 1 ? '{builtAppPlural}' : 'one {builtApp}'
+                );
                 const fix = refs.length
                   ? ` Used in: ${refs.join(', ')}. Remove those uses in Build, then remove it here.`
                   // The code word this used to say names the app-scoped pair in `service.py` and
@@ -1807,7 +1832,9 @@ window.SW = window.SW || {};
       // are safe in is exactly the invention ADR-0011 forbids.
       const source = attachment.dataset_id
         ? `The app's copy is gone and the file stays in ${attachment.dataset}.`
-        : "The app's copy is gone. This file records no Dataset, so there is no source to name.";
+        : SW.brand.text(
+          "The app's copy is gone. This file records no {dataset}, so there is no source to name."
+        );
       const leaked = result.removed_copies || [];
       const copies = leaked.length ? ` A copy left in ${leaked.join(', ')} went with it.` : '';
       // The route hands back no manifest, so the list is the one on screen minus what just went —
@@ -2100,7 +2127,9 @@ window.SW = window.SW || {};
         return app;
       } catch (err) {
         // The one refusal worth a sentence is the turn lock's, and the server writes it.
-        antd.message.warning(err.message || 'Sage could not start a new Built App.');
+        antd.message.warning(
+          err.message || SW.brand.text('{assistantName} could not start a new {builtApp}.')
+        );
         return null;
       } finally {
         creating = false;
@@ -2130,7 +2159,9 @@ window.SW = window.SW || {};
         if (selected && selected.planId) await store.loadPlan(selected.planId);
         return selected;
       } catch (err) {
-        antd.message.warning(err.message || 'Sage could not switch to that Built App.');
+        antd.message.warning(
+          err.message || SW.brand.text('{assistantName} could not switch to that {builtApp}.')
+        );
         return state.activeApp;
       } finally {
         selecting = null;
@@ -2344,7 +2375,9 @@ window.SW = window.SW || {};
     async pullAndBuild(prompt) {
       const result = await SW.api.syncProject();
       if (result.status === 'conflict-unresolved' || result.status === 'error') {
-        throw new Error(result.detail || 'Sage could not pull the latest changes.');
+        throw new Error(
+          result.detail || SW.brand.text('{assistantName} could not pull the latest changes.')
+        );
       }
       await Promise.all([store.loadApps({ cascade: false }), store.loadBuild({ keepPreview: true })]);
       return store.sendBuildPrompt(prompt, { skipIncomingGate: true });
@@ -3038,7 +3071,7 @@ window.SW = window.SW || {};
         state.resourceIndex[next.id] = next;
         await store.attach(next.id, 'user', undefined, { silent: true, quiet: true });
       }
-      antd.message.success(`${resource.name} is on the Dataset`);
+      antd.message.success(SW.brand.text('{name} is on the {dataset}', { name: resource.name }));
       return res;
     },
 
@@ -3152,35 +3185,24 @@ window.SW = window.SW || {};
   // by then provenance is gone, and a filter cannot tell our word for the platform from a Resource
   // a user named after the company.
   //
-  // The shell paints before /api/brand answers, so every token has a Domino default here too.
-  const BRAND_FALLBACK = {
-    productName: 'AI Workbench',
-    assistantName: 'Sage',
-    platformName: 'Domino',
-  };
-  // A noun contributes both forms — `{dataset}` and `{datasetPlural}` — because a plural is read
-  // from the pack, never derived. Copy that would need `a`/`an` is reworded instead.
-  const BRAND_NOUNS_FALLBACK = {
-    dataset: { singular: 'Dataset', plural: 'Datasets' },
-    dataSource: { singular: 'Data Source', plural: 'Data Sources' },
-    modelApi: { singular: 'Model API', plural: 'Model APIs' },
-    llmAlias: { singular: 'LLM Alias', plural: 'LLM Aliases' },
-    builtApp: { singular: 'Built App', plural: 'Built Apps' },
-    gallery: { singular: 'Gallery', plural: 'Galleries' },
-  };
+  // What an absent key falls back to is BRAND_DEFAULT, at the top of this file — the pack's
+  // documented defaults, held once. The shell paints before /api/brand answers, so those are what
+  // a person reads until it does.
   const BRAND_TOKEN = /\{([A-Za-z][A-Za-z0-9]*)\}/g;
 
   function brandTokens() {
     const pack = store.get().brand || {};
-    const table = Object.assign({}, BRAND_FALLBACK);
-    for (const [key, value] of Object.entries(pack)) {
-      if (typeof value === 'string' && value) table[key] = value;
-    }
-    const packNouns = (pack.nouns && typeof pack.nouns === 'object') ? pack.nouns : {};
-    for (const [key, fallback] of Object.entries(BRAND_NOUNS_FALLBACK)) {
-      const forms = Object.assign({}, fallback, packNouns[key] || {});
-      if (typeof forms.singular === 'string' && forms.singular) table[key] = forms.singular;
-      if (typeof forms.plural === 'string' && forms.plural) table[key + 'Plural'] = forms.plural;
+    const table = {};
+    for (const source of [BRAND_DEFAULT, pack]) {
+      for (const [key, value] of Object.entries(source)) {
+        if (typeof value === 'string' && value) table[key] = value;
+      }
+      const nouns = (source.nouns && typeof source.nouns === 'object') ? source.nouns : {};
+      for (const [key, forms] of Object.entries(nouns)) {
+        if (!forms || typeof forms !== 'object') continue;
+        if (typeof forms.singular === 'string' && forms.singular) table[key] = forms.singular;
+        if (typeof forms.plural === 'string' && forms.plural) table[key + 'Plural'] = forms.plural;
+      }
     }
     return table;
   }
@@ -3195,11 +3217,19 @@ window.SW = window.SW || {};
     platform() {
       return brandTokens().platformName;
     },
+    // `values` fill the rest of the sentence, so the whole sentence stays one literal that the lint
+    // over marked positions can read. A substituted value is NOT scanned again, which is what lets
+    // a Resource a user named after the company survive being interpolated into one of ours.
+    //
     // An unknown token is left as it was written rather than throwing: a typo in a string must
-    // never stop the Workbench booting.
-    text(template) {
+    // never stop the Workbench booting, and a passed-through platform error carries braces of
+    // its own.
+    text(template, values) {
       if (!template || template.indexOf('{') < 0) return template;
       const table = brandTokens();
+      if (values) {
+        for (const [key, value] of Object.entries(values)) table[key] = String(value);
+      }
       return String(template).replace(BRAND_TOKEN, (raw, key) =>
         Object.prototype.hasOwnProperty.call(table, key) ? table[key] : raw
       );

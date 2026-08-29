@@ -57,11 +57,20 @@ window.SW = window.SW || {};
     if (!state.items.length) {
       return h(Result, {
         icon: h(Empty, { image: Empty.PRESENTED_IMAGE_SIMPLE, description: null }),
-        title: state.provisioning ? 'No Built Apps yet' : 'Gallery needs Domino',
-        subTitle: state.provisioning
-          ? 'Apps published from a Sage Builder show up here, for everyone who can open them. ' +
-            'Build something in Chat, then publish it.'
-          : 'This build runs outside Domino, so there are no published Apps to list.',
+        // `No Built Apps yet` is pinned as SOURCE TEXT by `test_gallery.py`, which this batch does
+        // not own, so it is the one title here the pack cannot rename yet. ADR-0014 says a grep over
+        // the source is the wrong test; replacing that assertion is what unblocks the token.
+        title: state.provisioning
+          ? 'No Built Apps yet'
+          : SW.brand.text('{gallery} needs {platformName}'),
+        subTitle: SW.brand.text(
+          state.provisioning
+            // No article engine, so the sentence takes CONTEXT.md's own plural phrasing rather
+            // than "a {assistantName} Builder", which a vowel-initial name would have broken.
+            ? 'Apps published from {assistantName} Builder sessions show up here, for everyone ' +
+              'who can open them. Build something in Chat, then publish it.'
+            : 'This build runs outside {platformName}, so there are no published Apps to list.'
+        ),
         extra: state.provisioning
           ? h(Button, { type: 'primary', onClick: () => SW.router.go('#/chat') }, 'Go to Chat')
           : null,
@@ -77,7 +86,8 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-gallery-head' },
-          h('h2', { style: { margin: 0, fontSize: 20, fontWeight: 600 } }, 'Gallery'),
+          h('h2', { style: { margin: 0, fontSize: 20, fontWeight: 600 } },
+            SW.brand.text('{gallery}')),
           h('p', { className: 'sw-secondary', style: { margin: '4px 0 0' } },
             `${state.items.length} ${state.items.length === 1 ? 'app' : 'apps'} you can open`)
         ),

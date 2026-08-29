@@ -70,11 +70,13 @@ function rawFromPrefix(id) {
 async function fetchDominoListing() {
   const [res, assets] = await Promise.all([
     request('/resources').catch(() => ({ data_sources: [], llm_aliases: [], model_apis: [], errors: {
-      data_sources: 'Could not list Data Sources.',
+      data_sources: SW.brand.text('Could not list {dataSourcePlural}.'),
       llm_aliases: 'Could not list language models.',
-      model_apis: 'Could not list Model APIs.',
+      model_apis: SW.brand.text('Could not list {modelApiPlural}.'),
     } })),
-    request('/assets').catch(() => ({ assets: [], error: 'Could not list Datasets.' })),
+    request('/assets').catch(() => ({
+      assets: [], error: SW.brand.text('Could not list {datasetPlural}.'),
+    })),
   ]);
   const errors = { ...(res.errors || {}) };
   if (assets.error) errors.datasets = assets.error;
@@ -302,7 +304,7 @@ SW.api = {
           ...r,
           inProject: memberIds.has(r.id),
           description: r.description || '',
-          originName: r.project || 'Domino',
+          originName: r.project || SW.brand.platform(),
           ownerName: '',
         });
       });
