@@ -4,6 +4,9 @@ Sage is a builder that turns a chat conversation into a working app, published o
 This glossary covers the language Sage uses for the Domino things a user can bring into an
 app, and for the artefacts Sage produces from them.
 
+Every term here is a **default label**, not fixed vocabulary. An OEM pack replaces the ones a
+person sees — see [ADR-0014](docs/adr/0014-the-overlay-renames-prose-not-identifiers.md).
+
 ## Language
 
 ### Domino things a user can pick
