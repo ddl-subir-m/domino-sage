@@ -9,8 +9,8 @@ The rule behind every line below is [ADR-0014](../adr/0014-the-overlay-renames-p
 
 ## Status
 
-**This file is the design, and it is now built.** The one exception is the packaging bug under
-Attribution, which predates the overlay and is not brand work.
+**This file is the design, and it is now built.** The one thing still open is the repo having no
+`LICENSE` of its own — noted under Attribution, and repo governance rather than brand work.
 
 Shipped in v1 (`40ecb14`): the pack loader and its fallbacks, `GET /api/brand`, `productName`,
 `assistantName`, `pageTitle`, `logoUrl`, `logoAlt`, `colors`, the antd theme, about fourteen UI
@@ -216,9 +216,13 @@ workflow file has to exist first — neither test can supply one.
 renders no Notices surface.**
 
 What is left is not brand. Third-party licence text has to travel with what we distribute, which a
-file in the Environment image satisfies. **Not built, and not this file's problem** — the repo ships
-no `NOTICE` or `LICENSE` today while `index.html:9-14` serves Inter under the SIL OFL. Track it as a
-packaging bug; it predates the overlay.
+file in the image satisfies. **Built, and deliberately not a brand surface** — `NOTICE` covers Inter
+and the nine vendor bundles the Workbench serves from its own origin, and `environment/Dockerfile`
+asserts it reached the image, so deleting it fails the build rather than shipping a licence breach
+quietly. Nothing renders it and no pack key switches it.
+
+The repo still has no `LICENSE` of its own. That is repo governance, not a distribution obligation
+and not this file's problem.
 
 Built Apps carry their own. Their dependencies ship in a repo the user owns, so the obligation is
 the user's. Sage writes no licence file into a new app and injects nothing into its chrome.
