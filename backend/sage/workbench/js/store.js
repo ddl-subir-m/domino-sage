@@ -2004,7 +2004,10 @@ window.SW = window.SW || {};
       // Unconditional, not the id-guarded cascade: a recross rewrites this app's records whether
       // or not it moved the selection, so "the app did not change" is not "nothing changed".
       await loadAppList({ cascade: false });
-      await refreshAppScope();
+      // Passed the app the read above just settled on, not left to default: `refreshAppScope`
+      // assigns whatever it is given, so calling it bare puts the selection down — on the one path
+      // whose whole point is that the crossing's app stays selected.
+      await refreshAppScope(state.activeApp);
       notify();
       return result;
     },

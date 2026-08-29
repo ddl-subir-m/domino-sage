@@ -580,3 +580,19 @@ def test_the_change_sheet_saves_the_answers_as_a_preference_only_when_asked():
                              "handoffTranscript": False}
     assert once["recrossed"] == [{"include": answers, "planId": "001"}]
     assert once["prefs"] == {}
+
+
+@needs_node
+def test_redoing_the_crossing_leaves_the_app_selected(tmp_path: Path):
+    """A recross refreshes what the selected app ships (#95), and refreshing that must not put the
+    selection down.
+
+    The comment on the refresh says why the selection matters at exactly this moment: the crossing
+    selected the app it wrote into, so a rail that stops highlighting it leaves the next build
+    landing somewhere the person is not looking. The card's own press is the only way in — nothing
+    else calls `recrossHandoff` — so this is asserted through it rather than against the store."""
+    card = _card(_proposed(_CROSSED), press="Change what crosses|Redo the crossing")
+
+    assert card["recrossed"] == [{"include": {"resources": True, "artifacts": True,
+                                              "transcript": False}, "planId": "001"}]
+    assert card["activeApp"] == "app_a"
