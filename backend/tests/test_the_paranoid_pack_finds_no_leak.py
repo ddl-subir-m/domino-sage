@@ -298,8 +298,29 @@ def test_an_identifier_is_not_a_word():
     exclusion is case-sensitive whole-word matching, and it is a decision, not a lucky regex."""
     for identifier in (".sage/scratch", "sage-chat", "domino_data", "DOMINO_API_HOST",
                        "DatasetClient", "get_dataset", "./img/domino-logo.svg", "src/appQuery.ts",
-                       "sage@dominodatalab.com", "sageBuilder"):
+                       "sageBuilder"):
         assert not _FORBIDDEN.search(identifier), identifier
+
+
+def test_the_commit_author_names_nobody():
+    """The fallback git identity, scanned case-INSENSITIVELY, unlike every other surface here.
+
+    Everywhere else the case-sensitive match is what keeps identifiers out (`.sage/`, `domino_data`).
+    A git author is not an identifier: nothing resolves it, no mail is sent to it, and lowercase is
+    exactly the form a person reads in `git log`. So `sage@dominodatalab.com` passed the scan while
+    being our name in the author line of every save in a partner's customer's repo.
+
+    De-branded once rather than re-branded per pack, because history is immutable — ADR-0014's third
+    arm, the same call as `build: `. Harvested from source so a third site added later is caught too.
+    """
+    identities = set()
+    for path in sorted(SAGE.rglob("*.py")):
+        identities |= set(re.findall(r"user\.(?:name|email)=(\S+?)[\"\']", path.read_text()))
+
+    assert identities, "no fallback identity found — the harvest broke, it did not pass"
+    for value in identities:
+        for word in ("sage", "domino", "ml studio", "workbench"):
+            assert word not in value.lower(), f"{value} names us in every commit it authors"
 
 
 def test_prose_naming_us_is_a_word():

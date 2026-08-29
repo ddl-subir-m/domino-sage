@@ -21,7 +21,9 @@ from pathlib import Path
 
 from ..workspace.manager import _IGNORE, _SEED_SKIP
 
-_SAGE_IDENTITY = ["-c", "user.email=sage@dominodatalab.com", "-c", "user.name=sage"]
+# De-branded once — see `workspace.git._identity_args`, which makes the same call for the same
+# reason. Kept in step with it by `test_the_commit_author_names_nobody`.
+_AGENT_IDENTITY = ["-c", "user.email=agent@localhost", "-c", "user.name=agent"]
 
 # One-shot credential helper: on a `get`, prints creds from $SAGE_PUSH_TOKEN. The token itself never
 # appears here — only the env var name does — so it stays out of argv and any process listing.
@@ -105,6 +107,6 @@ def seed_and_push(
         _git(repo, "init", "-q")
         _git(repo, "checkout", "-q", "-b", branch)
         _git(repo, "add", "-A")
-        _git(repo, *_SAGE_IDENTITY, "commit", "-q", "-m", message)
+        _git(repo, *_AGENT_IDENTITY, "commit", "-q", "-m", message)
         _git(repo, "remote", "add", "origin", clone_url)
         _git(repo, *push_prefix, "push", "-q", "-u", "origin", branch, env=push_env)

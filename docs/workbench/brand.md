@@ -180,6 +180,10 @@ The repo is a surface — the partner's own customer can read it.
   One resolver answers "what is this app's helper called", not 49 conditionals. The names are
   load-bearing in 49 places, including `pinned_model.py:30-31` and `pinned_model_api.py:27-28`.
 - **Commit prefix is `build: `.** Nothing parses it. `seed.py:63` → `"Initial commit"`.
+- **Commit author is `agent <agent@localhost>`.** The fallback identity used when the repo has none
+  configured, so it is the author line of every save the partner's own customer reads. Lowercase, so
+  the case-sensitive scan never caught it; nothing resolves it, so it is not an identifier either.
+  De-branded once for the same reason as the prefix beside it.
 - **Built App chrome stays out.** That is the user's product.
 
 ## Proof — partly built
