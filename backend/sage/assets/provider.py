@@ -94,18 +94,19 @@ class UnconfiguredAssetProvider:
     """No DOMINO_API_HOST. Raises rather than inventing datasets, so the rail cannot look populated."""
 
     def list_datasets(self, project_id: str | None) -> list[Asset]:
-        raise ResourceUnavailable(
-            "Sage lists Datasets from the Domino API, and it is not configured to reach one, "
-            "so it cannot tell which Datasets you have."
-        )
+        raise ResourceUnavailable(brand.text(
+            "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
+            "configured to reach one, so it cannot tell which {datasetPlural} you have."
+        ))
 
     def list_files(self, asset: Asset) -> list[DatasetFile]:
         return []
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
-        raise ResourceUnavailable(
-            "Sage reads Dataset files through the Domino API, and it is not configured to reach one."
-        )
+        raise ResourceUnavailable(brand.text(
+            "{assistantName} reads {dataset} files through the {platformName} API, and it is not "
+            "configured to reach one."
+        ))
 
 
 # name -> (tags, project, {filename: contents}). Seeded to a temp dir so the file-attach flow
@@ -230,10 +231,11 @@ class DominoAssetProvider:
         try:
             from domino_data.datasets import DatasetClient
         except ImportError as e:
-            raise ResourceUnavailable(
-                "Sage reads Dataset files through the Domino data library, which is not installed "
-                "here. Datasets will still list, but Sage cannot look inside one."
-            ) from e
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} reads {dataset} files through the {platformName} data library, "
+                "which is not installed here. {datasetPlural} will still list, but "
+                "{assistantName} cannot look inside one."
+            )) from e
         return DatasetClient().get_dataset(dataset_unique_name(asset))
 
     def _mount_path_for(self, name: str) -> str | None:
@@ -247,10 +249,10 @@ class DominoAssetProvider:
         import httpx
 
         if not self._api_host:
-            raise ResourceUnavailable(
-                "Sage lists Datasets from the Domino API, and it is not configured to reach one, "
-                "so it cannot tell which Datasets you have."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
+                "configured to reach one, so it cannot tell which {datasetPlural} you have."
+            ))
         url = f"{self._api_host}/api/datasetrw/v2/datasets"
         found: list[Asset] = []
         offset = 0
@@ -268,7 +270,10 @@ class DominoAssetProvider:
                 raise
             except Exception as e:
                 raise ResourceUnavailable(
-                    f"The Domino API didn't answer at /api/datasetrw/v2/datasets ({type(e).__name__})."
+                    brand.text(
+                        "The {platformName} API didn't answer at /api/datasetrw/v2/datasets ({err}).",
+                        err=type(e).__name__,
+                    )
                 ) from e
             if r.status_code >= 400:
                 raise ResourceUnavailable(
@@ -280,11 +285,11 @@ class DominoAssetProvider:
             try:
                 data = r.json()
             except ValueError as e:
-                raise ResourceUnavailable(
-                    "The Domino API returned a non-JSON body listing Datasets. "
+                raise ResourceUnavailable(brand.text(
+                    "The {platformName} API returned a non-JSON body listing {datasetPlural}. "
                     "That is what a signed-out session looks like, so this builder's token for it "
                     "may have expired."
-                ) from e
+                )) from e
             items = data.get("datasets") or data.get("data") or []
             for item in items:
                 ds = item.get("dataset") or item
@@ -325,8 +330,10 @@ class DominoAssetProvider:
             raise
         except Exception as e:
             raise ResourceUnavailable(
-                f"Domino did not answer for the files in Dataset {asset.name} "
-                f"({type(e).__name__})."
+                brand.text(
+                    "{platformName} did not answer for the files in {dataset} {name} ({err}).",
+                    name=asset.name, err=type(e).__name__,
+                )
             ) from e
         return [DatasetFile(n, 0) for n in names if n][:_MAX_FILES]
 
@@ -338,6 +345,9 @@ class DominoAssetProvider:
             dataset.download_file(rel_path, str(dest))
         except Exception as e:
             raise ResourceUnavailable(
-                f"Domino did not send {rel_path} from Dataset {asset.name} ({type(e).__name__})."
+                brand.text(
+                    "{platformName} did not send {path} from {dataset} {name} ({err}).",
+                    path=rel_path, name=asset.name, err=type(e).__name__,
+                )
             ) from e
         return dest.stat().st_size
