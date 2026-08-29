@@ -6532,7 +6532,7 @@ class Orchestrator:
         path = project.record.path
         if not git.is_repo_root(path):
             return None
-        message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
+        message = f"build: {prompt.splitlines()[0][:72]}" if prompt.strip() else "build: no prompt"
         # Hard backstop: never stage attached-data copies, even if the agent ignored the fix nudge.
         leaked = self._leaked_copy_paths(project)
         try:
@@ -6614,7 +6614,7 @@ class Orchestrator:
             git.abort_merge(path)
             return git.SyncResult("conflict-unresolved", remaining,
                                   f"conflicts remain in {', '.join(remaining)} — pull was rolled back")
-        git.finalize_merge(path, "sage: merge remote changes")
+        git.finalize_merge(path, "build: merge remote changes")
         return git.SyncResult("merged", conflicts, "merged teammate changes (conflicts resolved)")
 
     def sync(self) -> dict:
@@ -6641,7 +6641,7 @@ class Orchestrator:
         if not self._turn_lock.acquire(blocking=False):
             raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
-            git.commit_all(path, "sage: save before pull", exclude=self._leaked_copy_paths(project))
+            git.commit_all(path, "build: save before pull", exclude=self._leaked_copy_paths(project))
             result = self._integrate_remote(project)
             if result is None or result.status in ("conflict-unresolved", "error"):
                 detail = result.detail if result else "no remote to pull from"
