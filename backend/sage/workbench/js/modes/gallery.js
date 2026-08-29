@@ -57,11 +57,8 @@ window.SW = window.SW || {};
     if (!state.items.length) {
       return h(Result, {
         icon: h(Empty, { image: Empty.PRESENTED_IMAGE_SIMPLE, description: null }),
-        // `No Built Apps yet` is pinned as SOURCE TEXT by `test_gallery.py`, which this batch does
-        // not own, so it is the one title here the pack cannot rename yet. ADR-0014 says a grep over
-        // the source is the wrong test; replacing that assertion is what unblocks the token.
         title: state.provisioning
-          ? 'No Built Apps yet'
+          ? SW.brand.text('No {builtAppPlural} yet')
           : SW.brand.text('{gallery} needs {platformName}'),
         subTitle: SW.brand.text(
           state.provisioning

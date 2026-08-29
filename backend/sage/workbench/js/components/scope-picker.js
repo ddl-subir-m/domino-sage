@@ -86,8 +86,8 @@ window.SW = window.SW || {};
             Tooltip,
             {
               // Say why it can't be used, rather than offering a button that fails on click.
-              title: canProvision ? '' : 'Sage can’t reach Domino from this container, '
-                + 'so it can’t create a Project.',
+              title: canProvision ? '' : SW.brand.text('{assistantName} can’t reach {platformName} '
+                + 'from this container, so it can’t create a Project.'),
               placement: 'right',
             },
             h(

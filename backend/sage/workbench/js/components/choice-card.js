@@ -45,7 +45,10 @@ window.SW = window.SW || {};
           { className: 'sw-choice-resolved' },
           h(CheckCircleFilled, null),
           chosen.opensPanel
-            ? 'Opened the Domino catalogue — add one there and I\'ll pick the thread back up.'
+            // The catalogue is the platform's page, so the word is the platform's name; the label
+            // beside it is whatever the option was called, dropped in rather than resolved.
+            ? SW.brand.text('Opened the {platformName} catalogue — add one there and I\'ll pick '
+              + 'the thread back up.')
             : `You chose "${chosen.label}".`
         )
     );

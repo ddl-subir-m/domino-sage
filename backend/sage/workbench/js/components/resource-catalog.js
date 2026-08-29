@@ -11,7 +11,7 @@ window.SW = window.SW || {};
   const KINDS = [
     { key: null, label: 'Everything' },
     { key: 'dataset', label: '{datasetPlural}' },
-    { key: 'datasource', label: 'Data sources' },
+    { key: 'datasource', label: '{dataSourcePlural}' },
     { key: 'model_llm', label: 'Language models' },
     { key: 'model_predictive', label: 'Predictive models' },
     { key: 'agent', label: 'Agents' },
@@ -211,7 +211,7 @@ window.SW = window.SW || {};
               prefix: h(SearchOutlined, { style: { color: '#8F8FA3' } }),
               placeholder: drill
                 ? `Search in ${drill.name}…`
-                : 'Search everything in Domino…',
+                : SW.brand.text('Search everything in {platformName}…'),
               value: query,
               allowClear: true,
               autoFocus: true,
@@ -257,7 +257,10 @@ window.SW = window.SW || {};
               ? h(Empty, {
                   style: { padding: 32 },
                   description: query.trim()
-                    ? `Nothing in Domino matches "${query.trim()}".`
+                    // What the person typed is theirs: it fills a slot and is never scanned for
+                    // tokens, so a search for `{dataset}` reads back as itself.
+                    ? SW.brand.text('Nothing in {platformName} matches "{query}".',
+                      { query: query.trim() })
                     : 'Nothing here.',
                 })
               : rows.map((resource) =>
