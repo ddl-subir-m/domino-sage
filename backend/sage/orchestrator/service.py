@@ -2088,6 +2088,11 @@ class Orchestrator:
         # rather than run over a session that may still be writing. Nothing clears this: restarting
         # the workspace is the remedy, and the refusal says so.
         self._turn_wedged = False
+        # Set when a turn was given up on, whether or not its session then confirmed it stopped —
+        # so it is true on the clean stall path as well, where `_turn_wedged` stays false because
+        # the lock IS handed back. What it means is narrower and more useful: this turn did not
+        # build anything. Cleanup that only makes sense after a build that happened reads this one.
+        self._turn_gave_up = False
         # Serializes the four operations that change WHICH Built App is bound, or what is in it:
         # select, New app, Delete and Reset. Switching stopped taking the turn lock (#77), so it is
         # no longer serialized against the other three by holding that — and each of them reads the
@@ -3108,6 +3113,7 @@ class Orchestrator:
             yield from self._busy_refusal()
             return
         try:
+            self._turn_gave_up = False
             self._begin_conversation(conversation)
             project = self.project()
             self._pin_turn_app(project)
@@ -5492,6 +5498,8 @@ class Orchestrator:
                     quiet_for = time.monotonic() - last_event
                     log.error("build turn wedged: no OpenCode output for %.0fs — giving up", quiet_for)
                     stopped = self._stop_wedged_session(client, sid)
+                    # Before the branch, because it is true of both: nothing was built either way.
+                    self._turn_gave_up = True
                     if not stopped:
                         # Two failures, and the second is the one that decides what happens next. We
                         # cannot show that the session let go of the working tree, so the turn lock
@@ -5522,6 +5530,16 @@ class Orchestrator:
                         raise TurnWedged()
                     # It stopped, so the tree is ours again: put the mode pins back and hand the
                     # person an offer they can act on rather than an error row they cannot.
+                    #
+                    # The stop flag goes with it. A person watching a build hang for five minutes
+                    # presses Stop, and `stop_build` sets this while the workspace still reads busy
+                    # — `_turn_wedged` is false until the stop actually fails. The turn that would
+                    # have cleared it in `handle_stop` is the one that never came back, and this
+                    # exit hands the lock straight back, so the flag would be sitting there for the
+                    # NEXT turn to trip over: the Try again button on the card below would return
+                    # "stopped" without running a step. The stop has been honoured — the session is
+                    # idle — so the flag has done its job.
+                    project.stop_requested = False
                     restore_mode()
                     yield from stalled_offer(quiet_for)
                     return
@@ -5793,6 +5811,7 @@ class Orchestrator:
             yield from self._busy_refusal()
             return
         try:
+            self._turn_gave_up = False
             self._begin_conversation(conversation)
             self._pin_turn_app(self.project())
             yield from self._approve_locked(answers, plan_edits, plan_id=plan_id)
@@ -5893,10 +5912,12 @@ class Orchestrator:
                 yield ev
         finally:
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
-            # Not on a wedge (#39): that writes to the tree the session may still be holding, and it
-            # would retire a plan for a build that never happened, leaving nothing to re-approve
-            # after the restart.
-            if not self._turn_wedged:
+            # Not when the turn gave up (#39): on the wedged path that writes to the tree the session
+            # may still be holding, and on BOTH paths it would retire a plan for a build that never
+            # happened. `_turn_wedged` alone was too narrow — it is false after a stall the session
+            # confirmed, which is exactly the case where the person is holding a Try again button and
+            # the plan they would be retrying has just been archived out from under it.
+            if not self._turn_gave_up:
                 project.app_for_turn().archive_plan()
 
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:

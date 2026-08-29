@@ -571,3 +571,62 @@ def test_the_routes_hand_the_wedged_sentence_to_the_person(tmp_path: Path, monke
         for response in (client.post("/api/apps"), client.post("/api/project/reset")):
             assert response.status_code == 409
             assert "Restart the workspace" in response.json()["error"]
+
+
+def test_a_stop_pressed_while_sage_was_stopping_does_not_answer_the_next_turn(tmp_path: Path):
+    """The give-up's offer is a Try again button, and this is what that button used to reach.
+
+    The window is narrow and specific. A Stop pressed during the five-minute wait is consumed by the
+    poll loop's own first statement — it interrupts, runs `handle_stop`, and the turn ends as
+    "stopped" rather than stalling. But `_stop_wedged_session` then spends up to `_BUILD_STOP_GRACE_S`
+    asking the session to stop, and inside it there is no poll loop running: the lock is still held,
+    so `turn_busy()` is true and `stop_build` still accepts, and nothing is left to consume what it
+    sets. #97 found this window from the reset side; this is the same window seen from the next turn.
+
+    The clean exit then hands the lock straight back, so the flag was waiting for the next turn to
+    trip over on its first poll — and the next turn is the one the card's own button starts.
+    """
+    orch, oc = _wedged(tmp_path, turns=[Turn(text="wedged"),
+                                        Turn(text="done", writes={"src/chart.tsx": "chart\n"})])
+    real_interrupt = oc.interrupt
+
+    def stop_pressed_while_we_ask(sid: str) -> None:
+        # Exactly where a person lands who pressed Stop as the give-up was already under way.
+        orch.project(start_preview=False).stop_requested = True
+        real_interrupt(sid)
+
+    oc.interrupt = stop_pressed_while_we_ask
+
+    list(orch.build_stream("add a chart"))
+    assert orch.project(start_preview=False).stop_requested is False
+
+    events = list(orch.build_stream("try that again"))
+    assert _of(events, "done")[0]["ok"] is True
+
+
+def test_a_stalled_approve_leaves_the_plan_to_be_approved_again(tmp_path: Path):
+    """A stall archived the plan the person is being offered the chance to retry.
+
+    `archive_plan` is a one-shot handoff: once a build has consumed the plan, leaving `.sage/plan.md`
+    on disk reads to a later turn like current intent. That reasoning needs a build to have happened.
+    The guard was `_turn_wedged`, which is false after a stall the session confirmed — precisely the
+    case where the lock comes back, the person holds a Try again button, and the plan behind it has
+    just been moved out from under them.
+    """
+    ws = tmp_path / "mnt" / "code"
+    oc = WedgedOpenCode(ws, [Turn(text="1. Add a table\n2. Wire up the data"), Turn(text="building")])
+    orch = _orch(tmp_path, oc)
+    oc.orch = orch
+    # The gate back on: the approve turn only exists behind it.
+    orch.project(start_preview=False).record.write_settings({"skip_planning": False})
+
+    oc.stay_running = False        # the planning turn is healthy and writes the plan
+    list(orch.build_stream("build me a dashboard"))
+    plan = orch.project(start_preview=False).workspace.path / ".sage" / "plan.md"
+    assert plan.exists()
+
+    oc.stay_running = True         # the build behind the approval is the one that hangs
+    events = list(orch.approve_stream())
+
+    assert _of(events, "build-stalled")
+    assert plan.exists(), "the plan was archived for a build that never happened"
