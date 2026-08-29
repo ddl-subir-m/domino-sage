@@ -285,12 +285,19 @@ def user_texts(history: list[dict]) -> list[str]:
 
 
 def transcript_markdown(history: list[dict]) -> str:
+    """The Chat transcript written to `.sage/handoff-transcript.md` in the Built App's repo.
+
+    `Agent`, not the pack's assistantName: a transcript is a record, and ADR-0014:108 says a pack
+    change cannot re-brand a conversation that already happened — so the label Sage wrapped it in is
+    de-branded ONCE, the way `sage: ` became `build: `. `User` is a role, and what either of them
+    said is reproduced verbatim.
+    """
     lines: list[str] = []
     for e in history or []:
         if e.get("type") == "user" and e.get("text"):
             lines.append(f"**User:** {e['text']}")
         elif e.get("type") == "agent" and e.get("kind") == "text" and e.get("text"):
-            lines.append(f"**Sage:** {e['text']}")
+            lines.append(f"**Agent:** {e['text']}")
     return ("\n\n".join(lines) + "\n") if lines else ""
 
 
