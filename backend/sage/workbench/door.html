@@ -141,7 +141,10 @@
 </head>
 <body>
   <main class="card" id="card">
-    <img class="logo" id="logo" src="./img/domino-logo.svg" alt="" />
+    <!-- Filled by the route that serves this page (#116), not by the fetch below: the door is the
+         first page a published App's viewer ever sees, and a src written here paints our logo for
+         as long as /api/brand takes to answer. The default pack resolves this to the same file. -->
+    <img class="logo" id="logo" src="{logoUrl}" alt="{logoAlt}" />
     <h1 id="title">Opening your workspace…</h1>
     <p id="detail">Finding your Default project.</p>
     <blockquote class="sw-passthrough" id="quote" hidden><pre id="quote-body"></pre></blockquote>

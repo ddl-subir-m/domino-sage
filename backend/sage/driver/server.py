@@ -16,6 +16,10 @@ from pathlib import Path
 # "opencode server listening on http://127.0.0.1:4096"
 _LISTEN_RE = re.compile(r"listening on\s+(https?://[^\s]+)")
 
+# Where `_install_opencode_config` puts the pack-voiced config. Kept in sync with app.py by this
+# comment and the test that reads both.
+_VOICED_CONFIG = Path(os.path.expanduser("~/.config/opencode/opencode.json"))
+
 
 def parse_server_url(line: str) -> str | None:
     m = _LISTEN_RE.search(line)
@@ -41,9 +45,15 @@ class OpenCodeServer:
         # back to its built-in free tier (429 FreeUsageLimitError). OPENCODE_CONFIG loads our file as
         # "custom config" (above global, below project) — the documented way to point it at our config.
         env = dict(os.environ)
-        cfg = self._cwd / "opencode.json"
-        if cfg.exists():
-            env["OPENCODE_CONFIG"] = str(cfg)
+        # The voiced copy first. `opencode.json` in cwd is the checked-in source, and its agent
+        # prompts name the assistant and the nouns as `{assistantName}` / `{dataset}` tokens; the
+        # orchestrator resolves them against the pack and installs the result globally, but leaves
+        # the source unresolved on purpose, so a pack never writes its words into a repo file.
+        # Point OPENCODE_CONFIG at the source and OpenCode reads those braces out loud to the user.
+        for cfg in (_VOICED_CONFIG, self._cwd / "opencode.json"):
+            if cfg.exists():
+                env["OPENCODE_CONFIG"] = str(cfg)
+                break
         self._proc = subprocess.Popen(
             cmd,
             cwd=self._cwd,
