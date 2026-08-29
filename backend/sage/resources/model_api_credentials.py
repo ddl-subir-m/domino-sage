@@ -21,6 +21,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..orchestrator import brand
+
 # What the store is called, and the ignore rule that keeps it out of the app's repo. The path is
 # relative to the workspace root, and the rule is written in the same form `.gitignore` already uses.
 STORE_PATH = Path(".sage") / "model-api-credentials.json"
@@ -62,22 +64,23 @@ class VerifyResult:
 def _refusal(status: int) -> str:
     """One sentence per way a Model API says no, written for whoever pasted the snippet."""
     if status in (401, 403):
-        return (
-            "Domino refused that access token. Tokens are regenerated from the Model API's Settings "
-            "page in Domino, and an old snippet carries the old token — copy the sample request "
-            "again and paste the current one."
+        return brand.text(
+            "{platformName} refused that access token. Tokens are regenerated from the {modelApi}'s "
+            "Settings page in {platformName}, and an old snippet carries the old token — copy the "
+            "sample request again and paste the current one."
         )
     if status == 404:
-        return (
-            "There is no Model API at that URL. Check the snippet came from this model's Overview "
+        return brand.text(
+            "There is no {modelApi} at that URL. Check the snippet came from this model's Overview "
             "page, and that the model still has a deployed version."
         )
     if status == 503:
-        return (
-            "That Model API is not running. Start it in Domino, wait for its status to reach "
-            "Running, then try again."
+        return brand.text(
+            "That {modelApi} is not running. Start it in {platformName}, wait for its status to "
+            "reach Running, then try again."
         )
-    return f"The Model API did not answer (error {status}). Try again in a moment."
+    return brand.text("The {modelApi} did not answer (error {status}). Try again in a moment.",
+                      status=status)
 
 
 def verify_credential(url: str, token: str, *, timeout: float = VERIFY_TIMEOUT) -> VerifyResult:
@@ -101,9 +104,10 @@ def verify_credential(url: str, token: str, *, timeout: float = VERIFY_TIMEOUT) 
         return VerifyResult(
             ok=False,
             status=None,
-            message=(
-                f"Sage could not reach that Model API ({type(e).__name__}). Check the URL, and that "
-                "Domino is reachable from here, then try again."
+            message=brand.text(
+                "{assistantName} could not reach that {modelApi} ({error}). Check the URL, and "
+                "that {platformName} is reachable from here, then try again.",
+                error=type(e).__name__,
             ),
         )
     # 400 is a PASS. The token authenticated; the empty probe body is what the model turned down.

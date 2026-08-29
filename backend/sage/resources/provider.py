@@ -55,7 +55,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
+from ..orchestrator import brand
 from ..router.models import reasoning_efforts_for as name_reasoning_efforts
+
+
+def _platform_api() -> str:
+    """What a failure message calls the platform's own API. One literal read at four call sites, so
+    the sentence a creator gets and the sentence the lint reads are the same one. Resolved per call
+    rather than at import, because the pack is read when the string is read."""
+    return brand.text("The {platformName} API")
 
 
 class ResourceUnavailable(RuntimeError):
@@ -407,10 +415,11 @@ def safe_identifier(name: str) -> str:
     warehouse passes, and one that does not says so rather than being sent.
     """
     if not _IDENTIFIER.fullmatch(name or ""):
-        raise ValueError(
-            f"Sage will not send {name[:60]!r} to a database as a name. A database, schema or table "
-            "name may hold letters, digits, underscores and $ only."
-        )
+        raise ValueError(brand.text(
+            "{assistantName} will not send {name} to a database as a name. A database, schema or "
+            "table name may hold letters, digits, underscores and $ only.",
+            name=repr(name[:60]),
+        ))
     return name
 
 
@@ -455,10 +464,12 @@ def dialect_for(source: DataSource) -> SqlDialect:
     dialect = SQL_DIALECTS.get(source.connector_type)
     if dialect is None:
         known = source.connector or source.connector_type or "this kind of"
-        raise ResourceUnavailable(
-            f"Sage cannot list what is inside a {known} Data Source yet, so it cannot offer its "
-            "databases and schemas. You can still record that the app uses this Data Source."
-        )
+        raise ResourceUnavailable(brand.text(
+            "{assistantName} cannot list what is inside a {kind} {dataSource} yet, so it cannot "
+            "offer its databases and schemas. You can still record that the app uses this "
+            "{dataSource}.",
+            kind=known,
+        ))
     return dialect
 
 
@@ -920,14 +931,15 @@ class DominoResourceProvider:
         team, which is the case that made #21 worth checking at all.
         """
         if not self._api_host:
-            raise ResourceUnavailable(
-                "Sage reads Hosted GenAI Endpoint status from the Domino API, and it is not running "
-                "against one, so it cannot tell whether the endpoint behind a model is running."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} reads Hosted GenAI Endpoint status from the {platformName} API, "
+                "and it is not running against one, so it cannot tell whether the endpoint behind "
+                "a model is running."
+            ))
         payload = self._get(
             "/api/gen-ai/beta/endpoints",
             root=self._api_host,
-            service="The Domino API",
+            service=_platform_api(),
             token_provider=self._api_token_provider,
         )
         return parse_endpoints(payload)
@@ -938,7 +950,7 @@ class DominoResourceProvider:
         return self._get(
             path,
             root=self._api_host,
-            service="The Domino API",
+            service=_platform_api(),
             token_provider=self._api_token_provider,
             params=params,
         )
@@ -1041,16 +1053,17 @@ class DominoResourceProvider:
         whole list, and finding none is unlistable rather than empty.
         """
         if not self._api_host:
-            raise ResourceUnavailable(
-                "Sage lists Model APIs from the Domino project it runs in, and it is not running in "
-                "one, so it cannot tell whether this project has any."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} lists {modelApiPlural} from the {platformName} project it runs "
+                "in, and it is not running in one, so it cannot tell whether this project has any."
+            ))
         home_id = project_id or ""
         pairs = [(pid, pname) for pid, pname in self._member_projects(home_id) if pid]
         if not pairs:
-            raise ResourceUnavailable(
-                "Sage lists Model APIs from the projects you belong to, and it could not find any."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} lists {modelApiPlural} from the projects you belong to, and it "
+                "could not find any."
+            ))
         out: list[ModelApi] = []
         seen: set[str] = set()
         for pid, pname in pairs:
@@ -1131,10 +1144,10 @@ class DominoResourceProvider:
         and the public listing is keyed on it.
         """
         if not self._api_host:
-            raise ResourceUnavailable(
-                "Sage lists Data Sources from the Domino API, and it is not configured to reach one, "
-                "so it cannot tell which Data Sources you have."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} lists {dataSourcePlural} from the {platformName} API, and it is "
+                "not configured to reach one, so it cannot tell which {dataSourcePlural} you have."
+            ))
         path = "/api/datasource/v1/datasources"
         rows: list[DataSource] = []
         offset = 0
@@ -1142,7 +1155,7 @@ class DominoResourceProvider:
             payload = self._get(
                 path,
                 root=self._api_host,
-                service="The Domino API",
+                service=_platform_api(),
                 token_provider=self._api_token_provider,
                 params={"offset": offset, "limit": self._PAGE},
             )
@@ -1198,10 +1211,11 @@ class DominoResourceProvider:
         """
         dialect = dialect_for(source)
         if dialect.columns is None:
-            raise ResourceUnavailable(
-                f"Sage cannot read the columns inside a {source.connector or source.connector_type} "
-                "Data Source, so the agent will have to be told what the tables hold."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} cannot read the columns inside a {kind} {dataSource}, so the "
+                "agent will have to be told what the tables hold.",
+                kind=source.connector or source.connector_type,
+            ))
         rows = self._introspect_rows(
             source, dialect.statement(dialect.columns, database=database, schema=schema, table=table))
         return [
@@ -1220,10 +1234,11 @@ class DominoResourceProvider:
         """
         dialect = dialect_for(source)
         if dialect.sample is None:
-            raise ResourceUnavailable(
-                f"Sage cannot read rows out of a {source.connector or source.connector_type} Data "
-                "Source, so it cannot show the agent what this table holds."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} cannot read rows out of a {kind} {dataSource}, so it cannot show "
+                "the agent what this table holds.",
+                kind=source.connector or source.connector_type,
+            ))
         frame = self._query(source, dialect.statement(
             dialect.sample, database=database, schema=schema, table=table, limit=max(1, int(limit))))
         columns, rows = frame_rows(frame)
@@ -1268,10 +1283,11 @@ class DominoResourceProvider:
         try:
             from domino_data.data_sources import DataSourceClient
         except ImportError as e:
-            raise ResourceUnavailable(
-                "Sage reads a Data Source's contents through the Domino data library, which is not "
-                "installed here. Data Sources will still list, but Sage cannot look inside one."
-            ) from e
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} reads a {dataSource}'s contents through the {platformName} data "
+                "library, which is not installed here. {dataSourcePlural} will still list, but "
+                "{assistantName} cannot look inside one."
+            )) from e
         try:
             client = DataSourceClient()
             return client.get_datasource(source.name).query(sql).to_pandas()
@@ -1298,7 +1314,7 @@ class DominoResourceProvider:
                 "/v4/datasource/authentication-status",
                 {"dataSourceIds": ids},
                 root=self._api_host,
-                service="The Domino API",
+                service=_platform_api(),
                 token_provider=self._api_token_provider,
             )
         except ResourceUnavailable:
@@ -1354,21 +1370,29 @@ class DominoResourceProvider:
         except ResourceUnavailable:
             raise
         except Exception as e:
-            raise ResourceUnavailable(
-                f"{service} didn't answer at {path} ({type(e).__name__}). "
-                "Resources will be listed once it responds."
-            ) from e
+            # `service` arrives resolved and `path` is a literal API path, so both travel as values:
+            # a value is not scanned again, and the sentence stays one literal.
+            raise ResourceUnavailable(brand.text(
+                "{service} didn't answer at {path} ({error}). "
+                "Resources will be listed once it responds.",
+                service=service, path=path, error=type(e).__name__,
+            )) from e
         if r.status_code >= 400:
-            raise ResourceUnavailable(f"{service} answered {r.status_code} at {path}.", r.status_code)
+            raise ResourceUnavailable(
+                brand.text("{service} answered {code} at {path}.",
+                           service=service, code=r.status_code, path=path),
+                r.status_code,
+            )
         # An unauthenticated call to the gateway returns 200 carrying a Keycloak LOGIN PAGE, so the
         # status is not proof of an answer (verified — DOMINO-PRIMITIVES.md). Inspect the body.
         try:
             return r.json()
         except ValueError as e:
-            raise ResourceUnavailable(
-                f"{service} returned a non-JSON body at {path}. That is what a signed-out "
-                "session looks like, so this builder's token for it may have expired."
-            ) from e
+            raise ResourceUnavailable(brand.text(
+                "{service} returned a non-JSON body at {path}. That is what a signed-out "
+                "session looks like, so this builder's token for it may have expired.",
+                service=service, path=path,
+            )) from e
 
 
 # Mirrors what Sage's own gateway actually returns (probed 2026-08-19), the Domino-hosted sovereign
@@ -1570,10 +1594,11 @@ class FakeResourceProvider:
         """
         dialect = dialect_for(source)
         if dialect.columns is None:
-            raise ResourceUnavailable(
-                f"Sage cannot read the columns inside a {source.connector or source.connector_type} "
-                "Data Source, so the agent will have to be told what the tables hold."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} cannot read the columns inside a {kind} {dataSource}, so the "
+                "agent will have to be told what the tables hold.",
+                kind=source.connector or source.connector_type,
+            ))
         wanted = self.list_tables(source, database, schema)
         if table:
             wanted = [t for t in wanted if t == table]
@@ -1588,10 +1613,11 @@ class FakeResourceProvider:
         """
         dialect = dialect_for(source)
         if dialect.sample is None:
-            raise ResourceUnavailable(
-                f"Sage cannot read rows out of a {source.connector or source.connector_type} Data "
-                "Source, so it cannot show the agent what this table holds."
-            )
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} cannot read rows out of a {kind} {dataSource}, so it cannot show "
+                "the agent what this table holds.",
+                kind=source.connector or source.connector_type,
+            ))
         names = [name for name, _ in self.columns.get(table, [])]
         rows = [[sample_value(v) for v in row] for row in self.rows.get(table, [])[:max(1, limit)]]
         return SampleRows(table, names, rows)

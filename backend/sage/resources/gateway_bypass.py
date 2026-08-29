@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import re
 
+from ..orchestrator import brand
+
 # The dev-server path `src/appLlm.ts` routes to while the app is previewed. It is Sage's proxy and
 # it is not there once the app ships, so this one in app source is the variant that passes every
 # check the creator can run and fails only for the people they published it for.
@@ -107,12 +109,16 @@ def unbound_alias_notice(calls: list[tuple[str, list[str]]]) -> str | None:
         return None
     files = sorted({f for f, aliases in calls if aliases})
     several = len(names) > 1
-    return (
-        f"{_join(files)} asks Domino's LLM Gateway for {_join(names)}, which "
-        f"{'are models' if several else 'is a model'} this app is not set up to use. The call is "
-        f"being rewritten to go through askModel, which refuses a model the app does not have — so "
-        f"if this app should have {'them' if several else 'it'}, open the Resources panel and "
-        f"choose Use on the LLM {'Aliases' if several else 'Alias'}."
+    return brand.text(
+        "{files} asks {platformName}'s LLM Gateway for {models}, which {areModels} this app is not "
+        "set up to use. The call is being rewritten to go through askModel, which refuses a model "
+        "the app does not have — so if this app should have {them}, open the Resources panel and "
+        "choose Use on the {aliases}.",
+        files=_join(files),
+        models=_join(names),
+        areModels="are models" if several else "is a model",
+        them="them" if several else "it",
+        aliases=brand.text("{llmAliasPlural}" if several else "{llmAlias}"),
     )
 
 

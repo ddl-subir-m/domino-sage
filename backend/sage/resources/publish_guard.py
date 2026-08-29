@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..orchestrator import brand
 from .bindings import KIND_DATA_SOURCE, Binding
 from .provider import DataSource
 
@@ -152,9 +153,10 @@ def publish_problems(
     if not bindings:
         return out
     if visibility is None:
-        out.append(PublishProblem(UNCHECKED_APP, (
-            "Sage couldn't reach Domino to check who this app is shared with, and it won't publish "
-            "an app that reads a store without knowing that. Try publishing again in a moment."
+        out.append(PublishProblem(UNCHECKED_APP, brand.text(
+            "{assistantName} couldn't reach {platformName} to check who this app is shared with, "
+            "and it won't publish an app that reads a store without knowing that. Try publishing "
+            "again in a moment."
         )))
     elif open_visibility(visibility):
         out.append(PublishProblem(OPEN_APP, _open_message(bindings, visibility)))
@@ -173,20 +175,22 @@ def missing_app_problem(display_name: str) -> PublishProblem:
     and whoever was given the old link is not getting it back either way, because the App that
     served it is gone.
     """
-    return PublishProblem(MISSING_APP, (
-        f"The Domino App that {display_name} publishes to has been deleted, so there is no App to "
-        f"publish a new version of. Publish it as a new App to put it back — that gives it a new "
-        f"URL, and the old link stays dead whatever you do."
+    return PublishProblem(MISSING_APP, brand.text(
+        "The {platformName} App that {name} publishes to has been deleted, so there is no App to "
+        "publish a new version of. Publish it as a new App to put it back — that gives it a new "
+        "URL, and the old link stays dead whatever you do.",
+        name=display_name,
     ))
 
 
 def _credential_problem(b: Binding, sources: list[DataSource] | None) -> PublishProblem | None:
     """What is wrong with publishing on one Data Source Binding, or None when nothing is."""
     if sources is None:
-        return PublishProblem(UNCHECKED_SOURCE, (
-            f"Sage couldn't reach Domino to check whether the Data Source {b.display_name} uses a "
-            f"shared credential, and it won't publish an app that reads a store it couldn't check. "
-            f"Try publishing again in a moment."
+        return PublishProblem(UNCHECKED_SOURCE, brand.text(
+            "{assistantName} couldn't reach {platformName} to check whether the {dataSource} {name} "
+            "uses a shared credential, and it won't publish an app that reads a store it couldn't "
+            "check. Try publishing again in a moment.",
+            name=b.display_name,
         ), b.kind, b.id)
     source = _match(b, sources)
     if source is None:
@@ -194,19 +198,21 @@ def _credential_problem(b: Binding, sources: list[DataSource] | None) -> Publish
         # Data Source that has gone, so a creator normally meets it before building rather than at
         # publish. The guard stays because preflight is a warning and this is a refusal, and because
         # a listing that failed at session open leaves nothing for the creator to have seen.
-        return PublishProblem(UNLISTED_SOURCE, (
-            f"This app is recorded as reading the Data Source {b.display_name}, which isn't in the "
-            f"Data Sources you have permission on, so Sage can't tell whether its credential is "
-            f"shared. Check the Data Source in Domino, or remove it from this app's Resources, and "
-            f"publish again."
+        return PublishProblem(UNLISTED_SOURCE, brand.text(
+            "This app is recorded as reading the {dataSource} {name}, which isn't in the "
+            "{dataSourcePlural} you have permission on, so {assistantName} can't tell whether its "
+            "credential is shared. Check the {dataSource} in {platformName}, or remove it from "
+            "this app's Resources, and publish again.",
+            name=b.display_name,
         ), b.kind, b.id)
     if source.credential_type != SHARED:
-        return PublishProblem(INDIVIDUAL_CREDENTIAL, (
-            f"This app is recorded as reading the Data Source {b.display_name}, whose credential "
-            f"belongs to one person rather than to a service account. A published app reaches the "
-            f"store as its publisher, so publishing this would hand every viewer that person's "
-            f"access. Remove it from this app's Resources, or bind a Data Source with a Shared "
-            f"credential, and publish again."
+        return PublishProblem(INDIVIDUAL_CREDENTIAL, brand.text(
+            "This app is recorded as reading the {dataSource} {name}, whose credential "
+            "belongs to one person rather than to a service account. A published app reaches the "
+            "store as its publisher, so publishing this would hand every viewer that person's "
+            "access. Remove it from this app's Resources, or bind a {dataSource} with a Shared "
+            "credential, and publish again.",
+            name=b.display_name,
         ), b.kind, b.id)
     return None
 
@@ -226,11 +232,13 @@ def _open_message(bindings: list[Binding], visibility: str) -> str:
     # The raw value is quoted for two readers. A creator sees which setting is in the way; whoever
     # gets the report of a wrongly-refused publish sees the spelling to add to ALLOWED_VISIBILITY,
     # which is the whole cost of failing closed on a value this list has not met.
-    return (
-        f"This app can be opened by people who are not signed in to Domino (its visibility is "
-        f"{visibility}), and it reads {_names(bindings)}. A published app queries the store as its "
-        f"publisher, so anyone who reached the app would be reading it. Share the app with Domino "
-        f"users instead, on its settings page in Domino, then publish again."
+    return brand.text(
+        "This app can be opened by people who are not signed in to {platformName} (its visibility "
+        "is {visibility}), and it reads {sources}. A published app queries the store as its "
+        "publisher, so anyone who reached the app would be reading it. Share the app with "
+        "{platformName} users instead, on its settings page in {platformName}, then publish again.",
+        visibility=visibility,
+        sources=_names(bindings),
     )
 
 
@@ -238,5 +246,6 @@ def _names(bindings: list[Binding]) -> str:
     """The bound Data Sources as one readable phrase, so a refusal names what it is about."""
     names = [b.display_name for b in bindings]
     if len(names) == 1:
-        return f"the Data Source {names[0]}"
-    return f"the Data Sources {', '.join(names[:-1])} and {names[-1]}"
+        return brand.text("the {dataSource} {name}", name=names[0])
+    return brand.text("the {dataSourcePlural} {names}",
+                      names=f"{', '.join(names[:-1])} and {names[-1]}")
