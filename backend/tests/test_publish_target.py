@@ -15,8 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, TurnBusy
 from sage.provision.domino import ControlPlane, DominoControlPlane, FakeControlPlane
+from sage.resources.publish_guard import PublishRefused
 from sage.router.models import ModelCatalog
 
 
@@ -124,6 +125,48 @@ def test_the_manage_link_still_names_the_domino_project(tmp_path: Path):
     out = orch.publish()
 
     assert out["manage_url"].startswith("/u/owner/Sales dashboard/apps/")
+
+
+def test_a_publish_is_refused_while_a_turn_holds_the_working_tree(tmp_path: Path):
+    """Publishing ships the code on disk, and a turn streaming into that disk has not finished
+    writing it. `_save_to_git` commits the PROJECT ROOT — one repo holds every Built App — then
+    pulls and may run an agent turn over the merge, which is the exact collision `_turn_lock`
+    exists to prevent (#39). Project-wide, so a build in ANOTHER app is equally in the way: the
+    commit takes that app's half-written tree with it.
+
+    Non-blocking, like Delete's: there is nothing to wait out, and a Publish that sat silently
+    until a long build finished would look like a control that did nothing (#89).
+    """
+    cp = FakeControlPlane()
+    orch = _orch(tmp_path, cp)
+
+    assert orch._turn_lock.acquire(blocking=False)      # simulate a turn in flight
+    try:
+        with pytest.raises(TurnBusy):
+            orch.publish()
+    finally:
+        orch._turn_lock.release()
+
+    # Refused before anything was created, recorded or stamped.
+    assert list(cp.published) == []
+    assert orch.project(start_preview=False).workspace.domino_app_id() == ""
+    # And the lock is handed back, so the publish that follows the build works.
+    assert orch.publish()["published"] is True
+
+
+def test_a_publish_hands_the_turn_lock_back_when_it_fails(tmp_path: Path):
+    """A refusal that kept the lock would wedge every turn after it — the builder would answer
+    "a build is already running" forever, with no build behind it."""
+    cp = FakeControlPlane()
+    orch = _orch(tmp_path, cp)
+    orch.publish()
+    cp.published.clear()                                # the App was deleted in Domino (#80)
+
+    with pytest.raises(PublishRefused):
+        orch.publish()
+
+    assert orch._turn_lock.acquire(blocking=False)
+    orch._turn_lock.release()
 
 
 @pytest.mark.parametrize("cls", [ControlPlane, DominoControlPlane, FakeControlPlane])

@@ -466,6 +466,12 @@ SW.api = {
   // serving can still be deleted and one that is gone cannot come back.
   deleteApp: (id, { deleteDominoApp = false } = {}) =>
     del(`/apps/${encodeURIComponent(id)}?domino_app=${deleteDominoApp ? 'delete' : 'keep'}`),
+  // Publish (or republish) the SELECTED Built App as a live Domino App (#89). No id on the wire:
+  // the server publishes the app Build is pointed at, and an id travelling beside it would be a
+  // second answer to "which app" — shipping over the wrong one is the failure #70 exists to stop.
+  // Answers {published, app_id, url, manage_url, republished}; a 409 carries `refused` problems
+  // and every other failure carries a sentence, both of which `request` already surfaces.
+  publish: () => post('/publish', {}),
   // Both halves of one Conversation, merged and labelled with the half each turn came from (#56).
   // Beside `thread(id).history`, not instead of it: the split conversation view still asks Chat
   // what Chat said, and this asks what the whole Conversation did — a question about the Project's
@@ -473,7 +479,6 @@ SW.api = {
   conversation: (threadId) =>
     request(`/threads/${encodeURIComponent(threadId)}/conversation`).then((r) => r.history || []),
   appConversations: () => empty(),
-  publish: async () => ({}),
 
   addDecision: async () => ({}),
   removeDecision: async () => ({}),

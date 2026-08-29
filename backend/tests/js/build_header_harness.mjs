@@ -18,11 +18,19 @@ const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
 // Four apps, chosen for the four things a row has to be able to say: built, not built yet,
 // mid-build (#77), and behind a teammate's push (#78). A control that names only the selected app
 // cannot show any of the last three, which is why the list is the criterion.
+// `url` is what `Open app` opens, and the server builds it from the id each app recorded — so a
+// published app has one and an unpublished app has "", which is the same answer `published` gives.
+// Held in the fixture rather than derived here, because a harness that computed it would let the
+// row ship no URL at all and still pass.
 const APPS = [
-  { id: 'app_a', name: 'Desk dashboard', built: true, building: false, behind: false, published: true },
-  { id: 'app_b', name: 'P&L report', built: false, building: false, behind: false, published: false },
-  { id: 'app_c', name: 'Rate curve viewer', built: true, building: true, behind: false, published: false },
-  { id: 'app_d', name: 'Risk monitor', built: true, building: false, behind: true, published: true },
+  { id: 'app_a', name: 'Desk dashboard', built: true, building: false, behind: false,
+    published: true, url: '/modelproducts/da_a?scope=project' },
+  { id: 'app_b', name: 'P&L report', built: false, building: false, behind: false,
+    published: false, url: '' },
+  { id: 'app_c', name: 'Rate curve viewer', built: true, building: true, behind: false,
+    published: false, url: '' },
+  { id: 'app_d', name: 'Risk monitor', built: true, building: false, behind: true,
+    published: true, url: '/modelproducts/da_d?scope=project' },
 ];
 
 const THREADS = {
@@ -138,6 +146,9 @@ const calls = [];
 let selected = 'app_a';
 // A 500 on the app list, which is not the same answer as a Project with no apps (#95).
 let appsFail = false;
+// A refused publish, as the sentence the server would send with the 409. Nothing is published on
+// this path, and the confirm has to stay open on it.
+let publishFails = '';
 // Emptied by the `noapps` step: a brand-new Project, which is the one state the empty state is
 // written for and the one state a picker cannot show it in.
 let apps = APPS;
@@ -191,6 +202,20 @@ function route(path, init) {
     if (appsFail) return json({ error: 'unavailable' }, 500);
     return json({ items: apps.map((a) => ({ ...a, selected: a.id === selected })), selected });
   }
+  // The publish route carries NO app id, the way the real one does not: the server ships the app
+  // it has selected. So this writes to `selected` and to nothing else, which is what makes "the
+  // publish reached the selected app and no other" a claim the fixture can be asked about
+  // afterwards rather than a request path a test could match and be satisfied by.
+  if (path === '/publish' && init && init.method === 'POST') {
+    if (publishFails) return json({ error: publishFails }, 409);
+    const row = apps.find((a) => a.id === selected);
+    const again = !!(row && row.published);
+    if (row) {
+      row.published = true;
+      row.url = `/modelproducts/da_${row.id.replace('app_', '')}?scope=project`;
+    }
+    return json({ published: true, app_id: `da_${selected}`, url: row ? row.url : '', republished: again });
+  }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
   if (path === '/bindings') return json({ bindings: bound[selected] || [] });
@@ -239,6 +264,8 @@ const timeouts = [];
 const backing = new Map();
 const effects = [];
 const modals = [];
+// Every new tab, in order.
+const opened = [];
 // Every toast, in order. A message is the only place some of these decisions land.
 const said = [];
 
@@ -260,6 +287,10 @@ const sandbox = {
     removeItem: (k) => backing.delete(k),
   },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
+  // Recorded, because the two open controls are told apart by WHERE each one went and by nothing
+  // else: `./preview/` is the local pane and the app's URL is the deployed App, and a single
+  // control that changed between them would read identically in every other way.
+  open: (u) => { opened.push(String(u)); },
   location: { hash: '' },
   history: { replaceState() {} },
   addEventListener() {},
@@ -346,6 +377,9 @@ function flatten(node, out = [], depth = 0) {
     entry.items = props.menu.items.map((i) => ({
       key: i.key || '', label: typeof i.label === 'string' ? i.label : '', danger: !!i.danger,
       divider: i.type === 'divider',
+      // An item that cannot act yet is still a control, and the claim about it is that it SAYS
+      // why rather than disappearing — a claim about the label and the flag together.
+      disabled: !!i.disabled,
     }));
     // Kept beside the labels so a step can CLICK an item rather than only read it: "reachable from
     // this section" is a claim about what the item does, and a label proves half of it.
@@ -434,7 +468,9 @@ function panelContents(tree) {
 }
 
 async function arrive(threadId, appId) {
-  apps = APPS;
+  // Copies, for the reason `bound` and `attached` are copies: publishing WRITES to a row, and the
+  // fixture is shared by every step in the run.
+  apps = APPS.map((a) => ({ ...a }));
   context = JSON.parse(JSON.stringify(CONTEXT));
   bound = JSON.parse(JSON.stringify(BINDINGS));
   attached = JSON.parse(JSON.stringify(ATTACHED));
@@ -892,6 +928,88 @@ for (const step of steps) {
       parts: nodes
         .filter((n) => n.className && n.texts)
         .map((n) => ({ className: n.className, texts: n.texts })),
+    });
+    continue;
+  }
+
+  // Publishing, driven the way a person drives it: open the `…` beside the app the header names,
+  // click the item, answer the confirm. The step knows no menu key beyond `publish` — an item that
+  // stopped being reachable from the header would not be found at all rather than quietly asserted
+  // around.
+  if (step.publish) {
+    await arrive(step.publish, step.select);
+    said.length = 0;
+    modals.length = 0;
+    opened.length = 0;
+    publishFails = step.refuse || '';
+    if (step.buildRunning) SW.store.set({ buildRunning: true });
+    calls.length = 0;
+    const menuOf = () => {
+      const found = flatten(SW.BuildMode({ conversationId: step.publish, appId: selected }))
+        .find((n) => n.items && n.items.some((i) => i.key === 'publish'));
+      if (!found) throw new Error('nothing in the Build header offers to publish');
+      return found;
+    };
+    const menu = menuOf();
+    const item = menu.items.find((i) => i.key === 'publish');
+    // A disabled item is not clicked, the way antd would not click it. What it says is the claim.
+    if (!item.disabled) menu.onMenu({ key: 'publish', domEvent: { stopPropagation() {} } });
+    const confirm = item.disabled ? null : modals[modals.length - 1];
+    // A modal can sit open for as long as somebody leaves it there, and the 30-second app poll
+    // moves the selection underneath — which the request cannot notice, because it carries no id.
+    // Its own key: `switchTo` is the switch step's, one branch above this one.
+    if (confirm && step.movesTo) await SW.store.selectApp(step.movesTo);
+    let acted = null;
+    if (confirm && step.confirm) acted = await confirm.onOk().then(() => 'ok', () => 'held open');
+    if (confirm && !step.confirm && confirm.onCancel) confirm.onCancel();
+    publishFails = '';
+    // Read after the act, so the row's own state is what the publish left rather than what it
+    // found: `published`, the URL and the confirm's own sentence all move together or not at all.
+    const after = menuOf();
+    report.push({
+      step: `publish ${step.select}`,
+      item,
+      confirm: confirm ? {
+        title: String(confirm.title || ''),
+        okText: String(confirm.okText || ''),
+        cancelText: String(confirm.cancelText || ''),
+        danger: !!(confirm.okButtonProps || {}).danger,
+        content: words(flatten(confirm.content)).join(' '),
+      } : null,
+      acted,
+      calls: calls.slice(),
+      said: said.slice(),
+      // Every app afterwards, because the criterion is about the ones that did NOT move.
+      apps: SW.store.get().apps.map((a) => ({ id: a.id, published: !!a.published, url: a.url || '' })),
+      items: after.items,
+      // Whether the question survived being answered — a void one takes its modal with it.
+      openAfter: modals[modals.length - 1] === confirm && acted === 'held open',
+    });
+    if (step.buildRunning) SW.store.set({ buildRunning: false });
+    continue;
+  }
+
+  // The other door. Two controls, two destinations — so the step clicks each and reports where it
+  // went, which is the only way one control wearing two words would be caught.
+  if (step.openapp) {
+    await arrive(step.openapp, step.select);
+    opened.length = 0;
+    const nodes = flatten(SW.BuildMode({ conversationId: step.openapp, appId: selected }));
+    const menu = nodes.find((n) => n.items && n.items.some((i) => i.key === 'open'));
+    if (!menu) throw new Error('nothing in the Build header offers to open the app');
+    const item = menu.items.find((i) => i.key === 'open');
+    if (!item.disabled) menu.onMenu({ key: 'open', domEvent: { stopPropagation() {} } });
+    const appOpened = opened.slice();
+    opened.length = 0;
+    // The preview control, from the toolbar, by the label it says out loud.
+    const preview = nodes.find((n) => n.onClick && n.label === 'Open preview in a new tab');
+    if (preview) preview.onClick();
+    report.push({
+      step: `openapp ${step.select}`,
+      item,
+      appOpened,
+      previewOpened: opened.slice(),
+      labels: nodes.filter((n) => n.label).map((n) => n.label),
     });
     continue;
   }

@@ -346,6 +346,32 @@ def test_the_route_reports_the_refusal_and_takes_the_answer_back(tmp_path: Path,
     assert out.json()["app_id"] != app_id
 
 
+def test_the_route_answers_a_busy_turn_as_a_refusal_and_not_as_a_failure(tmp_path: Path, monkeypatch):
+    """A publish under a streaming build is refused by the turn lock (#89). 409 beside the refusal
+    above and for the same reason: the request is well formed and the app is fine, and what is in
+    the way is a build holding the working tree this would commit. Reported as a 502 it would read
+    as Sage being broken rather than as something the creator can wait out."""
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
+
+    cp = FakeControlPlane()
+    orch, _ = _published(tmp_path, cp)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    client = TestClient(appmod.control_app)
+
+    assert orch._turn_lock.acquire(blocking=False)
+    try:
+        busy = client.post("/api/publish")
+    finally:
+        orch._turn_lock.release()
+
+    assert busy.status_code == 409
+    assert "build" in busy.json()["error"]
+    # Not the guard's shape: there is nothing here for a caller to enumerate.
+    assert "refused" not in busy.json()
+
+
 def test_the_route_answers_a_body_it_cannot_read_rather_than_falling_over(tmp_path: Path, monkeypatch):
     # Every other failure on this route is mapped deliberately (409 / 400 / 502). A body that is not
     # JSON, or that is JSON but not an object, must not be the one that reaches the client as a 500.

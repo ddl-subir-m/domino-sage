@@ -2029,6 +2029,50 @@ window.SW = window.SW || {};
       return out;
     },
 
+    // Ship the selected Built App as a live Domino App (#89). Nothing is passed, and nothing here
+    // decides which app: the server publishes the one Build is pointed at, which is the one the
+    // confirm named. An id sent from here would be a second answer to that question, and shipping
+    // one app's code over another's URL is the failure #70 exists to stop.
+    //
+    // The list is re-read rather than patched from the response, because three things the row
+    // carries move on a publish — `published`, `publishedAt`, and the URL `Open app` opens — and
+    // the row is where the header reads every one of them. `loadAppList` rather than `loadBuild`:
+    // the selection has not moved, so the Bindings and the attachments are the same two answers
+    // they were a moment ago and are not worth asking for again.
+    //
+    // Failures are thrown on rather than reported here. The caller is a confirm that has to stay
+    // open on a refusal, and it is the only thing that knows the app's name to say it with.
+    async publishApp(asked) {
+      // The app this act NAMES, handed in by the confirm that named it. Refuse rather than ship
+      // the other one: the title is a promise about which app goes out, and a modal can sit open
+      // for as long as somebody leaves it there — long enough for the 30-second app poll to move
+      // the selection under a question nobody has answered yet.
+      //
+      // This NARROWS the window to one request round trip rather than closing it, for the reason
+      // `removeBindingFromApp` gives: the server still resolves the app itself and could be moved
+      // between this check and the handler. Closing it means the route naming its app, which is a
+      // route-shape change (#100) rather than a guard.
+      if (asked && (!state.activeApp || state.activeApp.id !== asked.id)) {
+        const moved = new Error(
+          `Nothing was published. The selected app changed to ${appScopeName()} while this was `
+          + `open, and this publish named ${asked.name}.`
+        );
+        // Told apart from a server failure by the caller: this question is void and its modal
+        // should go, where a refusal is worth reading with the modal still open behind it.
+        moved.moved = true;
+        throw moved;
+      }
+      try {
+        return await SW.api.publish();
+      } finally {
+        // In a `finally`, because a publish can fail AFTER it has succeeded: `record_domino_app`
+        // and `mark_published` are written before the response is built, so a 502 on the way out
+        // still leaves a live Domino App recorded. Re-reading only on success would leave the
+        // header offering "publish it first" for an app that is already deployed.
+        await loadAppList();
+      }
+    },
+
     clearApp() {
       applyAppScope(appScopeTicket(), { activeApp: null });
       state.activePlanId = null;

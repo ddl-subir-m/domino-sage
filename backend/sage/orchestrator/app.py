@@ -906,6 +906,12 @@ async def publish(request: Request) -> JSONResponse:
     new_app = bool(body.get("new_app")) if isinstance(body, dict) else False
     try:
         result = await run_in_threadpool(orchestrator.publish, new_app=new_app)
+    except TurnBusy as e:
+        # 409 beside the refusal below, and for the same reason: the request is well formed and the
+        # app is fine, and what is in the way is a build holding the working tree this would commit.
+        # The sentence is the service's — it is the only side that knows whether the lock has a turn
+        # behind it or a wedge (#97).
+        return JSONResponse(status_code=409, content={"error": str(e)})
     except PublishRefused as e:
         # 409, not 400: the request is well formed and the app is fine — it is the state of what it
         # reads that is in the way. `refused` carries every problem so the UI can name them all at

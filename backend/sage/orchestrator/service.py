@@ -39,7 +39,9 @@ from ..preview.supervisor import ViteSupervisor
 from ..provision import naming
 # The 404 the publish path has to tell from every other failure (#80). A runtime import, unlike the
 # `ControlPlane` Protocol above, because it is caught rather than annotated with.
-from ..provision.domino import NotFound
+# `app_viewer_url` beside it for the rail row's `Open app` door (#89) — same module, and the same
+# reason: the URL grammar is the control plane's, so only one file gets to know it.
+from ..provision.domino import NotFound, app_viewer_url
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
     KIND_LLM_ALIAS,
@@ -2457,6 +2459,19 @@ class Orchestrator:
             # take the Domino App with it (#76). The id itself stays here — the rail has no use for
             # it, and a Domino App is deleted by the app that owns it, never by one named over HTTP.
             "published": bool(workspace.domino_app_id()),
+            # Where `Open app` goes (#89), and "" until the first publish — the same answer
+            # `published` gives, from the same recorded id.
+            #
+            # A destination, not a field to read an id out of. The id is IN this string, which the
+            # line above does not pretend otherwise about: what stays true is that no route takes a
+            # Domino App id from a caller, so nothing the UI can do with the one it can see here
+            # reaches an App. What the row is not is a `dominoAppId` for the browser to build URLs
+            # from — the rewrite that turns one into a page (`/apps-internal/{id}` 404s in a
+            # browser, `/modelproducts/{id}` does not) is control-plane knowledge that lives in one
+            # place and has already been re-learned from live Domino once. Handing over the id
+            # would make the UI its second author. `/api/gallery` hands its cards a URL for the
+            # same reason.
+            "url": app_viewer_url(workspace.domino_app_id()),
             # When the code behind that URL last moved. The transcript's app card reads publish
             # state off this row rather than out of the block it renders, because whether an app is
             # published today is a now-question and a six-week-old build run cannot answer it (#56).
@@ -6335,110 +6350,127 @@ class Orchestrator:
                 "Publish is only available when this builder runs on Domino (missing control-plane "
                 "or DOMINO_PROJECT_ID)."
             )
-        project = self.project()
-        # Which Domino App this Built App deploys to, read from the app itself: a Project holds many
-        # and its Domino project holds one App per app, so "the project's App" names none of them
-        # in particular (ADR-0008). Settled here rather than after the save because the guard needs
-        # it — an app's sharing setting is a property of the deployed App. Before anything is
-        # written, pushed or deployed, too: a refused publish must leave nothing behind, so a
-        # creator who fixes the Binding and publishes again publishes the code they were looking at.
-        deployed_app_id = project.workspace.domino_app_id()
-        if deployed_app_id:
-            gone = self._target_is_gone(deployed_app_id)
-            if not new_app:
-                # An ordinary re-publish. Only a 404 stops it — see `_target_is_gone` for why an
-                # unreachable check carries on rather than refusing.
-                if gone:
-                    raise self._missing_app(project)
-            elif gone:
-                # The creator answered the refusal, so everything after here runs the first-publish
-                # path. Dropped from the LOCAL only: the record on disk is replaced by
-                # `record_domino_app` once a new App exists, and not before, so a
-                # `_refuse_unsafe_publish` refusal below cannot leave this app having forgotten an
-                # App that is still serving (#76's stranding, self-inflicted).
-                deployed_app_id = ""
-            else:
-                # `new_app` is the answer to one question, and this is not that question. Creating a
-                # second App while the first is alive strands it: `record_domino_app` overwrites the
-                # only id Sage has, so neither Publish nor Delete could reach the old App again, and
-                # it would go on serving old code at a URL people already hold.
-                raise RuntimeError(
-                    "This app's published App is still there, so Sage won't publish a second one "
-                    "beside it — that would leave the first serving at a URL nothing here could "
-                    "reach again. Publish normally to ship a new version to it. If you want a fresh "
-                    "App, delete that one in Domino first."
-                    if gone is False else
-                    "Sage couldn't reach Domino to confirm that this app's published App is really "
-                    "gone, and it won't create a second one on a guess. Try again in a moment."
-                )
-        self._refuse_unsafe_publish(project, deployed_app_id)
-        # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
-        # app created from an older image would otherwise redeploy its original copy forever — and
-        # keep hitting bugs fixed since (the Node-18 PATH order that crash-looped every build).
-        # Best-effort: a refresh failure must not block publishing the committed copy.
+        # One operation owns the working tree at a time (see `_turn_lock`). Publishing is not a
+        # read: `_save_to_git` commits the PROJECT ROOT — one repo holds every Built App — then
+        # pulls, and may run an agent turn to resolve conflicts. Under a streaming build that
+        # commits half of whatever the turn is in the middle of writing and merges on top of it,
+        # which is the exact collision the lock exists to prevent (#39).
+        #
+        # Project-wide rather than per app, which is why the UI's own guard is not enough on its
+        # own: a build streaming into app A is stopped by nothing when app B is the one selected,
+        # and the commit takes A's half-written tree with it.
+        #
+        # Non-blocking, like Delete's: there is nothing to wait out here, and a Publish that sat
+        # silently until a long build finished would look like a control that did nothing.
+        if not self._turn_lock.acquire(blocking=False):
+            raise TurnBusy(self._turn_wedged, "publish")
         try:
-            if self._wm.refresh_entry_script():
-                log.info("publish: refreshed the deploy files from the template")
-        except Exception:
-            log.exception("publish: couldn't refresh the deploy files; publishing the committed copies")
-        # The builder holds the working tree, so a fast local check beats the hub's GitHub-API probe.
-        entry = project.workspace.path / _ENTRY_POINT
-        if not entry.exists():
-            raise RuntimeError(
-                f"'{_ENTRY_POINT}' is missing from this app, so Domino has no entry script to "
-                f"run. Add {_ENTRY_POINT} to {project.repo_rel('')} and rebuild, then publish again."
-            )
-        # The refresh above is best-effort, so app.sh can be the current one while the server it execs
-        # is absent — a deploy that reports success and then crash-loops on "can't open file
-        # 'serve.py'". Ask what THIS app.sh needs rather than demanding serve.py of an older app whose
-        # entry script still serves the build with Node.
-        if _SERVER_SCRIPT in entry.read_text() and not (project.workspace.path / _SERVER_SCRIPT).exists():
-            raise RuntimeError(
-                f"'{_SERVER_SCRIPT}' is missing from this app, but {_ENTRY_POINT} runs it to serve "
-                f"the app, so the deploy would start and immediately fail. Restore {_SERVER_SCRIPT} to "
-                f"{project.repo_rel('')} and publish again."
-            )
-        # Deploy the newest code: commit + push before publishing. Best-effort — a save failure (no
-        # remote, offline) must not block a publish of whatever is already committed.
-        try:
-            self._save_to_git(project, "save before publish")
-        except Exception:
-            log.exception("publish: pre-publish save failed; publishing the last committed code")
-
-        cp = self._control_plane
-        pid = self._domino_project_id
-        project_name = self._domino_project_name or self._project_id
-        if deployed_app_id:  # already published — ship a new version, keep the URL
+            project = self.project()
+            # Which Domino App this Built App deploys to, read from the app itself: a Project holds many
+            # and its Domino project holds one App per app, so "the project's App" names none of them
+            # in particular (ADR-0008). Settled here rather than after the save because the guard needs
+            # it — an app's sharing setting is a property of the deployed App. Before anything is
+            # written, pushed or deployed, too: a refused publish must leave nothing behind, so a
+            # creator who fixes the Binding and publishes again publishes the code they were looking at.
+            deployed_app_id = project.workspace.domino_app_id()
+            if deployed_app_id:
+                gone = self._target_is_gone(deployed_app_id)
+                if not new_app:
+                    # An ordinary re-publish. Only a 404 stops it — see `_target_is_gone` for why an
+                    # unreachable check carries on rather than refusing.
+                    if gone:
+                        raise self._missing_app(project)
+                elif gone:
+                    # The creator answered the refusal, so everything after here runs the first-publish
+                    # path. Dropped from the LOCAL only: the record on disk is replaced by
+                    # `record_domino_app` once a new App exists, and not before, so a
+                    # `_refuse_unsafe_publish` refusal below cannot leave this app having forgotten an
+                    # App that is still serving (#76's stranding, self-inflicted).
+                    deployed_app_id = ""
+                else:
+                    # `new_app` is the answer to one question, and this is not that question. Creating a
+                    # second App while the first is alive strands it: `record_domino_app` overwrites the
+                    # only id Sage has, so neither Publish nor Delete could reach the old App again, and
+                    # it would go on serving old code at a URL people already hold.
+                    raise RuntimeError(
+                        "This app's published App is still there, so Sage won't publish a second one "
+                        "beside it — that would leave the first serving at a URL nothing here could "
+                        "reach again. Publish normally to ship a new version to it. If you want a fresh "
+                        "App, delete that one in Domino first."
+                        if gone is False else
+                        "Sage couldn't reach Domino to confirm that this app's published App is really "
+                        "gone, and it won't create a second one on a guess. Try again in a moment."
+                    )
+            self._refuse_unsafe_publish(project, deployed_app_id)
+            # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
+            # app created from an older image would otherwise redeploy its original copy forever — and
+            # keep hitting bugs fixed since (the Node-18 PATH order that crash-looped every build).
+            # Best-effort: a refresh failure must not block publishing the committed copy.
             try:
-                app = cp.republish_app(deployed_app_id)
-            except NotFound as e:
-                # The preflight said the App was there and the version POST says 404. Usually that
-                # is the window between them — a git push, seconds long and room enough for somebody
-                # to delete it — and then this is the same refusal, not the raw 502 naming an app id
-                # (#80). But `versions` is a sub-resource, and a deployment that does not route it
-                # would 404 every re-publish: telling every creator their App was deleted and
-                # inviting each to publish a fresh one is how one broken route becomes a deployment
-                # full of duplicates. So ASK, on the error path where a second call costs nothing,
-                # and only say "deleted" when the App itself is what is missing.
-                if self._target_is_gone(deployed_app_id):
-                    raise self._missing_app(project) from e
-                raise
-            out = {"published": True, "app_id": app.id, "url": app.url, "republished": True}
-        else:
-            # The entry point is the app's own directory, and Domino fixes it when the App is
-            # created — which is why the directory is named for an id that never changes (ADR-0008).
-            # The App is named for the Built App: several of them share this Domino project, and the
-            # project's name would list them as identical rows nobody can tell apart.
-            app = cp.publish_app(pid, name=_app_display_name(project.workspace, project_name),
-                                 entry_point=project.repo_rel(_ENTRY_POINT))
-            project.workspace.record_domino_app(app.id)
-            out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
-        # Both branches, because both moved the code behind the URL. `record_domino_app` above runs
-        # on the first publish only, so it cannot be where the time is written (#56).
-        project.workspace.mark_published()
-        # The deep link is /u/{owner}/{project}/apps/… — the Domino project's name, not the app's.
-        out["manage_url"] = cp.app_manage_url(app.id, project_name)
-        return out
+                if self._wm.refresh_entry_script():
+                    log.info("publish: refreshed the deploy files from the template")
+            except Exception:
+                log.exception("publish: couldn't refresh the deploy files; publishing the committed copies")
+            # The builder holds the working tree, so a fast local check beats the hub's GitHub-API probe.
+            entry = project.workspace.path / _ENTRY_POINT
+            if not entry.exists():
+                raise RuntimeError(
+                    f"'{_ENTRY_POINT}' is missing from this app, so Domino has no entry script to "
+                    f"run. Add {_ENTRY_POINT} to {project.repo_rel('')} and rebuild, then publish again."
+                )
+            # The refresh above is best-effort, so app.sh can be the current one while the server it execs
+            # is absent — a deploy that reports success and then crash-loops on "can't open file
+            # 'serve.py'". Ask what THIS app.sh needs rather than demanding serve.py of an older app whose
+            # entry script still serves the build with Node.
+            if _SERVER_SCRIPT in entry.read_text() and not (project.workspace.path / _SERVER_SCRIPT).exists():
+                raise RuntimeError(
+                    f"'{_SERVER_SCRIPT}' is missing from this app, but {_ENTRY_POINT} runs it to serve "
+                    f"the app, so the deploy would start and immediately fail. Restore {_SERVER_SCRIPT} to "
+                    f"{project.repo_rel('')} and publish again."
+                )
+            # Deploy the newest code: commit + push before publishing. Best-effort — a save failure (no
+            # remote, offline) must not block a publish of whatever is already committed.
+            try:
+                self._save_to_git(project, "save before publish")
+            except Exception:
+                log.exception("publish: pre-publish save failed; publishing the last committed code")
+
+            cp = self._control_plane
+            pid = self._domino_project_id
+            project_name = self._domino_project_name or self._project_id
+            if deployed_app_id:  # already published — ship a new version, keep the URL
+                try:
+                    app = cp.republish_app(deployed_app_id)
+                except NotFound as e:
+                    # The preflight said the App was there and the version POST says 404. Usually that
+                    # is the window between them — a git push, seconds long and room enough for somebody
+                    # to delete it — and then this is the same refusal, not the raw 502 naming an app id
+                    # (#80). But `versions` is a sub-resource, and a deployment that does not route it
+                    # would 404 every re-publish: telling every creator their App was deleted and
+                    # inviting each to publish a fresh one is how one broken route becomes a deployment
+                    # full of duplicates. So ASK, on the error path where a second call costs nothing,
+                    # and only say "deleted" when the App itself is what is missing.
+                    if self._target_is_gone(deployed_app_id):
+                        raise self._missing_app(project) from e
+                    raise
+                out = {"published": True, "app_id": app.id, "url": app.url, "republished": True}
+            else:
+                # The entry point is the app's own directory, and Domino fixes it when the App is
+                # created — which is why the directory is named for an id that never changes (ADR-0008).
+                # The App is named for the Built App: several of them share this Domino project, and the
+                # project's name would list them as identical rows nobody can tell apart.
+                app = cp.publish_app(pid, name=_app_display_name(project.workspace, project_name),
+                                     entry_point=project.repo_rel(_ENTRY_POINT))
+                project.workspace.record_domino_app(app.id)
+                out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+            # Both branches, because both moved the code behind the URL. `record_domino_app` above runs
+            # on the first publish only, so it cannot be where the time is written (#56).
+            project.workspace.mark_published()
+            # The deep link is /u/{owner}/{project}/apps/… — the Domino project's name, not the app's.
+            out["manage_url"] = cp.app_manage_url(app.id, project_name)
+            return out
+        finally:
+            self._turn_lock.release()
 
     def publish_check(self) -> dict:
         """What the published app is going to refuse to answer, asked BEFORE it is published (#26).
