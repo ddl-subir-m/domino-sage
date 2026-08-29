@@ -485,6 +485,12 @@ SW.api = {
   history: (conversation) =>
     request(`/project/history${conversation ? `?conversation=${encodeURIComponent(conversation)}` : ''}`),
   bindings: () => request('/bindings'),
+  // The two app-scoped removals (ADR-0011). Both answer with the app source that STILL uses what
+  // just went — read by the route before the record goes, because a Data Source's queries are found
+  // through the record — so neither caller has to scan anything to report it.
+  unbind: (kind, resourceId) =>
+    del(`/bindings/${encodeURIComponent(kind)}/${encodeURIComponent(resourceId)}`),
+  detachFile: (path) => post('/project/files/detach', { path }),
   buildState: () => request('/project/build/state'),
   setBuildMode: (mode) => post('/project/model', { mode }),
   setChatModel: (chat_model, reasoning_effort) =>

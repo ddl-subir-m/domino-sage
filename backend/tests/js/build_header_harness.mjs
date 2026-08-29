@@ -56,19 +56,50 @@ const THREADS = {
 // What each app has RECORDED, per app, because the row's whole claim is that two apps under the
 // same conversation ship different things (#92). Read off disk by the server in real life — here,
 // two flat tables keyed by app, served the way `/api/bindings` and `/api/project` serve them.
+// A Model API sits beside the Alias and the Data Source because the three do not cost the same to
+// re-pick (ADR-0011): the Data Source's Scope goes with the record, and the Model API's access
+// token does NOT — it lives in its own store keyed by model id — so the confirm has to say
+// different things over them and a fixture with one kind could not tell.
 const BINDINGS = {
   app_a: [
     { kind: 'llm_alias', id: 'al_1', name: 'claude-sonnet-4', display_name: 'Claude Sonnet 4' },
     { kind: 'data_source', id: 'ds_1', name: 'market-data-eod', display_name: 'Market data EOD' },
+    { kind: 'model_api', id: 'ma_1', name: 'churn-risk', display_name: 'Churn risk' },
   ],
   app_c: [{ kind: 'llm_alias', id: 'al_2', name: 'qwen-2-5', display_name: 'Qwen 2.5' }],
 };
 // `app_d` carries files and no Bindings, `app_c` the reverse: a kind with nothing in it is not the
 // same state as an app with nothing at all, and only the second one gets the empty state.
+//
+// `legacy.csv` is the rehydrated entry `detach_file`'s docstring records: no `dataset_id`, so there
+// is no source to name. It carries a `dataset` all the same, because `_rehydrate_attached` fills
+// that from the symlink's PARENT DIRECTORY — a fixture without one would be a shape the backend
+// never writes, and the sentence that must not name a source would never be asked the real question.
 const ATTACHED = {
-  app_a: [{ path: 'public/data/desks/margins.csv', file: 'margins.csv', dataset: 'desks', size: 12 }],
-  app_d: [{ path: 'public/data/risk/limits.csv', file: 'limits.csv', dataset: 'risk', size: 34 }],
+  app_a: [
+    { path: 'public/data/desks/margins.csv', file: 'margins.csv',
+      dataset: 'desks', dataset_id: 'as_desks', size: 12 },
+    { path: 'public/data/rehydrated/legacy.csv', file: 'legacy.csv',
+      dataset: 'rehydrated', dataset_id: null, size: 7 },
+  ],
+  app_d: [{ path: 'public/data/risk/limits.csv', file: 'limits.csv',
+            dataset: 'risk', dataset_id: 'as_risk', size: 34 }],
 };
+
+// What the app's own source still says about a record, keyed the way the route is asked for it.
+// This is the answer `unbind` reads from `_resource_usage` and `detach_file` from `_data_usage`,
+// BOTH taken before the record goes — a Data Source's queries are found THROUGH the record.
+const USES = {
+  'data_source:ds_1': ['src/queries.py', 'public/panel.js'],
+  'llm_alias:al_1': [],
+  'model_api:ma_1': [],
+  'public/data/desks/margins.csv': ['src/load.py'],
+  'public/data/rehydrated/legacy.csv': [],
+};
+
+// The raw copies the agent leaked into the app tree, which `detach_file` deletes on the way out —
+// as distinct from the inlined-into-code uses above, which it leaves in place and reports.
+const LEAKED = { 'public/data/desks/margins.csv': ['src/data/margins.csv'] };
 
 // One Conversation's chips, in the id space the server actually answers in (#99). `resourceId` is
 // the prefixed Project Resource id — `data_source:ds_1`, not the bare `ds_1` a Binding carries —
@@ -106,6 +137,10 @@ let appsFail = false;
 let apps = APPS;
 // Chips come off the server and go back to it, so dropping one is a DELETE the next read sees.
 let context = {};
+// The app's two manifests, which removal WRITES. Copies rather than the fixtures themselves, so a
+// step that unbinds does not leave the next step's app short a Binding.
+let bound = {};
+let attached = {};
 
 const json = (body, status = 200) => ({
   ok: status < 400, status,
@@ -133,8 +168,28 @@ function serve(url, init) {
   }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
-  if (path === '/bindings') return json({ bindings: BINDINGS[selected] || [] });
-  if (path === '/project') return json({ attached: ATTACHED[selected] || [] });
+  if (path === '/bindings') return json({ bindings: bound[selected] || [] });
+  if (path === '/project') return json({ attached: attached[selected] || [] });
+  // The two removal routes, answering what the real ones answer. Both report the app source that
+  // still uses what just went, and both report it AFTER the act — there is no route here that a
+  // pre-warning could have asked, which is the point (ADR-0010).
+  if ((m = path.match(/^\/bindings\/([^/]+)\/([^/?]+)$/)) && init && init.method === 'DELETE') {
+    const kind = decodeURIComponent(m[1]);
+    const id = decodeURIComponent(m[2]);
+    const gone = (bound[selected] || []).find((b) => b.kind === kind && b.id === id) || null;
+    bound[selected] = (bound[selected] || []).filter((b) => b !== gone);
+    return json({
+      bindings: bound[selected],
+      refs: USES[`${kind}:${id}`] || [],
+      kind,
+      name: gone ? gone.display_name || gone.name : id,
+    });
+  }
+  if (path === '/project/files/detach' && init && init.method === 'POST') {
+    const p = JSON.parse(init.body || '{}').path;
+    attached[selected] = (attached[selected] || []).filter((a) => a.path !== p);
+    return json({ detached: p, removed_copies: LEAKED[p] || [], refs: USES[p] || [], status: 'ok' });
+  }
   if (path.match(/^\/threads\/([^/]+)\/conversation$/)) return json({ history: [] });
   if ((m = path.match(/^\/threads\/([^/]+)\/context$/))) return json({ items: context[m[1]] || [] });
   if ((m = path.match(/^\/threads\/([^/]+)\/context\/([^/]+)$/))) {
@@ -267,7 +322,17 @@ function flatten(node, out = [], depth = 0) {
       key: i.key || '', label: typeof i.label === 'string' ? i.label : '', danger: !!i.danger,
       divider: i.type === 'divider',
     }));
+    // Kept beside the labels so a step can CLICK an item rather than only read it: "reachable from
+    // this section" is a claim about what the item does, and a label proves half of it.
+    entry.onMenu = props.menu.onClick;
   }
+  // Same reason, for the controls that are buttons rather than menu items — the notice's cleanup
+  // offer and its Dismiss. Dropped by `JSON.stringify` on the way into the report.
+  if (typeof props.onClick === 'function') entry.onClick = props.onClick;
+  // The id a row carries, which is what "Add to this conversation" POSTs. The app's rows build
+  // theirs rather than being handed one, so whether it is an id the Project answers in is a
+  // question that has to be asked of the value itself (#96).
+  if (props.resource && props.resource.id) entry.resourceId = props.resource.id;
   if (props.mode) entry.mode = props.mode;
   // The strings directly under this element, so an assertion can ask WHICH CONTROL said a word
   // rather than only whether the screen holds it somewhere. Two things say "Starting preview\u2026"
@@ -317,13 +382,21 @@ function panelContents(tree) {
   const out = [];
   let section = null;
   let row = null;
+  // The `ResourceRow` element is walked just before the `sw-res-row` div it renders, so the id it
+  // was handed is read off the element and carried onto the row below it.
+  let pendingId = null;
   for (const n of flatten(tree)) {
     const cls = String(n.className || '');
+    if (n.resourceId) { pendingId = n.resourceId; continue; }
     if (cls.startsWith('sw-res-row')) {
-      row = { section, className: cls, texts: [] };
+      row = { section, className: cls, texts: [], id: pendingId };
+      pendingId = null;
       out.push(row);
       continue;
     }
+    // The overflow menu hangs inside the row it acts on and carries no class of its own, so it is
+    // recognised by having items at all. Which row holds which removal is the whole question.
+    if (row && n.items) { row.items = n.items; row.onMenu = n.onMenu; }
     if (cls === 'sw-panel-section-title') {
       section = (n.texts || []).join('');
       row = null;
@@ -338,6 +411,9 @@ function panelContents(tree) {
 async function arrive(threadId, appId) {
   apps = APPS;
   context = JSON.parse(JSON.stringify(CONTEXT));
+  bound = JSON.parse(JSON.stringify(BINDINGS));
+  attached = JSON.parse(JSON.stringify(ATTACHED));
+  modals.length = 0;
   said.length = 0;
   effects.length = 0;
   timers.length = 0;
@@ -427,10 +503,109 @@ for (const step of steps) {
     await arrive(step.panel, step.select);
     await SW.store.reloadAttachments();
     SW.store.set({ resourceGroups: RESOURCE_GROUPS, resourcesLoading: false });
+    // Emptied here rather than in `arrive`, for the reason the build step gives: what survives is
+    // the traffic the RENDER caused, and the section reports two written records (ADR-0010).
+    calls.length = 0;
+    const tree = SW.ResourcePanel();
+    const rows = panelContents(tree);
+    const nodes = flatten(tree);
     report.push({
       step: `panel ${step.select || selected}`,
       app: (SW.store.get().activeApp || {}).name || null,
-      rows: panelContents(SW.ResourcePanel()),
+      rows,
+      renderCalls: calls.slice(),
+      // Section heads in the order they are drawn, taken off the heads themselves rather than off
+      // the rows under them — a section whose list is empty still has a head, and that is the one
+      // the question is about.
+      sections: nodes
+        .filter((n) => n.className === 'sw-panel-section-title')
+        .map((n) => (n.texts || []).join('')),
+      parts: nodes.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
+      words: words(nodes),
+    });
+    continue;
+  }
+
+  // A removal driven the way a person drives it: find the row in the app's section, open its menu,
+  // and click the item whose label names a scope other than the Conversation. The step knows no
+  // menu keys — an item that stopped naming its scope would not be found at all, which is the
+  // glossary's Remove rule asked as a question rather than asserted as a string.
+  if (step.removeFrom) {
+    await arrive(step.thread, step.select);
+    await SW.store.reloadAttachments();
+    SW.store.set({ resourceGroups: RESOURCE_GROUPS, resourcesLoading: false });
+    said.length = 0;
+    modals.length = 0;
+    calls.length = 0;
+    const rows = panelContents(SW.ResourcePanel());
+    const inSection = rows.filter(
+      (r) => r.section && r.section !== 'Project resources' && r.section !== 'In context'
+    );
+    const row = inSection.find((r) => r.texts.includes(step.removeFrom));
+    if (!row) {
+      throw new Error(
+        `no row ${step.removeFrom} in the app's section — found ${JSON.stringify(inSection.map((r) => r.texts))}`
+      );
+    }
+    const item = (row.items || []).find(
+      (i) => i.label.startsWith('Remove from ') && i.label !== 'Remove from this conversation'
+    );
+    const chipsBefore = SW.store.get().attachments.map((a) => a.id);
+    const acted = item ? row.onMenu({ key: item.key }) : null;
+    // Whatever the click raised, answered before the tree is read again. A removal that confirms has
+    // done nothing yet and is waiting on this; one that does not has already gone to the server.
+    // The click's own promise is awaited AFTER the answer, or a confirming removal would deadlock
+    // on the modal nobody had replied to.
+    const confirm = modals.length ? modals[modals.length - 1] : null;
+    if (confirm && step.confirm) await confirm.onOk();
+    if (confirm && !step.confirm) confirm.onCancel();
+    await acted;
+    const actCalls = calls.slice();
+
+    let cleanupCalls = null;
+    let seeded = null;
+    let after = flatten(SW.ResourcePanel());
+    const control = (re) => after.find((n) => n.onClick && (n.texts || []).some((t) => re.test(t)));
+    if (step.cleanup) {
+      const offer = control(/clean/i);
+      if (!offer) throw new Error('the notice offered no cleanup');
+      calls.length = 0;
+      offer.onClick();
+      cleanupCalls = calls.slice();
+      seeded = SW.store.get().composerSeed || null;
+      after = flatten(SW.ResourcePanel());
+    }
+    if (step.dismiss) {
+      const off = control(/^Dismiss$/);
+      if (!off) throw new Error('the notice could not be dismissed');
+      off.onClick();
+      after = flatten(SW.ResourcePanel());
+    }
+
+    report.push({
+      step: `removeFrom ${step.removeFrom}`,
+      item: item ? { key: item.key, label: item.label, danger: item.danger } : null,
+      confirm: confirm
+        ? {
+            title: String(confirm.title || ''),
+            content: String(confirm.content || ''),
+            okText: String(confirm.okText || ''),
+            danger: !!(confirm.okButtonProps || {}).danger,
+          }
+        : null,
+      calls: actCalls,
+      said: said.slice(),
+      cleanupCalls,
+      seeded,
+      // Both lists after the act, plus everything the section said. The chips are the assertion
+      // that the two scopes move on their own.
+      rows: panelContents(SW.ResourcePanel()).map((r) => ({ section: r.section, texts: r.texts })),
+      parts: after.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
+      words: words(after),
+      chipsBefore,
+      chips: SW.store.get().attachments.map((a) => a.id),
+      bindings: (SW.store.get().bindings || []).map((b) => b.display_name || b.name),
+      attachments: (SW.store.get().appAttachments || []).map((a) => a.file),
     });
     continue;
   }

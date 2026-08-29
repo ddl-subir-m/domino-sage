@@ -99,8 +99,8 @@ def test_a_poll_that_moves_the_app_moves_its_bindings_and_attachments():
     assert moved["activeApp"] == "app_a"
     assert moved["activeName"] == "Desk dashboard"
     # app_a's records, not app_c's. `qwen-2-5` was the Binding a moment ago.
-    assert moved["bindings"] == ["Claude Sonnet 4", "Market data EOD"]
-    assert moved["attachments"] == ["margins.csv"]
+    assert moved["bindings"] == ["Claude Sonnet 4", "Market data EOD", "Churn risk"]
+    assert moved["attachments"] == ["margins.csv", "legacy.csv"]
 
 
 @needs_node
@@ -128,8 +128,8 @@ def test_a_poll_that_changes_nothing_leaves_the_lists_where_they_were():
     """Not refetching must not mean losing them: the row renders off this state on every tick."""
     _, still = _ticks()
     assert still["activeApp"] == "app_a"
-    assert still["bindings"] == ["Claude Sonnet 4", "Market data EOD"]
-    assert still["attachments"] == ["margins.csv"]
+    assert still["bindings"] == ["Claude Sonnet 4", "Market data EOD", "Churn risk"]
+    assert still["attachments"] == ["margins.csv", "legacy.csv"]
 
 
 @needs_node
@@ -141,8 +141,8 @@ def test_a_failed_read_of_the_app_list_is_not_an_app_that_moved():
         [{"thread": "thr_many", "select": "app_a", "poll": "app_c", "readFails": True}]
     )[-1]
     assert step["calls"] == ["GET /apps"]
-    assert step["bindings"] == ["Claude Sonnet 4", "Market data EOD"]
-    assert step["attachments"] == ["margins.csv"]
+    assert step["bindings"] == ["Claude Sonnet 4", "Market data EOD", "Churn risk"]
+    assert step["attachments"] == ["margins.csv", "legacy.csv"]
 
 
 # ---- the paths that already refreshed --------------------------------------------------

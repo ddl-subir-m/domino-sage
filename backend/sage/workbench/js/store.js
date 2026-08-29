@@ -147,6 +147,15 @@ window.SW = window.SW || {};
     // Conversation's and must not follow the app (#84). This one is read off the app's own
     // manifest, so switching app replaces it — see `loadBuild` (#92).
     appAttachments: [],
+    // What the last app-scoped removal reported, drawn as a notice inside the section that did it.
+    // `{ text, prompt }` — `prompt` is null when the app's code refers to nothing that went, and a
+    // notice with nothing to act on carries no offer. Never a toast: five seconds is not long
+    // enough to read a file list and decide (ADR-0011).
+    appRemoval: null,
+    // A prompt written into the composer and left there. The cleanup offer above puts work in front
+    // of the person rather than firing a build turn, which the per-project turn lock can refuse and
+    // which would put work past a plan gate they never read.
+    composerSeed: null,
     previewSrc: './preview/',
     previewStatus: 'idle',
   };
@@ -345,10 +354,65 @@ window.SW = window.SW || {};
       SW.api.bindings().catch(() => null),
     ]);
     state.activeApp = app;
+    // The notice reports one act on one app's lists, so it goes with them. Left standing it would
+    // sit under a head naming a different app than the sentence does.
+    state.appRemoval = null;
     // A read that failed keeps what is on screen. Emptying on a 502 would have the row report an
     // app that ships nothing — the same lie as blanking, arrived at by accident.
     if (project) state.appAttachments = project.attached || [];
     if (bound) state.bindings = bound.bindings || [];
+  }
+
+  // Re-picking a Binding does not cost the same over the three kinds, and one sentence covering all
+  // of them would either overstate or understate. A Data Source's Scope goes with the Binding
+  // record and nothing else holds it, so it has to be chosen again. A Model API's access token does
+  // NOT go — it lives in `CredentialStore`, keyed by model id, which `unbind` never touches — so
+  // saying nothing here would let someone expect the worse outcome and keep a Binding they do not
+  // want.
+  const UNBIND_COPY = {
+    data_source: {
+      stops: 'stops being allowed to read it',
+      cost: 'Pick it again from Project resources and you will choose its Scope again — the Scope '
+        + 'goes with the Binding.',
+    },
+    model_api: {
+      stops: 'stops being allowed to call it',
+      cost: 'Pick it again from Project resources. The access token stays, so it will not ask for '
+        + 'the sample request again.',
+    },
+  };
+  // The third kind, and any kind added later. An LLM Alias carries neither a Scope nor a
+  // credential, so re-picking it costs the pick and nothing else — which is worth saying plainly
+  // rather than leaving the confirm to imply a cost the kind does not have.
+  const UNBIND_PLAIN = {
+    stops: 'stops being allowed to use it',
+    cost: 'Pick it again from Project resources.',
+  };
+
+  // Whose lists these are. A Build with no selected app draws no section, so the fallback is for
+  // the window where a read has not landed rather than for a state anyone acts in.
+  function appScopeName() {
+    return state.activeApp ? state.activeApp.name : 'this app';
+  }
+
+  // What a removal REPORTED, once it has happened. Both routes read the app's own source before the
+  // record goes and hand back what still uses it, so this reports an answer rather than asking for
+  // one: nothing here scans anything, and nothing warned before the act (ADR-0010).
+  //
+  // The offer is only attached when there is something to act on. Where the app's code refers to
+  // nothing, the sentence is still worth drawing — it is the acknowledgement that the act landed.
+  function reportRemoval(where, name, refs, alsoDid) {
+    const uses = refs.length
+      ? `The app's code still uses it in ${refs.join(', ')}.`
+      : "Nothing in the app's code refers to it.";
+    state.appRemoval = {
+      text: `${name} is out of ${where}.${alsoDid ? ` ${alsoDid}` : ''} ${uses}`,
+      prompt: refs.length
+        ? `${name} is no longer part of this app, and ${refs.join(', ')} still refer to it. `
+          + 'Remove or replace those uses.'
+        : null,
+    };
+    notify();
   }
 
   // ---------------------------------------------------------------------
@@ -1368,7 +1432,9 @@ window.SW = window.SW || {};
                 const subject = apps.length > 1 ? 'Built Apps' : 'a Built App';
                 const fix = refs.length
                   ? ` Used in: ${refs.join(', ')}. Remove those uses in Build, then remove it here.`
-                  : ' Unbind it in Build, then remove it here.';
+                  // The code word this used to say names the app-scoped pair in `service.py` and
+                  // never on screen, and the act it points at is now a control of its own (#96).
+                  : ' Remove it from that app in Build, then remove it here.';
                 antd.Modal.info({
                   title: `${resource.name} is still used by ${subject}`,
                   content: `${err.message}, so it can't leave ${scopeName} yet.` + fix,
@@ -1399,6 +1465,100 @@ window.SW = window.SW || {};
           onCancel: () => resolve(false),
         });
       });
+    },
+
+    // Out of the selected Built App ---------------------------------------
+    //
+    // The third of the three removal scopes. Both acts live here — beside the list that owns the
+    // scope (ADR-0011) — and the Build header keeps its pointers rather than growing a second copy
+    // of either guard.
+    //
+    // Neither touches the Conversation's chips: the app stops being allowed to reach the Resource
+    // while the chip stays on the composer. That is the mirror of the sentence
+    // `removeFromConversation` draws below, and it is correct rather than a leak.
+
+    async removeBindingFromApp(binding) {
+      const where = appScopeName();
+      const name = binding.display_name || binding.name || binding.id;
+      const copy = UNBIND_COPY[binding.kind] || UNBIND_PLAIN;
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Remove ${name} from ${where}?`,
+          content: `${where} ${copy.stops}, and there is no undo. ${copy.cost}`,
+          // Names its scope, like every other removal label. The sibling confirm above says a bare
+          // "Remove"; that one predates the rule (ADR-0011) and is not this ticket's to move.
+          okText: `Remove from ${where}`,
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            let result;
+            try {
+              result = await SW.api.unbind(binding.kind, binding.id);
+            } catch (err) {
+              antd.message.error(`${name} could not be removed: ${err.message}`);
+              resolve(false);
+              return;
+            }
+            // The route answers with the list it just wrote, so nothing is re-read to find out
+            // what happened — see ADR-0010 on what may render per app switch.
+            state.bindings = result.bindings || [];
+            reportRemoval(where, result.name || name, result.refs || []);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
+    // No confirm, and the asymmetry is the point: re-attaching is one click on the same Dataset
+    // file, while re-binding costs the Scope. A gate over the cheap one would teach that they cost
+    // the same.
+    async removeAttachmentFromApp(attachment) {
+      const where = appScopeName();
+      const name = (attachment.file || attachment.path || '').split('/').pop();
+      let result;
+      try {
+        result = await SW.api.detachFile(attachment.path);
+      } catch (err) {
+        antd.message.error(`${name} could not be removed: ${err.message}`);
+        return false;
+      }
+      state.appAttachments = (state.appAttachments || []).filter(
+        (a) => a.path !== attachment.path
+      );
+      // What `detach_file` actually does: the declaration, the app's copy under public/data/ and any
+      // raw copy the agent leaked into the app tree all go, and the Dataset bytes stay. The last
+      // half can only be promised when there is a Dataset to name.
+      //
+      // Keyed on `dataset_id`, never on `dataset`. Every entry carries a `dataset`, the rehydrated
+      // ones included — `_rehydrate_attached` fills it from the SYMLINK'S PARENT DIRECTORY, so for
+      // those it is a path fragment that merely looks like a Dataset name. `dataset_id` is the only
+      // field that says a real Dataset was recorded, and naming a directory as the source the bytes
+      // are safe in is exactly the invention ADR-0011 forbids.
+      const source = attachment.dataset_id
+        ? `The app's copy is gone and the file stays in ${attachment.dataset}.`
+        : "The app's copy is gone. This file records no Dataset, so there is no source to name.";
+      const leaked = result.removed_copies || [];
+      const copies = leaked.length ? ` A copy left in ${leaked.join(', ')} went with it.` : '';
+      reportRemoval(where, name, result.refs || [], `${source}${copies}`);
+      return true;
+    },
+
+    dismissAppRemoval() {
+      state.appRemoval = null;
+      notify();
+    },
+
+    // A prompt put in front of the person, unsent. A control that fired the turn itself could be
+    // refused by the per-project turn lock, and would put work past a plan gate nobody read.
+    seedComposer(text) {
+      state.composerSeed = text;
+      notify();
+    },
+
+    // Read once by the composer, which holds the text from then on. No `notify` — the box already
+    // has it, and telling every listener would only redraw the screen to say the same thing.
+    clearComposerSeed() {
+      state.composerSeed = null;
     },
 
     // Conversation context ------------------------------------------------

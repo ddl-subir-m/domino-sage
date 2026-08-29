@@ -22,10 +22,12 @@ Joining on `b.id` matches nothing, silently, and the screen looks exactly like t
 was there before. So the join key is `${b.kind}:${b.id}`, and the fixtures below carry the prefixed
 ids the server really answers with — a fixture that shortened them would prove the wrong thing.
 
-WHAT DID NOT CHANGE. No app-scoped removal control appears anywhere; that is #96, which this blocks.
-The In-this-app rows keep their `required: true`, which is those rows describing themselves, but
+WHAT DID NOT CHANGE HERE. The app-scoped removal control is #96, which this blocked and which has
+since landed — its own claims live in `test_removal_lands_in_the_in_this_app_section.py`, and nothing
+below asserts anything about it. The In-this-app rows keep their `required: true`, which is those
+rows describing themselves, but
 lose the fake `app: {name: 'this app'}` that would have had them read "Required by this app" under a
-head already saying "In this app".
+head that already names the app.
 
 Nothing is mounted — see `js/build_header_harness.mjs` for why.
 """
@@ -148,12 +150,12 @@ def test_the_subtitle_follows_the_selected_app():
 def test_nothing_reads_as_required_twice():
     """The In-this-app rows pass `required: true` as a literal — they ARE the app's list. Once the
     Project rows' subtitle is real, that literal must not also draw "Required by this app" under a
-    head that already says "In this app"."""
+    head that already names the app (#96 gave the section that head)."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
     # `app_a` is bound to two Resources, so both sections draw both — the subtitle belongs to
     # exactly one of the two copies, and it is the one whose head does not already say it.
     for name in ("Market data EOD", "Claude Sonnet 4"):
-        in_app = _row(step["rows"], name, "In this app")
+        in_app = _row(step["rows"], name, "In Desk dashboard")
         assert not any("Required by" in t for t in in_app["texts"])
         # The In-this-app row still carries the marker; it just stops repeating its own section.
         assert "is-required" in in_app["className"]

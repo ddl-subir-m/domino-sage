@@ -439,9 +439,15 @@ window.SW = window.SW || {};
 
     // Read-only, and said so rather than left to be discovered: a row that reports a Binding and
     // says nothing about where it is dealt with is the same dead end the empty state below avoids.
-    // The pointer is where the kind is LISTED, not a second Remove — unbind and detach each report
-    // the app source that still uses what just went, and a second copy of either here would be a
-    // second guard to keep in step with the first.
+    // The pointer is where the kind is DEALT WITH, not a second Remove — unbind and detach each
+    // report the app source that still uses what just went, and a second copy of either here would
+    // be a second guard to keep in step with the first.
+    //
+    // It names the destination by the head the reader will actually see there and names the action,
+    // because the destination can now act (#96). It used to say "listed in", a read-only word, and
+    // the Attachments one pointed at a group that did not exist.
+    const pointer = `in Project resources, under ${activeApp.name} — remove it there`;
+
     const kindRow = (label, names, where, full) =>
       h(
         Tooltip,
@@ -461,24 +467,20 @@ window.SW = window.SW || {};
       // Always here, including for a brand-new app with neither: hiding the row would make the
       // header jump the moment the first Binding lands, and would teach a first-time creator
       // nothing at the one moment they have not seen either word yet.
-      // Named the way the panel's own empty state names it, and for the reason it does: the
-      // handoff is what actually fills BOTH lists. `_promote_chat_file` turns a Dataset chip into
-      // an app Attachment and `_bind_from_handoff` records the Bindings, so a sentence telling a
-      // first-timer to attach a file in Build would send them to the composer's upload — which
-      // writes scratch and a Conversation chip, and leaves this row still saying nothing yet.
+      // One sentence, written once in `SW.util` and said by the panel's section too — the two
+      // surfaces answer the same question and had drifted into two answers to it (ADR-0011).
       bound.length === 0 && files.length === 0
         ? h(
             'span',
             { className: 'sw-app-scope-empty' },
-            'nothing yet. Resources and data files from Chat land here after Open Builder.'
+            SW.util.appScopeEmpty('nothing yet.')
           )
         // A kind with nothing in it is not the same state, so it is not named. `Attachments —`
-        // over an empty list says the app ships a kind of thing it does not.
+        // over an empty list says the app ships a kind of thing it does not. The panel does name
+        // it, because a destination someone arrived at intending to act is not a glance.
         : [
-            bound.length > 0 && kindRow('Bindings', bound,
-              'listed in Project resources, under “In this app”'),
-            files.length > 0 && kindRow('Attachments', files,
-              'listed in Project resources, with the app’s files', paths),
+            bound.length > 0 && kindRow('Bindings', bound, pointer),
+            files.length > 0 && kindRow('Attachments', files, pointer, paths),
           ]
     );
   }

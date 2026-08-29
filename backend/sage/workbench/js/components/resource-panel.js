@@ -144,6 +144,10 @@ window.SW = window.SW || {};
     required,
     highlighted,
     app,
+    // The Built App this row is a record of, and the record itself: `{ app, binding }` or
+    // `{ app, attachment }`. Only the "In this app" rows carry it, because only they are the list
+    // that owns that scope — a Project row's removal is the Project's (ADR-0011).
+    appScope,
     onOpen,
     contextItem,
     attached,
@@ -173,6 +177,14 @@ window.SW = window.SW || {};
               // A disabled item never fires onClick, so the reason has to be the label itself.
               : [{ key: 'to-dataset', label: 'No writable Dataset is mounted here', disabled: true }]
             : []),
+          // The third of the three scopes, beside the two this menu already named. Every label says
+          // which list it acts on, because that is the only thing telling the three apart.
+          ...(appScope
+            ? [
+                { type: 'divider' },
+                { key: 'remove-from-app', label: `Remove from ${appScope.app.name}`, danger: true },
+              ]
+            : []),
           ...(resource.membershipParent
             ? [
                 { type: 'divider' },
@@ -187,6 +199,11 @@ window.SW = window.SW || {};
       if (key === 'remove-from-conversation') return SW.store.removeFromConversation(contextItem);
       if (key === 'remove-resource-from-conversation') {
         return SW.store.removeResourceFromConversation(resource.id);
+      }
+      if (key === 'remove-from-app') {
+        return appScope.binding
+          ? SW.store.removeBindingFromApp(appScope.binding)
+          : SW.store.removeAttachmentFromApp(appScope.attachment);
       }
       if (key === 'remove') return SW.store.removeFromProject(resource);
       if (key.startsWith('to-dataset:')) {
@@ -296,7 +313,7 @@ window.SW = window.SW || {};
   SW.ResourcePanel = function ResourcePanel() {
     const {
       resourceGroups, resourceErrors, activeApp, panelFilter, projectPlan, bindings, attachments,
-      resourcesLoading,
+      appAttachments, appRemoval, resourcesLoading,
     } = SW.store.get();
     const [query, setQuery] = useState('');
     const [collapsed, setCollapsed] = useState({});
@@ -327,8 +344,14 @@ window.SW = window.SW || {};
         : kind === 'llm_alias' ? 'model_llm'
         : kind === 'model_api' ? 'model_predictive'
         : kind;
+    // Both of the app's lists, read out of the store rather than fetched: `refreshAppScope` assigns
+    // them together with the app, so anything drawn here is already the selected app's (#95).
     const inApp = (bindings || []).filter((b) =>
       !needle || (b.display_name || b.name || '').toLowerCase().includes(needle)
+    );
+    const fileName = (a) => String(a.file || a.path || '').split('/').pop();
+    const inAppFiles = (appAttachments || []).filter((a) =>
+      !needle || fileName(a).toLowerCase().includes(needle)
     );
 
     const openResource = (resource) =>
@@ -358,6 +381,62 @@ window.SW = window.SW || {};
       (acc, g) => acc + g.subgroups.reduce((n, s) => n + visible(s.kind).length, 0),
       0
     );
+
+    // Both group labels, always, even over an empty kind. The Build header omits one for the
+    // opposite reason: it is a glance, and naming a kind with nothing in it says the app ships
+    // something it does not. This is where the two words are learned and where someone arrived
+    // intending to act, so "Attachments — none" answers the question they came with (ADR-0011).
+    //
+    // `held` is what the APP records, not what the filter left: a search matching nothing does not
+    // make the app's list empty, and a label saying it did would be the wrong answer to a question
+    // about the app.
+    const appGroup = (label, held, rows) =>
+      h(
+        Fragment,
+        { key: label },
+        h(
+          'div',
+          { className: 'sw-res-subgroup' },
+          h('span', { className: 'sw-group-label sw-app-group' }, held ? label : `${label} — none`)
+        ),
+        rows
+      );
+
+    const bindingRow = (b) =>
+      h(SW.ResourceRow, {
+        key: SW.util.bindingId(b),
+        resource: {
+          id: SW.util.bindingId(b),
+          name: b.display_name || b.name,
+          kind: kindForBinding(b.kind),
+          subtitle: (b.kind || '').replace(/_/g, ' '),
+        },
+        // These rows ARE the app's list — the literal is them describing themselves, and it keeps
+        // the marker the Project rows get. No `app`, though: with one, the subtitle would read
+        // "Required by this app" under a head already naming the app, so the row would repeat its
+        // own section instead of naming its kind (#99).
+        required: true,
+        appScope: activeApp ? { app: activeApp, binding: b } : null,
+        onOpen: () => {},
+      });
+
+    const fileRow = (a) =>
+      h(SW.ResourceRow, {
+        key: a.path,
+        resource: {
+          id: `file:${a.path}`,
+          name: fileName(a),
+          kind: 'file',
+          // The Dataset the bytes stay in, which is also the half the removal can promise. Keyed on
+          // `dataset_id` for the reason `removeAttachmentFromApp` gives: a rehydrated entry still
+          // carries a `dataset`, filled from the symlink's parent directory, and printing that as a
+          // Dataset name would name a source the entry does not have.
+          subtitle: a.dataset_id ? a.dataset : a.path,
+        },
+        required: true,
+        appScope: activeApp ? { app: activeApp, attachment: a } : null,
+        onOpen: () => {},
+      });
 
     const rowFor = (resource) => {
       const expandable = resource.membershipParent
@@ -417,36 +496,62 @@ window.SW = window.SW || {};
               )
         ),
 
+      // Headed by the app rather than by "this app": a Project holds many, and ADR-0008 makes which
+      // one a question every surface has to answer. This one has to twice over — it is where #92's
+      // header pointers land, and a pointer is a promise that the destination can act.
       inBuild &&
         h(
           'div',
           { className: 'sw-panel-section-head' },
-          h('span', { className: 'sw-panel-section-title' }, 'In this app'),
-          h('span', { className: 'sw-panel-section-count' }, inApp.length)
+          h(
+            'span',
+            { className: 'sw-panel-section-title' },
+            `In ${activeApp ? activeApp.name : 'this app'}`
+          ),
+          h('span', { className: 'sw-panel-section-count' }, inApp.length + inAppFiles.length)
         ),
       inBuild &&
         h(
           'div',
           { className: 'sw-in-app' },
-          inApp.length === 0
-            ? h('div', { className: 'sw-caption' }, 'Nothing recorded yet. Bindings from Chat land here after Open Builder.')
-            : inApp.map((b) =>
-                h(SW.ResourceRow, {
-                  key: SW.util.bindingId(b),
-                  resource: {
-                    id: SW.util.bindingId(b),
-                    name: b.display_name || b.name,
-                    kind: kindForBinding(b.kind),
-                    subtitle: (b.kind || '').replace(/_/g, ' '),
+          // What the last removal reported, after the act. Here rather than in a toast because it
+          // is only worth having if it can be acted on, and five seconds is not long enough to read
+          // a file list and decide (ADR-0011).
+          appRemoval &&
+            h(
+              'div',
+              { className: 'sw-panel-hint sw-app-notice' },
+              h('span', { className: 'sw-app-notice-text' }, appRemoval.text),
+              // Writes the prompt into the composer and stops. Firing the turn from here could be
+              // refused by the turn lock, and would put work past a plan gate nobody read.
+              appRemoval.prompt &&
+                h(
+                  Button,
+                  {
+                    type: 'link',
+                    size: 'small',
+                    style: { padding: 0, height: 'auto' },
+                    onClick: () => SW.store.seedComposer(appRemoval.prompt),
                   },
-                  // These rows ARE the app's list — the literal is them describing themselves, and
-                  // it keeps the marker the Project rows get. No `app`, though: with one, the
-                  // subtitle would read "Required by this app" under a head already saying "In this
-                  // app", so the row would repeat its own section instead of naming its kind (#99).
-                  required: true,
-                  onOpen: () => {},
-                })
+                  `Ask ${SW.brand.assistant()} to clean this up`
+                ),
+              h(
+                Button,
+                {
+                  type: 'link',
+                  size: 'small',
+                  style: { padding: 0, height: 'auto' },
+                  onClick: () => SW.store.dismissAppRemoval(),
+                },
+                'Dismiss'
               )
+            ),
+          (bindings || []).length === 0 && (appAttachments || []).length === 0
+            ? h('div', { className: 'sw-caption' }, SW.util.appScopeEmpty('Nothing yet.'))
+            : [
+                appGroup('Bindings', (bindings || []).length, inApp.map(bindingRow)),
+                appGroup('Attachments', (appAttachments || []).length, inAppFiles.map(fileRow)),
+              ]
         ),
 
       h(

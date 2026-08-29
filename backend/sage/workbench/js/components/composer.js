@@ -118,7 +118,7 @@ window.SW = window.SW || {};
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
-      apps, activeApp,
+      apps, activeApp, composerSeed,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -144,6 +144,15 @@ window.SW = window.SW || {};
     const buildModes = BUILD_MODES();
     const activeBuildMode = buildModes.find((m) => m.id === buildMode) || buildModes[0];
     const modeQueued = showMode && buildRunning && buildTurnMode && buildTurnMode !== buildMode;
+
+    // A prompt written somewhere else and left here to read, edit or drop — the panel's cleanup
+    // offer after an app-scoped removal is the one that writes it (ADR-0011). Taken as a DRAFT and
+    // never sent: `onSend` is reached from the send control and from nowhere else.
+    useEffect(() => {
+      if (!composerSeed) return;
+      setText(composerSeed);
+      SW.store.clearComposerSeed();
+    }, [composerSeed]);
 
     useEffect(() => {
       if (!modeOpen || !showMode) return undefined;

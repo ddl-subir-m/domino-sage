@@ -76,6 +76,19 @@ window.SW = window.SW || {};
       return `${binding.kind}:${binding.id}`;
     },
 
+    // What the Build header and the panel's app section both say when the selected app records
+    // neither Bindings nor Attachments. One sentence in one place, because the two surfaces had
+    // drifted into two answers to one question (ADR-0011) — the header's runs on from "{app}
+    // ships" and the panel's stands alone, so only the lead differs.
+    //
+    // It names the handoff rather than an upload: `_promote_chat_file` writes the Attachment and
+    // `_bind_from_handoff` the Bindings, while the composer's upload writes a scratch file and a
+    // Conversation chip. A sentence naming the upload would leave a first-timer doing as they were
+    // told and seeing neither list change.
+    appScopeEmpty(lead) {
+      return `${lead} Resources and data files from Chat land here after Open Builder.`;
+    },
+
     // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path
     // OpenCode reads. Lives here rather than in the composer because the menu that INSERTS a token
     // and the turn that reads it back off the prompt have to derive it the same way — a token only
