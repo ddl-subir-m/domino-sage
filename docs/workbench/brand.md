@@ -15,8 +15,8 @@ Shipped in v1 (`40ecb14`): the pack loader and its fallbacks, `GET /api/brand`, 
 `assistantName`, `pageTitle`, `logoUrl`, `logoAlt`, `colors`, the antd theme, about fourteen UI
 strings through `SW.brand.*`, and `apply_voice()` / `apply_agent_voice()`.
 
-Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`; and
-`platformName`.
+Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`;
+`platformName`; and `nouns`.
 
 Everything else below is designed and unbuilt. Sections carry the marker.
 
@@ -80,8 +80,8 @@ Unknown keys are **ignored but logged at startup**, so a typo is findable.
 }
 ```
 
-**Not built:** `peerProducts`, `faviconUrl`, `nouns`, the unknown-key log, and
-the Title Case warning. There is also no default favicon asset yet — it has to be drawn.
+**Not built:** `peerProducts`, `faviconUrl`, and the unknown-key log. There is also no default
+favicon asset yet — it has to be drawn.
 
 An OEM typically sets `productName` and `assistantName` to the same string. `assistantName` omitted
 falls back to `productName`. Colors omitted keep the purple tokens.
@@ -110,15 +110,24 @@ One pack per process. Not `.sage/brand.json` (that would be per project).
 there. Do not
 patch them from JS on boot — the browser paints the unbranded name first.
 
-## Nouns — not built
+## Nouns — partly built
 
 Domino's own whitelabel renames its nouns, and nothing exposes that vocabulary to a Workspace tool,
 so the pack carries a copy. **This will drift.** It is accepted only until an API exists.
 
-- `{singular, plural}` per noun. **No pluralization engine, no article engine.** Where copy needs
-  `a`/`an`, reword the copy.
+**Built:** the map, both forms through `brand.text()` / `SW.brand.text()`, the Title Case warning,
+and `nouns` on `GET /api/brand`. **Not built:** the lint below, and rendering a passed-through
+platform error as a quotation.
+
+The default keys are `dataset`, `dataSource`, `modelApi`, `llmAlias`, `builtApp` and `gallery`. A
+key the pack invents is ignored — a token Sage never emits is not a rename. A key set to only one
+of its two forms keeps the default for the other.
+
+- `{singular, plural}` per noun, read as `{dataset}` and `{datasetPlural}`. **No pluralization
+  engine, no article engine.** Where copy needs `a`/`an`, reword the copy.
 - **Title Case.** A value containing `_` or starting lowercase logs a warning and is used anyway.
-  `"No files in this xyz_dataset."` reads as a leaked code identifier, not a product term.
+  `"No files in this xyz_dataset."` reads as a leaked code identifier, not a product term. The
+  warning is made once per bad value: `load()` runs per request.
 - **A `CONTEXT.md` term gets a key iff it appears in a user-visible string.** The lint computes this.
   A new glossary term used in the UI fails the lint until it has a key; a glossary-only
   disambiguator (`AI Gateway`, `Domino Artifacts`) never gets one. Sage's own coinages —

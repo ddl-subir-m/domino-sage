@@ -144,7 +144,9 @@ window.SW = window.SW || {};
       return h(
         'div',
         { className: 'sw-tree-empty' },
-        query ? `Nothing matches “${query.trim()}”.` : 'No files in this Dataset.'
+        query
+          ? `Nothing matches “${query.trim()}”.`
+          : SW.brand.text('No files in this {dataset}.')
       );
     }
     const tree = nestFiles(visible);

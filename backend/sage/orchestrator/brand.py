@@ -6,14 +6,18 @@ One pack per process; not per project.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+log = logging.getLogger("sage.orchestrator.brand")
+
 _BAKED = Path("/opt/sage/brand.json")
 _TOKEN = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
+_WARNED: set[str] = set()   # Title Case complaints already made, so each is made once
 _HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 
 DEFAULT: dict[str, Any] = {
@@ -26,6 +30,20 @@ DEFAULT: dict[str, Any] = {
     "pageTitle": "Sage Workspace",
     "logoUrl": "./img/domino-logo.svg",
     "logoAlt": "Domino",
+    # The platform's own whitelabel renames its nouns and no API exposes that vocabulary to a
+    # Sage Builder, so the pack carries a copy of it. This will drift, silently, and it is
+    # accepted only until such an API exists — if one appears these keys go, not grow.
+    #
+    # Two forms per noun because the nouns are woven into sentences, not confined to labels.
+    # There is no pluralisation engine and no article engine: copy needing `a`/`an` is reworded.
+    "nouns": {
+        "dataset": {"singular": "Dataset", "plural": "Datasets"},
+        "dataSource": {"singular": "Data Source", "plural": "Data Sources"},
+        "modelApi": {"singular": "Model API", "plural": "Model APIs"},
+        "llmAlias": {"singular": "LLM Alias", "plural": "LLM Aliases"},
+        "builtApp": {"singular": "Built App", "plural": "Built Apps"},
+        "gallery": {"singular": "Gallery", "plural": "Galleries"},
+    },
     "colors": {
         "primary": "#543FDE",
         "primaryDark": "#311EAE",
@@ -85,8 +103,13 @@ def apply_agent_voice(cfg: dict, assistant_name: str | None = None) -> dict:
 
 
 def _tokens(pack: dict[str, Any]) -> dict[str, str]:
-    """The pack flattened to the token names a string may use."""
-    return {key: value for key, value in pack.items() if isinstance(value, str)}
+    """The pack flattened to the token names a string may use. A noun contributes both its forms,
+    `{dataset}` and `{datasetPlural}`, because a plural is read from the pack and never derived."""
+    table = {key: value for key, value in pack.items() if isinstance(value, str)}
+    for key, forms in pack["nouns"].items():
+        table[key] = forms["singular"]
+        table[key + "Plural"] = forms["plural"]
+    return table
 
 
 def _read(path: Path) -> dict | None:
@@ -112,6 +135,18 @@ def _merge(base: dict, overlay: dict | None) -> dict:
         value = _nonempty(overlay.get(key))
         if value:
             out[key] = value
+    nouns = overlay.get("nouns")
+    if isinstance(nouns, dict):
+        merged_nouns = {key: dict(forms) for key, forms in out["nouns"].items()}
+        for key, forms in nouns.items():
+            if key not in merged_nouns or not isinstance(forms, dict):
+                continue          # a token Sage never emits is not a rename
+            for form in ("singular", "plural"):
+                value = _nonempty(forms.get(form))
+                if value:
+                    _warn_unless_title_case(key, form, value)
+                    merged_nouns[key][form] = value
+        out["nouns"] = merged_nouns
     colors = overlay.get("colors")
     if isinstance(colors, dict):
         merged = dict(out["colors"])
@@ -121,6 +156,25 @@ def _merge(base: dict, overlay: dict | None) -> dict:
                 merged[key] = raw.strip()
         out["colors"] = merged
     return out
+
+
+def _warn_unless_title_case(key: str, form: str, value: str) -> None:
+    """A noun carrying `_` or starting lowercase reads as a leaked code identifier rather than a
+    product term — *"No files in this xyz_dataset."* — so it is worth saying out loud. It is used
+    anyway: a brand pack must never be able to stop the product booting.
+
+    Said once per bad value, because `load()` runs per request and a pack nobody is going to
+    change would otherwise fill the log.
+    """
+    if "_" not in value and not value[:1].islower():
+        return
+    seen = f"{key}.{form}={value}"
+    if seen in _WARNED:
+        return
+    _WARNED.add(seen)
+    log.warning(
+        "brand pack noun %s.%s is %r — nouns are Title Case. Using it anyway.", key, form, value
+    )
 
 
 def _nonempty(value: object) -> str:

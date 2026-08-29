@@ -3158,6 +3158,16 @@ window.SW = window.SW || {};
     assistantName: 'Sage',
     platformName: 'Domino',
   };
+  // A noun contributes both forms — `{dataset}` and `{datasetPlural}` — because a plural is read
+  // from the pack, never derived. Copy that would need `a`/`an` is reworded instead.
+  const BRAND_NOUNS_FALLBACK = {
+    dataset: { singular: 'Dataset', plural: 'Datasets' },
+    dataSource: { singular: 'Data Source', plural: 'Data Sources' },
+    modelApi: { singular: 'Model API', plural: 'Model APIs' },
+    llmAlias: { singular: 'LLM Alias', plural: 'LLM Aliases' },
+    builtApp: { singular: 'Built App', plural: 'Built Apps' },
+    gallery: { singular: 'Gallery', plural: 'Galleries' },
+  };
   const BRAND_TOKEN = /\{([A-Za-z][A-Za-z0-9]*)\}/g;
 
   function brandTokens() {
@@ -3165,6 +3175,12 @@ window.SW = window.SW || {};
     const table = Object.assign({}, BRAND_FALLBACK);
     for (const [key, value] of Object.entries(pack)) {
       if (typeof value === 'string' && value) table[key] = value;
+    }
+    const packNouns = (pack.nouns && typeof pack.nouns === 'object') ? pack.nouns : {};
+    for (const [key, fallback] of Object.entries(BRAND_NOUNS_FALLBACK)) {
+      const forms = Object.assign({}, fallback, packNouns[key] || {});
+      if (typeof forms.singular === 'string' && forms.singular) table[key] = forms.singular;
+      if (typeof forms.plural === 'string' && forms.plural) table[key + 'Plural'] = forms.plural;
     }
     return table;
   }

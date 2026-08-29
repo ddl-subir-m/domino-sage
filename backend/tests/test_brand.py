@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,6 +19,8 @@ from sage.router.models import ModelCatalog
 def _isolate_brand(monkeypatch, tmp_path):
     monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "no-baked-brand.json")
     monkeypatch.delenv("SAGE_BRAND_FILE", raising=False)
+    # The Title Case complaint is made once per process; each test is its own first time.
+    monkeypatch.setattr("sage.orchestrator.brand._WARNED", set())
 
 
 def test_default_pack_keeps_the_workbench_sage_split():
@@ -362,3 +365,112 @@ def test_a_destination_string_names_the_packs_platform(tmp_path, monkeypatch):
     assert "in your Acme Cloud account" in str(e.value)
     assert "github.com" in str(e.value)      # the literal in the same sentence
     assert "Domino" not in str(e.value)
+
+
+# --- nouns (#104) -----------------------------------------------------------------------------
+#
+# The platform's own whitelabel renames its nouns and nothing exposes that vocabulary to a Sage
+# Builder, so the pack carries a copy. Two forms per noun because the nouns are woven into
+# sentences rather than confined to labels — hence no pluralisation engine, and no article engine
+# either: copy needing `a`/`an` is reworded (ADR-0014).
+
+
+def test_nouns_default_to_the_glossary_terms():
+    nouns = load()["nouns"]
+    assert nouns["dataset"] == {"singular": "Dataset", "plural": "Datasets"}
+    assert nouns["dataSource"] == {"singular": "Data Source", "plural": "Data Sources"}
+    assert nouns["builtApp"] == {"singular": "Built App", "plural": "Built Apps"}
+
+
+def test_both_forms_of_a_noun_resolve_through_the_helper(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("{dataset}") == "Cube"
+    assert text("{datasetPlural}") == "Cubes"
+
+
+def test_a_noun_woven_into_a_sentence_renders_in_both_forms(tmp_path, monkeypatch):
+    """The strings this covers are the ones a person actually reads — the Resource Browser's
+    heading and the empty state under a Dataset — not a bare label in isolation."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("No files in this {dataset}.") == "No files in this Cube."
+    assert text("{dataset} contents live under the {dataset}.") == (
+        "Cube contents live under the Cube."
+    )
+    assert text("{datasetPlural}") == "Cubes"
+
+
+def test_one_form_of_a_noun_leaves_the_other_at_its_default(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("{dataset}") == "Dataset"
+    assert text("{datasetPlural}") == "Cubes"
+
+
+def test_a_noun_the_pack_invents_is_ignored(tmp_path, monkeypatch):
+    """A token Sage never emits is not a rename, and inventing one cannot make Sage say it."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"widget": {"singular": "Widget", "plural": "Widgets"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert "widget" not in load()["nouns"]
+    assert text("{widget}") == "{widget}"
+
+
+def test_api_brand_carries_the_nouns(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    import sage.orchestrator.app as appmod
+
+    body = TestClient(appmod.control_app).get("/api/brand").json()
+    assert body["nouns"]["dataset"] == {"singular": "Cube", "plural": "Cubes"}
+    assert body["nouns"]["dataSource"]["plural"] == "Data Sources"
+
+
+def test_a_noun_that_is_not_title_case_warns_and_is_used_anyway(tmp_path, monkeypatch, caplog):
+    """`"No files in this xyz_dataset."` reads as a leaked code identifier rather than a product
+    term. It is still used: a brand pack must never be able to stop the product booting."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps(
+        {"nouns": {"dataset": {"singular": "xyz_dataset", "plural": "datasets"}}}
+    ))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        pack = load()
+    assert pack["nouns"]["dataset"] == {"singular": "xyz_dataset", "plural": "datasets"}
+    assert "xyz_dataset" in caplog.text          # the underscore
+    assert "datasets" in caplog.text             # the lowercase start
+    assert text("No files in this {dataset}.") == "No files in this xyz_dataset."
+
+
+def test_the_title_case_warning_does_not_repeat_on_every_read(tmp_path, monkeypatch, caplog):
+    """`load()` runs per request. One line per bad value, or a pack nobody is going to change
+    fills the log."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "xyz_dataset"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        load()
+        caplog.clear()
+        load()
+    assert caplog.text == ""
+
+
+def test_the_workbench_weaves_a_renamed_noun_into_a_sentence():
+    """The same two strings, through the accessor the Workbench actually calls."""
+    answers = _brand_js(
+        [{"op": "text", "template": "No files in this {dataset}."},
+         {"op": "text", "template": "{datasetPlural}"}],
+        pack={"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}},
+    )
+    assert answers == ["No files in this Cube.", "Cubes"]
+
+
+def test_the_workbench_nouns_fall_back_before_the_pack_arrives():
+    answers = _brand_js([{"op": "text", "template": "No files in this {dataset}."},
+                         {"op": "text", "template": "{datasetPlural}"}])
+    assert answers == ["No files in this Dataset.", "Datasets"]
