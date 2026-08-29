@@ -38,14 +38,14 @@ log = logging.getLogger(__name__)
 # Hop-by-hop headers must not be forwarded across a proxy.
 _HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer", "proxy-authorization", "proxy-authenticate"}
 
-# What `sageQuery.ts` asks for, minus the leading slash this app's paths arrive without.
+# What `appQuery.ts` asks for, minus the leading slash this app's paths arrive without.
 _QUERY_PREFIX = "api/queries/"
 
-# What `sageLlm.ts` asks for in the preview only — the published build calls the gateway directly.
+# What `appLlm.ts` asks for in the preview only — the published build calls the gateway directly.
 _LLM_PREFIX = "api/llm/"
 
 # Headers the app sets that must survive the hop. The tag headers are how spend is attributed to the
-# app (see `tagHeaders` in sageLlm.ts); dropping them would put preview traffic in "unknown".
+# app (see `tagHeaders` in appLlm.ts); dropping them would put preview traffic in "unknown".
 _LLM_FORWARD = ("content-type", "accept")
 
 # No read timeout, on purpose. A scalar httpx timeout becomes the INTER-CHUNK read timeout on a
@@ -97,7 +97,7 @@ async def _answer_query(request: Request, path: str, queries) -> Response | None
 async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
     """One LLM Gateway call from the previewed app, made server-side. None when there is no gateway.
 
-    Why it cannot just go to the gateway like the published app's does: `sageLlm.ts` is built around
+    Why it cannot just go to the gateway like the published app's does: `appLlm.ts` is built around
     the call being SAME-ORIGIN. A published app is served from `apps.<domino-host>` and so is the
     gateway, so the viewer's own Domino cookie authenticates it with no key on the page and no server
     hop — which is the whole design, and it is worth keeping. The preview is served from the
@@ -173,7 +173,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     "" for local dev, where `base` is just `/preview/`.
 
     `get_queries` is optional: without it — and whenever it answers None — `/api/queries/*` goes to
-    Vite and 404s exactly as it did before #24, which `sageQuery.ts` already reads correctly as
+    Vite and 404s exactly as it did before #24, which `appQuery.ts` already reads correctly as
     "not published yet".
     """
     vite_base = f"{base_prefix}/preview"  # what the browser sees == what Vite serves at
@@ -230,12 +230,12 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
             answered = await _answer_query(request, path, get_queries and get_queries())
             if answered is not None:
                 return answered
-            # Fall through when there is no query server: Vite 404s, and `sageQuery.ts` already has
+            # Fall through when there is no query server: Vite 404s, and `appQuery.ts` already has
             # the right sentence for that — "only available once it is published". Which is true.
         if path.startswith(_LLM_PREFIX):
             # Same shape, one line up the stack: the previewed page cannot make this call itself
             # (cross-origin), so the proxy makes it. Falls through to Vite when no gateway is
-            # configured, and `sageLlm.ts` reads that 404 as "this app has no model", as it should.
+            # configured, and `appLlm.ts` reads that 404 as "this app has no model", as it should.
             forwarded = await _forward_llm(request, path, get_llm)
             if forwarded is not None:
                 return forwarded

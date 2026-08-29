@@ -304,8 +304,8 @@ def orchestrator(tmp_path: Path):
     (template / "src" / "App.tsx").write_text("placeholder")
     (template / "package.json").write_text("{}")
     shutil.copy2(TEMPLATE / "serve.py", template / "serve.py")
-    shutil.copy2(TEMPLATE / "src" / "sageQuery.ts", template / "src" / "sageQuery.ts")
-    shutil.copy2(TEMPLATE / "src" / "sageBase.ts", template / "src" / "sageBase.ts")
+    shutil.copy2(TEMPLATE / "src" / "appQuery.ts", template / "src" / "appQuery.ts")
+    shutil.copy2(TEMPLATE / "src" / "appBase.ts", template / "src" / "appBase.ts")
 
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code",
@@ -357,11 +357,11 @@ def test_the_agent_is_told_the_columns_and_how_to_query_them(tmp_path: Path):
 
 
 def test_an_app_seeded_before_the_helper_existed_gets_one_when_it_binds(tmp_path: Path):
-    # The template ships `src/sageQuery.ts`, so every project seeded after #15 already has it. This is
+    # The template ships `src/appQuery.ts`, so every project seeded after #15 already has it. This is
     # for the ones seeded before: their repo has none, and the block above tells the agent to import
     # from a module that is not there — the same gap `ensure_llm_helper` exists to close.
     orch = orchestrator(tmp_path)
-    helper = workspace_of(orch) / "src" / "sageQuery.ts"
+    helper = workspace_of(orch) / "src" / "appQuery.ts"
     helper.unlink()
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     assert helper.is_file()

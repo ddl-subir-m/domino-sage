@@ -3,7 +3,7 @@
 `WorkspaceManager.ensure()` seeds the template only when `package.json` is absent, so an app keeps
 whatever copies of Sage's own files it was born with. Every later fix to them ships in the image,
 rebuilds cleanly, passes its tests — and is invisible in every project that already exists.
-`vite.config.ts` and `src/sageLlm.ts` were each pulled out of that trap one at a time, after each had
+`vite.config.ts` and `src/appLlm.ts` were each pulled out of that trap one at a time, after each had
 already cost a debugging session. These are the four that were still in it.
 
 The trap is silent by construction, so a test that only reads the template proves nothing: it passes
@@ -82,8 +82,8 @@ def test_an_unchanged_source_is_not_rewritten(tmp_path: Path):
 def test_attach_never_puts_in_a_helper_the_app_did_not_have(tmp_path: Path):
     """Refresh, not restore — the one thing attach must not do.
 
-    `src/sageModelApi.ts` imports `./sageModelApi.config`, and `src/sageQuery.ts` imports
-    `./sageBase`. Both siblings are written by the Binding path, which knows whether the app has a
+    `src/appModelApi.ts` imports `./appModelApi.config`, and `src/appQuery.ts` imports
+    `./appBase`. Both siblings are written by the Binding path, which knows whether the app has a
     Model API or a Data Source; attach does not. So an app seeded before either helper existed would
     get a module importing a file that isn't there, and stop compiling — Sage breaking an app that
     was working, to deliver a helper it never asked for. Putting them there stays with
@@ -109,13 +109,13 @@ def test_the_binding_writers_replace_a_stale_helper_rather_than_keep_it(tmp_path
     """
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_template(tmp_path))
     ws = mgr.ensure("proj1")
-    (ws.path / "src" / "sageModelApi.ts").write_text("// an older Sage wrote this\n")
-    (ws.path / "src" / "sageQuery.ts").write_text("// an older Sage wrote this\n")
+    (ws.path / "src" / "appModelApi.ts").write_text("// an older Sage wrote this\n")
+    (ws.path / "src" / "appQuery.ts").write_text("// an older Sage wrote this\n")
 
     assert mgr.ensure_model_api_helper() is True
     assert mgr.ensure_query_helper() is True
-    assert (ws.path / "src" / "sageModelApi.ts").read_text() == "// template sageModelApi.ts v2\n"
-    assert (ws.path / "src" / "sageQuery.ts").read_text() == "// template sageQuery.ts v2\n"
+    assert (ws.path / "src" / "appModelApi.ts").read_text() == "// template appModelApi.ts v2\n"
+    assert (ws.path / "src" / "appQuery.ts").read_text() == "// template appQuery.ts v2\n"
     assert mgr.ensure_model_api_helper() is False   # already current — nothing to commit
     assert mgr.ensure_query_helper() is False
 
@@ -126,7 +126,7 @@ def test_agents_md_forbids_editing_every_file_that_gets_refreshed():
     A refresh overwrites on every attach, which is safe for a file nobody else may edit and
     destructive for one somebody might. The two Resource helpers were already named in AGENTS.md —
     but only in a block SPLICED IN when the matching Binding exists, while all four are on disk from
-    seed time regardless. So in a project with no Model API bound, `sageModelApi.ts` sat there with
+    seed time regardless. So in a project with no Model API bound, `appModelApi.ts` sat there with
     the agent never having been told to leave it alone. This asserts the STATIC file, which is the
     only copy every project is guaranteed to have.
     """

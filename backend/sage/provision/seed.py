@@ -60,7 +60,7 @@ def seed_and_push(
     template: Path,
     *,
     branch: str = "main",
-    message: str = "Initial commit from Sage",
+    message: str = "Initial commit",
     token_provider: Callable[[], str] | None = None,
     settings: dict | None = None,
 ) -> None:

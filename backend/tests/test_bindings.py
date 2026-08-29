@@ -217,7 +217,8 @@ def test_the_two_kinds_share_one_list_in_the_order_they_were_chosen(tmp_path: Pa
 def test_a_model_api_recorded_first_does_not_take_the_alias_pin(tmp_path: Path):
     # The app's model is the first LLM ALIAS, not the first Binding (#7). A Model API recorded ahead
     # of one must not leave the app with no model pinned into its source.
-    from sage.resources.pinned_model import CONFIG_PATH
+    from sage.resources.app_helpers import TEMPLATE as HELPERS
+    CONFIG_PATH = HELPERS.llm_config_path
 
     orch = _orch(tmp_path)
     _credential(orch)

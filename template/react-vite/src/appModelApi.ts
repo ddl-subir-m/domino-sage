@@ -1,6 +1,6 @@
 // The app's Model API, called straight from the viewer's browser (#9).
 //
-// This is NOT the same recipe as `./sageLlm.ts`, and the difference matters. The LLM Gateway is
+// This is NOT the same recipe as `./appLlm.ts`, and the difference matters. The LLM Gateway is
 // another App on the `apps.` host, so that call is same-origin and the viewer's own Domino session
 // cookie authenticates it — no key, and each viewer spends their own grant. A Model API is served
 // from the MAIN Domino host, so every call from a published page is cross-origin, and the ingress
@@ -9,16 +9,16 @@
 //
 // So the model's own access token is the credential, sent as `Basic base64(token:token)` — the one
 // shape a Model API accepts, verified against every alternative Domino offers. It lives in
-// `./sageModelApi.config`, which means IT IS IN THIS BUNDLE and anyone who opens the app can read it
+// `./appModelApi.config`, which means IT IS IN THIS BUNDLE and anyone who opens the app can read it
 // in devtools. That is Domino's own documented pattern for calling a Model API from a page, and
 // whoever added the model in Sage was told as much before pasting it. Two consequences for the code
 // here: `credentials: "omit"` is explicit, because sending the cookie would get the whole request
 // blocked by the wildcard above; and every viewer's call is the SAME identity, so a failure is never
 // "you lack access" — it is the app's, and the message says so.
 //
-// Sage owns this file and `./sageModelApi.config`. Do not edit either: the config is rewritten
+// Sage owns this file and `./appModelApi.config`. Do not edit either: the config is rewritten
 // whenever the app's Resources change, and an edit here is overwritten.
-import { sageModelApiConfig } from "./sageModelApi.config";
+import { appModelApiConfig } from "./appModelApi.config";
 
 type ModelApi = { name: string; url: string; token: string };
 type Config = {
@@ -28,9 +28,9 @@ type Config = {
   models?: ModelApi[];
 };
 
-// Widened on purpose, for the reason sageLlm.ts widens its own: the generated config annotates
+// Widened on purpose, for the reason appLlm.ts widens its own: the generated config annotates
 // nothing, so `url: null` would otherwise have type `null` and every comparison read as dead code.
-const config: Config = sageModelApiConfig;
+const config: Config = appModelApiConfig;
 
 /** Every Model API this app may call, the first being its default. `name`/`url`/`token` repeat that
  * first entry so a config written by a newer Sage still reads in an app whose helper predates the
@@ -139,7 +139,7 @@ async function detailOf(res: Response): Promise<string | null> {
  *     const result = await callModelApi({ score: 0.9 });
  *
  * Pass `model` when this app uses more than one Model API and this call is for a particular one —
- * the names are in `models` in `./sageModelApi.config`:
+ * the names are in `models` in `./appModelApi.config`:
  *
  *     const risk = await callModelApi({ score: 0.9 }, { model: "fraud-scorer" });
  *

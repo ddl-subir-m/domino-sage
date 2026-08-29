@@ -15,9 +15,9 @@
 // project_name for it — so the gateway's first-class per-project columns are blank for this traffic.
 // The `sage-project` tag below is the only thing that says which app the spend came from.
 //
-// Sage owns this file and `./sageLlm.config`. Do not edit either: the config is rewritten whenever
+// Sage owns this file and `./appLlm.config`. Do not edit either: the config is rewritten whenever
 // the app's Resources change, and an edit here is overwritten.
-import { sageLlmConfig } from "./sageLlm.config";
+import { appLlmConfig } from "./appLlm.config";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -34,7 +34,7 @@ export type AskOptions = {
   /** Abort the request — pass `AbortController.signal` to cancel on unmount. */
   signal?: AbortSignal;
   /**
-   * Which model to ask, by Alias name — one of `models` in `./sageLlm.config`. Omit it and the
+   * Which model to ask, by Alias name — one of `models` in `./appLlm.config`. Omit it and the
    * app's default model answers, so a call written before this app used a second model is
    * unchanged. An Alias this app is not recorded as using is refused rather than quietly swapped
    * for the default: a summary that silently came from another model is a wrong answer nobody sees.
@@ -53,7 +53,7 @@ type Config = {
 
 // Widened on purpose: the generated config annotates nothing, so `alias: null` would otherwise be
 // of type `null` and every comparison against a string would read as dead code.
-const config: Config = sageLlmConfig;
+const config: Config = appLlmConfig;
 
 /** Every Alias this app may call, the first being its default. `alias`/`displayName` are the same
  * first entry, kept beside the list so a config written by a newer Sage still reads in an app whose
@@ -109,9 +109,9 @@ function tagHeaders(): Record<string, string> {
 // `import.meta.env.DEV` rather than a runtime sniff: Vite replaces it at build time, so the
 // published bundle contains only the direct call and cannot take this branch by accident.
 //
-// `BASE_URL` rather than importing `./sageBase`: in the dev server the two are the same string —
-// `sageBase` only prefers `window.__SAGE_BASE__`, which `serve.py` stamps and which therefore never
-// exists here — and this file has to be droppable into an app built before `sageBase.ts` shipped.
+// `BASE_URL` rather than importing `./appBase`: in the dev server the two are the same string —
+// `appBase` only prefers `window.__SAGE_BASE__`, which `serve.py` stamps and which therefore never
+// exists here — and this file has to be droppable into an app built before `appBase.ts` shipped.
 function endpoint(path: string): string {
   if (import.meta.env.DEV) {
     return `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/llm${path}`;
@@ -187,7 +187,7 @@ export async function checkModel(alias?: string): Promise<ModelStatus> {
  *     await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });
  *
  * Pass `alias` when this app uses more than one model and this call is for a particular one —
- * the names are in `models` in `./sageLlm.config`:
+ * the names are in `models` in `./appLlm.config`:
  *
  *     await askModel(messages, { alias: "gpt-5.4" });
  *

@@ -1,11 +1,11 @@
 """An app that calls the LLM Gateway around `askModel` loses more than the record (#94).
 
 The premise this was filed on was wrong, and the ticket says so. Through `template/react-vite/src/
-sageLlm.ts` an undeclared Alias does NOT work: `pick` returns null and the call throws a sentence
+appLlm.ts` an undeclared Alias does NOT work: `pick` returns null and the call throws a sentence
 written for the viewer. So the declaration already gates a call made through the helper.
 
 What survives is the call that goes around it. An app that declares one Alias has a live gateway URL
-in `src/sageLlm.config.ts`, and nothing stops a raw `fetch` at it. What that loses is not mainly the
+in `src/appLlm.config.ts`, and nothing stops a raw `fetch` at it. What that loses is not mainly the
 record: it loses the `X-LLM-Tag-sage-*` cost tags, which are the only thing attributing this app's
 spend to Sage; the error messages written for the viewer; session-expiry detection; and streaming.
 And the nastiest shape is the mirror — `/api/llm` is Sage's PREVIEW proxy, so a call copied from
@@ -37,7 +37,11 @@ import pytest
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
 from sage.resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
-from sage.resources.pinned_model import CONFIG_PATH, HELPER_PATH, render_config
+from sage.resources.app_helpers import TEMPLATE
+from sage.resources.pinned_model import render_config
+
+CONFIG_PATH = TEMPLATE.llm_config_path
+HELPER_PATH = TEMPLATE.llm_path
 from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.models import Mode, ModelCatalog
 
@@ -79,7 +83,7 @@ RAW_AT_PATH = RAW_AT_BASE.replace(f"{BASE}/chat/completions", "/v1/chat/completi
 RAW_AT_BASE_ONLY = f'const models = await fetch("{BASE}/models", {{ credentials: "include" }});\n'
 
 USES_HELPER = '''
-import { askModel } from "./sageLlm";
+import { askModel } from "./appLlm";
 
 export async function ask(q: string) {
   return askModel([{ role: "user", content: q }], { alias: "sonnet" });
@@ -117,7 +121,7 @@ def test_the_pinned_base_is_matched_on_its_own_not_only_where_a_known_path_follo
 
 
 def test_the_helper_that_holds_all_three_shapes_by_definition_is_not_flagged():
-    # `src/sageLlm.ts` IS the legitimate caller: it carries the base, the preview path and the
+    # `src/appLlm.ts` IS the legitimate caller: it carries the base, the preview path and the
     # completions path on purpose. Flagging it would be the scan reporting the thing it protects.
     helper = (REPO_TEMPLATE / HELPER_PATH).read_text()
     assert raw_gateway_calls([(HELPER_PATH, helper)], ["sonnet"], BASE, OWNED) == []
@@ -305,11 +309,11 @@ def test_a_raw_gateway_call_nudges_the_agent_to_rewrite_it(tmp_path: Path):
     # writes no model section for an app with no Alias, and titles it in the plural for an app with
     # several, so a quoted heading is wrong in two of the three cases.
     assert "AGENTS.md" not in nudge
-    assert "src/sageLlm.ts" in nudge
+    assert "src/appLlm.ts" in nudge
 
 
 def test_an_app_that_uses_the_helper_is_flagged_nowhere(tmp_path: Path):
-    # Including `src/sageLlm.ts` itself, which is sitting in this workspace holding all three shapes.
+    # Including `src/appLlm.ts` itself, which is sitting in this workspace holding all three shapes.
     orch, _oc = _orch(tmp_path, _plan_then({"src/Chat.tsx": USES_HELPER}))
     orch.bind_llm_alias("id-sonnet")
 

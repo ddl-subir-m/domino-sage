@@ -74,8 +74,7 @@ from ..resources.model_api_credentials import (
     verify_credential,
 )
 from ..resources.model_api_snippet import parse_snippet
-from ..resources.pinned_model import CONFIG_PATH, agents_block, bound_aliases, render_config
-from ..resources.pinned_model_api import CONFIG_PATH as MODEL_API_CONFIG_PATH
+from ..resources.pinned_model import agents_block, bound_aliases, render_config
 from ..resources.pinned_model_api import agents_block as model_api_agents_block
 from ..resources.pinned_model_api import bound_model_apis
 from ..resources.pinned_model_api import render_config as render_model_api_config
@@ -1793,18 +1792,15 @@ _COPY_SCAN_MAX = 512 * 1024
 # verbatim; requiring a multi-line contiguous run keeps false positives on ordinary code negligible.
 _SAMPLE_MATCH_ROWS = 6
 _SAMPLE_MATCH_MIN_BYTES = 64
-# Sage's own files inside the app tree. They name every bound Resource by definition, and Sage
-# rewrites them itself whenever the Bindings change (_write_app_resources), so a Binding found in one
-# is not a dangling reference anybody has to act on. Excluded from _resource_usage for that reason:
-# reporting them would send the creator to edit files AGENTS.md tells the agent never to touch.
 # The end-of-turn scan's answer about the Bindings (#93). Gitignored where it is written — see
 # Workspace.usage_path for why this one is not a committed manifest like the two beside it.
 _USAGE_PATH = ".sage/usage.json"
-_SAGE_OWNED_SOURCES = frozenset({
-    "src/sageLlm.ts", "src/sageLlm.config.ts",
-    "src/sageModelApi.ts", "src/sageModelApi.config.ts",
-    "src/sageQuery.ts",
-})
+# Sage's own files inside the app tree name every bound Resource by definition, and Sage rewrites
+# them itself whenever the Bindings change (_write_app_resources), so a Binding found in one is not
+# a dangling reference anybody has to act on. Excluded from _resource_usage for that reason:
+# reporting them would send the creator to edit files AGENTS.md tells the agent never to touch.
+# WHICH files those are is the app's own answer rather than a constant here — an app seeded before
+# #119 calls them `sage*` — so the set is `Workspace.helpers.owned`, resolved per app (#119).
 
 
 def _is_inlined_copy(raw: bytes, text: str) -> bool:
@@ -5616,7 +5612,7 @@ class Orchestrator:
             # no model section at all for an app with no Alias bound, and titles it in the plural for
             # an app with several, so a quoted heading is wrong in two of the three cases.
             "You called Domino's LLM Gateway with your own fetch in {files}. Rewrite those calls to "
-            "use `askModel` from `src/sageLlm.ts` — import it and pass it the messages; it already "
+            "use `askModel` from `{helper}` — import it and pass it the messages; it already "
             "knows the model, the URL and the headers. A "
             "raw call drops the X-LLM-Tag-sage-* cost tags that attribute this app's spend, the "
             "error messages written for the viewer, the expired-session check and streaming — and "
@@ -6162,7 +6158,9 @@ class Orchestrator:
                         if notice:
                             yield persist({"type": "gateway-alias-unbound", "message": notice})
                         yield {"type": "iterate", "reason": "called the LLM Gateway directly — routing it through askModel"}
-                        current = GATEWAY_FIX_NUDGE.format(files=", ".join(n for n, _ in raw_calls))
+                        current = GATEWAY_FIX_NUDGE.format(
+                            files=", ".join(n for n, _ in raw_calls),
+                            helper=project.app_for_turn().helpers.llm_path)
                         continue
                 restore_mode()
                 # The receipt for what this turn changed, before the line that closes the turn.
@@ -6534,7 +6532,7 @@ class Orchestrator:
         path = project.record.path
         if not git.is_repo_root(path):
             return None
-        message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
+        message = f"build: {prompt.splitlines()[0][:72]}" if prompt.strip() else "build: no prompt"
         # Hard backstop: never stage attached-data copies, even if the agent ignored the fix nudge.
         leaked = self._leaked_copy_paths(project)
         try:
@@ -6616,7 +6614,7 @@ class Orchestrator:
             git.abort_merge(path)
             return git.SyncResult("conflict-unresolved", remaining,
                                   f"conflicts remain in {', '.join(remaining)} — pull was rolled back")
-        git.finalize_merge(path, "sage: merge remote changes")
+        git.finalize_merge(path, "build: merge remote changes")
         return git.SyncResult("merged", conflicts, "merged teammate changes (conflicts resolved)")
 
     def sync(self) -> dict:
@@ -6643,7 +6641,7 @@ class Orchestrator:
         if not self._turn_lock.acquire(blocking=False):
             raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
-            git.commit_all(path, "sage: save before pull", exclude=self._leaked_copy_paths(project))
+            git.commit_all(path, "build: save before pull", exclude=self._leaked_copy_paths(project))
             result = self._integrate_remote(project)
             if result is None or result.status in ("conflict-unresolved", "error"):
                 detail = result.detail if result else "no remote to pull from"
@@ -8288,8 +8286,9 @@ class Orchestrator:
         tokens = [t for t in names if t]
         if not tokens:
             return []
+        owned = workspace.helpers.owned
         refs = [rel for rel, text in sources
-                if text is not None and rel not in _SAGE_OWNED_SOURCES
+                if text is not None and rel not in owned
                 and any(t in text for t in tokens)]
         return catalog + sorted(set(refs))
 
@@ -8407,7 +8406,7 @@ class Orchestrator:
         app = project.app_for_turn()
         declared = [b.name for b in bound_aliases(parse_bindings(app.read_bindings()))]
         return raw_gateway_calls(self._scan_app_sources(app), declared,
-                                 self._browser_gateway_base, _SAGE_OWNED_SOURCES)
+                                 self._browser_gateway_base, app.helpers.owned)
 
     def _attached_per_app(self, project: Project) -> list[tuple[Workspace, list[dict]]]:
         """Every Built App on the volume, paired with the attachment list to judge it by.
@@ -8532,13 +8531,17 @@ class Orchestrator:
         aliases = bound_aliases(recorded)
         if aliases:
             self._wm.ensure_llm_helper()
-        self._write_generated(project.workspace.path / CONFIG_PATH,
-                              render_config(aliases, self._browser_gateway_base, self._cost_project_label))
+        # AFTER the helper: an app seeded before #7 has no helper at all, so what it is called is
+        # only settled once one has landed.
+        names = project.workspace.helpers
+        self._write_generated(project.workspace.path / names.llm_config_path,
+                              render_config(aliases, self._browser_gateway_base,
+                                            self._cost_project_label, names))
         # The stores go in beside the Aliases only to decide the closing paragraph (#35): what the
         # agent is told about where the app's data goes is a fact about the JOIN, and the join is
         # readable off this one manifest.
         self._splice_agents(project, self._MODEL_BEGIN, self._MODEL_END,
-                            agents_block(aliases, data_source_bindings(recorded)))
+                            agents_block(aliases, data_source_bindings(recorded), names))
 
     def _write_app_model_api(self, project: Project) -> None:
         """Pin the app's Model API into its own source, and tell the agent it is there (#9).
@@ -8555,10 +8558,11 @@ class Orchestrator:
         credentials = {a.id: c for a in apis if (c := store.get(a.id)) is not None}
         if apis:
             self._wm.ensure_model_api_helper()
-        self._write_generated(project.workspace.path / MODEL_API_CONFIG_PATH,
-                              render_model_api_config(apis, credentials))
+        names = project.workspace.helpers
+        self._write_generated(project.workspace.path / names.model_api_config_path,
+                              render_model_api_config(apis, credentials, names))
         self._splice_agents(project, self._MODEL_API_BEGIN, self._MODEL_API_END,
-                            model_api_agents_block(apis, credentials))
+                            model_api_agents_block(apis, credentials, names))
 
     def _reconcile_bound_schema(self, project: Project, bindings: list[Binding]) -> None:
         """Give every recorded Data Source an entry read at the Scope it currently records (#33).
@@ -8632,6 +8636,7 @@ class Orchestrator:
             catalog_problems(template, project.workspace.path),
             getattr(module, "_DEFAULT_MAX_ROWS", 5000),
             samples=self._shared_samples(project),
+            names=project.workspace.helpers,
         )
         self._splice_agents(project, self._DATA_BEGIN, self._DATA_END, block)
 

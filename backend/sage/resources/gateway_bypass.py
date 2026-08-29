@@ -1,9 +1,9 @@
 """App source that calls Domino's LLM Gateway itself instead of through `askModel` (#94).
 
-`src/sageLlm.ts` already refuses an Alias the app never declared — `pick` returns null and the call
+`src/appLlm.ts` already refuses an Alias the app never declared — `pick` returns null and the call
 throws a sentence written for the viewer — so the declaration does gate a model call made THROUGH
 the helper. What survives is the call that goes around it: an app that declares at least one Alias
-has a live gateway URL in `src/sageLlm.config.ts`, and nothing stops a `fetch` at it.
+has a live gateway URL in `src/appLlm.config.ts`, and nothing stops a `fetch` at it.
 
 The record is the least of what that loses. A raw call also drops the `X-LLM-Tag-sage-*` cost tags,
 which are the only thing saying this app's spend came from Sage at all; the viewer-readable error
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 
-# The dev-server path `src/sageLlm.ts` routes to while the app is previewed. It is Sage's proxy and
+# The dev-server path `src/appLlm.ts` routes to while the app is previewed. It is Sage's proxy and
 # it is not there once the app ships, so this one in app source is the variant that passes every
 # check the creator can run and fails only for the people they published it for.
 DEV_PROXY_PATH = "/api/llm"
@@ -54,11 +54,11 @@ def raw_gateway_calls(
     `sources` is `_scan_app_sources`'s answer — files with no text are non-code files and cannot
     hold a call. `declared` is the Alias names from `.sage/bindings.json`, which the caller has
     already read; nothing here asks a gateway what exists. `base` is the URL pinned into
-    `src/sageLlm.config.ts`, and is None for an app with no model — which has no gateway URL in its
+    `src/appLlm.config.ts`, and is None for an app with no model — which has no gateway URL in its
     source to fetch, so there is nothing of that shape to find.
 
-    `owned` is `_SAGE_OWNED_SOURCES`. `src/sageLlm.ts` is the legitimate caller and holds all three
-    shapes by definition; flagging it would be the scan reporting the thing it protects.
+    `owned` is `HelperNames.owned` for the app in hand. Its LLM helper is the legitimate caller and
+    holds all three shapes by definition; flagging it would be the scan reporting what it protects.
 
     A substring match, so what it really finds is a gateway URL in a file rather than a proven call
     — a source that merely PRINTS the base is flagged too. That is `_detect_leaks`'s bargain, taken

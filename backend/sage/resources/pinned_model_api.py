@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import json
 
+from .app_helpers import TEMPLATE, HelperNames
 from .bindings import KIND_MODEL_API, Binding
 from .model_api_credentials import Credential
 
 # Sage-owned, committed into the app's repo, and written as a pair: the helper imports the config.
-CONFIG_PATH = "src/sageModelApi.config.ts"
-HELPER_PATH = "src/sageModelApi.ts"
+# Their names are the app's rather than this module's (#119) — see `app_helpers`, and `pinned_model`,
+# which this mirrors here as it does everywhere else.
 
 
 def pinned_model_api(bindings: list[Binding]) -> Binding | None:
@@ -43,8 +44,9 @@ def bound_model_apis(bindings: list[Binding]) -> list[Binding]:
     return [b for b in bindings if b.kind == KIND_MODEL_API]
 
 
-def render_config(apis: list[Binding], credentials: dict[str, Credential]) -> str:
-    """The whole text of `src/sageModelApi.config.ts`.
+def render_config(apis: list[Binding], credentials: dict[str, Credential],
+                  names: HelperNames = TEMPLATE) -> str:
+    """The whole text of the app's Model API config (`names.model_api_config_path`).
 
     A Binding without a credential is dropped rather than rendered with a null token. That pairing is
     enforced at bind time, so reaching this branch means the store was emptied under a bound app — and
@@ -83,12 +85,13 @@ def render_config(apis: list[Binding], credentials: dict[str, Credential]) -> st
         "// has no other credential, and a Domino session will not open one.\n"
         "//\n"
         "// `name`/`url`/`token` repeat the first entry. null means no Model API has been chosen yet.\n"
-        "// See ./sageModelApi.ts.\n"
-        f"export const sageModelApiConfig = {{\n{body},{models}}};\n"
+        f"// See ./{names.model_api}.ts.\n"
+        f"export const {names.model_api}Config = {{\n{body},{models}}};\n"
     )
 
 
-def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str:
+def agents_block(apis: list[Binding], credentials: dict[str, Credential],
+                 names: HelperNames = TEMPLATE) -> str:
     """What the agent is told about the app's Model APIs, for the managed AGENTS.md region.
 
     Empty when nothing is callable, for the reason the Alias block is: describing machinery that is
@@ -108,9 +111,9 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str
     head = ["## The app's Model APIs" if several else "## The app's Model API", ""]
     if several:
         head += [
-            ("This app can call any of the Model APIs below. `src/sageModelApi.ts` already knows each "
-             "one's URL and holds its access token — call it, and never write a URL, token or `fetch` "
-             "of your own:"), "",
+            (f"This app can call any of the Model APIs below. `{names.model_api_path}` already knows "
+             "each one's URL and holds its access token — call it, and never write a URL, token or "
+             "`fetch` of your own:"), "",
         ]
         for i, a in enumerate(usable):
             note = " — the default, used by any call that names no model" if i == 0 else ""
@@ -118,13 +121,14 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str
         head.append("")
     else:
         head += [
-            (f"This app calls the Model API **{usable[0].display_name}**. `src/sageModelApi.ts` already "
-             "knows its URL and holds its access token — call it, and never write a URL, token or "
-             "`fetch` yourself:"), "",
+            (f"This app calls the Model API **{usable[0].display_name}**. `{names.model_api_path}` "
+             "already knows its URL and holds its access token — call it, and never write a URL, "
+             "token or `fetch` yourself:"), "",
         ]
     code = [
         "```tsx",
-        'import { callModelApi, ModelApiError } from "./sageModelApi";  // from a subfolder: "../sageModelApi"',
+        f'import {{ callModelApi, ModelApiError }} from "./{names.model_api}";'
+        f'  // from a subfolder: "../{names.model_api}"',
         "",
         "const result = await callModelApi({ score: 0.9 });  // whatever this model's function takes",
     ]
@@ -155,8 +159,8 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str
          "that says which argument was wrong."),
         ("- **Show the failure, never swallow it.** A prediction that quietly renders nothing looks "
          "like an app with no data. Catch the error and put the message on the screen."),
-        ("- **Do not edit or re-create `src/sageModelApi.ts` or `src/sageModelApi.config.ts`.** Sage "
-         "owns both, rewrites them, and which Model APIs this app uses is chosen in Sage, not in "
-         "code."), "",
+        (f"- **Do not edit or re-create `{names.model_api_path}` or `{names.model_api_config_path}`.** "
+         "Sage owns both, rewrites them, and which Model APIs this app uses is chosen in Sage, not "
+         "in code."), "",
     ]
     return "\n".join(head + code + rules)

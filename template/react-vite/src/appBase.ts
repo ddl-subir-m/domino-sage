@@ -9,13 +9,13 @@
 // A router MUST be given it:
 //
 //     import { BrowserRouter } from "react-router-dom";
-//     import { sageBase } from "./sageBase";
-//     <BrowserRouter basename={sageBase}>
+//     import { appBase } from "./appBase";
+//     <BrowserRouter basename={appBase}>
 //
 // Without it the router matches the viewer's whole path (`/apps/<uuid>/reports`) against routes
 // written without the prefix (`/reports`), matches nothing, and renders a blank page.
 //
 // In the dev preview there is no shim, and Vite's own `base` is already the full prefix. `??` rather
 // than `||`: an app published at the root reports "", which is an answer, not a missing value.
-export const sageBase: string =
+export const appBase: string =
   ((window as { __SAGE_BASE__?: string }).__SAGE_BASE__ ?? import.meta.env.BASE_URL) || "/";
