@@ -3156,6 +3156,7 @@ window.SW = window.SW || {};
   const BRAND_FALLBACK = {
     productName: 'AI Workbench',
     assistantName: 'Sage',
+    platformName: 'Domino',
   };
   const BRAND_TOKEN = /\{([A-Za-z][A-Za-z0-9]*)\}/g;
 
@@ -3174,6 +3175,9 @@ window.SW = window.SW || {};
     },
     product() {
       return brandTokens().productName;
+    },
+    platform() {
+      return brandTokens().platformName;
     },
     // An unknown token is left as it was written rather than throwing: a typo in a string must
     // never stop the Workbench booting.

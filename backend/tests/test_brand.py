@@ -268,3 +268,97 @@ def test_the_workbench_leaves_an_unknown_token_alone():
     answers = _brand_js([{"op": "text", "template": "{notABrandKey} stays."}],
                         pack={"productName": "Acme"})
     assert answers == ["{notABrandKey} stays."]
+
+
+# --- platformName (#103) ---------------------------------------------------------------------
+#
+# One key for both parts the word plays — the platform as actor and the platform as destination —
+# because they are one fact: is the platform rebranded? (ADR-0014)
+
+
+def test_platform_name_defaults_to_domino():
+    assert load()["platformName"] == "Domino"
+    assert text("{platformName}") == "Domino"
+
+
+def test_the_pack_renames_the_platform(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["platformName"] == "Acme Cloud"
+    assert text("{platformName}") == "Acme Cloud"
+
+
+def test_platform_name_does_not_follow_the_product_name(tmp_path, monkeypatch):
+    """The fallback for a missing key is the built-in default, never another key a partner can
+    edit. Renaming Sage is not evidence that the platform under it was renamed too, and a chain
+    would put one fact in two places."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["platformName"] == "Domino"
+
+
+def test_api_brand_carries_the_platform_name(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    import sage.orchestrator.app as appmod
+
+    r = TestClient(appmod.control_app).get("/api/brand")
+    assert r.json()["platformName"] == "Acme Cloud"
+
+
+def test_the_workbench_reads_the_platform_name():
+    answers = _brand_js(
+        [{"op": "platform"}, {"op": "text", "template": "Browse {platformName}…"}],
+        pack={"platformName": "Acme Cloud"},
+    )
+    assert answers == ["Acme Cloud", "Browse Acme Cloud…"]
+
+
+def test_an_actor_string_names_the_packs_platform(tmp_path, monkeypatch):
+    """The platform did something, and the sentence saying so carries an API path in the same
+    breath. The name moves; the path is a literal and does not."""
+    import httpx
+
+    from sage.assets.provider import DominoAssetProvider
+    from sage.resources.provider import ResourceUnavailable
+
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(503))
+
+    provider = DominoAssetProvider("https://acme.example", lambda: "tok", mount_roots=[])
+    with pytest.raises(ResourceUnavailable) as e:
+        provider.list_datasets(None)
+    assert str(e.value) == "The Acme Cloud API answered 503 at /api/datasetrw/v2/datasets."
+
+
+def test_a_destination_string_names_the_packs_platform(tmp_path, monkeypatch):
+    """Copy that sends a person to a page Sage does not own has to say the partner's word, or it
+    is a dead end. The git host in the same sentence is a literal and stays."""
+    import httpx
+
+    from sage.provision.domino import DominoControlPlane
+
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+
+    def handler(request):
+        if request.url.path == "/api/users/v1/self":
+            return httpx.Response(200, json={"user": {"id": "user-1"}})
+        return httpx.Response(200, json={"credentials": []})
+
+    cp = DominoControlPlane(
+        "https://acme.example", lambda: "tok",
+        environment_id="env-1", hardware_tier_id="tier-1",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(RuntimeError) as e:
+        cp.create_project("X", git_url="https://github.com/me/sage-x.git")
+    assert "in your Acme Cloud account" in str(e.value)
+    assert "github.com" in str(e.value)      # the literal in the same sentence
+    assert "Domino" not in str(e.value)

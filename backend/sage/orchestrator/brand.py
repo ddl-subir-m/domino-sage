@@ -19,6 +19,10 @@ _HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 DEFAULT: dict[str, Any] = {
     "productName": "AI Workbench",
     "assistantName": "Sage",
+    # The platform under us, as actor and as destination. One key, because they are one
+    # fact: is the platform rebranded? It presupposes the partner set the platform's own
+    # /admin/whitelabel — Sage renames the word, not the page it links to.
+    "platformName": "Domino",
     "pageTitle": "Sage Workspace",
     "logoUrl": "./img/domino-logo.svg",
     "logoAlt": "Domino",
@@ -104,7 +108,7 @@ def _merge(base: dict, overlay: dict | None) -> dict:
         out["assistantName"] = _nonempty(overlay.get("assistantName")) or out["productName"]
     elif product:
         out["assistantName"] = product
-    for key in ("pageTitle", "logoUrl", "logoAlt"):
+    for key in ("platformName", "pageTitle", "logoUrl", "logoAlt"):
         value = _nonempty(overlay.get(key))
         if value:
             out[key] = value

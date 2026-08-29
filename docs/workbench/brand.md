@@ -15,7 +15,8 @@ Shipped in v1 (`40ecb14`): the pack loader and its fallbacks, `GET /api/brand`, 
 `assistantName`, `pageTitle`, `logoUrl`, `logoAlt`, `colors`, the antd theme, about fourteen UI
 strings through `SW.brand.*`, and `apply_voice()` / `apply_agent_voice()`.
 
-Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`.
+Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`; and
+`platformName`.
 
 Everything else below is designed and unbuilt. Sections carry the marker.
 
@@ -79,11 +80,21 @@ Unknown keys are **ignored but logged at startup**, so a typo is findable.
 }
 ```
 
-**Not built:** `platformName`, `peerProducts`, `faviconUrl`, `nouns`, the unknown-key log, and
+**Not built:** `peerProducts`, `faviconUrl`, `nouns`, the unknown-key log, and
 the Title Case warning. There is also no default favicon asset yet — it has to be drawn.
 
 An OEM typically sets `productName` and `assistantName` to the same string. `assistantName` omitted
 falls back to `productName`. Colors omitted keep the purple tokens.
+
+`platformName` names the platform under us in both the parts that word plays — **actor** (*"The
+Domino API answered 500"*) and **destination** (*"Manage settings in Domino"*). One key, because
+they are one fact: is the platform rebranded? It falls back to the built-in `Domino`, never to
+`productName` — a chain would put that one fact in two places a partner can edit.
+
+**Precondition: set the platform's own `/admin/whitelabel` first.** Sage renames the word; it
+cannot rename the page it links you to. A partner who renames only Sage builds a dead end — copy
+saying "Acme" pointing at a page saying "Domino". Leave `platformName` as `Domino` if the platform
+is not rebranded. Sage cannot verify this and does not try.
 
 `peerProducts` is a **list**, not a name, so a partner with no second product sets `[]` and the
 switcher collapses to a plain product label. A switcher with one item is not a switcher.
