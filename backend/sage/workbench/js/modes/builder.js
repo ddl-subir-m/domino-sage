@@ -840,7 +840,7 @@ window.SW = window.SW || {};
   }
 
   SW.BuildMode = function BuildMode({ conversationId, appId }) {
-    const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning,
+    const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning, turnWedged,
             projectPlan } = SW.store.get();
     const scroller = useRef(null);
 
@@ -1014,7 +1014,10 @@ window.SW = window.SW || {};
                 placeholder: activeApp
                   ? `Describe a change to ${activeApp.name}…`
                   : 'Describe a change, or ask about this app…',
-                disabled: buildRunning,
+                // Open while a turn runs: a second change queues behind it now, and the queued row
+                // the composer draws is where it says so (#79). A wedged workspace is the one that
+                // still refuses, because that lock never frees.
+                disabled: turnWedged,
                 showMode: true,
                 compact: true,
               })

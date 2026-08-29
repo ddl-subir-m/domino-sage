@@ -246,8 +246,9 @@
   border-color: var(--purple-500);
   box-shadow: var(--shadow-card);
 }
-/* A starter sends a question, so it is held back by a running turn for the same reason the
-   composer is — the bar above them both says why. */
+/* A starter sends a question, so it is held back by exactly what holds the composer back — which
+   since #79 is a wedged workspace and nothing else, because that is the only state where a send
+   would be refused rather than queued. */
 .sw-starter:disabled { cursor: default; opacity: 0.5; }
 .sw-starter-text { font-size: 13px; font-weight: 600; color: var(--dark-700); }
 .sw-starter-detail { font-size: 12px; color: var(--gray-500); line-height: 1.45; }
@@ -627,6 +628,36 @@
   border-radius: var(--radius);
 }
 .sw-chat-turnbar .ant-btn { margin-left: auto; }
+
+/* Questions asked and not started yet (#79). Stacked above the box, between the turn bar and the
+   composer, because that is the order they happen in: the turn that is running, then the ones
+   waiting on it, then the one still being typed. Quieter than the transcript on purpose — a pending
+   turn is an intention, and nothing of it has run. */
+.sw-composer-queued {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-bottom: var(--s2);
+}
+.sw-composer-queued-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: 6px var(--s3);
+  background: var(--gray-100);
+  border-radius: var(--radius);
+  border-left: 2px solid var(--gray-300);
+}
+.sw-composer-queued-text { min-width: 0; }
+/* The question itself, one line of it: enough to tell two queued turns apart without turning a
+   waiting row into a second copy of the transcript. */
+.sw-composer-queued-prompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dark-700);
+}
+.sw-composer-queued-row .ant-btn { margin-left: auto; flex: none; }
 
 .sw-composer-inner { width: 100%; }
 .sw-composer {

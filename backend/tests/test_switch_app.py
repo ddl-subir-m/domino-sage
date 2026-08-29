@@ -5,9 +5,9 @@ rather than editing. Three rules meet here:
 
 - One preview runs at a time, and it serves whichever app is on screen. Selecting another app stops
   the one that was running and starts it again in the new directory.
-- The turn lock stays one per Project. A second turn is still refused, but SWITCHING no longer takes
-  that lock — a build that is already running keeps running in the app it started in, and the rail
-  says which app that is.
+- The turn lock stays one per Project. A second turn waits behind the one running (#79), and
+  SWITCHING does not take that lock at all — a build that is already running keeps running in the
+  app it started in, and the rail says which app that is.
 
 The second rule is what the pin exists for: a turn writes into the app it began in, not the one that
 appeared under it while it was working.
@@ -193,6 +193,38 @@ def _at_first_send(oc, action) -> dict:
     return outcome
 
 
+def _stream(events):
+    """Drain a turn generator on its own thread, the way the SSE route does (`app.py:_turn_sse`).
+
+    A turn asked for while one is running waits in line now (#79), so `list()`ing one from inside
+    the running turn is a deadlock rather than a refusal."""
+    import threading
+
+    seen: list[dict] = []
+    finished = threading.Event()
+
+    def pump() -> None:
+        try:
+            for ev in events:
+                seen.append(ev)   # noqa: PERF402 — one at a time, so a test can read it as it fills
+        finally:
+            finished.set()
+
+    threading.Thread(target=pump, daemon=True).start()
+    return seen, finished
+
+
+def _wait_for(predicate, timeout: float = 20.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for the turn queue")
+
+
 def _switch_mid_turn(orch, oc, to_app: str) -> dict:
     """The person clicks another app in the rail while the turn is streaming."""
     return _at_first_send(oc, lambda: {"switched": orch.select_app(to_app),
@@ -258,22 +290,38 @@ def test_the_rail_marks_the_app_a_build_is_running_in(tmp_path: Path):
     assert [r["id"] for r in orch.list_apps() if r["building"]] == []
 
 
-def test_a_second_turn_is_still_refused_while_one_is_running(tmp_path: Path):
-    """Switching gave up the turn lock; nothing else did. One tree, one turn."""
-    orch, oc, _root, first, _second = _two_apps(tmp_path, [Turn(text="Built it.",
-                                                                writes={"src/App.tsx": "// P&L\n"})])
+def test_a_second_turn_asked_mid_build_waits_rather_than_running_alongside(tmp_path: Path):
+    """Switching gave up the turn lock; nothing else did. One tree, one turn — still true under the
+    queue (#79), and reached differently: the second send is accepted and WAITS, where it used to be
+    told a build was already running.
+
+    It waits on its own thread because a queued turn is held on the connection it arrived on. Called
+    inline the way the switch above it is, it would be a turn waiting for the turn that is waiting
+    for it. That is not a queue artefact — it is what the SSE route already does with every turn."""
+    orch, oc, root, first, _second = _two_apps(tmp_path,
+                                               [Turn(text="Built it.", writes={"src/App.tsx": "// P&L\n"}),
+                                                Turn(text="Charted it.", writes={"src/Chart.tsx": "// c\n"})])
+    queued: dict = {}
 
     def switch_then_send_again():
         orch.select_app(first)                          # allowed
-        return list(orch.build_stream("and a chart"))
+        events, finished = _stream(orch.build_stream("and a chart"))
+        queued["events"], queued["finished"] = events, finished
+        _wait_for(lambda: any(e.get("type") == "pending" for e in events))
+        return events
 
-    outcome = _at_first_send(oc, switch_then_send_again)
+    _at_first_send(oc, switch_then_send_again)
 
     list(orch.build_stream("build me a P&L report"))
 
-    refused = outcome["out"]
-    assert [ev["type"] for ev in refused][-1] == "done"
-    assert any("already running" in str(ev.get("message", "")) for ev in refused)
+    assert queued["finished"].wait(30) is True
+    waited = queued["events"]
+    assert waited[0]["type"] == "pending"
+    assert not any("already running" in str(ev.get("message", "")) for ev in waited)
+    # And when its turn came it built into the app it was written for — the one the switch above
+    # selected, not the one the turn it queued behind was pinned to.
+    assert waited[-1]["type"] == "done"
+    assert (root / "apps" / first / "src" / "Chart.tsx").exists()
 
 
 def test_a_crash_in_the_preview_on_screen_is_not_fed_to_a_build_in_another_app(tmp_path: Path):

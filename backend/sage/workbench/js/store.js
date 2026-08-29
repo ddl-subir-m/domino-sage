@@ -81,15 +81,31 @@ window.SW = window.SW || {};
     typing: null,
     // A turn is running somewhere in this project. Not "in this conversation": one project runs
     // one turn at a time (the server's turn lock), so a Chat turn, a Build turn and a turn another
-    // tab started are all the same fact here — the fact that decides whether Chat can send, and
-    // whether it offers Stop. Reading it per-conversation is what let the composer take a question
-    // it already knew the server would refuse.
+    // tab started are all the same fact here. It no longer decides whether Chat can SEND — a second
+    // question is queued now rather than refused (#79) — so what is left is whether to show the
+    // turn bar and offer Stop.
     chatRunning: false,
     // The conversation whose Chat turn THIS tab is streaming, or null. Not the same question as
     // `chatRunning`: a turn started in another tab, or before a reload, is running with nobody here
     // reading it. Knowing which lets the composer say whether the turn holding it up is the one on
     // screen — "wait" and "wait, over there" send someone to different places.
     chatTurnThread: null,
+    // Turns this tab has asked for that have not started yet (#79). A pending turn is an INTENTION,
+    // not a commitment: nothing of it has run, nothing of it is on the server's disk, and Cancel
+    // drops it without touching whatever is running. `{ ticket, text, message }`, oldest first —
+    // which is also the order they will run in, because the queue drains by when it was asked.
+    //
+    // This tab's own, not the project's. A turn queued in another tab is somebody else's held
+    // connection and there is nothing here to cancel it with; `turnPending` is how many the server
+    // is holding altogether.
+    queuedTurns: [],
+    turnPending: 0,
+    // The workspace is wedged on a turn that would not stop (#39), and only a restart clears it.
+    // The one state where the composer is still disabled: a queue cannot form behind a lock that is
+    // never coming back, so every send would be refused. `build/state` reports it (#79) — it used
+    // to be visible only in the refusal a send came back with, and under a queue that send waits
+    // instead of coming back.
+    turnWedged: false,
     pendingTurn: null,
     scriptMeta: { planTemplate: 'tpl_generic' },
     assistantTurns: 0,
@@ -1167,11 +1183,46 @@ window.SW = window.SW || {};
     applyBuildTranscript();
   }
 
+  // How many turns this tab currently has open, per mode — running or still waiting in line (#79).
+  // The `*Running` flags are project-wide facts polled off the server's lock, and a tab has to keep
+  // them honest between polls: with a queue it can have several turns alive at once, and the first
+  // one to unwind used to clear a flag the others were still relying on.
+  let liveBuildTurns = 0;
+  let liveChatTurns = 0;
+
+  // A turn this tab asked for that has not started yet (#79). Kept out of the transcript on
+  // purpose: the transcript is the receipt, and nothing has happened yet to write one for.
+  function queueTurn(ev) {
+    state.queuedTurns = [...state.queuedTurns,
+                         { ticket: ev.ticket, text: ev.prompt || '', message: ev.message || '' }];
+  }
+
+  function dropQueuedTurn(ticket) {
+    if (!ticket) return;
+    state.queuedTurns = state.queuedTurns.filter((q) => q.ticket !== ticket);
+  }
+
+  // What `/build/state` says, folded into the flags that render. The server's lock is the authority
+  // on whether a turn is running; this tab's own open turns are the authority on whether it may
+  // stop showing one. A turn waiting in line holds neither — it is queued behind a lock somebody
+  // else has, and between two queued turns that lock is free for an instant, which is long enough
+  // for a poll to land on it and blank a header that is about to fill straight back up.
+  function applyTurnState(payload) {
+    const turn = payload || {};
+    state.turnWedged = !!turn.wedged;
+    state.turnPending = turn.pending || 0;
+    return !!turn.running || liveBuildTurns > 0 || liveChatTurns > 0;
+  }
+
   function applyBuildEvent(ev) {
-    if (!ev || ev.busy || (ev.type === 'done' && ev.decision === 'busy')) {
-      if (ev && (ev.busy || ev.decision === 'busy')) {
-        state.buildTyping = 'Another build is still running…';
-      }
+    if (!ev) return;
+    // A turn that never ran leaves the transcript alone. The transcript is the receipt and there is
+    // nothing here to give one for: `pending` is a composer row, and both ways a queued turn can end
+    // without running hand the question back to the composer instead of recording it (#79).
+    if (ev.type === 'pending') return;
+    if (ev.contextChanged
+        || (ev.type === 'done' && (ev.decision === 'cancelled' || ev.decision === 'context changed'))) {
+      state.buildTyping = null;
       return;
     }
     if (ev.type === 'user') return;
@@ -2165,8 +2216,11 @@ window.SW = window.SW || {};
     // that offer was about: the gate already stopped this request once and the user answered it, so
     // re-matching it would hand back the same offer forever. `skipIncomingGate` says the same of an
     // incoming-changes offer (#78), and is set by both of that offer's buttons.
+    // A second send no longer bounces off `state.buildRunning` (#79). The server takes the turn and
+    // holds it in line on this request's own connection, so this promise stays alive for as long as
+    // the wait plus the turn — and a tab can have several of them at once.
     async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false } = {}) {
-      if (!text.trim() || state.buildRunning) return null;
+      if (!text.trim()) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
       // Echo what the server will write to the transcript, so live and reloaded read the same. For a
@@ -2179,7 +2233,13 @@ window.SW = window.SW || {};
       // rail's Building mark is what reports the turn once the person has moved on.
       const turnApp = state.activeApp && state.activeApp.id;
       const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
+      // The queue's two ends of this send: `ticket` is what a Cancel would name, and `unran` is
+      // whether the turn ended without ever running — which is the only case where the bubble
+      // drawn just below has to come back off the screen again.
+      let ticket = '';
+      let unran = false;
       appendBuildRow({ type: 'user', text: bubble });
+      liveBuildTurns += 1;
       state.buildRunning = true;
       state.buildTyping = 'Working…';
       notify();
@@ -2203,6 +2263,11 @@ window.SW = window.SW || {};
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
+          // The queue's own two rows, which belong to this send rather than to the app on screen —
+          // so they are read before the rail check below, not after it.
+          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev); notify(); return; }
+          if (ev.contextChanged) { unran = true; store.seedComposer(ev.prompt || text); }
+          if (ev.type === 'done' && ev.decision === 'cancelled') unran = true;
           // Once the rail has moved on, these events describe an app that is no longer on screen.
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -2212,12 +2277,19 @@ window.SW = window.SW || {};
       } catch (err) {
         applyBuildEvent({ type: 'error', message: String(err.message || err) });
       } finally {
-        state.buildRunning = false;
-        state.buildTyping = null;
+        liveBuildTurns -= 1;
+        dropQueuedTurn(ticket);
+        // Not `false`: this tab can have several turns alive at once now, and the first one to
+        // unwind used to clear a flag the others were still relying on. Any of them still here
+        // means a turn is running in this project — its own, or the one it is queued behind.
+        state.buildRunning = liveBuildTurns > 0;
+        state.buildTyping = state.buildRunning ? state.buildTyping : null;
         notify();
         // Reload rather than keep a half-turn on screen: the transcript showing now is the other
-        // app's, and it was deliberately never given this turn's events.
-        if (movedOn()) await store.loadBuild({ keepPreview: true });
+        // app's, and it was deliberately never given this turn's events. A turn that never ran gets
+        // the same treatment for the opposite reason — the send optimistically drew a bubble for a
+        // question the server never recorded, and the text is back in the composer instead.
+        if (movedOn() || unran) await store.loadBuild({ keepPreview: true });
         await Promise.all([probePreview(), refreshBindings()]);
         notify();
       }
@@ -2272,13 +2344,16 @@ window.SW = window.SW || {};
     },
 
     async approveBuild(answers, planEdits, planId) {
-      if (state.buildRunning) return null;
       if (!state.thread) await store.newThread();
-      // Same rule as sendBuildPrompt: an approve is a build turn, and the person can move to
-      // another Built App while it streams (#77).
+      // Same rule as sendBuildPrompt, twice over: an approve is a build turn, so the person can
+      // move to another Built App while it streams (#77) and it waits in line rather than being
+      // refused when one is already going (#79).
       const turnApp = state.activeApp && state.activeApp.id;
       const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
+      let ticket = '';
+      let unran = false;
       appendBuildRow({ type: 'user', text: 'Approved the plan.' });
+      liveBuildTurns += 1;
       state.buildRunning = true;
       state.buildTyping = 'Building…';
       notify();
@@ -2301,6 +2376,8 @@ window.SW = window.SW || {};
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
+          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev); notify(); return; }
+          if (ev.contextChanged || (ev.type === 'done' && ev.decision === 'cancelled')) unran = true;
           if (movedOn()) return;
           applyBuildEvent(ev);
           notify();
@@ -2309,10 +2386,14 @@ window.SW = window.SW || {};
       } catch (err) {
         applyBuildEvent({ type: 'error', message: String(err.message || err) });
       } finally {
-        state.buildRunning = false;
-        state.buildTyping = null;
+        liveBuildTurns -= 1;
+        dropQueuedTurn(ticket);
+        state.buildRunning = liveBuildTurns > 0;
+        state.buildTyping = state.buildRunning ? state.buildTyping : null;
         notify();
-        if (movedOn()) await store.loadBuild({ keepPreview: true });
+        // `unran` reloads for the same reason `movedOn` does: an approve that never ran left an
+        // "Approved the plan." bubble the server has no record of, and the plan is still waiting.
+        if (movedOn() || unran) await store.loadBuild({ keepPreview: true });
         await Promise.all([probePreview(), refreshBindings(), loadThreadList()]);
         notify();
       }
@@ -2398,11 +2479,26 @@ window.SW = window.SW || {};
     // since a second tab choosing another app moves it here too (#95).
     readAppHistory: loadAppHistory,
 
+    // Stop ends ONE turn, and whatever was queued behind it starts (#79). So the flags are not
+    // cleared here any more: `loadBuild` re-reads the server's lock, which is the only thing that
+    // knows whether stopping this turn left the project idle or handed it straight to the next
+    // question. Clearing them first showed an idle header over a build that had just begun.
     async stopBuild() {
+      state.buildTyping = 'Stopping…';
+      notify();
       await SW.api.stopBuild();
-      state.buildRunning = false;
-      state.buildTyping = null;
       await store.loadBuild({ keepPreview: true });
+    },
+
+    // Cancel is not Stop. Stop interrupts the turn that is RUNNING; this drops one that is still
+    // waiting in line and leaves the running one alone — "I have changed my mind about asking" and
+    // "I have seen enough of this answer" are different sentences, and a single control for both
+    // would make one of them throw away the other's work (ADR-0013).
+    //
+    // The pending turn's own stream is what actually ends: the server wakes it, it yields a
+    // cancelled `done`, and the send that has been awaiting it all along clears its own row.
+    async cancelQueuedTurn(ticket) {
+      await SW.api.cancelTurn(ticket);
     },
 
     async loadBuild(options = {}) {
@@ -2431,7 +2527,7 @@ window.SW = window.SW || {};
         loadAppList({ cascade: false, ticket }),
       ]);
       await applyBuildRead(hist);
-      state.buildRunning = !!running.running;
+      state.buildRunning = applyTurnState(running);
       state.buildTyping = state.buildRunning ? 'Working…' : null;
       if (!options.keepPreview) state.previewStatus = 'starting';
       notify();
@@ -2485,7 +2581,7 @@ window.SW = window.SW || {};
         if (mine < settled) return;
         settled = mine;
         await applyBuildRead(hist);
-        state.buildRunning = !!running.running;
+        state.buildRunning = applyTurnState(running);
         if (!state.buildRunning) {
           state.buildTyping = null;
           clearInterval(store._watchTimer);
@@ -2499,11 +2595,10 @@ window.SW = window.SW || {};
 
     async sendMessage(text) {
       if (!text.trim()) return;
-      // The server refuses a second turn and says so in the transcript, which read as Sage
-      // answering a question with a complaint about a build. Refusing here instead means the
-      // composer is already disabled and the Stop button is already on screen: the answer to
-      // "a turn is running" is a control, not a sentence.
-      if (state.chatRunning) return;
+      // A second question used to be dropped here, because the server would only have refused it
+      // and said so in the transcript — which read as Sage answering a question about data with a
+      // complaint about a build. The server queues it now (#79), so the composer takes it: the
+      // second question was never the thing worth refusing, the dead composer was.
       let thread = state.thread;
       if (!thread) thread = await store.newThread();
       // The conversation this turn belongs to. Everything below writes to the view only while it
@@ -2535,6 +2630,12 @@ window.SW = window.SW || {};
         blocks: [{ type: 'text', value: text }],
         attachments,
       });
+      // The queue's two ends of this send (#79): `ticket` is what a Cancel would name, and `unran`
+      // is whether it ended without ever running — the one case where the bubble above has to come
+      // back off the screen, because the server recorded nothing to replace it with.
+      let ticket = '';
+      let unran = false;
+      liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
       state.chatTurnThread = turnThread;
@@ -2587,6 +2688,17 @@ window.SW = window.SW || {};
         }
         await readSSE(res, async (ev) => {
           if (!ev || ev.type === 'user') return;
+          // The queue's rows belong to this send wherever the reader has moved to, so they are read
+          // before the `mine()` check rather than after it: a Cancel has to be able to find its
+          // ticket, and a question handed back has to reach a composer.
+          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev); notify(); return; }
+          if (ev.contextChanged) {
+            unran = true;
+            store.seedComposer(ev.prompt || text);
+            antd.message.warning(ev.message);
+            return;
+          }
+          if (ev.type === 'done' && ev.decision === 'cancelled') { unran = true; return; }
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
           // answer appearing under a different question.
@@ -2681,16 +2793,22 @@ window.SW = window.SW || {};
         }
         notify();
       } finally {
-        // The turn is over wherever the reader is now, so the flag clears either way — it says
-        // "this project is busy", not "this conversation is busy".
-        state.chatRunning = false;
-        state.chatTurnThread = null;
+        liveChatTurns -= 1;
+        dropQueuedTurn(ticket);
+        // The turn is over wherever the reader is now. Not `false` outright: this tab can have
+        // several turns alive at once now, and the flag says "this project is busy", not "this
+        // conversation is busy" — so it stays true while any of them is still here.
+        state.chatRunning = liveChatTurns > 0;
+        if (!state.chatRunning) state.chatTurnThread = null;
         if (mine()) state.typing = null;
         notify();
       }
       // Back on the conversation this turn ran in, but the stream stopped writing to the view when
       // it was left. Re-read it, so the answer is there rather than in a Thread nobody reloaded.
-      if (left && state.thread && state.thread.id === turnThread) {
+      // A turn that never ran re-reads for the opposite reason: the bubble it drew optimistically
+      // has to go, because the server recorded nothing to replace it with and the text is back in
+      // the composer instead.
+      if ((left || unran) && state.thread && state.thread.id === turnThread) {
         await store.openThread(turnThread).catch(() => {});
       }
       await loadThreadList();
@@ -2699,8 +2817,12 @@ window.SW = window.SW || {};
 
     // Stop is the answer to a turn that will not end. Chat already caps a turn at ten minutes, and
     // the comment that chose that number said it was generous "because by then the person can
-    // press Stop" — which was true of Build and of nothing in Chat. Same endpoint Build uses: one
-    // project runs one turn, so there is one thing to interrupt.
+    // press Stop" — which was true of Build and of nothing in Chat.
+    //
+    // Same endpoint Build uses, and it used to be the same endpoint because there was only ever one
+    // thing to interrupt. That is no longer why: the endpoint stops the turn HOLDING the lock,
+    // whichever mode started it, and the questions queued behind it are not interrupted — they run
+    // (#79). Dropping one of those is Cancel's job, which is a different control.
     async stopChat() {
       state.typing = 'Stopping…';
       notify();
@@ -2714,17 +2836,20 @@ window.SW = window.SW || {};
       }
       // A turn this tab is streaming reports its own stop and clears the flag as it unwinds. The
       // watcher is for the turn it is not — after a reload, or one another tab started — and for
-      // the stop the stream never hears, so the composer never stays disabled on a freed lock.
+      // the stop the stream never hears, so the turn bar never stays up over a freed lock.
       store._watchTurn();
     },
 
     // Whether the project is mid-turn, straight from the server's turn lock. The one place the
-    // answer is authoritative — a tab that reloaded mid-turn has no stream and no memory of it,
-    // and used to offer a composer that the server would then refuse.
+    // answer is authoritative — a tab that reloaded mid-turn has no stream and no memory of it, and
+    // used to offer a composer that the server would then refuse. It queues now, so what this
+    // decides is the turn bar and Stop rather than whether anything can be typed; `wedged` rides
+    // along, because a wedged workspace is the one that still refuses (#79).
     async refreshTurnState() {
-      const { running } = await SW.api.buildState().catch(() => ({ running: false }));
+      const turn = await SW.api.buildState().catch(() => ({ running: false }));
       const was = state.chatRunning;
-      state.chatRunning = !!running;
+      const running = applyTurnState(turn);
+      state.chatRunning = running;
       if (running) {
         notify();
         store._watchTurn();
@@ -2738,16 +2863,15 @@ window.SW = window.SW || {};
       if (was && state.thread) await store.openThread(state.thread.id).catch(() => {});
     },
 
-    // Poll the lock so the composer comes back by itself. The lock is the only thing that knows:
+    // Poll the lock so the turn bar goes away by itself. The lock is the only thing that knows:
     // a stream can still be reading an SSE the server has finished with, and a Stop can land on a
     // turn that never says a word back — both look like "still running" from in here, and both end
-    // with a free lock. Errs towards running, so a poll that fails never enables a composer the
-    // server is about to refuse.
+    // with a free lock. Errs towards running, so a poll that fails never claims a project is idle.
     _watchTurn() {
       if (store._turnWatchTimer) return;
       store._turnWatchTimer = setInterval(async () => {
-        const { running } = await SW.api.buildState().catch(() => ({ running: true }));
-        if (running) return;
+        const turn = await SW.api.buildState().catch(() => ({ running: true }));
+        if (applyTurnState(turn)) return;
         clearInterval(store._turnWatchTimer);
         store._turnWatchTimer = null;
         await store.refreshTurnState();

@@ -524,6 +524,10 @@ SW.api = {
   // reload (#60): the card is rebuilt from the transcript, so the cancel has to leave a row there.
   cancelPlan: (body) => post('/project/plan/cancel', body || {}),
   stopBuild: () => post('/project/build/stop'),
+  // Stop and Cancel are not the same control (#79). Stop interrupts the turn that is RUNNING;
+  // this drops one that is still waiting in line, and leaves the running one alone. The ticket
+  // comes from the `pending` event that queued turn's own stream yielded.
+  cancelTurn: (ticket) => post('/project/turn/cancel', { ticket }),
   // Puts the SELECTED app's code back to the starter template (#36, narrowed to one Built App in
   // #75). Attachments, Resources, the transcript and every other app survive it — see
   // Orchestrator.reset_app.
