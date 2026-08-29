@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, TurnBusy
 from sage.provision.domino import FakeControlPlane
 from sage.router.models import ModelCatalog
 
@@ -257,7 +257,7 @@ def test_delete_is_refused_while_a_build_is_running(tmp_path: Path):
 
     assert orch._turn_lock.acquire(blocking=False)
     try:
-        with pytest.raises(RuntimeError, match="busy"):
+        with pytest.raises(TurnBusy):
             orch.delete_app(app_id)
     finally:
         orch._turn_lock.release()

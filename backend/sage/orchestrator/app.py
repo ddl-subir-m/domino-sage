@@ -62,7 +62,8 @@ from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from ..workspace.threads import safe_id
 from .service import (
-    AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceStillBound, UploadUnavailable,
+    AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceStillBound, TurnBusy,
+    UploadUnavailable,
 )
 
 _feedback = FeedbackRunner()
@@ -1102,9 +1103,8 @@ def reset_app() -> JSONResponse:
     other app all survive — see Orchestrator.reset_app."""
     try:
         return JSONResponse(content=orchestrator.reset_app())
-    except ResetBusy:
-        return JSONResponse(status_code=409, content={
-            "error": "A build is running. Wait for it to finish or stop it, then reset."})
+    except ResetBusy as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
 
 
 @control_app.get("/api/assets")
@@ -1580,15 +1580,11 @@ def create_app() -> JSONResponse:
     it. The plan gate fires on its first turn because it has not been built (#74)."""
     try:
         return JSONResponse(orchestrator.create_app())
-    except RuntimeError as e:
+    except TurnBusy as e:
         # Only the turn-lock refusal, as in `select_app` — anything else is a real failure and must
-        # not be reported to the person as a build they can wait out.
-        if str(e) == "busy":
-            return JSONResponse(
-                {"error": "A build is running. Stop it, or wait for it to finish, "
-                          "then start a new app."},
-                status_code=409)
-        raise
+        # not be reported to the person as a build they can wait out. The sentence is the service's:
+        # it is the only side that knows whether the lock has a turn behind it or a wedge (#97).
+        return JSONResponse({"error": str(e)}, status_code=409)
 
 
 @control_app.post("/api/apps/{app_id}/select")
@@ -1614,15 +1610,14 @@ def delete_app(app_id: str, domino_app: str = "keep") -> JSONResponse:
                                                     delete_domino_app=domino_app == "delete"))
     except KeyError:
         return JSONResponse({"error": "unknown app"}, status_code=404)
+    except TurnBusy as e:
+        # The turn-lock refusal is the one a person can wait out — or, after a wedge, the one that
+        # names the restart. Either way the service wrote the sentence (#97).
+        return JSONResponse({"error": str(e)}, status_code=409)
     except RuntimeError as e:
-        # The turn-lock refusal is the one a person can wait out. Anything else here is a real
-        # failure — the control plane refusing to delete the Domino App, most of all, and that one
-        # has to reach them as itself, because the Built App is still there.
-        if str(e) == "busy":
-            return JSONResponse(
-                {"error": "A build is running. Stop it, or wait for it to finish, "
-                          "then delete the app."},
-                status_code=409)
+        # Anything else here is a real failure — the control plane refusing to delete the Domino
+        # App, most of all, and that one has to reach them as itself, because the Built App is
+        # still there.
         return JSONResponse({"error": str(e)}, status_code=502)
 
 
@@ -1689,10 +1684,8 @@ def draft_handoff_plan(thread_id: str) -> JSONResponse:
         return JSONResponse(orchestrator.draft_handoff_plan(thread_id))
     except KeyError:
         return JSONResponse({"error": "unknown thread"}, status_code=404)
-    except RuntimeError as e:
-        if str(e) == "busy":
-            return JSONResponse({"error": "a turn is already running"}, status_code=409)
-        raise
+    except TurnBusy as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=502)
 
@@ -1704,10 +1697,8 @@ def confirm_handoff(thread_id: str, body: dict) -> JSONResponse:
             thread_id, (body or {}).get("include") or {}, (body or {}).get("target") or {}))
     except KeyError:
         return JSONResponse({"error": "unknown thread"}, status_code=404)
-    except RuntimeError as e:
-        if str(e) == "busy":
-            return JSONResponse({"error": "a turn is already running"}, status_code=409)
-        raise
+    except TurnBusy as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -1725,10 +1716,8 @@ def recross_handoff(thread_id: str, body: dict | None = None) -> JSONResponse:
             str((body or {}).get("planId") or "")))
     except KeyError:
         return JSONResponse({"error": "unknown thread"}, status_code=404)
-    except RuntimeError as e:
-        if str(e) == "busy":
-            return JSONResponse({"error": "a turn is already running"}, status_code=409)
-        raise
+    except TurnBusy as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 

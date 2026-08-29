@@ -211,10 +211,50 @@ _RUNNING_STATES = frozenset({"running"})
 _FAILED_STATES = frozenset({"failed", "error"})
 
 
+def turn_busy_message(wedged: bool, action: str = "resend") -> str:
+    """The sentence a refused operation answers with — the one place both of them live.
+
+    Two states, not one. An ordinary refusal is a turn somebody can wait out or stop, and `action`
+    names what they were doing when it was refused: the only part worth varying per entry point.
+    A wedged workspace (#39) has neither a turn to wait for nor one to stop, so there is no tail to
+    add and every entry point says the same thing — restart, which is the only thing that clears it.
+
+    One place rather than one per caller because the distinction is the hard part, not the wording:
+    a seventh hand-written copy is a seventh chance to tell somebody to wait for a build that is
+    never going to finish (#97).
+    """
+    if wedged:
+        return ("This workspace is stuck on a build that would not stop, so Sage "
+                "cannot start another one here. Restart the workspace to clear it. "
+                "Everything already written to your apps is safe.")
+    return f"A build is already running. Wait for it to finish or stop it first, then {action}."
+
+
+class TurnBusy(RuntimeError):
+    """A non-streaming operation asked for the turn lock while something else held it.
+
+    Still a RuntimeError, because that is what these entry points have always raised and what their
+    callers unwind on. The type and the `wedged` flag are what is new: the routes used to test
+    `str(e) == "busy"` and write their own sentence, which left them unable to tell a turn that is
+    running from a workspace that will never run one again (#97)."""
+
+    def __init__(self, wedged: bool = False, action: str = "resend") -> None:
+        super().__init__(turn_busy_message(wedged, action))
+        self.wedged = wedged
+
+
 class ResetBusy(Exception):
     """A reset was asked for while a turn was already streaming. Same rule as a build: one operation
     owns the working tree at a time, and a reset under a live turn would pull the files out from
-    under it."""
+    under it.
+
+    Its own type rather than a `TurnBusy`, because it comes off a different acquire — the one that
+    waits out a Stop (see _acquire_for_reset). The message and the `wedged` flag are the same, from
+    the same place."""
+
+    def __init__(self, wedged: bool = False) -> None:
+        super().__init__(turn_busy_message(wedged, "reset"))
+        self.wedged = wedged
 
 
 class TurnWedged(Exception):
@@ -2426,7 +2466,7 @@ class Orchestrator:
         """
         project = self.project(start_preview=False, seed_app=False)
         if not self._turn_lock.acquire(blocking=False):
-            raise RuntimeError("busy")
+            raise TurnBusy(self._turn_wedged, "start a new app")
         try:
             with self._app_lock:
                 born = self._wm.create_app(self._project_id)
@@ -2498,7 +2538,7 @@ class Orchestrator:
             raise KeyError(app_id)
         project = self.project(start_preview=False, seed_app=False)
         if not self._turn_lock.acquire(blocking=False):
-            raise RuntimeError("busy")
+            raise TurnBusy(self._turn_wedged, "delete the app")
         try:
             # Read before the directory goes: the id that reaches the Domino App is in the app's
             # own settings, and afterwards there is nothing left to ask.
@@ -2832,8 +2872,11 @@ class Orchestrator:
         # Serialize with the streaming turns: only one turn may run at a time (see _turn_lock). Refuse
         # rather than overlap another turn on the shared control + working tree.
         if not self._turn_lock.acquire(blocking=False):
-            return {"ok": False, "error_count": 0, "decision": "busy",
-                    "message": "A build is already running. Wait for it to finish or stop it first."}
+            # Answers in a dict rather than by raising, but from the same two sentences: a wedged
+            # workspace refuses everything the same way, whatever shape the caller reads (#97).
+            return {"ok": False, "error_count": 0,
+                    "decision": "wedged" if self._turn_wedged else "busy",
+                    "message": turn_busy_message(self._turn_wedged)}
         try:
             project = self._ensure_seeded()
             self._pin_turn_app(project)
@@ -3502,7 +3545,7 @@ class Orchestrator:
 
         Idempotent once the Thread's handoff names a plan document. Does not teleport into Build."""
         if not self._turn_lock.acquire(blocking=False):
-            raise RuntimeError("busy")
+            raise TurnBusy(self._turn_wedged, "try again")
         try:
             return self._draft_handoff_plan(thread_id)
         finally:
@@ -3517,7 +3560,7 @@ class Orchestrator:
         default lives HERE rather than in the sheet's markup, so a caller that says nothing gets a
         new app and never someone else's (docs/workbench/handoff.md §4, #73)."""
         if not self._turn_lock.acquire(blocking=False):
-            raise RuntimeError("busy")
+            raise TurnBusy(self._turn_wedged, "try again")
         try:
             # `_app_lock` as well, because confirming BINDS an app and then keeps reading the one it
             # bound — the plan, the handoff note, the `bound` mark, the plan document's `appId`. A
@@ -3545,7 +3588,7 @@ class Orchestrator:
         pressing Change on the first card would rewrite the second app's crossing.
         """
         if not self._turn_lock.acquire(blocking=False):
-            raise RuntimeError("busy")
+            raise TurnBusy(self._turn_wedged, "try again")
         try:
             # `_app_lock` for the same reason confirming takes it: this selects an app and then
             # writes into the one it selected.
@@ -4476,6 +4519,13 @@ class Orchestrator:
         """
         if self._turn_lock.acquire(blocking=False):
             return True
+        # A wedged workspace can hold both the lock and the flag: pressing Stop during the thirty
+        # seconds Sage spends asking the session to stop sets `stop_requested`, and the turn that
+        # would have cleared it is the one that never came back. Nothing else does. Waiting there
+        # is fifteen seconds spent on a lock that is never released, before the wrong sentence
+        # (#97, #39).
+        if self._turn_wedged:
+            return False
         if self._project is None or not self._project.stop_requested:
             return False
         # Read once, as a decision, then wait on the LOCK — not polled as a loop condition. The turn
@@ -4504,7 +4554,7 @@ class Orchestrator:
         happened. Without one, the history the agent greps still describes an app that is gone, and
         the next turn would build from a record of code it can no longer read."""
         if not self._acquire_for_reset():
-            raise ResetBusy()
+            raise ResetBusy(self._turn_wedged)
         try:
             with self._app_lock:
                 project = self.project()
@@ -4708,15 +4758,10 @@ class Orchestrator:
             # answers with "Another build is still running" — true of the lock, and the one thing
             # that is useless here. This sentence is the whole point of the refusal, so it goes
             # through the ordinary error path where it is actually read.
-            yield {"type": "error",
-                   "message": "This workspace is stuck on a build that would not stop, so Sage "
-                              "cannot start another one here. Restart the workspace to clear it. "
-                              "Everything already written to your apps is safe."}
+            yield {"type": "error", "message": turn_busy_message(wedged=True)}
             yield {"type": "done", "ok": False, "decision": "wedged"}
             return
-        yield {"type": "error", "busy": True,
-               "message": "A build is already running. Wait for it to finish or stop it first, "
-                          "then resend."}
+        yield {"type": "error", "busy": True, "message": turn_busy_message(wedged=False)}
         yield {"type": "done", "ok": False, "decision": "busy"}
 
     def _stop_wedged_session(self, client, sid: str) -> bool:
