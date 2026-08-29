@@ -136,3 +136,94 @@ def test_project_name_is_read_from_the_field_that_carries_it(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
     got = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[]).list_datasets(None)
     assert [a.project for a in got] == ["Seabed-Object-Classifier"]
+
+
+# --- the brand overlay (#110) -------------------------------------------------------------------
+#
+# The Asset provider carries the canonical actor string, and its sentences put three roles side by
+# side: the platform that did something, the noun the platform provisions, and text Sage did not
+# write — the Dataset name the person chose. Each gets its own treatment inside the one string.
+
+
+@pytest.fixture
+def _oem_pack(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "none.json")
+    pack = tmp_path / "brand.json"
+    pack.write_text(json.dumps({
+        "productName": "Acme", "assistantName": "Ada", "platformName": "Acme Cloud",
+        "nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}},
+    }))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
+
+
+def test_a_listing_failure_renames_the_platform_and_the_noun_but_not_the_users_name(_oem_pack):
+    class _Boom:
+        def list_files(self):
+            raise RuntimeError("proxy said no")
+
+    with pytest.raises(ResourceUnavailable) as e:
+        _provider(_FakeDatasetClient(_Boom())).list_files(Asset(id="i1", name="domino_shared"))
+
+    # The platform renamed, the noun renamed, and the name the person gave their Dataset left
+    # exactly as they typed it — including the word it happens to contain.
+    assert str(e.value) == "Acme Cloud did not answer for the files in Cube domino_shared (RuntimeError)."
+
+
+def test_a_download_failure_leaves_the_path_the_creator_asked_for_alone(_oem_pack, tmp_path):
+    class _Boom:
+        def list_files(self):
+            return []
+
+        def download_file(self, rel, local):
+            raise OSError("gone")
+
+    with pytest.raises(ResourceUnavailable) as e:
+        _provider(_FakeDatasetClient(_Boom())).download_file(
+            Asset(id="i1", name="domino_shared"), "domino/train.csv", tmp_path / "out" / "train.csv",
+        )
+
+    assert str(e.value) == "Acme Cloud did not send domino/train.csv from Cube domino_shared (OSError)."
+
+
+def test_the_unconfigured_providers_refusals_name_the_packs_brands(_oem_pack):
+    with pytest.raises(ResourceUnavailable) as listing:
+        UnconfiguredAssetProvider().list_datasets(None)
+    with pytest.raises(ResourceUnavailable) as reading:
+        UnconfiguredAssetProvider().download_file(Asset(id="i1", name="ds"), "a.csv", Path("a.csv"))
+
+    assert str(listing.value) == (
+        "Ada lists Cubes from the Acme Cloud API, and it is not configured to reach one, "
+        "so it cannot tell which Cubes you have."
+    )
+    assert str(reading.value) == (
+        "Ada reads Cube files through the Acme Cloud API, and it is not configured to reach one."
+    )
+
+
+def test_the_api_paths_survive_the_rename(_oem_pack, monkeypatch):
+    """The sentence renames the platform; the endpoint it names is a literal and does not move."""
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+    provider = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[])
+
+    with pytest.raises(ResourceUnavailable) as e:
+        provider.list_datasets(None)
+
+    assert str(e.value) == (
+        "The Acme Cloud API didn't answer at /api/datasetrw/v2/datasets (OSError)."
+    )
+
+
+def test_a_non_json_listing_body_renames_the_platform_and_the_noun(_oem_pack, monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(200, text="<html>signed out"))
+    provider = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[])
+
+    with pytest.raises(ResourceUnavailable) as e:
+        provider.list_datasets(None)
+
+    assert str(e.value).startswith("The Acme Cloud API returned a non-JSON body listing Cubes.")

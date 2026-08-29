@@ -256,7 +256,7 @@ class DominoControlPlane:
         # NewProjectV1. ownerId omitted -> defaults to the calling user (the hub runs as that user).
         body = {
             "name": name,
-            "description": description or "Created by Sage",
+            "description": description or brand.text("Created by {assistantName}"),
             "visibility": "Private",
             "mainRepository": {
                 "uri": git_url,
