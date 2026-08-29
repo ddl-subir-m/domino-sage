@@ -148,6 +148,27 @@ def test_the_agent_is_given_the_import_the_display_name_and_the_load_check():
     assert "src/sageLlm.ts" in block
 
 
+def test_the_agent_is_told_what_a_raw_gateway_call_costs_not_just_that_it_is_forbidden():
+    # AGENTS.md forbids EDITING the helper, never going around it, and the line about "no key to
+    # add, no server to write, no CORS to configure" reads a little like an invitation (#94). Every
+    # rule in this block states a consequence, because a bare prohibition is the one an agent that
+    # can see its own `fetch` working talks itself out of.
+    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [])
+    assert "askModel" in block
+    assert "X-LLM-Tag-sage-*" in block   # how this app's spend is attributable to Sage at all
+    assert "for the viewer" in block     # the error messages a raw call replaces with nothing
+    assert "expired" in block            # session expiry, which a raw call cannot tell from a 500
+    assert "streaming" in block
+
+
+def test_the_agent_is_told_the_preview_proxy_is_not_there_once_the_app_ships():
+    # The one variant no test the agent can run will catch: `/api/llm` is Sage's own proxy, answers
+    # correctly through the whole build, and is gone the moment the app is published.
+    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [])
+    assert "/api/llm" in block
+    assert "published" in block
+
+
 # ---- through the Orchestrator, which is what a Binding change calls ------------------------------
 
 
