@@ -72,8 +72,10 @@ declaration is the one that publishes
 ([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md)). A Data Source Binding
 also records a Scope. A Resource is picked once for the Project and can be bound by several of its
 Built Apps; a Binding always names exactly one of them, so "what does this app read" has an answer
-per app.
-_Avoid_: connection, link, reference, wiring
+per app. Removing a Binding takes the grant and the Scope with it. There is no undo: the Resource
+stays in the Project and is picked again
+([ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md)).
+_Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
 
 **Scope**:
 The database, schema and optionally table a Data Source Binding is read at. Chosen from lists
@@ -97,7 +99,8 @@ _Avoid_: preview, sample data, examples, peek
 **Attachment**:
 A file bound into the Built App, reachable by the app's code. A file never becomes a Binding, so
 what one Built App carries is two named things and not one. A Binding may also produce an
-Attachment, but most do not.
+Attachment, but most do not. Removing an Attachment takes the declaration and the app's copy of the
+file. The source it was attached from is never touched.
 _Avoid_: upload, mount, bundled file
 
 **Built App**:
@@ -186,10 +189,22 @@ document)
 **Session context**:
 The Resources and Artifacts in scope for this Conversation right now, shown as chips on the
 composer. Distinct from a Binding, which is what the Built App needs to run and is permitted to
-reach. A chip is the Session context row the user can see and remove.
-_Avoid_: attachment (that is a file in the Built App), binding (durable app dependency)
+reach. A chip is the Session context row the user can see and remove. The two lists move on their own:
+removing a Binding leaves the chip where it is, and removing a chip leaves the app still needing the
+Resource.
+_Avoid_: attachment (that is a file in the Built App), binding (durable app dependency), detach
+(that is the app's word for removing an Attachment)
 
 ### Handling rules
+
+**Remove**:
+Taking something out of one of the three lists that can hold it: a Conversation, a Built App, or the
+Project. Every label names which — "Remove from this conversation", "Remove from <app>", "Remove from
+<project>" — because the scope is the only thing that tells the three apart. The act belongs to the
+list that owns that scope, so a summary of a list points at it and never removes on its behalf. See
+[ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md).
+_Avoid_: a bare "Remove" (it does not say which of the three), detach or unbind as a label (those
+name the app-scoped pair in code, not on screen), delete, drop, clear
 
 **Shared credential**:
 A Data Source credential belonging to a service account rather than a person, so every
