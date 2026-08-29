@@ -152,6 +152,23 @@ window.SW = window.SW || {};
     // notice with nothing to act on carries no offer. Never a toast: five seconds is not long
     // enough to read a file list and decide (ADR-0011).
     appRemoval: null,
+    // The selected app's own build log, as last read (#88). `null` until it has been read for this
+    // app; `{ rows, failed }` after — THREE states, not two, for the reason `loadAppList` gives
+    // above about `apps()`: a read that failed is not an app with no builds, and `[]` cannot tell
+    // the two apart. An empty list is a sentence about the app; a failed read is a sentence about
+    // the read, and only one of them is true when the route 500s.
+    //
+    // NOT `buildHistory` above: that one is this Conversation's turns in this app, which is what
+    // Build replays. This is every build of the app, whoever asked for it and in whichever
+    // Conversation — the log as the app's directory holds it (ADR-0008).
+    //
+    // Read only when something asks to see it, and dropped the moment the selection moves, so the
+    // list can never be one app's builds under another app's name.
+    appHistory: null,
+    // Whether the build history is on screen. The person's, not the app's — which is why it is not
+    // in `APP_SCOPED` below, for the reason `composerSeed` is not: switching app changes WHICH
+    // builds are listed, never whether you had asked to see them.
+    buildHistoryOpen: false,
     // A prompt written into the composer and left there. The cleanup offer above puts work in front
     // of the person rather than firing a build turn, which the per-project turn lock can refuse and
     // which would put work past a plan gate they never read.
@@ -224,8 +241,14 @@ window.SW = window.SW || {};
   // The fields the gate covers, named rather than spread blind: a writer handing over a key that is
   // not on this list is writing something else, and a silent new key on `state` is how that would
   // go unnoticed. `composerSeed` is deliberately absent — it is a draft handed to the composer and
-  // cleared on read, and it belongs to the person rather than to the app.
-  const APP_SCOPED = ['activeApp', 'bindings', 'appAttachments', 'appRemoval'];
+  // cleared on read, and it belongs to the person rather than to the app. `buildHistoryOpen` is
+  // absent for the same reason: it says whether somebody asked to see the builds, not whose.
+  //
+  // `appHistory` is here because it is the same kind of thing as the four before it (#88): a list
+  // read per app, over a route that carries no app id, which means a read taken under the app you
+  // left can land after you have moved and print that app's builds under this one's name. That is
+  // #101's bug arriving through a new door, and this list is the door.
+  const APP_SCOPED = ['activeApp', 'bindings', 'appAttachments', 'appRemoval', 'appHistory'];
 
   // Where each field's newest write got to, PER FIELD rather than one number for all four. Sharing
   // one would make every writer supersede every other: the 2s build tick calls `loadAppList` and
@@ -274,6 +297,13 @@ window.SW = window.SW || {};
         // down — did not, nor did `clearApp` or `setScope`.
         state.appRemoval = null;
         appScopeApplied.appRemoval = ticket.seq;
+        // The builds listed are the app's, so the selection moving is what makes them somebody
+        // else's (#88). Dropped rather than left up: a list that stayed would be the wrong pairing
+        // #95 fixed, printed as prompts under a header naming a different app. Claiming this
+        // ticket is also what makes a read still in flight for the app you left lose to the switch,
+        // whenever it lands.
+        state.appHistory = null;
+        appScopeApplied.appHistory = ticket.seq;
       }
       state[key] = fields[key];
     }
@@ -986,6 +1016,11 @@ window.SW = window.SW || {};
         blocks: [{
           type: 'build_run',
           prompt: run.prompt,
+          // When the run was asked for, off the user row that opened it. Absent on every row
+          // written before Sage started stamping the clock, and a surface that shows the time
+          // leaves it off rather than inventing one — the rule `durationMs` already follows in
+          // `buildHistoryToMessages`.
+          at: run.at,
           apps: appsChangedIn(run.rows),
           // The cards are the row's FACE, so they are not repeated inside the turns it opens on.
           messages: buildHistoryToMessages(run.rows.filter((ev) => ev.type !== 'app_change')),
@@ -994,11 +1029,20 @@ window.SW = window.SW || {};
       run = null;
     };
 
-    for (const ev of rows) {
+    for (const [i, ev] of rows.entries()) {
       if (ev.type === 'user') {
         flushLoose();
         flushRun();
-        run = { order: ev.order, prompt: ev.text || '', rows: [] };
+        // The row's own position when nothing stamped one, exactly as `buildHistoryToMessages`
+        // falls back. The merged read numbers every row before it splits them (#56), but a log
+        // read straight off the app's disk carries no `order` at all — and `run_undefined` is the
+        // same id for every run in it, which React draws as one (#88).
+        run = {
+          order: ev.order === undefined ? i : ev.order,
+          at: ev.at,
+          prompt: ev.text || '',
+          rows: [],
+        };
       }
       if (!run) {
         loose.push(ev);
@@ -1164,6 +1208,28 @@ window.SW = window.SW || {};
   async function refreshBindings(ticket = appScopeTicket()) {
     const body = await SW.api.bindings().catch(() => ({ bindings: [] }));
     applyAppScope(ticket, { bindings: body.bindings || [] });
+  }
+
+  // Every build of the selected app, read on demand (#88). Not folded into `loadBuild`: the log
+  // reaches megabytes on a long-lived app (~68KB per user turn), Build already reads the slice it
+  // draws, and paying for the whole file on every app switch would buy a list nobody had asked to
+  // see.
+  //
+  // Ticketed like the reads beside it, and for the sharper version of the same reason: the route
+  // carries no app id, so its answer is only ever "the app that was selected when it was asked".
+  // A read that resolves after the creator has moved is answering about an app that is no longer
+  // on screen, and it loses here rather than painting (#101).
+  // A failure is REPORTED rather than flattened to an empty list, which is the same rule
+  // `loadAppList` states 780 lines up about `apps()`: `[]` answers a 500 as readily as it answers
+  // an app nobody has built in, and the drawer's empty state is a confident claim about the app.
+  // Made on a failed read it is simply false, and it hands the person a dead end — the log is on
+  // disk and their builds are fine.
+  async function loadAppHistory(ticket = appScopeTicket()) {
+    const read = await SW.api.appHistory().then(
+      (rows) => ({ rows, failed: false }),
+      () => ({ rows: [], failed: true })
+    );
+    applyAppScope(ticket, { appHistory: read });
   }
 
   // The plan the panel pins. Two moments move it and nothing else does: a gate turn or a Chat
@@ -2309,6 +2375,29 @@ window.SW = window.SW || {};
       return result;
     },
 
+    // The selected app's builds, asked for (#88). Two lines, and the second one is the point: the
+    // list is cleared on the way in, so opening always reads. Keeping the last look would mean a
+    // build that finished since is missing from a list whose whole job is to hold every build.
+    //
+    // Through the gate rather than by hand, because that is what claims a place in the queue: a
+    // read still out for this app from a previous look must not land on top of the fresh one.
+    openBuildHistory() {
+      applyAppScope(appScopeTicket(), { appHistory: null });
+      state.buildHistoryOpen = true;
+      notify();
+    },
+
+    closeBuildHistory() {
+      state.buildHistoryOpen = false;
+      notify();
+    },
+
+    // The one reader, called by the drawer when it is open and holds nothing for the app on
+    // screen. Two moments answer that description and they are the whole of the behaviour: opening
+    // it, and the selection moving underneath it while it is open — which needs nobody to click,
+    // since a second tab choosing another app moves it here too (#95).
+    readAppHistory: loadAppHistory,
+
     async stopBuild() {
       await SW.api.stopBuild();
       state.buildRunning = false;
@@ -2901,6 +2990,12 @@ window.SW = window.SW || {};
   };
 
   SW.store = store;
+
+  // The Build log cut into runs — a user row and the agent rows that followed it — for anything
+  // that LISTS builds rather than replaying them (#88). The same grouping Chat's merged view folds
+  // with, exported rather than copied: one answer to "where does a build start and stop", and two
+  // surfaces that draw it differently.
+  SW.buildRuns = buildRunMessages;
 
   SW.brand = {
     assistant() {

@@ -758,3 +758,51 @@
   grid-template-columns: repeat(3, 1fr);
   gap: var(--s3);
 }
+
+/* The Built App's build history, in a drawer over the preview (#88) ---------
+   Not beside it and not in place of it: a build history is read AGAINST the app it built, so the
+   preview has to still be there when the drawer closes. Everything below is the list inside it —
+   antd owns the mask and the panel. */
+.sw-bh-list { display: grid; gap: var(--s3); }
+/* Whose builds these are, said once at the top rather than per row. One Conversation can drive
+   several apps and several conversations can drive one, so a list with builds this conversation
+   never asked for is correct and has to read that way. */
+.sw-bh-intro {
+  font-size: 12px;
+  color: var(--gray-600);
+  line-height: 1.5;
+}
+.sw-bh-run {
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius);
+  background: var(--gray-100);
+  padding: var(--s3);
+  display: grid;
+  gap: var(--s2);
+}
+/* The prompt and its time on one line, the time flush right and never wrapped: it is the shortest
+   thing on the row and the one a reader scans down. */
+.sw-bh-run-head { display: flex; align-items: baseline; gap: var(--s2); }
+/* Two lines, then an ellipsis. The prompt is the row's heading, and a long one must not push the
+   next build off the screen — the turns are one click away. */
+.sw-bh-run-prompt {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dark-700);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sw-bh-run-at { flex: none; font-size: 11px; color: var(--gray-500); }
+.sw-bh-run-turns {
+  display: grid;
+  gap: var(--s2);
+  border-top: 1px solid var(--gray-300);
+  padding-top: var(--s2);
+}
+.sw-bh-empty { display: grid; gap: 4px; padding: var(--s4) 0; }

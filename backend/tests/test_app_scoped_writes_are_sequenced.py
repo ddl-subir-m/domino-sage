@@ -26,7 +26,8 @@ alone, and clicking Dismiss writes the notice alone, and neither may throw away 
 still in flight for the same app.
 
 WHAT IS NOT IN IT. `composerSeed` is not app-scoped — it is a draft handed to the composer and
-cleared on read — so the gate does not cover it.
+cleared on read — so the gate does not cover it. Nor is `buildHistoryOpen` (#88): switching app
+changes WHICH builds are listed, never whether somebody had asked to see them.
 
 The out-of-order resolve is the test: each race below asserts the NEWER write won, not merely that
 one of them did. Nothing is mounted — see `js/build_header_harness.mjs` for why.
@@ -55,17 +56,24 @@ needs_node = pytest.mark.skipif(
 # Named here rather than counted, because the first criterion is that the writers are ENUMERATED:
 # a writer added later has to be added to this list to be covered, and the gate test below is what
 # makes forgetting it fail rather than pass quietly.
-APP_SCOPED = ("activeApp", "bindings", "appAttachments", "appRemoval")
+#
+# `appHistory` joined them in #88: the app's whole build log, read over a route that carries no app
+# id, which makes a late answer describe an app that is no longer on screen. Its own tests live in
+# `test_build_shows_the_apps_build_history.py`; what belongs here is that the gate covers it and
+# that its two writers go through the gate like the rest.
+APP_SCOPED = ("activeApp", "bindings", "appAttachments", "appRemoval", "appHistory")
 WRITERS = (
     "async function loadScopeData(",
     "async function loadAppList(",
     "async function refreshAppScope(",
     "async function refreshBindings(",
+    "async function loadAppHistory(",
     "async setScope(",
     "async removeBindingFromApp(",
     "async removeAttachmentFromApp(",
     "dismissAppRemoval(",
     "clearApp(",
+    "openBuildHistory(",
     "async loadBuild(",
 )
 
@@ -129,15 +137,18 @@ def test_every_writer_the_audit_found_goes_through_the_gate():
         assert "applyAppScope(" in _body_from(src, decl), decl
 
 
-def test_the_gate_covers_the_four_app_scoped_fields_and_not_the_composer_seed():
+def test_the_gate_covers_the_app_scoped_fields_and_not_the_ones_that_belong_to_the_person():
     """`composerSeed` is a draft handed to the composer and cleared on read. It belongs to the
-    person, not to the app, and sequencing it against app-scoped reads would drop prompts."""
+    person, not to the app, and sequencing it against app-scoped reads would drop prompts.
+    `buildHistoryOpen` is the same kind of thing: whether the build history is on screen is the
+    person's answer, and only the list inside it is the app's (#88)."""
     src = _STORE.read_text()
     listed = re.search(r"const APP_SCOPED = \[([^\]]*)\]", src)
     assert listed, "the gate no longer names the fields it covers"
     names = re.findall(r"'([^']+)'", listed.group(1))
     assert sorted(names) == sorted(APP_SCOPED)
     assert "composerSeed" not in names
+    assert "buildHistoryOpen" not in names
 
 
 # ---- a read that started first, landing last -------------------------------------------------
