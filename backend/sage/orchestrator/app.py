@@ -2146,6 +2146,15 @@ control_app.mount("/js", _RevalidatingStatic(directory=_WB / "js"), name="wb-js"
 control_app.mount("/img", _RevalidatingStatic(directory=_WB / "img"), name="wb-img")
 control_app.mount("/vendor", _RevalidatingStatic(directory=_WB / "vendor"), name="wb-vendor")
 
+# The partner's own logo and favicon (#117). Held on the module so a test can point it somewhere
+# it is allowed to write; the boundary it enforces lives in brand.py, next to the pack that names
+# the files. BRAND_DIR is `/opt/sage/brand` and never `/opt/sage`, which holds opencode.json.
+from .brand import BRAND_DIR as _BRAND_DIR
+from .brand import BrandImages as _BrandImages
+
+_brand_images = _BrandImages(directory=_BRAND_DIR, check_dir=False)
+control_app.mount("/brand", _brand_images, name="brand-img")
+
 
 def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
     """Make OpenCode actually load Sage's provider/agents/model — the real fix.

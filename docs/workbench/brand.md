@@ -16,7 +16,7 @@ Shipped in v1 (`40ecb14`): the pack loader and its fallbacks, `GET /api/brand`, 
 strings through `SW.brand.*`, and `apply_voice()` / `apply_agent_voice()`.
 
 Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`;
-`platformName`; and `nouns`.
+`platformName`; `nouns`; and `faviconUrl` with the `/brand` image mount.
 
 Everything else below is designed and unbuilt. Sections carry the marker.
 
@@ -80,7 +80,11 @@ Unknown keys are **ignored but logged at startup**, so a typo is findable.
 }
 ```
 
-**Not built:** `faviconUrl`. There is also no default favicon asset yet — it has to be drawn.
+**Built:** `faviconUrl`, filled into `<link rel="icon">` on both entry pages by the route that
+serves them, and validated where the pack is read — relative path on our own origin, `.svg` or
+`.png`, no walking, no remote URL. Anything else is refused, logged once and falls back.
+**Still missing: the default asset itself.** `./img/domino-favicon.svg` has to be drawn; until it
+lands, an unset pack names a file the shell does not have.
 
 An OEM typically sets `productName` and `assistantName` to the same string. `assistantName` omitted
 falls back to `productName`. Colors omitted keep the purple tokens.
@@ -135,11 +139,17 @@ of its two forms keeps the default for the other.
   user chose, a URL path segment. Render a passed-through platform error **as a quotation**: its own
   marked block, so two vocabularies on one screen read as attribution rather than a bug.
 
-## Images — not built
+## Images — built
+
+Served at `/brand`, by `BrandImages` in `orchestrator/brand.py`. A pack names a partner's file as
+`./brand/<file>.svg` — relative, because the platform serves the shell under a proxy prefix an
+absolute path would walk out of. The Domino defaults are not here; they are the shell's own
+assets, under `/img`.
 
 - **Mount `/opt/sage/brand/`. Never `/opt/sage/`** — that holds `opencode.json` and its gateway
   configuration. A static mount one level too high publishes it.
-- Allowlist `.svg` and `.png`. No directory listing, no fallthrough.
+- Allowlist `.svg` and `.png`. No directory listing, no fallthrough. The extension is checked
+  before anything touches the filesystem, and a refused name answers exactly like an absent one.
 - **No remote URLs.** They break an air-gapped install and hand the partner's CDN a log of every
   user's session.
 - Favicon is SVG. Unset → the Domino default, same fallback rule as every other key.
