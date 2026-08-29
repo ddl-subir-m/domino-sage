@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 
 from sage.orchestrator import handoff
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, TurnBusy
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
@@ -604,7 +604,7 @@ def test_new_app_is_refused_while_a_build_is_running_and_mints_nothing(tmp_path:
 
     assert orch._turn_lock.acquire(blocking=False)      # simulate a turn in flight
     try:
-        with pytest.raises(RuntimeError, match="busy"):
+        with pytest.raises(TurnBusy):
             orch.create_app()
     finally:
         orch._turn_lock.release()
@@ -634,4 +634,4 @@ def test_the_rail_starts_an_app_over_the_route_that_lists_them(tmp_path: Path, m
         finally:
             orch._turn_lock.release()
         assert refused.status_code == 409
-        assert "A build is running" in refused.json()["error"]
+        assert "A build is already running" in refused.json()["error"]

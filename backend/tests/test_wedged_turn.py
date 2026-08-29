@@ -25,7 +25,7 @@ import pytest
 
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator import service as svc
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, ResetBusy, TurnBusy
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -447,3 +447,127 @@ def test_the_offer_is_replayable_from_the_transcript(tmp_path: Path):
     assert offer["prompt"] == "add a chart"
     history = orch.project(start_preview=False).app_for_turn().read_history()
     assert [e for e in history if e.get("type") == "build-stalled"]
+
+
+# The same refusal, off the entry points that do not stream (#97).
+#
+# #39 gave the streaming paths the sentence above. New app, Delete, Reset and the three handoff
+# drafts take the same lock and did not get it: they raised a bare "busy" that each route turned
+# into "a build is running". After a wedge no build is running, and the one thing that clears the
+# workspace — restarting it — was the one thing those sentences never said. #39 made that likelier
+# to be read, not rarer: `turn_busy()` now answers false when wedged, so the rail looks idle and
+# invites exactly the click that landed on the wrong sentence.
+
+
+def _refusal_messages(orch: Orchestrator) -> dict[str, str]:
+    """Refuse every non-streaming entry point in whatever state `orch` is in, and collect what each
+    one said. Three shapes answer here — `TurnBusy`, `ResetBusy`, and `build`'s dict — and gathering
+    them in one place is the point: the sentence has to be the same one."""
+    app_id = orch.project(start_preview=False, seed_app=False).workspace.app_id
+    calls = {
+        "create_app": orch.create_app,
+        "delete_app": lambda: orch.delete_app(app_id),
+        "draft_handoff_plan": lambda: orch.draft_handoff_plan("thread-1"),
+        "confirm_handoff": lambda: orch.confirm_handoff("thread-1"),
+        "recross_handoff": lambda: orch.recross_handoff("thread-1"),
+    }
+    said = {}
+    for name, call in calls.items():
+        with pytest.raises(TurnBusy) as caught:
+            call()
+        said[name] = str(caught.value)
+    with pytest.raises(ResetBusy) as reset:
+        orch.reset_app()
+    said["reset_app"] = str(reset.value)
+    said["build"] = orch.build("add a chart")["message"]
+    return said
+
+
+def test_after_a_wedge_every_non_streaming_entry_point_names_the_restart(tmp_path: Path):
+    """Word for word the streaming refusal's sentence. A wedged workspace has nothing to wait for
+    and nothing to stop, so there is no per-entry-point tail to add — the answer is the same
+    wherever it is asked, and a seventh hand-written copy fails here."""
+    orch, _ = _wedged(tmp_path, stops=False)
+    list(orch.build_stream("add a chart"))
+
+    said = _refusal_messages(orch)
+    streamed = _of(list(orch._busy_refusal()), "error")[0]["message"]
+
+    assert set(said) == {"create_app", "delete_app", "draft_handoff_plan", "confirm_handoff",
+                         "recross_handoff", "reset_app", "build"}
+    for name, message in said.items():
+        assert message == streamed, name
+        assert "Restart the workspace" in message
+
+
+def test_a_turn_that_is_genuinely_running_still_says_wait_or_stop_it_first(tmp_path: Path):
+    """The other half of the distinction. A held lock with no wedge behind it is the ordinary case,
+    and there the old advice is the right advice — with the tail that names what was refused."""
+    orch = _orch(tmp_path, FakeOpenCode(tmp_path / "mnt" / "code"))
+
+    assert orch._turn_lock.acquire(blocking=False)      # a turn in flight, and nothing wrong with it
+    try:
+        said = _refusal_messages(orch)
+    finally:
+        orch._turn_lock.release()
+
+    for name, message in said.items():
+        assert message.startswith(
+            "A build is already running. Wait for it to finish or stop it first, then "), name
+        assert "Restart the workspace" not in message
+    # The tails stay per entry point: the shared opening cannot name the thing that was refused.
+    assert said["create_app"].endswith("then start a new app.")
+    assert said["delete_app"].endswith("then delete the app.")
+    assert said["reset_app"].endswith("then reset.")
+
+
+def test_reset_does_not_wait_out_a_lock_that_is_never_coming_back(tmp_path: Path):
+    """`_acquire_for_reset` waits up to fifteen seconds when `stop_requested` is set, on the reading
+    that the lock is about to free itself. A wedge breaks that reading: the turn that would have
+    cleared the flag is the one that never came back, and nothing else clears it.
+
+    Reachable, not theoretical. Stop is refused once a workspace is wedged — `turn_busy()` is false
+    by then — but the thirty seconds Sage spends asking the session to stop come BEFORE that, with
+    the lock still held and the workspace still reading as busy. A person watching a build that
+    stopped responding presses Stop in exactly that window."""
+    import time as _time
+
+    orch, oc = _wedged(tmp_path, stops=False)
+    real_interrupt = oc.interrupt
+    pressed = {"stop": False}
+
+    def stop_pressed_while_sage_gives_up(session_id: str) -> None:
+        if not pressed["stop"]:
+            pressed["stop"] = True
+            orch.stop_build()          # still busy from the outside, so the flag lands
+        real_interrupt(session_id)
+
+    oc.interrupt = stop_pressed_while_sage_gives_up
+    list(orch.build_stream("add a chart"))
+
+    assert orch.project(start_preview=False).stop_requested   # nothing left to clear it
+    started = _time.monotonic()
+    with pytest.raises(ResetBusy):
+        orch.reset_app()
+    assert _time.monotonic() - started < 1.0
+
+
+def test_the_routes_hand_the_wedged_sentence_to_the_person(tmp_path: Path, monkeypatch):
+    """The service side is where the two states are told apart, and the routes' whole job is now to
+    carry the sentence out unchanged. 409 either way — the status is what the rail reads to tell a
+    refusal from a failure — with the body saying which refusal it was.
+
+    Nothing swallows it on the way. Unlike the streaming refusal, whose `busy` flag makes the UI
+    substitute its own line, a 409 body reaches `err.message` verbatim (js/api.js)."""
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as appmod
+
+    orch, _ = _wedged(tmp_path, stops=False)
+    list(orch.build_stream("add a chart"))
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+
+    with TestClient(appmod.control_app) as client:
+        for response in (client.post("/api/apps"), client.post("/api/project/reset")):
+            assert response.status_code == 409
+            assert "Restart the workspace" in response.json()["error"]
