@@ -23,6 +23,8 @@ import binascii
 import re
 from dataclasses import dataclass
 
+from ..orchestrator import brand
+
 # The invocation URL, in any of Domino's language tabs. The port is optional because the page prints
 # an explicit `:443` while a hand-shortened URL usually drops it, and both reach the same endpoint.
 # The version segment is `latest` on the page but a pinned version number is equally valid.
@@ -58,9 +60,10 @@ class ParsedSnippet:
         if self.complete:
             return None
         if not self.url and not self.token:
-            return (
-                "That paste has neither the model's URL nor its access token. Copy the whole sample "
-                "request from the Model API's Overview page in Domino, and paste all of it."
+            return brand.text(
+                "That paste has neither the model's URL nor its access token. Copy the whole "
+                "sample request from the {modelApi}'s Overview page in {platformName}, and paste "
+                "all of it."
             )
         if not self.url:
             return (

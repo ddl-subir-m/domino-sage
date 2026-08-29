@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..orchestrator import brand
+
 # The kinds Sage records. Other Resource kinds join this vocabulary as they arrive.
 KIND_LLM_ALIAS = "llm_alias"
 # A Model API Binding (#9) is a record only, for now: the first LLM Alias is pinned into the app's
@@ -138,10 +140,13 @@ def _scope_part(entry: dict, key: str) -> str | None:
 
 # What each kind is called in a sentence. What the app can DO with a second one of that kind is not
 # a property of the kind, so it lives in `_what_the_app_does_with` below rather than in this table.
+#
+# A template per kind rather than a resolved label: the pack is read when the sentence is written,
+# and this table is built once at import.
 _KIND_LABEL = {
-    KIND_LLM_ALIAS: "LLM Alias",
-    KIND_MODEL_API: "Model API",
-    KIND_DATA_SOURCE: "Data Source",
+    KIND_LLM_ALIAS: "{llmAlias}",
+    KIND_MODEL_API: "{modelApi}",
+    KIND_DATA_SOURCE: "{dataSource}",
 }
 
 
@@ -165,7 +170,8 @@ def _what_the_app_does_with(b: Binding, first: Binding | None) -> str:
         return f'Queries read it by naming `"binding": "{b.id}"`.'
     if b.kind == KIND_MODEL_API:
         if first is None or first.key == b.key:
-            return "This app's default Model API — the one a call that names no model reaches."
+            return brand.text("This app's default {modelApi} — the one a call that names no model "
+                              "reaches.")
         return (f'Also callable by name — pass `model: "{b.display_name}"` for the predictions this '
                 f"request means for it. The default stays **{first.display_name}**.")
     return "recorded as used by this app."
@@ -192,7 +198,7 @@ def mention_note(mentions: list[Mention], recorded: list[Binding]) -> str:
     lines = []
     for mention in mentions:
         b = mention.binding
-        kind = _KIND_LABEL.get(b.kind, b.kind)
+        kind = brand.text(_KIND_LABEL.get(b.kind, b.kind))
         # The display name is what the creator picked from; the name is what they typed after the @.
         # Both, when they differ, so neither reading of the mention is left guessing.
         name = b.display_name if b.display_name == b.name else f"{b.display_name} (`{b.name}`)"
