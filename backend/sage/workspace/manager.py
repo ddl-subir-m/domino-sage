@@ -34,6 +34,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..resources.app_helpers import TEMPLATE, HelperNames, helpers_for
 from . import plan_doc
 from .threads import CHAT_WORK, new_id, safe_id
 
@@ -100,17 +101,19 @@ _BINDINGS_LOCK = threading.Lock()
 _PROJECT_RESOURCES_LOCK = threading.Lock()
 # The helper a Built App calls its model through (#7). Sage-owned like the deploy files above,
 # and committed to the app's repo for the same reason: a published app has no Sage around it.
-_LLM_HELPER = str(Path("src") / "sageLlm.ts")
-# The same, for the Model API a Built App calls (#9). Separate file rather than more of sageLlm.ts:
-# the two call different hosts with different credentials, and only this one carries a secret.
-_MODEL_API_HELPER = str(Path("src") / "sageModelApi.ts")
+# Named as the TEMPLATE names it, here and in _OWNED_SOURCES below: these are the source paths, and
+# `_ensure_helper` asks `app_helpers` what the app in hand calls each one before it writes (#119).
+_LLM_HELPER = TEMPLATE.llm_path
+# The same, for the Model API a Built App calls (#9). Separate file rather than more of the LLM
+# helper: the two call different hosts with different credentials, and only this one carries a secret.
+_MODEL_API_HELPER = TEMPLATE.model_api_path
 # And for the Data Source a Built App queries (#15). Separate again, and for a sharper reason than
 # the other two: this one calls the app's OWN server, which is the only Resource path that does.
-_QUERY_HELPER = str(Path("src") / "sageQuery.ts")
+_QUERY_HELPER = TEMPLATE.query_path
 # Everything under `src/` that Sage owns outright: AGENTS.md forbids the agent to edit any of them,
 # and attach brings each one back in line with the template (#40). Enumerated rather than remembered,
-# so a new Sage-owned file joins by being declared here. NOT service.py's `_SAGE_OWNED_SOURCES`,
-# which is a different set for a different job — that one excludes Sage's files from the reference
+# so a new Sage-owned file joins by being declared here. NOT `HelperNames.owned`, which is a
+# different set for a different job — that one excludes Sage's files from the reference
 # scan on unbind, holds the generated `.config.ts` files this list must never overwrite, and is
 # missing the two below. Two named sets that overlap is honest; one doing both jobs would drift.
 # Order is load-bearing, as it is in _DEPLOY_FILES: ErrorBoundary.tsx imports reportRuntimeError.ts,
@@ -514,6 +517,12 @@ class Workspace:
     @property
     def app_entry(self) -> Path:
         return self.path / "src" / "App.tsx"
+
+    @property
+    def helpers(self) -> HelperNames:
+        """What THIS app calls each of the Sage-owned `src/` helpers (#119). One resolver, asked
+        here, so no caller works the scheme out for itself."""
+        return helpers_for(self.path)
 
     @property
     def plan_path(self) -> Path:
@@ -1150,6 +1159,11 @@ class WorkspaceManager:
     def app_path(self) -> Path:
         return self.apps_dir / self.selected_app_id()
 
+    @property
+    def helpers(self) -> HelperNames:
+        """What the selected app calls each of the Sage-owned `src/` helpers (#119)."""
+        return helpers_for(self.app_path)
+
     def app_workspace(self, project_id: str, app_id: str | None = None) -> Workspace:
         """One Built App's record, without seeding or starting anything. For readers that want the
         transcript, the name or the Bindings off the volume without attaching the project. Names no
@@ -1354,7 +1368,7 @@ class WorkspaceManager:
     def ensure_llm_helper(self) -> bool:
         """Put the Sage-owned model helper in the workspace, replacing a stale copy. True if written.
 
-        `src/sageLlm.ts` ships in the template, so every project seeded after #7 already has it. The
+        The LLM helper ships in the template, so every project seeded after #7 already has it. The
         absent case is for the ones seeded before: their repo has no helper, and writing the config
         file next to a missing module would leave an app that cannot build.
 
@@ -1371,17 +1385,17 @@ class WorkspaceManager:
         return self._ensure_helper(_LLM_HELPER, refresh=True)
 
     def ensure_model_api_helper(self) -> bool:
-        """The same, for `src/sageModelApi.ts` (#9), and for projects seeded before it shipped.
+        """The same, for the Model API helper (#9), and for projects seeded before it shipped.
 
         Refreshes too, since #40: bind is where this file first lands, so it is also where a stale
         copy is most easily left standing — the file exists, so a missing-only check returned without
         reading it. Unlike `refresh_owned_sources` this one may CREATE the helper, because the caller
-        writes `sageModelApi.config.ts` in the same breath.
+        writes the Model API config in the same breath.
         """
         return self._ensure_helper(_MODEL_API_HELPER, refresh=True)
 
     def ensure_query_helper(self) -> bool:
-        """The same, for `src/sageQuery.ts` (#15)."""
+        """The same, for the query helper (#15)."""
         return self._ensure_helper(_QUERY_HELPER, refresh=True)
 
     def refresh_owned_sources(self) -> bool:
@@ -1398,27 +1412,38 @@ class WorkspaceManager:
         preview, so by publish time the damage is already done.
 
         REFRESH, never restore — the difference from `_ensure_helper`'s own missing case, and the
-        line this must not cross. `sageModelApi.ts` imports `./sageModelApi.config` and `sageQuery.ts`
-        imports `./sageBase`; the Binding path writes those siblings because it knows whether the app
+        line this must not cross. The Model API helper imports its own config and the query helper
+        imports the base; the Binding path writes those siblings because it knows whether the app
         has a Model API or a Data Source, and attach does not. Putting a helper into an app seeded
         before it existed would hand it a module importing a file that is not there — Sage breaking a
         working app to deliver something it never asked for.
         """
         changed = False
+        names = self.helpers
         for rel in _OWNED_SOURCES:
-            if (self.app_path / rel).is_file() and self._ensure_helper(rel, refresh=True):
+            if (self.app_path / names.localize(rel)).is_file() and self._ensure_helper(rel, refresh=True):
                 changed = True
         return changed
 
     def _ensure_helper(self, rel: str, *, refresh: bool = False) -> bool:
         """Copy one Sage-owned helper in. `refresh` also replaces a copy that differs from the
-        template's; without it an existing file is left alone whatever it holds."""
+        template's; without it an existing file is left alone whatever it holds.
+
+        `rel` is the TEMPLATE's path. Where it lands, and what it says, are the app's: an app seeded
+        before #119 calls these files `sage*` and imports them under those names, so both the name
+        and the text are put through `HelperNames.localize` on the way in. An app that already has
+        the neutral names gets the bytes unchanged.
+        """
         src = self._template / rel
-        dst = self.app_path / rel
         if not src.is_file():
             return False
-        if dst.is_file() and (not refresh or dst.read_bytes() == src.read_bytes()):
+        names = self.helpers
+        payload = src.read_bytes()
+        if names is not TEMPLATE:
+            payload = names.localize(payload.decode()).encode()
+        dst = self.app_path / names.localize(rel)
+        if dst.is_file() and (not refresh or dst.read_bytes() == payload):
             return False
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        dst.write_bytes(payload)
         return True

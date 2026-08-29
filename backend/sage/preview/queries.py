@@ -30,7 +30,7 @@ Two things are deliberately NOT the published app's behaviour:
     statement that has since been fixed is worse than not answering.
 
 Everything here is best-effort. Every failure path leaves `port` None and the preview behaving
-exactly as it did before this module existed — a 404 that `sageQuery.ts` already has a sentence for.
+exactly as it did before this module existed — a 404 that `appQuery.ts` already has a sentence for.
 A build session that cannot answer queries is worse than one that can; a build session that will not
 START because it cannot answer queries is worse than both.
 """

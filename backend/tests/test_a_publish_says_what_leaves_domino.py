@@ -411,7 +411,7 @@ def test_the_block_is_handed_no_listing_to_go_stale():
     else, and the conditional wording is what that precision buys."""
     import inspect
 
-    assert list(inspect.signature(agents_block).parameters) == ["aliases", "sources"]
+    assert list(inspect.signature(agents_block).parameters) == ["aliases", "sources", "names"]
     assert not any(f.name == "sovereign" for f in dataclasses.fields(Binding))
 
 

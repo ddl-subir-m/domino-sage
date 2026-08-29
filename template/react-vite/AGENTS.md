@@ -71,11 +71,11 @@ for, what you proposed, which steps ran.
   `tsc -p tsconfig.json` points at a solution file that lists no inputs, so it compiles zero files
   and passes whatever you wrote — run it and you will tell the user the app is clean while it is
   broken. Write the code and end the turn; the real result comes back to you.
-- **Do not touch `src/sageLlm.ts` or `src/sageLlm.config.ts` either.** Sage owns both and rewrites
+- **Do not touch `src/appLlm.ts` or `src/appLlm.config.ts` either.** Sage owns both and rewrites
   them: they hold which language model this app calls, which is chosen in Sage rather than in code.
-  Import from them, never edit them. If no model has been chosen, `sageLlm.config.ts` is all nulls
-  and there is nothing to fix here — say the app needs a model chosen in Sage. `src/sageModelApi.ts`
-  and `src/sageQuery.ts` are Sage's on the same terms, whether or not this app has a Model API or a
+  Import from them, never edit them. If no model has been chosen, `appLlm.config.ts` is all nulls
+  and there is nothing to fix here — say the app needs a model chosen in Sage. `src/appModelApi.ts`
+  and `src/appQuery.ts` are Sage's on the same terms, whether or not this app has a Model API or a
   Data Source yet: they are on disk from the start, Sage rewrites them, and an edit to either is
   lost rather than kept.
 - **Never run `npm install` / `yarn add` / `pnpm add`.** It does not just fail — it breaks the
@@ -205,14 +205,14 @@ bug that does not exist. If you ever see those two together and the file reads f
 happened: reload the preview rather than editing anything.
 
 ### Routing: the basename is not optional
-A published app is served under a path that its own code cannot know at build time. `src/sageBase.ts`
+A published app is served under a path that its own code cannot know at build time. `src/appBase.ts`
 works it out at runtime, so pass it to the router:
 
 ```tsx
 import { BrowserRouter } from "react-router-dom";
-import { sageBase } from "./sageBase";
+import { appBase } from "./appBase";
 
-<BrowserRouter basename={sageBase}>
+<BrowserRouter basename={appBase}>
 ```
 
 Leave it out and the app works in the preview and shows a blank page once published, because the

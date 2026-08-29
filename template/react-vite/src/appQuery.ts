@@ -11,7 +11,7 @@
 //
 // Sage owns this file. Do not edit it — which Data Source this app reads is chosen in Sage, and the
 // queries it can run are declared in `.sage/queries.json`.
-import { sageBase } from "./sageBase";
+import { appBase } from "./appBase";
 
 /** A parameter value, in the types a declared parameter may take. A date is written `YYYY-MM-DD`. */
 export type QueryParam = string | number | boolean;
@@ -48,7 +48,7 @@ export async function runQuery(
   params: Record<string, QueryParam> = {},
   options: { signal?: AbortSignal } = {},
 ): Promise<QueryResult> {
-  const url = `${sageBase.replace(/\/$/, "")}/api/queries/${encodeURIComponent(name)}`;
+  const url = `${appBase.replace(/\/$/, "")}/api/queries/${encodeURIComponent(name)}`;
   let response: Response;
   try {
     response = await fetch(url, {

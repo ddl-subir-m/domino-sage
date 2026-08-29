@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from .app_helpers import TEMPLATE, HelperNames
 from .bindings import Binding
 from .provider import Column, SampleRows
 
@@ -186,7 +187,7 @@ def parse_samples(raw: object) -> list[SharedSample]:
 
 
 def agents_block(sources: list[BoundSource], problems: list[str] | None,
-                 max_rows: int, *, samples=()) -> str:
+                 max_rows: int, *, samples=(), names: HelperNames = TEMPLATE) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
     Empty when no Data Source is bound. Describing the machinery for a store that is not there would
@@ -226,7 +227,7 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
                                   source.columns[0].table if source.columns else "usage"), ""]
     # The example names one of this app's own tables. A generic `usage` reads as a placeholder the
     # agent has to translate, and the translation is exactly the step this block exists to remove.
-    lines += _how_to_ask(sources, max_rows)
+    lines += _how_to_ask(sources, max_rows, names)
     lines += _samples_section(samples)
     lines += _problems_section(problems)
     return "\n".join(lines)
@@ -271,7 +272,7 @@ def _tables_section(columns: list[Column]) -> list[str]:
     return out
 
 
-def _how_to_ask(sources: list[BoundSource], max_rows: int) -> list[str]:
+def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -> list[str]:
     first = sources[0]
     table = first.columns[0].table if first.columns else "usage"
     # Which store a query reads is per query, so with several it is a rule of its own rather than a
@@ -309,7 +310,7 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int) -> list[str]:
          "valid JSON; a catalog that will not parse leaves the app with no queries at all."), "",
         "Call it from the app:", "",
         "```tsx",
-        'import { runQuery } from "./sageQuery";   // from a subfolder: "../sageQuery"',
+        f'import {{ runQuery }} from "./{names.query}";   // from a subfolder: "../{names.query}"',
         "",
         'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });',
         "```", "",
@@ -334,7 +335,7 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int) -> list[str]:
         ("- **Do not read the Data Source yourself.** No scripts, no SQL anywhere except "
          "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "
          "above is what you have; if it is not enough, ask the user."),
-        ("- **Do not edit or re-create `src/sageQuery.ts`.** Sage owns it, and which Data Sources "
+        (f"- **Do not edit or re-create `{names.query_path}`.** Sage owns it, and which Data Sources "
          "this app reads is chosen in Sage, not in code."), "",
     ]
 

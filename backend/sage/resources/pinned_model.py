@@ -1,9 +1,9 @@
 """The one LLM Alias a Built App calls, pinned into the app's own source (#7).
 
 A Binding is a record (#6). This is what turns one of those records into something the published app
-can actually call: the Alias name is written into `src/sageLlm.config.ts`, committed to the app's
-repo, and the template's `src/sageLlm.ts` calls the gateway with it straight from the viewer's
-browser.
+can actually call: the Alias name is written into the app's own LLM config, committed to the app's
+repo, and the template's LLM helper calls the gateway with it straight from the viewer's browser.
+Which file each of those is depends on the app — see `app_helpers`.
 
 Pinned, and pinned in the app's OWN repo, for two reasons. The app answers the same way for everyone
 who opens it, rather than resolving a model per viewer. And the published app has no Sage around it
@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import json
 
+from .app_helpers import TEMPLATE, HelperNames
 from .bindings import KIND_LLM_ALIAS, Binding
 
 # Sage-owned, committed into the app's repo, and both are needed for the app to build: the helper
-# imports the config. Written as a pair, never one without the other.
-CONFIG_PATH = "src/sageLlm.config.ts"
-HELPER_PATH = "src/sageLlm.ts"
+# imports the config. Written as a pair, never one without the other. Their NAMES are the app's
+# rather than this module's (#119), so every function below takes them — see `app_helpers`. The
+# default is the template's, which is what a fresh app has and what every caller but Sage means.
 
 
 def pinned_alias(bindings: list[Binding]) -> Binding | None:
@@ -47,8 +48,9 @@ def bound_aliases(bindings: list[Binding]) -> list[Binding]:
     return [b for b in bindings if b.kind == KIND_LLM_ALIAS]
 
 
-def render_config(aliases: list[Binding], base: str | None, project: str | None) -> str:
-    """The whole text of `src/sageLlm.config.ts`.
+def render_config(aliases: list[Binding], base: str | None, project: str | None,
+                  names: HelperNames = TEMPLATE) -> str:
+    """The whole text of the app's LLM config (`names.llm_config_path`).
 
     A generated TS module rather than JSON, because `resolveJsonModule` is off in the template's
     tsconfig and turning it on to carry four fields would change how every app compiles.
@@ -91,12 +93,13 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None)
         "//\n"
         "// `models` is every LLM Alias this app may call — pass one by name to `askModel`. `alias` is\n"
         "// the first of them, the model a call that names none gets. null means no model has been\n"
-        "// chosen yet. See ./sageLlm.ts.\n"
-        f"export const sageLlmConfig = {{\n{body},{models}}};\n"
+        f"// chosen yet. See ./{names.llm}.ts.\n"
+        f"export const {names.llm}Config = {{\n{body},{models}}};\n"
     )
 
 
-def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
+def agents_block(aliases: list[Binding], sources: list[Binding],
+                 names: HelperNames = TEMPLATE) -> str:
     """What the agent is told about the app's models, for the managed AGENTS.md region.
 
     Empty when nothing is bound: an agent told about a model that is not there would write a call
@@ -127,8 +130,9 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
         # name gets it wrong for every Alias registered under a different one, and the call fails at
         # request time with a message about a model the creator never named.
         head += [
-            ("This app can call any of the LLM Aliases below. `src/sageLlm.ts` already knows how to "
-             "reach them — call it, and never write a model name, gateway URL or API key of your own:"),
+            (f"This app can call any of the LLM Aliases below. `{names.llm_path}` already knows how "
+             "to reach them — call it, and never write a model name, gateway URL or API key of your "
+             "own:"),
             "",
         ]
         for i, a in enumerate(aliases):
@@ -138,14 +142,15 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
         head.append("")
     else:
         head += [
-            (f"This app calls the LLM Alias **{default.display_name}**. `src/sageLlm.ts` already knows "
-             "which model that is and how to reach it — call it, and never write a model name, gateway "
-             "URL or API key yourself:"),
+            (f"This app calls the LLM Alias **{default.display_name}**. `{names.llm_path}` already "
+             "knows which model that is and how to reach it — call it, and never write a model name, "
+             "gateway URL or API key yourself:"),
             "",
         ]
     code = [
         "```tsx",
-        'import { askModel, checkModel } from "./sageLlm";  // from a subfolder: "../sageLlm"',
+        f'import {{ askModel, checkModel }} from "./{names.llm}";'
+        f'  // from a subfolder: "../{names.llm}"',
         "",
         'const answer = await askModel([{ role: "user", content: question }]);',
     ]
@@ -199,8 +204,8 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
         ("- **The model answers in the preview too**, so a call that fails while you are building is "
          "a real failure worth fixing now. Do not design a screen around the model being "
          "unavailable, and do not treat an empty answer as the normal state."),
-        ("- **Do not edit or re-create `src/sageLlm.ts` or `src/sageLlm.config.ts`.** Sage owns both, "
-         "rewrites them, and which models this app uses is chosen in Sage, not in code."), "",
+        (f"- **Do not edit or re-create `{names.llm_path}` or `{names.llm_config_path}`.** Sage owns "
+         "both, rewrites them, and which models this app uses is chosen in Sage, not in code."), "",
     ]
     return "\n".join(head + code + rules + _egress_note(sources))
 
