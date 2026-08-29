@@ -2521,8 +2521,10 @@ class Orchestrator:
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
         if seed_app:
-            # A freshly seeded AGENTS.md is the template's, so the Project's instructions have to be
-            # rendered back into it — they are kept on the record, not in the file (ADR-0008).
+            # A freshly seeded AGENTS.md is the template's, so it is voiced in the pack's words
+            # (#114) and then the Project's instructions have to be rendered back into it — they are
+            # kept on the record, not in the file (ADR-0008).
+            self._voice_agents_md(self._project)
             self._splice_instructions(self._project)
         self._rehydrate_attached(self._project)
         return self._project
@@ -2540,7 +2542,9 @@ class Orchestrator:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
         self._prepare_app_files()
-        # The app may have been seeded just now, from a template that carries no instructions block.
+        # The app may have been seeded just now, from a template that carries the pack's tokens and
+        # no instructions block.
+        self._voice_agents_md(self._project)
         self._splice_instructions(self._project)
         return self._project
 
@@ -2858,6 +2862,7 @@ class Orchestrator:
         # from (see Project.turn_attached and _restore_attachments).
         project.attached = []
         self._prepare_app_files()
+        self._voice_agents_md(project)   # the app being bound to may have been seeded just now
         self._splice_instructions(project)
         self._rehydrate_attached(project)
         return project
@@ -4828,8 +4833,10 @@ class Orchestrator:
                 # Project rather than inside the app — so clearing them is a second call, through the
                 # surface that owns them, and it names the app so the other apps' documents stay.
                 project.record.clear_plan_docs(project.workspace.app_id)
-                # AGENTS.md came back from the template, so the Project's instructions are rendered into
-                # it again. They were never kept in that file, so Reset had nothing to lose.
+                # AGENTS.md came back from the template, so it is voiced again and the Project's
+                # instructions are rendered into it. They were never kept in that file, so Reset had
+                # nothing to lose.
+                self._voice_agents_md(project)
                 self._splice_instructions(project)
                 self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
                 project.workspace.clear_built()
@@ -8769,6 +8776,32 @@ class Orchestrator:
         """Record the user's project instructions, and render them where the agent reads them."""
         project.record.write_instructions(content)
         self._splice_instructions(project)
+
+    def _voice_agents_md(self, project: Project) -> None:
+        """Resolve the template's brand tokens in a freshly seeded AGENTS.md (#114).
+
+        The Built App's repo is a surface — a partner's own customer can read it (ADR-0014) — and
+        AGENTS.md is generated per Project, so it re-brands like every other prompt. The template
+        ships the tokens; this is where they are read.
+
+        Called only where the file has just come back from the template, and always before the
+        managed blocks go in. Those carry a Resource name the creator chose and the user's own
+        project instructions, and text Sage did not write is never rewritten — so this must not
+        become a pass over the whole file on every attach.
+
+        Nothing is written when nothing resolved: an app seeded before this change carries no
+        tokens, and a rewrite with identical content would show up as a dirty file in the turn's
+        tree comparison and in the user's git history. A `{` the template uses for something else
+        (`basename={appBase}`) is not a pack key, so the helper leaves it exactly as written.
+        """
+        agents = project.workspace.path / "AGENTS.md"
+        if not agents.exists():
+            return
+        with self._agents_lock:   # same file as the two managed regions below
+            body = agents.read_text()
+            voiced = brand.text(body)
+            if voiced != body:
+                agents.write_text(voiced)
 
     def _splice_instructions(self, project: Project) -> None:
         """Render the Project's instructions into the app's AGENTS.md as a managed block, preserving

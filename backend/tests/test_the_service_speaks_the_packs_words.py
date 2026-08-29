@@ -268,7 +268,7 @@ def test_a_mismatched_snippet_names_the_packs_noun(acme, tmp_path):
     """A complete paste for the WRONG model: two Overview tabs open is how this happens, so the
     refusal has to name the thing they were adding in the words the rest of the rail uses."""
     token = "SsQBZCygwPP79P8Q57qLPrGIfj67YAFBm3nrTT6Sm7vuPhBPBJvAL7lHm6jp36qB"
-    url = f"https://cloud-dogfood.domino.tech:443/models/6a8727f40ff0450030085fb3/latest/model"
+    url = "https://cloud-dogfood.domino.tech:443/models/6a8727f40ff0450030085fb3/latest/model"
     orch = _orch(tmp_path, control_plane=FakeControlPlane())
 
     answer = orch.save_model_api_credential(
