@@ -121,6 +121,7 @@ from ..workspace.threads import (
     snapshot_files,
     title_from_prompt,
 )
+from . import brand
 from . import chat_compact
 from . import handoff as chat_handoff
 from . import scope
@@ -249,9 +250,9 @@ def turn_busy_message(wedged: bool, action: str = "resend") -> str:
     never going to finish (#97).
     """
     if wedged:
-        return ("This workspace is stuck on a build that would not stop, so Sage "
-                "cannot start another one here. Restart the workspace to clear it. "
-                "Everything already written to your apps is safe.")
+        return brand.text("This workspace is stuck on a build that would not stop, so {assistantName} "
+                          "cannot start another one here. Restart the workspace to clear it. "
+                          "Everything already written to your apps is safe.")
     return f"A build is already running. Wait for it to finish or stop it first, then {action}."
 
 
@@ -303,8 +304,9 @@ def turn_pending_message(ahead: int) -> str:
     not a commitment. "Nothing has run yet" is that promise in the only terms that matter: no file
     written, no model called, nothing to undo if they change their mind."""
     turns = "the turn that is running" if ahead <= 1 else f"{ahead} turns"
-    return (f"Queued behind {turns}. Sage runs one turn at a time and will start this when they "
-            "finish. Nothing has run yet, so you can cancel it.")
+    return brand.text("Queued behind {turns}. {assistantName} runs one turn at a time and will start "
+                      "this when they finish. Nothing has run yet, so you can cancel it.",
+                      turns=turns)
 
 
 def turn_context_changed_message() -> str:
@@ -314,8 +316,9 @@ def turn_context_changed_message() -> str:
     Running against the snapshot resurrects a chip the person deliberately removed; running against
     live context makes the transcript bubble a lie about what the turn was given. So the turn does
     not run and the text goes back where they typed it (ADR-0013)."""
-    return ("Your context changed since you asked this, so Sage did not run it. The text is back in "
-            "the composer — send it again to run it against what is there now.")
+    return brand.text("Your context changed since you asked this, so {assistantName} did not run it. "
+                      "The text is back in the composer — send it again to run it against what is "
+                      "there now.")
 
 
 class _TurnTicket:
@@ -1413,24 +1416,31 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
     scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
     if kind == "dataset":
         where = f" (project {project})" if project else ""
+        # The noun is ours and the name is theirs, in one sentence: the noun is a pack token, and
+        # every name, path and identifier rides in as a value, which the helper does not scan again
+        # (ADR-0014). A Dataset somebody called `{dataset}` therefore comes through as they wrote it.
         if path:
-            return (
-                f"- Dataset {name}{where}, files at {path}. Read those files. "
-                "Do not search the rest of this workspace for a substitute."
+            return brand.text(
+                "- {dataset} {name}{where}, files at {path}. Read those files. "
+                "Do not search the rest of this workspace for a substitute.",
+                name=name, where=where, path=path,
             )
         unique = _dataset_unique_name(item, name)
         if not unique:
-            return (
-                f"- Dataset {name}{where}. Sage has no identifier for it, so its files cannot be "
-                "read this turn. Tell the person that. Do not search this git repo or any other "
-                "folder for a project of the same name — that is not this Dataset."
+            return brand.text(
+                "- {dataset} {name}{where}. {assistantName} has no identifier for it, so its files "
+                "cannot be read this turn. Tell the person that. Do not search this git repo or any "
+                "other folder for a project of the same name — that is not this {dataset}.",
+                name=name, where=where,
             )
-        return (
-            f"- Dataset {name}{where}. Not mounted here, so read it with the Domino data library: "
-            f'`from domino_data.datasets import DatasetClient` then `DatasetClient().get_dataset("{unique}")`. '
-            "`.list_files()` names its files and `.download_file(<file>, \"/tmp/<file>\")` fetches "
+        return brand.text(
+            "- {dataset} {name}{where}. Not mounted here, so read it with the {platformName} data "
+            'library: `from domino_data.datasets import DatasetClient` then '
+            '`DatasetClient().get_dataset("{unique}")`. '
+            '`.list_files()` names its files and `.download_file(<file>, "/tmp/<file>")` fetches '
             "one to read with pandas. Do not search this git repo or any other folder for a "
-            "project of the same name — that is not this Dataset."
+            "project of the same name — that is not this {dataset}.",
+            name=name, where=where, unique=unique,
         )
     if kind in ("file", "artifact"):
         extra = f" at {path}" if path else ""
@@ -1443,16 +1453,18 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
                 {"id": item.get("datasetId")}, str(item.get("datasetName") or "")
             )
             if not unique:
-                return (
-                    f"- file {name} in Dataset {ds} ({rel}). Sage has no identifier for that "
-                    "Dataset, so this file cannot be read this turn. Tell the person that. "
-                    "Do not search this git repo for a substitute."
+                return brand.text(
+                    "- file {name} in {dataset} {ds} ({rel}). {assistantName} has no identifier for "
+                    "that {dataset}, so this file cannot be read this turn. Tell the person that. "
+                    "Do not search this git repo for a substitute.",
+                    name=name, ds=ds, rel=rel,
                 )
-            return (
-                f"- file {rel} in Dataset {ds}. Not mounted here, so fetch it with the Domino data "
-                "library: `from domino_data.datasets import DatasetClient` then "
-                f'`DatasetClient().get_dataset("{unique}").download_file("{rel}", "/tmp/{name}")`, '
-                f"then read /tmp/{name} with pandas. Do not search this git repo for a substitute."
+            return brand.text(
+                "- file {rel} in {dataset} {ds}. Not mounted here, so fetch it with the "
+                "{platformName} data library: `from domino_data.datasets import DatasetClient` then "
+                '`DatasetClient().get_dataset("{unique}").download_file("{rel}", "/tmp/{name}")`, '
+                "then read /tmp/{name} with pandas. Do not search this git repo for a substitute.",
+                name=name, ds=ds, rel=rel, unique=unique,
             )
         line = f"- {kind}: {name}{extra}"
         if file_note:
@@ -1480,18 +1492,20 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
                 for c in cols[:40]
             ).strip()
             extra = f" Columns: {col_txt}." if col_txt else ""
-            return (
-                f"- Data Source {name}, table {dotted}.{extra} Query it with "
+            return brand.text(
+                "- {dataSource} {name}, table {dotted}.{extra} Query it with "
                 "`from domino_data.data_sources import DataSourceClient` then "
-                f"`DataSourceClient().get_datasource({name!r}).query("
-                f'"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
+                '`DataSourceClient().get_datasource({quoted}).query('
+                '"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
                 "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
-                "If the query errors, tell the person."
+                "If the query errors, tell the person.",
+                name=name, dotted=dotted, extra=extra, quoted=repr(name),
             )
         extra = f" at {path}" if path else ""
-        return (
-            f"- Data Source {name}{extra}. This workspace cannot query it live. Do not invent rows. "
-            "Say that you cannot open it."
+        return brand.text(
+            "- {dataSource} {name}{extra}. This workspace cannot query it live. Do not invent rows. "
+            "Say that you cannot open it.",
+            name=name, extra=extra,
         )
     extra = f" at {path}" if path else ""
     return f"- {kind}: {name}{extra}"
@@ -1875,7 +1889,7 @@ def _tool_duration_ms(part: dict) -> int | None:
     return ms if ms >= 0 else None
 
 
-def _app_display_name(workspace: Workspace, fallback: str = "Unnamed Built App") -> str:
+def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
     """What to call one Built App.
 
     The name somebody gave it, else the title of the plan it was built from, else `fallback`: a
@@ -1893,7 +1907,12 @@ def _app_display_name(workspace: Workspace, fallback: str = "Unnamed Built App")
     # no plan at all is named for what it is instead of borrowing that. "Built App" in full, and
     # not "Untitled": CONTEXT.md keeps `App` for the Domino thing and `Untitled` away from names.
     plan = workspace.read_plan() or workspace.read_archived_plan() or ""
-    return chat_handoff.plan_title(plan) if plan.strip() else fallback
+    if plan.strip():
+        return chat_handoff.plan_title(plan)
+    # Resolved here rather than in the signature: a default evaluated at import would freeze the
+    # pack the process booted with, and a caller's own fallback is the Domino project's name — a
+    # name somebody chose, which is never rewritten.
+    return fallback if fallback is not None else brand.text("Unnamed {builtApp}")
 
 
 def _app_change_event(workspace: Workspace) -> dict:
@@ -2769,17 +2788,22 @@ class Orchestrator:
             deleted_domino_app = False
             if deployed and delete_domino_app:
                 if self._control_plane is None:
-                    raise RuntimeError(
-                        "This app has a published Domino App, but this builder has no connection to "
-                        "Domino to delete it with. Delete the App in Domino, then delete this app.")
+                    raise RuntimeError(brand.text(
+                        "This app has a published {platformName} App, but this builder has no "
+                        "connection to {platformName} to delete it with. Delete the App in "
+                        "{platformName}, then delete this app."))
                 try:
                     self._control_plane.delete_app_deployment(deployed)
                 except Exception as e:
                     log.exception("delete_app: couldn't delete Domino App %s", deployed)
-                    raise RuntimeError(
-                        f"Sage couldn't delete this app's Domino App ({deployed}): {e}. The Built "
-                        f"App is still here, so nothing is stranded — try again, or delete the App "
-                        f"in Domino first and then delete this one.") from e
+                    # `reason` is the platform's own words, so it rides in as a value and is left
+                    # exactly as it arrived — only the sentence around it is ours to re-brand.
+                    raise RuntimeError(brand.text(
+                        "{assistantName} couldn't delete this app's {platformName} App "
+                        "({deployed}): {reason}. The {builtApp} is still here, so nothing is "
+                        "stranded — try again, or delete the App in {platformName} first and then "
+                        "delete this one.",
+                        deployed=deployed, reason=e)) from e
                 deleted_domino_app = True
             # From here down is the part a switch must not interleave with. The control-plane call
             # above is deliberately OUTSIDE it: deleting a Domino App takes the best part of a
@@ -4457,7 +4481,8 @@ class Orchestrator:
                     # because half an app is worse than none; a Chat turn writes charts and tables
                     # under examples/, and one already written is an answer someone can still use.
                     stopped = {"type": "stopped",
-                               "message": "Stopped. Anything Sage had already written is kept."}
+                               "message": brand.text(
+                                   "Stopped. Anything {assistantName} had already written is kept.")}
                     done = {"type": "done", "ok": False, "decision": "stopped"}
                     store.append_history(thread_id, stopped)
                     store.append_history(thread_id, done)
@@ -4488,23 +4513,26 @@ class Orchestrator:
                     elif step_error:
                         # It did not go quiet on its own — it was refused, and then there was
                         # nothing left to say. The refusal is the reason; the silence only followed.
-                        message = f"Sage could not finish this turn — {step_error}"
+                        # The refusal is the provider's own sentence, so it rides in as a value:
+                        # ours is the half around it, and theirs is left as it arrived.
+                        message = brand.text(
+                            "{assistantName} could not finish this turn — {reason}", reason=step_error)
                     elif quiet and running_tools:
                         # A step was still open when the window closed. Blaming the turn for
                         # stopping would be wrong twice over: it did not stop, and the person
                         # would go looking for the wrong thing to make smaller.
-                        message = (
-                            "The step Sage was running did not finish, so the turn was stopped. "
-                            "A large Dataset file or a broad query can take longer than one Chat "
-                            "turn allows — try a narrower query."
+                        message = brand.text(
+                            "The step {assistantName} was running did not finish, so the turn was "
+                            "stopped. A large {dataset} file or a broad query can take longer than "
+                            "one Chat turn allows — try a narrower query."
                         )
                     elif quiet:
                         # Say which of the two happened. The turn did not run out of time doing
                         # work — it stopped doing any, with nothing of its own left running.
-                        message = (
-                            "Sage stopped making progress, so the turn was stopped. If you were "
-                            "querying a Data Source, it may be too slow to answer here — try a "
-                            "narrower query."
+                        message = brand.text(
+                            "{assistantName} stopped making progress, so the turn was stopped. If "
+                            "you were querying a {dataSource}, it may be too slow to answer here — "
+                            "try a narrower query."
                         )
                     else:
                         message = (
@@ -4653,7 +4681,9 @@ class Orchestrator:
                 # the shape that sends someone looking for a Sage bug when the provider had already
                 # said what was wrong. Artifacts written before the failing step are still theirs.
                 err = {"type": "error",
-                       "message": f"Sage could not finish this turn — {step_error}"}
+                       "message": brand.text(
+                           "{assistantName} could not finish this turn — {reason}",
+                           reason=step_error)}
                 store.append_history(thread_id, err)
                 yield err
                 done = {"type": "done", "ok": False, "decision": "step failed"}
@@ -5544,10 +5574,12 @@ class Orchestrator:
                     # at the model when the thing that hung was their build command, and a step
                     # that never returns is the one case where asking again unchanged may not be
                     # the move. Chat draws the same line for the same reason.
-                    "message": (f"The step Sage was running didn't finish. It waited {waited} and "
-                                f"then stopped the build. {fate}" if in_tool else
-                                f"The build stopped responding. It went quiet for {waited}, so Sage "
-                                f"stopped it. {fate}"),
+                    "message": (brand.text(
+                        "The step {assistantName} was running didn't finish. It waited {waited} and "
+                        "then stopped the build. {fate}", waited=waited, fate=fate) if in_tool else
+                        brand.text(
+                        "The build stopped responding. It went quiet for {waited}, so "
+                        "{assistantName} stopped it. {fate}", waited=waited, fate=fate)),
                     "prompt": "" if is_approval else prompt,
                     "quietForS": round(quiet_for),
                     "kept": kept,
@@ -5611,13 +5643,16 @@ class Orchestrator:
             # Self-contained rather than pointing at a heading in AGENTS.md: `agents_block` writes
             # no model section at all for an app with no Alias bound, and titles it in the plural for
             # an app with several, so a quoted heading is wrong in two of the three cases.
-            "You called Domino's LLM Gateway with your own fetch in {files}. Rewrite those calls to "
-            "use `askModel` from `{helper}` — import it and pass it the messages; it already "
-            "knows the model, the URL and the headers. A "
+            # `{files}` and `{helper}` are not pack keys, so the helper leaves them for the
+            # brand.text call at the fix site to fill from the turn (see below).
+            "You called {platformName}'s LLM Gateway with your own fetch in {files}. Rewrite those "
+            "calls to use `askModel` from `{helper}` — import it and pass it the messages; it "
+            "already knows the model, the URL and the headers. A "
             "raw call drops the X-LLM-Tag-sage-* cost tags that attribute this app's spend, the "
             "error messages written for the viewer, the expired-session check and streaming — and "
-            "`/api/llm` is Sage's PREVIEW proxy, which is not there once the app is published, so a "
-            "call written against it works while you build and breaks the moment it ships."
+            "`/api/llm` is {assistantName}'s PREVIEW proxy, which is not there once the app is "
+            "published, so a call written against it works while you build and breaks the moment "
+            "it ships."
         )
         LEAK_FIX_NUDGE = (
             "You copied attached data into the app's source, which leaks it into git — attached files "
@@ -5882,11 +5917,14 @@ class Orchestrator:
                             # thing that hung, and a card that says "stopped responding" over a
                             # step that ran the whole time sends them to look at the model.
                             "message": (
-                                ("The step Sage was running didn't finish, and the build would not "
-                                 "stop when Sage asked it to, so this workspace cannot run another "
-                                 "build. " if tool_open else
-                                 "The build stopped responding and would not stop when Sage asked "
-                                 "it to, so this workspace cannot run another build. ")
+                                (brand.text(
+                                    "The step {assistantName} was running didn't finish, and the "
+                                    "build would not stop when {assistantName} asked it to, so this "
+                                    "workspace cannot run another build. ") if tool_open else
+                                 brand.text(
+                                    "The build stopped responding and would not stop when "
+                                    "{assistantName} asked it to, so this workspace cannot run "
+                                    "another build. "))
                                 + "Restart the workspace to clear it. Everything already written "
                                   "to your app is still there.")})
                         yield persist({"type": "done", "ok": False, "decision": "wedged"})
@@ -6158,7 +6196,8 @@ class Orchestrator:
                         if notice:
                             yield persist({"type": "gateway-alias-unbound", "message": notice})
                         yield {"type": "iterate", "reason": "called the LLM Gateway directly — routing it through askModel"}
-                        current = GATEWAY_FIX_NUDGE.format(
+                        current = brand.text(
+                            GATEWAY_FIX_NUDGE,
                             files=", ".join(n for n, _ in raw_calls),
                             helper=project.app_for_turn().helpers.llm_path)
                         continue
@@ -6248,8 +6287,9 @@ class Orchestrator:
         # transcript that nobody can act on. build_stream's chat-approval path has always checked this
         # (it requires a non-empty read_plan before it approves); the Approve button never did.
         if not plan_md.strip():
-            yield {"type": "error", "message": (
-                "That plan was already built. Type the next change you want and Sage will plan it.")}
+            yield {"type": "error", "message": brand.text(
+                "That plan was already built. Type the next change you want and {assistantName} "
+                "will plan it.")}
             yield {"type": "done", "ok": False, "decision": "no plan to approve"}
             return
         # What was approved reaches the document. Two things were going missing here. The text: an
@@ -6676,15 +6716,16 @@ class Orchestrator:
         that succeeds, never cleared by one that then refuses.
         """
         if not publish_available(self._wm.path):
-            raise RuntimeError(
-                "Publish is only available in a Sage Builder workspace whose app repo is /mnt/code. "
-                "This Workbench App is Sage itself, not a Built App."
-            )
+            raise RuntimeError(brand.text(
+                "Publish is only available in a {assistantName} Builder workspace whose app repo is "
+                "/mnt/code. This {productName} App is {assistantName} itself, not a {builtApp}."
+            ))
         if self._control_plane is None or not self._domino_project_id:
-            raise RuntimeError(
-                "Publish is only available when this builder runs on Domino (missing control-plane "
-                "or DOMINO_PROJECT_ID)."
-            )
+            # DOMINO_PROJECT_ID is an env var name, so it is named, not renamed.
+            raise RuntimeError(brand.text(
+                "Publish is only available when this builder runs on {platformName} (missing "
+                "control-plane or DOMINO_PROJECT_ID)."
+            ))
         # One operation owns the working tree at a time (see `_turn_lock`). Publishing is not a
         # read: `_save_to_git` commits the PROJECT ROOT — one repo holds every Built App — then
         # pulls, and may run an agent turn to resolve conflicts. Under a streaming build that
@@ -6727,15 +6768,16 @@ class Orchestrator:
                     # second App while the first is alive strands it: `record_domino_app` overwrites the
                     # only id Sage has, so neither Publish nor Delete could reach the old App again, and
                     # it would go on serving old code at a URL people already hold.
-                    raise RuntimeError(
-                        "This app's published App is still there, so Sage won't publish a second one "
-                        "beside it — that would leave the first serving at a URL nothing here could "
-                        "reach again. Publish normally to ship a new version to it. If you want a fresh "
-                        "App, delete that one in Domino first."
+                    raise RuntimeError(brand.text(
+                        "This app's published App is still there, so {assistantName} won't publish a "
+                        "second one beside it — that would leave the first serving at a URL nothing "
+                        "here could reach again. Publish normally to ship a new version to it. If "
+                        "you want a fresh App, delete that one in {platformName} first."
                         if gone is False else
-                        "Sage couldn't reach Domino to confirm that this app's published App is really "
-                        "gone, and it won't create a second one on a guess. Try again in a moment."
-                    )
+                        "{assistantName} couldn't reach {platformName} to confirm that this app's "
+                        "published App is really gone, and it won't create a second one on a guess. "
+                        "Try again in a moment."
+                    ))
             self._refuse_unsafe_publish(project, deployed_app_id)
             # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
             # app created from an older image would otherwise redeploy its original copy forever — and
@@ -6749,9 +6791,10 @@ class Orchestrator:
             # The builder holds the working tree, so a fast local check beats the hub's GitHub-API probe.
             entry = project.workspace.path / _ENTRY_POINT
             if not entry.exists():
-                raise RuntimeError(
-                    f"'{_ENTRY_POINT}' is missing from this app, so Domino has no entry script to "
-                    f"run. Add {_ENTRY_POINT} to {project.repo_rel('')} and rebuild, then publish again."
+                raise RuntimeError(brand.text(
+                    "'{entry}' is missing from this app, so {platformName} has no entry script to "
+                    "run. Add {entry} to {where} and rebuild, then publish again.",
+                    entry=_ENTRY_POINT, where=project.repo_rel(''))
                 )
             # The refresh above is best-effort, so app.sh can be the current one while the server it execs
             # is absent — a deploy that reports success and then crash-loops on "can't open file
@@ -6867,7 +6910,8 @@ class Orchestrator:
         """Deploy status of a published app so the UI can poll after Publish. Maps the raw instance
         status to a phase: running (live) / failed / pending (still deploying)."""
         if self._control_plane is None:
-            raise RuntimeError("Publish status is only available when this builder runs on Domino.")
+            raise RuntimeError(brand.text(
+                "Publish status is only available when this builder runs on {platformName}."))
         raw = self._control_plane.app_status(app_id)
         s = raw.lower()
         if s in _RUNNING_STATES:
@@ -7615,12 +7659,12 @@ class Orchestrator:
         recorded = [b for b in parse_bindings(project.workspace.read_bindings())
                     if b.kind == KIND_DATA_SOURCE]
         if not recorded:
-            raise LookupError("This app is not recorded as using a Data Source.")
+            raise LookupError(brand.text("This app is not recorded as using a {dataSource}."))
         if not source_id:
             return recorded[0]
         found = next((b for b in recorded if b.id == source_id), None)
         if found is None:
-            raise LookupError("This app is not recorded as using that Data Source.")
+            raise LookupError(brand.text("This app is not recorded as using that {dataSource}."))
         return found
 
     # ---- Model access tokens, pasted once and remembered (#9) ----
@@ -7656,8 +7700,8 @@ class Orchestrator:
             return {"ok": False, "error": parsed.missing()}
         model_api_id = model_api_id or (parsed.model_id or "")
         if parsed.model_id and parsed.model_id != model_api_id:
-            return {"ok": False, "error": (
-                "That snippet is for a different Model API. Copy the sample request from the "
+            return {"ok": False, "error": brand.text(
+                "That snippet is for a different {modelApi}. Copy the sample request from the "
                 "Overview page of the model you are adding."
             )}
         result = verify_credential(parsed.url, parsed.token)
