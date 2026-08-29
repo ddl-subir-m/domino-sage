@@ -1580,6 +1580,10 @@ window.SW = window.SW || {};
     // `removeFromConversation` draws below, and it is correct rather than a leak.
 
     async removeBindingFromApp(binding) {
+      // The app this act NAMES, captured where the question is asked. Neither removal route carries
+      // an app id — both resolve through whatever the server has selected — so a confirm left open
+      // while the selection moved would take the Binding out of an app this modal never mentioned.
+      const asked = state.activeApp;
       const where = appScopeName();
       const name = binding.display_name || binding.name || binding.id;
       const copy = UNBIND_COPY[binding.kind] || UNBIND_PLAIN;
@@ -1597,6 +1601,21 @@ window.SW = window.SW || {};
             // the race this answers is the length of the REQUEST, and a modal can sit open far
             // longer than that (#101).
             const gen = appGen;
+            // Refuse rather than act on the wrong app. The title is a promise about which app loses
+            // the Binding, and a modal can sit open for as long as somebody leaves it there.
+            //
+            // This NARROWS the window to one request round trip; it does not close it, because the
+            // server still resolves the app itself and could be moved between this check and the
+            // handler. Closing it means the route naming its app, which is a route-shape change
+            // rather than a guard.
+            if (!asked || !state.activeApp || state.activeApp.id !== asked.id) {
+              antd.message.warning(
+                `Nothing was removed. The selected app changed to ${appScopeName()} while this was `
+                + `open, and this removal named ${asked ? asked.name : 'another app'}.`
+              );
+              resolve(false);
+              return;
+            }
             try {
               result = await SW.api.unbind(binding.kind, binding.id);
             } catch (err) {

@@ -427,3 +427,16 @@ def test_the_composer_takes_the_seed_without_sending_it():
     effect = composer[composer.rindex("useEffect(", 0, end) : end]
     assert "setText(composerSeed)" in effect
     assert "onSend" not in effect
+
+
+def test_a_confirm_left_open_across_an_app_switch_removes_nothing():
+    """Neither removal route carries an app id — both resolve through whatever the server has
+    selected — so a modal that names one app and is answered under another would take the Binding
+    out of an app the person never pointed at. The title is a promise about which app loses it.
+
+    A narrowing rather than a proof: the server still resolves the app itself, so the window is one
+    request round trip instead of however long somebody leaves a modal open. Closing it entirely
+    means the route naming its app."""
+    step = _remove("Market data EOD", confirm=True, switchTo="app_b")
+
+    assert not [c for c in step["calls"] if c.startswith("DELETE /bindings")]

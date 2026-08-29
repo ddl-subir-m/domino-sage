@@ -578,6 +578,9 @@ for (const step of steps) {
     // The click's own promise is awaited AFTER the answer, or a confirming removal would deadlock
     // on the modal nobody had replied to.
     const confirm = modals.length ? modals[modals.length - 1] : null;
+    // Move the selection while the modal sits open, which is the whole of the hazard: the removal
+    // routes carry no app id, so the act would land on whichever app the server now has.
+    if (confirm && step.switchTo) await SW.store.selectApp(step.switchTo);
     if (confirm && step.confirm) await confirm.onOk();
     if (confirm && !step.confirm) confirm.onCancel();
     await acted;
