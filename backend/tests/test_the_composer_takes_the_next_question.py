@@ -98,3 +98,45 @@ def test_a_question_refused_because_context_moved_goes_back_to_the_composer():
     assert out["rolesAfter"] == []                       # and the bubble for it is gone
     assert out["queuedAfter"] == 0
     assert "./api/project/turn/cancel" not in out["posted"]
+
+
+# ---- and the box the next question is typed into ------------------------------------------------
+
+_OPEN_HARNESS = Path(__file__).resolve().parent / "js" / "composer_open_harness.mjs"
+
+
+def _drawn(turn: str) -> dict:
+    out = subprocess.run(["node", str(_OPEN_HARNESS)], input=json.dumps({"turn": turn}), check=False,
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_every_composer_stays_open_while_a_turn_is_running():
+    """The dead composer was the incident. A store that will take the second question is worth
+    nothing behind a box that will not let anybody type it, and those two decisions live in
+    different files — `store.js` above, `modes/*.js` here — so only reading them together says the
+    feature is reachable.
+
+    Every composer, not one: Build's, Chat's, and the Landing one a new Conversation opens on all
+    read the same fact, and one project runs one turn, so a turn started in Build closes Chat's box
+    too if it is still asking the old question."""
+    drawn = _drawn("running")
+    assert drawn["build"] == [False]
+    assert drawn["chat"] == [False]
+    assert drawn["landing"] == [False]
+    assert drawn["starters"] == [False]        # a starter is a send, and it is a send that queues
+
+
+def test_a_wedged_workspace_is_the_one_that_still_closes_the_composer():
+    """The `disabled` moved rather than being deleted. A wedge holds the turn lock for the life of
+    the process (#39), so no queue can form behind it and every send would be refused at the door —
+    which makes it the one state where typing into the box is a dead end.
+
+    This is also what stops the test above from passing by accident: a composer that is never
+    disabled would satisfy it and lose the only refusal that is still real."""
+    drawn = _drawn("wedged")
+    assert drawn["build"] == [True]
+    assert drawn["chat"] == [True]
+    assert drawn["landing"] == [True]
+    assert drawn["starters"] == [True]
