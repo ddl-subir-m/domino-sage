@@ -6307,6 +6307,19 @@ class Orchestrator:
         if not git.is_repo_root(path) or not git.has_remote(path):
             return {"status": "no-remote", "conflicts": [], "pushed": False,
                     "detail": "this app has no git remote to pull from"}
+        # The turn lock, for the reasons publish takes it: `commit_all` commits the PROJECT ROOT —
+        # one repo holding every Built App (ADR-0008) — so under a streaming build it commits half a
+        # turn's writes, and `_integrate_remote` then runs an AGENT over that tree to resolve
+        # conflicts. Two agents in one working tree is the collision #39 exists to prevent.
+        #
+        # Project-wide, so `buildRunning` in another app is still a reason to refuse: a build
+        # streaming into app A is stopped by nothing when app B is selected, and this commit takes
+        # A's half-written tree with it.
+        #
+        # Non-blocking, like publish's and Delete's: there is nothing to wait out, and a Pull latest
+        # that sat silently until a long build finished would look like a control that did nothing.
+        if not self._turn_lock.acquire(blocking=False):
+            raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
             git.commit_all(path, "sage: save before pull", exclude=self._leaked_copy_paths(project))
             result = self._integrate_remote(project)
@@ -6320,6 +6333,8 @@ class Orchestrator:
         except Exception as e:
             log.exception("sync failed")
             return {"status": "error", "conflicts": [], "pushed": False, "detail": f"{type(e).__name__}: {e}"}
+        finally:
+            self._turn_lock.release()
 
     def publish(self, *, new_app: bool = False) -> dict:
         """Publish (or republish) THIS app's project as a live Domino App, deploying the latest

@@ -877,6 +877,10 @@ async def sync_project() -> JSONResponse:
     (which needs the event loop free to serve the /v1 calls that turn makes)."""
     try:
         result = await run_in_threadpool(orchestrator.sync)
+    except TurnBusy as e:
+        # 409, the same as publish's: the request is well formed and nothing is wrong with it — the
+        # working tree is busy, and the answer is to wait or stop the build.
+        return JSONResponse(status_code=409, content={"error": str(e)})
     except Exception as e:
         log.exception("sync failed")
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})

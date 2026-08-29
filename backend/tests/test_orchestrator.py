@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator.service import Orchestrator, _part_key
+from sage.orchestrator.service import Orchestrator, TurnBusy, _part_key
 from sage.router.models import ModelCatalog
 
 
@@ -209,6 +209,20 @@ def test_sync_pulls_teammate_changes_and_pushes(tmp_path: Path):
         catalog=_catalog(), project_id="Sage",
     )
     orch.project(start_preview=False)  # attach without Vite (sync reuses the memoized project)
+
+    # A turn holding the working tree refuses the pull, on publish's reasoning and for the same
+    # code: `commit_all` commits the PROJECT ROOT — one repo holds every Built App — and
+    # `_integrate_remote` then runs an AGENT over that tree to resolve conflicts. Two agents in one
+    # working tree is the collision `_turn_lock` exists to prevent (#39). Non-blocking, so the
+    # control answers rather than sitting silently through a long build.
+    assert orch._turn_lock.acquire(blocking=False)
+    try:
+        with pytest.raises(TurnBusy):
+            orch.sync()
+    finally:
+        orch._turn_lock.release()
+    # Refused before anything was committed, and before the teammate's file was pulled in.
+    assert not (ws / "mate.txt").exists()
 
     result = orch.sync()
     assert result["status"] == "merged"
