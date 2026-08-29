@@ -50,3 +50,8 @@ __pycache__/
 # directory anyway. Ignoring it also keeps `git add -A` from failing outright in the window
 # where the store exists with no commit yet.
 .sage/snapshots/
+# What the end-of-turn scan found the app's own source using, for the Build header's usage label
+# (#93). Derived whole from the tree beside it every build turn, like `.sage/history.md` above, and
+# written after that turn's commit — so committing it would conflict between two Sage Builders in
+# one Project over an answer either one can rebuild, and leave a dirty file behind every turn.
+.sage/usage.json

@@ -97,8 +97,11 @@ def test_create_then_list(tmp_path: Path):
     orch = _orch(tmp_path)
     assert orch.list_bindings() == []
     out = orch.bind_llm_alias("id-sonnet")
+    # `used` is the HTTP row's, not the manifest's: the advisory answer about what the app's source
+    # calls (#93), and None until a build turn has looked. `to_dict` is both shapes, so the label is
+    # added on the way out and never written into `.sage/bindings.json`.
     assert out == [{"kind": "llm_alias", "id": "id-sonnet", "name": "sonnet",
-                    "display_name": "Claude Sonnet 4.6"}]
+                    "display_name": "Claude Sonnet 4.6", "used": None}]
     assert orch.list_bindings() == out
 
 
@@ -166,7 +169,8 @@ def test_binding_a_model_api_records_the_name_as_both_labels(tmp_path: Path):
     orch = _orch(tmp_path)
     _credential(orch)
     assert orch.bind_model_api("id-churn") == [
-        {"kind": "model_api", "id": "id-churn", "name": "churn-risk", "display_name": "churn-risk"}
+        {"kind": "model_api", "id": "id-churn", "name": "churn-risk",
+         "display_name": "churn-risk", "used": None}
     ]
 
 
@@ -454,7 +458,7 @@ def test_binding_a_data_source_records_the_chosen_scope(tmp_path: Path):
         "kind": "data_source", "id": "ds-dwh", "name": "Snowflake-Data-Warehouse",
         "display_name": "Snowflake-Data-Warehouse",
         "database": "DWH", "schema": "MARTS", "table": "FCT_USAGE_DAILY",
-        "connector_type": "SnowflakeConfig",
+        "connector_type": "SnowflakeConfig", "used": None,
     }]
 
 

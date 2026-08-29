@@ -522,6 +522,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Quieter than the name it qualifies, and only ever a word: the derived answer is advisory and
+   gates nothing (ADR-0010), so styling it as a warning would claim something the record does not.
+   Colour alone would carry it to nobody — the word is the label, the colour only its weight. */
+.sw-app-scope-unused { color: var(--gray-500); }
 
 /* The canvas is the preview's whole height. Without `flex: 1` it falls back to the
    iframe's intrinsic 150px and the app shows through a letterbox. `position: relative`
