@@ -222,3 +222,15 @@ _Avoid_: personal credential, user credential
 The property of a model call that never leaves Domino. Sage's sovereign slots resolve to LLM
 Aliases backed by Hosted GenAI Endpoints.
 _Avoid_: private, local, on-prem
+
+**Vendor-backed Alias**:
+An LLM Alias whose model runs outside Domino, so a call to it is not [[Sovereign]]. Sage can tell
+one from a Domino-hosted Alias, but cannot tell which vendor is behind it, and so never names one.
+_Avoid_: external model, third-party model, public model
+
+**Egress**:
+Rows leaving Domino because a Built App sends them to a Vendor-backed Alias. Distinct from
+re-export, which is a viewer being handed the publisher's own access to a store: egress is about
+where the data goes, re-export about whose permission it moves under. Publish refuses re-export and
+only names egress ([ADR-0012](docs/adr/0012-every-store-and-alias-combination-publishes.md)).
+_Avoid_: leak, exfiltration, data sharing
