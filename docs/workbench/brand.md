@@ -141,11 +141,19 @@ moment somebody writes a code comment.
   rendered DOM, `HTTPException` details, the generated `AGENTS.md`, the OpenCode system prompt, the
   commit message. Adding a surface without listing it is itself the failure.
 
-## Attribution — not built
+## Attribution
 
-Pending a legal answer on what must ship. The Workbench carries a Notices surface. **Its label is pack-controlled; its existence is not.**
-Attribution a pack can switch off is not attribution. Built Apps ship third-party licence text as a
-file in the repo, with no injected link.
+**No floor.** A partner may remove every Domino mark; the trademark removal is signed off, so
+`platformName` ships defaulted and ungated. **The pack has no attribution key and the Workbench
+renders no Notices surface.**
+
+What is left is not brand. Third-party licence text has to travel with what we distribute, which a
+file in the Environment image satisfies. **Not built, and not this file's problem** — the repo ships
+no `NOTICE` or `LICENSE` today while `index.html:9-14` serves Inter under the SIL OFL. Track it as a
+packaging bug; it predates the overlay.
+
+Built Apps carry their own. Their dependencies ship in a repo the user owns, so the obligation is
+the user's. Sage writes no licence file into a new app and injects nothing into its chrome.
 
 ## Out of scope
 

@@ -77,9 +77,13 @@ A grep over the source is the wrong test — it fails whenever somebody writes a
 
 The lint catches the string written next week; the paranoid pack catches a token that is never resolved. Neither substitutes for the other.
 
-## Attribution is not pack-controlled
+## There is no attribution floor
 
-The Workbench carries a Notices surface whose **label** the pack may set and whose **existence** it may not. Attribution a pack can switch off is not attribution. Built Apps get third-party licence text as a file in the repo and no injected link — that chrome belongs to the user, not to us.
+A partner may remove every Domino mark. Removing the trademark from Sage's UI is signed off, so `platformName` ships defaulted and ungated — there is no approval gate on the capability and no mark that has to survive somewhere a person can reach.
+
+**So attribution is not a brand surface at all, and the pack has no key for it.** What remains is an ordinary licensing obligation: the third-party licence text that must travel with what we distribute. It is satisfied by a file in the Environment image, so it is a packaging chore rather than something the Workbench renders. This repo currently ships none — there is no `NOTICE` or `LICENSE` anywhere outside `node_modules` and `.venv` — while `workbench/index.html:9-14` serves Inter from our own origin under the SIL OFL, which requires the licence to accompany the font. That gap predates the overlay and is not fixed by it.
+
+**Built Apps carry their own.** The template's runtime dependencies — `react`, `react-dom`, `react-router-dom`, `recharts`, `date-fns`, `lucide-react` — land in a repo the user owns and publishes. The obligation follows the distribution, so it is theirs; Sage generates no licence file into a new app and injects no link into its chrome.
 
 ## Considered options
 
@@ -92,6 +96,8 @@ The Workbench carries a Notices surface whose **label** the pack may set and who
 **Renaming `.sage/`, `sage-chat` and `sage-plan`.** Rejected. They are identifiers, and renaming the path breaks every workspace that already exists for a string that reads as a path, not as a name.
 
 **Migrating existing Built Apps to the neutral file names.** Rejected above.
+
+**A Notices surface in the Workbench whose existence the pack cannot switch off.** Designed, then rejected once the contractual answer came back: there is no mark that must survive, so a surface defending one defends nothing. The licence obligation it would have carried is met by a file.
 
 **A `version` field in the pack.** Rejected. Every key is optional with a documented default and unknown keys are ignored but logged at startup, which is forward compatibility without a migration story we do not have.
 
