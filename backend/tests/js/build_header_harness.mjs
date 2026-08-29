@@ -943,6 +943,23 @@ for (const step of steps) {
       tree = await paint();
     }
 
+    if (step.reopen) {
+      // Shut, then opened again on the SAME app. Nothing dropped the list on the way — the
+      // selection never moved, so the app-scope gate had no reason to — which leaves
+      // `openBuildHistory`'s own clear as the only thing that can send the drawer back to the log.
+      // Without it the second look IS the first look, and a build that finished in between is
+      // missing from a list whose whole job is to hold every build.
+      mid = readDrawer(tree);
+      SW.store.closeBuildHistory();
+      await paint();
+      calls.length = 0;
+      const again = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }))
+        .find((n) => n.onClick && n.label === 'Build history');
+      if (!again) throw new Error('nothing in the Build header re-opens the build history');
+      again.onClick();
+      tree = await paint();
+    }
+
     const whole = flatten(tree);
     report.push({
       step: `history ${step.select || selected}`,

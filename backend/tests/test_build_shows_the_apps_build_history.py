@@ -341,6 +341,21 @@ def test_a_failed_read_leaves_a_way_back():
 
 
 @needs_node
+def test_opening_it_again_reads_again_rather_than_showing_the_last_look():
+    """Read on demand buys nothing if the demand is only honoured once. Nothing drops the list when
+    the drawer merely closes — the selection never moved, so the app-scope gate has no reason to —
+    so re-opening on a cached list would show a history missing every build that finished since it
+    was last read. That is the one claim a surface called "every build of this app" cannot survive,
+    and `openBuildHistory` clearing on the way in is what keeps it."""
+    step = _run([{"history": "thr_many", "select": "app_a", "reopen": True}])[-1]
+
+    assert step["mid"]["runs"] > 0                     # the first look had the list
+    assert "GET /project/history" in step["calls"]     # and the second look went and asked again
+    assert step["drawer"]["open"] is True
+    assert step["drawer"]["prompts"] == step["mid"]["prompts"]
+
+
+@needs_node
 def test_a_shut_drawer_reads_nothing():
     """The log reaches megabytes on a long-lived app, so it is read when somebody asks to see it
     and not on every load. Build's own transcript read is still made — that is #56's, per
