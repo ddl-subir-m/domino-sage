@@ -547,3 +547,121 @@ def test_api_brand_still_answers_with_an_unknown_key_in_the_pack(tmp_path, monke
     r = TestClient(appmod.control_app).get("/api/brand")
     assert r.status_code == 200
     assert r.json()["productName"] == "Acme"
+
+
+# --- peerProducts (#115) ---------------------------------------------------------------------
+#
+# A list, not a name. A switcher with one item is not a switcher — it offers a choice that does not
+# exist — so a partner with no second product sets `[]` and the control collapses to a label.
+
+
+def _switcher_js(pack: dict | None = None, click: str | None = None) -> dict:
+    """Ask the shell's top bar what it drew for the product, given the pack /api/brand returned."""
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH (it is in the Sage image)")
+    harness = Path(__file__).resolve().parent / "js" / "product_switcher_harness.mjs"
+    out = subprocess.run(
+        ["node", str(harness)],
+        input=json.dumps({"pack": pack, "click": click}),
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_peer_products_defaults_to_the_domino_list():
+    assert load()["peerProducts"] == [{"key": "studio", "label": "ML Studio"}]
+
+
+def test_an_omitted_peer_products_key_keeps_the_default(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"productName": "Acme"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["peerProducts"] == DEFAULT["peerProducts"]
+
+
+def test_the_pack_replaces_the_peer_list(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"peerProducts": [
+        {"key": "vision", "label": "Acme Vision"},
+        {"key": "forge", "label": "Acme Forge"},
+    ]}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["peerProducts"] == [
+        {"key": "vision", "label": "Acme Vision"},
+        {"key": "forge", "label": "Acme Forge"},
+    ]
+
+
+def test_an_empty_peer_list_is_honoured_rather_than_read_as_unset(tmp_path, monkeypatch):
+    """`[]` is the whole reason the key is a list: a partner saying there is nowhere else to go.
+    Falling back to the default here would make that unsayable."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"peerProducts": []}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["peerProducts"] == []
+
+
+def test_a_peer_missing_a_key_or_a_label_is_dropped(tmp_path, monkeypatch):
+    """A half-written entry would draw a menu row with nothing on it. Dropped, never fatal —
+    a brand pack must not be able to stop the product booting."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"peerProducts": [
+        {"key": "vision", "label": "Acme Vision"},
+        {"key": "forge"},
+        {"label": "Acme Anvil"},
+        "studio",
+    ]}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["peerProducts"] == [{"key": "vision", "label": "Acme Vision"}]
+
+
+def test_api_brand_carries_the_peer_products(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"peerProducts": [{"key": "vision", "label": "Acme Vision"}]}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    import sage.orchestrator.app as appmod
+
+    r = TestClient(appmod.control_app).get("/api/brand")
+    assert r.status_code == 200
+    assert r.json()["peerProducts"] == [{"key": "vision", "label": "Acme Vision"}]
+
+
+def test_the_shell_draws_the_switcher_from_the_pack():
+    """The partner's own products, and nothing of ours left in the menu."""
+    drawn = _switcher_js(pack={
+        "productName": "Acme",
+        "peerProducts": [{"key": "vision", "label": "Acme Vision"}],
+    })
+    assert drawn["switcher"] is True
+    assert drawn["items"] == ["Acme", "Acme Vision"]
+
+
+def test_an_empty_peer_list_collapses_the_switcher():
+    """No switcher, no disabled control needing an explanation — a plain label with nothing to
+    click."""
+    drawn = _switcher_js(pack={"peerProducts": []})
+    assert drawn["switcher"] is False
+    assert drawn["control"] == "span"
+    assert drawn["label"] == "AI Workbench"
+
+
+def test_the_shell_offers_no_switcher_before_the_pack_arrives():
+    """The shell paints before GET /api/brand answers. Erring towards the label is the safe half:
+    it can only under-offer, never offer a product the partner does not have."""
+    drawn = _switcher_js()
+    assert drawn["switcher"] is False
+    assert drawn["control"] == "span"
+
+
+def test_choosing_a_peer_names_it_in_the_packs_words():
+    drawn = _switcher_js(
+        pack={
+            "productName": "Acme", "platformName": "Acme Cloud",
+            "peerProducts": [{"key": "vision", "label": "Acme Vision"}],
+        },
+        click="vision",
+    )
+    assert drawn["said"] == [
+        "Acme Vision is another Acme Cloud product. Only Acme is built out here."
+    ]

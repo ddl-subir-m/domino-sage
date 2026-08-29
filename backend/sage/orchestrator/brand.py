@@ -28,6 +28,10 @@ DEFAULT: dict[str, Any] = {
     # /admin/whitelabel — Sage renames the word, not the page it links to.
     "platformName": "Domino",
     "pageTitle": "Sage Workspace",
+    # The other products the top bar can switch to. A list rather than a name, so a partner with
+    # no second product sets `[]` and the switcher collapses to a plain label: a switcher with one
+    # item is not a switcher, it offers a choice that does not exist.
+    "peerProducts": [{"key": "studio", "label": "ML Studio"}],
     "logoUrl": "./img/domino-logo.svg",
     "logoAlt": "Domino",
     # The platform's own whitelabel renames its nouns and no API exposes that vocabulary to a
@@ -166,6 +170,15 @@ def _merge(base: dict, overlay: dict | None) -> dict:
         value = _nonempty(overlay.get(key))
         if value:
             out[key] = value
+    peers = overlay.get("peerProducts")
+    if isinstance(peers, list):
+        # An empty list is the point of the key, so it is honoured rather than treated as unset:
+        # `[]` is a partner saying there is nowhere else to go, and it must reach the shell.
+        out["peerProducts"] = [
+            {"key": _nonempty(peer.get("key")), "label": _nonempty(peer.get("label"))}
+            for peer in peers
+            if isinstance(peer, dict) and _nonempty(peer.get("key")) and _nonempty(peer.get("label"))
+        ]
     nouns = overlay.get("nouns")
     if isinstance(nouns, dict):
         merged_nouns = {key: dict(forms) for key, forms in out["nouns"].items()}
