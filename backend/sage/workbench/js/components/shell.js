@@ -431,8 +431,10 @@ window.SW = window.SW || {};
         h(
           'p',
           { className: 'sw-setting-hint' },
-          'Split keeps Chat and Build as separate halves of a conversation, the way the ',
-          'Workbench works today. Unified shows one transcript in both.'
+          SW.brand.text(
+            'Split keeps Chat and Build as separate halves of a conversation, the way '
+            + '{productName} works today. Unified shows one transcript in both.'
+          )
         ),
         h(antd.Radio.Group, {
           // antd renders the group as a plain div, so without the role the label is not announced

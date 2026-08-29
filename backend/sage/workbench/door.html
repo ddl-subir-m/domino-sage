@@ -159,10 +159,11 @@
       var quote = document.getElementById('quote');
       var quoteBody = document.getElementById('quote-body');
       var api = new URL('.', location.href).pathname.replace(/\/$/, '') + '/api';
-      // Our half of an error names us, so it comes from the pack the door already fetches for its
-      // colours and logo. Best-effort in exactly the same way: /api/brand can answer after a
-      // failure has been drawn, and the Domino default reads correctly on its own until it does.
-      var pack = { assistantName: 'Sage' };
+      // Our half of an error names us, so the name is substituted into this page by the route that
+      // serves it (#116) rather than written here. The fetch below still refreshes it, because
+      // /api/brand also carries the colours and the logo — but a failure drawn before that answers
+      // already says the partner's name, instead of ours for as long as the request takes.
+      var pack = { assistantName: '{assistantName}' };
 
       function say(head, sub) {
         if (head) title.textContent = head;
