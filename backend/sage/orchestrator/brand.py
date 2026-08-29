@@ -54,11 +54,7 @@ DEFAULT: dict[str, Any] = {
     # the browser paints the partner's icon rather than ours and then swaps. A partner's own file
     # goes under BRAND_DIR and is named "./brand/<file>.svg"; relative, because the platform
     # serves the shell under a proxy prefix that an absolute path would walk out of.
-    #
-    # Points at the logo, not a drawn favicon: `img/domino-favicon.svg` does not exist yet and a
-    # default that 404s is worse than a large one (#117 stays open on that criterion). Swap this
-    # line, not the mechanism, when the asset lands.
-    "faviconUrl": "./img/domino-logo.svg",
+    "faviconUrl": "./img/domino-favicon.svg",
     # The platform's own whitelabel renames its nouns and no API exposes that vocabulary to a
     # Sage Builder, so the pack carries a copy of it. This will drift, silently, and it is
     # accepted only until such an API exists — if one appears these keys go, not grow.

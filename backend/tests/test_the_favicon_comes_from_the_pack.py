@@ -12,6 +12,8 @@ import json
 import logging
 from pathlib import Path
 
+import xml.etree.ElementTree as ET
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -21,10 +23,28 @@ _WB = Path(__file__).resolve().parents[1] / "sage" / "workbench"
 SHELL = (_WB / "index.html").read_text()
 DOOR = (_WB / "door.html").read_text()
 
-# The drawn favicon does not exist yet, so the default is the logo (#117). This constant is the
-# one place to change when the asset lands.
-DOMINO_DEFAULT = "./img/domino-logo.svg"
+DOMINO_DEFAULT = "./img/domino-favicon.svg"
 
+
+
+def test_the_default_favicon_is_a_file_that_exists_and_is_shaped_like_an_icon():
+    """A default that 404s is worse than no default, and the wordmark was worse than either.
+
+    `domino-logo.svg` is 120x23; a browser squeezes that into a 16px box and draws a smear. This
+    pins the three things that make the fallback an icon rather than a link to one: the bytes are
+    there, the box is square, and the mark has a ground behind it — its paths are white, so on a
+    light tab a transparent version would be invisible rather than merely small.
+    """
+    asset = _WB / DOMINO_DEFAULT.removeprefix("./")
+    assert asset.is_file(), f"{DOMINO_DEFAULT} is the default and must ship"
+
+    svg = ET.parse(asset).getroot()
+    x, y, w, h = (float(n) for n in svg.get("viewBox").split())
+    assert (x, y) == (0.0, 0.0) and w == h, f"a favicon is square, got {svg.get('viewBox')}"
+
+    ns = "{http://www.w3.org/2000/svg}"
+    ground = svg.find(f"{ns}rect")
+    assert ground is not None and ground.get("fill"), "the white mark needs a ground behind it"
 
 @pytest.fixture(autouse=True)
 def _isolate_brand(monkeypatch, tmp_path):
