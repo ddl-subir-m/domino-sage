@@ -2694,6 +2694,7 @@ class Orchestrator:
     def _prepare_app_files(self) -> None:
         self._wm.refresh_preview_config()
         self._wm.ensure_llm_helper()
+        self._wm.refresh_owned_sources()
 
     def _ensure_preview_running(self, project: Project) -> None:
         try:

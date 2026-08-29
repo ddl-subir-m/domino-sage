@@ -62,7 +62,9 @@ for, what you proposed, which steps ran.
   `NOTHING_TO_BUILD` instead (see the top of this file) — never reach for that because a task is
   large, unclear, or would be easier after a question.
 - **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html`. The config
-  is known-good; regenerating it wastes turns and breaks the preview.
+  is known-good; regenerating it wastes turns and breaks the preview. The same holds for
+  `src/ErrorBoundary.tsx` and `src/reportRuntimeError.ts`, which are how a crash in this app
+  reaches the screen and reaches you — edit them and a broken app looks like a blank one.
 - **Don't run the typechecker or a build yourself.** Sage typechecks this workspace the moment your
   turn ends and sends any errors straight back to you, so `npx tsc` and `npm run build` spend a tool
   call on a check you are getting anyway. The command you would reach for is also the wrong one:
@@ -72,7 +74,10 @@ for, what you proposed, which steps ran.
 - **Do not touch `src/sageLlm.ts` or `src/sageLlm.config.ts` either.** Sage owns both and rewrites
   them: they hold which language model this app calls, which is chosen in Sage rather than in code.
   Import from them, never edit them. If no model has been chosen, `sageLlm.config.ts` is all nulls
-  and there is nothing to fix here — say the app needs a model chosen in Sage.
+  and there is nothing to fix here — say the app needs a model chosen in Sage. `src/sageModelApi.ts`
+  and `src/sageQuery.ts` are Sage's on the same terms, whether or not this app has a Model API or a
+  Data Source yet: they are on disk from the start, Sage rewrites them, and an edit to either is
+  lost rather than kept.
 - **Never run `npm install` / `yarn add` / `pnpm add`.** It does not just fail — it breaks the
   workspace. `node_modules` here is a symlink to a warm, pre-installed copy, and npm refuses to
   write into a symlinked one: it deletes the link *before* it knows whether the install resolves.

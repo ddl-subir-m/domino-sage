@@ -107,6 +107,21 @@ _MODEL_API_HELPER = str(Path("src") / "sageModelApi.ts")
 # And for the Data Source a Built App queries (#15). Separate again, and for a sharper reason than
 # the other two: this one calls the app's OWN server, which is the only Resource path that does.
 _QUERY_HELPER = str(Path("src") / "sageQuery.ts")
+# Everything under `src/` that Sage owns outright: AGENTS.md forbids the agent to edit any of them,
+# and attach brings each one back in line with the template (#40). Enumerated rather than remembered,
+# so a new Sage-owned file joins by being declared here. NOT service.py's `_SAGE_OWNED_SOURCES`,
+# which is a different set for a different job — that one excludes Sage's files from the reference
+# scan on unbind, holds the generated `.config.ts` files this list must never overwrite, and is
+# missing the two below. Two named sets that overlap is honest; one doing both jobs would drift.
+# Order is load-bearing, as it is in _DEPLOY_FILES: ErrorBoundary.tsx imports reportRuntimeError.ts,
+# so the reporter lands first and a refresh that dies partway leaves the older boundary against the
+# newer reporter rather than a newer boundary importing exports that are not there.
+_OWNED_SOURCES = (
+    _MODEL_API_HELPER,
+    _QUERY_HELPER,
+    str(Path("src") / "reportRuntimeError.ts"),
+    str(Path("src") / "ErrorBoundary.tsx"),
+)
 
 
 # settings.json is read and written by two surfaces. ProjectRecord owns the file — skip_planning,
@@ -1308,12 +1323,44 @@ class WorkspaceManager:
         return self._ensure_helper(_LLM_HELPER, refresh=True)
 
     def ensure_model_api_helper(self) -> bool:
-        """The same, for `src/sageModelApi.ts` (#9), and for projects seeded before it shipped."""
-        return self._ensure_helper(_MODEL_API_HELPER)
+        """The same, for `src/sageModelApi.ts` (#9), and for projects seeded before it shipped.
+
+        Refreshes too, since #40: bind is where this file first lands, so it is also where a stale
+        copy is most easily left standing — the file exists, so a missing-only check returned without
+        reading it. Unlike `refresh_owned_sources` this one may CREATE the helper, because the caller
+        writes `sageModelApi.config.ts` in the same breath.
+        """
+        return self._ensure_helper(_MODEL_API_HELPER, refresh=True)
 
     def ensure_query_helper(self) -> bool:
         """The same, for `src/sageQuery.ts` (#15)."""
-        return self._ensure_helper(_QUERY_HELPER)
+        return self._ensure_helper(_QUERY_HELPER, refresh=True)
+
+    def refresh_owned_sources(self) -> bool:
+        """Bring the app's copies of _OWNED_SOURCES back in line with the template. True if any changed.
+
+        The src/ twin of refresh_entry_script, and it exists for the reason that one does: these files
+        are committed when the project is seeded, so an app keeps whatever copies it was born with,
+        and a fix to the template reached only new apps while every existing one went on hitting the
+        bug we had already fixed. `9611195` rewrote the preview crash card so it stops telling the
+        creator to fix code the agent is mid-way through writing; every project that existed on the
+        day it shipped still shows the old card.
+
+        At ATTACH, for the reason refresh_preview_config gives: what these hold together is the
+        preview, so by publish time the damage is already done.
+
+        REFRESH, never restore — the difference from `_ensure_helper`'s own missing case, and the
+        line this must not cross. `sageModelApi.ts` imports `./sageModelApi.config` and `sageQuery.ts`
+        imports `./sageBase`; the Binding path writes those siblings because it knows whether the app
+        has a Model API or a Data Source, and attach does not. Putting a helper into an app seeded
+        before it existed would hand it a module importing a file that is not there — Sage breaking a
+        working app to deliver something it never asked for.
+        """
+        changed = False
+        for rel in _OWNED_SOURCES:
+            if (self.app_path / rel).is_file() and self._ensure_helper(rel, refresh=True):
+                changed = True
+        return changed
 
     def _ensure_helper(self, rel: str, *, refresh: bool = False) -> bool:
         """Copy one Sage-owned helper in. `refresh` also replaces a copy that differs from the
