@@ -80,8 +80,8 @@ Unknown keys are **ignored but logged at startup**, so a typo is findable.
 }
 ```
 
-**Not built:** `peerProducts`, `faviconUrl`, and the unknown-key log. There is also no default
-favicon asset yet — it has to be drawn.
+**Not built:** `peerProducts` and `faviconUrl`. There is also no default favicon asset yet — it has
+to be drawn.
 
 An OEM typically sets `productName` and `assistantName` to the same string. `assistantName` omitted
 falls back to `productName`. Colors omitted keep the purple tokens.

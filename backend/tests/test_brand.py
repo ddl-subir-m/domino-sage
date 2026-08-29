@@ -474,3 +474,76 @@ def test_the_workbench_nouns_fall_back_before_the_pack_arrives():
     answers = _brand_js([{"op": "text", "template": "No files in this {dataset}."},
                          {"op": "text", "template": "{datasetPlural}"}])
     assert answers == ["No files in this Dataset.", "Datasets"]
+
+
+# --- unknown keys (#118) ---------------------------------------------------------------------
+#
+# The pack has no `version` field and never will (ADR-0014). Forward compatibility is instead:
+# every key optional with a documented default, unknown keys ignored but named in the log. So the
+# log line IS the migration story, and a partner's typo is findable only through it.
+
+
+def test_an_unknown_key_is_named_in_the_log_and_ignored(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"prodcutName": "Acme", "productName": "Acme"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        pack = load()
+    assert "prodcutName" in caplog.text
+    # Boots anyway: the typo is reported, the rest of the pack still applies, and nothing raises.
+    assert pack["productName"] == "Acme"
+    assert "prodcutName" not in pack
+
+
+def test_a_recognised_key_logs_nothing(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({
+        "productName": "Acme", "assistantName": "Ada", "platformName": "Acme Cloud",
+        "pageTitle": "Acme Studio", "logoUrl": "./img/acme.svg", "logoAlt": "Acme",
+        "nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}},
+        "colors": {"primary": "#112233"},
+    }))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        load()
+    assert caplog.text == ""
+
+
+def test_the_unknown_key_warning_does_not_repeat_on_every_read(tmp_path, monkeypatch, caplog):
+    """`load()` runs per request. The complaint belongs to the pack the process booted with, so it
+    is made once rather than on every call the Workbench makes."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"prodcutName": "Acme"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        load()
+        assert "prodcutName" in caplog.text
+        caplog.clear()
+        load()
+        load()
+    assert caplog.text == ""
+
+
+def test_the_pack_has_no_version_field(tmp_path, monkeypatch, caplog):
+    """`version` is not a key Sage knows, so it is reported like any other unknown one rather than
+    quietly accepted — a pack that looks versioned would imply a migration story we do not have."""
+    assert "version" not in DEFAULT
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"version": 2, "productName": "Acme"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        pack = load()
+    assert "version" in caplog.text
+    assert "version" not in pack
+
+
+def test_api_brand_still_answers_with_an_unknown_key_in_the_pack(tmp_path, monkeypatch):
+    """A brand pack must never be able to stop the product booting."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"prodcutName": "Acme", "productName": "Acme"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    import sage.orchestrator.app as appmod
+
+    r = TestClient(appmod.control_app).get("/api/brand")
+    assert r.status_code == 200
+    assert r.json()["productName"] == "Acme"
