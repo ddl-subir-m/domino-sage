@@ -163,6 +163,22 @@ _Avoid_: Thread (what this used to be called; identifiers and stored paths still
 and are not being renamed), session (OpenCode already uses session for the harness object),
 chat (that is the mode)
 
+**Turn**:
+One request and the work it causes, from the prompt to the answer. A Chat turn produces Artifacts
+and an answer; a Build turn edits a Built App. A Conversation runs one turn at a time and never
+two; a Project runs several, one per Conversation, up to a cap. Which Conversation a turn belongs
+to decides everything it may read and write. See
+[ADR-0013](docs/adr/0013-a-conversation-runs-one-turn-a-project-runs-three.md).
+_Avoid_: job, run, request (that is one call to a gateway, of which a turn makes many), message
+(that is one row in the transcript)
+
+**Pending turn**:
+A turn a person has asked for that is waiting for the Conversation's running turn to finish. It is
+an intention, not a commitment: it is held in memory, it dies with the Sage Builder, and it is
+refused rather than run if the Session context it was written against has changed by the time its
+place comes. Cancelling one is a different act from stopping the turn that is running.
+_Avoid_: queued job, scheduled turn, draft (a draft is text nobody has sent)
+
 **Default**:
 The Sage display name of the caller's one persistent personal Project, created the first
 time they open the Workbench, reused thereafter. Naming it changes the chip only; it stays
