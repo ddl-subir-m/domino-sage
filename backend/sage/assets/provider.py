@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..orchestrator import brand
 from ..resources.provider import ResourceUnavailable
 
 # Where Domino mounts a project's datasets in the running container. DFS projects use
@@ -271,7 +272,10 @@ class DominoAssetProvider:
                 ) from e
             if r.status_code >= 400:
                 raise ResourceUnavailable(
-                    f"The Domino API answered {r.status_code} at /api/datasetrw/v2/datasets."
+                    brand.text(
+                        "The {platformName} API answered {code} at /api/datasetrw/v2/datasets.",
+                        code=r.status_code,
+                    )
                 )
             try:
                 data = r.json()

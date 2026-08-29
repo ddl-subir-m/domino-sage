@@ -101,7 +101,7 @@ def test_workbench_is_the_default_ui():
     assert tree.status_code == 200
     # The dead end is gone: the tree lists files for any readable Dataset, mounted or not.
     assert b"Files are not mounted in this workspace" not in tree.content
-    assert b"No files in this Dataset." in tree.content
+    assert b"No files in this {dataset}." in tree.content
     assert b"SW.DatasetFileTree" in tree.content
     assert b"SW.DataSourceCascade" in tree.content
 

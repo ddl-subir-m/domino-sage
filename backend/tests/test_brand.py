@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from sage.orchestrator.brand import DEFAULT, apply_agent_voice, apply_voice, load
+from sage.orchestrator.brand import DEFAULT, apply_agent_voice, apply_voice, load, text
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
@@ -15,6 +19,8 @@ from sage.router.models import ModelCatalog
 def _isolate_brand(monkeypatch, tmp_path):
     monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "no-baked-brand.json")
     monkeypatch.delenv("SAGE_BRAND_FILE", raising=False)
+    # The Title Case complaint is made once per process; each test is its own first time.
+    monkeypatch.setattr("sage.orchestrator.brand._WARNED", set())
 
 
 def test_default_pack_keeps_the_workbench_sage_split():
@@ -184,3 +190,287 @@ def test_install_opencode_config_voices_the_global_copy_only(tmp_path, monkeypat
     assert global_cfg["agent"]["sage-chat"]["prompt"] == "You are Acme's chat agent."
     assert global_cfg["provider"]["sage-gateway"]["name"] == "Sage Enforcement Shim"
     assert ":9999" in global_cfg["provider"]["sage-gateway"]["options"]["baseURL"]
+
+
+# --- The author-time substitution helper (#102) ---------------------------------------------
+#
+# Every user-visible string is a template resolved when it is read, so a new string is branded
+# because whoever wrote it wrote it that way (ADR-0014). These tests pin the helper's contract;
+# no call site changes in this ticket.
+
+
+def test_a_token_resolves_to_the_packs_value(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("Ask {assistantName} in {productName}.") == "Ask Ada in Acme."
+
+
+def test_a_token_resolves_to_the_domino_default_with_no_pack():
+    assert text("Ask {assistantName} in {productName}.") == "Ask Sage in AI Workbench."
+
+
+def test_an_unknown_token_is_left_alone():
+    """A typo in a string must never stop the Workbench booting, and a passed-through error body
+    can carry braces of its own."""
+    assert text("{notABrandKey} said {\"ok\": 1}") == "{notABrandKey} said {\"ok\": 1}"
+
+
+def test_a_string_without_a_token_comes_back_unchanged():
+    assert text("Nothing to substitute here.") == "Nothing to substitute here."
+
+
+def test_values_fill_the_rest_of_the_sentence(tmp_path, monkeypatch):
+    """The whole sentence stays one literal, so the lint over marked positions can read it."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"productName": "Acme"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("{productName} answered {code}.", code=500) == "Acme answered 500."
+
+
+def test_a_value_carrying_braces_is_not_resolved_again():
+    """A Resource the user named after us arrives as a value, not as a template."""
+    assert text("Missing {name}.", name="{productName}") == "Missing {productName}."
+
+
+# --- The Workbench half of the same helper (#102) --------------------------------------------
+
+
+def _brand_js(calls: list[dict], pack: dict | None = None) -> list:
+    """Run SW.brand against a pack the way /api/brand delivers one."""
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH (it is in the Sage image)")
+    harness = Path(__file__).resolve().parent / "js" / "brand_harness.mjs"
+    out = subprocess.run(
+        ["node", str(harness)],
+        input=json.dumps({"pack": pack, "calls": calls}),
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_the_workbench_resolves_the_same_tokens_from_the_pack():
+    """The accessor reads the pack GET /api/brand already returns, so both halves of the wire
+    answer with one word."""
+    answers = _brand_js(
+        [{"op": "text", "template": "Ask {assistantName} in {productName}."}],
+        pack={"productName": "Acme", "assistantName": "Ada"},
+    )
+    assert answers == ["Ask Ada in Acme."]
+
+
+def test_the_workbench_falls_back_before_the_pack_arrives():
+    """The shell paints before /api/brand answers. What it paints has to be the Domino default,
+    not an unresolved token."""
+    answers = _brand_js([{"op": "text", "template": "Ask {assistantName} in {productName}."}])
+    assert answers == ["Ask Sage in AI Workbench."]
+
+
+def test_the_workbench_leaves_an_unknown_token_alone():
+    answers = _brand_js([{"op": "text", "template": "{notABrandKey} stays."}],
+                        pack={"productName": "Acme"})
+    assert answers == ["{notABrandKey} stays."]
+
+
+# --- platformName (#103) ---------------------------------------------------------------------
+#
+# One key for both parts the word plays — the platform as actor and the platform as destination —
+# because they are one fact: is the platform rebranded? (ADR-0014)
+
+
+def test_platform_name_defaults_to_domino():
+    assert load()["platformName"] == "Domino"
+    assert text("{platformName}") == "Domino"
+
+
+def test_the_pack_renames_the_platform(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["platformName"] == "Acme Cloud"
+    assert text("{platformName}") == "Acme Cloud"
+
+
+def test_platform_name_does_not_follow_the_product_name(tmp_path, monkeypatch):
+    """The fallback for a missing key is the built-in default, never another key a partner can
+    edit. Renaming Sage is not evidence that the platform under it was renamed too, and a chain
+    would put one fact in two places."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert load()["platformName"] == "Domino"
+
+
+def test_api_brand_carries_the_platform_name(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    import sage.orchestrator.app as appmod
+
+    r = TestClient(appmod.control_app).get("/api/brand")
+    assert r.json()["platformName"] == "Acme Cloud"
+
+
+def test_the_workbench_reads_the_platform_name():
+    answers = _brand_js(
+        [{"op": "platform"}, {"op": "text", "template": "Browse {platformName}…"}],
+        pack={"platformName": "Acme Cloud"},
+    )
+    assert answers == ["Acme Cloud", "Browse Acme Cloud…"]
+
+
+def test_an_actor_string_names_the_packs_platform(tmp_path, monkeypatch):
+    """The platform did something, and the sentence saying so carries an API path in the same
+    breath. The name moves; the path is a literal and does not."""
+    import httpx
+
+    from sage.assets.provider import DominoAssetProvider
+    from sage.resources.provider import ResourceUnavailable
+
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(503))
+
+    provider = DominoAssetProvider("https://acme.example", lambda: "tok", mount_roots=[])
+    with pytest.raises(ResourceUnavailable) as e:
+        provider.list_datasets(None)
+    assert str(e.value) == "The Acme Cloud API answered 503 at /api/datasetrw/v2/datasets."
+
+
+def test_a_destination_string_names_the_packs_platform(tmp_path, monkeypatch):
+    """Copy that sends a person to a page Sage does not own has to say the partner's word, or it
+    is a dead end. The git host in the same sentence is a literal and stays."""
+    import httpx
+
+    from sage.provision.domino import DominoControlPlane
+
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+
+    def handler(request):
+        if request.url.path == "/api/users/v1/self":
+            return httpx.Response(200, json={"user": {"id": "user-1"}})
+        return httpx.Response(200, json={"credentials": []})
+
+    cp = DominoControlPlane(
+        "https://acme.example", lambda: "tok",
+        environment_id="env-1", hardware_tier_id="tier-1",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(RuntimeError) as e:
+        cp.create_project("X", git_url="https://github.com/me/sage-x.git")
+    assert "in your Acme Cloud account" in str(e.value)
+    assert "github.com" in str(e.value)      # the literal in the same sentence
+    assert "Domino" not in str(e.value)
+
+
+# --- nouns (#104) -----------------------------------------------------------------------------
+#
+# The platform's own whitelabel renames its nouns and nothing exposes that vocabulary to a Sage
+# Builder, so the pack carries a copy. Two forms per noun because the nouns are woven into
+# sentences rather than confined to labels — hence no pluralisation engine, and no article engine
+# either: copy needing `a`/`an` is reworded (ADR-0014).
+
+
+def test_nouns_default_to_the_glossary_terms():
+    nouns = load()["nouns"]
+    assert nouns["dataset"] == {"singular": "Dataset", "plural": "Datasets"}
+    assert nouns["dataSource"] == {"singular": "Data Source", "plural": "Data Sources"}
+    assert nouns["builtApp"] == {"singular": "Built App", "plural": "Built Apps"}
+
+
+def test_both_forms_of_a_noun_resolve_through_the_helper(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("{dataset}") == "Cube"
+    assert text("{datasetPlural}") == "Cubes"
+
+
+def test_a_noun_woven_into_a_sentence_renders_in_both_forms(tmp_path, monkeypatch):
+    """The strings this covers are the ones a person actually reads — the Resource Browser's
+    heading and the empty state under a Dataset — not a bare label in isolation."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("No files in this {dataset}.") == "No files in this Cube."
+    assert text("{dataset} contents live under the {dataset}.") == (
+        "Cube contents live under the Cube."
+    )
+    assert text("{datasetPlural}") == "Cubes"
+
+
+def test_one_form_of_a_noun_leaves_the_other_at_its_default(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert text("{dataset}") == "Dataset"
+    assert text("{datasetPlural}") == "Cubes"
+
+
+def test_a_noun_the_pack_invents_is_ignored(tmp_path, monkeypatch):
+    """A token Sage never emits is not a rename, and inventing one cannot make Sage say it."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"widget": {"singular": "Widget", "plural": "Widgets"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert "widget" not in load()["nouns"]
+    assert text("{widget}") == "{widget}"
+
+
+def test_api_brand_carries_the_nouns(tmp_path, monkeypatch):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    import sage.orchestrator.app as appmod
+
+    body = TestClient(appmod.control_app).get("/api/brand").json()
+    assert body["nouns"]["dataset"] == {"singular": "Cube", "plural": "Cubes"}
+    assert body["nouns"]["dataSource"]["plural"] == "Data Sources"
+
+
+def test_a_noun_that_is_not_title_case_warns_and_is_used_anyway(tmp_path, monkeypatch, caplog):
+    """`"No files in this xyz_dataset."` reads as a leaked code identifier rather than a product
+    term. It is still used: a brand pack must never be able to stop the product booting."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps(
+        {"nouns": {"dataset": {"singular": "xyz_dataset", "plural": "datasets"}}}
+    ))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        pack = load()
+    assert pack["nouns"]["dataset"] == {"singular": "xyz_dataset", "plural": "datasets"}
+    assert "xyz_dataset" in caplog.text          # the underscore
+    assert "datasets" in caplog.text             # the lowercase start
+    assert text("No files in this {dataset}.") == "No files in this xyz_dataset."
+
+
+def test_the_title_case_warning_does_not_repeat_on_every_read(tmp_path, monkeypatch, caplog):
+    """`load()` runs per request. One line per bad value, or a pack nobody is going to change
+    fills the log."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataset": {"singular": "xyz_dataset"}}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        load()
+        caplog.clear()
+        load()
+    assert caplog.text == ""
+
+
+def test_the_workbench_weaves_a_renamed_noun_into_a_sentence():
+    """The same two strings, through the accessor the Workbench actually calls."""
+    answers = _brand_js(
+        [{"op": "text", "template": "No files in this {dataset}."},
+         {"op": "text", "template": "{datasetPlural}"}],
+        pack={"nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}}},
+    )
+    assert answers == ["No files in this Cube.", "Cubes"]
+
+
+def test_the_workbench_nouns_fall_back_before_the_pack_arrives():
+    answers = _brand_js([{"op": "text", "template": "No files in this {dataset}."},
+                         {"op": "text", "template": "{datasetPlural}"}])
+    assert answers == ["No files in this Dataset.", "Datasets"]

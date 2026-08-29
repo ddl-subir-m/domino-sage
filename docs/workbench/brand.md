@@ -15,6 +15,9 @@ Shipped in v1 (`40ecb14`): the pack loader and its fallbacks, `GET /api/brand`, 
 `assistantName`, `pageTitle`, `logoUrl`, `logoAlt`, `colors`, the antd theme, about fourteen UI
 strings through `SW.brand.*`, and `apply_voice()` / `apply_agent_voice()`.
 
+Shipped since: the author-time substitution helper, `brand.text()` and `SW.brand.text()`;
+`platformName`; and `nouns`.
+
 Everything else below is designed and unbuilt. Sections carry the marker.
 
 ## Locked
@@ -27,6 +30,28 @@ Everything else below is designed and unbuilt. Sections carry the marker.
   this” = `Sage`. Page title = `Sage Workspace`. Platform = `Domino`.
 - **Substitution is author-time.** Every user-visible string is a template resolved when read. Never
   a filter over outgoing responses — a filter cannot tell our word from a Resource the user named.
+
+## Substitution helper — built
+
+`sage.orchestrator.brand.text()` on the backend and `SW.brand.text()` in the Workbench. Both resolve
+`{token}` against the resolved pack at the moment the string is read.
+
+```python
+brand.text("Ask {assistantName} in {productName}.")
+brand.text("{productName} answered {code}.", code=r.status_code)
+```
+
+```js
+SW.brand.text('Ask {assistantName} in {productName}.');
+```
+
+- A token is a pack key. Keyword values fill the rest of the sentence, so the whole sentence stays
+  one literal the lint can read. A substituted value is **not scanned again**, so a Resource name
+  carrying braces passes through untouched.
+- An **unknown token is left as written**, never raised. A typo must not stop the Workbench booting,
+  and a passed-through platform error can carry braces of its own.
+- Nothing is migrated by the helper existing. The roughly 137 strings that still name Sage or Domino
+  move in their own batches.
 
 ## Pack — partly built
 
@@ -55,11 +80,21 @@ Unknown keys are **ignored but logged at startup**, so a typo is findable.
 }
 ```
 
-**Not built:** `platformName`, `peerProducts`, `faviconUrl`, `nouns`, the unknown-key log, and
-the Title Case warning. There is also no default favicon asset yet — it has to be drawn.
+**Not built:** `peerProducts`, `faviconUrl`, and the unknown-key log. There is also no default
+favicon asset yet — it has to be drawn.
 
 An OEM typically sets `productName` and `assistantName` to the same string. `assistantName` omitted
 falls back to `productName`. Colors omitted keep the purple tokens.
+
+`platformName` names the platform under us in both the parts that word plays — **actor** (*"The
+Domino API answered 500"*) and **destination** (*"Manage settings in Domino"*). One key, because
+they are one fact: is the platform rebranded? It falls back to the built-in `Domino`, never to
+`productName` — a chain would put that one fact in two places a partner can edit.
+
+**Precondition: set the platform's own `/admin/whitelabel` first.** Sage renames the word; it
+cannot rename the page it links you to. A partner who renames only Sage builds a dead end — copy
+saying "Acme" pointing at a page saying "Domino". Leave `platformName` as `Domino` if the platform
+is not rebranded. Sage cannot verify this and does not try.
 
 `peerProducts` is a **list**, not a name, so a partner with no second product sets `[]` and the
 switcher collapses to a plain product label. A switcher with one item is not a switcher.
@@ -75,15 +110,24 @@ One pack per process. Not `.sage/brand.json` (that would be per project).
 there. Do not
 patch them from JS on boot — the browser paints the unbranded name first.
 
-## Nouns — not built
+## Nouns — partly built
 
 Domino's own whitelabel renames its nouns, and nothing exposes that vocabulary to a Workspace tool,
 so the pack carries a copy. **This will drift.** It is accepted only until an API exists.
 
-- `{singular, plural}` per noun. **No pluralization engine, no article engine.** Where copy needs
-  `a`/`an`, reword the copy.
+**Built:** the map, both forms through `brand.text()` / `SW.brand.text()`, the Title Case warning,
+and `nouns` on `GET /api/brand`. **Not built:** the lint below, and rendering a passed-through
+platform error as a quotation.
+
+The default keys are `dataset`, `dataSource`, `modelApi`, `llmAlias`, `builtApp` and `gallery`. A
+key the pack invents is ignored — a token Sage never emits is not a rename. A key set to only one
+of its two forms keeps the default for the other.
+
+- `{singular, plural}` per noun, read as `{dataset}` and `{datasetPlural}`. **No pluralization
+  engine, no article engine.** Where copy needs `a`/`an`, reword the copy.
 - **Title Case.** A value containing `_` or starting lowercase logs a warning and is used anyway.
-  `"No files in this xyz_dataset."` reads as a leaked code identifier, not a product term.
+  `"No files in this xyz_dataset."` reads as a leaked code identifier, not a product term. The
+  warning is made once per bad value: `load()` runs per request.
 - **A `CONTEXT.md` term gets a key iff it appears in a user-visible string.** The lint computes this.
   A new glossary term used in the UI fails the lint until it has a key; a glossary-only
   disambiguator (`AI Gateway`, `Domino Artifacts`) never gets one. Sage's own coinages —

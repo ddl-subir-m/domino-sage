@@ -10,7 +10,7 @@ window.SW = window.SW || {};
   // why this is a surface you open rather than a 300px column you live beside.
   const KINDS = [
     { key: null, label: 'Everything' },
-    { key: 'dataset', label: 'Datasets' },
+    { key: 'dataset', label: '{datasetPlural}' },
     { key: 'datasource', label: 'Data sources' },
     { key: 'model_llm', label: 'Language models' },
     { key: 'model_predictive', label: 'Predictive models' },
@@ -194,7 +194,7 @@ window.SW = window.SW || {};
                   setDrill(null);
                 },
               },
-              h('span', null, entry.label),
+              h('span', null, SW.brand.text(entry.label)),
               entry.key &&
                 counts[entry.key] !== undefined &&
                 h('span', { className: 'sw-cat-side-count' }, counts[entry.key])
