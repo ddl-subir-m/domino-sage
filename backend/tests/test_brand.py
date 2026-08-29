@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -138,6 +139,23 @@ def test_api_brand_returns_the_resolved_pack(tmp_path, monkeypatch):
     assert body["productName"] == "Acme"
     assert body["assistantName"] == "Ada"
     assert body["colors"]["primary"] == DEFAULT["colors"]["primary"]
+
+
+def test_the_chat_template_carries_tokens_rather_than_names():
+    """The Chat template is a prompt a person's answers come out of, so it re-brands like the Built
+    App's (#114). Before #124 it hard-coded `Dataset` and `Data Source`, and under a partner's pack
+    Chat said "Dataset" while the Resource panel beside it said the partner's word."""
+    src = (Path(__file__).resolve().parents[2] / "template" / "chat" / "AGENTS.md").read_text()
+    assert "{assistantName}" in src
+    assert "{dataset}" in src and "{dataSource}" in src and "{dataSourcePlural}" in src
+    assert re.search(r"\bSage\b", src) is None, "a bare product name survives in the template"
+
+
+def test_the_chat_template_names_the_default_nouns_only_as_synonyms():
+    """The one place a DEFAULT noun stays literal: the user types "dataset" whatever the pack says,
+    and the agent has to recognise it to answer about the right thing."""
+    src = (Path(__file__).resolve().parents[2] / "template" / "chat" / "AGENTS.md").read_text()
+    assert "Recognise **Dataset** and **Data Source**" in src
 
 
 def test_chat_agents_md_uses_assistant_name(tmp_path, monkeypatch):
@@ -503,6 +521,33 @@ def test_a_recognised_key_logs_nothing(tmp_path, monkeypatch, caplog):
         "nouns": {"dataset": {"singular": "Cube", "plural": "Cubes"}},
         "colors": {"primary": "#112233"},
     }))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        load()
+    assert caplog.text == ""
+
+
+def test_a_mistyped_noun_is_named_in_the_log_too(tmp_path, monkeypatch, caplog):
+    """`nouns` is where a partner is most likely to typo, and the merge drops an unknown noun as
+    silently as it drops an unknown top-level key (#124). A walk that stopped at the top left that
+    one place unreported, which is the opposite of what the log line is for."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {
+        "datasets": {"singular": "Cube", "plural": "Cubes"},      # the typo
+        "dataset": {"singular": "Cube", "plural": "Cubes"},
+    }}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        pack = load()
+    assert "nouns.datasets" in caplog.text
+    # Ignored, not refused, and the noun spelled correctly beside it still lands.
+    assert "datasets" not in pack["nouns"]
+    assert pack["nouns"]["dataset"] == {"singular": "Cube", "plural": "Cubes"}
+
+
+def test_a_recognised_noun_logs_nothing(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"nouns": {"dataSource": {"singular": "Warehouse"}}}))
     monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
     with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
         load()

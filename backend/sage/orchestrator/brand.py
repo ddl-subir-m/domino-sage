@@ -111,12 +111,21 @@ def text(template: str, **values: object) -> str:
     return _TOKEN.sub(lambda m: table.get(m.group(1), m.group(0)), template)
 
 
-def apply_voice(text: str, assistant_name: str | None = None) -> str:
-    """Swap the default speaker name in a prompt or AGENTS.md body."""
+def apply_voice(body: str, assistant_name: str | None = None) -> str:
+    """Resolve a prompt or AGENTS.md body into the pack's words.
+
+    Tokens first, because a tokenised prompt is the one that re-brands completely: the chat
+    template names the nouns as `{dataset}` and `{dataSource}`, and nothing else on the way to
+    OpenCode would resolve them. Then the bare speaker name, for the prompts that still write it
+    out — those are migrated one at a time, and until they are, this is what keeps them voiced.
+    """
+    if not body:
+        return body
+    voiced = text(body)
     name = (assistant_name if assistant_name is not None else load()["assistantName"]).strip()
-    if not text or name == "Sage":
-        return text
-    return text.replace("Sage's", f"{name}'s").replace("Sage", name)
+    if name == "Sage":
+        return voiced
+    return voiced.replace("Sage's", f"{name}'s").replace("Sage", name)
 
 
 def apply_agent_voice(cfg: dict, assistant_name: str | None = None) -> dict:
@@ -192,14 +201,20 @@ def _warn_unknown_keys(overlay: dict | None, path: Path) -> None:
     What counts as recognised is `DEFAULT`'s own keys rather than a second list beside them, so a
     key stops warning by being implemented and the two cannot drift apart.
 
+    `nouns` is walked as well as the top level. A mistyped noun — `"nouns": {"datasets": …}` — is
+    dropped by the merge exactly like a mistyped top-level key, so a walk that stopped at the top
+    would leave the one place a partner is most likely to typo the one place nothing says so.
+
     Said once per key per file, because `load()` runs per request: the complaint belongs to the pack
     the process booted with, not to whoever happened to ask for it first.
     """
     if not overlay:
         return
-    for key in overlay:
-        if key in DEFAULT:
-            continue
+    unknown = [key for key in overlay if key not in DEFAULT]
+    nouns = overlay.get("nouns")
+    if isinstance(nouns, dict):
+        unknown += [f"nouns.{key}" for key in nouns if key not in DEFAULT["nouns"]]
+    for key in unknown:
         seen = f"{path}:{key}"
         if seen in _WARNED:
             continue
