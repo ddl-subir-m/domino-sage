@@ -70,8 +70,18 @@ const ATTACHED = {
   app_d: [{ path: 'public/data/risk/limits.csv', file: 'limits.csv', dataset: 'risk', size: 34 }],
 };
 
+// The third app-scoped list (#95). `appRequires` is a client-side stub that fetches nothing, so
+// the fixture hangs off the same `selected` the other two follow — otherwise a refresh that never
+// ran and one that did would leave `requires` looking identical.
+const REQUIRES = {
+  app_a: [{ resourceId: 'ds_1', name: 'market-data-eod' }],
+  app_c: [{ resourceId: 'al_2', name: 'qwen-2-5' }],
+};
+
 const calls = [];
 let selected = 'app_a';
+// A 500 on the app list, which is not the same answer as a Project with no apps (#95).
+let appsFail = false;
 // Emptied by the `noapps` step: a brand-new Project, which is the one state the empty state is
 // written for and the one state a picker cannot show it in.
 let apps = APPS;
@@ -92,6 +102,7 @@ function serve(url, init) {
     return json({});
   }
   if (path === '/apps') {
+    if (appsFail) return json({ error: 'unavailable' }, 500);
     return json({ items: apps.map((a) => ({ ...a, selected: a.id === selected })), selected });
   }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
@@ -174,6 +185,14 @@ SW.Composer = function Composer() { return null; };
 SW.Message = function Message() { return null; };
 SW.TypingIndicator = function TypingIndicator() { return null; };
 SW.PlanSheet = function PlanSheet() { return null; };
+
+// Recorded in `calls` like the two real fetches, so one ledger answers both halves of #95: whether
+// a tick that moved the app refreshed what hangs off it, and whether a tick that moved nothing
+// stayed silent.
+SW.api.appRequires = async (appId) => {
+  calls.push(`GET /apps/${appId}/requires`);
+  return REQUIRES[appId] || [];
+};
 
 // --- walking the tree ------------------------------------------------------
 // Function components are called rather than stepped over, which is what makes a header assembled
@@ -367,6 +386,47 @@ for (const step of steps) {
     });
     continue;
   }
+  // One tick of the 30s poll Build arms (#95). The server's selection is moved WITHOUT a request,
+  // because that is what another tab selecting a different app looks like from here: `/apps`
+  // simply starts answering differently. `step.poll` names the app the server now reports, so
+  // passing the one already selected is the tick that changes nothing.
+  if (step.poll) {
+    await arrive(step.thread, step.select);
+    calls.length = 0;
+    selected = step.poll;
+    appsFail = !!step.readFails;
+    await SW.store.loadApps();
+    appsFail = false;
+    const s = SW.store.get();
+    // Taken before the render, so the row's own reads cannot land in the tick's ledger (#92).
+    const ticked = calls.slice();
+    const nodes = flatten(SW.BuildMode({ conversationId: step.thread, appId: selected }));
+    report.push({
+      step: `poll ${step.select} -> ${step.poll}`,
+      calls: ticked,
+      activeApp: (s.activeApp || {}).id || null,
+      activeName: (s.activeApp || {}).name || null,
+      bindings: (s.bindings || []).map((b) => b.display_name || b.name),
+      attachments: (s.appAttachments || []).map((a) => a.file),
+      requires: (s.requires || []).map((r) => r.name),
+      parts: nodes
+        .filter((n) => n.className && n.texts)
+        .map((n) => ({ className: n.className, texts: n.texts })),
+    });
+    continue;
+  }
+
+  // The other way the selected app moves: the header's app control, which reloads the whole of
+  // Build. The cascade has to stay OFF down that path — `loadBuild` refreshes what hangs off the
+  // app itself — so this step counts reads rather than looking at the screen (#95).
+  if (step.switchTo) {
+    await arrive(step.thread, step.select);
+    calls.length = 0;
+    await SW.store.selectApp(step.switchTo);
+    report.push({ step: `switch ${step.select} -> ${step.switchTo}`, calls: calls.slice() });
+    continue;
+  }
+
   if (step.route) {
     // `SW.appRoute` after the move: same grammar, and still there for the callers outside the rail.
     const app = APPS.find((a) => a.id === step.route);
