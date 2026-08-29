@@ -429,11 +429,11 @@ window.SW = window.SW || {};
           'aria-haspopup': true,
           'aria-expanded': open,
         },
-        // The one place the no-article-engine rule cannot be honoured here: the copy is pinned by
-        // `test_build_keeps_the_conversation_rail.py`, which this batch does not own. A pack whose
-        // {builtApp} starts with a vowel reads "Choose a Archive" until that reword lands with it.
+        // Plural, not "Choose a {builtApp}": there is no article engine, and a pack whose noun
+        // starts with a vowel read "Choose a Archive". The picker only draws with apps in it, so
+        // the plural is also true.
         h('span', { className: 'sw-app-picker-name' },
-          activeApp ? activeApp.name : SW.brand.text('Choose a {builtApp}')),
+          activeApp ? activeApp.name : SW.brand.text('Choose from your {builtAppPlural}')),
         h(DownOutlined, { style: { fontSize: 9 } })
       )
     );

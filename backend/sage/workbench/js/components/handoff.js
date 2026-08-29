@@ -133,8 +133,10 @@ window.SW = window.SW || {};
               showIcon: true,
               style: { marginTop: 10 },
               message: `This replaces the plan in “${target.name || target.id}”`,
-              description:
-                'Its code stays until you approve the plan and build. The other Built Apps in this project are untouched either way.',
+              description: SW.brand.text(
+                'Its code stays until you approve the plan and build. The other {builtAppPlural} '
+                  + 'in this project are untouched either way.'
+              ),
             })
         ),
 

@@ -154,10 +154,13 @@ def test_the_header_says_nothing_when_this_conversation_touched_only_the_open_ap
 @needs_node
 def test_the_count_says_nothing_until_an_app_is_named():
     """"Other" is other than the app in the preview, so with none named there is no count to give.
-    Counting every touched app as "other" beside a control reading `Choose a Built App` is a header
-    disagreeing with itself on first paint."""
+    Counting every touched app as "other" beside a control reading `Choose from your Built Apps` is
+    a header disagreeing with itself on first paint.
+
+    Plural, and read off the render rather than the source: there is no article engine (ADR-0014),
+    so "Choose a {builtApp}" read "Choose a Archive" under a pack with a vowel-initial noun."""
     step = _build("thr_many", unselected=True)
-    assert "Choose a Built App" in step["words"]
+    assert "Choose from your Built Apps" in step["words"]
     assert "other app" not in _said(step)
 
 

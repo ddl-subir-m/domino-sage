@@ -267,7 +267,7 @@ window.SW = window.SW || {};
       return h(
         'div',
         { className: 'sw-tree-empty' },
-        `${SW.brand.assistant()} cannot look inside this Data Source.`
+        SW.brand.text('{assistantName} cannot look inside this {dataSource}.')
       );
     }
 

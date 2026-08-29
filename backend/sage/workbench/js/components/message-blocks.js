@@ -230,8 +230,9 @@ window.SW = window.SW || {};
     const { threads } = SW.store.get();
     const by = (threads || []).find((t) => t.id === superseded.conversation);
     return by && by.title
-      ? `“${by.title}” planned this Built App again.`
-      : 'Another conversation planned this Built App again.';
+      // The Conversation's title is the person's own word, so it fills a slot rather than resolving.
+      ? SW.brand.text('“{title}” planned this {builtApp} again.', { title: by.title })
+      : SW.brand.text('Another conversation planned this {builtApp} again.');
   }
 
   // "the plan, 2 charts and 1 thing this conversation had in context" — what a handoff carried,
@@ -260,7 +261,7 @@ window.SW = window.SW || {};
   // Markup, not a component: the expanded/collapsed answer belongs to the card, which is the thing
   // that survives a re-render, the same way the superseded lines below are the card's own.
   function crossingReceipt({ crossed, open, onToggle }) {
-    const named = crossed.appName || crossed.appId || 'the Built App';
+    const named = crossed.appName || crossed.appId || SW.brand.text('the {builtApp}');
     return h(
       'div',
       { className: 'sw-crossing' },
@@ -269,7 +270,11 @@ window.SW = window.SW || {};
         { className: 'sw-crossing-line' },
         'The plan crossed into ',
         h('strong', null, `“${named}”`),
-        crossed.newApp ? ' — a new Built App.' : ' — a Built App you already had.',
+        // No article engine: "a new {builtApp}" is safe because the article sits before `new`, but
+        // the other branch had the article against the noun, so it takes the plural instead.
+        crossed.newApp
+          ? SW.brand.text(' — a new {builtApp}.')
+          : SW.brand.text(' — one of the {builtAppPlural} you already had.'),
         ' It carried ',
         carried(crossed),
         '.'

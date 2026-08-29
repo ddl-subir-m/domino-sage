@@ -99,7 +99,7 @@ def test_workbench_is_the_default_ui():
     # The promote targets are every writable mount, not the curated rail: membership never gated
     # the server's copy, so it must not grey out the menu either.
     assert b"SW.store.get().datasetTargets" in panel.content
-    assert b"No writable Dataset is mounted here" in panel.content
+    assert b"No writable {dataset} is mounted here" in panel.content
 
     tree = client.get("/js/components/resource-tree.js")
     assert tree.status_code == 200

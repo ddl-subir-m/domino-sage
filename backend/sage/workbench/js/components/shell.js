@@ -19,8 +19,10 @@ window.SW = window.SW || {};
 
   // Concepts that span every project, so they live in the platform bar rather
   // than under a project scope.
+  // The label is a template, resolved where the row is drawn: this list is built when the file is
+  // evaluated, which is before GET /api/brand has answered.
   const GLOBAL_NAV = [
-    { id: 'gallery', label: 'Gallery', hint: 'Find what your organization already built', path: '#/gallery' },
+    { id: 'gallery', label: '{gallery}', hint: 'Find what your organization already built', path: '#/gallery' },
     { id: 'manage', label: 'Manage', hint: 'Cost and app health across every project', path: '#/manage/org' },
   ];
 
@@ -142,7 +144,7 @@ window.SW = window.SW || {};
                 }`,
                 onClick: () => SW.router.go(item.path),
               },
-              item.label
+              SW.brand.text(item.label)
             )
           )
         )
