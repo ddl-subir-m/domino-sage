@@ -197,6 +197,88 @@ window.SW = window.SW || {};
   // and a superseded open drops its answer instead of writing it.
   let openSeq = 0;
 
+  // ---------------------------------------------------------------------
+  // App-scoped state, sequenced (#101)
+  // ---------------------------------------------------------------------
+  //
+  // `activeApp`, `bindings`, `appAttachments` and `appRemoval` describe ONE app between them, and
+  // at `ee24c31` eleven functions wrote them: `loadScopeData`, `loadAppList`, `refreshAppScope`,
+  // `refreshBindings` and `loadBuild` reading them; the two removals and `reportRemoval` under them
+  // writing what an act returned; and `setScope`, `clearApp` and `dismissAppRemoval` putting one
+  // down by hand. The async ones read in parallel and none knew about the others, so whichever
+  // RESOLVED last won — which is not the same as whichever STARTED last. A read taken under the app
+  // you left could land on top of a fresh one and print the old app's records under the new app's
+  // name: the wrong pairing #95 fixed, arrived at by timing rather than by a missing refresh.
+  //
+  // Ten of the eleven now go through `applyAppScope` and nothing assigns these fields directly.
+  // (`reportRemoval` is the eleventh; it returns its notice for its caller to install, as
+  // `removalNotice`.) The shared gate is the half of the fix a counter cannot do — one local to
+  // `refreshAppScope` would never see `loadBuild`'s `refreshBindings`, and the stale write would
+  // still land.
+  let appScopeSeq = 0;
+  // Which app the state describes. Moved by the selection moving, and checked only by the acts
+  // below — a read is ordered by when it started, and holding it to a generation as well would
+  // drop the newest read of all whenever a slower one happened to move the selection first.
+  let appGen = 0;
+
+  // The fields the gate covers, named rather than spread blind: a writer handing over a key that is
+  // not on this list is writing something else, and a silent new key on `state` is how that would
+  // go unnoticed. `composerSeed` is deliberately absent — it is a draft handed to the composer and
+  // cleared on read, and it belongs to the person rather than to the app.
+  const APP_SCOPED = ['activeApp', 'bindings', 'appAttachments', 'appRemoval'];
+
+  // Where each field's newest write got to, PER FIELD rather than one number for all four. Sharing
+  // one would make every writer supersede every other: the 2s build tick calls `loadAppList` and
+  // writes `activeApp` alone, and it must not throw away a `/bindings` read still in flight for the
+  // same app — nor must clicking Dismiss, which writes only the notice.
+  const appScopeApplied = {};
+  APP_SCOPED.forEach((key) => { appScopeApplied[key] = 0; });
+
+  // A place in the queue. A read takes its ticket where it ISSUES its requests and carries that one
+  // ticket through whatever chain installs the answer, so the number says when what it carries was
+  // true and the newer of two reads wins however the two resolve.
+  //
+  // An ACT takes its ticket where its ROUTE ANSWERS instead, passing the generation it was issued
+  // under. The server has just written the list the route hands back, so it is newer than any read
+  // in flight and must not lose to one that started first and would put back what has just gone;
+  // claiming last puts it at the head of the queue, where its start position would have left it
+  // behind. That costs it the sequence's protection against an app switch, which is what the
+  // generation buys back: the list is right, but by then it can be another app's list.
+  function appScopeTicket(gen = null) {
+    return { seq: ++appScopeSeq, gen };
+  }
+
+  // Whether this ticket is still the newest word on `key`. Asked before a cascade as well as at the
+  // write, so a tick that has already lost costs the one read it had made and stops there.
+  function appScopeCurrent(ticket, key) {
+    return ticket.seq >= appScopeApplied[key] && (ticket.gen === null || ticket.gen === appGen);
+  }
+
+  // Install what a ticket carries, field by field. One pass with no await in it, so no render
+  // catches it half-applied (#95) — and a field some newer write already owns is left where it is
+  // rather than rolled back to this one.
+  function applyAppScope(ticket, fields) {
+    for (const key of APP_SCOPED) {
+      if (!(key in fields) || !appScopeCurrent(ticket, key)) continue;
+      appScopeApplied[key] = ticket.seq;
+      // `activeApp` comes first in the list, so a selection that moves settles the notice before
+      // the loop reaches it.
+      if (key === 'activeApp'
+          && (fields.activeApp && fields.activeApp.id)
+             !== (state.activeApp && state.activeApp.id)) {
+        appGen += 1;
+        // The notice reports one act on one app's lists, so the selection moving is what makes it
+        // another app's. Cleared here rather than by the paths that move the selection, because
+        // three of those four never did: `refreshAppScope` cleared it by hand, and `loadAppList`'s
+        // non-cascading branch — the one `loadBuild`, and so every app switch made by hand, goes
+        // down — did not, nor did `clearApp` or `setScope`.
+        state.appRemoval = null;
+        appScopeApplied.appRemoval = ticket.seq;
+      }
+      state[key] = fields[key];
+    }
+  }
+
   function applyResourceGroups(groups, extras = {}) {
     state.resourceGroups = groups;
     state.resourceIndex = indexResources(groups);
@@ -236,6 +318,7 @@ window.SW = window.SW || {};
     state.activity = activity;
     notify();
 
+    const appTicket = appScopeTicket();
     Promise.all([
       SW.api.project().catch(() => ({ attached: [] })),
       SW.api.resourceListing(),
@@ -245,7 +328,7 @@ window.SW = window.SW || {};
       // scratch file to a Dataset attaches it, and the panel refreshes through here rather than
       // through `loadBuild`. Without this the Build header would go on saying the app ships
       // nothing until the next app switch (#92).
-      state.appAttachments = project.attached || [];
+      applyAppScope(appTicket, { appAttachments: project.attached || [] });
       const files = [
         ...(project.scratch || []).map((e) => ({
           id: `file:${e.path}`,
@@ -320,7 +403,12 @@ window.SW = window.SW || {};
   // forever, in every open Build tab. `cascade: false` is for the callers that refresh app-scoped
   // state themselves straight after — without it `loadBuild` would read `/bindings` twice on every
   // app switch.
-  async function loadAppList({ cascade = true } = {}) {
+  //
+  // `ticket` is passed by the callers that read this list as part of a bigger chain, and defaulted
+  // here for the rest: which app is selected is what THIS read said, so the cascade it fires writes
+  // under that read's place in the queue rather than minting a fresher one for information that is
+  // no newer (#101).
+  async function loadAppList({ cascade = true, ticket = appScopeTicket() } = {}) {
     const apps = await SW.api.apps().catch(() => null);
     state.apps = apps || [];
     const next = state.apps.find((a) => a.selected) || null;
@@ -328,8 +416,14 @@ window.SW = window.SW || {};
     // A read that FAILED is not an app that moved. `apps()` answers empty for a 500 as readily as
     // for a Project with no apps, so without this one blip fires the whole cascade, and the tick
     // that recovers fires it again.
-    if (apps && moved && cascade) await refreshAppScope(next);
-    else state.activeApp = next;
+    //
+    // A superseded read is not worth two more requests to install either, so the queue is asked
+    // here as well as at the write: the tick that lost costs the one read it had already made.
+    if (apps && moved && cascade && appScopeCurrent(ticket, 'activeApp')) {
+      await refreshAppScope(next, ticket);
+    } else {
+      applyAppScope(ticket, { activeApp: next });
+    }
     notify();
   }
 
@@ -348,19 +442,22 @@ window.SW = window.SW || {};
   // first would put the new name over the old lists for the length of the reads, and that window
   // is not private: `refreshPreview`'s interval and every SSE build frame call `notify()`, so
   // mid-build the row WOULD be repainted inside it, saying exactly what #95 is about.
-  async function refreshAppScope(app) {
+  async function refreshAppScope(app, ticket = appScopeTicket()) {
     const [project, bound] = await Promise.all([
       SW.api.project().catch(() => null),
       SW.api.bindings().catch(() => null),
     ]);
-    state.activeApp = app;
-    // The notice reports one act on one app's lists, so it goes with them. Left standing it would
-    // sit under a head naming a different app than the sentence does.
-    state.appRemoval = null;
+    // The notice goes with the lists, and the gate drops it when the selection actually moves —
+    // which is the same rule applied on every path the selection moves down, rather than only on
+    // this one (#101).
+    //
     // A read that failed keeps what is on screen. Emptying on a 502 would have the row report an
     // app that ships nothing — the same lie as blanking, arrived at by accident.
-    if (project) state.appAttachments = project.attached || [];
-    if (bound) state.bindings = bound.bindings || [];
+    applyAppScope(ticket, {
+      activeApp: app,
+      ...(project ? { appAttachments: project.attached || [] } : {}),
+      ...(bound ? { bindings: bound.bindings || [] } : {}),
+    });
   }
 
   // Re-picking a Binding does not cost the same over the three kinds, and one sentence covering all
@@ -401,18 +498,20 @@ window.SW = window.SW || {};
   //
   // The offer is only attached when there is something to act on. Where the app's code refers to
   // nothing, the sentence is still worth drawing — it is the acknowledgement that the act landed.
-  function reportRemoval(where, name, refs, alsoDid) {
+  //
+  // Returned rather than assigned: the notice and the list the act rewrote are one answer about
+  // one app, so they go into the store together, under the act's own ticket (#101).
+  function removalNotice(where, name, refs, alsoDid) {
     const uses = refs.length
       ? `The app's code still uses it in ${refs.join(', ')}.`
       : "Nothing in the app's code refers to it.";
-    state.appRemoval = {
+    return {
       text: `${name} is out of ${where}.${alsoDid ? ` ${alsoDid}` : ''} ${uses}`,
       prompt: refs.length
         ? `${name} is no longer part of this app, and ${refs.join(', ')} still refer to it. `
           + 'Remove or replace those uses.'
         : null,
     };
-    notify();
   }
 
   // ---------------------------------------------------------------------
@@ -1062,9 +1161,9 @@ window.SW = window.SW || {};
     appendBuildRow(ev);
   }
 
-  async function refreshBindings() {
+  async function refreshBindings(ticket = appScopeTicket()) {
     const body = await SW.api.bindings().catch(() => ({ bindings: [] }));
-    state.bindings = body.bindings || [];
+    applyAppScope(ticket, { bindings: body.bindings || [] });
   }
 
   // The plan the panel pins. Two moments move it and nothing else does: a gate turn or a Chat
@@ -1269,7 +1368,10 @@ window.SW = window.SW || {};
       // The apps belong to the Project being left, and a stale list is worse than none: the rail
       // would offer rows that select an app this Builder is not attached to.
       state.apps = [];
-      state.activeApp = null;
+      // Through the gate, so a `/bindings` or `/project` read still in flight for the Project being
+      // LEFT cannot land afterwards and describe an app this Builder is no longer attached to. This
+      // happens now, so it takes the newest place in the queue and everything outstanding loses.
+      applyAppScope(appScopeTicket(), { activeApp: null });
       state.railAppFilter = null;
       if (!keepThread) {
         state.thread = null;
@@ -1491,6 +1593,10 @@ window.SW = window.SW || {};
           okButtonProps: { danger: true },
           onOk: async () => {
             let result;
+            // The app the act is issued against, read here rather than where the confirm opened:
+            // the race this answers is the length of the REQUEST, and a modal can sit open far
+            // longer than that (#101).
+            const gen = appGen;
             try {
               result = await SW.api.unbind(binding.kind, binding.id);
             } catch (err) {
@@ -1499,9 +1605,14 @@ window.SW = window.SW || {};
               return;
             }
             // The route answers with the list it just wrote, so nothing is re-read to find out
-            // what happened — see ADR-0010 on what may render per app switch.
-            state.bindings = result.bindings || [];
-            reportRemoval(where, result.name || name, result.refs || []);
+            // what happened — see ADR-0010 on what may render per app switch. That also makes it
+            // newer than any read in flight, which is why the ticket is taken HERE: a `/bindings`
+            // read that started before the unbind and lands after it would put the Binding back.
+            applyAppScope(appScopeTicket(gen), {
+              bindings: result.bindings || [],
+              appRemoval: removalNotice(where, result.name || name, result.refs || []),
+            });
+            notify();
             resolve(true);
           },
           onCancel: () => resolve(false),
@@ -1516,15 +1627,14 @@ window.SW = window.SW || {};
       const where = appScopeName();
       const name = (attachment.file || attachment.path || '').split('/').pop();
       let result;
+      // The app the act is issued against — see the sibling above.
+      const gen = appGen;
       try {
         result = await SW.api.detachFile(attachment.path);
       } catch (err) {
         antd.message.error(`${name} could not be removed: ${err.message}`);
         return false;
       }
-      state.appAttachments = (state.appAttachments || []).filter(
-        (a) => a.path !== attachment.path
-      );
       // What `detach_file` actually does: the declaration, the app's copy under public/data/ and any
       // raw copy the agent leaked into the app tree all go, and the Dataset bytes stay. The last
       // half can only be promised when there is a Dataset to name.
@@ -1539,12 +1649,19 @@ window.SW = window.SW || {};
         : "The app's copy is gone. This file records no Dataset, so there is no source to name.";
       const leaked = result.removed_copies || [];
       const copies = leaked.length ? ` A copy left in ${leaked.join(', ')} went with it.` : '';
-      reportRemoval(where, name, result.refs || [], `${source}${copies}`);
+      // The route hands back no manifest, so the list is the one on screen minus what just went —
+      // filtered HERE, off whatever the newest read left, and installed under the act's own ticket
+      // so a `/project` read that started before the detach cannot put the file back (#101).
+      applyAppScope(appScopeTicket(gen), {
+        appAttachments: (state.appAttachments || []).filter((a) => a.path !== attachment.path),
+        appRemoval: removalNotice(where, name, result.refs || [], `${source}${copies}`),
+      });
+      notify();
       return true;
     },
 
     dismissAppRemoval() {
-      state.appRemoval = null;
+      applyAppScope(appScopeTicket(), { appRemoval: null });
       notify();
     },
 
@@ -1894,7 +2011,7 @@ window.SW = window.SW || {};
     },
 
     clearApp() {
-      state.activeApp = null;
+      applyAppScope(appScopeTicket(), { activeApp: null });
       state.activePlanId = null;
       state.activePlan = null;
       notify();
@@ -2137,12 +2254,16 @@ window.SW = window.SW || {};
     },
 
     async loadBuild(options = {}) {
+      // One ticket for the whole load, not one per read: the attachments, the Bindings and the
+      // selected app are three parts of one answer taken at one moment, and a newer answer has to
+      // beat all three of them or none (#101).
+      const ticket = appScopeTicket();
       const project = await SW.api.project().catch(() => ({}));
       applyModelStatus(project);
       // Off the read that was already happening. The header's row renders per app switch, so it
       // has to answer out of the store rather than fetch (ADR-0010) — and `loadBuild` is what
       // `selectApp` already runs, so the switch reloads it with everything else app-scoped.
-      state.appAttachments = project.attached || [];
+      applyAppScope(ticket, { appAttachments: project.attached || [] });
       // No conversation open means a new one: nothing to replay. Asking for the whole project
       // here is what used to make "New conversation" look dead — the transcript never changed.
       const conversation = state.thread && state.thread.id;
@@ -2151,11 +2272,11 @@ window.SW = window.SW || {};
           ? readBuildTranscript(conversation)
           : Promise.resolve({ merged: null, history: [] }),
         SW.api.buildState().catch(() => ({ running: false })),
-        refreshBindings(),
+        refreshBindings(ticket),
         refreshProjectPlan(),
         // The cascade would be this function's own work done twice: `attached` is off the read
         // above and `/bindings` is in this very list.
-        loadAppList({ cascade: false }),
+        loadAppList({ cascade: false, ticket }),
       ]);
       await applyBuildRead(hist);
       state.buildRunning = !!running.running;

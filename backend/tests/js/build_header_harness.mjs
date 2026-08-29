@@ -149,9 +149,28 @@ const json = (body, status = 200) => ({
   text: async () => JSON.stringify(body),
 });
 
+// Requests parked instead of answered, so a step can resolve two app-scoped writers in the order it
+// names rather than the order they were asked (#101). Held by exact path; the body is still built
+// WHEN THE REQUEST ARRIVES, which is the whole point — a read taken before an app switch has to go
+// on answering what was true when it was taken, however long it is held for.
+let holding = null;
+const held = [];
+// A task turn, which drains the whole microtask queue behind it — so every promise the store can
+// settle without the server has settled, and it is parked on a held request, before a step acts.
+const settle = () => new Promise((res) => setTimeout(res, 0));
+
 function serve(url, init) {
   const path = String(url).replace(/^\.\/api/, '');
-  calls.push(`${(init && init.method) || 'GET'} ${path}`);
+  const key = `${(init && init.method) || 'GET'} ${path}`;
+  calls.push(key);
+  const body = route(path, init);
+  if (holding && holding.has(path)) {
+    return new Promise((release) => { held.push({ key, release: () => release(body) }); });
+  }
+  return body;
+}
+
+function route(path, init) {
   let m;
   if ((m = path.match(/^\/apps\/([^/?]+)\/select$/))) {
     selected = m[1];
@@ -419,6 +438,8 @@ async function arrive(threadId, appId) {
   timers.length = 0;
   timeouts.length = 0;
   calls.length = 0;
+  holding = null;
+  held.length = 0;
   await SW.store.openThread(threadId);
   if (appId) await SW.store.selectApp(appId);
   await SW.store.loadApps();
@@ -691,7 +712,178 @@ for (const step of steps) {
     await arrive(step.thread, step.select);
     calls.length = 0;
     await SW.store.selectApp(step.switchTo);
-    report.push({ step: `switch ${step.select} -> ${step.switchTo}`, calls: calls.slice() });
+    const s = SW.store.get();
+    report.push({
+      step: `switch ${step.select} -> ${step.switchTo}`,
+      calls: calls.slice(),
+      // The lists too, because the sequencing has to cost the single-writer case nothing — not
+      // one extra read, and not one write dropped for having been ticketed (#101).
+      activeApp: (s.activeApp || {}).id || null,
+      bindings: (s.bindings || []).map((b) => b.display_name || b.name),
+      attachments: (s.appAttachments || []).map((a) => a.file),
+    });
+    continue;
+  }
+
+  // Two app-scoped writers in flight at once, resolved in the order this step names rather than the
+  // order they were asked (#101). Each race is spelled out rather than driven by a mini-language:
+  // the interleaving IS the claim, and a step that hid it behind a list of holds and releases would
+  // assert on a shape nobody could read.
+  if (step.race) {
+    await arrive(step.thread, step.select);
+    // What the app's own section said before the rest of the step happened, for the races whose
+    // claim is about the notice: it has to be drawn first for its going or staying to mean
+    // anything.
+    let noticeBefore = null;
+    const noticeNow = () => {
+      const said = SW.store.get().appRemoval;
+      return said ? said.text : null;
+    };
+
+    // A removal driven all the way through. This is the SETUP three of these races share, not the
+    // claim any of them makes — the interleave below each one is the claim, and pulling the setup
+    // out is what leaves it visible.
+    const removeBinding = async (display) => {
+      const gone = SW.store.get().bindings.find((b) => (b.display_name || b.name) === display);
+      if (!gone) throw new Error(`no Binding ${display} on this app`);
+      const acted = SW.store.removeBindingFromApp(gone);
+      await settle();
+      await modals[modals.length - 1].onOk();
+      await acted;
+      return gone;
+    };
+
+    // A second tab binding something, which from here is `/bindings` starting to answer
+    // differently — the same way `/apps` does when a second tab moves the selection.
+    const boundElsewhere = () => {
+      bound[selected] = [
+        ...(bound[selected] || []),
+        { kind: 'llm_alias', id: 'al_9', name: 'gpt-oss-120b', display_name: 'GPT OSS 120B' },
+      ];
+    };
+
+    if (step.race === 'remove-then-switch') {
+      // Nothing overlaps here. The removal finishes, and only then does the app change — by hand,
+      // down the path `selectApp` takes, which is the one path the notice was never cleared on.
+      await removeBinding(step.remove);
+      noticeBefore = noticeNow();
+      calls.length = 0;
+      await SW.store.selectApp(step.raceTo);
+    }
+
+    if (step.race === 'read-then-tick') {
+      // NOTHING competes for the Bindings here: same app, no act, no switch. The 2s build tick
+      // calls `loadAppList`, which writes `activeApp` and nothing else — and a read of this same
+      // app's `/bindings` is still out behind it. One shared high-water mark for all four fields
+      // would let that tick supersede the read and throw a good answer away, with nothing
+      // re-reading until the build ends.
+      await removeBinding(step.remove);
+      boundElsewhere();
+      holding = new Set(['/bindings']);
+      calls.length = 0;
+      const read = SW.store.loadBuild();
+      await settle();
+      noticeBefore = noticeNow();
+      await SW.store.loadApps();
+      held.shift().release();
+      await read;
+    }
+
+    if (step.race === 'dismiss-mid-read') {
+      // A notice on screen, a read of the app's Bindings in flight behind it, and the person
+      // clicking Dismiss while it is still out. The click is about the notice and nothing else,
+      // so it must not take the read down with it.
+      await removeBinding(step.remove);
+      boundElsewhere();
+      holding = new Set(['/bindings']);
+      calls.length = 0;
+      const read = SW.store.loadBuild();
+      await settle();
+      noticeBefore = noticeNow();
+      SW.store.dismissAppRemoval();
+      held.shift().release();
+      await read;
+    }
+
+    if (step.race === 'read-then-switch') {
+      // A build read that starts under the app you are about to leave, and lands after a poll has
+      // moved the selection. Its answer is older than the poll's however late it arrives.
+      holding = new Set(['/project', '/bindings']);
+      calls.length = 0;
+      const read = SW.store.loadBuild();
+      await settle();
+      // `loadBuild`'s own `/project`, let through so the read gets as far as asking for
+      // `/bindings` while the app it is describing is still the selected one.
+      held.shift().release();
+      await settle();
+      // The selection moves the way a second tab moves it: `/apps` simply starts answering
+      // differently, and the poll cascades onto the new app.
+      selected = step.raceTo;
+      const poll = SW.store.loadApps();
+      await settle();
+      const stale = held.shift();
+      // The NEWER writer answers first and the older one last, which is the interleave: the one
+      // that used to win was whichever resolved last, and that is this one.
+      held.splice(0).forEach((h) => h.release());
+      await poll;
+      stale.release();
+      await read;
+    }
+
+    if (step.race === 'read-then-act') {
+      // A read of the app's Bindings, started before a removal and landing after it. The route
+      // the removal called has already written the manifest; the read answers what was true
+      // before it, so installing it would put the Binding back on screen.
+      holding = new Set(['/bindings']);
+      calls.length = 0;
+      const read = SW.store.loadBuild();
+      await settle();
+      await removeBinding(step.remove);
+      held.shift().release();
+      await read;
+    }
+
+    if (step.race === 'act-then-switch') {
+      // The other side of the same rule. An act claims its place at the head of the queue, which
+      // is what keeps it ahead of a read — but the app it acted on can be gone by the time the
+      // route answers, and then its list belongs to nobody on screen.
+      const gone = SW.store.get().bindings.find((b) => (b.display_name || b.name) === step.remove);
+      if (!gone) throw new Error(`no Binding ${step.remove} on this app`);
+      const acted = SW.store.removeBindingFromApp(gone);
+      await settle();
+      const confirm = modals[modals.length - 1];
+      holding = new Set([`/bindings/${gone.kind}/${gone.id}`]);
+      calls.length = 0;
+      const ok = confirm.onOk();
+      await settle();
+      selected = step.raceTo;
+      await SW.store.loadApps();
+      held.shift().release();
+      await ok;
+      await acted;
+    }
+
+    holding = null;
+    held.length = 0;
+    const s = SW.store.get();
+    const nodes = flatten(
+      SW.BuildMode({ conversationId: step.thread, appId: (s.activeApp || {}).id })
+    );
+    report.push({
+      step: `race ${step.race}`,
+      calls: calls.slice(),
+      activeApp: (s.activeApp || {}).id || null,
+      activeName: (s.activeApp || {}).name || null,
+      bindings: (s.bindings || []).map((b) => b.display_name || b.name),
+      attachments: (s.appAttachments || []).map((a) => a.file),
+      // The notice is app-scoped too, and it is the one field whose sentence names its own app
+      // out loud — so a stale one is readable as a wrong pairing rather than inferred from a list.
+      notice: s.appRemoval ? s.appRemoval.text : null,
+      noticeBefore,
+      parts: nodes
+        .filter((n) => n.className && n.texts)
+        .map((n) => ({ className: n.className, texts: n.texts })),
+    });
     continue;
   }
 
