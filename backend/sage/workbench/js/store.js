@@ -691,6 +691,19 @@ window.SW = window.SW || {};
           count: ev.count || (ev.files || []).length,
           live: !!ev.live,
         });
+      } else if (ev.type === 'build-stalled' && ev.message) {
+        // A turn that stopped saying anything and was given up on (#39). An offer rather than a
+        // status line: the message explains what happened and what was kept, and the button asks
+        // again. Same `live` rule as the two offers above — a replayed row must not resend a build
+        // on a page load nobody connected it to. A turn with no sentence of the person's to replay
+        // (an approve, a phase of a phased build) arrives with an empty `prompt` and renders as the
+        // message alone.
+        ensureAssistant().blocks.push({
+          type: 'build_stalled',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          live: !!ev.live,
+        });
       } else if (ev.type === 'app-reset') {
         ensureAssistant().blocks.push({
           type: 'status',
@@ -939,7 +952,8 @@ window.SW = window.SW || {};
     // The buttons on a reset offer belong to the offer the user is looking at, not to every copy of
     // it the transcript keeps. Marking the live frame is what separates the two — the server row a
     // reload returns has no `live`, so it replays as text (see buildHistoryToMessages).
-    if (ev.type === 'reset-offer' || ev.type === 'incoming-changes') ev.live = true;
+    if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
+        || ev.type === 'build-stalled') ev.live = true;
     appendBuildRow(ev);
   }
 
@@ -1855,6 +1869,14 @@ window.SW = window.SW || {};
     async buildWithoutReset(prompt) {
       await store.loadBuild({ keepPreview: true });
       return store.sendBuildPrompt(prompt, { skipResetGate: true });
+    },
+
+    // The one answer to a build-stalled offer (#39): ask again. No gate is skipped, because none
+    // was answered — a stalled turn is one that already got past them, and anything that changed
+    // while it hung deserves to be asked about again.
+    async retryStalledBuild(prompt) {
+      await store.loadBuild({ keepPreview: true });
+      return store.sendBuildPrompt(prompt);
     },
 
     async approveBuild(answers, planEdits, planId) {

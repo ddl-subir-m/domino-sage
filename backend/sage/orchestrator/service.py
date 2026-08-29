@@ -127,6 +127,21 @@ log = logging.getLogger("sage.orchestrator")
 # can block up to its httpx timeout, so this is ~a minute of sustained unresponsiveness, not a blip.
 _MAX_POLL_FAILURES = 4
 
+# What ends a BUILD turn that will not end itself (#39). Silence, not wall clock: a turn writing a
+# large file is legitimately quiet for a minute, and a phased build for far longer, so a deadline on
+# the turn's total length kills healthy work. This one is measured from the last thing OpenCode
+# produced — text, a tool call, a phase change — so any turn still making progress resets it and is
+# never at risk however long it runs in total. Five minutes is an order of magnitude above the quiet
+# stretches a real turn has, and far below the 36 minutes the live incident sat wedged.
+#
+# The 12-second deadline in the poll loop is a different rule and stays as it is: it covers a turn
+# that never appeared at all, and this one only starts to matter once one has.
+_BUILD_QUIET_TIMEOUT_S = 300.0
+
+# How long we wait for a wedged session to confirm it actually stopped, after asking it to. Only
+# a session that confirms lets the turn lock go — see _stop_wedged_session.
+_BUILD_STOP_GRACE_S = 30.0
+
 # What ends a Chat turn that will not end itself. Quiet time, not wall clock: a hung
 # `DataSourceClient.query` (Arrow Flight from a published App) never goes idle, the UI stays on its
 # last label, and the turn lock blocks the next send — and that hang looks exactly like this, a
@@ -173,7 +188,7 @@ _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
-    "app_change",
+    "app_change", "build-stalled",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -200,6 +215,16 @@ class ResetBusy(Exception):
     """A reset was asked for while a turn was already streaming. Same rule as a build: one operation
     owns the working tree at a time, and a reset under a live turn would pull the files out from
     under it."""
+
+
+class TurnWedged(Exception):
+    """A turn was given up on and the session it ran in would not confirm that it stopped (#39).
+
+    Raised out of the turn so the entry point that holds `_turn_lock` keeps holding it. Releasing a
+    lock whose session may still be writing is the corruption the lock exists to prevent, arriving
+    from the fix instead of from the bug — a wedged workspace someone can restart beats a corrupted
+    working tree nobody can detect. The turn has already said so in its own stream before this is
+    raised, so nothing above needs to report it a second time."""
 
 
 class AttachTooLarge(Exception):
@@ -2018,6 +2043,11 @@ class Orchestrator:
         # overlap is refused with a clear event, not silently run. Stop stays lock-free (it only sets
         # stop_requested, which the running turn polls) so it can always interrupt the held turn.
         self._turn_lock = threading.Lock()
+        # Set when a turn was given up on and its OpenCode session would not confirm it stopped
+        # (#39). The lock above is then deliberately never released, so every later turn is refused
+        # rather than run over a session that may still be writing. Nothing clears this: restarting
+        # the workspace is the remedy, and the refusal says so.
+        self._turn_wedged = False
         # Serializes the four operations that change WHICH Built App is bound, or what is in it:
         # select, New app, Delete and Reset. Switching stopped taking the turn lock (#77), so it is
         # no longer serialized against the other three by holding that — and each of them reads the
@@ -2045,7 +2075,11 @@ class Orchestrator:
         """True while a build/approve turn holds the turn lock. The UI polls this to tell a dropped
         SSE connection (turn still running, keep showing Stop) from a finished turn — without it, a
         network blip makes the composer look idle and the next send hits _busy_refusal."""
-        return self._turn_lock.locked()
+        # A wedged workspace holds the lock for good (#39) and has no turn in it. Reading that as
+        # "running" would leave the header spinning on a build nobody can stop and the composer
+        # disabled against it — the exact screen this fixes, put back by the fix. It is refused at
+        # the lock either way; what changes is that the refusal can be reached and reads true.
+        return self._turn_lock.locked() and not self._turn_wedged
 
     def read_plan_pin(self) -> dict:
         """The plan this app is being built from, for the rail's plan pin. `{}` when there is none.
@@ -3075,11 +3109,25 @@ class Orchestrator:
             yield from self._build_stream(
                 prompt, mentions, resources,
                 user_text="Build it." if skip_reset_gate or skip_incoming_gate else None)
+        except TurnWedged:
+            # Swallowed, not re-reported: the turn already said what happened in its own stream, and
+            # a traceback on top of it would only be a second, worse version of the same sentence.
+            log.error("turn wedged and would not stop — keeping the turn lock; restart to clear")
         finally:
-            self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
-            self._recheck_app_data()
-            self._clear_turn_baseline()
-            self._turn_lock.release()
+            # Everything here is skipped for a wedged turn — the lock, and the two cleanups that read
+            # and write the working tree. The session would not confirm it stopped, so it may still be
+            # writing there, and both letting the next turn in and healing the tree under it are the
+            # exact collision `_turn_lock` exists to prevent (#39). Any OTHER failure still unwinds
+            # normally: an exception is not evidence that OpenCode is loose in the tree.
+            #
+            # Read off the orchestrator rather than a local, so it holds however this generator
+            # unwinds — a caller that walks away mid-stream raises GeneratorExit here, not
+            # TurnWedged, and that must not hand the lock back either.
+            if not self._turn_wedged:
+                self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
+                self._recheck_app_data()
+                self._clear_turn_baseline()
+                self._turn_lock.release()
 
     def create_thread(self) -> dict:
         """A new Chat Thread in this project. Does not provision a Domino project."""
@@ -3343,6 +3391,12 @@ class Orchestrator:
         timer.start()
 
     def _on_chat_save_idle(self) -> None:
+        if self._turn_wedged:
+            # The lock is held for good (#39) and this would re-arm against it every 30 seconds for
+            # the life of the process. The Chat files stay on disk unharmed; the save that commits
+            # them runs after the restart the wedge card asks for.
+            log.warning("chat: save deferred to the restart — the workspace is wedged")
+            return
         if self._turn_lock.locked():
             self._arm_chat_idle_save()
             return
@@ -3361,7 +3415,10 @@ class Orchestrator:
         # now runs off the lock (see chat_stream), so the window is the moment someone is most
         # likely to send the next thing. Losing the race only defers the commit.
         if not self._turn_lock.acquire(blocking=False):
-            self._arm_chat_idle_save()
+            # Not re-armed on a wedge: the lock never comes back, so this would only queue a timer
+            # per attempt against a workspace that has to be restarted anyway (see _on_chat_save_idle).
+            if not self._turn_wedged:
+                self._arm_chat_idle_save()
             return None
         try:
             return self._chat_save_now(reason)
@@ -4641,11 +4698,69 @@ class Orchestrator:
                 yield ev
 
     def _busy_refusal(self):
-        """Events yielded when a turn is refused because another is already streaming."""
+        """Events yielded when a turn is refused because another is already streaming.
+
+        A wedged workspace gets its own sentence (#39). It is refused by the same held lock, but
+        "wait for it to finish or stop it first" is true and useless there — there is nothing left
+        to wait for and nothing left to stop, and the only thing that clears it is a restart."""
+        if self._turn_wedged:
+            # No `busy` flag, unlike the refusal below: the UI drops every event carrying one and
+            # answers with "Another build is still running" — true of the lock, and the one thing
+            # that is useless here. This sentence is the whole point of the refusal, so it goes
+            # through the ordinary error path where it is actually read.
+            yield {"type": "error",
+                   "message": "This workspace is stuck on a build that would not stop, so Sage "
+                              "cannot start another one here. Restart the workspace to clear it. "
+                              "Everything already written to your apps is safe."}
+            yield {"type": "done", "ok": False, "decision": "wedged"}
+            return
         yield {"type": "error", "busy": True,
                "message": "A build is already running. Wait for it to finish or stop it first, "
                           "then resend."}
         yield {"type": "done", "ok": False, "decision": "busy"}
+
+    def _stop_wedged_session(self, client, sid: str) -> bool:
+        """Ask a wedged session to stop, and report whether it confirmed that it did (#39).
+
+        Order matters and only runs one way: stop OpenCode, THEN release the turn lock. A lock
+        released under a session that is still generating gives you two turns on one working tree,
+        which is the thing the lock exists to prevent — the abandoned turn goes on writing while the
+        next one starts, and nothing downstream can tell which file came from which.
+
+        Confirmation is the session going idle, not the interrupt call returning. `interrupt` posts
+        and returns without waiting, and a session wedged badly enough to need this is exactly the
+        one that may ignore it. Anything short of a clean idle reading — a refused interrupt, a poll
+        that will not answer, a session still running at the grace deadline — is reported as NOT
+        stopped, because the only safe reading of "we cannot tell" is that it is still writing.
+        """
+        import time
+
+        try:
+            client.interrupt(sid)
+        except Exception:
+            # Tolerated rather than fatal, because it is not the answer: the polling below is, and a
+            # session that was already finishing reads idle whether or not this call landed.
+            log.exception("wedged turn: interrupt failed")
+        # Started HERE, after the call returns. `interrupt` is an httpx POST with a 30-second
+        # timeout against the server that just stopped answering, so it is exactly the call likely
+        # to hang — and a deadline set before it would be spent by the time the session got its
+        # first chance to go idle. That would brick a workspace over a slow POST rather than over a
+        # session that actually refused to stop, which is the harshest outcome here.
+        deadline = time.monotonic() + _BUILD_STOP_GRACE_S
+        while True:
+            try:
+                if not client.is_running(sid):
+                    return True
+            except Exception as e:
+                # A failed poll is not a refusal. This is the same OpenCode the main loop tolerates
+                # four consecutive timeouts from — briefly CPU-bound is normal, and a session busy
+                # enough to need an interrupt is exactly the one likely to miss the first probe.
+                # Giving up here would condemn the workspace to a restart over one slow read.
+                log.warning("wedged turn: session state unreadable after interrupt: %s", e)
+            if time.monotonic() >= deadline:
+                log.error("wedged turn: no idle reading %.0fs after interrupt", _BUILD_STOP_GRACE_S)
+                return False
+            time.sleep(1.0)
 
     def _seen_baseline(self, client, sid: str, *, limit: int | None = None) -> set[tuple[str, object]]:
         """Keys of every assistant part already in the session, so a turn only emits its OWN parts.
@@ -5017,6 +5132,63 @@ class Orchestrator:
             restore_mode()
             return {"type": "stopped"}
 
+        def stalled_offer(quiet_for: float):
+            """The transcript's half of giving up on a wedged turn (#39).
+
+            An offer, not a bare error row, on the precedent of the reset offer (#36) and the
+            incoming-changes offer (#78): something needs the person's decision, and here the only
+            decision left is whether to ask again. A plain `error` is a dead end — the screen stops
+            meaning anything and there is nowhere to go from it.
+
+            It says the two things they cannot see for themselves: that Sage waited rather than
+            missed something, and that whatever the turn had already written is still on disk.
+            Nothing is discarded. A wedged turn's files are exactly as legitimate as any other
+            turn's — the person asked for them and the agent wrote them, and only the reporting
+            failed — and deleting them silently would be indistinguishable from the turn never
+            having run. If they are wrong, that at least is something the person can see.
+
+            The button replays `prompt`, what was asked for, rather than `current`, which may be an
+            internal nudge by now. An approve turn and a phase of a phased build have no such
+            sentence of the person's to replay, so they get the message and no button.
+            """
+            waited = (f"{_BUILD_QUIET_TIMEOUT_S / 60:.0f} minutes" if _BUILD_QUIET_TIMEOUT_S >= 90
+                      else f"{_BUILD_QUIET_TIMEOUT_S:.0f} seconds")
+            kept = agent_wrote()
+            if kept and (gate or answer_only):
+                # A read-only turn that wrote broke the guarantee it exists to give, and stalling
+                # does not make those edits legitimate. The ordinary exit reverts them and says so
+                # (the gate/answer-only check further down); this exit has to reach the same answer,
+                # or going quiet becomes the way around the gate.
+                log.error("%s turn wrote code and then stalled — reverting; read-only was bypassed",
+                          "gated" if gate else "answer-only")
+                project.snapshot.discard_changes()
+                kept = False
+                fate = ("It had also edited files, which a planning turn is not allowed to do, so "
+                        "those edits were undone.")
+            elif kept:
+                fate = "What it had already written to your app is kept, so you can see how far it got."
+            else:
+                fate = "It hadn't written anything to your app yet."
+            # A phase is not a turn, and gets no card. _run_step retries a failed phase in a fresh
+            # session, so a build that stalls at phase 3 and finishes on the retry would otherwise
+            # carry "the build stopped responding, so Sage stopped it" permanently in the middle of
+            # a build that worked. The phase machinery already has words for this: the `done` below
+            # is swallowed into the step's own outcome, and the step-done card names it.
+            if owns_turn:
+                yield persist({
+                    "type": "build-stalled",
+                    "message": f"The build stopped responding. It went quiet for {waited}, so Sage "
+                               f"stopped it. {fate}",
+                    "prompt": "" if is_approval else prompt,
+                    "quietForS": round(quiet_for),
+                    "kept": kept,
+                })
+                if kept:
+                    # The app really did change, so it owes the same receipt every other turn that
+                    # changes it leaves — without one, "you can see how far it got" points at nothing.
+                    yield persist(_app_change_event(project.app_for_turn()))
+            yield persist({"type": "done", "ok": False, "decision": "stalled"})
+
         # client.messages(sid) returns the ENTIRE session's messages on every poll, and `seen` starts
         # empty for each user turn (this is a fresh _build_stream call). So without a baseline, this
         # turn's first poll re-walks the PREVIOUS turn's already-completed assistant parts and re-emits
@@ -5129,11 +5301,20 @@ class Orchestrator:
             chat_note = ""
             appeared = False
             start = time.monotonic()
+            # When OpenCode last produced anything, and so what the quiet deadline below is measured
+            # from (#39). Seeded at the send rather than at zero: a turn that says nothing at all from
+            # the moment it is asked is as wedged as one that stops halfway.
+            last_event = start
             # The shim classifies plan/implement per model call (phase_classifier). We only observe
             # the resulting phase here to keep the UI's live indicator in sync — routing is decided
             # in the shim, not here, so it stays per-step and race-free.
             last_phase = project.control.snapshot().phase.value
             last_active: str | None = None  # last "active" label emitted (dedup across 1s polls)
+            # Tool calls seen in flight, by part key. Only five tools carry a printable detail and
+            # only some of those change it, so `last_active` alone would miss a `task`, a `webfetch`
+            # or a `glob` starting — and a step starting IS a new OpenCode message, whatever the
+            # transcript can show for it. Movement, for the quiet deadline; nothing renders from it.
+            in_flight: set[tuple[str, object]] = set()
             poll_failures = 0
             while True:
                 if project.stop_requested:
@@ -5161,6 +5342,13 @@ class Orchestrator:
                     time.sleep(2.0)
                     continue
                 appeared = appeared or running
+                # What "OpenCode produced something" means for the quiet deadline below: a part this
+                # poll had not seen before (a finished tool call, a paragraph of text), or a running
+                # tool whose streaming detail moved. A tool sitting in-progress with the same detail
+                # poll after poll is not progress — it is the shape a wedged turn has.
+                seen_before = len(seen)
+                active_before = last_active
+                in_flight_before = len(in_flight)
                 for m in msgs:
                     if m.get("type") != "assistant":
                         continue
@@ -5177,6 +5365,7 @@ class Orchestrator:
                             status = (part.get("state") or {}).get("status")
                             tool = part.get("tool") or part.get("name") or pt
                             if status in ("pending", "running", "in_progress"):
+                                in_flight.add(key)
                                 # Live "active" hint so a long step names what it's doing instead of
                                 # dead air. Only for tools whose streaming input already carries a
                                 # useful detail (a file path, a command); this deliberately skips
@@ -5234,15 +5423,63 @@ class Orchestrator:
                             else:
                                 yield persist({"type": "agent", "kind": "text", "text": body})
                 cur_phase = project.control.snapshot().phase.value
+                moved = (len(seen) > seen_before or last_active != active_before
+                         or len(in_flight) > in_flight_before)
                 if cur_phase != last_phase:
                     last_phase = cur_phase
+                    # A phase change is the shim having classified another model call, so inference
+                    # is flowing even when nothing has reached the transcript yet.
+                    moved = True
                     yield {"type": "phase", "phase": cur_phase}
+                if moved:
+                    last_event = time.monotonic()
                 if project.last_gateway_error is not None:
                     break
                 if appeared and not running:
                     break
                 if not appeared and time.monotonic() - start > 12:
                     break
+                # Last of the exits, and only once the turn has appeared. A turn that never
+                # registered as running has its own deadline twelve lines up and its own answer;
+                # this one is for the case that had none — a session that says it is running and
+                # has stopped saying anything else (#39).
+                if appeared and time.monotonic() - last_event >= _BUILD_QUIET_TIMEOUT_S:
+                    quiet_for = time.monotonic() - last_event
+                    log.error("build turn wedged: no OpenCode output for %.0fs — giving up", quiet_for)
+                    stopped = self._stop_wedged_session(client, sid)
+                    if not stopped:
+                        # Two failures, and the second is the one that decides what happens next. We
+                        # cannot show that the session let go of the working tree, so the turn lock
+                        # stays held and this workspace takes no more turns until it is restarted.
+                        # Saying that is the whole of what is left to do for the person.
+                        self._turn_wedged = True
+                        # The same persisted card the clean give-up leaves, not an `error` frame:
+                        # `error` is not in _PERSISTED_EVENTS, and this is the one outcome
+                        # guaranteed to outlive the tab — it ends in a restart. No prompt rides
+                        # along, because there is nothing a retry could reach until then.
+                        #
+                        # No restore_mode() either, and that is the point rather than an omission:
+                        # the read-only and web pins are what the shim strips a request against, so
+                        # leaving them armed is the last thing still standing between a session
+                        # that would not stop and the working tree. The user's model pick rides
+                        # along with them, unrestored — in memory only, so the restart clears it.
+                        # The two persists below still append history and set the failure flag;
+                        # what is skipped is everything that reverts or rewrites the app's code.
+                        yield persist({
+                            "type": "build-stalled", "stuck": True, "prompt": "",
+                            "quietForS": round(time.monotonic() - last_event), "kept": True,
+                            "message": (
+                                "The build stopped responding and would not stop when Sage asked "
+                                "it to, so this workspace cannot run another build. Restart the "
+                                "workspace to clear it. Everything already written to your app is "
+                                "still there.")})
+                        yield persist({"type": "done", "ok": False, "decision": "wedged"})
+                        raise TurnWedged()
+                    # It stopped, so the tree is ours again: put the mode pins back and hand the
+                    # person an offer they can act on rather than an error row they cannot.
+                    restore_mode()
+                    yield from stalled_offer(quiet_for)
+                    return
                 time.sleep(1.0)
 
             if project.last_gateway_error is not None:
@@ -5514,11 +5751,25 @@ class Orchestrator:
             self._begin_conversation(conversation)
             self._pin_turn_app(self.project())
             yield from self._approve_locked(answers, plan_edits, plan_id=plan_id)
+        except TurnWedged:
+            # Swallowed, not re-reported: the turn already said what happened in its own stream, and
+            # a traceback on top of it would only be a second, worse version of the same sentence.
+            log.error("turn wedged and would not stop — keeping the turn lock; restart to clear")
         finally:
-            self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
-            self._recheck_app_data()
-            self._clear_turn_baseline()
-            self._turn_lock.release()
+            # Everything here is skipped for a wedged turn — the lock, and the two cleanups that read
+            # and write the working tree. The session would not confirm it stopped, so it may still be
+            # writing there, and both letting the next turn in and healing the tree under it are the
+            # exact collision `_turn_lock` exists to prevent (#39). Any OTHER failure still unwinds
+            # normally: an exception is not evidence that OpenCode is loose in the tree.
+            #
+            # Read off the orchestrator rather than a local, so it holds however this generator
+            # unwinds — a caller that walks away mid-stream raises GeneratorExit here, not
+            # TurnWedged, and that must not hand the lock back either.
+            if not self._turn_wedged:
+                self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
+                self._recheck_app_data()
+                self._clear_turn_baseline()
+                self._turn_lock.release()
 
     def _approve_locked(self, answers: str = "", plan_edits: str | None = None,
                         user_text: str | None = None, plan_id: str = ""):
@@ -5597,7 +5848,11 @@ class Orchestrator:
                 yield ev
         finally:
             # One-shot handoff: consumed, so move it out of the agent's live view (git keeps history).
-            project.app_for_turn().archive_plan()
+            # Not on a wedge (#39): that writes to the tree the session may still be holding, and it
+            # would retire a plan for a build that never happened, leaving nothing to re-approve
+            # after the restart.
+            if not self._turn_wedged:
+                project.app_for_turn().archive_plan()
 
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
         """The document the approved plan.md belongs to, or None.
@@ -5716,6 +5971,7 @@ class Orchestrator:
         errors = ""
         reason = "the step did not complete"
 
+        outcome: dict | None = None
         try:
             for attempt in (1, 2):
                 if attempt == 2 and strong_retry:
@@ -5756,6 +6012,15 @@ class Orchestrator:
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
+        except TurnWedged:
+            # A phase's `done` is swallowed above so one build ends once, not once per phase — but a
+            # wedge never reaches the ending in _phased_approve that would emit the build's own, so
+            # this is the last place it can be said at all. Without it the stream simply stops: no
+            # terminal event, and no record that the build failed for the next turn to replan from.
+            project.app_for_turn().set_last_turn_failed(True)
+            if outcome is not None:
+                yield outcome
+            raise
         finally:
             if escalated:
                 project.control.pick(original_pick)
