@@ -318,3 +318,26 @@ def test_binding_a_handoff_keeps_the_plan_document_it_drafted(tmp_path):
     store.mark_handoff_bound(thread_id)
 
     assert store.read_handoff(thread_id)["planId"] == "001"
+
+
+def test_the_handoff_transcript_is_de_branded_and_quotes_the_agent_verbatim(tmp_path, monkeypatch):
+    """`.sage/handoff-transcript.md` is written into the Built App's repo, which the user owns and
+    publishes, so no part of it carries the pack's words. ADR-0014:108 settles it: a pack change
+    cannot re-brand a conversation that already happened, so a Sage-written label wrapping a record
+    is de-branded ONCE — exactly as `sage: ` became `build: `, not `{productName}: `. Wave 2 landed
+    the same resolution for `.sage/history.md`'s byline; this is that label's other rendering.
+
+    What the agent actually said is verbatim either way: a transcript is a record."""
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "none.json")
+    pack = tmp_path / "brand.json"
+    pack.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
+
+    md = handoff.transcript_markdown([
+        {"type": "user", "text": "put the trades on a dashboard"},
+        {"type": "agent", "kind": "text", "text": "Sage charted them from Domino."},
+    ])
+
+    assert "**Agent:** Sage charted them from Domino." in md   # neutral byline, words untouched
+    assert "**User:** put the trades on a dashboard" in md     # a role, not a brand
+    assert "Ada" not in md and "Acme" not in md                # the pack reaches none of it
