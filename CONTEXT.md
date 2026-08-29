@@ -250,3 +250,12 @@ re-export, which is a viewer being handed the publisher's own access to a store:
 where the data goes, re-export about whose permission it moves under. Publish refuses re-export and
 only names egress ([ADR-0012](docs/adr/0012-every-store-and-alias-combination-publishes.md)).
 _Avoid_: leak, exfiltration, data sharing
+
+**Raw Gateway call**:
+A Built App reaching Domino's LLM Gateway with its own `fetch` instead of `askModel`. It works —
+the viewer's cookie authenticates it either way — and loses the `X-LLM-Tag-sage-*` cost tags that
+attribute the app's spend, the error messages written for the viewer, session-expiry detection and
+streaming. It also leaves the Alias out of the record the [[Egress]] sentence is built from, which
+is why that sentence can understate. The end-of-turn scan flags one and nudges the agent to rewrite
+it (#94); nothing about it refuses a publish.
+_Avoid_: direct call, unregistered model call, hardcoded model

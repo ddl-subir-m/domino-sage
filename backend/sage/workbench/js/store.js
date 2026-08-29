@@ -896,6 +896,31 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({ type: 'status', ok: !!ev.ok, value });
       } else if ((ev.type === 'ask-blocked' || ev.type === 'ask-active') && ev.message) {
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'data-leak' && ev.file) {
+        // Persisted since it shipped and never drawn, so the defect it reports — attached data
+        // copied into src/, which leaks it into git — reached the transcript and nobody ever saw it.
+        // The nudge is the agent's half; this is the creator's, and without it a prompt that keeps
+        // causing the copy gets repeated by the one person who could stop writing it.
+        ensureAssistant().blocks.push({
+          type: 'status',
+          ok: false,
+          value: `${ev.file} was copied into ${(ev.where || []).join(', ') || 'the app source'}`
+            + ' — moving it back to data/',
+        });
+      } else if (ev.type === 'gateway-call' && ev.file) {
+        // Calling Domino's LLM Gateway around askModel (#94). Drawn beside the leak line above for
+        // the same reason: the agent is being nudged to fix it, and a creator who can see which
+        // file did it can tell whether the fix landed.
+        ensureAssistant().blocks.push({
+          type: 'status',
+          ok: false,
+          value: `${ev.file} calls Domino's LLM Gateway directly — rewriting it to use askModel`,
+        });
+      } else if (ev.type === 'gateway-alias-unbound' && ev.message) {
+        // The half of that the agent cannot finish: only a person can bind an Alias (ADR-0010), so
+        // this sentence is the whole point of the event and is written server-side, already
+        // addressed to the creator.
+        ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
       } else if (ev.type === 'mentions-unresolved' && ev.message) {
         // Sits above the turn it belongs to rather than beside the composer: what the build could not
         // use is part of the record of that build, and a toast would be gone by the time the app it

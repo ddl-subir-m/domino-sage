@@ -65,6 +65,7 @@ from ..resources.bound_schema import (
 )
 from ..resources.bound_schema import agents_block as data_agents_block
 from ..resources.builtapp import catalog_problems, serve_module, stranded_levels
+from ..resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
 from ..resources.model_api_credentials import (
     Credential,
     CredentialRequired,
@@ -211,7 +212,7 @@ _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
-    "app_change", "build-stalled",
+    "app_change", "build-stalled", "gateway-call", "gateway-alias-unbound",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -5339,6 +5340,23 @@ class Orchestrator:
         MAX_RUNTIME_FIXES = 3
         leak_fixes = 0
         MAX_LEAK_FIXES = 2
+        # An app that declares a model has a live gateway URL in its own source, and nothing stops
+        # the agent fetching it instead of calling `askModel` (#94). Bounded like the leak fix
+        # beside it, and for the same reason: a defect we can describe but cannot make the agent fix.
+        gateway_fixes = 0
+        MAX_GATEWAY_FIXES = 2
+        GATEWAY_FIX_NUDGE = (
+            # Self-contained rather than pointing at a heading in AGENTS.md: `agents_block` writes
+            # no model section at all for an app with no Alias bound, and titles it in the plural for
+            # an app with several, so a quoted heading is wrong in two of the three cases.
+            "You called Domino's LLM Gateway with your own fetch in {files}. Rewrite those calls to "
+            "use `askModel` from `src/sageLlm.ts` — import it and pass it the messages; it already "
+            "knows the model, the URL and the headers. A "
+            "raw call drops the X-LLM-Tag-sage-* cost tags that attribute this app's spend, the "
+            "error messages written for the viewer, the expired-session check and streaming — and "
+            "`/api/llm` is Sage's PREVIEW proxy, which is not there once the app is published, so a "
+            "call written against it works while you build and breaks the moment it ships."
+        )
         LEAK_FIX_NUDGE = (
             "You copied attached data into the app's source, which leaks it into git — attached files "
             "live under public/data/ (gitignored on purpose) and must be READ from there at runtime, "
@@ -5849,6 +5867,29 @@ class Orchestrator:
                             yield persist({"type": "data-leak", "file": name, "where": where[:3]})
                         yield {"type": "iterate", "reason": "copied attached data into source — moving it back to data/"}
                         current = LEAK_FIX_NUDGE
+                        continue
+                # The agent may have called the LLM Gateway itself rather than through `askModel`,
+                # which loses the cost tags, the viewer's error messages, session expiry and
+                # streaming — and a call written against the preview's `/api/llm` proxy works while
+                # it is built and breaks once it ships (#94). Its own block rather than folded into
+                # the leak one above: two defects want two nudges, and the `continue` means only one
+                # fires per iteration, so a turn that did both fixes the leak and catches this on
+                # the next pass. Nothing gates — the nudge is bounded and the turn completes either
+                # way, exactly as the leak fix does.
+                if report.ok and wrote_code and gateway_fixes < MAX_GATEWAY_FIXES:
+                    raw_calls = self._detect_raw_gateway_calls(project)
+                    if raw_calls:
+                        gateway_fixes += 1
+                        for name, _ in raw_calls:
+                            yield persist({"type": "gateway-call", "file": name})
+                        # The half the agent cannot finish: rewriting the call to `askModel` makes an
+                        # Alias this app never declared throw, and only a person can bind one
+                        # (ADR-0010). Said once for the turn, not once per file.
+                        notice = unbound_alias_notice(raw_calls)
+                        if notice:
+                            yield persist({"type": "gateway-alias-unbound", "message": notice})
+                        yield {"type": "iterate", "reason": "called the LLM Gateway directly — routing it through askModel"}
+                        current = GATEWAY_FIX_NUDGE.format(files=", ".join(n for n, _ in raw_calls))
                         continue
                 restore_mode()
                 # The receipt for what this turn changed, before the line that closes the turn.
@@ -8072,6 +8113,24 @@ class Orchestrator:
         is neither the tree the agent copied into nor the list it copied from — so asking it would
         report no leak."""
         return self._copies_in_app(project, project.app_for_turn(), project.attachments_for_turn())
+
+    def _detect_raw_gateway_calls(self, project: Project) -> list[tuple[str, list[str]]]:
+        """(source file, [Alias names it asks for that this app does not declare]) for the app a
+        turn is BUILDING — the source that calls the LLM Gateway around `askModel` (#94).
+
+        The I/O half of `gateway_bypass`, which is pure: this reads the tree and the manifest and
+        hands both in. `_scan_app_sources`'s existing walk, not a second one — the leak scan above
+        does its own because it needs the attachment bytes as well, and this needs nothing the walk
+        does not already return.
+
+        The app being built rather than the one on screen, for `_detect_leaks`'s reason: after a
+        switch mid-build (#77) the on-screen app is not the tree the agent wrote into, and its
+        manifest is not the record the flagged call should be judged against.
+        """
+        app = project.app_for_turn()
+        declared = [b.name for b in bound_aliases(parse_bindings(app.read_bindings()))]
+        return raw_gateway_calls(self._scan_app_sources(app), declared,
+                                 self._browser_gateway_base, _SAGE_OWNED_SOURCES)
 
     def _attached_per_app(self, project: Project) -> list[tuple[Workspace, list[dict]]]:
         """Every Built App on the volume, paired with the attachment list to judge it by.

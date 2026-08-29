@@ -182,6 +182,16 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
          "show that message as it is; do not replace it with your own wording."),
         ("- The call goes from the viewer's browser to Domino's LLM Gateway under the viewer's own "
          "Domino identity. There is no key to add, no server to write, and no CORS to configure."),
+        # Said because the line above it reads like an invitation to write the fetch yourself (#94).
+        # A consequence rather than a prohibition, like every rule here: `askModel` is strictly
+        # better in each of these respects, so there is nothing to weigh. The preview clause is the
+        # one an agent cannot work out by testing — `/api/llm` is Sage's own proxy and answers
+        # correctly right up to the moment the app ships.
+        ("- **Never `fetch` the LLM Gateway yourself — always `askModel`.** A raw call loses the "
+         "`X-LLM-Tag-sage-*` cost tags that attribute this app's spend, the error messages written "
+         "for the viewer, the check for an expired Domino session, and streaming. And `/api/llm` is "
+         "Sage's PREVIEW proxy: a call written against it works while you build and breaks the "
+         "moment the app is published."),
         # Said for the same reason the query block says it (#7). A model call used to fail in the
         # preview whatever the app did — cross-origin — so an agent that saw it fail could reasonably
         # build a screen around the model being unreachable. Now that it answers, a failure is a real
