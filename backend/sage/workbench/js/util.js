@@ -7,11 +7,14 @@ window.SW = window.SW || {};
   // times read correctly no matter when the prototype is demoed.
   const TODAY = new Date();
 
+  // The two rows the pack renames read their label through a getter rather than holding a string:
+  // this file is evaluated before /api/brand answers, and `RESOURCE_META[kind].label` is read
+  // directly as well as through `labelFor`, so read time is the only point that covers both.
   const RESOURCE_META = {
     plan:             { icon: '📋', label: 'plan',           group: 'artifacts' },
-    dataset:          { icon: '📦', label: 'dataset',        group: 'data' },
+    dataset:          { icon: '📦', group: 'data', get label() { return SW.brand.text('{dataset}'); } },
     table:            { icon: '▦',  label: 'database table', group: 'data' },
-    datasource:       { icon: '🔌', label: 'data source',    group: 'data' },
+    datasource:       { icon: '🔌', group: 'data', get label() { return SW.brand.text('{dataSource}'); } },
     model_llm:        { icon: '🧠', label: 'model',          group: 'models' },
     model_predictive: { icon: '🤖', label: 'predictive model', group: 'models' },
     tool:             { icon: '🔧', label: 'tool',           group: 'tools' },

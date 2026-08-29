@@ -374,3 +374,67 @@ def test_closing_the_stream_stops_the_reader_because_event_never_ends(monkeypatc
             stream.close()
     assert seen == 3          # the frame after close() is not delivered
     assert closed == [True]   # and the connection went with it
+
+
+def _spawn_capturing_env(monkeypatch, cwd):
+    """Start an OpenCodeServer against a fake `opencode serve` and hand back the env it spawned with."""
+    import io
+
+    from sage.driver import server as drv
+
+    seen = {}
+
+    class _Proc:
+        pid = 1
+        stdout = io.StringIO("opencode server listening on http://127.0.0.1:4096\n")
+
+        def poll(self):
+            return 0
+
+    def _popen(cmd, **kw):
+        seen["env"] = kw["env"]
+        return _Proc()
+
+    monkeypatch.setattr(drv.subprocess, "Popen", _popen)
+    drv.OpenCodeServer(cwd=cwd).start(ready_timeout_s=5.0)
+    return seen["env"]
+
+
+def test_opencode_is_pointed_at_the_voiced_config_not_the_tokenised_source(monkeypatch, tmp_path):
+    """The checked-in config says `{assistantName}`; only the installed copy says the pack's word.
+
+    Handing OpenCode the source makes the chat agent introduce itself with a pair of braces, in
+    every install, packed or not — so the voiced copy has to win when it is there.
+    """
+    from sage.driver import server as drv
+
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    (cwd / "opencode.json").write_text('{"agent": {"sage-chat": {"prompt": "{assistantName}"}}}')
+    voiced = tmp_path / "global" / "opencode.json"
+    voiced.parent.mkdir()
+    voiced.write_text('{"agent": {"sage-chat": {"prompt": "Ada"}}}')
+    monkeypatch.setattr(drv, "_VOICED_CONFIG", voiced)
+
+    env = _spawn_capturing_env(monkeypatch, cwd)
+
+    assert env["OPENCODE_CONFIG"] == str(voiced)
+    assert "{assistantName}" not in voiced.read_text()
+
+
+def test_the_source_config_is_the_fallback_when_nothing_was_installed(monkeypatch, tmp_path):
+    """A boot where `_install_opencode_config` could not write must still leave the gateway wired.
+
+    Without any OPENCODE_CONFIG, OpenCode never sees the sage-gateway provider and drops to its
+    free tier — a 429 in the user's face is worse than an unresolved token in a prompt.
+    """
+    from sage.driver import server as drv
+
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    (cwd / "opencode.json").write_text("{}")
+    monkeypatch.setattr(drv, "_VOICED_CONFIG", tmp_path / "nowhere" / "opencode.json")
+
+    env = _spawn_capturing_env(monkeypatch, cwd)
+
+    assert env["OPENCODE_CONFIG"] == str(cwd / "opencode.json")

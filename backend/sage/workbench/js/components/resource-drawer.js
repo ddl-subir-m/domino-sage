@@ -100,7 +100,13 @@ window.SW = window.SW || {};
             type: 'info',
             showIcon: true,
             message: `Not in ${scope.name} yet`,
-            description: `You are looking at it in the Domino catalogue. Adding it makes it available to ${SW.brand.assistant()} everywhere in ${scope.name}. You can remove it later.`,
+            // Three roles in one sentence: the platform's catalogue and our own name both resolve
+            // through the pack, while the Project's name is the user's word and only fills a slot.
+            description: SW.brand.text(
+              'You are looking at it in the {platformName} catalogue. Adding it makes it available '
+                + 'to {assistantName} everywhere in {scope}. You can remove it later.',
+              { scope: scope.name },
+            ),
           })
       );
     };

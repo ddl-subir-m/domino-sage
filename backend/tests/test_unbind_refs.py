@@ -18,7 +18,11 @@ from pathlib import Path
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.resources.bindings import KIND_DATA_SOURCE, Binding
-from sage.resources.pinned_model import CONFIG_PATH, HELPER_PATH, render_config
+from sage.resources.app_helpers import TEMPLATE
+from sage.resources.pinned_model import render_config
+
+CONFIG_PATH = TEMPLATE.llm_config_path
+HELPER_PATH = TEMPLATE.llm_path
 from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.models import ModelCatalog
 
@@ -65,7 +69,7 @@ def test_unbinding_an_alias_names_the_app_code_that_still_calls_it(tmp_path):
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-mimo")
     _write(orch, "src/Cluster.tsx",
-           'import { askModel } from "./sageLlm";\n'
+           'import { askModel } from "./appLlm";\n'
            'await askModel(msgs, { alias: "mimo-v2.5" });\n')
 
     result = orch.unbind("llm_alias", "id-mimo")
@@ -78,7 +82,7 @@ def test_unbinding_an_alias_names_the_app_code_that_still_calls_it(tmp_path):
 def test_sages_own_files_are_never_reported_as_references(tmp_path):
     """The whole reason this can't be a plain grep for the Alias name.
 
-    `src/sageLlm.config.ts` lists every bound Alias — that is its job — and this unbind is what
+    `src/appLlm.config.ts` lists every bound Alias — that is its job — and this unbind is what
     rewrites it. If it counted, EVERY unbind would warn, and the one file it named would be one the
     creator must not edit.
     """
@@ -183,7 +187,7 @@ def test_refusing_a_membership_removal_names_the_same_files(tmp_path):
     orch.add_project_resource({"id": "llm_alias:id-mimo", "kind": "model_llm", "name": "MiMo 2.5"})
     orch.bind_llm_alias("id-mimo")
     _write(orch, "src/Cluster.tsx",
-           'import { askModel } from "./sageLlm";\n'
+           'import { askModel } from "./appLlm";\n'
            'await askModel(msgs, { alias: "mimo-v2.5" });\n')
 
     try:

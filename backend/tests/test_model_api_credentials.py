@@ -28,8 +28,8 @@ from sage.resources.model_api_credentials import (
     verify_credential,
 )
 from sage.resources.model_api_snippet import parse_snippet
+from sage.resources.app_helpers import TEMPLATE as HELPERS
 from sage.resources.pinned_model_api import (
-    CONFIG_PATH,
     agents_block,
     bound_model_apis,
     pinned_model_api,
@@ -37,6 +37,8 @@ from sage.resources.pinned_model_api import (
 )
 from sage.resources.provider import FakeResourceProvider, LlmAlias, ModelApi
 from sage.router.models import ModelCatalog
+
+CONFIG_PATH = HELPERS.model_api_config_path
 
 TOKEN = "SsQBZCygwPP79P8Q57qLPrGIfj67YAFBm3nrTT6Sm7vuPhBPBJvAL7lHm6jp36qB"
 MODEL_ID = "6a8727f40ff0450030085fb3"
@@ -246,7 +248,7 @@ def test_the_generated_config_carries_the_url_and_token_and_warns_about_the_bund
     api = Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk")
     text = render_config([api], {MODEL_ID: Credential(URL, TOKEN)})
     assert f'"{URL}"' in text and f'"{TOKEN}"' in text
-    # The exposure is the whole reason this file is different from sageLlm.config.ts. Whoever opens
+    # The exposure is the whole reason this file is different from appLlm.config.ts. Whoever opens
     # it later must not have to reconstruct why a secret is sitting in a committed file.
     assert "CAN READ THEM" in text
 
@@ -296,7 +298,7 @@ def _orch(tmp_path: Path) -> Orchestrator:
     template = tmp_path / "template"
     (template / "src").mkdir(parents=True)
     (template / "src" / "App.tsx").write_text("placeholder")
-    (template / "src" / "sageModelApi.ts").write_text("// helper")
+    (template / "src" / "appModelApi.ts").write_text("// helper")
     (template / "package.json").write_text("{}")
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code",

@@ -4,7 +4,7 @@ The bug this closes: a published app calls Domino's LLM Gateway straight from th
 and that works only because the app and the gateway are both served from `apps.<domino-host>` — the
 call is same-origin and the viewer's own cookie authenticates it. The preview is served from the
 builder's origin, so the identical call is cross-origin, needs CORS headers the gateway does not
-send, and throws before it leaves the page. `sageLlm.ts` reports that as "Domino's LLM Gateway is not
+send, and throws before it leaves the page. `appLlm.ts` reports that as "Domino's LLM Gateway is not
 answering", which is the one thing that was NOT wrong. An app with a model could not be tried until
 it shipped.
 
@@ -184,7 +184,7 @@ def test_a_fresh_token_is_taken_per_call(gateway: _Gateway):
 
 
 def test_cost_tags_survive_the_hop(gateway: _Gateway):
-    # `tagHeaders()` in sageLlm.ts is the only thing that says which app the spend came from — a
+    # `tagHeaders()` in appLlm.ts is the only thing that says which app the spend came from — a
     # browser call carries no project context. Dropping them here would put preview spend in
     # "unknown" while the published app's lands correctly, and the two would never reconcile.
     _client(gateway).post("/api/llm/chat/completions", json={"stream": False},
@@ -233,7 +233,7 @@ def test_a_streamed_answer_is_streamed_and_not_buffered(gateway: _Gateway):
 
 def test_without_a_gateway_the_call_falls_through_to_vite(gateway: _Gateway):
     # `openai` and `fake` mode have no Domino gateway, and an app in those was never given one to
-    # call. Falling through means Vite 404s it, which `sageLlm.ts` already reads as "no model" —
+    # call. Falling through means Vite 404s it, which `appLlm.ts` already reads as "no model" —
     # rather than this proxy inventing an error for a configuration that is not broken.
     r = _client(None).get("/api/llm/models")
 
@@ -261,3 +261,30 @@ def test_a_token_that_cannot_be_minted_says_the_published_app_is_fine(gateway: _
 
     assert r.status_code == 502
     assert "published app is unaffected" in r.json()["error"]["message"]
+
+
+def test_the_gateway_errors_name_the_packs_brands(tmp_path, monkeypatch):
+    """Both 502s the preview writes itself name us and name the platform in one breath (#109).
+    An OEM pack moves both words; the gateway's own name is not a noun in the pack and stays."""
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "none.json")
+    pack = tmp_path / "brand.json"
+    pack.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada",
+                                "platformName": "Acme Cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
+
+    def no_token() -> tuple[str, str]:
+        raise OSError("sidecar refused the connection")
+
+    minting = TestClient(make_preview_app(_no_vite, "", None, no_token)).get("/api/llm/models")
+    dead = "http://127.0.0.1:9/v1"     # discard port: connections are refused, not hung
+    reaching = TestClient(
+        make_preview_app(_no_vite, "", None, lambda: (dead, "tok"))
+    ).get("/api/llm/models")
+
+    assert minting.json()["error"]["message"].startswith(
+        "Ada could not get a token for Acme Cloud's LLM Gateway,"
+    )
+    assert reaching.json()["error"]["message"] == "The preview could not reach Acme Cloud's LLM Gateway."
+    for r in (minting, reaching):
+        assert "Domino" not in r.json()["error"]["message"]
+        assert "Sage" not in r.json()["error"]["message"]

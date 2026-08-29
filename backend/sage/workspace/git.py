@@ -75,13 +75,20 @@ def has_remote(path: Path) -> bool:
 
 
 def _identity_args(path: Path) -> list[str]:
-    """Use the repo's configured identity (Domino sets it) when present; otherwise fall back to a
-    sage identity so an unconfigured environment still commits cleanly rather than erroring."""
+    """Use the repo's configured identity (the platform sets it) when present; otherwise fall back to
+    a neutral one so an unconfigured environment still commits cleanly rather than erroring.
+
+    De-branded once, not per-pack: this is the author line of every save in a repo the partner's own
+    customer can read, and git history is immutable, so a name written here can never be re-branded
+    later without falsifying a record already committed. ADR-0014's third arm, the same call as
+    `build: ` one field over. `agent` because that is what wrote the commit, and the address claims
+    no domain at all.
+    """
     args: list[str] = []
     if not _git(path, "config", "user.email", check=False).stdout.strip():
-        args += ["-c", "user.email=sage@dominodatalab.com"]
+        args += ["-c", "user.email=agent@localhost"]
     if not _git(path, "config", "user.name", check=False).stdout.strip():
-        args += ["-c", "user.name=sage"]
+        args += ["-c", "user.name=agent"]
     return args
 
 

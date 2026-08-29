@@ -27,7 +27,14 @@ window.SW = window.SW || {};
     { id: 'go_build', group: 'Go to', label: 'Build', run: () => goTo('build') },
     { id: 'go_code', group: 'Go to', label: 'Code', run: () => SW.router.go('#/code') },
     { id: 'go_manage', group: 'Go to', label: 'Manage', run: () => SW.router.go('#/manage') },
-    { id: 'go_gallery', group: 'Go to', label: 'Gallery', run: () => SW.router.go('#/gallery') },
+    // A getter, because this list is built when the file is evaluated — before GET /api/brand has
+    // answered — and the label is both what is shown and what the query is matched against.
+    {
+      id: 'go_gallery',
+      group: 'Go to',
+      get label() { return SW.brand.text('{gallery}'); },
+      run: () => SW.router.go('#/gallery'),
+    },
     { id: 'new_thread', group: 'Actions', label: 'New conversation', run: newConversation },
     { id: 'switch', group: 'Actions', label: 'Switch project', run: () => SW.store.set({ scopePickerOpen: true }) },
     { id: 'invite', group: 'Actions', label: 'Invite people', run: () => SW.store.set({ inviteOpen: true }) },

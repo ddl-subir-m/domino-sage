@@ -7,10 +7,14 @@ def test_the_published_app_serves_the_door_not_the_chat_shell(monkeypatch):
     """ADR-0004: the Workbench App is a door. It must not serve Chat from its scratch checkout —
     it sends the viewer to their own Sage Builder, where their files are in a real git Project."""
     import sage.orchestrator.app as appmod
+    from sage.orchestrator.brand import text as brand_text
 
-    assert Path(appmod.ui().path) == appmod._UI  # a Sage Builder serves the shell, unchanged
+    # The route templates the page it picks (#116), so which one it picked is read off the body.
+    served = lambda: appmod.ui().body.decode()
+
+    assert served() == brand_text(appmod._UI.read_text())  # a Sage Builder serves the shell, unchanged
     monkeypatch.setattr(appmod, "proxy_is_app", lambda: True)
-    assert Path(appmod.ui().path) == appmod._DOOR_UI
+    assert served() == brand_text(appmod._DOOR_UI.read_text())
 
     door = Path(appmod._DOOR_UI).read_text()
     assert "/door" in door and "location.replace" in door  # it opens the builder and goes there
@@ -95,13 +99,13 @@ def test_workbench_is_the_default_ui():
     # The promote targets are every writable mount, not the curated rail: membership never gated
     # the server's copy, so it must not grey out the menu either.
     assert b"SW.store.get().datasetTargets" in panel.content
-    assert b"No writable Dataset is mounted here" in panel.content
+    assert b"No writable {dataset} is mounted here" in panel.content
 
     tree = client.get("/js/components/resource-tree.js")
     assert tree.status_code == 200
     # The dead end is gone: the tree lists files for any readable Dataset, mounted or not.
     assert b"Files are not mounted in this workspace" not in tree.content
-    assert b"No files in this Dataset." in tree.content
+    assert b"No files in this {dataset}." in tree.content
     assert b"SW.DatasetFileTree" in tree.content
     assert b"SW.DataSourceCascade" in tree.content
 

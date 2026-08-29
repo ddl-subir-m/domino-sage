@@ -1,0 +1,256 @@
+# Every surface a person reads, and what the paranoid pack has to prove about it (#124, ADR-0014).
+#
+# THIS FILE IS THE TEST. `test_the_paranoid_pack_finds_no_leak.py` reads it, boots the Workbench on
+# a pack of nonsense sentinels, and asserts that none of the words below survive anywhere listed
+# here. It also walks the code for the surfaces that can grow — an entry page, a template
+# AGENTS.md, a Python module that puts a sentence in front of a person, an OpenCode agent — and
+# fails when one of them is reachable and absent from this list. Adding a surface without adding it
+# here is itself the failure, so a coverage list cannot be aspirational.
+#
+# This does not replace the lint over marked positions. The lint catches the string somebody writes
+# next week; this catches a token that is never resolved.
+
+[forbidden]
+# Case-sensitive and whole-word, which is also how identifiers stay out of it: `.sage/`,
+# `sage-chat`, `domino_data`, `DOMINO_API_HOST`, `DatasetClient` and `./img/domino-logo.svg` are
+# code and paths, and ADR-0014 does not rename them. `test_an_identifier_is_not_a_word` pins that,
+# so it is a decision rather than a side effect of how the regex came out.
+words = [
+  "Sage", "Domino", "ML Studio", "AI Workbench", "Workbench",
+  "Dataset", "Datasets", "Data Source", "Data Sources",
+  "Model API", "Model APIs", "LLM Alias", "LLM Aliases",
+  "Built App", "Built Apps", "Gallery", "Galleries",
+]
+
+[sentinels]
+# Values no real pack would carry, so a pass cannot be an accident of the Domino defaults. Every
+# surface below that says `shows_pack = true` must be shown carrying one of these: a surface that
+# resolves to nothing at all would otherwise pass by having no words to leak.
+prefix = "ZZQQ-"
+
+[rules.runtime-values]
+# The AC's exemption for text Sage did not write, and it is structural rather than a word list.
+# A Resource the user named after the company, a line of their SQL, a platform error body: all of
+# them arrive as VALUES, and no probe here reads a value. `brand.text()` sites are resolved with a
+# marker standing in for every keyword argument, and a passed-through error is a runtime string
+# with no literal to harvest. So Sage's own prose is the only thing that can ever fail this file.
+# Pinned by `test_text_sage_did_not_write_is_never_scanned`.
+why = "provenance is the whole point of author-time substitution (ADR-0014)"
+
+[rules.comments]
+# An entry page is scanned as bytes, and a grep over source is explicitly not this test — it breaks
+# the moment somebody writes a code comment. HTML, CSS and JS comments come out before the scan.
+# Everything else stays in, including every string literal the page's own script can put on screen:
+# door.html builds its failure line from one, and that line is a leak if it names us.
+applies_to = ["entry-page"]
+why = "a comment is not read by a person; ADR-0014 rules a source grep out for exactly this reason"
+
+[exemption.builder-nouns-as-synonyms]
+text = "Recognise **Dataset**, **Data Source**, **Model API**, **LLM Alias**, **Built App** and **Gallery**"
+why = """The one place a DEFAULT noun is allowed to be literal (brand.md, Nouns). The agent speaks
+the pack's words and understands the defaults, because the user will type "dataset" whatever the
+pack says. Re-branding this line would delete the synonym it exists to teach."""
+
+[exemption.chat-nouns-as-synonyms]
+text = "Recognise **Dataset** and **Data Source** as the same two things when the user types one"
+why = """Chat's half of the same rule. It names the two nouns Chat's own prose uses, so the agent
+still answers a question about a "dataset" in the partner's word for one."""
+
+# --- the surfaces ---------------------------------------------------------------------------
+
+[kind.api-brand]
+what = "GET /api/brand — the resolved pack every Workbench string is drawn from"
+
+[kind.entry-page]
+reads = "file"
+what = """The HTML the server sends. Both pages come through one route, which substitutes the pack
+before the browser paints, so the flash in which an unbranded name is on screen never happens."""
+discovered_by = "every *.html in sage/workbench/, which is what that route can serve"
+
+[kind.shell-dom]
+what = """The words the shell's own chrome renders once the pack has arrived — read off the tree,
+not off the source, because `SW.brand.text('{gallery}')` reads clean in the file and leaks the
+moment the token is one the pack does not carry."""
+
+[kind.python-prose]
+reads = "module"
+what = """Every sentence this module can put in front of a person: an error `detail`, a refusal, a
+status line. Harvested at its `brand.text()` site and resolved against the sentinel pack, so both
+a bare name and a token that never resolves are failures."""
+discovered_by = "every module under sage/ that calls brand.text(), from the AST rather than a list"
+# Every brace at one of these sites is either a pack key or a value the caller fills, so anything
+# still written `{like this}` afterwards is a token nothing resolves. The other kinds cannot be
+# held to it: a template's `basename={appBase}` and a page's CSS are braces that are not tokens.
+no_unresolved_braces = true
+
+[kind.agents-md]
+reads = "template"
+what = """The instructions a Built App or a Chat workspace is seeded with. The repo is a surface —
+a partner's own customer can read it — so AGENTS.md re-brands like any other prompt."""
+discovered_by = "every template/*/AGENTS.md"
+
+[kind.agent-prompt]
+reads = "agent"
+what = "The OpenCode system prompt this agent speaks from, voiced when the config is installed."
+discovered_by = "every agent in opencode.json carrying a prompt"
+
+[kind.commit-message]
+what = """What Sage writes into a person's git history. De-branded once rather than per-pack (the
+prefix is `build: `), because a pack change must not re-brand a commit that already happened."""
+
+[[surface]]
+kind = "api-brand"
+shows_pack = true
+
+[[surface]]
+kind = "entry-page"
+file = "index.html"
+shows_pack = true
+
+[[surface]]
+kind = "entry-page"
+file = "door.html"
+shows_pack = true
+
+[[surface]]
+kind = "shell-dom"
+shows_pack = true
+
+[[surface]]
+kind = "agents-md"
+template = "react-vite"
+shows_pack = true
+exempt = ["builder-nouns-as-synonyms"]
+
+[[surface]]
+kind = "agents-md"
+template = "chat"
+shows_pack = true
+exempt = ["chat-nouns-as-synonyms"]
+
+[[surface]]
+kind = "agent-prompt"
+agent = "sage-chat"
+shows_pack = true
+exempt = ["chat-nouns-as-synonyms"]
+
+[[surface]]
+kind = "agent-prompt"
+agent = "sage-ask"
+shows_pack = true
+
+[[surface]]
+kind = "agent-prompt"
+agent = "sage-plan"
+shows_pack = true
+
+[[surface]]
+kind = "agent-prompt"
+agent = "sage-architect"
+shows_pack = true
+
+[[surface]]
+kind = "agent-prompt"
+agent = "sage-implement"
+shows_pack = true
+
+[[surface]]
+kind = "commit-message"
+# The one surface that carries no pack word at all, and that is the design: a commit message is a
+# record, and regenerating history under a new pack would falsify it. So it is de-branded once.
+shows_pack = false
+
+[[surface]]
+kind = "python-prose"
+module = "sage/assets/provider.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/orchestrator/app.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/orchestrator/service.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/preview/proxy.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/provision/domino.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/provision/service.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/bindings.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/bound_schema.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/gateway_bypass.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/model_api_credentials.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/model_api_snippet.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/pinned_model.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/pinned_model_api.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/preflight.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/provider.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/publish_egress.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/resources/publish_guard.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/tools/app_visibility.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
+module = "sage/tools/dataset_probe.py"
+shows_pack = true

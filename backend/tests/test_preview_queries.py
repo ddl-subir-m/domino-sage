@@ -341,3 +341,28 @@ class _Query:
 class _Raiser:
     def __call__(self, query, params):
         raise RuntimeError("boom")
+
+
+def test_a_query_server_that_will_not_answer_names_the_packs_assistant(tmp_path, monkeypatch):
+    """The one sentence the proxy writes itself on this path names us, so an OEM pack renames it
+    (#109). `serve.py`'s own words, when there are any, are still forwarded verbatim."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "none.json")
+    pack = tmp_path / "brand.json"
+    pack.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
+
+    class _Dead:
+        port = 9              # discard port: connections are refused, not hung
+        def refresh(self) -> None: ...
+
+    def upstream() -> str:
+        raise RuntimeError("vite is not running in this test")
+
+    r = TestClient(make_preview_app(upstream, "", lambda: _Dead())).post(
+        "/api/queries/usage", json={"params": {}},
+    )
+
+    assert r.status_code == 502
+    assert r.json()["error"] == "Ada could not reach this app's query server in the preview."

@@ -1,9 +1,9 @@
 """The one LLM Alias a Built App calls, pinned into the app's own source (#7).
 
 A Binding is a record (#6). This is what turns one of those records into something the published app
-can actually call: the Alias name is written into `src/sageLlm.config.ts`, committed to the app's
-repo, and the template's `src/sageLlm.ts` calls the gateway with it straight from the viewer's
-browser.
+can actually call: the Alias name is written into the app's own LLM config, committed to the app's
+repo, and the template's LLM helper calls the gateway with it straight from the viewer's browser.
+Which file each of those is depends on the app — see `app_helpers`.
 
 Pinned, and pinned in the app's OWN repo, for two reasons. The app answers the same way for everyone
 who opens it, rather than resolving a model per viewer. And the published app has no Sage around it
@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import json
 
+from ..orchestrator import brand
+from .app_helpers import TEMPLATE, HelperNames
 from .bindings import KIND_LLM_ALIAS, Binding
 
 # Sage-owned, committed into the app's repo, and both are needed for the app to build: the helper
-# imports the config. Written as a pair, never one without the other.
-CONFIG_PATH = "src/sageLlm.config.ts"
-HELPER_PATH = "src/sageLlm.ts"
+# imports the config. Written as a pair, never one without the other. Their NAMES are the app's
+# rather than this module's (#119), so every function below takes them — see `app_helpers`. The
+# default is the template's, which is what a fresh app has and what every caller but Sage means.
 
 
 def pinned_alias(bindings: list[Binding]) -> Binding | None:
@@ -47,8 +49,9 @@ def bound_aliases(bindings: list[Binding]) -> list[Binding]:
     return [b for b in bindings if b.kind == KIND_LLM_ALIAS]
 
 
-def render_config(aliases: list[Binding], base: str | None, project: str | None) -> str:
-    """The whole text of `src/sageLlm.config.ts`.
+def render_config(aliases: list[Binding], base: str | None, project: str | None,
+                  names: HelperNames = TEMPLATE) -> str:
+    """The whole text of the app's LLM config (`names.llm_config_path`).
 
     A generated TS module rather than JSON, because `resolveJsonModule` is off in the template's
     tsconfig and turning it on to carry four fields would change how every app compiles.
@@ -86,17 +89,21 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None)
         )
     )
     models = f"\n  models: [\n{entries},\n  ],\n" if aliases else "\n  models: [],\n"
-    return (
-        "// Written by Sage — do not edit. Sage rewrites this file whenever the app's Resources change.\n"
+    header = brand.text(
+        "// Written by {assistantName} — do not edit. {assistantName} rewrites this file whenever "
+        "the app's Resources change.\n"
         "//\n"
-        "// `models` is every LLM Alias this app may call — pass one by name to `askModel`. `alias` is\n"
+        "// `models` is every {llmAlias} this app may call — pass one by name to `askModel`. "
+        "`alias` is\n"
         "// the first of them, the model a call that names none gets. null means no model has been\n"
-        "// chosen yet. See ./sageLlm.ts.\n"
-        f"export const sageLlmConfig = {{\n{body},{models}}};\n"
+        "// chosen yet. See ./{helper}.ts.\n",
+        helper=names.llm,
     )
+    return f"{header}export const {names.llm}Config = {{\n{body},{models}}};\n"
 
 
-def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
+def agents_block(aliases: list[Binding], sources: list[Binding],
+                 names: HelperNames = TEMPLATE) -> str:
     """What the agent is told about the app's models, for the managed AGENTS.md region.
 
     Empty when nothing is bound: an agent told about a model that is not there would write a call
@@ -127,8 +134,10 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
         # name gets it wrong for every Alias registered under a different one, and the call fails at
         # request time with a message about a model the creator never named.
         head += [
-            ("This app can call any of the LLM Aliases below. `src/sageLlm.ts` already knows how to "
-             "reach them — call it, and never write a model name, gateway URL or API key of your own:"),
+            brand.text("This app can call any of the {llmAliasPlural} below. `{helper}` already "
+                       "knows how to reach them — call it, and never write a model name, gateway "
+                       "URL or API key of your own:",
+                       helper=names.llm_path),
             "",
         ]
         for i, a in enumerate(aliases):
@@ -138,14 +147,16 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
         head.append("")
     else:
         head += [
-            (f"This app calls the LLM Alias **{default.display_name}**. `src/sageLlm.ts` already knows "
-             "which model that is and how to reach it — call it, and never write a model name, gateway "
-             "URL or API key yourself:"),
+            brand.text("This app calls the {llmAlias} **{name}**. `{helper}` already knows which "
+                       "model that is and how to reach it — call it, and never write a model name, "
+                       "gateway URL or API key yourself:",
+                       name=default.display_name, helper=names.llm_path),
             "",
         ]
     code = [
         "```tsx",
-        'import { askModel, checkModel } from "./sageLlm";  // from a subfolder: "../sageLlm"',
+        f'import {{ askModel, checkModel }} from "./{names.llm}";'
+        f'  // from a subfolder: "../{names.llm}"',
         "",
         'const answer = await askModel([{ role: "user", content: question }]);',
     ]
@@ -180,18 +191,21 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
          + (" Each Alias is a separate answer: check the ones a screen actually uses." if several else "")),
         ("- **`askModel` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
-        ("- The call goes from the viewer's browser to Domino's LLM Gateway under the viewer's own "
-         "Domino identity. There is no key to add, no server to write, and no CORS to configure."),
+        brand.text(
+            "- The call goes from the viewer's browser to {platformName}'s LLM Gateway under the "
+            "viewer's own {platformName} identity. There is no key to add, no server to write, and "
+            "no CORS to configure."),
         # Said because the line above it reads like an invitation to write the fetch yourself (#94).
         # A consequence rather than a prohibition, like every rule here: `askModel` is strictly
         # better in each of these respects, so there is nothing to weigh. The preview clause is the
         # one an agent cannot work out by testing — `/api/llm` is Sage's own proxy and answers
         # correctly right up to the moment the app ships.
-        ("- **Never `fetch` the LLM Gateway yourself — always `askModel`.** A raw call loses the "
-         "`X-LLM-Tag-sage-*` cost tags that attribute this app's spend, the error messages written "
-         "for the viewer, the check for an expired Domino session, and streaming. And `/api/llm` is "
-         "Sage's PREVIEW proxy: a call written against it works while you build and breaks the "
-         "moment the app is published."),
+        brand.text(
+            "- **Never `fetch` the LLM Gateway yourself — always `askModel`.** A raw call loses the "
+            "`X-LLM-Tag-sage-*` cost tags that attribute this app's spend, the error messages "
+            "written for the viewer, the check for an expired {platformName} session, and "
+            "streaming. And `/api/llm` is {assistantName}'s PREVIEW proxy: a call written against "
+            "it works while you build and breaks the moment the app is published."),
         # Said for the same reason the query block says it (#7). A model call used to fail in the
         # preview whatever the app did — cross-origin — so an agent that saw it fail could reasonably
         # build a screen around the model being unreachable. Now that it answers, a failure is a real
@@ -199,8 +213,10 @@ def agents_block(aliases: list[Binding], sources: list[Binding]) -> str:
         ("- **The model answers in the preview too**, so a call that fails while you are building is "
          "a real failure worth fixing now. Do not design a screen around the model being "
          "unavailable, and do not treat an empty answer as the normal state."),
-        ("- **Do not edit or re-create `src/sageLlm.ts` or `src/sageLlm.config.ts`.** Sage owns both, "
-         "rewrites them, and which models this app uses is chosen in Sage, not in code."), "",
+        brand.text("- **Do not edit or re-create `{helper}` or `{config}`.** {assistantName} owns "
+                   "both, rewrites them, and which models this app uses is chosen in "
+                   "{assistantName}, not in code.",
+                   helper=names.llm_path, config=names.llm_config_path), "",
     ]
     return "\n".join(head + code + rules + _egress_note(sources))
 
@@ -230,13 +246,16 @@ def _egress_note(sources: list[Binding]) -> list[str]:
     return [
         "### Where this app's data goes",
         "",
-        ("This app reads a Data Source and calls a model, so rows from that store go wherever the "
-         "model runs. An LLM Alias hosted on Domino answers inside the platform; one that is not — "
-         "which most are — answers outside it, and whatever a prompt carries goes with it. Once the "
-         "app is published that happens for every viewer, unattended, rather than under the "
-         "creator's eye. The creator is told this before publishing and decides."),
+        brand.text(
+            "This app reads a {dataSource} and calls a model, so rows from that store go wherever "
+            "the model runs. An {llmAlias} hosted on {platformName} answers inside the platform; "
+            "one that is not — which most are — answers outside it, and whatever a prompt carries "
+            "goes with it. Once the app is published that happens for every viewer, unattended, "
+            "rather than under the creator's eye. The creator is told this before publishing and "
+            "decides."),
         "",
-        ("A screen that sends whole rows sends more than one that sends the columns it shows. Both "
-         "are allowed, and they are not the same amount of data leaving Domino."),
+        brand.text(
+            "A screen that sends whole rows sends more than one that sends the columns it shows. "
+            "Both are allowed, and they are not the same amount of data leaving {platformName}."),
         "",
     ]

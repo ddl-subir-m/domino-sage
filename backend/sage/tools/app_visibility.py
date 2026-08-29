@@ -34,6 +34,7 @@ load_dotenv()
 import httpx
 
 from ..gateway.client import DEFAULT_SIDECAR_URL, sidecar_token
+from ..orchestrator import brand
 
 _APPS_PATH = "/api/apps/beta/apps"
 # Substrings that mark a value as a sharing setting rather than a name or a status. Deliberately
@@ -99,7 +100,7 @@ def _find(client: httpx.Client, host: str, headers: dict, project_id: str) -> tu
 def main() -> int:
     host = os.environ.get("DOMINO_API_HOST", "").rstrip("/")
     if not host:
-        print("no DOMINO_API_HOST — run this inside a Domino workspace.")
+        print(brand.text("no DOMINO_API_HOST — run this inside a {platformName} workspace."))
         return 2
     token = sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
     headers = {"Authorization": f"Bearer {token()}", "Accept": "application/json"}

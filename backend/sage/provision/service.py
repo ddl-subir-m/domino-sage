@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ..orchestrator import brand
 from . import naming
 from .domino import BUILDER_WORKSPACE_NAME, BuiltApp, ControlPlane, ProjectRef
 from .github import RepoInfo, RepoNameConflict, RepoProvider
@@ -153,9 +154,10 @@ class ProvisionService:
 
     def _create_repo(self, base: str, display_name: str) -> RepoInfo:
         last: Exception | None = None
+        description = brand.text("{assistantName} app: {app}", app=display_name)
         for name in naming.candidates(base, self._name_limit):
             try:
-                return self._repo.create_repo(name, description=f"Sage app: {display_name}", private=True)
+                return self._repo.create_repo(name, description=description, private=True)
             except RepoNameConflict as e:  # name taken — try the next -N candidate
                 last = e
         raise RuntimeError(f"could not find a free repo name under {base!r} after {self._name_limit} tries") from last

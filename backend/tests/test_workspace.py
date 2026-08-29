@@ -295,3 +295,35 @@ def test_app_sh_is_refreshed_after_everything_it_calls(tmp_path: Path):
 
     assert _DEPLOY_FILES[-1] == "app.sh"
     assert "scripts/rehydrate_data.py" in _DEPLOY_FILES
+
+
+def test_the_rendered_history_is_de_branded_and_quotes_the_agent_verbatim(
+    tmp_path: Path, monkeypatch
+):
+    """`.sage/history.md` is regenerated into a repo the user owns and publishes, so NO part of it
+    carries the pack's words — not the generated-by comment, not the byline. #110 first made the
+    chrome re-brand; #114's test caught it and ADR-0014's own worked example settles it the other
+    way: `sage: ` became `build: `, not `{productName}: `, because a Sage-written label wrapping a
+    record in the user's repo is de-branded ONCE. A tokenised byline would make every turn's line
+    change in `git diff` when the pack changes, rewriting a conversation that already happened.
+
+    What the agent actually said is verbatim either way: a transcript is a record."""
+    import json
+
+    from sage.workspace.manager import Workspace
+
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "none.json")
+    pack = tmp_path / "brand.json"
+    pack.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
+
+    ws = Workspace(project_id="p", path=tmp_path / "ws", app_id="app_t")
+    ws.append_history({"type": "user", "text": "publish it"})
+    ws.append_history({"type": "agent", "kind": "text", "text": "Sage published it to Domino."})
+    ws.render_history_md()
+    md = ws.history_md_path.read_text()
+
+    assert "<!-- Generated from .sage/history.jsonl." in md          # no actor, no pack word
+    assert "**Agent:** Sage published it to Domino." in md           # neutral byline, words untouched
+    assert "Ada" not in md                                           # the pack reaches none of it
+    assert "**User:** publish it" in md                              # a role, not a brand

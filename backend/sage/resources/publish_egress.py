@@ -25,6 +25,7 @@ I/O and its own failure handling.
 """
 from __future__ import annotations
 
+from ..orchestrator import brand
 from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, Binding
 from .provider import LlmAlias
 
@@ -66,12 +67,18 @@ def egress_notice(bindings: list[Binding], aliases: list[LlmAlias] | None) -> st
         return None
     sources = [b for b in bindings if b.kind == KIND_DATA_SOURCE]
     several = len(offsite) > 1
-    return (
-        f"This app reads {_phrase(sources, 'the Data Source', 'the Data Sources')} and calls "
-        f"{_phrase(offsite, 'the LLM Alias', 'the LLM Aliases')}, which "
-        f"{'run' if several else 'runs'} outside Domino. Anything the app sends "
-        f"{'those models' if several else 'that model'} leaves Domino — once this is published, "
-        f"for every viewer, and with nobody watching. This doesn't stop the publish."
+    # Each phrase is resolved before it travels as a value: a value is not scanned again, so the
+    # noun has to be its own literal rather than a token inside `_phrase`'s answer.
+    stores = _phrase(sources, brand.text("the {dataSource}"), brand.text("the {dataSourcePlural}"))
+    models = _phrase(offsite, brand.text("the {llmAlias}"), brand.text("the {llmAliasPlural}"))
+    return brand.text(
+        "This app reads {stores} and calls {models}, which {run} outside {platformName}. Anything "
+        "the app sends {them} leaves {platformName} — once this is published, for every viewer, "
+        "and with nobody watching. This doesn't stop the publish.",
+        stores=stores,
+        models=models,
+        run="run" if several else "runs",
+        them="those models" if several else "that model",
     )
 
 

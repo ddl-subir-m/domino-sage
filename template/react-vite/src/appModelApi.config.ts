@@ -7,8 +7,8 @@
 // has no other credential, and a Domino session will not open one.
 //
 // `name`/`url`/`token` repeat the first entry. null means no Model API has been chosen yet.
-// See ./sageModelApi.ts.
-export const sageModelApiConfig = {
+// See ./appModelApi.ts.
+export const appModelApiConfig = {
   name: null,
   url: null,
   token: null,

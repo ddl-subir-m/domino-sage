@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import json
 
+from ..orchestrator import brand
+from .app_helpers import TEMPLATE, HelperNames
 from .bindings import KIND_MODEL_API, Binding
 from .model_api_credentials import Credential
 
 # Sage-owned, committed into the app's repo, and written as a pair: the helper imports the config.
-CONFIG_PATH = "src/sageModelApi.config.ts"
-HELPER_PATH = "src/sageModelApi.ts"
+# Their names are the app's rather than this module's (#119) — see `app_helpers`, and `pinned_model`,
+# which this mirrors here as it does everywhere else.
 
 
 def pinned_model_api(bindings: list[Binding]) -> Binding | None:
@@ -43,8 +45,9 @@ def bound_model_apis(bindings: list[Binding]) -> list[Binding]:
     return [b for b in bindings if b.kind == KIND_MODEL_API]
 
 
-def render_config(apis: list[Binding], credentials: dict[str, Credential]) -> str:
-    """The whole text of `src/sageModelApi.config.ts`.
+def render_config(apis: list[Binding], credentials: dict[str, Credential],
+                  names: HelperNames = TEMPLATE) -> str:
+    """The whole text of the app's Model API config (`names.model_api_config_path`).
 
     A Binding without a credential is dropped rather than rendered with a null token. That pairing is
     enforced at bind time, so reaching this branch means the store was emptied under a bound app — and
@@ -73,22 +76,30 @@ def render_config(apis: list[Binding], credentials: dict[str, Credential]) -> st
         )
     )
     models = f"\n  models: [\n{entries},\n  ],\n" if usable else "\n  models: [],\n"
-    return (
-        "// Written by Sage — do not edit. Sage rewrites this file whenever the app's Resources change.\n"
+    header = brand.text(
+        "// Written by {assistantName} — do not edit. {assistantName} rewrites this file whenever "
+        "the app's Resources change.\n"
         "//\n"
-        "// `models` is every Model API this app may call — pass one by name to `callModelApi`. Each carries\n"
-        "// its own `token`, and every one of them is compiled into the app's bundle, so ANYONE WHO OPENS THE\n"
-        "// PUBLISHED APP CAN READ THEM and call those models until each is regenerated from its Model API's\n"
-        "// Settings page in Domino. That is how Domino's own sample calls a Model API from a page: the model\n"
-        "// has no other credential, and a Domino session will not open one.\n"
+        "// `models` is every {modelApi} this app may call — pass one by name to `callModelApi`. "
+        "Each carries\n"
+        "// its own `token`, and every one of them is compiled into the app's bundle, so ANYONE "
+        "WHO OPENS THE\n"
+        "// PUBLISHED APP CAN READ THEM and call those models until each is regenerated from its "
+        "{modelApi}'s\n"
+        "// Settings page in {platformName}. That is how {platformName}'s own sample calls a "
+        "{modelApi} from a page: the model\n"
+        "// has no other credential, and a {platformName} session will not open one.\n"
         "//\n"
-        "// `name`/`url`/`token` repeat the first entry. null means no Model API has been chosen yet.\n"
-        "// See ./sageModelApi.ts.\n"
-        f"export const sageModelApiConfig = {{\n{body},{models}}};\n"
+        "// `name`/`url`/`token` repeat the first entry. null means no {modelApi} has been chosen "
+        "yet.\n"
+        "// See ./{helper}.ts.\n",
+        helper=names.model_api,
     )
+    return f"{header}export const {names.model_api}Config = {{\n{body},{models}}};\n"
 
 
-def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str:
+def agents_block(apis: list[Binding], credentials: dict[str, Credential],
+                 names: HelperNames = TEMPLATE) -> str:
     """What the agent is told about the app's Model APIs, for the managed AGENTS.md region.
 
     Empty when nothing is callable, for the reason the Alias block is: describing machinery that is
@@ -105,12 +116,14 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str
     if not usable:
         return ""
     several = len(usable) > 1
-    head = ["## The app's Model APIs" if several else "## The app's Model API", ""]
+    head = [brand.text("## The app's {modelApiPlural}") if several
+            else brand.text("## The app's {modelApi}"), ""]
     if several:
         head += [
-            ("This app can call any of the Model APIs below. `src/sageModelApi.ts` already knows each "
-             "one's URL and holds its access token — call it, and never write a URL, token or `fetch` "
-             "of your own:"), "",
+            brand.text("This app can call any of the {modelApiPlural} below. `{helper}` already "
+                       "knows each one's URL and holds its access token — call it, and never write "
+                       "a URL, token or `fetch` of your own:",
+                       helper=names.model_api_path), "",
         ]
         for i, a in enumerate(usable):
             note = " — the default, used by any call that names no model" if i == 0 else ""
@@ -118,13 +131,15 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str
         head.append("")
     else:
         head += [
-            (f"This app calls the Model API **{usable[0].display_name}**. `src/sageModelApi.ts` already "
-             "knows its URL and holds its access token — call it, and never write a URL, token or "
-             "`fetch` yourself:"), "",
+            brand.text("This app calls the {modelApi} **{name}**. `{helper}` already knows its URL "
+                       "and holds its access token — call it, and never write a URL, token or "
+                       "`fetch` yourself:",
+                       name=usable[0].display_name, helper=names.model_api_path), "",
         ]
     code = [
         "```tsx",
-        'import { callModelApi, ModelApiError } from "./sageModelApi";  // from a subfolder: "../sageModelApi"',
+        f'import {{ callModelApi, ModelApiError }} from "./{names.model_api}";'
+        f'  // from a subfolder: "../{names.model_api}"',
         "",
         "const result = await callModelApi({ score: 0.9 });  // whatever this model's function takes",
     ]
@@ -143,10 +158,12 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str
             "wrong answer rendered as a right one. `callModelApi` refuses a name this app does not "
             "use rather than falling back to the default.")
     rules += [
-        ("- **The argument is the model's own input, and Sage does not know its shape.** Domino "
-         "publishes no signature for a Model API, so ask the person building the app what the model "
-         "takes rather than guessing. `callModelApi` wraps whatever you pass as Domino's `{\"data\": …}` "
-         "envelope and returns the `result` out of the response."
+        (brand.text(
+            "- **The argument is the model's own input, and {assistantName} does not know its "
+            "shape.** {platformName} publishes no signature for a {modelApi}, so ask the person "
+            "building the app what the model takes rather than guessing. `callModelApi` wraps "
+            "whatever you pass as {platformName}'s `{\"data\": …}` envelope and returns the "
+            "`result` out of the response.")
          + (" Each model has its own shape; do not assume one takes what another does."
             if several else "")),
         ("- **`callModelApi` throws a `ModelApiError` whose `message` is written for the viewer.** Show "
@@ -155,8 +172,9 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential]) -> str
          "that says which argument was wrong."),
         ("- **Show the failure, never swallow it.** A prediction that quietly renders nothing looks "
          "like an app with no data. Catch the error and put the message on the screen."),
-        ("- **Do not edit or re-create `src/sageModelApi.ts` or `src/sageModelApi.config.ts`.** Sage "
-         "owns both, rewrites them, and which Model APIs this app uses is chosen in Sage, not in "
-         "code."), "",
+        brand.text("- **Do not edit or re-create `{helper}` or `{config}`.** {assistantName} owns "
+                   "both, rewrites them, and which {modelApiPlural} this app uses is chosen in "
+                   "{assistantName}, not in code.",
+                   helper=names.model_api_path, config=names.model_api_config_path), "",
     ]
     return "\n".join(head + code + rules)

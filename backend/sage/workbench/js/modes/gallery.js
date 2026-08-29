@@ -40,10 +40,16 @@ window.SW = window.SW || {};
     }
 
     if (state.error) {
+      // Title and reason are ours and carry the pack's words; what came back is the platform's and
+      // is quoted rather than retold (#121). Reload is the resolution step.
       return h(Result, {
         status: 'warning',
-        title: 'Sage couldn’t list the Built Apps',
-        subTitle: state.error,
+        title: SW.brand.text('{assistantName} couldn’t list the {builtAppPlural}'),
+        subTitle: h(SW.PlatformError, {
+          reason: SW.brand.text('{platformName} answered with an error.'),
+          body: state.error,
+          fix: SW.brand.text('Try again. If it keeps happening, check your access in {platformName}.'),
+        }),
         extra: h(Button, { onClick: () => window.location.reload() }, 'Try again'),
       });
     }
@@ -51,11 +57,17 @@ window.SW = window.SW || {};
     if (!state.items.length) {
       return h(Result, {
         icon: h(Empty, { image: Empty.PRESENTED_IMAGE_SIMPLE, description: null }),
-        title: state.provisioning ? 'No Built Apps yet' : 'Gallery needs Domino',
-        subTitle: state.provisioning
-          ? 'Apps published from a Sage Builder show up here, for everyone who can open them. ' +
-            'Build something in Chat, then publish it.'
-          : 'This build runs outside Domino, so there are no published Apps to list.',
+        title: state.provisioning
+          ? SW.brand.text('No {builtAppPlural} yet')
+          : SW.brand.text('{gallery} needs {platformName}'),
+        subTitle: SW.brand.text(
+          state.provisioning
+            // No article engine, so the sentence takes CONTEXT.md's own plural phrasing rather
+            // than "a {assistantName} Builder", which a vowel-initial name would have broken.
+            ? 'Apps published from {assistantName} Builder sessions show up here, for everyone ' +
+              'who can open them. Build something in Chat, then publish it.'
+            : 'This build runs outside {platformName}, so there are no published Apps to list.'
+        ),
         extra: state.provisioning
           ? h(Button, { type: 'primary', onClick: () => SW.router.go('#/chat') }, 'Go to Chat')
           : null,
@@ -71,7 +83,8 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-gallery-head' },
-          h('h2', { style: { margin: 0, fontSize: 20, fontWeight: 600 } }, 'Gallery'),
+          h('h2', { style: { margin: 0, fontSize: 20, fontWeight: 600 } },
+            SW.brand.text('{gallery}')),
           h('p', { className: 'sw-secondary', style: { margin: '4px 0 0' } },
             `${state.items.length} ${state.items.length === 1 ? 'app' : 'apps'} you can open`)
         ),

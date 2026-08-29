@@ -21,7 +21,7 @@ window.SW = window.SW || {};
   function renameApp(app) {
     let value = app.name;
     Modal.confirm({
-      title: 'Rename Built App',
+      title: SW.brand.text('Rename {builtApp}'),
       // The id is the app's directory and a published App's entry point is fixed at creation, so
       // it is deliberately shown and deliberately not editable.
       content: h(
@@ -69,8 +69,8 @@ window.SW = window.SW || {};
       content: h(
         Fragment,
         null,
-        h('div', null, 'This app’s code, its plan and its Bindings are removed and can’t be '
-          + 'recovered. Your other Built Apps and this conversation stay.'),
+        h('div', null, SW.brand.text('This app’s code, its plan and its Bindings are removed and '
+          + 'can’t be recovered. Your other {builtAppPlural} and this conversation stay.')),
         app.published &&
           h(
             'div',
@@ -82,13 +82,14 @@ window.SW = window.SW || {};
                   alsoDelete = e.target.checked;
                 },
               },
-              'Also delete the published Domino App'
+              SW.brand.text('Also delete the published {platformName} App')
             ),
             h(
               'div',
               { className: 'sw-caption', style: { marginTop: 4, marginLeft: 24 } },
-              'Leave this and its URL goes on serving the version you last published — but Sage '
-                + 'can’t update or delete it after this, so you’d do that in Domino.'
+              SW.brand.text('Leave this and its URL goes on serving the version you last '
+                + 'published — but {assistantName} can’t update or delete it after this, so you’d '
+                + 'do that in {platformName}.')
             )
           )
       ),
@@ -97,14 +98,20 @@ window.SW = window.SW || {};
           .deleteApp(app.id, { deleteDominoApp: alsoDelete })
           .then((out) => {
             if (out.dominoApp === 'deleted') {
-              antd.message.success(`Deleted “${app.name}” and its Domino App.`);
+              antd.message.success(
+                SW.brand.text('Deleted “{name}” and its {platformName} App.', { name: app.name })
+              );
             } else if (out.dominoApp === 'running') {
               // The one outcome worth saying out loud, and worth holding on screen: the Domino App
               // is still costing a container and serving a URL, Sage is no longer the thing that
               // can stop it, and the person has somewhere to go if that is not what they wanted.
               antd.message.warning({
-                content: `Deleted “${app.name}”. Its Domino App is still running — delete it in `
-                  + 'Domino if you don’t want it, because Sage can no longer reach it.',
+                content: SW.brand.text(
+                  'Deleted “{name}”. Its {platformName} App is still running — delete it in '
+                    + '{platformName} if you don’t want it, because {assistantName} can no longer '
+                    + 'reach it.',
+                  { name: app.name }
+                ),
                 duration: 10,
               });
             } else {
@@ -114,7 +121,9 @@ window.SW = window.SW || {};
           .catch((err) => {
             // Held open rather than closed on the failure: the app is still there, and the answer
             // to a control plane that refused may well be to delete it without the deployment.
-            antd.message.warning(err.message || 'Sage could not delete this Built App.');
+            antd.message.warning(
+              err.message || SW.brand.text('{assistantName} could not delete this {builtApp}.')
+            );
             return Promise.reject(err);
           }),
     });
@@ -187,11 +196,14 @@ window.SW = window.SW || {};
       h(
         'div',
         null,
-        again
-          ? 'The Domino App you published before starts serving this app’s latest code. The URL '
-            + 'doesn’t change, so anybody already holding it sees the new version.'
-          : 'This app’s code is saved and deployed as a Domino App with a URL of its own. Who '
-            + 'can open it is set in Domino, so nobody sees it until you share it.'
+        SW.brand.text(
+          again
+            ? 'The {platformName} App you published before starts serving this app’s latest code. '
+              + 'The URL doesn’t change, so anybody already holding it sees the new version.'
+            : 'This app’s code is saved and deployed on {platformName} as an App with a URL of its '
+              + 'own. Who can open it is set in {platformName}, so nobody sees it until you '
+              + 'share it.'
+        )
       ),
       // Deliberately silent about the attached files. `public/data/` is gitignored, so the push
       // does not carry the bytes and the deployed app rehydrates them from the manifest — which
@@ -201,7 +213,10 @@ window.SW = window.SW || {};
       h(
         'div',
         { style: { marginTop: 12 } },
-        'Only this app goes out. Your other Built Apps and this conversation stay where they are.'
+        SW.brand.text(
+          'Only this app goes out. Your other {builtAppPlural} and this conversation stay '
+            + 'where they are.'
+        )
       ),
       // LAST, so nothing above it moves when it arrives. The confirm's own explanation is what a
       // creator starts reading, and a notice inserted over it would shift the paragraph under their
@@ -231,7 +246,9 @@ window.SW = window.SW || {};
             // Held open rather than closed on the failure, on Delete's precedent: nothing was
             // published, the app is exactly as it was, and the answer to a refusal is usually to
             // read it and press this again.
-            antd.message.warning(err.message || 'Sage could not publish this Built App.');
+            antd.message.warning(
+              err.message || SW.brand.text('{assistantName} could not publish this {builtApp}.')
+            );
             // Unless the app it named is no longer the selected one. Then the question itself is
             // void — pressing again would only earn the same sentence — so the modal goes and the
             // creator is left looking at the app they actually moved to.
@@ -362,7 +379,7 @@ window.SW = window.SW || {};
                 h(Input, {
                   size: 'small',
                   prefix: h(SearchOutlined, { style: { color: '#8F8FA3' } }),
-                  placeholder: 'Search Built Apps',
+                  placeholder: SW.brand.text('Search {builtAppPlural}'),
                   value: query,
                   allowClear: true,
                   onChange: (e) => setQuery(e.target.value),
@@ -373,9 +390,11 @@ window.SW = window.SW || {};
               { className: 'sw-app-picker-list sw-scroll' },
               // The label the rail's head carried. It says what this list is, which is also what
               // the button above it is naming one of.
-              h('div', { className: 'sw-rail-group sw-group-label' }, 'Built Apps in this Project'),
+              h('div', { className: 'sw-rail-group sw-group-label' },
+                SW.brand.text('{builtAppPlural} in this Project')),
               filtered.length === 0
-                ? h('div', { className: 'sw-rail-empty sw-secondary' }, `No Built Apps match "${query}".`)
+                ? h('div', { className: 'sw-rail-empty sw-secondary' },
+                    SW.brand.text('No {builtAppPlural} match "{query}".', { query }))
                 : filtered.map((app) =>
                     h(AppRow, {
                       key: app.id,
@@ -390,7 +409,10 @@ window.SW = window.SW || {};
               h(
                 'div',
                 { className: 'sw-rail-note' },
-                'Each Built App has its own code, plan and Resources. Building one leaves the rest alone.'
+                SW.brand.text(
+                  'Each {builtApp} has its own code, plan and Resources. Building one leaves '
+                    + 'the rest alone.'
+                )
               )
           ),
       },
@@ -399,13 +421,19 @@ window.SW = window.SW || {};
         {
           className: 'sw-app-picker',
           type: 'button',
-          'aria-label': `Built App — ${activeApp ? activeApp.name : 'choose one'}`,
+          'aria-label': SW.brand.text('{builtApp} — {name}', {
+            name: activeApp ? activeApp.name : 'choose one',
+          }),
           // The panel is rows with actions on them, not options in a listbox, and a reader that is
           // told listbox waits for a selection model this does not have.
           'aria-haspopup': true,
           'aria-expanded': open,
         },
-        h('span', { className: 'sw-app-picker-name' }, activeApp ? activeApp.name : 'Choose a Built App'),
+        // Plural, not "Choose a {builtApp}": there is no article engine, and a pack whose noun
+        // starts with a vowel read "Choose a Archive". The picker only draws with apps in it, so
+        // the plural is also true.
+        h('span', { className: 'sw-app-picker-name' },
+          activeApp ? activeApp.name : SW.brand.text('Choose from your {builtAppPlural}')),
         h(DownOutlined, { style: { fontSize: 9 } })
       )
     );
@@ -439,7 +467,8 @@ window.SW = window.SW || {};
         h(
           'span',
           { className: 'sw-caption' },
-          'No Built Apps yet. Start one with New app, or approve a plan in Chat.'
+          SW.brand.text('No {builtAppPlural} yet. Start one with New app, or approve a plan '
+            + 'in Chat.')
         ),
         newApp
       );
@@ -817,8 +846,9 @@ window.SW = window.SW || {};
             'div',
             { className: 'sw-preview-overlay is-stalled' },
             h('div', { className: 'sw-preview-overlay-text' },
-              'Nothing answered on the preview port for 90 seconds, so Sage stopped '
-              + 'checking. A first build installs dependencies and can take longer than that.'),
+              SW.brand.text('Nothing answered on the preview port for 90 seconds, so '
+                + '{assistantName} stopped checking. A first build installs dependencies and can '
+                + 'take longer than that.')),
             h(
               Button,
               {

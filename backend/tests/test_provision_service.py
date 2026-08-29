@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -174,3 +176,22 @@ def test_list_apps_keeps_only_sage_repos(tmp_path):
     apps = _service(tmp_path, cp).list_apps()
     assert [a.id for a in apps] == ["p1"]
     assert apps[0].git_url == "https://github.com/me/sage-one.git"
+
+
+def test_the_new_repos_description_names_the_packs_assistant(tmp_path, monkeypatch, no_network_seed):
+    """The repo description is prose Sage writes into a repo the user owns and publishes, so an
+    OEM pack renames it (#109). The app name inside it is what the person typed and is not."""
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "none.json")
+    pack = tmp_path / "brand.json"
+    pack.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
+    seen = {}
+
+    class _Recording(FakeRepoProvider):
+        def create_repo(self, name, *, description="", private=True):
+            seen["description"] = description
+            return super().create_repo(name, description=description, private=private)
+
+    _service(tmp_path, repo=_Recording(), seed_calls=no_network_seed).create_app("Domino Sales")
+
+    assert seen["description"] == "Ada app: Domino Sales"

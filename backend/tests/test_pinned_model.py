@@ -16,7 +16,8 @@ from pathlib import Path
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.resources.bindings import Binding
-from sage.resources.pinned_model import CONFIG_PATH, HELPER_PATH, agents_block, pinned_alias, render_config
+from sage.resources.app_helpers import TEMPLATE
+from sage.resources.pinned_model import agents_block, pinned_alias, render_config
 from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.models import ModelCatalog
 
@@ -33,6 +34,10 @@ CATALOG = ModelCatalog(
 )
 
 REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+# The names a freshly seeded app has (#119). An app seeded before it has its own — see
+# test_an_app_seeded_before_the_rename_keeps_its_helper_names.py.
+CONFIG_PATH = TEMPLATE.llm_config_path
+HELPER_PATH = TEMPLATE.llm_path
 
 
 def _binding(rid: str, name: str, display: str = "", kind: str = "llm_alias") -> Binding:
@@ -142,10 +147,10 @@ def test_the_agent_is_told_nothing_when_no_model_is_pinned():
 def test_the_agent_is_given_the_import_the_display_name_and_the_load_check():
     block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [])
     assert "Claude Sonnet 4.6" in block
-    assert 'from "./sageLlm"' in block
+    assert 'from "./appLlm"' in block
     assert "checkModel" in block          # the check whose absence only breaks for OTHER people
-    assert "src/sageLlm.config.ts" in block  # ... and the two files it must not rewrite
-    assert "src/sageLlm.ts" in block
+    assert "src/appLlm.config.ts" in block  # ... and the two files it must not rewrite
+    assert "src/appLlm.ts" in block
 
 
 def test_the_agent_is_told_what_a_raw_gateway_call_costs_not_just_that_it_is_forbidden():

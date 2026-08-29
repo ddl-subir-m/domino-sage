@@ -50,6 +50,7 @@ import httpx
 
 from ..assets.provider import DEFAULT_DATASET_MOUNT_ROOTS
 from ..gateway.client import sidecar_token
+from ..orchestrator import brand
 
 # Artifacts is the other candidate the research rules out on mechanism (manual sync, no
 # write-back from an App). Listed here anyway: if it is not even mounted, that is one more
@@ -72,7 +73,7 @@ def _get(client: httpx.Client, host: str, path: str) -> tuple[int, object]:
 
 def _probe_permissions(host: str, headers: dict[str, str]) -> None:
     print("=" * 72)
-    print("D-Q5  Dataset visibility and role, as whoever this token belongs to")
+    print(brand.text("D-Q5  {dataset} visibility and role, as whoever this token belongs to"))
     print("=" * 72)
 
     with httpx.Client(headers=headers, timeout=30) as client:
@@ -106,7 +107,7 @@ def _probe_permissions(host: str, headers: dict[str, str]) -> None:
 
 def _probe_mounts() -> None:
     print("\n" + "=" * 72)
-    print("D-Q7  Is a Dataset mount inside the git work-tree TurnSnapshot reverts?")
+    print(brand.text("D-Q7  Is a {dataset} mount inside the git work-tree TurnSnapshot reverts?"))
     print("=" * 72)
 
     root = Path(os.environ.get("SAGE_WORKSPACE_DIR", "/mnt/code")).resolve()
@@ -132,11 +133,12 @@ def _probe_mounts() -> None:
 
     print("\n  /mnt top level:")
     mnt = Path("/mnt")
-    print(f"    {sorted(c.name for c in mnt.iterdir()) if mnt.exists() else '(no /mnt -- not a Domino workspace)'}")
+    absent = brand.text("(no /mnt -- not a {platformName} workspace)")
+    print(f"    {sorted(c.name for c in mnt.iterdir()) if mnt.exists() else absent}")
 
     if verdict_inside and not any(verdict_inside):
         print("\n  VERDICT: every mount found is OUTSIDE the work-tree. Moving examples/ onto")
-        print("  a Dataset drops stop-button cleanup. That needs a design answer first.")
+        print(brand.text("  a {dataset} drops stop-button cleanup. That needs a design answer first."))
 
 
 def main() -> None:
@@ -144,7 +146,7 @@ def main() -> None:
     if not host:
         # Mount geometry is still worth printing without a host: it needs no API at all,
         # and it is half the question.
-        print("no DOMINO_API_HOST -- skipping D-Q5. Run this inside a Domino workspace.\n")
+        print(brand.text("no DOMINO_API_HOST -- skipping D-Q5. Run this inside a {platformName} workspace.\n"))
         _probe_mounts()
         sys.exit(1)
 
@@ -155,7 +157,7 @@ def main() -> None:
         token = sidecar_token()()
     except Exception as e:
         print(f"token sidecar unreachable ({type(e).__name__}: {e}) -- skipping D-Q5.")
-        print("D-Q5 only answers anything from inside a Domino workspace anyway.\n")
+        print(brand.text("D-Q5 only answers anything from inside a {platformName} workspace anyway.\n"))
     else:
         _probe_permissions(host, {"Authorization": f"Bearer {token}", "Accept": "application/json"})
 

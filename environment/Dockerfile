@@ -89,6 +89,12 @@ ARG SAGE_CACHE_BUST=2026-08-29-turn-queue
 # secret build-arg and use it in the URL, or make a deploy mirror public. Public clone shown here.
 RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage
 
+# The Workbench serves Inter and nine vendor bundles from its own origin, so the image distributes
+# them and their licence text has to travel with it. The clone brings the file; this asserts it
+# arrived, so removing it fails the build here rather than shipping a licence breach quietly.
+# Nothing renders it — there is no Notices surface and no brand-pack key (ADR-0014).
+RUN test -s /opt/sage/NOTICE && echo "[sage] third-party notices OK"
+
 # Warm template deps baked (agent-added deps install on top, into the app fs, at runtime).
 # Even with a compatible Node, `npm ci` can still skip rolldown's platform-native optional binary
 # (@rolldown/binding-linux-x64-gnu) — then vite dies at startup with "Cannot find module

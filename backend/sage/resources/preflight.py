@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..orchestrator import brand
 from ..router.models import ModelCatalog
 from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
 from .provider import HostedEndpoint, LlmAlias
@@ -40,10 +41,12 @@ class SlotProblem:
     def message(self) -> str:
         """What the maintainer reads, in the log and in the builder. Names both halves — the slot
         alone does not say what to change it from, and the alias alone does not say what broke."""
-        return (
-            f"Sage's {self.slot} model is set to the LLM Alias {self.alias}, which this LLM Gateway "
-            f"does not offer. Turns that route to {self.slot} will fail. Pick a different model for "
-            f"that slot, or register {self.alias} in the LLM Gateway."
+        return brand.text(
+            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, which this LLM "
+            "Gateway does not offer. Turns that route to {slot} will fail. Pick a different model "
+            "for that slot, or register {alias} in the LLM Gateway.",
+            slot=self.slot,
+            alias=self.alias,
         )
 
     def to_dict(self) -> dict:
@@ -158,10 +161,14 @@ class EndpointProblem:
 
     @property
     def message(self) -> str:
-        return (
-            f"Sage's {self.slot} model is set to the LLM Alias {self.alias}, whose Hosted GenAI "
-            f"Endpoint {self.endpoint} is {self.status}. Turns that route to {self.slot} will fail. "
-            f"{endpoint_remedy(self.status, 'pick a different model for that slot')}."
+        return brand.text(
+            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, whose Hosted GenAI "
+            "Endpoint {endpoint} is {status}. Turns that route to {slot} will fail. {remedy}.",
+            slot=self.slot,
+            alias=self.alias,
+            endpoint=self.endpoint,
+            status=self.status,
+            remedy=endpoint_remedy(self.status, "pick a different model for that slot"),
         )
 
     def to_dict(self) -> dict:
@@ -210,10 +217,13 @@ def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
         if not found:
             continue
         endpoint, status = found
-        out.append((b, (
-            f"This app is recorded using the LLM Alias {b.display_name}, whose Hosted GenAI "
-            f"Endpoint {endpoint} is {status}. Its calls will fail. "
-            f"{endpoint_remedy(status, 'pick a different Alias')}, before you build on it."
+        out.append((b, brand.text(
+            "This app is recorded using the {llmAlias} {name}, whose Hosted GenAI Endpoint "
+            "{endpoint} is {status}. Its calls will fail. {remedy}, before you build on it.",
+            name=b.display_name,
+            endpoint=endpoint,
+            status=status,
+            remedy=endpoint_remedy(status, "pick a different Alias"),
         ), status))
     return out
 
@@ -274,30 +284,34 @@ def stale_message(b: Binding) -> str:
     thirds of the people who read it to the wrong screen.
     """
     if b.kind == KIND_MODEL_API:
-        return (
-            f"This app is recorded as using the Model API {b.display_name}, which is no longer "
-            f"deployed in this project. Its prediction calls will fail. Remove it, or pick a "
-            f"different Model API, before you build on it."
+        return brand.text(
+            "This app is recorded as using the {modelApi} {name}, which is no longer deployed in "
+            "this project. Its prediction calls will fail. Remove it, or pick a different "
+            "{modelApi}, before you build on it.",
+            name=b.display_name,
         )
     if b.kind == KIND_DATA_SOURCE:
         # Says publishing too, because that refusal (#12) is the one a creator would otherwise meet
         # first, at the point where the app is already built.
-        return (
-            f"This app is recorded as reading the Data Source {b.display_name}, which is no longer "
-            f"among the Data Sources you have permission on. Sage will not publish an app that reads "
-            f"a store it cannot check. Remove it, or pick a different Data Source, before you build "
-            f"on it."
+        return brand.text(
+            "This app is recorded as reading the {dataSource} {name}, which is no longer among the "
+            "{dataSourcePlural} you have permission on. {assistantName} will not publish an app "
+            "that reads a store it cannot check. Remove it, or pick a different {dataSource}, "
+            "before you build on it.",
+            name=b.display_name,
         )
-    return (
-        f"This app is recorded as using the LLM Alias {b.display_name}, which the LLM Gateway no "
-        f"longer offers. Remove it, or pick a different Alias, before you build on it."
+    return brand.text(
+        "This app is recorded as using the {llmAlias} {name}, which the LLM Gateway no longer "
+        "offers. Remove it, or pick a different Alias, before you build on it.",
+        name=b.display_name,
     )
 
 
 def credential_message(b: Binding) -> str:
     """What a creator reads about a Model API Binding whose access token has gone."""
-    return (
-        f"This app is recorded as using the Model API {b.display_name}, but Sage no longer holds an "
-        f"access token for it, so the app cannot call it. Use it again in the Resources panel to "
-        f"paste a new token, or remove it."
+    return brand.text(
+        "This app is recorded as using the {modelApi} {name}, but {assistantName} no longer holds "
+        "an access token for it, so the app cannot call it. Use it again in the Resources panel to "
+        "paste a new token, or remove it.",
+        name=b.display_name,
     )

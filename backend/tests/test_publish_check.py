@@ -58,8 +58,8 @@ def _template(tmp: Path, *, with_serve: bool = True) -> Path:
     (t / "app.sh").write_text("#!/bin/bash\nexec npx vite preview\n")
     if with_serve:
         shutil.copy2(TEMPLATE / "serve.py", t / "serve.py")
-        (t / "src" / "sageQuery.ts").write_text("// placeholder")
-        (t / "src" / "sageBase.ts").write_text("// placeholder")
+        (t / "src" / "appQuery.ts").write_text("// placeholder")
+        (t / "src" / "appBase.ts").write_text("// placeholder")
     return t
 
 

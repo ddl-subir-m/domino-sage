@@ -74,8 +74,7 @@ from ..resources.model_api_credentials import (
     verify_credential,
 )
 from ..resources.model_api_snippet import parse_snippet
-from ..resources.pinned_model import CONFIG_PATH, agents_block, bound_aliases, render_config
-from ..resources.pinned_model_api import CONFIG_PATH as MODEL_API_CONFIG_PATH
+from ..resources.pinned_model import agents_block, bound_aliases, render_config
 from ..resources.pinned_model_api import agents_block as model_api_agents_block
 from ..resources.pinned_model_api import bound_model_apis
 from ..resources.pinned_model_api import render_config as render_model_api_config
@@ -122,6 +121,7 @@ from ..workspace.threads import (
     snapshot_files,
     title_from_prompt,
 )
+from . import brand
 from . import chat_compact
 from . import handoff as chat_handoff
 from . import scope
@@ -250,9 +250,9 @@ def turn_busy_message(wedged: bool, action: str = "resend") -> str:
     never going to finish (#97).
     """
     if wedged:
-        return ("This workspace is stuck on a build that would not stop, so Sage "
-                "cannot start another one here. Restart the workspace to clear it. "
-                "Everything already written to your apps is safe.")
+        return brand.text("This workspace is stuck on a build that would not stop, so {assistantName} "
+                          "cannot start another one here. Restart the workspace to clear it. "
+                          "Everything already written to your apps is safe.")
     return f"A build is already running. Wait for it to finish or stop it first, then {action}."
 
 
@@ -304,8 +304,9 @@ def turn_pending_message(ahead: int) -> str:
     not a commitment. "Nothing has run yet" is that promise in the only terms that matter: no file
     written, no model called, nothing to undo if they change their mind."""
     turns = "the turn that is running" if ahead <= 1 else f"{ahead} turns"
-    return (f"Queued behind {turns}. Sage runs one turn at a time and will start this when they "
-            "finish. Nothing has run yet, so you can cancel it.")
+    return brand.text("Queued behind {turns}. {assistantName} runs one turn at a time and will start "
+                      "this when they finish. Nothing has run yet, so you can cancel it.",
+                      turns=turns)
 
 
 def turn_context_changed_message() -> str:
@@ -315,8 +316,9 @@ def turn_context_changed_message() -> str:
     Running against the snapshot resurrects a chip the person deliberately removed; running against
     live context makes the transcript bubble a lie about what the turn was given. So the turn does
     not run and the text goes back where they typed it (ADR-0013)."""
-    return ("Your context changed since you asked this, so Sage did not run it. The text is back in "
-            "the composer — send it again to run it against what is there now.")
+    return brand.text("Your context changed since you asked this, so {assistantName} did not run it. "
+                      "The text is back in the composer — send it again to run it against what is "
+                      "there now.")
 
 
 class _TurnTicket:
@@ -1414,24 +1416,31 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
     scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
     if kind == "dataset":
         where = f" (project {project})" if project else ""
+        # The noun is ours and the name is theirs, in one sentence: the noun is a pack token, and
+        # every name, path and identifier rides in as a value, which the helper does not scan again
+        # (ADR-0014). A Dataset somebody called `{dataset}` therefore comes through as they wrote it.
         if path:
-            return (
-                f"- Dataset {name}{where}, files at {path}. Read those files. "
-                "Do not search the rest of this workspace for a substitute."
+            return brand.text(
+                "- {dataset} {name}{where}, files at {path}. Read those files. "
+                "Do not search the rest of this workspace for a substitute.",
+                name=name, where=where, path=path,
             )
         unique = _dataset_unique_name(item, name)
         if not unique:
-            return (
-                f"- Dataset {name}{where}. Sage has no identifier for it, so its files cannot be "
-                "read this turn. Tell the person that. Do not search this git repo or any other "
-                "folder for a project of the same name — that is not this Dataset."
+            return brand.text(
+                "- {dataset} {name}{where}. {assistantName} has no identifier for it, so its files "
+                "cannot be read this turn. Tell the person that. Do not search this git repo or any "
+                "other folder for a project of the same name — that is not this {dataset}.",
+                name=name, where=where,
             )
-        return (
-            f"- Dataset {name}{where}. Not mounted here, so read it with the Domino data library: "
-            f'`from domino_data.datasets import DatasetClient` then `DatasetClient().get_dataset("{unique}")`. '
-            "`.list_files()` names its files and `.download_file(<file>, \"/tmp/<file>\")` fetches "
+        return brand.text(
+            "- {dataset} {name}{where}. Not mounted here, so read it with the {platformName} data "
+            'library: `from domino_data.datasets import DatasetClient` then '
+            '`DatasetClient().get_dataset("{unique}")`. '
+            '`.list_files()` names its files and `.download_file(<file>, "/tmp/<file>")` fetches '
             "one to read with pandas. Do not search this git repo or any other folder for a "
-            "project of the same name — that is not this Dataset."
+            "project of the same name — that is not this {dataset}.",
+            name=name, where=where, unique=unique,
         )
     if kind in ("file", "artifact"):
         extra = f" at {path}" if path else ""
@@ -1444,16 +1453,18 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
                 {"id": item.get("datasetId")}, str(item.get("datasetName") or "")
             )
             if not unique:
-                return (
-                    f"- file {name} in Dataset {ds} ({rel}). Sage has no identifier for that "
-                    "Dataset, so this file cannot be read this turn. Tell the person that. "
-                    "Do not search this git repo for a substitute."
+                return brand.text(
+                    "- file {name} in {dataset} {ds} ({rel}). {assistantName} has no identifier for "
+                    "that {dataset}, so this file cannot be read this turn. Tell the person that. "
+                    "Do not search this git repo for a substitute.",
+                    name=name, ds=ds, rel=rel,
                 )
-            return (
-                f"- file {rel} in Dataset {ds}. Not mounted here, so fetch it with the Domino data "
-                "library: `from domino_data.datasets import DatasetClient` then "
-                f'`DatasetClient().get_dataset("{unique}").download_file("{rel}", "/tmp/{name}")`, '
-                f"then read /tmp/{name} with pandas. Do not search this git repo for a substitute."
+            return brand.text(
+                "- file {rel} in {dataset} {ds}. Not mounted here, so fetch it with the "
+                "{platformName} data library: `from domino_data.datasets import DatasetClient` then "
+                '`DatasetClient().get_dataset("{unique}").download_file("{rel}", "/tmp/{name}")`, '
+                "then read /tmp/{name} with pandas. Do not search this git repo for a substitute.",
+                name=name, ds=ds, rel=rel, unique=unique,
             )
         line = f"- {kind}: {name}{extra}"
         if file_note:
@@ -1481,18 +1492,20 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
                 for c in cols[:40]
             ).strip()
             extra = f" Columns: {col_txt}." if col_txt else ""
-            return (
-                f"- Data Source {name}, table {dotted}.{extra} Query it with "
+            return brand.text(
+                "- {dataSource} {name}, table {dotted}.{extra} Query it with "
                 "`from domino_data.data_sources import DataSourceClient` then "
-                f"`DataSourceClient().get_datasource({name!r}).query("
-                f'"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
+                '`DataSourceClient().get_datasource({quoted}).query('
+                '"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
                 "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
-                "If the query errors, tell the person."
+                "If the query errors, tell the person.",
+                name=name, dotted=dotted, extra=extra, quoted=repr(name),
             )
         extra = f" at {path}" if path else ""
-        return (
-            f"- Data Source {name}{extra}. This workspace cannot query it live. Do not invent rows. "
-            "Say that you cannot open it."
+        return brand.text(
+            "- {dataSource} {name}{extra}. This workspace cannot query it live. Do not invent rows. "
+            "Say that you cannot open it.",
+            name=name, extra=extra,
         )
     extra = f" at {path}" if path else ""
     return f"- {kind}: {name}{extra}"
@@ -1793,18 +1806,15 @@ _COPY_SCAN_MAX = 512 * 1024
 # verbatim; requiring a multi-line contiguous run keeps false positives on ordinary code negligible.
 _SAMPLE_MATCH_ROWS = 6
 _SAMPLE_MATCH_MIN_BYTES = 64
-# Sage's own files inside the app tree. They name every bound Resource by definition, and Sage
-# rewrites them itself whenever the Bindings change (_write_app_resources), so a Binding found in one
-# is not a dangling reference anybody has to act on. Excluded from _resource_usage for that reason:
-# reporting them would send the creator to edit files AGENTS.md tells the agent never to touch.
 # The end-of-turn scan's answer about the Bindings (#93). Gitignored where it is written — see
 # Workspace.usage_path for why this one is not a committed manifest like the two beside it.
 _USAGE_PATH = ".sage/usage.json"
-_SAGE_OWNED_SOURCES = frozenset({
-    "src/sageLlm.ts", "src/sageLlm.config.ts",
-    "src/sageModelApi.ts", "src/sageModelApi.config.ts",
-    "src/sageQuery.ts",
-})
+# Sage's own files inside the app tree name every bound Resource by definition, and Sage rewrites
+# them itself whenever the Bindings change (_write_app_resources), so a Binding found in one is not
+# a dangling reference anybody has to act on. Excluded from _resource_usage for that reason:
+# reporting them would send the creator to edit files AGENTS.md tells the agent never to touch.
+# WHICH files those are is the app's own answer rather than a constant here — an app seeded before
+# #119 calls them `sage*` — so the set is `Workspace.helpers.owned`, resolved per app (#119).
 
 
 def _is_inlined_copy(raw: bytes, text: str) -> bool:
@@ -1879,7 +1889,7 @@ def _tool_duration_ms(part: dict) -> int | None:
     return ms if ms >= 0 else None
 
 
-def _app_display_name(workspace: Workspace, fallback: str = "Unnamed Built App") -> str:
+def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
     """What to call one Built App.
 
     The name somebody gave it, else the title of the plan it was built from, else `fallback`: a
@@ -1897,7 +1907,12 @@ def _app_display_name(workspace: Workspace, fallback: str = "Unnamed Built App")
     # no plan at all is named for what it is instead of borrowing that. "Built App" in full, and
     # not "Untitled": CONTEXT.md keeps `App` for the Domino thing and `Untitled` away from names.
     plan = workspace.read_plan() or workspace.read_archived_plan() or ""
-    return chat_handoff.plan_title(plan) if plan.strip() else fallback
+    if plan.strip():
+        return chat_handoff.plan_title(plan)
+    # Resolved here rather than in the signature: a default evaluated at import would freeze the
+    # pack the process booted with, and a caller's own fallback is the Domino project's name — a
+    # name somebody chose, which is never rewritten.
+    return fallback if fallback is not None else brand.text("Unnamed {builtApp}")
 
 
 def _app_change_event(workspace: Workspace) -> dict:
@@ -2506,8 +2521,10 @@ class Orchestrator:
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None)
         if seed_app:
-            # A freshly seeded AGENTS.md is the template's, so the Project's instructions have to be
-            # rendered back into it — they are kept on the record, not in the file (ADR-0008).
+            # A freshly seeded AGENTS.md is the template's, so it is voiced in the pack's words
+            # (#114) and then the Project's instructions have to be rendered back into it — they are
+            # kept on the record, not in the file (ADR-0008).
+            self._voice_agents_md(self._project)
             self._splice_instructions(self._project)
         self._rehydrate_attached(self._project)
         return self._project
@@ -2525,7 +2542,9 @@ class Orchestrator:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
         self._prepare_app_files()
-        # The app may have been seeded just now, from a template that carries no instructions block.
+        # The app may have been seeded just now, from a template that carries the pack's tokens and
+        # no instructions block.
+        self._voice_agents_md(self._project)
         self._splice_instructions(self._project)
         return self._project
 
@@ -2773,17 +2792,22 @@ class Orchestrator:
             deleted_domino_app = False
             if deployed and delete_domino_app:
                 if self._control_plane is None:
-                    raise RuntimeError(
-                        "This app has a published Domino App, but this builder has no connection to "
-                        "Domino to delete it with. Delete the App in Domino, then delete this app.")
+                    raise RuntimeError(brand.text(
+                        "This app has a published {platformName} App, but this builder has no "
+                        "connection to {platformName} to delete it with. Delete the App in "
+                        "{platformName}, then delete this app."))
                 try:
                     self._control_plane.delete_app_deployment(deployed)
                 except Exception as e:
                     log.exception("delete_app: couldn't delete Domino App %s", deployed)
-                    raise RuntimeError(
-                        f"Sage couldn't delete this app's Domino App ({deployed}): {e}. The Built "
-                        f"App is still here, so nothing is stranded — try again, or delete the App "
-                        f"in Domino first and then delete this one.") from e
+                    # `reason` is the platform's own words, so it rides in as a value and is left
+                    # exactly as it arrived — only the sentence around it is ours to re-brand.
+                    raise RuntimeError(brand.text(
+                        "{assistantName} couldn't delete this app's {platformName} App "
+                        "({deployed}): {reason}. The {builtApp} is still here, so nothing is "
+                        "stranded — try again, or delete the App in {platformName} first and then "
+                        "delete this one.",
+                        deployed=deployed, reason=e)) from e
                 deleted_domino_app = True
             # From here down is the part a switch must not interleave with. The control-plane call
             # above is deliberately OUTSIDE it: deleting a Domino App takes the best part of a
@@ -2838,6 +2862,7 @@ class Orchestrator:
         # from (see Project.turn_attached and _restore_attachments).
         project.attached = []
         self._prepare_app_files()
+        self._voice_agents_md(project)   # the app being bound to may have been seeded just now
         self._splice_instructions(project)
         self._rehydrate_attached(project)
         return project
@@ -4461,7 +4486,8 @@ class Orchestrator:
                     # because half an app is worse than none; a Chat turn writes charts and tables
                     # under examples/, and one already written is an answer someone can still use.
                     stopped = {"type": "stopped",
-                               "message": "Stopped. Anything Sage had already written is kept."}
+                               "message": brand.text(
+                                   "Stopped. Anything {assistantName} had already written is kept.")}
                     done = {"type": "done", "ok": False, "decision": "stopped"}
                     store.append_history(thread_id, stopped)
                     store.append_history(thread_id, done)
@@ -4492,23 +4518,26 @@ class Orchestrator:
                     elif step_error:
                         # It did not go quiet on its own — it was refused, and then there was
                         # nothing left to say. The refusal is the reason; the silence only followed.
-                        message = f"Sage could not finish this turn — {step_error}"
+                        # The refusal is the provider's own sentence, so it rides in as a value:
+                        # ours is the half around it, and theirs is left as it arrived.
+                        message = brand.text(
+                            "{assistantName} could not finish this turn — {reason}", reason=step_error)
                     elif quiet and running_tools:
                         # A step was still open when the window closed. Blaming the turn for
                         # stopping would be wrong twice over: it did not stop, and the person
                         # would go looking for the wrong thing to make smaller.
-                        message = (
-                            "The step Sage was running did not finish, so the turn was stopped. "
-                            "A large Dataset file or a broad query can take longer than one Chat "
-                            "turn allows — try a narrower query."
+                        message = brand.text(
+                            "The step {assistantName} was running did not finish, so the turn was "
+                            "stopped. A large {dataset} file or a broad query can take longer than "
+                            "one Chat turn allows — try a narrower query."
                         )
                     elif quiet:
                         # Say which of the two happened. The turn did not run out of time doing
                         # work — it stopped doing any, with nothing of its own left running.
-                        message = (
-                            "Sage stopped making progress, so the turn was stopped. If you were "
-                            "querying a Data Source, it may be too slow to answer here — try a "
-                            "narrower query."
+                        message = brand.text(
+                            "{assistantName} stopped making progress, so the turn was stopped. If "
+                            "you were querying a {dataSource}, it may be too slow to answer here — "
+                            "try a narrower query."
                         )
                     else:
                         message = (
@@ -4657,7 +4686,9 @@ class Orchestrator:
                 # the shape that sends someone looking for a Sage bug when the provider had already
                 # said what was wrong. Artifacts written before the failing step are still theirs.
                 err = {"type": "error",
-                       "message": f"Sage could not finish this turn — {step_error}"}
+                       "message": brand.text(
+                           "{assistantName} could not finish this turn — {reason}",
+                           reason=step_error)}
                 store.append_history(thread_id, err)
                 yield err
                 done = {"type": "done", "ok": False, "decision": "step failed"}
@@ -4802,8 +4833,10 @@ class Orchestrator:
                 # Project rather than inside the app — so clearing them is a second call, through the
                 # surface that owns them, and it names the app so the other apps' documents stay.
                 project.record.clear_plan_docs(project.workspace.app_id)
-                # AGENTS.md came back from the template, so the Project's instructions are rendered into
-                # it again. They were never kept in that file, so Reset had nothing to lose.
+                # AGENTS.md came back from the template, so it is voiced again and the Project's
+                # instructions are rendered into it. They were never kept in that file, so Reset had
+                # nothing to lose.
+                self._voice_agents_md(project)
                 self._splice_instructions(project)
                 self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
                 project.workspace.clear_built()
@@ -5548,10 +5581,12 @@ class Orchestrator:
                     # at the model when the thing that hung was their build command, and a step
                     # that never returns is the one case where asking again unchanged may not be
                     # the move. Chat draws the same line for the same reason.
-                    "message": (f"The step Sage was running didn't finish. It waited {waited} and "
-                                f"then stopped the build. {fate}" if in_tool else
-                                f"The build stopped responding. It went quiet for {waited}, so Sage "
-                                f"stopped it. {fate}"),
+                    "message": (brand.text(
+                        "The step {assistantName} was running didn't finish. It waited {waited} and "
+                        "then stopped the build. {fate}", waited=waited, fate=fate) if in_tool else
+                        brand.text(
+                        "The build stopped responding. It went quiet for {waited}, so "
+                        "{assistantName} stopped it. {fate}", waited=waited, fate=fate)),
                     "prompt": "" if is_approval else prompt,
                     "quietForS": round(quiet_for),
                     "kept": kept,
@@ -5615,13 +5650,16 @@ class Orchestrator:
             # Self-contained rather than pointing at a heading in AGENTS.md: `agents_block` writes
             # no model section at all for an app with no Alias bound, and titles it in the plural for
             # an app with several, so a quoted heading is wrong in two of the three cases.
-            "You called Domino's LLM Gateway with your own fetch in {files}. Rewrite those calls to "
-            "use `askModel` from `src/sageLlm.ts` — import it and pass it the messages; it already "
-            "knows the model, the URL and the headers. A "
+            # `{files}` and `{helper}` are not pack keys, so the helper leaves them for the
+            # brand.text call at the fix site to fill from the turn (see below).
+            "You called {platformName}'s LLM Gateway with your own fetch in {files}. Rewrite those "
+            "calls to use `askModel` from `{helper}` — import it and pass it the messages; it "
+            "already knows the model, the URL and the headers. A "
             "raw call drops the X-LLM-Tag-sage-* cost tags that attribute this app's spend, the "
             "error messages written for the viewer, the expired-session check and streaming — and "
-            "`/api/llm` is Sage's PREVIEW proxy, which is not there once the app is published, so a "
-            "call written against it works while you build and breaks the moment it ships."
+            "`/api/llm` is {assistantName}'s PREVIEW proxy, which is not there once the app is "
+            "published, so a call written against it works while you build and breaks the moment "
+            "it ships."
         )
         LEAK_FIX_NUDGE = (
             "You copied attached data into the app's source, which leaks it into git — attached files "
@@ -5886,11 +5924,14 @@ class Orchestrator:
                             # thing that hung, and a card that says "stopped responding" over a
                             # step that ran the whole time sends them to look at the model.
                             "message": (
-                                ("The step Sage was running didn't finish, and the build would not "
-                                 "stop when Sage asked it to, so this workspace cannot run another "
-                                 "build. " if tool_open else
-                                 "The build stopped responding and would not stop when Sage asked "
-                                 "it to, so this workspace cannot run another build. ")
+                                (brand.text(
+                                    "The step {assistantName} was running didn't finish, and the "
+                                    "build would not stop when {assistantName} asked it to, so this "
+                                    "workspace cannot run another build. ") if tool_open else
+                                 brand.text(
+                                    "The build stopped responding and would not stop when "
+                                    "{assistantName} asked it to, so this workspace cannot run "
+                                    "another build. "))
                                 + "Restart the workspace to clear it. Everything already written "
                                   "to your app is still there.")})
                         yield persist({"type": "done", "ok": False, "decision": "wedged"})
@@ -6162,7 +6203,10 @@ class Orchestrator:
                         if notice:
                             yield persist({"type": "gateway-alias-unbound", "message": notice})
                         yield {"type": "iterate", "reason": "called the LLM Gateway directly — routing it through askModel"}
-                        current = GATEWAY_FIX_NUDGE.format(files=", ".join(n for n, _ in raw_calls))
+                        current = brand.text(
+                            GATEWAY_FIX_NUDGE,
+                            files=", ".join(n for n, _ in raw_calls),
+                            helper=project.app_for_turn().helpers.llm_path)
                         continue
                 restore_mode()
                 # The receipt for what this turn changed, before the line that closes the turn.
@@ -6250,8 +6294,9 @@ class Orchestrator:
         # transcript that nobody can act on. build_stream's chat-approval path has always checked this
         # (it requires a non-empty read_plan before it approves); the Approve button never did.
         if not plan_md.strip():
-            yield {"type": "error", "message": (
-                "That plan was already built. Type the next change you want and Sage will plan it.")}
+            yield {"type": "error", "message": brand.text(
+                "That plan was already built. Type the next change you want and {assistantName} "
+                "will plan it.")}
             yield {"type": "done", "ok": False, "decision": "no plan to approve"}
             return
         # What was approved reaches the document. Two things were going missing here. The text: an
@@ -6534,7 +6579,7 @@ class Orchestrator:
         path = project.record.path
         if not git.is_repo_root(path):
             return None
-        message = f"sage: {prompt.splitlines()[0][:72]}" if prompt.strip() else "sage: build"
+        message = f"build: {prompt.splitlines()[0][:72]}" if prompt.strip() else "build: no prompt"
         # Hard backstop: never stage attached-data copies, even if the agent ignored the fix nudge.
         leaked = self._leaked_copy_paths(project)
         try:
@@ -6616,7 +6661,7 @@ class Orchestrator:
             git.abort_merge(path)
             return git.SyncResult("conflict-unresolved", remaining,
                                   f"conflicts remain in {', '.join(remaining)} — pull was rolled back")
-        git.finalize_merge(path, "sage: merge remote changes")
+        git.finalize_merge(path, "build: merge remote changes")
         return git.SyncResult("merged", conflicts, "merged teammate changes (conflicts resolved)")
 
     def sync(self) -> dict:
@@ -6643,7 +6688,7 @@ class Orchestrator:
         if not self._turn_lock.acquire(blocking=False):
             raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
-            git.commit_all(path, "sage: save before pull", exclude=self._leaked_copy_paths(project))
+            git.commit_all(path, "build: save before pull", exclude=self._leaked_copy_paths(project))
             result = self._integrate_remote(project)
             if result is None or result.status in ("conflict-unresolved", "error"):
                 detail = result.detail if result else "no remote to pull from"
@@ -6678,15 +6723,16 @@ class Orchestrator:
         that succeeds, never cleared by one that then refuses.
         """
         if not publish_available(self._wm.path):
-            raise RuntimeError(
-                "Publish is only available in a Sage Builder workspace whose app repo is /mnt/code. "
-                "This Workbench App is Sage itself, not a Built App."
-            )
+            raise RuntimeError(brand.text(
+                "Publish is only available in a {assistantName} Builder workspace whose app repo is "
+                "/mnt/code. This {productName} App is {assistantName} itself, not a {builtApp}."
+            ))
         if self._control_plane is None or not self._domino_project_id:
-            raise RuntimeError(
-                "Publish is only available when this builder runs on Domino (missing control-plane "
-                "or DOMINO_PROJECT_ID)."
-            )
+            # DOMINO_PROJECT_ID is an env var name, so it is named, not renamed.
+            raise RuntimeError(brand.text(
+                "Publish is only available when this builder runs on {platformName} (missing "
+                "control-plane or DOMINO_PROJECT_ID)."
+            ))
         # One operation owns the working tree at a time (see `_turn_lock`). Publishing is not a
         # read: `_save_to_git` commits the PROJECT ROOT — one repo holds every Built App — then
         # pulls, and may run an agent turn to resolve conflicts. Under a streaming build that
@@ -6729,15 +6775,16 @@ class Orchestrator:
                     # second App while the first is alive strands it: `record_domino_app` overwrites the
                     # only id Sage has, so neither Publish nor Delete could reach the old App again, and
                     # it would go on serving old code at a URL people already hold.
-                    raise RuntimeError(
-                        "This app's published App is still there, so Sage won't publish a second one "
-                        "beside it — that would leave the first serving at a URL nothing here could "
-                        "reach again. Publish normally to ship a new version to it. If you want a fresh "
-                        "App, delete that one in Domino first."
+                    raise RuntimeError(brand.text(
+                        "This app's published App is still there, so {assistantName} won't publish a "
+                        "second one beside it — that would leave the first serving at a URL nothing "
+                        "here could reach again. Publish normally to ship a new version to it. If "
+                        "you want a fresh App, delete that one in {platformName} first."
                         if gone is False else
-                        "Sage couldn't reach Domino to confirm that this app's published App is really "
-                        "gone, and it won't create a second one on a guess. Try again in a moment."
-                    )
+                        "{assistantName} couldn't reach {platformName} to confirm that this app's "
+                        "published App is really gone, and it won't create a second one on a guess. "
+                        "Try again in a moment."
+                    ))
             self._refuse_unsafe_publish(project, deployed_app_id)
             # Ship the CURRENT entry script. app.sh is committed to the app's repo at seed time, so an
             # app created from an older image would otherwise redeploy its original copy forever — and
@@ -6751,9 +6798,10 @@ class Orchestrator:
             # The builder holds the working tree, so a fast local check beats the hub's GitHub-API probe.
             entry = project.workspace.path / _ENTRY_POINT
             if not entry.exists():
-                raise RuntimeError(
-                    f"'{_ENTRY_POINT}' is missing from this app, so Domino has no entry script to "
-                    f"run. Add {_ENTRY_POINT} to {project.repo_rel('')} and rebuild, then publish again."
+                raise RuntimeError(brand.text(
+                    "'{entry}' is missing from this app, so {platformName} has no entry script to "
+                    "run. Add {entry} to {where} and rebuild, then publish again.",
+                    entry=_ENTRY_POINT, where=project.repo_rel(''))
                 )
             # The refresh above is best-effort, so app.sh can be the current one while the server it execs
             # is absent — a deploy that reports success and then crash-loops on "can't open file
@@ -6869,7 +6917,8 @@ class Orchestrator:
         """Deploy status of a published app so the UI can poll after Publish. Maps the raw instance
         status to a phase: running (live) / failed / pending (still deploying)."""
         if self._control_plane is None:
-            raise RuntimeError("Publish status is only available when this builder runs on Domino.")
+            raise RuntimeError(brand.text(
+                "Publish status is only available when this builder runs on {platformName}."))
         raw = self._control_plane.app_status(app_id)
         s = raw.lower()
         if s in _RUNNING_STATES:
@@ -7617,12 +7666,12 @@ class Orchestrator:
         recorded = [b for b in parse_bindings(project.workspace.read_bindings())
                     if b.kind == KIND_DATA_SOURCE]
         if not recorded:
-            raise LookupError("This app is not recorded as using a Data Source.")
+            raise LookupError(brand.text("This app is not recorded as using a {dataSource}."))
         if not source_id:
             return recorded[0]
         found = next((b for b in recorded if b.id == source_id), None)
         if found is None:
-            raise LookupError("This app is not recorded as using that Data Source.")
+            raise LookupError(brand.text("This app is not recorded as using that {dataSource}."))
         return found
 
     # ---- Model access tokens, pasted once and remembered (#9) ----
@@ -7658,8 +7707,8 @@ class Orchestrator:
             return {"ok": False, "error": parsed.missing()}
         model_api_id = model_api_id or (parsed.model_id or "")
         if parsed.model_id and parsed.model_id != model_api_id:
-            return {"ok": False, "error": (
-                "That snippet is for a different Model API. Copy the sample request from the "
+            return {"ok": False, "error": brand.text(
+                "That snippet is for a different {modelApi}. Copy the sample request from the "
                 "Overview page of the model you are adding."
             )}
         result = verify_credential(parsed.url, parsed.token)
@@ -8288,8 +8337,9 @@ class Orchestrator:
         tokens = [t for t in names if t]
         if not tokens:
             return []
+        owned = workspace.helpers.owned
         refs = [rel for rel, text in sources
-                if text is not None and rel not in _SAGE_OWNED_SOURCES
+                if text is not None and rel not in owned
                 and any(t in text for t in tokens)]
         return catalog + sorted(set(refs))
 
@@ -8407,7 +8457,7 @@ class Orchestrator:
         app = project.app_for_turn()
         declared = [b.name for b in bound_aliases(parse_bindings(app.read_bindings()))]
         return raw_gateway_calls(self._scan_app_sources(app), declared,
-                                 self._browser_gateway_base, _SAGE_OWNED_SOURCES)
+                                 self._browser_gateway_base, app.helpers.owned)
 
     def _attached_per_app(self, project: Project) -> list[tuple[Workspace, list[dict]]]:
         """Every Built App on the volume, paired with the attachment list to judge it by.
@@ -8532,13 +8582,17 @@ class Orchestrator:
         aliases = bound_aliases(recorded)
         if aliases:
             self._wm.ensure_llm_helper()
-        self._write_generated(project.workspace.path / CONFIG_PATH,
-                              render_config(aliases, self._browser_gateway_base, self._cost_project_label))
+        # AFTER the helper: an app seeded before #7 has no helper at all, so what it is called is
+        # only settled once one has landed.
+        names = project.workspace.helpers
+        self._write_generated(project.workspace.path / names.llm_config_path,
+                              render_config(aliases, self._browser_gateway_base,
+                                            self._cost_project_label, names))
         # The stores go in beside the Aliases only to decide the closing paragraph (#35): what the
         # agent is told about where the app's data goes is a fact about the JOIN, and the join is
         # readable off this one manifest.
         self._splice_agents(project, self._MODEL_BEGIN, self._MODEL_END,
-                            agents_block(aliases, data_source_bindings(recorded)))
+                            agents_block(aliases, data_source_bindings(recorded), names))
 
     def _write_app_model_api(self, project: Project) -> None:
         """Pin the app's Model API into its own source, and tell the agent it is there (#9).
@@ -8555,10 +8609,11 @@ class Orchestrator:
         credentials = {a.id: c for a in apis if (c := store.get(a.id)) is not None}
         if apis:
             self._wm.ensure_model_api_helper()
-        self._write_generated(project.workspace.path / MODEL_API_CONFIG_PATH,
-                              render_model_api_config(apis, credentials))
+        names = project.workspace.helpers
+        self._write_generated(project.workspace.path / names.model_api_config_path,
+                              render_model_api_config(apis, credentials, names))
         self._splice_agents(project, self._MODEL_API_BEGIN, self._MODEL_API_END,
-                            model_api_agents_block(apis, credentials))
+                            model_api_agents_block(apis, credentials, names))
 
     def _reconcile_bound_schema(self, project: Project, bindings: list[Binding]) -> None:
         """Give every recorded Data Source an entry read at the Scope it currently records (#33).
@@ -8632,6 +8687,7 @@ class Orchestrator:
             catalog_problems(template, project.workspace.path),
             getattr(module, "_DEFAULT_MAX_ROWS", 5000),
             samples=self._shared_samples(project),
+            names=project.workspace.helpers,
         )
         self._splice_agents(project, self._DATA_BEGIN, self._DATA_END, block)
 
@@ -8720,6 +8776,32 @@ class Orchestrator:
         """Record the user's project instructions, and render them where the agent reads them."""
         project.record.write_instructions(content)
         self._splice_instructions(project)
+
+    def _voice_agents_md(self, project: Project) -> None:
+        """Resolve the template's brand tokens in a freshly seeded AGENTS.md (#114).
+
+        The Built App's repo is a surface — a partner's own customer can read it (ADR-0014) — and
+        AGENTS.md is generated per Project, so it re-brands like every other prompt. The template
+        ships the tokens; this is where they are read.
+
+        Called only where the file has just come back from the template, and always before the
+        managed blocks go in. Those carry a Resource name the creator chose and the user's own
+        project instructions, and text Sage did not write is never rewritten — so this must not
+        become a pass over the whole file on every attach.
+
+        Nothing is written when nothing resolved: an app seeded before this change carries no
+        tokens, and a rewrite with identical content would show up as a dirty file in the turn's
+        tree comparison and in the user's git history. A `{` the template uses for something else
+        (`basename={appBase}`) is not a pack key, so the helper leaves it exactly as written.
+        """
+        agents = project.workspace.path / "AGENTS.md"
+        if not agents.exists():
+            return
+        with self._agents_lock:   # same file as the two managed regions below
+            body = agents.read_text()
+            voiced = brand.text(body)
+            if voiced != body:
+                agents.write_text(voiced)
 
     def _splice_instructions(self, project: Project) -> None:
         """Render the Project's instructions into the app's AGENTS.md as a managed block, preserving

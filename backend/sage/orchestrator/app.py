@@ -26,6 +26,7 @@ load_dotenv()
 from fastapi import FastAPI, Request
 from fastapi.responses import (
     FileResponse,
+    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     Response,
@@ -61,6 +62,7 @@ from ..resources.publish_guard import PublishRefused
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from ..workspace.threads import safe_id
+from .brand import text as brand_text
 from .service import (
     AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceStillBound, TurnBusy,
     UploadUnavailable,
@@ -207,11 +209,15 @@ def _build_provision_service(control_plane):
     def token_provider() -> str:  # shared by repo create + seed push; in-memory, never logged
         tok = credentials.extract_token(host)
         if not tok:
-            raise RuntimeError(
-                f"no HTTPS git credential for {host} in this container "
+            # `host` rides in as a value: it is the literal the credential is stored under,
+            # and `Account Settings > Git Credentials` is the platform's own menu path, which
+            # Sage renames no more than it renames the page it is sending them to.
+            raise RuntimeError(brand_text(
+                "no HTTPS git credential for {host} in this container "
                 "(an SSH-key credential can't be extracted). Add an HTTPS Git credential under "
-                "Account Settings > Git Credentials, then restart Sage."
-            )
+                "Account Settings > Git Credentials, then restart {assistantName}.",
+                host=host,
+            ))
         return tok
 
     return ProvisionService(
@@ -460,17 +466,28 @@ control_app.add_middleware(_ViewerIdentityMiddleware)
 
 
 @control_app.get("/")
-def ui() -> FileResponse:
+def ui() -> HTMLResponse:
     """The Workbench shell (Chat / Build), or the door.
 
     In the published Workbench App this is the door (ADR-0004): it does not run Chat or Build
     against the App's scratch checkout — it sends the viewer to their own Sage Builder, where their
     files live in a real git Project. A Sage Builder serves the shell itself, unchanged.
 
+    Both pages come through here, so the brand pack is substituted here and reaches both (#116).
+    Server-side, never from JS on boot: the browser paints whatever the HTML literally said first,
+    and the flash lands on the door — the first page a viewer ever sees — where it would show our
+    name over a partner's product. `text()` leaves an unknown token as written, so a page keeps
+    booting whatever the pack says — and that is also what protects the rest of the document, which
+    is templated wholesale: a `{word}` in the CSS or the inline JS resolves only if it happens to
+    name a pack key, and otherwise comes through untouched.
+
     no-store so the current HTML is always served.
     """
+    from .brand import text as brand_text
+
     page = _DOOR_UI if proxy_is_app() else _UI
-    return FileResponse(page, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(brand_text(page.read_text(encoding="utf-8")),
+                        headers={"Cache-Control": "no-store"})
 
 
 @control_app.post("/api/door")
@@ -484,9 +501,11 @@ async def door_open() -> JSONResponse:
     if _door is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Sage can't reach Domino from this App, so it can't open your Sage "
-                              "Builder. Check the App's Environment has the Domino API host and a "
-                              "Git credential, then restart it."},
+            content={"error": brand_text(
+                "{assistantName} can't reach {platformName} from this App, so it can't open your "
+                "{assistantName} Builder. Check the App's Environment has the {platformName} API "
+                "host and a Git credential, then restart it."
+            )},
         )
     try:
         target = await run_in_threadpool(_door.ensure_default)
@@ -555,8 +574,10 @@ async def create_project(body: dict) -> JSONResponse:
     if _provision is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Sage can't reach Domino from this container, so it can't create a "
-                              "Project. This build runs against the project it is bound to."},
+            content={"error": brand_text(
+                "{assistantName} can't reach {platformName} from this container, so it can't "
+                "create a Project. This build runs against the project it is bound to."
+            )},
         )
     from ..provision.service import workspace_is_running
 
@@ -588,8 +609,10 @@ async def open_project(project_id: str) -> JSONResponse:
     if _provision is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "Sage can't reach Domino from this container, so it can't open "
-                              "another Project. This build runs against the project it is bound to."},
+            content={"error": brand_text(
+                "{assistantName} can't reach {platformName} from this container, so it can't open "
+                "another Project. This build runs against the project it is bound to."
+            )},
         )
     try:
         who = await run_in_threadpool(_control_plane.whoami)
@@ -1190,8 +1213,9 @@ def _cascade(level, *args) -> JSONResponse:
     try:
         return JSONResponse(content={"items": level(*args)})
     except LookupError:
-        return JSONResponse(status_code=404, content={"error": (
-            "That Data Source is not one Domino offers you, so Sage cannot look inside it."
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "That {dataSource} is not one {platformName} offers you, so {assistantName} cannot "
+            "look inside it."
         )})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
@@ -1240,8 +1264,9 @@ async def add_binding(request: Request) -> JSONResponse:
                 str(body.get("table") or ""),
             )})
         except LookupError:
-            return JSONResponse(status_code=404, content={"error": (
-                "That Data Source is not one Domino offers you, so the app cannot depend on it."
+            return JSONResponse(status_code=404, content={"error": brand_text(
+                "That {dataSource} is not one {platformName} offers you, so the app cannot depend "
+                "on it."
             )})
         except ValueError as e:
             return JSONResponse(status_code=400, content={"error": str(e)})
@@ -1253,13 +1278,14 @@ async def add_binding(request: Request) -> JSONResponse:
     if kind == KIND_LLM_ALIAS:
         # Either it is not registered on the gateway, or this caller has no grant for it. Both mean
         # the same thing to the creator: the app cannot depend on it.
-        bind, missing = orchestrator.bind_llm_alias, (
-            "That LLM Alias is not one you can use, so the app cannot depend on it."
+        bind, missing = orchestrator.bind_llm_alias, brand_text(
+            "That {llmAlias} is not one you can use, so the app cannot depend on it."
         )
     elif kind == KIND_MODEL_API:
-        bind, missing = orchestrator.bind_model_api, (
-            "Domino would not describe that Model API to you, and Sage holds no access token for it, "
-            "so the app cannot depend on it. Paste its sample request to add it."
+        bind, missing = orchestrator.bind_model_api, brand_text(
+            "{platformName} would not describe that {modelApi} to you, and {assistantName} holds "
+            "no access token for it, so the app cannot depend on it. Paste its sample request to "
+            "add it."
         )
     else:
         return JSONResponse(status_code=400, content={"error": f"unknown Resource kind: {kind}"})
@@ -1270,9 +1296,12 @@ async def add_binding(request: Request) -> JSONResponse:
         # something the creator can supply. The rail asks for the snippet before binding, so this is
         # the invariant holding rather than the usual path — but it has to say what to do anyway,
         # because anything that binds without going through the rail lands here.
-        return JSONResponse(status_code=409, content={"error": (
-            "Sage needs this Model API's access token before an app can call it. Open the Model "
-            "API's Overview page in Domino, copy the sample request, and paste it into Sage."
+        # `Overview` is the platform's own page, named the way the platform names it; only the
+        # word for the platform itself is ours to replace.
+        return JSONResponse(status_code=409, content={"error": brand_text(
+            "{assistantName} needs this {modelApi}'s access token before an app can call it. Open "
+            "the {modelApi}'s Overview page in {platformName}, copy the sample request, and paste "
+            "it into {assistantName}."
         )})
     except LookupError:
         return JSONResponse(status_code=404, content={"error": missing})
@@ -1306,8 +1335,8 @@ async def add_model_api_credential(request: Request) -> JSONResponse:
     # that is not shaped like a request at all.
     resource_id, snippet = str(body.get("id") or ""), body.get("snippet")
     if not isinstance(snippet, str) or not snippet.strip():
-        return JSONResponse(content={"ok": False, "error": (
-            "Paste the sample request from the Model API's Overview page in Domino."
+        return JSONResponse(content={"ok": False, "error": brand_text(
+            "Paste the sample request from the {modelApi}'s Overview page in {platformName}."
         )})
     return JSONResponse(content=orchestrator.save_model_api_credential(resource_id, snippet))
 
@@ -1351,8 +1380,8 @@ async def share_samples(request: Request) -> JSONResponse:
             [str(t) for t in tables] if isinstance(tables, list) else [],
         ))
     except LookupError as e:
-        return JSONResponse(status_code=404, content={"error": str(e) or (
-            "This app is not recorded as using a Data Source.")})
+        return JSONResponse(status_code=404, content={"error": str(e) or brand_text(
+            "This app is not recorded as using a {dataSource}.")})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     except ResourceUnavailable as e:
@@ -1386,7 +1415,7 @@ def list_asset_files(dataset_id: str) -> JSONResponse:
     try:
         return JSONResponse(content={"files": orchestrator.list_asset_files(dataset_id)})
     except LookupError:
-        return JSONResponse(status_code=404, content={"error": "dataset not found"})
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 
@@ -1399,9 +1428,10 @@ async def attach_file(dataset_id: str, request: Request) -> JSONResponse:
     try:
         return JSONResponse(content=orchestrator.attach_file(dataset_id, path))
     except LookupError:
-        return JSONResponse(status_code=404, content={"error": "dataset not found"})
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
     except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"error": "file not found in dataset"})
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "file not found in the {dataset}")})
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid file path"})
     except ResourceUnavailable as e:
@@ -1441,10 +1471,10 @@ async def upload_file(request: Request) -> JSONResponse:
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid filename"})
     except UploadUnavailable:
-        msg = (
-            "The dataset you picked isn't mounted and writable in this workspace."
+        msg = brand_text(
+            "The {dataset} you picked isn't mounted and writable in this workspace."
             if dataset_id
-            else "No writable dataset is available to store uploads in this project."
+            else "No writable {dataset} is available to store uploads in this project."
         )
         return JSONResponse(status_code=409, content={"error": msg})
     except AttachTooLarge as e:
@@ -1467,11 +1497,12 @@ async def promote_scratch(request: Request) -> JSONResponse:
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": "scratch file not found"})
     except LookupError:
-        return JSONResponse(status_code=404, content={"error": "dataset not found"})
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
     except UploadUnavailable:
         return JSONResponse(
             status_code=409,
-            content={"error": "The dataset you picked isn't mounted and writable in this workspace."},
+            content={"error": brand_text(
+                "The {dataset} you picked isn't mounted and writable in this workspace.")},
         )
     except AttachTooLarge as e:
         mb = e.cap / (1024 * 1024)
@@ -2133,6 +2164,15 @@ control_app.mount("/css", _RevalidatingStatic(directory=_WB / "css"), name="wb-c
 control_app.mount("/js", _RevalidatingStatic(directory=_WB / "js"), name="wb-js")
 control_app.mount("/img", _RevalidatingStatic(directory=_WB / "img"), name="wb-img")
 control_app.mount("/vendor", _RevalidatingStatic(directory=_WB / "vendor"), name="wb-vendor")
+
+# The partner's own logo and favicon (#117). Held on the module so a test can point it somewhere
+# it is allowed to write; the boundary it enforces lives in brand.py, next to the pack that names
+# the files. BRAND_DIR is `/opt/sage/brand` and never `/opt/sage`, which holds opencode.json.
+from .brand import BRAND_DIR as _BRAND_DIR
+from .brand import BrandImages as _BrandImages
+
+_brand_images = _BrandImages(directory=_BRAND_DIR, check_dir=False)
+control_app.mount("/brand", _brand_images, name="brand-img")
 
 
 def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:

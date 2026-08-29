@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from ..orchestrator import brand
+from .app_helpers import TEMPLATE, HelperNames
 from .bindings import Binding
 from .provider import Column, SampleRows
 
@@ -186,7 +188,7 @@ def parse_samples(raw: object) -> list[SharedSample]:
 
 
 def agents_block(sources: list[BoundSource], problems: list[str] | None,
-                 max_rows: int, *, samples=()) -> str:
+                 max_rows: int, *, samples=(), names: HelperNames = TEMPLATE) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
     Empty when no Data Source is bound. Describing the machinery for a store that is not there would
@@ -213,8 +215,10 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
         lines += _tables_section(one.columns)
     else:
         lines += [
-            (f"This app reads {len(sources)} Data Sources. Every query names the one it reads, so "
-             "the first thing to settle for any question is WHICH of these holds the answer:"), "",
+            brand.text("This app reads {count} {dataSourcePlural}. Every query names the one it "
+                       "reads, so the first thing to settle for any question is WHICH of these "
+                       "holds the answer:",
+                       count=len(sources)), "",
         ]
         for source in sources:
             lines += [
@@ -226,7 +230,7 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
                                   source.columns[0].table if source.columns else "usage"), ""]
     # The example names one of this app's own tables. A generic `usage` reads as a placeholder the
     # agent has to translate, and the translation is exactly the step this block exists to remove.
-    lines += _how_to_ask(sources, max_rows)
+    lines += _how_to_ask(sources, max_rows, names)
     lines += _samples_section(samples)
     lines += _problems_section(problems)
     return "\n".join(lines)
@@ -235,7 +239,8 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
 def _scope_sentence(binding: Binding) -> str:
     kind = binding.connector_type[:-6] if binding.connector_type.endswith("Config") else ""
     where = f"**{binding.scope}** in " if binding.scope else ""
-    named = f"the {kind} Data Source" if kind else "the Data Source"
+    named = (brand.text("the {kind} {dataSource}", kind=kind) if kind
+             else brand.text("the {dataSource}"))
     return f"This app reads {where}{named} **{binding.display_name}**."
 
 
@@ -246,10 +251,11 @@ def _tables_section(columns: list[Column]) -> list[str]:
         tables.setdefault(column.table, []).append(column)
     if not tables:
         return [
-            ("Sage could not read what the tables in this Scope hold, so their column names are not "
-             "available here. Ask the user what a table holds rather than guessing column names — a "
-             "query naming a column that does not exist fails for the first person who opens the "
-             "app."),
+            brand.text(
+                "{assistantName} could not read what the tables in this Scope hold, so their "
+                "column names are not available here. Ask the user what a table holds rather than "
+                "guessing column names — a query naming a column that does not exist fails for the "
+                "first person who opens the app."),
             "",
         ]
     if len(columns) <= INLINE_COLUMN_LIMIT:
@@ -271,19 +277,22 @@ def _tables_section(columns: list[Column]) -> list[str]:
     return out
 
 
-def _how_to_ask(sources: list[BoundSource], max_rows: int) -> list[str]:
+def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -> list[str]:
     first = sources[0]
     table = first.columns[0].table if first.columns else "usage"
     # Which store a query reads is per query, so with several it is a rule of its own rather than a
     # constant to copy. The ids are repeated here beside the example even though each section above
     # is headed by one: this is where the agent is looking while it writes the entry.
     if len(sources) == 1:
-        which = [f'- `binding` must be `"{first.binding.id}"`. That is this app\'s Data Source.',
+        which = [brand.text('- `binding` must be `"{id}"`. That is this app\'s {dataSource}.',
+                            id=first.binding.id),
                  _scope_rule(first.binding, first.stranded, table)]
     else:
-        which = ["- `binding` says WHICH of this app's Data Sources the query reads: "
-                 + ", ".join(f'`"{s.binding.id}"` for {s.binding.display_name}' for s in sources)
-                 + ". Getting it wrong is not a slow query, it is a query the app refuses to run."]
+        which = [brand.text("- `binding` says WHICH of this app's {dataSourcePlural} the query "
+                            "reads: {ids}. Getting it wrong is not a slow query, it is a query the "
+                            "app refuses to run.",
+                            ids=", ".join(f'`"{s.binding.id}"` for {s.binding.display_name}'
+                                          for s in sources))]
     return [
         "### How this app asks for data", "",
         ("The app never sends SQL. It calls a query by NAME, and the statement lives in "
@@ -309,17 +318,18 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int) -> list[str]:
          "valid JSON; a catalog that will not parse leaves the app with no queries at all."), "",
         "Call it from the app:", "",
         "```tsx",
-        'import { runQuery } from "./sageQuery";   // from a subfolder: "../sageQuery"',
+        f'import {{ runQuery }} from "./{names.query}";   // from a subfolder: "../{names.query}"',
         "",
         'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });',
         "```", "",
         ("- **`runQuery` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
-        ("- **Queries answer in the preview too**, against the same Data Source, the same Scope and "
-         "the same statements the published app will use. So a query that fails while you are "
-         "building is a real failure and worth fixing now — do not design a screen around it, and "
-         "do not treat an empty result as the normal state. Preview answers are cached for a few "
-         "seconds, so a change made in the store may take a moment to show."),
+        brand.text(
+            "- **Queries answer in the preview too**, against the same {dataSource}, the same "
+            "Scope and the same statements the published app will use. So a query that fails while "
+            "you are building is a real failure and worth fixing now — do not design a screen "
+            "around it, and do not treat an empty result as the normal state. Preview answers are "
+            "cached for a few seconds, so a change made in the store may take a moment to show."),
         ("- **If the data cannot be reached, the WHOLE SCREEN says so — not just the panel that "
          "asked.** This is a different state from an empty list, and it is the one that goes wrong. "
          "When `runQuery` fails, every control fed by a query is inert at the same moment: a filter "
@@ -331,11 +341,13 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int) -> list[str]:
          "claims, not decoration. Do not leave a filled primary button that does nothing when "
          "pressed — if the only useful action is to try again, make that the primary action. The "
          "test to apply: a viewer reads **not yet**, rather than **working, but empty**."),
-        ("- **Do not read the Data Source yourself.** No scripts, no SQL anywhere except "
-         "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "
-         "above is what you have; if it is not enough, ask the user."),
-        ("- **Do not edit or re-create `src/sageQuery.ts`.** Sage owns it, and which Data Sources "
-         "this app reads is chosen in Sage, not in code."), "",
+        brand.text(
+            "- **Do not read the {dataSource} yourself.** No scripts, no SQL anywhere except "
+            "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "
+            "above is what you have; if it is not enough, ask the user."),
+        brand.text("- **Do not edit or re-create `{helper}`.** {assistantName} owns it, and which "
+                   "{dataSourcePlural} this app reads is chosen in {assistantName}, not in code.",
+                   helper=names.query_path), "",
     ]
 
 
@@ -354,9 +366,10 @@ def _scope_rule(binding: Binding, stranded: list[tuple[str, str]] | None, table:
     where an unqualified one runs only where the Scope travels.
     """
     if stranded is None:
-        return (f"- Write the table name qualified — `FROM {binding.schema or 'schema'}.{table}` — "
-                "unless the user says otherwise. Sage could not confirm what this connector will "
-                "accept as configuration, and a qualified name works either way.")
+        return brand.text("- Write the table name qualified — `FROM {qualified}` — unless the user "
+                          "says otherwise. {assistantName} could not confirm what this connector "
+                          "will accept as configuration, and a qualified name works either way.",
+                          qualified=f"{binding.schema or 'schema'}.{table}")
     if not stranded:
         return (f"- **Write table names unqualified** — `FROM {table}`, not "
                 f"`FROM {binding.schema or 'schema'}.{table}`. This app sends its Scope to the store "
@@ -424,6 +437,7 @@ def _problems_section(problems: list[str] | None) -> list[str]:
         return []
     return [
         "### Queries this app will refuse", "",
-        "Sage checked `.sage/queries.json` against this app's Data Source. Fix these:", "",
+        brand.text("{assistantName} checked `.sage/queries.json` against this app's {dataSource}. "
+                   "Fix these:"), "",
         *[f"- {p}" for p in problems], "",
     ]

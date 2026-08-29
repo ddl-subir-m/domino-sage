@@ -29,6 +29,8 @@ from urllib.parse import quote
 
 import httpx
 
+from ..orchestrator import brand
+
 log = logging.getLogger("sage.provision.domino")
 
 _PROJECTS_PATH = "/api/projects/beta/projects"
@@ -239,8 +241,11 @@ class DominoControlPlane:
             )
             if not match or not match.get("id"):
                 raise RuntimeError(
-                    f"no HTTPS Git credential for {self._git_host} in your Domino account — "
-                    f"add one under Account Settings > Git Credentials, then try again"
+                    brand.text(
+                        "no HTTPS Git credential for {host} in your {platformName} account — "
+                        "add one under Account Settings > Git Credentials, then try again",
+                        host=self._git_host,
+                    )
                 )
             self._cred_id = str(match["id"])
         return self._cred_id
@@ -251,7 +256,7 @@ class DominoControlPlane:
         # NewProjectV1. ownerId omitted -> defaults to the calling user (the hub runs as that user).
         body = {
             "name": name,
-            "description": description or "Created by Sage",
+            "description": description or brand.text("Created by {assistantName}"),
             "visibility": "Private",
             "mainRepository": {
                 "uri": git_url,

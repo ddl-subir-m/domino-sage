@@ -13,9 +13,11 @@ window.SW = window.SW || {};
     {
       key: 'data',
       label: 'Data',
+      // Subgroup labels are templates, resolved where they are drawn: this list is built when the
+      // file is evaluated, which is before GET /api/brand has answered.
       subgroups: [
-        { kind: 'dataset', label: 'Datasets' },
-        { kind: 'datasource', label: 'Data sources' },
+        { kind: 'dataset', label: '{datasetPlural}' },
+        { kind: 'datasource', label: '{dataSourcePlural}' },
       ],
     },
     {
@@ -175,7 +177,11 @@ window.SW = window.SW || {};
                   label: `Add to ${d.name}`,
                 }))
               // A disabled item never fires onClick, so the reason has to be the label itself.
-              : [{ key: 'to-dataset', label: 'No writable Dataset is mounted here', disabled: true }]
+              : [{
+                  key: 'to-dataset',
+                  label: SW.brand.text('No writable {dataset} is mounted here'),
+                  disabled: true,
+                }]
             : []),
           // The third of the three scopes, beside the two this menu already named. Every label says
           // which list it acts on, because that is the only thing telling the three apart.
@@ -366,14 +372,18 @@ window.SW = window.SW || {};
 
     const addMenu = {
       items: [
-        { key: 'browse', label: `Browse Domino…` },
+        { key: 'browse', label: SW.brand.text('Browse {platformName}…') },
         { key: 'upload', label: 'Upload a file' },
-        { key: 'connect', label: 'Connect a data source' },
+        // "a new {dataSource}", not "a {dataSource}": there is no article engine, and the article
+        // has to sit against a word the pack cannot change. The toast below already said "new".
+        { key: 'connect', label: SW.brand.text('Connect a new {dataSource}') },
       ],
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
         if (key === 'upload') return fileRef.current && fileRef.current.click();
-        return antd.message.info('Connecting a new data source is not wired up in this prototype.');
+        return antd.message.info(
+          SW.brand.text('Connecting a new {dataSource} is not wired up in this prototype.')
+        );
       },
     };
 
@@ -644,7 +654,7 @@ window.SW = window.SW || {};
                           style: { padding: 0, height: 'auto', fontSize: 12 },
                           onClick: () => SW.store.openCatalog(group.subgroups[0].kind),
                         },
-                        'Add from Domino'
+                        SW.brand.text('Add from {platformName}')
                       )
                   )
                 : items.map(({ sub, rows }) =>
@@ -657,7 +667,7 @@ window.SW = window.SW || {};
                             h(
                               'div',
                               { className: 'sw-res-subgroup' },
-                              h('span', { className: 'sw-group-label' }, sub.label)
+                              h('span', { className: 'sw-group-label' }, SW.brand.text(sub.label))
                             ),
                           rows.map(rowFor)
                         )
@@ -685,7 +695,8 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-drawer-body' },
-              h('div', { className: 'sw-drawer-hint' }, 'Files in this workspace. Dataset contents live under the Dataset.'),
+              h('div', { className: 'sw-drawer-hint' },
+                SW.brand.text('Files in this workspace. {dataset} contents live under the {dataset}.')),
               files.length
                 ? files.map(rowFor)
                 : h('div', { className: 'sw-group-empty' }, 'No files in this project yet.')

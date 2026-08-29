@@ -2,8 +2,8 @@
 //
 // `models` is every LLM Alias this app may call — pass one by name to `askModel`. `alias` is
 // the first of them, the model a call that names none gets. null means no model has been
-// chosen yet. See ./sageLlm.ts.
-export const sageLlmConfig = {
+// chosen yet. See ./appLlm.ts.
+export const appLlmConfig = {
   alias: null,
   displayName: null,
   base: null,

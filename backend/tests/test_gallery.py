@@ -4,9 +4,13 @@ Which Apps a viewer is shown is policy, so it is driven at the service seam agai
 Control Plane. Reading the global apps list is transport, and that is driven against a mock
 httpx transport alongside the rest of test_provision_domino's schema cover.
 """
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import httpx
+import pytest
 
 from sage.provision.domino import BuiltApp, DominoControlPlane, FakeControlPlane, ProjectRef
 from sage.provision.github import FakeRepoProvider
@@ -145,8 +149,42 @@ def test_the_gallery_shows_apps_and_never_falls_back_to_the_project_list():
     assert "SW.api.projects()" not in gallery      # an empty Gallery stays empty
     assert "attachProject" not in gallery          # and opening an app never switches Project
     assert "window.open(app.url, '_blank'" in gallery
-    assert "No Built Apps yet" in gallery          # empty says what, why, and what to do next
-    assert "then publish it" in gallery
+
+
+_EMPTY_HARNESS = Path(__file__).resolve().parent / "js" / "gallery_empty_harness.mjs"
+
+needs_node = pytest.mark.skipif(
+    shutil.which("node") is None, reason="node is not on PATH (it is in the Sage image)"
+)
+
+
+def _empty_gallery(pack: dict | None = None) -> list[str]:
+    out = subprocess.run(
+        ["node", str(_EMPTY_HARNESS)],
+        input=json.dumps({"pack": pack}),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@needs_node
+def test_the_empty_gallery_names_the_built_app_in_the_packs_words():
+    """The empty state used to be pinned here as source text. ADR-0014 rules that out — a grep
+    cannot tell our word from a code comment, and once the word is a token there is nothing in the
+    source to grep for. So it is read off the rendered tree, under a pack that is known either way.
+
+    The claim is unchanged: an empty Gallery says what, why, and what to do next."""
+    default = _empty_gallery()
+    assert "No Built Apps yet" in default
+    assert any("Build something in Chat, then publish it." in line for line in default)
+
+    renamed = _empty_gallery({"nouns": {"builtApp": {"singular": "Cube", "plural": "Cubes"}}})
+    assert "No Cubes yet" in renamed
+    assert not any("Built App" in line for line in renamed)
 
 
 def test_first_open_still_lands_in_chat():
