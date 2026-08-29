@@ -61,9 +61,15 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None)
     the literal early — these strings come from a gateway's registration records, not from us.
 
     `alias`/`displayName` carry the FIRST entry as well as `models` carrying all of them. Two shapes
-    for one fact, on purpose: `ensure_llm_helper` copies the helper only when it is absent, so an app
-    seeded before #34 keeps a helper that reads the scalars and would otherwise stop compiling the
-    moment Sage rewrote this file. It goes on calling the default, which is what it did before.
+    for one fact, on purpose: an app seeded before #34 has a helper that reads the scalars, and it
+    would stop compiling the moment Sage rewrote this file without them. It goes on calling the
+    default, which is what it did before.
+
+    That helper is now replaced rather than left standing — `ensure_llm_helper` has refreshed since
+    `e83f3d0`, and #40 put the rest of Sage's own sources on the same footing — so the copy these
+    scalars protect is one attach away from being gone. They stay because the refresh is not a
+    guarantee: `_ensure_helper` returns False when the template file cannot be read, and two fields
+    are a cheap thing to be wrong about in the safe direction.
     """
     default = aliases[0] if aliases else None
     entries = ",\n".join(

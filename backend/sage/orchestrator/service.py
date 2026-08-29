@@ -5563,11 +5563,19 @@ class Orchestrator:
                         yield persist({
                             "type": "build-stalled", "stuck": True, "prompt": "",
                             "quietForS": round(time.monotonic() - last_event), "kept": True,
+                            # Which silence it was, on the same line the offer next door draws
+                            # (#98). The action is the same either way — restart — but the sentence
+                            # is what someone reads to know whether their build command was the
+                            # thing that hung, and a card that says "stopped responding" over a
+                            # step that ran the whole time sends them to look at the model.
                             "message": (
-                                "The build stopped responding and would not stop when Sage asked "
-                                "it to, so this workspace cannot run another build. Restart the "
-                                "workspace to clear it. Everything already written to your app is "
-                                "still there.")})
+                                ("The step Sage was running didn't finish, and the build would not "
+                                 "stop when Sage asked it to, so this workspace cannot run another "
+                                 "build. " if tool_open else
+                                 "The build stopped responding and would not stop when Sage asked "
+                                 "it to, so this workspace cannot run another build. ")
+                                + "Restart the workspace to clear it. Everything already written "
+                                  "to your app is still there.")})
                         yield persist({"type": "done", "ok": False, "decision": "wedged"})
                         raise TurnWedged()
                     # It stopped, so the tree is ours again: put the mode pins back and hand the

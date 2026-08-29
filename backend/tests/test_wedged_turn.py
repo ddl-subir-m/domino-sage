@@ -722,3 +722,20 @@ def test_a_stalled_approve_leaves_the_plan_to_be_approved_again(tmp_path: Path):
 
     assert _of(events, "build-stalled")
     assert plan.exists(), "the plan was archived for a build that never happened"
+
+
+def test_a_stuck_call_that_will_not_stop_names_the_step_too(tmp_path: Path):
+    """The condemned-workspace card draws the same line the offer next door does (#98). Both
+    failures can arrive out of either silence, and only the sentence tells the two apart: the action
+    is a restart either way, but "stopped responding" over a step that ran the whole time sends
+    somebody to look at the model when it was their build command that hung."""
+    ws = tmp_path / "mnt" / "code"
+    oc = StuckToolOpenCode(ws, [Turn(text="running the build")], stops=False)
+    orch = _orch(tmp_path, oc)
+    oc.orch = orch
+
+    card = _of(list(orch.build_stream("add a chart")), "build-stalled")[0]
+
+    assert card["stuck"] is True
+    assert "step Sage was running" in card["message"]
+    assert "would not stop" in card["message"]
