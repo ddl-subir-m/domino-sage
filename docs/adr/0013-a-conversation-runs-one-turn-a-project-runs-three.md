@@ -64,6 +64,23 @@ somebody would have to invent a reason to want. Turns are serial **inside** a Co
 parallel **across** them. This makes ADR-0009 and #50 load-bearing rather than adjacent: if Build
 is a view of a Conversation, the unit is coherent; if it is a separate place, it is not.
 
+**The Conversation orders. It does not exclude.** A Conversation never owns a Built App —
+`CONTEXT.md` says two Conversations may drive one — so "two Conversations, two Build turns" does not
+mean two independent builds. They may be building the same app, and nothing in the blocker list
+stops them: both turns are *legitimately* allowed to write that app's files, so they would interleave
+edits and each typecheck over the other's half-written tree.
+
+So there are two rules, not one:
+
+- **A Conversation runs one turn at a time.** Ordering.
+- **A Built App is built by one turn at a time.** Exclusion.
+
+Most of the second already exists. Apps live in `apps/<appId>/` (#67, closed), a turn pins its app
+for its whole life so a rail switch mid-build cannot move it (`_pin_turn_app`, #77), and **Build's
+revert is already scoped to that app** — `Project.snapshot` returns
+`TurnSnapshot(self.app_for_turn().path)`. What is missing is the exclusion itself, which the
+project-wide turn lock provides today by accident and would stop providing the moment it is removed.
+
 ## Why the blockers do not gate the queue
 
 The claim that N is free had to be attacked before it could be believed. Three attacks, all
@@ -128,7 +145,7 @@ have.** Sage is one `Orchestrator` → one `Project` → one of everything.
 | Its own working directory | one `.sage/chat-work` (`threads.py:490`) | blocker 3 |
 | Its own file writes | a whole-tree revert that deletes (`threads.py:380`) | blocker 1 |
 | Its own credential environment | one `ModelControl` arming, last-writer-wins | blocker 2 |
-| Its own signal target | one `active_session_id` / `stop_requested` (`service.py:1795`, `:1811`) | blocker 4 |
+| Its own signal target | **five** single fields on `Project`, not two (below) | blocker 4 |
 | Its own checkout, or an accepted mess | **one `_save_to_git` on one working tree** (`:6203`) | **missing** |
 | No preview to share | **one `ViteSupervisor`** on the workspace path | **missing** |
 
@@ -137,6 +154,17 @@ because the code that protects it looks like it already handles concurrency. `_f
 takes the turn lock rather than testing it, with the reason written down: *"a turn that starts
 partway through gets its half-written files committed."* Under K > 1 there is **always** a turn
 running, so that protection evaporates at exactly the moment it starts mattering.
+
+Blocker 4 is larger than "stop targeting". `stop_requested` (`service.py:1811`) and
+`active_session_id` (`:1795`) are the two it is usually described by, but `_pin_turn_app` also
+writes `turn_app`, `turn_attached` and `turn_tree_baseline` — all single fields on `Project`. Under
+K > 1 two Build turns clobber each other's pin, and every later question the pin answers (*which app
+do I revert, log to, repair afterwards?*) gets the other turn's answer. Five fields, all keyed by
+Conversation.
+
+Blocker 1 is narrower than it looks, in Build's favour. The whole-tree diff is the **Chat** revert
+(`revert_denied_writes`). Build already reverts per app through `Project.snapshot`. So blocker 1 is
+Chat-only work, and Build's existing shape is the model for what Chat's should become.
 
 Blockers 1 and 3 also do not cover each other, which is easy to assume they do.
 `_SKIP_SNAPSHOT_PARTS` (`threads.py:466`) excludes `chat-work` from the snapshot, so two agents
@@ -161,6 +189,12 @@ but the order they drain in is not: the oldest pending turn anywhere in the Proj
 free slot. At K = 1 that is the whole schedule; at K > 1 it is which pending turn fills a slot as it
 frees.
 
+A pending turn is eligible when **its Conversation is free and its target Built App is free**. The
+second predicate is the exclusion rule doing its work: a second build asked for on an app that is
+already building waits rather than being refused. Refusing was the alternative and is rejected for
+consistency — a Workbench that queues Chat and refuses Build is a rule people have to learn instead
+of guess.
+
 Per-Conversation round-robin is the alternative and is rejected, for a reason that only holds in
 Sage. Round-robin exists to stop one tenant starving another. **There are no tenants here** — a Sage
 Builder belongs to one viewer (`CONTEXT.md`, *Sage Builder*: two viewers in the same Project each
@@ -175,7 +209,9 @@ answer is a higher K, not a cleverer scheduler — reordering would buy latency 
 making the schedule unpredictable for all of them.
 
 **Context: snapshot at enqueue, validate at run.** A pending turn records the chips it was written
-against. Before it runs, that snapshot is compared to the live Session context. If anything moved,
+against, **and, for a build, the Built App it was written for**. Resolving the target at run time
+instead would pick up wherever the rail had drifted to — the exact failure #77 fixed for a running
+turn, arriving through the queue instead. Before it runs, that snapshot is compared to the live Session context. If anything moved,
 **the turn does not run** — it is surfaced as *"your context changed since you asked this"* with the
 text returned to the composer. The two obvious alternatives both produce a turn that quietly did
 something other than what was on screen: running against the snapshot resurrects a chip the person
