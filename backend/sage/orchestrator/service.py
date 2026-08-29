@@ -2102,8 +2102,10 @@ class Orchestrator:
         # per-project state (read_only_turn, mode) and mutates one working tree; a second overlapping
         # turn would clear the first turn's read-only gate mid-flight (making the gated planner write
         # code, which then self-destructs as a "gate violation") and interleave edits on one tree.
-        # The UI already queues composer messages behind a live turn, but uploads, an approve, or a
-        # second client can still overlap — this is the backend backstop. Non-blocking: a would-be
+        # The UI refuses a composer send behind a live turn rather than queueing it (`store.js`,
+        # `state.buildRunning`) — there is no queue, and ADR-0013 is where one would come from. That
+        # refusal is also client-side, and uploads, an approve, or a second client can still overlap,
+        # so this is the backend backstop. Non-blocking: a would-be
         # overlap is refused with a clear event, not silently run. Stop stays lock-free (it only sets
         # stop_requested, which the running turn polls) so it can always interrupt the held turn.
         self._turn_lock = threading.Lock()
