@@ -472,6 +472,16 @@ SW.api = {
   // Answers {published, app_id, url, manage_url, republished}; a 409 carries `refused` problems
   // and every other failure carries a sentence, both of which `request` already surfaces.
   publish: () => post('/publish', {}),
+  // The two reads the pre-publish notice is built from (#35). Separate routes, asked together and
+  // neither awaited before the confirm opens: `publishCheck` is local disk and pure Python, and
+  // `publishEgress` may reach the gateway for the Alias listing — folded into one, a slow listing
+  // would hold up query warnings that were already sitting on the disk.
+  //
+  // Both are reads, and neither can refuse a publish (ADR-0012). A failure here is nothing to say,
+  // which is why the caller swallows it rather than reporting it: an unverified credential is a
+  // hole, an unwritten notice is not.
+  publishCheck: () => request('/publish-check'),
+  publishEgress: () => request('/publish-egress'),
   // Both halves of one Conversation, merged and labelled with the half each turn came from (#56).
   // Beside `thread(id).history`, not instead of it: the split conversation view still asks Chat
   // what Chat said, and this asks what the whole Conversation did — a question about the Project's

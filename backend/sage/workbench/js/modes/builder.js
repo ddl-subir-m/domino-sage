@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect, useRef, Fragment } = React;
-  const { Button, Tooltip, Input, Dropdown, Modal, Checkbox } = antd;
+  const { Button, Tooltip, Input, Dropdown, Modal, Checkbox, Alert } = antd;
   const {
     ReloadOutlined, ExportOutlined, SearchOutlined, MoreOutlined, PlusOutlined, DownOutlined,
     LoadingOutlined,
@@ -120,6 +120,52 @@ window.SW = window.SW || {};
     });
   }
 
+  // The pre-publish notice (#35), the surface `GET /api/publish-check` has been answering to nobody
+  // since #26. Two things a creator should read before shipping, and neither is a refusal:
+  //
+  // - the named queries the published app will not answer, which is a defect they can go and fix;
+  // - where this app's data goes, which is a consequence they accept or do not (ADR-0012).
+  //
+  // Silence means silence. A read that failed renders NOTHING — no "Sage could not check where your
+  // data goes", no spinner left behind. That is the deliberate asymmetry with `publish_problems`,
+  // which refuses when it cannot check: an unverified credential is a hole, an unwritten notice is
+  // not, and a sentence about Sage's own reachability costs attention and buys nothing.
+  function publishNotice(queries, egress) {
+    if (!queries.length && !egress) return null;
+    return h(
+      Fragment,
+      null,
+      // Warning, because these queries WILL fail for a viewer. Info below it, because nothing about
+      // the model is broken — it is what publishing means, said once, so the choice is knowing.
+      queries.length
+        ? h(Alert, {
+          type: 'warning',
+          showIcon: true,
+          style: { marginTop: 12 },
+          message: queries.length === 1
+            ? 'One of this app’s queries won’t answer once it’s published'
+            : `${queries.length} of this app’s queries won’t answer once it’s published`,
+          // The app's OWN sentences, which is the property #26 was built on: the creator reads what
+          // the viewer would read, so what they go and fix is the thing that will complain.
+          description: h(
+            'ul',
+            { className: 'sw-publish-warnings' },
+            queries.map((q, i) => h('li', { key: i }, q))
+          ),
+        })
+        : null,
+      egress
+        ? h(Alert, {
+          type: 'info',
+          showIcon: true,
+          style: { marginTop: 12 },
+          message: 'Where this app’s data goes',
+          description: egress,
+        })
+        : null
+    );
+  }
+
   // Publishing is consequential, so it confirms on Reset's and Delete's pattern (#76): say what it
   // does, and say in the same breath what it does NOT touch. The fear on the way to this button is
   // that the whole Project goes out, or that shipping the app moves the files and the conversation
@@ -135,33 +181,38 @@ window.SW = window.SW || {};
   // middle of this question.
   function publishApp(app) {
     const again = !!app.published;
-    Modal.confirm({
+    const body = (notice) => h(
+      Fragment,
+      null,
+      h(
+        'div',
+        null,
+        again
+          ? 'The Domino App you published before starts serving this app’s latest code. The URL '
+            + 'doesn’t change, so anybody already holding it sees the new version.'
+          : 'This app’s code is saved and deployed as a Domino App with a URL of its own. Who '
+            + 'can open it is set in Domino, so nobody sees it until you share it.'
+      ),
+      // Deliberately silent about the attached files. `public/data/` is gitignored, so the push
+      // does not carry the bytes and the deployed app rehydrates them from the manifest — which
+      // makes "your files are published" and "your files stay here" both wrong, and a confirm is
+      // the last place to be approximately right. What publishing does to data is its own
+      // question with its own answer to find.
+      h(
+        'div',
+        { style: { marginTop: 12 } },
+        'Only this app goes out. Your other Built Apps and this conversation stay where they are.'
+      ),
+      // LAST, so nothing above it moves when it arrives. The confirm's own explanation is what a
+      // creator starts reading, and a notice inserted over it would shift the paragraph under their
+      // eyes for the one case in which they are being asked to read carefully.
+      notice
+    );
+    const instance = Modal.confirm({
       title: again ? `Publish a new version of “${app.name}”?` : `Publish “${app.name}”?`,
       okText: again ? 'Publish new version' : 'Publish',
       cancelText: 'Cancel',
-      content: h(
-        Fragment,
-        null,
-        h(
-          'div',
-          null,
-          again
-            ? 'The Domino App you published before starts serving this app’s latest code. The URL '
-              + 'doesn’t change, so anybody already holding it sees the new version.'
-            : 'This app’s code is saved and deployed as a Domino App with a URL of its own. Who '
-              + 'can open it is set in Domino, so nobody sees it until you share it.'
-        ),
-        // Deliberately silent about the attached files. `public/data/` is gitignored, so the push
-        // does not carry the bytes and the deployed app rehydrates them from the manifest — which
-        // makes "your files are published" and "your files stay here" both wrong, and a confirm is
-        // the last place to be approximately right. What publishing does to data is its own
-        // question with its own answer to find.
-        h(
-          'div',
-          { style: { marginTop: 12 } },
-          'Only this app goes out. Your other Built Apps and this conversation stay where they are.'
-        )
-      ),
+      content: body(null),
       onOk: () =>
         SW.store
           // The app this confirm NAMED, not whichever one is selected when it is answered. The
@@ -188,6 +239,33 @@ window.SW = window.SW || {};
             return Promise.reject(err);
           }),
     });
+    // The notice FILLS IN, after the confirm is already on screen. Awaiting a network read before
+    // the modal opened would leave the click looking like a control that did nothing, and one of
+    // these two reads can be as slow as the gateway is.
+    //
+    // Through the instance's `update` rather than a component nested in `content`: `Modal.confirm`
+    // renders its config once, outside this tree's render cycle, so a nested component has no state
+    // change to re-render on. `body` is rebuilt whole because `update` replaces the config value.
+    //
+    // TWO independent handlers, never one `Promise.all`. Awaiting both would put the query warnings
+    // — already sitting on the workspace disk, and answered in microseconds — behind a gateway read
+    // that can be slow or never answer at all, which is the exact coupling the second route exists
+    // to prevent. Each read renders what it knows the moment it knows it, and the second one
+    // updates over the first.
+    //
+    // The reads are swallowed on failure and the modal keeps whatever it has — see `publishNotice`.
+    // Nothing here can reach `onOk`, so a read still in flight when somebody presses Publish delays
+    // nothing and blocks nothing. Answer the confirm before they land and `update` renders into a
+    // container antd has already detached: invisible, and not worth a flag that no test could tell
+    // from the real thing.
+    let queries = [];
+    let egress = '';
+    const fill = () => {
+      const notice = publishNotice(queries, egress);
+      if (notice) instance.update({ content: body(notice) });
+    };
+    SW.api.publishCheck().then((r) => { queries = (r && r.queries) || []; fill(); }, () => {});
+    SW.api.publishEgress().then((r) => { egress = (r && r.notice) || ''; fill(); }, () => {});
   }
 
   // A row of the header's app list — the rail's row, unchanged apart from where it lives. It keeps
