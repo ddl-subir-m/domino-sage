@@ -54,7 +54,11 @@ DEFAULT: dict[str, Any] = {
     # the browser paints the partner's icon rather than ours and then swaps. A partner's own file
     # goes under BRAND_DIR and is named "./brand/<file>.svg"; relative, because the platform
     # serves the shell under a proxy prefix that an absolute path would walk out of.
-    "faviconUrl": "./img/domino-favicon.svg",
+    #
+    # Points at the logo, not a drawn favicon: `img/domino-favicon.svg` does not exist yet and a
+    # default that 404s is worse than a large one (#117 stays open on that criterion). Swap this
+    # line, not the mechanism, when the asset lands.
+    "faviconUrl": "./img/domino-logo.svg",
     # The platform's own whitelabel renames its nouns and no API exposes that vocabulary to a
     # Sage Builder, so the pack carries a copy of it. This will drift, silently, and it is
     # accepted only until such an API exists — if one appears these keys go, not grow.
@@ -222,13 +226,18 @@ def _merge(base: dict, overlay: dict | None) -> dict:
         out["assistantName"] = _nonempty(overlay.get("assistantName")) or out["productName"]
     elif product:
         out["assistantName"] = product
-    for key in ("platformName", "pageTitle", "logoUrl", "logoAlt"):
+    for key in ("platformName", "pageTitle", "logoAlt"):
         value = _nonempty(overlay.get(key))
         if value:
             out[key] = value
-    favicon = _image_url("faviconUrl", overlay.get("faviconUrl"))
-    if favicon:
-        out["faviconUrl"] = favicon
+    # Both image keys take the same boundary. `logoUrl` reaches an <img src> in the shell exactly
+    # as `faviconUrl` reaches a <link href>, so a remote value here is the same per-viewer CDN
+    # beacon and the same air-gap break that ADR-0014 refuses — validating one and not the other
+    # left the hole open one key over.
+    for key in ("logoUrl", "faviconUrl"):
+        image = _image_url(key, overlay.get(key))
+        if image:
+            out[key] = image
     peers = overlay.get("peerProducts")
     if isinstance(peers, list):
         # An empty list is the point of the key, so it is honoured rather than treated as unset:

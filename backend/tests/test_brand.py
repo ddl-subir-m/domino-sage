@@ -37,7 +37,7 @@ def test_brand_file_overrides_and_omitted_assistant_follows_product(tmp_path, mo
     path.write_text(json.dumps({
         "productName": "Acme",
         "pageTitle": "Acme Studio",
-        "logoUrl": "https://acme.example/logo.svg",
+        "logoUrl": "./brand/acme-logo.svg",
         "logoAlt": "Acme",
         "colors": {"primary": "#112233"},
     }))
@@ -46,7 +46,7 @@ def test_brand_file_overrides_and_omitted_assistant_follows_product(tmp_path, mo
     assert pack["productName"] == "Acme"
     assert pack["assistantName"] == "Acme"
     assert pack["pageTitle"] == "Acme Studio"
-    assert pack["logoUrl"] == "https://acme.example/logo.svg"
+    assert pack["logoUrl"] == "./brand/acme-logo.svg"
     assert pack["colors"]["primary"] == "#112233"
     assert pack["colors"]["primaryDark"] == DEFAULT["colors"]["primaryDark"]
 

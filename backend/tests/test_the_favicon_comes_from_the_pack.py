@@ -21,7 +21,9 @@ _WB = Path(__file__).resolve().parents[1] / "sage" / "workbench"
 SHELL = (_WB / "index.html").read_text()
 DOOR = (_WB / "door.html").read_text()
 
-DOMINO_DEFAULT = "./img/domino-favicon.svg"
+# The drawn favicon does not exist yet, so the default is the logo (#117). This constant is the
+# one place to change when the asset lands.
+DOMINO_DEFAULT = "./img/domino-logo.svg"
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +74,9 @@ def test_the_packs_favicon_is_in_the_html_the_server_sends(tmp_path, monkeypatch
     _pack(tmp_path, monkeypatch, faviconUrl="./brand/acme-favicon.svg")
     r = _client(monkeypatch, door=door).get("/")
     assert '<link rel="icon" href="./brand/acme-favicon.svg" />' in r.text
-    assert DOMINO_DEFAULT not in r.text
+    # Scoped to the icon link, not the whole document: the default favicon IS the logo until the
+    # asset is drawn, and the door renders the logo in an <img> that this pack does not change.
+    assert f'<link rel="icon" href="{DOMINO_DEFAULT}"' not in r.text
 
 
 # --- what a pack may name ----------------------------------------------------------------------
@@ -97,6 +101,23 @@ def test_a_relative_image_under_our_own_origin_is_taken(tmp_path, monkeypatch, u
 ])
 def test_a_remote_url_is_refused_and_the_default_stands(tmp_path, monkeypatch, url):
     assert _pack(tmp_path, monkeypatch, faviconUrl=url)["faviconUrl"] == DOMINO_DEFAULT
+
+
+@pytest.mark.parametrize("url", [
+    "https://cdn.acme.example/logo.svg",
+    "http://cdn.acme.example/logo.svg",
+    "//cdn.acme.example/logo.svg",
+    "data:image/svg+xml;base64,PHN2Zy8+",
+])
+def test_the_logo_takes_the_same_boundary_as_the_favicon(tmp_path, monkeypatch, url):
+    """`logoUrl` reaches an <img src> in the shell exactly as `faviconUrl` reaches a <link href>.
+    Validating one and not the other left the beacon and the air-gap break open one key over, so
+    the rule is asserted on both keys and not just the one that happened to be written second."""
+    assert _pack(tmp_path, monkeypatch, logoUrl=url)["logoUrl"] == DEFAULT["logoUrl"]
+
+
+def test_the_logo_keeps_a_relative_url(tmp_path, monkeypatch):
+    assert _pack(tmp_path, monkeypatch, logoUrl="./brand/acme-logo.svg")["logoUrl"] == "./brand/acme-logo.svg"
 
 
 @pytest.mark.parametrize("door", [False, True])
