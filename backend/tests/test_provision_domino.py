@@ -436,3 +436,24 @@ def test_archive_project_surfaces_error_body():
         assert "403" in str(e) and "not the owner" in str(e)
     else:
         raise AssertionError("expected RuntimeError on 403")
+
+
+def test_the_new_projects_description_names_the_packs_assistant(tmp_path, monkeypatch):
+    """The description Sage writes on a Project it creates is prose a person reads in the
+    platform's own UI, so an OEM pack renames it (#109). A description the caller passed in is
+    text Sage did not write and is left exactly as it came."""
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", tmp_path / "none.json")
+    pack = tmp_path / "brand.json"
+    pack.write_text(json.dumps({"productName": "Acme", "assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
+    resp = httpx.Response(200, json={"project": {"id": "p1", "name": "My App"}, "metadata": {}})
+
+    seen = {}
+    _cp(_creds_handler(resp, seen)).create_project("My App", git_url="https://github.com/me/sage-x.git")
+    assert seen["body"]["description"] == "Created by Ada"
+
+    seen = {}
+    _cp(_creds_handler(resp, seen)).create_project(
+        "My App", git_url="https://github.com/me/sage-x.git", description="Domino demo",
+    )
+    assert seen["body"]["description"] == "Domino demo"

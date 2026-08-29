@@ -33,6 +33,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from ..orchestrator import brand
+
 log = logging.getLogger(__name__)
 
 # Hop-by-hop headers must not be forwarded across a proxy.
@@ -87,7 +89,7 @@ async def _answer_query(request: Request, path: str, queries) -> Response | None
         # The server is ours and on loopback, so this is a bug rather than a condition. Say so
         # plainly instead of dressing it as something the creator can act on.
         return JSONResponse(status_code=502, content={
-            "error": "Sage could not reach this app's query server in the preview.",
+            "error": brand.text("{assistantName} could not reach this app's query server in the preview."),
             "detail": f"{type(e).__name__}: {e}",
         })
     return Response(content=answer.content, status_code=answer.status_code,
@@ -120,9 +122,10 @@ async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
         # The sidecar mints these per request and is on loopback, so a failure here is Sage's
         # problem, not something the creator can act on. Say which.
         log.warning("preview llm: could not resolve a gateway token: %s", e)
-        return JSONResponse(status_code=502, content={"error": {"message": (
-            "Sage could not get a token for Domino's LLM Gateway, so the preview cannot make this "
-            "app's model calls. The published app is unaffected — it calls the gateway directly."
+        return JSONResponse(status_code=502, content={"error": {"message": brand.text(
+            "{assistantName} could not get a token for {platformName}'s LLM Gateway, so the preview "
+            "cannot make this app's model calls. The published app is unaffected — it calls the "
+            "gateway directly."
         )}})
     if resolved is None:
         return None    # no Domino gateway configured; fall through to Vite, which 404s
@@ -141,8 +144,8 @@ async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
     except (httpx.HTTPError, OSError) as e:
         await client.aclose()
         log.warning("preview llm: %s %s failed: %s", request.method, url, e)
-        return JSONResponse(status_code=502, content={"error": {"message": (
-            "The preview could not reach Domino's LLM Gateway."
+        return JSONResponse(status_code=502, content={"error": {"message": brand.text(
+            "The preview could not reach {platformName}'s LLM Gateway."
         )}})
 
     # Streamed rather than read whole: `askModel` turns on `stream: true` whenever the app passes
