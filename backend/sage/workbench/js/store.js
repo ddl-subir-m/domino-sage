@@ -2266,18 +2266,6 @@ window.SW = window.SW || {};
       notify();
     },
 
-    // A change landed on an app, so the conversation earns the tag. Committing
-    // is what earns it; having the app on screen never does.
-    async recordChange(appId, kind = 'changed') {
-      if (!state.thread || !appId) return null;
-      const summary = await SW.api.touchApp(state.thread.id, appId, kind);
-      state.touched = summary.touched;
-      state.thread = { ...state.thread, touched: summary.touched };
-      notify();
-      await Promise.all([refreshAttachments(), loadThreadList()]);
-      return summary;
-    },
-
     // A Build turn belongs to a conversation: it opens that conversation's own OpenCode
     // session, and its events are tagged with it in `.sage/history.jsonl`. Typing is intent, so
     // it opens one, the same way Chat does.

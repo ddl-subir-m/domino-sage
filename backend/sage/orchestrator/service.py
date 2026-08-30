@@ -1945,6 +1945,20 @@ def _app_change_event(workspace: Workspace) -> dict:
     return {"type": "app_change", "appId": workspace.app_id, "name": _app_display_name(workspace)}
 
 
+def _crossing_minted_app(workspace: Workspace, conversation: str) -> bool:
+    """Did this conversation's crossing MAKE this app, or find it already standing?
+
+    The answer is the crossing's own receipt (#60) — `newApp` on the plan card the handoff wrote
+    into this app's log under this conversation — read back rather than recomputed, because by the
+    time a build turn asks, `apps/` holds the app either way. It is what separates the rail's
+    "Built X" tag from "Changed X", and it does not change with later turns.
+    """
+    return any(
+        isinstance(row.get("crossed"), dict) and row["crossed"].get("newApp")
+        for row in workspace.read_history(conversation)
+    )
+
+
 @dataclass
 class Project:
     id: str
@@ -2830,6 +2844,10 @@ class Orchestrator:
             with self._app_lock:
                 self._wm.delete_app(app_id)
                 project.record.clear_plan_docs(app_id)
+                # And the rail's tags, on the same rule as the plan documents: they name an app that
+                # is gone, and they are the one place that names it from OUTSIDE the directory the
+                # delete just took away, so nothing else clears them.
+                ThreadStore(project.record.path).forget_app(app_id)
                 # Build was looking at the app that just went, so it has to be looking at something.
                 # `ensure` answers with the newest app left, or seeds one for a Project that now has
                 # none — the same not-yet-built app a Project starts with, rather than a Build mode
@@ -5231,6 +5249,24 @@ class Orchestrator:
             log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
         return seen
 
+    def _tag_conversation(self, project: Project, ev: dict) -> None:
+        """Name the app on the conversation's own record, so the rail can tag, filter and search it.
+
+        Off the `app_change` receipt rather than off the turn: the tag and the card in the
+        transcript then say the same appId and the same name by construction, and there is one
+        place that decides a turn changed an app instead of two that can disagree.
+        """
+        thread_id = str(project.build_conversation or "")
+        app_id = str(ev.get("appId") or "")
+        if not thread_id or not app_id:
+            return
+        ThreadStore(project.record.path).record_touch(
+            thread_id,
+            app_id=app_id,
+            app_name=str(ev.get("name") or ""),
+            kind="built" if _crossing_minted_app(project.app_for_turn(), thread_id) else "changed",
+        )
+
     def _build_stream(self, prompt: str, mentions: list[str] | None = None,
                       resources: list[dict] | None = None, *, is_approval: bool = False,
                       user_text: str | None = None, mode: Mode | None = None,
@@ -5311,6 +5347,12 @@ class Orchestrator:
                 project.app_for_turn().set_last_turn_failed(not ev.get("ok"))
             # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
             # must not reach history either, or a reload would replay six "build is clean" dividers.
+            # The rail's app tag, recording half. Here rather than at the four yield sites that
+            # emit the receipt, for the reason the replan record above gives: every one of them
+            # passes through persist(), and a fact with four writers has four chances to be
+            # forgotten. A phase is not excluded — a phase never emits `app_change`.
+            if ev["type"] == "app_change":
+                self._tag_conversation(project, ev)
             if ev["type"] in _PERSISTED_EVENTS and (owns_turn or ev["type"] != "done"):
                 project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
@@ -6443,6 +6485,10 @@ class Orchestrator:
         steps = parse_steps(plan_md)
 
         def persist(ev: dict) -> dict:
+            # Same argument as _build_stream's persist(): the receipt has two yield sites here and
+            # the tag has one writer.
+            if ev["type"] == "app_change":
+                self._tag_conversation(project, ev)
             if ev["type"] in _PERSISTED_EVENTS:
                 project.app_for_turn().append_history(ev, project.build_conversation)
             return ev

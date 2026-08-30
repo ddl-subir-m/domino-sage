@@ -304,3 +304,33 @@ def test_selecting_an_app_in_the_header_does_not_preselect_a_handoff_target():
     source = (_WORKBENCH / "js" / "components" / "handoff.js").read_text()
     assert "useState('')" in source
     assert "activeApp" not in source
+
+
+# ---- the tags the rail was built around now have a writer ---------------------------------------
+
+
+def test_the_rail_reads_the_keys_the_server_writes():
+    """The tags, the app filter and the app-name search were all coded here and all dead, because
+    `thread.touched` had no writer. It has one now (ThreadStore.record_touch), and the two halves
+    agree by nothing stronger than these four key names — so a rename on either side has to break a
+    test rather than quietly empty the rail.
+
+    No node here: the claim is about the source, and it holds whether or not the rail mounts."""
+    rail = (_WORKBENCH / "js" / "components" / "conversation-list.js").read_text()
+    # The filter and the search, the two the rail cannot draw at all without.
+    assert "x.appId === railAppFilter" in rail
+    assert "x.appName.toLowerCase().includes(needle)" in rail
+    # The tag itself: which app, and "Built X" versus "Changed X".
+    assert "tag.appName" in rail
+    assert "tag.kind === 'built'" in rail
+
+    writer = (Path(__file__).resolve().parents[1] / "sage" / "workspace" / "threads.py").read_text()
+    assert '{"appId": app_id, "appName": app_name, "kind": kind}' in writer
+
+
+def test_the_stubs_the_server_replaced_are_gone():
+    """`api.touchApp` returned `{touched: []}` and `store.recordChange` was its only caller, with no
+    caller of its own. Left beside a field the server now really writes, a stub named for the same
+    job is a trap for the next reader."""
+    assert "touchApp" not in (_WORKBENCH / "js" / "api.js").read_text()
+    assert "recordChange" not in (_WORKBENCH / "js" / "store.js").read_text()

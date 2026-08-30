@@ -150,6 +150,10 @@ class ThreadStore:
             "createdAt": now,
             "updatedAt": now,
             "pinned": False,
+            # The Built Apps this conversation changed, written by the build turn that changed one
+            # (see `record_touch`). Born empty rather than absent so the rail's tags, filter and
+            # app-name search read one shape on a Thread that has never built.
+            "touched": [],
         }
         self.thread_dir(row["id"]).mkdir(parents=True, exist_ok=True)
         self._write_json(self.meta_path(row["id"]), row)
@@ -252,6 +256,54 @@ class ThreadStore:
             row["updatedAt"] = _now()
 
         return self._edit_meta(thread_id, edit)
+
+    def record_touch(self, thread_id: str, *, app_id: str, app_name: str, kind: str) -> dict | None:
+        """Name a Built App this conversation changed, for the rail's tags, filter and search.
+
+        One entry per app, however many turns hit it: the tag answers "which apps did this
+        conversation change", and a conversation that spent twenty turns on one app changed one
+        app. A conversation that changed two gets two entries, because filing it under either one
+        would be a lie about the other (ADR-0008).
+
+        The newest name wins, for the opposite reason `_app_change_event` freezes its own: that
+        record is a then-fact about one turn, and this one is a label on a row in today's rail, so
+        it says what the app is called now.
+
+        Deliberately does NOT bump `updatedAt`. The rail sorts on it, and earning a tag is not new
+        activity to sort by."""
+        def edit(row: dict) -> None:
+            entry = {"appId": app_id, "appName": app_name, "kind": kind}
+            touched = [t for t in (row.get("touched") or []) if isinstance(t, dict)]
+            for i, existing in enumerate(touched):
+                if existing.get("appId") == app_id:
+                    touched[i] = entry
+                    break
+            else:
+                touched.append(entry)
+            row["touched"] = touched
+
+        return self._edit_meta(thread_id, edit)
+
+    def forget_app(self, app_id: str) -> None:
+        """Drop every tag naming one Built App, for the moment that app is deleted.
+
+        A tag outlives its app in a way the transcript's card does not: the card lives in the app's
+        own directory and goes when the directory goes, while the tag is on the Thread's record over
+        in the Project. Left behind, it is a chip in the rail naming an app nobody can open, and a
+        filter that narrows the list by an appId that is not there any more.
+
+        Deliberately not called by Reset, which empties an app and keeps it: that conversation did
+        change that app, and the app is still there to be named."""
+        def edit(row: dict) -> None:
+            row["touched"] = [t for t in (row.get("touched") or [])
+                              if isinstance(t, dict) and t.get("appId") != app_id]
+
+        for d in self._thread_dirs():
+            # Read before the write, so a delete rewrites the few records that named this app rather
+            # than every record in a Project that may hold hundreds.
+            tags = (self._read_meta(d.name) or {}).get("touched") or []
+            if any(isinstance(t, dict) and t.get("appId") == app_id for t in tags):
+                self._edit_meta(d.name, edit)
 
     def delete(self, thread_id: str) -> bool:
         """A tombstone, not a removal. The old delete dropped the index row and left

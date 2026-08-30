@@ -434,7 +434,6 @@ SW.api = {
   recrossHandoff: (id, include, planId) =>
     post(`/threads/${id}/handoff/recross`, { include, planId: planId || '' }),
   patchThread: (id, body) => patch(`/threads/${id}`, body),
-  touchApp: async () => ({ touched: [] }),
   deleteThread: (id) => del(`/threads/${id}`),
   sendMessage: () => Promise.reject(new Error('use chatStream')),
   advance: async () => ({ message: { blocks: [] } }),
