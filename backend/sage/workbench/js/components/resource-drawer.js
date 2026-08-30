@@ -103,8 +103,9 @@ window.SW = window.SW || {};
             // Three roles in one sentence: the platform's catalogue and our own name both resolve
             // through the pack, while the Project's name is the user's word and only fills a slot.
             description: SW.brand.text(
-              'You are looking at it in the {platformName} catalogue. Adding it makes it available '
-                + 'to {assistantName} everywhere in {scope}. You can remove it later.',
+              'You are looking at it in the {platformName} catalogue. Using it in this chat also '
+                + 'adds it to {scope}, so {assistantName} can reach it everywhere in the project. '
+                + 'You can remove it later.',
               { scope: scope.name },
             ),
           })
@@ -124,26 +125,28 @@ window.SW = window.SW || {};
           h(
             Space,
             null,
-            // Two different acts, and which one is primary depends on where the
-            // thing already is. Getting it into the project comes first;
-            // pointing at it in a conversation only makes sense after.
-            inProject
-              ? h(
-                  Button,
-                  { type: 'primary', disabled: attached, onClick: mention },
-                  attached ? 'In this chat' : 'Use in this chat'
-                )
-              : h(
-                  Button,
-                  {
-                    type: 'primary',
-                    onClick: async () => {
-                      await SW.store.addToProject(resource);
-                      close();
-                    },
-                  },
-                  `Add to ${scope.name}`
-                )
+            // One act either way, so one button. Membership is the provisioning step, and it now
+            // happens on the way into the chat instead of gating it — `Add to {project}` named the
+            // machine's reason and made the user do it first.
+            h(
+              Button,
+              {
+                type: 'primary',
+                disabled: attached,
+                // A resource already in the project closes the drawer on its way out, the way it
+                // always did, and Sage acknowledges the pick in the Thread.
+                //
+                // A catalogue one does NOT close: the alert above says it is not in the project,
+                // and this button flipping to `In this chat` is where the user watches that stop
+                // being true. It is quiet for the same reason — the flip and the join toast are
+                // already the feedback, and with the drawer still up, a third acknowledgement is
+                // being told once per surface.
+                onClick: inProject
+                  ? mention
+                  : () => SW.store.addToContext(resource, { quiet: true }),
+              },
+              attached ? 'In this chat' : 'Use in this chat'
+            )
           ),
       },
       loading ? h(antd.Skeleton, { active: true, paragraph: { rows: 8 } }) : body()

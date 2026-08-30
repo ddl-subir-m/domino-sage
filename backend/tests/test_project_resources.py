@@ -256,3 +256,118 @@ def test_the_route_answers_409_naming_the_apps_that_still_bind_it(tmp_path: Path
     assert answer.json()["apps"] == ["Churn model"]
     assert answer.json()["refs"] == [".sage/queries.json", "src/Ads.tsx"]
     assert "Churn model still needs BigQuery_Demo" in answer.json()["error"]
+
+
+# Mentioning a catalogue Resource joins the project ---------------------------
+#
+# Membership existed for a machine reason — provisioning — and stood in front of the user reason,
+# which is naming the thing in a sentence. So naming it in a Thread does the join on the way in.
+# The flag on the response row is how the panel learns to refresh; nothing else tells it.
+
+
+def _thread(orch: Orchestrator) -> str:
+    return orch.create_thread()["id"]
+
+
+def test_naming_a_catalogue_parent_in_a_thread_joins_the_project(tmp_path: Path):
+    orch = _orch(tmp_path)
+    tid = _thread(orch)
+
+    row = orch.add_thread_context(tid, {
+        "kind": "dataset", "name": "card-transactions-q3", "resourceId": "dataset:ds1",
+    })
+
+    assert row["joinedProject"] is True
+    assert [r["id"] for r in orch.list_project_resources()] == ["dataset:ds1"]
+    assert orch.list_project_resources()[0]["name"] == "card-transactions-q3"
+
+
+def test_every_parent_kind_joins_on_the_way_in(tmp_path: Path):
+    orch = _orch(tmp_path)
+    tid = _thread(orch)
+
+    for kind, rid in (
+        ("dataset", "dataset:ds1"),
+        ("data_source", "data_source:ds-dwh"),
+        ("llm_alias", "llm_alias:f-sonnet"),
+        ("model_api", "model_api:churn"),
+    ):
+        row = orch.add_thread_context(tid, {"kind": kind, "name": rid, "resourceId": rid})
+        assert row["joinedProject"] is True, kind
+
+    assert [r["id"] for r in orch.list_project_resources()] == [
+        "dataset:ds1", "data_source:ds-dwh", "llm_alias:f-sonnet", "model_api:churn",
+    ]
+
+
+def test_a_resource_already_in_the_project_joins_nothing_and_says_nothing(tmp_path: Path):
+    """Idempotent, and quiet with it: a second flag would draw a second toast for a membership
+    that never changed."""
+    orch = _orch(tmp_path)
+    orch.add_project_resource({"id": "dataset:ds1", "kind": "dataset", "name": "autodoc"})
+    tid = _thread(orch)
+
+    row = orch.add_thread_context(tid, {
+        "kind": "dataset", "name": "autodoc", "resourceId": "dataset:ds1",
+    })
+
+    assert "joinedProject" not in row
+    assert len(orch.list_project_resources()) == 1
+
+
+def test_a_file_and_an_artifact_join_nothing(tmp_path: Path):
+    """Neither is a Domino Resource, so neither has a membership row to make."""
+    orch = _orch(tmp_path)
+    tid = _thread(orch)
+
+    scratch = orch.project(start_preview=False).workspace.path / "positions.csv"
+    scratch.write_text("a,b\n1,2\n")
+    a_file = orch.add_thread_context(tid, {
+        "kind": "file", "name": "positions.csv", "path": "positions.csv",
+        "resourceId": "file:positions.csv",
+    })
+    an_artifact = orch.add_thread_context(tid, {
+        "kind": "artifact", "name": "chart.png", "path": ".sage/artifacts/chart.png",
+        "resourceId": "artifact:.sage/artifacts/chart.png",
+    })
+
+    assert "joinedProject" not in a_file
+    assert "joinedProject" not in an_artifact
+    assert orch.list_project_resources() == []
+
+
+def test_a_leaf_joins_nothing_because_the_rail_is_the_only_way_to_reach_one(tmp_path: Path):
+    """A Dataset file and a warehouse table are reached by expanding a parent in the rail, which
+    already means that parent is a member. Joining off a leaf would write a membership row for the
+    LEAF's own id, which is not a Resource id the rail can render."""
+    orch = _orch(tmp_path)
+    tid = _thread(orch)
+
+    dsfile = orch.add_thread_context(tid, {
+        "kind": "file", "name": "train.csv", "resourceId": "dsfile:ds1:train.csv",
+        "parentId": "dataset:ds1", "datasetId": "ds1", "datasetRelPath": "train.csv",
+    })
+    table = orch.add_thread_context(tid, {
+        "kind": "data_source", "name": "DIM_ACCOUNT",
+        "resourceId": "table:ds-dwh:DWH.MARTS.DIM_ACCOUNT",
+        "parentId": "data_source:ds-dwh",
+        "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
+    })
+
+    assert "joinedProject" not in dsfile
+    assert "joinedProject" not in table
+    assert orch.list_project_resources() == []
+
+
+def test_the_join_flag_is_an_event_and_is_never_persisted(tmp_path: Path):
+    """It says "membership changed just now", which is true once. Read back off disk it would say
+    it again on every reload, and the panel would keep re-announcing an old join."""
+    orch = _orch(tmp_path)
+    tid = _thread(orch)
+    orch.add_thread_context(tid, {
+        "kind": "dataset", "name": "autodoc", "resourceId": "dataset:ds1",
+    })
+
+    stored = orch.thread_context(tid)["items"]
+
+    assert [i.get("joinedProject") for i in stored] == [None]

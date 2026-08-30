@@ -121,3 +121,25 @@ def test_only_pin_carries_the_tooltip():
     tooltip. Counted over the `h(` call rather than the word, so that importing another antd
     component whose name sits beside Tooltip in the destructure does not read as a second one."""
     assert TREE_FLAT.count("h( Tooltip,") == 1
+
+
+# Membership stopped being a gate in front of the verb ------------------------
+
+def test_the_drawer_puts_a_catalogue_resource_in_the_chat_in_one_click():
+    # Was `Add to {project}`, which named the machine's step rather than the user's.
+    assert "await SW.store.addToProject(resource);" not in DRAWER
+    assert ": () => SW.store.addToContext(resource, { quiet: true })," in DRAWER
+    # The alert above the button has to agree with what the button now does.
+    assert "Using it in this chat also " in DRAWER
+    assert "adds it to {scope}" in DRAWER
+    assert "SW.brand.text(" in DRAWER
+
+
+def test_the_drawer_stays_open_so_the_join_can_be_seen_landing():
+    """The alert says this is not in the project. Closing on click would take that sentence off
+    screen at the moment it stopped being true, and the only evidence left would be a toast."""
+    assert """onClick: inProject
+                  ? mention
+                  : () => SW.store.addToContext(resource, { quiet: true }),""" in DRAWER
+    # `mention` is the branch that closes, and only a resource already in the project takes it.
+    assert DRAWER.count("close();") == 1

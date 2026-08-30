@@ -280,8 +280,12 @@ SW.api = {
   resourceListing: () => fetchDominoListing(),
   overlayResourceListing: overlayListing,
   resource: (id) => {
-    const { resourceIndex } = SW.store.get();
-    return Promise.resolve(resourceIndex[id] || { id, name: rawFromPrefix(id), kind: kindFromPrefix(id) });
+    const { resourceIndex, catalogueParents } = SW.store.get();
+    // The index holds the project's working set. A catalogue parent is not in it yet and the
+    // drawer opens on one — without this fallback it would show the bare Domino id as the name,
+    // and `Use in this chat` would write that id into the project rail as the resource's name.
+    const known = resourceIndex[id] || (catalogueParents || []).find((r) => r.id === id);
+    return Promise.resolve(known || { id, name: rawFromPrefix(id), kind: kindFromPrefix(id) });
   },
   restrictedIn: () => Promise.resolve([]),
 
@@ -411,6 +415,9 @@ SW.api = {
       datasetId: row.datasetId || resource.datasetId,
       datasetRelPath: row.datasetRelPath || resource.datasetRelPath,
       scope: row.scope || resource.scope,
+      // Set only when THIS post is what made the resource a project member. The store refreshes
+      // the rail off it, so dropping it here would leave the panel denying a join that happened.
+      joinedProject: Boolean(row.joinedProject),
     };
   },
   removeFromConversation: (id, attachmentId) => del(`/threads/${id}/context/${attachmentId}`),

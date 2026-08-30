@@ -567,6 +567,20 @@ def _copied_bytes(root: Path) -> int:
     return total
 
 
+# The Domino Resource kinds that have a membership row of their own. Everything else a Thread can
+# name is either not a Resource (a file, an Artifact) or a LEAF hanging off one of these — see
+# `Orchestrator._join_project_on_mention`.
+#
+# The same four kinds in the UI's own id space are `SW.util.MEMBERSHIP_PARENT_KINDS` in
+# `sage/workbench/js/util.js`; `SW.util.uiKind` is the mapping between the two spellings.
+_MEMBERSHIP_PARENT_KINDS = ("dataset", "data_source", "llm_alias", "model_api")
+
+# The two leaf ids that arrive carrying their PARENT's kind, so the kind alone cannot spot them:
+# `table:<sourceId>:<dotted>` posts as `data_source`, `dsfile:<datasetId>:<relPath>` as `file`.
+# Every other leaf is already refused by its kind.
+_LEAF_ID_PREFIXES = ("table:", "dsfile:")
+
+
 def _bare_kind_id(value: str, kind: str) -> str:
     """Strip a `kind:` prefix from a membership id. Dataset `dataset:ds_1` and Data Source
     `data_source:abc` / `datasource:abc` all store the live id after the first colon."""
@@ -3557,7 +3571,46 @@ class Orchestrator:
                 cols = self._columns_for_context(source, scope)
                 if cols:
                     row["columns"] = cols
-        return store.add_context(thread_id, row)
+        joined = self._join_project_on_mention(row)
+        stored = store.add_context(thread_id, row)
+        # On the answer, not in the row: the flag says "membership changed just now", which is true
+        # once. Persisted, it would say it again on every reload and the panel would re-announce a
+        # join the user made days ago.
+        return {**stored, "joinedProject": True} if joined else stored
+
+    def _join_project_on_mention(self, row: dict) -> bool:
+        """Put a catalogue Resource in the project because a Thread named it. True when this
+        mention is what made it a member.
+
+        Membership is the provisioning step. It exists for a machine reason, not a user one, so it
+        happens as a side effect of the act that does have a reason behind it — naming the thing in
+        a sentence — rather than standing in front of it as a gate.
+
+        Parents only. A Dataset file or a warehouse table is reached by expanding a parent in the
+        rail, which already means that parent is a member; and a leaf's own id is not one the rail
+        can render a membership row for.
+        """
+        kind = str(row.get("kind") or "")
+        rid = str(row.get("resourceId") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if kind not in _MEMBERSHIP_PARENT_KINDS or not name:
+            return False
+        if not rid or rid.startswith(_LEAF_ID_PREFIXES):
+            return False
+        try:
+            # Idempotent on id, so an existing member reports `added: False` and draws no flag.
+            return bool(self.add_project_resource({
+                "id": rid,
+                "kind": kind,
+                "name": name,
+                "project": row.get("project"),
+                "path": row.get("path"),
+                "bindingKey": row.get("bindingKey"),
+            })["added"])
+        except (ValueError, OSError):
+            # The chip is worth having either way. A membership row the disk refused must not take
+            # the mention down with it.
+            return False
 
     @staticmethod
     def _context_source_id(item: dict) -> str:

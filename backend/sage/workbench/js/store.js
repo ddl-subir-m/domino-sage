@@ -82,6 +82,9 @@ window.SW = window.SW || {};
     // Every Dataset this container has mounted writable, whether or not it is in the project rail.
     // Membership is a curated list; the promote target is a fact about the disk.
     datasetTargets: [],
+    // The catalogue parents this viewer can reach that are NOT in the project rail. The @ menu
+    // offers them last, because picking one joins the project on the way in (see `attach`).
+    catalogueParents: [],
     gatewayAliases: [],
     resourcesLoading: true,
     members: [],
@@ -420,6 +423,16 @@ window.SW = window.SW || {};
       // The overlay keeps only the Datasets already in the rail. A scratch file can be promoted
       // onto any Dataset this container mounts writable, so that set is kept whole here.
       state.datasetTargets = ((listing.groups && listing.groups.dataset) || []).filter((d) => d.writable);
+      // Same read, same reason: the overlay discards every non-member, and the @ menu needs them.
+      // Parents only — a warehouse table is a level down and this listing never fetched one.
+      const members = new Set(
+        SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+          (kind) => (state.resourceGroups[kind] || []).map((r) => r.id)
+        )
+      );
+      state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+        (kind) => (((listing.groups && listing.groups[kind]) || []).filter((r) => !members.has(r.id)))
+      );
       notify();
     }).catch(() => {});
 

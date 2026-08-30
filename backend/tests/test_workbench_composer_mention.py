@@ -61,3 +61,73 @@ def test_a_deletion_never_opens_a_closed_mention_menu():
     assert "e.nativeEvent && e.nativeEvent.inputType" in UI
     # A deletion may still NARROW a menu that is already open, so the guard is conditional on state.
     assert "&& !mention) return;" in UI
+
+
+# The sixth group: a resource the project has not joined yet -------------------
+
+STORE = (WB / "js" / "store.js").read_text()
+API = (WB / "js" / "api.js").read_text()
+UTIL = (WB / "js" / "util.js").read_text()
+
+
+def test_the_menu_offers_resources_the_project_has_not_joined_yet():
+    # Adding used to be two acts — join the project, then mention it — and the first one existed
+    # for a machine reason. The menu now offers the catalogue too, and picking does both.
+    assert "catalogueParents" in UI
+    assert "Not in ${scope.name} yet" in UI
+
+
+def test_the_new_group_is_appended_last():
+    # Last because it is the only group whose rows are not already here: everything above is
+    # something this project or this thread already holds, and those stay easier to reach.
+    assert "return context.concat(produced, pins, project, files, catalogue).slice(0, 8);" in UI
+
+
+def test_the_cap_of_eight_survives_the_new_group():
+    # A sixth source of rows is a sixth way to overflow the menu. The cap is applied once, after
+    # the concat, so it still counts every group.
+    assert UI.count(".slice(0, 8)") == 1
+
+
+def test_no_table_or_dataset_file_can_reach_the_new_group():
+    """The `@` menu must never fetch a warehouse catalog (docs/workbench/chat.md). Tables and
+    Dataset files are leaves reached by expanding a parent in the rail, and each one is a round
+    trip to Domino — a menu that listed them would make every keystroke expensive."""
+    # The store fills the group from the parent kinds only, off a listing that has no leaves in it.
+    assert "SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(" in STORE
+    # Pinned whole, so no leaf kind can be added to it without this line changing.
+    assert "MEMBERSHIP_PARENT_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive']" in UTIL
+    # And the listing it filters has no leaf in it to begin with: a table is a level below any
+    # group `fetchDominoListing` builds, and reaching one is the round trip this menu never makes.
+    assert "warehouse" in STORE.split("state.catalogueParents")[0].split("datasetTargets =")[1]
+
+
+def test_a_catalogue_row_says_so_on_the_row_itself():
+    """The menu draws ONE heading and picks it off `suggestions[0]`. Catalogue rows come last, so
+    any row above them makes that heading read `In {project}` — over a row that is not in the
+    project. The row carries the correction, the way `in context` already does for the same
+    reason: the heading cannot speak for six groups."""
+    assert "`not in ${scope.name}`" in UI
+    assert "catalogueIds.has(resource.id)" in UI
+    # And the heading itself is right when a catalogue row IS first.
+    assert "Not in ${scope.name} yet" in UI
+
+
+def test_the_group_holds_only_resources_the_project_does_not_have():
+    # A row in both lists would appear twice — once under the project's own heading and once under
+    # "not in it yet", which reads as the menu disagreeing with itself.
+    assert "state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(" in STORE
+    assert ".filter((r) => !members.has(r.id))" in STORE
+
+
+def test_the_store_asks_for_nothing_new_to_fill_the_group():
+    """`resourceListing()` already returned the whole catalogue and `overlayResourceListing` threw
+    the non-members away. Keeping them costs no request; a second fetch on every scope load would."""
+    assert STORE.count("SW.api.resourceListing()") == 1
+
+
+def test_the_join_flag_reaches_the_store_that_reads_it():
+    # store.js has handled `attachment.joinedProject` since the panel was written; the API layer
+    # dropped it on the floor, so the rail never heard about a join.
+    assert "joinedProject: Boolean(row.joinedProject)," in API
+    assert "if (attachment.joinedProject) {" in STORE

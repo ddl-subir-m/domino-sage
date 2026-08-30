@@ -15,7 +15,7 @@ window.SW = window.SW || {};
     ];
   }
   const BUILD_MODE_LABEL = { auto: 'Auto', ask: 'Ask · read-only', plan: 'Plan', implement: 'Implement' };
-  const PROJECT_MENTION_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive'];
+  const PROJECT_MENTION_KINDS = SW.util.MEMBERSHIP_PARENT_KINDS;
 
   function chatAliases(resourceGroups) {
     return (resourceGroups.model_llm || []).filter((r) => {
@@ -29,8 +29,10 @@ window.SW = window.SW || {};
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
 
-  // Session context, then this Thread's artifacts, then project Resources, then files.
-  function mentionCandidates(attachments, resourceGroups, query, artifacts) {
+  // Session context, then this Thread's artifacts, then project Resources, then files, then the
+  // catalogue this project has not joined yet. That one is last because it is the only group whose
+  // rows are not here already — picking it joins the project on the way in.
+  function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents) {
     const lowered = query.trim().toLowerCase();
     const matches = (r) => {
       if (!lowered) return true;
@@ -89,7 +91,16 @@ window.SW = window.SW || {};
       if (row) files.push(row);
     });
 
-    return context.concat(produced, pins, project, files).slice(0, 8);
+    // Parents only — the store filters to `MEMBERSHIP_PARENT_KINDS`, off a listing that has no
+    // leaf in it to begin with. That is what keeps a warehouse table out of this menu, which must
+    // never fetch a warehouse catalog (docs/workbench/chat.md).
+    const catalogue = [];
+    (catalogueParents || []).forEach((r) => {
+      const row = take(r);
+      if (row) catalogue.push(row);
+    });
+
+    return context.concat(produced, pins, project, files, catalogue).slice(0, 8);
   }
 
   // Where the caret sits inside an unfinished @mention, if it does.
@@ -118,7 +129,7 @@ window.SW = window.SW || {};
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
-      apps, activeApp, composerSeed, queuedTurns,
+      apps, activeApp, composerSeed, queuedTurns, catalogueParents,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -139,8 +150,10 @@ window.SW = window.SW || {};
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
     const suggestions = mention
-      ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts)
+      ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts,
+                          catalogueParents)
       : [];
+    const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));
     const buildModes = BUILD_MODES();
     const activeBuildMode = buildModes.find((m) => m.id === buildMode) || buildModes[0];
     const modeQueued = showMode && buildRunning && buildTurnMode && buildTurnMode !== buildMode;
@@ -438,7 +451,9 @@ window.SW = window.SW || {};
                   ? 'In context'
                   : suggestions[0] && suggestions[0].kind === 'artifact'
                     ? 'In this thread'
-                    : `In ${scope.name}`
+                    : suggestions[0] && catalogueIds.has(suggestions[0].id)
+                      ? `Not in ${scope.name} yet`
+                      : `In ${scope.name}`
               ),
               suggestions.map((resource, index) =>
                 h(
@@ -454,7 +469,13 @@ window.SW = window.SW || {};
                   h('span', { className: 'sw-mention-name' }, resource.name),
                   attachedIds.has(resource.id)
                     ? h('span', { className: 'sw-incontext-tag' }, 'in context')
-                    : h('span', { className: 'sw-caption' }, SW.util.labelFor(resource.kind))
+                    // The menu has ONE heading and it describes the first row only. A catalogue
+                    // row sits last, so whenever anything is above it that heading reads
+                    // `In {project}` — the exact opposite of true for this row. It says so
+                    // itself, the way `in context` already does for the same reason.
+                    : catalogueIds.has(resource.id)
+                      ? h('span', { className: 'sw-caption' }, `not in ${scope.name}`)
+                      : h('span', { className: 'sw-caption' }, SW.util.labelFor(resource.kind))
                 )
               )
             ),

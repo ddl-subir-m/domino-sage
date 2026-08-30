@@ -25,6 +25,17 @@ window.SW = window.SW || {};
     mcp:              { icon: '🧩', label: 'MCP',            group: 'mcp' },
   };
 
+  // The Resource kinds that get a membership row of their own, in the UI id space. A Dataset file
+  // and a warehouse table hang off one of these and have no row. The same four in Domino's own
+  // spelling are `_MEMBERSHIP_PARENT_KINDS` in `sage/orchestrator/service.py`; `uiKind` below is
+  // the mapping between the two.
+  //
+  // Shared because two surfaces have to agree on it exactly: the store keeps the non-member ones
+  // out of the rail so the @ menu can offer them, and the composer draws the group it keeps. A
+  // kind in one list and not the other is either a row held and never shown, or shown and never
+  // held — and both look like the menu forgetting things.
+  const MEMBERSHIP_PARENT_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive'];
+
   const PLAN_STATUS = {
     draft:      { label: 'Draft',      color: 'default' },
     in_review:  { label: 'In review',  color: 'blue' },
@@ -46,6 +57,7 @@ window.SW = window.SW || {};
   SW.util = {
     TODAY,
     RESOURCE_META,
+    MEMBERSHIP_PARENT_KINDS,
     PLAN_STATUS,
     APP_STATUS,
 

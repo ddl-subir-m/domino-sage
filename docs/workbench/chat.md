@@ -176,7 +176,7 @@ Three bags, never one (the prototype's P0 bug was using `planId || threadId` as 
 | Bag | File | Lifetime | UI |
 |-----|------|----------|----|
 | Session context | `.sage/threads/<id>/context.json` | This Thread | Chips on the composer; "IN CONTEXT" in the resource panel |
-| Project membership | `.sage/project-resources.json` | This project | "PROJECT RESOURCES" rail. Parents plus optional **pins** (Dataset files, Data Source tables). Pins are not prompt context. |
+| Project membership | `.sage/project-resources.json` | This project | "PROJECT RESOURCES" rail. Parents plus optional **pins** (Dataset files, Data Source tables). Pins are not prompt context. Membership is provisioning, not a step the user has to take first: putting a **parent** in Session context joins it here in the same click, and the answer carries `joinedProject: true` so the rail refreshes. Leaves (a `dsfile:` file, a `table:` table) join nothing — they are reached by expanding a parent that is already a member. |
 | Bindings | `.sage/bindings.json` | The Built App | "IN THIS APP" in Build after handoff |
 
 Chat-local files live in gitignored `.sage/scratch/`. They persist on this workspace volume. **Add to a Dataset** copies them onto a writable Dataset so they outlive this workspace.
@@ -217,7 +217,7 @@ Chips:
 
 - Persist across turns in this Thread.
 - Clicking × removes the row from `context.json` for subsequent turns. Already-sent messages keep the chips they were sent with (store them on the history `user` event as `contextIds`).
-- `@` autocomplete lists Session context first, then this Thread's Artifacts (from the manifest, not as chips), then project **pins**, then parent Resources, then Files. Cap 8. It does not fetch a warehouse catalog.
+- `@` autocomplete lists Session context first, then this Thread's Artifacts (from the manifest, not as chips), then project **pins**, then parent Resources, then Files, then parent Resources this project has **not** joined yet. Cap 8 over all six groups. The menu draws one heading, off the first row: "Not in {project} yet" when a catalogue row leads, and every catalogue row is also tagged `not in {project}` on the row, since the heading cannot speak for six groups. Picking one joins the project (see Project membership above). The last group is parents only, off the catalogue listing the panel already fetched — it does not fetch a warehouse catalog, so a table never appears in the menu. Tables stay reachable by pinning one in the rail.
 - Picking `@` inserts `@name` into the composer text (and the prompt OpenCode receives) **and** adds the chip. Do not strip the token.
 - Adding from the resource panel appends to `context.json` and shows the chip. Provenance `addedBy: user | sage`. When Sage adds one, it reports in the Thread in a sentence ("I'll use card-transactions-q3") — mixed-initiative from the mock, but the panel is the accounting.
 
