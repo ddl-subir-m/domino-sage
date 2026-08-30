@@ -55,3 +55,8 @@ __pycache__/
 # written after that turn's commit — so committing it would conflict between two Sage Builders in
 # one Project over an answer either one can rebuild, and leave a dirty file behind every turn.
 .sage/usage.json
+# The Chat Artifacts, linked in from the Project root so the paths the handoff digest names
+# (`examples/<threadId>/…`) resolve from this directory. A symlink pointing outside the app tree,
+# so committing it would give a fresh clone a dangling link. Anchored, and with no trailing slash:
+# git records a symlink as a symlink rather than as a directory, and `examples/` would miss it.
+/examples

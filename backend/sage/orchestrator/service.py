@@ -114,6 +114,7 @@ from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager, ensu
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
     ThreadStore,
+    _ensure_dir_link,
     ensure_chat_workdir,
     new_artifact_paths,
     new_id,
@@ -3176,6 +3177,7 @@ class Orchestrator:
             # Same reason as the streaming turns: the archive is no longer committed, so a fresh
             # clone reaching the agent through this route would hand it a file that isn't there.
             self._refresh_history_archive(project)
+            self._ensure_examples_link(project)
             client = self._ensure_opencode()
             sid = self._ensure_session(project, conversation)
 
@@ -4928,6 +4930,9 @@ class Orchestrator:
                 project.workspace.clear_resource_usage()
                 project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
                 self._refresh_history_archive(project)
+                # Reset took the link with the rest of the app; it is not in _RESET_KEEP because
+                # this seam is what puts it back, the same way it puts back `.sage/history.md`.
+                self._ensure_examples_link(project)
                 return {"ok": True, "status": project.status()}
         finally:
             self._release_turn()
@@ -5373,6 +5378,7 @@ class Orchestrator:
         # is part of the pre-turn state. Written after it, the read-only gate would see a changed
         # working tree and fail an Ask/Plan turn that wrote nothing.
         self._refresh_history_archive(project)
+        self._ensure_examples_link(project)
         # Snapshot before touching history/files so a stop mid-turn can restore exactly this
         # state, and remember how many history entries pre-date this turn so a stop can drop
         # everything appended since (the turn disappears from the transcript entirely).
@@ -6507,6 +6513,7 @@ class Orchestrator:
 
         # Same ordering rule as _build_stream: refresh the archive before the revert point below.
         self._refresh_history_archive(project)
+        self._ensure_examples_link(project)
         project.app_for_turn().append_history(
             {"type": "user", "text": user_text if user_text is not None else "Approved the plan."},
             project.build_conversation)
@@ -8984,6 +8991,36 @@ class Orchestrator:
         if git.is_repo_root(root):
             git.untrack(root, project.repo_rel(rel))
         ws.render_history_md()
+
+    def _ensure_examples_link(self, project: Project) -> None:
+        """Link the Project's Chat Artifacts into the app a turn runs in, and keep the link out of
+        git while doing it.
+
+        The handoff prompt hands the implement turn `examples/<threadId>/…` (handoff._HANDOFF_LINE),
+        but the build agent's cwd is `apps/<appId>/` and the Artifacts live one level above it — so
+        every path the digest named resolved to nothing, and silently: the build still worked,
+        because the plan is the spec and the Artifacts are background. Chat's own workdir has had
+        this link since it was written, for the same reason and with the same shape
+        (`ensure_chat_workdir`); the app directory never got it.
+
+        The ignore rule is anchored and carries NO trailing slash. Git does not follow a symlink, so
+        it records this one as a symlink and not as a directory — `examples/`, which matches
+        directories only, would not cover it. Unignored, `git add -A` commits a link pointing
+        outside the app tree and a fresh clone gets a dangling one. The template ships the rule;
+        this call is what fixes an app seeded before it existed.
+
+        No `.ignore` negation, unlike `_refresh_history_archive` above. That one needs it because
+        the agent FINDS the archive by grepping, and ripgrep honours `.gitignore`. Nothing here is
+        found by grepping: ripgrep does not follow symlinks anyway, so the rule costs no reach the
+        link ever had. The digest names its files by exact path, and a direct read resolves through
+        a symlink — which is the access this exists to provide.
+
+        Called beside `_refresh_history_archive` and, like it, BEFORE the turn's baseline: creating
+        the link and adding that rule are both writes, and after the baseline the read-only gate
+        would read them as an Ask/Plan turn that changed the working tree."""
+        ws = project.app_for_turn()
+        self._ensure_gitignored(ws.path, "/examples")
+        _ensure_dir_link(ws.path / "examples", project.record.path / "examples")
 
     def shutdown(self) -> None:
         # Stop-safe backstop: on a graceful SIGTERM (Domino /stop, idle cull, or the hub button),
