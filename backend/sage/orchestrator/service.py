@@ -3174,10 +3174,10 @@ class Orchestrator:
             project = self._ensure_seeded()
             self._pin_turn_app(project)
             self._adopt_legacy_build_history(project.app_for_turn(), project.record)
-            # Same reason as the streaming turns: the archive is no longer committed, so a fresh
-            # clone reaching the agent through this route would hand it a file that isn't there.
-            self._refresh_history_archive(project)
-            self._ensure_examples_link(project)
+            # Same reason as the streaming turns: neither the archive nor the Artifacts link is
+            # committed, so a fresh clone reaching the agent through this route would hand it
+            # files that aren't there.
+            self._refresh_agent_inputs(project)
             client = self._ensure_opencode()
             sid = self._ensure_session(project, conversation)
 
@@ -4929,10 +4929,10 @@ class Orchestrator:
                 # it goes with it (#93). Unlike the Bindings themselves, which are setup and survive.
                 project.workspace.clear_resource_usage()
                 project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
-                self._refresh_history_archive(project)
-                # Reset took the link with the rest of the app; it is not in _RESET_KEEP because
-                # this seam is what puts it back, the same way it puts back `.sage/history.md`.
-                self._ensure_examples_link(project)
+                # Reset took the Artifacts link with the rest of the app, and `examples` is not in
+                # _RESET_KEEP because this seam is what puts it back — the same way it puts back
+                # `.sage/history.md`. One place encodes the invariant.
+                self._refresh_agent_inputs(project)
                 return {"ok": True, "status": project.status()}
         finally:
             self._release_turn()
@@ -5374,11 +5374,11 @@ class Orchestrator:
                 project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
 
-        # Refresh the agent-facing archive of earlier turns BEFORE the baseline below, so this write
-        # is part of the pre-turn state. Written after it, the read-only gate would see a changed
-        # working tree and fail an Ask/Plan turn that wrote nothing.
-        self._refresh_history_archive(project)
-        self._ensure_examples_link(project)
+        # Refresh what the agent reads BEFORE the baseline below, so these writes are part of the
+        # pre-turn state. Written after it, they would sit outside the revert point: a stop would
+        # roll them back mid-turn, and the read-only gate would be reading a working tree Sage had
+        # changed on the user's behalf rather than one the agent wrote.
+        self._refresh_agent_inputs(project)
         # Snapshot before touching history/files so a stop mid-turn can restore exactly this
         # state, and remember how many history entries pre-date this turn so a stop can drop
         # everything appended since (the turn disappears from the transcript entirely).
@@ -6511,9 +6511,9 @@ class Orchestrator:
                 project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
 
-        # Same ordering rule as _build_stream: refresh the archive before the revert point below.
-        self._refresh_history_archive(project)
-        self._ensure_examples_link(project)
+        # Same ordering rule as _build_stream: refresh what the agent reads before the revert
+        # point below.
+        self._refresh_agent_inputs(project)
         project.app_for_turn().append_history(
             {"type": "user", "text": user_text if user_text is not None else "Approved the plan."},
             project.build_conversation)
@@ -8991,6 +8991,22 @@ class Orchestrator:
         if git.is_repo_root(root):
             git.untrack(root, project.repo_rel(rel))
         ws.render_history_md()
+
+    def _refresh_agent_inputs(self, project: Project) -> None:
+        """Rebuild what Sage maintains for the agent to read, before the agent reads it.
+
+        Two things, and the point of this seam is that they cannot come apart: the rendered history
+        archive, and the link that puts the Project's Chat Artifacts inside the app the agent stands
+        in. They belong in one call because they share every constraint that matters — each is a
+        write Sage makes on the user's behalf rather than the agent's, each has to land before the
+        turn's baseline, and each has to be restored at the tail of Reset. Left as two calls at four
+        sites, a fifth turn entrypoint that remembered one and forgot the other would reopen
+        whichever bug it forgot, silently and in the same way as the first time.
+
+        Call at a turn entry and at the tail of Reset, always BEFORE
+        `project.snapshot.commit_before_turn()`. Each half documents what that ordering buys it."""
+        self._refresh_history_archive(project)
+        self._ensure_examples_link(project)
 
     def _ensure_examples_link(self, project: Project) -> None:
         """Link the Project's Chat Artifacts into the app a turn runs in, and keep the link out of

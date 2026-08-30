@@ -20,6 +20,7 @@ holds that.
 """
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 from pathlib import Path
@@ -422,6 +423,38 @@ def test_a_stop_does_not_delete_the_link_because_its_rule_pre_dates_the_baseline
 
     assert not (app2 / "examples").exists()
     assert (root2 / "examples" / "thr_a" / "revenue.png").read_bytes() == ARTIFACT  # never followed
+
+
+# ---- the two halves stay together ---------------------------------------------------------------
+
+def test_nothing_calls_half_the_seam():
+    """The fragility `_refresh_agent_inputs` exists to remove.
+
+    The history archive and the Artifacts link are two writes with one set of constraints: both are
+    Sage's rather than the agent's, both must land before the turn's baseline, both must come back
+    at the tail of Reset. As two calls pasted side by side at four sites, a fifth turn entrypoint
+    that remembered one and forgot the other would reopen whichever bug it forgot — which is exactly
+    how the Artifacts one got here, the archive having been wired up without it.
+
+    Asserted structurally because no runtime moment would notice. The forgetting turn still works;
+    it just cannot read what its own prompt told it to read, which is the definition of the silent
+    failure this whole change is about."""
+    src = (Path(__file__).resolve().parents[1] / "sage" / "orchestrator" / "service.py").read_text()
+    tree = ast.parse(src)
+    seam = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_refresh_agent_inputs")
+    within_seam = {id(n) for n in ast.walk(seam)}
+    halves = {"_refresh_history_archive", "_ensure_examples_link"}
+
+    stray = sorted({n.func.attr for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr in halves and id(n) not in within_seam})
+
+    assert stray == [], f"called outside _refresh_agent_inputs: {stray}"
+    # And the seam really does call both — an empty body would pass the check above.
+    called = {n.func.attr for n in ast.walk(seam)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    assert halves <= called
 
 
 # ---- delete_app ---------------------------------------------------------------------------------
