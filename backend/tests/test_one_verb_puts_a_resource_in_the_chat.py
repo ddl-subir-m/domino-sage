@@ -79,6 +79,19 @@ def test_the_row_menu_names_stopping_without_borrowing_the_removal_verb():
     assert "`Remove from ${appScope.app.name}`" in PANEL
 
 
+def test_the_chip_announces_the_act_the_menu_offers():
+    """The chip's X button is the same act as the menu item beside it. While the menu said "Stop
+    using here" and the button still announced "Remove ... from this conversation", a screen-reader
+    user was the only person hearing the retired verb — and heard the costly one for the free act.
+
+    It says "in this chat" rather than "here" on purpose: the visible control borrows its scope from
+    the panel it sits in, and there is no "here" to look at in audio (ADR-0015)."""
+    assert "`Stop using ${resource.name} in this chat`" in PANEL
+    assert "Remove ${resource.name} from this conversation" not in PANEL
+    # The button still calls the same store action — this was copy, not wiring.
+    assert "SW.store.removeFromConversation(contextItem)" in PANEL
+
+
 def test_the_rename_moved_no_wiring():
     """Copy only. The menu keys are what the click handler dispatches on, so a key renamed along
     with its label would leave a control that reads correctly and does nothing."""

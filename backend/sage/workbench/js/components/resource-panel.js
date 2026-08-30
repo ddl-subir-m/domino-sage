@@ -289,7 +289,10 @@ window.SW = window.SW || {};
             'button',
             {
               className: 'sw-res-more',
-              'aria-label': `Remove ${resource.name} from this conversation`,
+              // Says "in this chat" where the visible menu says "Stop using here": that control
+              // takes its scope from the panel around it, and a screen reader has no "here" to
+              // look at. Same act, same verb, the scope spoken rather than shown (ADR-0015).
+              'aria-label': `Stop using ${resource.name} in this chat`,
               onClick: (e) => {
                 e.preventDefault();
                 e.stopPropagation();

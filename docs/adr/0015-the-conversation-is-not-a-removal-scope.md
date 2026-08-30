@@ -70,10 +70,11 @@ means which list.
 Resource takes *"Remove from {that list}"*, and the glossary's _Avoid_ on a bare "Remove" stands.
 What no longer follows from the rule is that a Conversation must have a "Remove from" of its own.
 
-**The chip's `aria-label` still says the retired verb.** `resource-panel.js` announces
-*"Remove {name} from this conversation"* while the menu item for the same act says *"Stop using
-here"*, so a screen-reader user hears the vocabulary this ADR retires. That is a gap, not a
-decision, and it is the one place the old wording still reaches a person.
+**The chip's `aria-label` speaks the scope that the visible label only points at.** The X button
+announces *"Stop using {name} in this chat"* where the menu item beside it says *"Stop using here"*.
+Same verb, same act, worded twice on purpose: *"here"* is the panel a sighted reader is already
+looking at, and audio has no *here* to look at. This is the only place the pair diverges, and the
+reason is the absence of the surrounding UI, not a second vocabulary.
 
 **Nothing about removal's ownership changes.** ADR-0011's other decisions — that the act lives in
 the list that owns the scope, that the Build header points instead of acting, that the report comes
