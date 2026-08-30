@@ -219,13 +219,21 @@ _Avoid_: attachment (that is a file in the Built App), binding (durable app depe
 ### Handling rules
 
 **Remove**:
-Taking something out of one of the three lists that can hold it: a Conversation, a Built App, or the
-Project. Every label names which — "Remove from this conversation", "Remove from <app>", "Remove from
-<project>" — because the scope is the only thing that tells the three apart. The act belongs to the
-list that owns that scope, so a summary of a list points at it and never removes on its behalf. See
+Taking something out of one of the two durable lists that can hold it: a Built App or the Project.
+Every label names which — "Remove from <app>", "Remove from <project>" — because the scope is the
+only thing that tells the two apart. The act belongs to the list that owns that scope, so a summary
+of a list points at it and never removes on its behalf. See
 [ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md).
-_Avoid_: a bare "Remove" (it does not say which of the three), detach or unbind as a label (those
+_Avoid_: a bare "Remove" (it does not say which of the two), detach or unbind as a label (those
 name the app-scoped pair in code, not on screen), delete, drop, clear
+
+**Use in this chat** / **Stop using here**:
+Putting a Resource in front of the assistant for this Conversation, and taking it back out. Not a
+Remove: it writes nothing, the Resource stays wherever it lives, and naming it again is the way
+back. One pair of words on every surface that offers the act. See
+[ADR-0015](docs/adr/0015-the-conversation-is-not-a-removal-scope.md).
+_Avoid_: "Remove from this conversation" (it borrows a verb for a cost this act does not have),
+"Add to chat", "Mention in this chat", "Add to this conversation", attach, detach
 
 **Shared credential**:
 A Data Source credential belonging to a service account rather than a person, so every

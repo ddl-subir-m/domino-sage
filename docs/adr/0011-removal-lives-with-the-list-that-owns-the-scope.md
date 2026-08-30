@@ -17,6 +17,11 @@ A Resource can leave a Conversation, leave a Built App, or leave the Project. We
 object is removed from the list that owns its scope, and every removal label names that scope in
 words**. One surface per scope, one guard per operation, and no bare verb that could mean any of them.
 
+> **Partially superseded by [ADR-0015](0015-the-conversation-is-not-a-removal-scope.md).** The rule
+> holds for the Built App and the Project. The Conversation is not a removal scope — stopping there
+> discards nothing — so its control says *"Stop using here"* and names no scope. Everything else in
+> this ADR stands.
+
 ## Why a scope-naming rule, and not a new verb
 
 The obvious fix was a distinct verb for app-scoped removal, because `detach` had already been spent
@@ -30,7 +35,8 @@ scopes and a vocabulary that can hold two. `js/components/resource-panel.js:188`
 the next reader would have to memorise which of three verbs meant which of three lists.
 
 Naming the scope in the label scales to as many lists as the product grows, and it is already
-half-built: the Conversation's control says *"Remove from this conversation"*. The rule makes the
+half-built: the Conversation's control says *"Remove from this conversation"* (since retired by
+[ADR-0015](0015-the-conversation-is-not-a-removal-scope.md)). The rule makes the
 other two match rather than inventing anything. The code keeps `unbind` and `detach` as the
 app-scoped pair — `attach_file`/`detach_file` already pair correctly — and `store.detach` is renamed
 to `store.removeFromConversation`, the name of the API call it already makes, so the word stops
@@ -124,6 +130,8 @@ Both ask "does this app need this Resource", which is what a Binding answers. Th
 unaffected — it is the In-this-app rows describing themselves.
 
 **"Add to this conversation" stays on app-scoped rows.** It was never the problem; being *alone* was.
+(The gesture stays; the label is now *"Use in this chat"* on every surface —
+[ADR-0015](0015-the-conversation-is-not-a-removal-scope.md).)
 Bringing the app's Data Source into Chat to ask about it is a real gesture, and its label already
 names its own scope. Those rows do carry a synthetic id, `` `${b.kind}:${b.id}` ``, which will not
 match a Project Resource id — whether it makes a sound chip is a build-time check, not a decision.
