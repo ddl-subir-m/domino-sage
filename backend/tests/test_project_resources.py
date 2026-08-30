@@ -371,3 +371,61 @@ def test_the_join_flag_is_an_event_and_is_never_persisted(tmp_path: Path):
     stored = orch.thread_context(tid)["items"]
 
     assert [i.get("joinedProject") for i in stored] == [None]
+
+
+def test_a_mention_writes_the_same_row_the_browse_button_writes(tmp_path: Path):
+    """The two doors into the working set have to agree. The model picker reads `alias` and
+    `reasoning_efforts` off these rows whenever the Alias listing is unavailable, so a join that
+    kept only id/kind/name wrote an option it draws blank and cannot select."""
+    orch = _orch(tmp_path)
+    tid = _thread(orch)
+
+    orch.add_thread_context(tid, {
+        "kind": "llm_alias", "name": "Claude Sonnet 4.6", "resourceId": "llm_alias:f-sonnet",
+        "description": "Anthropic", "alias": "f-sonnet",
+        "capabilities": ["vision"], "reasoning_efforts": ["low", "high"],
+    })
+
+    joined = orch.list_project_resources()[0]
+    assert joined["alias"] == "f-sonnet"
+    assert joined["reasoning_efforts"] == ["low", "high"]
+    assert joined["capabilities"] == ["vision"]
+    assert joined["description"] == "Anthropic"
+
+
+def test_the_chip_does_not_keep_what_only_the_membership_row_wanted(tmp_path: Path):
+    """They ride in on the mention because the catalogue row is the only thing that has them. A
+    chip has no use for any of them, so it does not carry them afterwards."""
+    orch = _orch(tmp_path)
+    tid = _thread(orch)
+
+    row = orch.add_thread_context(tid, {
+        "kind": "llm_alias", "name": "Claude Sonnet 4.6", "resourceId": "llm_alias:f-sonnet",
+        "alias": "f-sonnet", "reasoning_efforts": ["low", "high"],
+    })
+
+    stored = orch.thread_context(tid)["items"][0]
+    for field in ("description", "alias", "capabilities", "reasoning_efforts"):
+        assert field not in row, field
+        assert field not in stored, field
+    assert stored["name"] == "Claude Sonnet 4.6"
+
+
+def test_adding_a_resource_again_fills_in_what_the_first_write_left_out(tmp_path: Path):
+    """Adding is idempotent on id, so a row that reached the working set thin lands right back on
+    that early return — and could never be repaired. Only what is MISSING is filled in: a value
+    already on the row is the one this Project has, and a re-add is not a reason to move it."""
+    orch = _orch(tmp_path)
+    orch.add_project_resource({"id": "llm_alias:f-sonnet", "kind": "model_llm", "name": "Sonnet"})
+
+    again = orch.add_project_resource({
+        "id": "llm_alias:f-sonnet", "kind": "model_llm", "name": "Renamed by nobody",
+        "alias": "f-sonnet", "reasoning_efforts": ["low", "high"],
+    })
+
+    assert again["added"] is False
+    row = orch.list_project_resources()[0]
+    assert row["alias"] == "f-sonnet"
+    assert row["reasoning_efforts"] == ["low", "high"]
+    # Present already, so left alone — filling gaps is not a rename.
+    assert row["name"] == "Sonnet"

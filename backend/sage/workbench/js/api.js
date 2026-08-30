@@ -395,6 +395,16 @@ SW.api = {
           : undefined),
       project: resource.project,
       bindingKey: resource.bindingKey,
+      // For the membership row this post may write, not for the chip: a mention of a catalogue
+      // parent joins it to the project (see `_join_project_on_mention`), and the join is the only
+      // place these four are wanted. Sent because the catalogue row is the only thing that has
+      // them — without them the join writes a model with no `alias` and no efforts, which the
+      // model picker then renders as a blank option nothing can select. The server strips them
+      // back off before the chip is stored.
+      description: resource.description,
+      alias: resource.alias,
+      capabilities: resource.capabilities,
+      reasoning_efforts: resource.reasoning_efforts,
       addedBy: addedBy || 'user',
       resourceId,
       parentId: resource.parentId,

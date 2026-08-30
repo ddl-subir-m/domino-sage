@@ -580,6 +580,13 @@ _MEMBERSHIP_PARENT_KINDS = ("dataset", "data_source", "llm_alias", "model_api")
 # Every other leaf is already refused by its kind.
 _LEAF_ID_PREFIXES = ("table:", "dsfile:")
 
+# What a catalogue row carries for the sake of the membership row and nothing else: the model
+# picker reads `alias` and `reasoning_efforts` off the project's own resources when the Alias
+# listing is unavailable, so a join without them writes an option that cannot be selected. A chip
+# has no use for any of them, so they ride in on the mention and are taken back off before it is
+# stored.
+_MEMBERSHIP_ONLY_FIELDS = ("description", "alias", "capabilities", "reasoning_efforts")
+
 
 def _bare_kind_id(value: str, kind: str) -> str:
     """Strip a `kind:` prefix from a membership id. Dataset `dataset:ds_1` and Data Source
@@ -3590,7 +3597,8 @@ class Orchestrator:
                 if cols:
                     row["columns"] = cols
         joined = self._join_project_on_mention(row)
-        stored = store.add_context(thread_id, row)
+        stored = store.add_context(
+            thread_id, {k: v for k, v in row.items() if k not in _MEMBERSHIP_ONLY_FIELDS})
         # On the answer, not in the row: the flag says "membership changed just now", which is true
         # once. Persisted, it would say it again on every reload and the panel would re-announce a
         # join the user made days ago.
@@ -3624,6 +3632,10 @@ class Orchestrator:
                 "project": row.get("project"),
                 "path": row.get("path"),
                 "bindingKey": row.get("bindingKey"),
+                # Everything `add_project_resource` keeps, so a mention writes the same row the
+                # Browse Domino button writes. Six fields wrote a model with no alias, which is an
+                # option the picker draws blank and cannot select.
+                **{k: row[k] for k in _MEMBERSHIP_ONLY_FIELDS if row.get(k) is not None},
             })["added"])
         except (ValueError, OSError):
             # The chip is worth having either way. A membership row the disk refused must not take
@@ -7205,13 +7217,21 @@ class Orchestrator:
             raise ValueError("kind and name required")
         added = {"added": False, "item": None}
 
+        keep = ("id", "kind", "name", "description", "project", "path", "bindingKey",
+                "alias", "capabilities", "reasoning_efforts")
+
         def change(items: list[dict]) -> list[dict]:
             for row in items:
                 if row.get("id") == rid:
+                    # Still not added, and still not a rename: what an earlier, thinner write left
+                    # out is filled in, and what the row already says is left exactly as it is. A
+                    # row that reached the working set missing its alias could otherwise never be
+                    # repaired, because adding it again lands right here.
+                    for k in keep:
+                        if k not in row and item.get(k) is not None:
+                            row[k] = item[k]
                     added["item"] = row
                     return items
-            keep = ("id", "kind", "name", "description", "project", "path", "bindingKey",
-                    "alias", "capabilities", "reasoning_efforts")
             row = {k: item[k] for k in keep if k in item and item[k] is not None}
             row["id"] = rid
             row["kind"] = kind

@@ -99,7 +99,7 @@ def test_no_table_or_dataset_file_can_reach_the_new_group():
     assert "MEMBERSHIP_PARENT_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive']" in UTIL
     # And the listing it filters has no leaf in it to begin with: a table is a level below any
     # group `fetchDominoListing` builds, and reaching one is the round trip this menu never makes.
-    assert "warehouse" in STORE.split("state.catalogueParents")[0].split("datasetTargets =")[1]
+    assert "warehouse" in STORE.split("state.catalogueParents = SW.util")[0].split("datasetTargets =")[1]
 
 
 def test_a_catalogue_row_says_so_on_the_row_itself():
@@ -118,6 +118,20 @@ def test_the_group_holds_only_resources_the_project_does_not_have():
     # "not in it yet", which reads as the menu disagreeing with itself.
     assert "state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(" in STORE
     assert ".filter((r) => !members.has(r.id))" in STORE
+
+
+def test_the_group_is_dropped_when_the_scope_changes_rather_than_when_it_refills():
+    """`catalogueParents` is the complement of the members list, so the two have to turn over
+    together. The members are applied synchronously and the catalogue arrives one deferred listing
+    later, so a group left standing across a scope change describes the OLD project — and a
+    resource that is a member of the newly picked one gets captioned `not in {project}`, the exact
+    opposite of true, until the listing lands."""
+    reset = "state.catalogueParents = [];"
+    assert reset in STORE
+    # Beside the synchronous members write, ahead of the deferred listing that refills it.
+    before, after = STORE.split(reset, 1)
+    assert "applyResourceGroups(resources.groups," in before.rsplit("async function loadScopeData", 1)[-1]
+    assert "state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(" in after
 
 
 def test_the_store_asks_for_nothing_new_to_fill_the_group():

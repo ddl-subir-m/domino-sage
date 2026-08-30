@@ -29,6 +29,15 @@ window.SW = window.SW || {};
       close();
     };
 
+    // The join, reported when it fails — because nothing else here would report it. The drawer
+    // stays open, the alert above still says the resource is not in the project and the button
+    // still reads `Use in this chat`, so a refused join looks exactly like a click that never
+    // landed. The composer says so about its own @mention for the same reason.
+    const useHere = () =>
+      SW.store
+        .addToContext(resource, { quiet: true })
+        .catch((err) => antd.message.error(String((err && err.message) || err)));
+
     const body = () => {
       if (!resource) return null;
       const meta = SW.util.RESOURCE_META[resource.kind] || {};
@@ -143,7 +152,7 @@ window.SW = window.SW || {};
                 // being told once per surface.
                 onClick: inProject
                   ? mention
-                  : () => SW.store.addToContext(resource, { quiet: true }),
+                  : useHere,
               },
               attached ? 'In this chat' : 'Use in this chat'
             )

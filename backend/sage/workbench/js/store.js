@@ -381,6 +381,11 @@ window.SW = window.SW || {};
     ]);
     if (gen !== scopeLoad) return;
     applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
+    // Cleared here, with the members it is the complement of, and not left standing until the
+    // deferred listing below refills it. The two are read together: a resource that IS a member of
+    // the scope just picked but was not a member of the last one would otherwise sit in the @ menu
+    // captioned `not in {project}` — the opposite of true — until the listing landed.
+    state.catalogueParents = [];
     state.resourcesLoading = false;
     state.activity = activity;
     notify();
