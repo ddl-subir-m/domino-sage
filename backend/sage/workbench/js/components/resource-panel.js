@@ -164,11 +164,11 @@ window.SW = window.SW || {};
     // greyed this out while the copy would have worked.
     const writableDatasets = SW.store.get().datasetTargets || [];
     const items = contextItem
-      ? [{ key: 'remove-from-conversation', label: 'Remove from this conversation' }]
+      ? [{ key: 'remove-from-conversation', label: 'Stop using here' }]
       : [
           {
             key: attached ? 'remove-resource-from-conversation' : 'mention',
-            label: attached ? 'Remove from this conversation' : 'Add to this conversation',
+            label: attached ? 'Stop using here' : 'Use in this chat',
           },
           ...(resource.source === 'scratch'
             ? writableDatasets.length

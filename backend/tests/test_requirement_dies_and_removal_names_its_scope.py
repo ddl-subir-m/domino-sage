@@ -187,7 +187,7 @@ def test_nothing_in_js_calls_a_conversation_scoped_act_detach():
 
 def test_the_conversation_scoped_remover_is_named_for_the_call_it_makes():
     """`SW.api.removeFromConversation` was already right; the store's action now matches it, and
-    the label on the menu — "Remove from this conversation" — matches both."""
+    the label on the menu — now "Stop using here" — is reached by the same action."""
     store = (_JS / "store.js").read_text()
     assert "async removeFromConversation(attachment)" in store
     assert "removeResourceFromConversation(resourceId)" in store

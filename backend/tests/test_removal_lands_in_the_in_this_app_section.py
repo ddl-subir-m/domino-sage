@@ -94,7 +94,7 @@ def _removal_item(row: dict) -> dict:
     found = [
         i
         for i in row.get("items", [])
-        if i["label"].startswith("Remove from ") and i["label"] != "Remove from this conversation"
+        if i["label"].startswith("Remove from ")
     ]
     assert len(found) == 1, f"{row['texts']} carries {[i['label'] for i in row.get('items', [])]}"
     return found[0]
@@ -156,7 +156,7 @@ def test_an_app_with_neither_takes_the_headers_own_sentence():
 @needs_node
 def test_the_apps_rows_carry_ids_the_project_answers_in():
     """The check #96 asked for before these rows are relied on for anything beyond display: they
-    BUILD an id rather than being handed one, and "Add to this conversation" POSTs it.
+    BUILD an id rather than being handed one, and "Use in this chat" POSTs it.
 
     A Binding holds a bare Domino id beside its kind, and `${kind}:${id}` is the prefixed id a
     Project Resource carries — so the two ARE the same string, and the chip is sound. An Attachment
@@ -183,7 +183,7 @@ def test_the_section_costs_no_network_call_on_render():
 
 @needs_node
 def test_both_kinds_offer_a_removal_that_names_the_app():
-    """The third of the three scopes. The section already offered "Remove from this conversation"
+    """The third of the three scopes. The section already offered "Stop using here"
     and Project rows offer "Remove from {project}"; a bare "Remove" here would be the one gesture
     three lists could claim."""
     step = _panel("app_a")

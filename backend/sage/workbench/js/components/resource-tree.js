@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Button, Spin } = antd;
+  const { Button, Spin, Tooltip } = antd;
   const { DownOutlined, RightOutlined } = icons;
 
   function bareId(id, kind) {
@@ -96,10 +96,21 @@ window.SW = window.SW || {};
       h(
         'span',
         { className: 'sw-tree-leaf-acts' },
-        h(Button, { size: 'small', type: 'link', onClick: onMention }, 'Add to chat'),
+        h(Button, { size: 'small', type: 'link', onClick: onMention }, 'Use in this chat'),
         pinned
           ? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin')
-          : h(Button, { size: 'small', type: 'link', onClick: onPin }, 'Pin')
+          // Pin only reorders the @ menu — it sends nothing. Sitting unlabelled beside the control
+          // that DOES send, it read as a second way to attach (docs/workbench/chat.md). The title
+          // goes through the pack because it names the assistant.
+          : h(
+              Tooltip,
+              {
+                title: SW.brand.text(
+                  'Keeps this at the top of the @ menu. It does not send it to {assistantName}.'
+                ),
+              },
+              h(Button, { size: 'small', type: 'link', onClick: onPin }, 'Pin')
+            )
       )
     );
   }

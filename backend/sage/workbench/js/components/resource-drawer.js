@@ -131,7 +131,7 @@ window.SW = window.SW || {};
               ? h(
                   Button,
                   { type: 'primary', disabled: attached, onClick: mention },
-                  attached ? 'In this chat' : 'Mention in this chat'
+                  attached ? 'In this chat' : 'Use in this chat'
                 )
               : h(
                   Button,

@@ -507,7 +507,7 @@ function flatten(node, out = [], depth = 0) {
   // Same reason, for the controls that are buttons rather than menu items — the notice's cleanup
   // offer and its Dismiss. Dropped by `JSON.stringify` on the way into the report.
   if (typeof props.onClick === 'function') entry.onClick = props.onClick;
-  // The id a row carries, which is what "Add to this conversation" POSTs. The app's rows build
+  // The id a row carries, which is what "Use in this chat" POSTs. The app's rows build
   // theirs rather than being handed one, so whether it is an id the Project answers in is a
   // question that has to be asked of the value itself (#96).
   if (props.resource && props.resource.id) entry.resourceId = props.resource.id;
@@ -802,7 +802,7 @@ for (const step of steps) {
       );
     }
     const item = (row.items || []).find(
-      (i) => i.label.startsWith('Remove from ') && i.label !== 'Remove from this conversation'
+      (i) => i.label.startsWith('Remove from ')
     );
     const chipsBefore = SW.store.get().attachments.map((a) => a.id);
     const acted = item ? row.onMenu({ key: item.key }) : null;
