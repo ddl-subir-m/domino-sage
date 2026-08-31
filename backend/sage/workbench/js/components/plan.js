@@ -280,6 +280,25 @@ window.SW = window.SW || {};
       load();
     };
 
+    // The document's own name — until now the one part of a plan nobody could change. The model
+    // wrote the first line and three surfaces read it: this heading, the transcript's plan card,
+    // and the panel's pin. Renaming the Built App deliberately does not touch it (an app is not
+    // its plan), so a plan the model named badly kept that name for good.
+    const saveTitle = async () => {
+      const next = draft.trim();
+      if (!next) {
+        antd.message.warning('Give the plan a name.');
+        return;
+      }
+      // The title alone, so the server patches metadata instead of writing a version: renaming a
+      // document is not a new draft of it, and a version is what reviewers commented on.
+      await SW.api.patchPlan(plan.id, { title: next });
+      setEditing(null);
+      load();
+      // The pin names this document too, and it is read once per load rather than polled.
+      SW.store.reloadProjectPlan();
+    };
+
     const startEdit = (key, kind, value) => {
       setEditing(key);
       setDraft(kind === 'list' ? (value || []).join('\n') : value || '');
@@ -400,7 +419,43 @@ window.SW = window.SW || {};
           h(
             'div',
             { className: 'sw-plan-head-main' },
-            h('h1', { className: 'sw-plan-title' }, plan.title),
+            editing === 'title'
+              ? h(
+                  'div',
+                  { className: 'sw-plan-title-edit' },
+                  h(Input, {
+                    value: draft,
+                    autoFocus: true,
+                    'aria-label': 'Plan name',
+                    onChange: (e) => setDraft(e.target.value),
+                    onPressEnter: saveTitle,
+                  }),
+                  h(
+                    Space,
+                    { size: 8 },
+                    h(Button, { type: 'primary', size: 'small', onClick: saveTitle }, 'Save'),
+                    h(Button, { size: 'small', onClick: () => setEditing(null) }, 'Cancel')
+                  )
+                )
+              : h(
+                  'div',
+                  { className: 'sw-plan-title-row' },
+                  h('h1', { className: 'sw-plan-title' }, plan.title),
+                  // Same affordance as a section's, because it is the same act: the pencil, the
+                  // draft, Save and Cancel. `editing` is shared with the sections, so opening this
+                  // closes one of those rather than leaving two editors open at once.
+                  h(
+                    Tooltip,
+                    { title: 'Rename plan' },
+                    h(Button, {
+                      type: 'text',
+                      size: 'small',
+                      icon: h(EditOutlined, null),
+                      'aria-label': 'Rename plan',
+                      onClick: () => startEdit('title', 'text', plan.title),
+                    })
+                  )
+                ),
             h(
               'div',
               { className: 'sw-plan-meta' },

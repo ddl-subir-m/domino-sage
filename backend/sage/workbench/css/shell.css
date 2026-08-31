@@ -1065,6 +1065,11 @@
 }
 .sw-plan-head-main { flex: 1; min-width: 0; }
 .sw-plan-title { font-size: var(--fs-26); font-weight: 600; line-height: 1.25; margin: 0 0 var(--s2); }
+/* The heading and its Rename pencil. The button sits on the baseline of a heading that wraps, and
+   the heading keeps its own bottom margin, so the row aligns on the first line rather than centre. */
+.sw-plan-title-row { display: flex; align-items: flex-start; gap: var(--s1); }
+.sw-plan-title-row .sw-plan-title { min-width: 0; }
+.sw-plan-title-edit { display: grid; gap: var(--s2); margin-bottom: var(--s2); }
 .sw-plan-meta {
   display: flex;
   align-items: center;

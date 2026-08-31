@@ -101,7 +101,11 @@ window.SW = window.SW || {};
           'span',
           { className: 'sw-plan-pin-head' },
           h(FileTextOutlined, { style: { fontSize: 11 } }),
-          h('span', { className: 'sw-plan-pin-label' }, built ? 'Working from' : 'Plan'),
+          // "a plan", not a bare "Working from": the line below is the PLAN's title, and an app
+          // is named from its plan at the handoff, so the two read alike until somebody renames
+          // the app. Without the noun the old name reads as this app's, gone stale. Chat's own
+          // plan bar already says these words (`chat.js`), so it is the term the Workbench uses.
+          h('span', { className: 'sw-plan-pin-label' }, built ? 'Working from a plan' : 'Plan'),
           h('span', { className: 'sw-plan-pin-open' }, 'Open', h(ArrowRightOutlined, { style: { fontSize: 9 } }))
         ),
         // The name is one line and a plan title is a sentence, so it truncates. The tooltip is the

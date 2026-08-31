@@ -2409,8 +2409,17 @@ class Orchestrator:
         # surfaces to answer one question — and why it asks for this app's documents rather than
         # the Project's, which now include other apps'.
         docs = self._app_plan_docs(project)
+        # The DOCUMENT's title, falling back to plan.md's first line. The two are the same words
+        # until somebody renames the document, and after that only one of them is a name anybody
+        # chose: plan.md's first line is what the model wrote and nothing can edit it. The fallback
+        # is for a workspace whose plan predates plan documents, which has no title but that one.
+        #
+        # Renaming the Built App is deliberately NOT one of the things that reaches here: an app is
+        # not its plan, and the same title is the plan page's heading and the transcript's plan
+        # card, on a document that carries comments and approvals (ADR-0008).
+        doc_title = str(docs[0].get("title") or "").strip() if docs else ""
         return {
-            "title": chat_handoff.plan_title(markdown),
+            "title": doc_title or chat_handoff.plan_title(markdown),
             "markdown": markdown,
             "status": "awaiting" if live else "built",
             "steps": _count_plan_steps(markdown),

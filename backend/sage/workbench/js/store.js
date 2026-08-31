@@ -3252,6 +3252,11 @@ window.SW = window.SW || {};
     reloadThreads: loadThreadList,
     reloadAttachments: refreshAttachments,
 
+    // The panel's pin names the plan document, so renaming one on the plan page has to reach the
+    // pin without a reload. `refreshProjectPlan` does not notify on its own — its other callers
+    // fold it into a bigger read that does — so this one says so itself.
+    reloadProjectPlan: () => refreshProjectPlan().then(notify, () => {}),
+
     async reloadNotifications() {
       state.notifications = await SW.api.notifications();
       notify();

@@ -252,6 +252,37 @@ def test_editing_a_section_rewrites_the_file_and_keeps_the_draft_before_it(tmp_p
     assert "The desk risk analyst." in (record.plan_docs_dir / "001" / "v001.md").read_text()
 
 
+def test_a_plan_can_be_renamed_without_becoming_a_new_draft(tmp_path: Path, monkeypatch):
+    """The title was the one part of a plan nobody could change: the model wrote the first line and
+    the page, the transcript's card and the panel's pin all read it. A rename is metadata — the
+    body is untouched and no version is added, because a version is what reviewers commented on."""
+    client, orch = _routed(tmp_path, monkeypatch)
+    record = orch.project(start_preview=False).record
+    record.create_plan_doc(PLAN, title="A dashboard")
+
+    r = client.patch("/api/plans/001", json={"title": "Desk exposure"})
+
+    assert r.status_code == 200
+    assert r.json()["title"] == "Desk exposure"
+    assert r.json()["version"] == 1
+    assert list((record.plan_docs_dir / "001").glob("v*.md")) == [
+        record.plan_docs_dir / "001" / "v001.md"
+    ]
+    assert "The desk risk analyst." in (record.plan_docs_dir / "001" / "v001.md").read_text()
+
+
+def test_the_plan_page_offers_the_rename(tmp_path: Path):
+    """The route above has always taken a title; nothing on the page ever sent one. The control is
+    the section pencil, on the heading, and it patches the title ALONE — a body in the same call
+    would make the rename a new draft."""
+    page = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
+            / "components" / "plan.js").read_text()
+    assert "'Rename plan'" in page
+    assert "SW.api.patchPlan(plan.id, { title: next })" in page
+    # The pin reads the document once per load, so a rename has to tell it (`store.js`).
+    assert "SW.store.reloadProjectPlan()" in page
+
+
 def test_a_question_can_be_resolved_on_the_page(tmp_path: Path, monkeypatch):
     """Resolving is an edit to the body, so it does make a version — unlike a comment."""
     client, orch = _routed(tmp_path, monkeypatch)

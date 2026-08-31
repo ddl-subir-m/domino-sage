@@ -124,6 +124,60 @@ def test_a_live_plan_outranks_the_archive(tmp_path: Path):
     assert pin["status"] == "awaiting"
 
 
+# ---- the name the pin says -----------------------------------------------------------------------
+
+
+def _doc_for_the_live_plan(orch: Orchestrator, title: str) -> dict:
+    """The document the gate writes beside plan.md, which is what the pin opens."""
+    record = orch.project(start_preview=False, seed_app=False).record
+    app_id = orch.project(start_preview=False).workspace.app_id
+    return record.create_plan_doc(PLAN, title=title, app_id=app_id)
+
+
+def test_the_pin_says_what_the_document_is_called(tmp_path: Path):
+    """The pin named the plan by plan.md's first line, which is what the model wrote and nothing
+    can edit. The document's title is the one a person can change, so the pin reads that."""
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False).workspace.write_plan(PLAN)
+    doc = _doc_for_the_live_plan(orch, "A desk exposure dashboard.")
+
+    orch.patch_plan_doc(doc["id"], {"title": "Desk exposure"})
+
+    assert orch.read_plan_pin()["title"] == "Desk exposure"
+    # The markdown behind it is untouched: renaming a document is not a new draft of it.
+    assert orch.read_plan_pin()["markdown"].startswith("A desk exposure dashboard.")
+
+
+def test_a_plan_with_no_document_still_has_a_name(tmp_path: Path):
+    """A workspace whose plan predates plan documents has no title but the first line of the file,
+    so that stays the fallback rather than the pin going blank."""
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False).workspace.write_plan(PLAN)
+
+    assert orch.read_plan_pin()["title"] == "A desk exposure dashboard."
+
+
+def test_renaming_the_app_does_not_rename_its_plan(tmp_path: Path):
+    """An app is not its plan. The same title is this document's heading and the transcript's plan
+    card, on a document carrying comments and approvals, so a rename of the app leaves it alone."""
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace
+    ws.write_plan(PLAN)
+    _doc_for_the_live_plan(orch, "A desk exposure dashboard.")
+
+    orch.rename_app(ws.app_id, "Desk exposure")
+
+    assert orch.read_plan_pin()["title"] == "A desk exposure dashboard."
+
+
+def test_the_pin_names_the_plan_and_not_the_app(tmp_path: Path):
+    """The label carries the noun. Without it the line below reads as this app's name gone stale,
+    which is exactly what it looks like once the app has been renamed away from its plan."""
+    panel = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
+             / "components" / "resource-panel.js").read_text()
+    assert "'Working from a plan'" in panel
+
+
 # ---- the step count ------------------------------------------------------------------------------
 
 
