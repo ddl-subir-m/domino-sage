@@ -8,9 +8,9 @@
 }
 
 .sw-code-hero { margin-bottom: var(--s5); }
-.sw-code-hero h1 { font-size: 26px; font-weight: 600; margin: 0 0 var(--s2); line-height: 1.25; }
+.sw-code-hero h1 { font-size: var(--fs-26); font-weight: 600; margin: 0 0 var(--s2); line-height: 1.25; }
 .sw-code-hero p {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--gray-600);
   line-height: 1.65;
   margin: 0 0 var(--s3);
@@ -39,14 +39,14 @@
   border-radius: 50%;
   background: var(--purple-500);
   color: var(--white);
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.sw-step-title { font-size: 15px; font-weight: 600; margin: 2px 0 0; }
-.sw-step-desc { font-size: 13px; color: var(--gray-600); line-height: 1.6; margin: 4px 0 0; }
+.sw-step-title { font-size: var(--fs-15); font-weight: 600; margin: 2px 0 0; }
+.sw-step-desc { font-size: var(--fs-13); color: var(--gray-600); line-height: 1.6; margin: 4px 0 0; }
 .sw-step-body { padding: var(--s3) var(--s4) var(--s4) calc(var(--s4) + 24px + var(--s3)); }
 
 /* Commands and snippets -------------------------------------------------- */
@@ -64,7 +64,7 @@
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-code);
   padding: 9px var(--s3);
   overflow-x: auto;
   white-space: nowrap;
@@ -78,12 +78,12 @@
   background: var(--white);
   color: var(--gray-500);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .sw-cmd-copy:hover { background: var(--gray-200); color: var(--dark-700); }
 
 .sw-or {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--gray-500);
   margin: var(--s3) 0 6px;
 }
@@ -124,13 +124,13 @@
 }
 .sw-download:hover { border-color: var(--purple-500); background: var(--purple-100); }
 .sw-download-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.sw-download-label { font-size: 13px; font-weight: 500; }
+.sw-download-label { font-size: var(--fs-13); font-weight: 500; }
 
 /* Editors ---------------------------------------------------------------- */
 
 .sw-editors { display: grid; gap: var(--s3); }
 .sw-editor-instructions {
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--gray-600);
   line-height: 1.6;
   margin: 0;
@@ -140,7 +140,7 @@
 
 .sw-config { margin-top: var(--s3); }
 .sw-config summary {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--purple-600);
   cursor: pointer;
   margin-bottom: var(--s2);
@@ -156,7 +156,7 @@
   background: var(--success-bg);
   border-radius: var(--radius-lg);
   padding: var(--s3) var(--s4);
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.6;
   color: var(--gray-600);
   margin-bottom: var(--s5);
@@ -185,7 +185,7 @@
   display: flex;
   align-items: center;
   gap: var(--s2);
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   font-family: var(--mono);
 }

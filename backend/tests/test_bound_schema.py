@@ -708,6 +708,56 @@ def test_the_agent_is_given_the_test_to_apply_rather_than_only_the_rules():
     assert "not yet" in block and "working, but empty" in block
 
 
+# ---- the Control mechanics, for an app that reads a store (ADR-0016) -----------------------------
+#
+# Presence tests. They prove the four sentences ADR-0016 puts in this block are still in it; they
+# prove nothing about whether a build ships a Control. That is scored by the prompt set in
+# `docs/live-runs/2026-08-31-controls.md`, which is recorded as unrun.
+
+
+def test_a_control_is_told_to_filter_in_sql_rather_than_in_the_browser():
+    # The default, and the one with no ceiling. Client-side filtering as the default was rejected
+    # in ADR-0016 precisely because it is the more obvious implementation and silently wrong.
+    block = block_for()
+    assert "**A Control filters in SQL, through a declared parameter.**" in block
+    assert "has no row ceiling" in block
+    assert "is the select's option list" in block
+
+
+def test_the_agent_is_told_what_truncated_means_and_to_put_it_on_screen():
+    """`truncated` has been on the wire since #13 and no instruction surface has ever named it.
+
+    Until Controls, filtering a capped result was a latent defect; a Control makes it reachable in
+    one click, which is why the flag arrives with them rather than on its own.
+    """
+    block = block_for(max_rows=250)
+    assert "**`runQuery` also answers `truncated`.**" in block
+    assert "the store held more than 250 rows and this app received the first 250" in block
+    assert "the filtered subset of what was fetched, not of the data" in block
+    assert "only when `truncated` is `false`" in block
+    assert "say so on screen beside the row count" in block
+
+
+def test_the_required_parameter_collision_is_given_one_resolution_not_a_choice():
+    # `Query.bind` refuses a missing parameter with a 400, so an "All" option has no value to send.
+    # Two resolutions exist; the agent is given one, because a collision discovered per build is
+    # what this sentence exists to prevent.
+    block = block_for()
+    assert "**Every declared parameter is required**" in block
+    assert "refused with a 400" in block
+    assert "give \"All\" a sentinel value" in block
+    assert "WHERE (:region = '__all__' OR region = :region)" in block
+
+
+def test_a_control_that_requeries_is_told_to_pass_the_abort_signal():
+    # `runQuery` has taken an AbortSignal since it was written. Nothing told the agent to use it,
+    # and a Control is the first thing that fires the same query twice in a second.
+    block = block_for()
+    assert "**A Control that re-queries passes an `AbortSignal`.**" in block
+    assert "{ signal: controller.signal }" in block
+    assert "the slowest response wins" in block
+
+
 def test_an_app_with_no_data_source_is_told_none_of_this():
     # The region exists only for an app that reads a store. Describing an unreachable store to an app
     # that has none costs context on every turn and invites a screen built around data it cannot
