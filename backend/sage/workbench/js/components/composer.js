@@ -129,6 +129,7 @@ window.SW = window.SW || {};
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
+      catalog, buildModel, buildPhase, openWeightModels,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents,
     } = SW.store.get();
     const [text, setText] = useState('');
@@ -288,6 +289,48 @@ window.SW = window.SW || {};
         if (key === 'browse') SW.store.openCatalog();
         if (key === 'reset') confirmReset();
       },
+    };
+
+    // Build's model picker. Which slot the current mode is pinned to is the whole question the
+    // menu answers, and the router (llm_router) is the only authority on it: Ask is pinned to
+    // `ask`, Auto follows the phase, and Plan and Implement take their own slot — and are the only
+    // two that will honour an override at all.
+    const pinnedSlot = activeBuildMode.id === 'ask'
+      ? 'ask'
+      : activeBuildMode.id === 'auto'
+        ? (buildPhase === 'implement' ? 'implement' : 'plan')
+        : activeBuildMode.id;
+    const pinnedModel = (catalog && catalog[pinnedSlot]) || '';
+    const overridable = activeBuildMode.id === 'plan' || activeBuildMode.id === 'implement';
+    // The four configured slots reduced to the models behind them: two slots pointing at one model
+    // are one row, not two the person has to tell apart.
+    const slotModels = catalog ? [...new Set([catalog.plan, catalog.implement, catalog.ask])] : [];
+    const extraModels = (openWeightModels || []).filter((o) => !slotModels.includes(o.id));
+    // The pinned row is the way BACK, so it carries no model id: picking it clears the override
+    // rather than setting one, which is the difference between "Plan's model" and "this model,
+    // which happens to be Plan's today".
+    const PINNED_KEY = '__pinned__';
+    // An override can name the model the mode is already pinned to — pick Plan's model while in
+    // Implement, then switch to Plan. It is the pinned row at that point, and reading it as an
+    // override would mark nothing selected and drop the "(default)" off a control that is running
+    // exactly the default.
+    const override = buildModel && buildModel !== pinnedModel ? buildModel : '';
+    const buildModelMenu = {
+      selectedKeys: [override || PINNED_KEY],
+      items: [
+        ...slotModels.map((id) => ({
+          key: id === pinnedModel ? PINNED_KEY : id,
+          label: id === pinnedModel ? `${id} (default)` : id,
+        })),
+        ...(extraModels.length
+          ? [{
+              type: 'group',
+              label: 'Open-weight',
+              children: extraModels.map((o) => ({ key: o.id, label: `${o.id} (${o.provider})` })),
+            }]
+          : []),
+      ],
+      onClick: ({ key }) => SW.store.setBuildModel(key === PINNED_KEY ? null : key),
     };
 
     const modelMenu = {
@@ -575,6 +618,42 @@ window.SW = window.SW || {};
             )
           ),
           h('span', { className: 'sw-composer-bar-spacer' }),
+
+          // Beside the mode pill, because the mode is what decides both whether this can be
+          // changed and what it falls back to. Ask and Auto still SAY which model is running —
+          // hiding it there would answer "why can't I change this" with nothing.
+          showMode && pinnedModel &&
+            (overridable && !buildRunning
+              ? h(
+                  Dropdown,
+                  { menu: buildModelMenu, trigger: ['click'], placement: 'topRight' },
+                  h(
+                    Button,
+                    { size: 'small', 'aria-label': 'Build model' },
+                    h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
+                      h(DownOutlined, { style: { fontSize: 9 } }))
+                  )
+                )
+              : h(
+                  Tooltip,
+                  {
+                    title: buildRunning
+                      // Unlike the mode, a pick is NOT pinned for the turn: ModelControl.snapshot
+                      // reads it live, so a click here would move the rest of this build onto
+                      // another model with the first half's tool calls in context. There is no
+                      // queue to put it in either, so the control closes instead.
+                      ? `This turn is running on ${override || pinnedModel}. Wait for it to finish to pick a different model.`
+                      : activeBuildMode.id === 'ask'
+                        ? `Ask always runs on ${pinnedModel} and can't be changed. Switch to Plan or Implement to pick a model.`
+                        : `Auto picks the model per phase — ${(catalog || {}).plan} to plan, ${(catalog || {}).implement} to build. Switch to Plan or Implement to pick one yourself.`,
+                  },
+                  // The span is load-bearing: a browser dispatches no mouse events on a disabled
+                  // button, so a Tooltip put straight on one never opens and the sentence above
+                  // becomes the silence it was written to prevent.
+                  h('span', { style: { display: 'inline-block' } },
+                    h(Button, { size: 'small', disabled: true, 'aria-label': 'Build model' },
+                      override || pinnedModel))
+                )),
 
           showMode &&
             h(
