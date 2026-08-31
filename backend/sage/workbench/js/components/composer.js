@@ -136,6 +136,8 @@ window.SW = window.SW || {};
     const [mention, setMention] = useState(null);
     const [cursor, setCursor] = useState(0);
     const [sendHint, setSendHint] = useState(false);
+    const [attachHint, setAttachHint] = useState(false);
+    const [attachOpen, setAttachOpen] = useState(false);
     const [modeOpen, setModeOpen] = useState(false);
     const fileRef = useRef(null);
 
@@ -543,10 +545,32 @@ window.SW = window.SW || {};
             ),
           h(
             Dropdown,
-            { menu: attachMenu, trigger: ['click'], placement: 'topLeft' },
+            {
+              menu: attachMenu,
+              trigger: ['click'],
+              placement: 'topLeft',
+              open: attachOpen,
+              onOpenChange: (open) => {
+                setAttachOpen(open);
+                // The pointer is still on the button when the menu closes, so
+                // nothing will deliver the mouseleave that clears the hint —
+                // left alone it pops back up over the spot the menu just left.
+                // Hovering again brings it back, which is the whole hint.
+                if (!open) setAttachHint(false);
+              },
+            },
             h(
               Tooltip,
-              { title: 'Attach a file or resource' },
+              {
+                title: 'Attach a file or resource',
+                // The menu and the hint come out of the same corner of the same
+                // button, so a hint left open is drawn over the list. It gets
+                // left open because the click that opens the menu happens under
+                // the pointer, and the mouseleave that would close it never
+                // comes.
+                open: attachHint && !attachOpen,
+                onOpenChange: setAttachHint,
+              },
               h(Button, { size: 'small', icon: h(PlusOutlined, null), 'aria-label': 'Attach' })
             )
           ),
