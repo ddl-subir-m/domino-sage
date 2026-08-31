@@ -4606,6 +4606,18 @@ class Orchestrator:
                         client.interrupt(sid)
                     except Exception:
                         log.exception("chat: interrupt after timeout failed")
+                    # The turn stopped, but the charts and tables it already wrote are on disk and
+                    # are still an answer someone can use. Only the end-of-turn path recorded them,
+                    # so a timed-out turn left them unlisted in the Thread — and `examples/` crosses
+                    # into Build by that list (handoff.md §1), which made the nudge below an offer to
+                    # start again with none of the work the person had just waited minutes for.
+                    revert_denied_writes(project.record.path, thread_id, before)
+                    timed_out = [
+                        store.record_artifact(thread_id, path=rel)
+                        for rel in new_artifact_paths(project.record.path, thread_id, before)
+                    ]
+                    if timed_out:
+                        immediate = immediate or "artifacts"
                     # Detect here too, not only after a turn that finished. Asking Chat to build an
                     # app is exactly what runs long — sage-chat writes an Artifact, not an app — so
                     # the turn the person most needs the nudge on is the one that never reaches the
@@ -4647,6 +4659,14 @@ class Orchestrator:
                         )
                     err = {"type": "error", "message": message}
                     done = {"type": "done", "ok": False, "decision": "timeout"}
+                    # Before the error, as on the path that finishes: what the turn produced, then
+                    # why it stopped. `done` still carries them, so a client that reads only the
+                    # terminal event sees them too.
+                    if timed_out:
+                        art_ev = {"type": "artifacts", "items": timed_out}
+                        store.append_history(thread_id, art_ev)
+                        yield art_ev
+                        done["artifacts"] = timed_out
                     store.append_history(thread_id, err)
                     store.append_history(thread_id, done)
                     yield err

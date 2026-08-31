@@ -98,7 +98,7 @@ def test_chat_alone_never_creates_an_app_directory(tmp_path: Path):
 
 
 def test_a_confirmed_handoff_creates_an_app_directory_seeded_from_the_template(tmp_path: Path):
-    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN)])
+    orch, _oc, root = _orch(tmp_path, [Turn(text=_PLAN)])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
 
@@ -122,7 +122,7 @@ def test_a_dismissed_handoff_sheet_leaves_no_app_behind(tmp_path: Path):
     """A Built App is born when a handoff is CONFIRMED (ADR-0008). Drafting a sheet and walking
     away is a person deciding not to build, and it must cost them nothing — with one app per
     Project that is a stray directory, and with several it would be a stray app per dismissal."""
-    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN)])
+    orch, _oc, root = _orch(tmp_path, [Turn(text=_PLAN)])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
 
@@ -152,7 +152,7 @@ def test_a_build_writes_its_code_in_the_app_directory(tmp_path: Path):
 
 def test_the_project_keeps_its_threads_plan_documents_and_settings_at_the_root(tmp_path: Path):
     """App-scoped records resolve inside the app; the Project's stay where the Project is."""
-    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN)])
+    orch, _oc, root = _orch(tmp_path, [Turn(text=_PLAN)])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
     _handoff(orch, tid)
@@ -198,7 +198,7 @@ def test_project_instructions_are_the_projects_and_survive_the_app(tmp_path: Pat
     """Written before there is an app, rendered into every app there turns out to be. The block in
     AGENTS.md is a rendering: the file comes back from the template on Reset, and a second app gets
     its own copy — so the sentence the person wrote is kept on the Project instead."""
-    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN)])
+    orch, _oc, root = _orch(tmp_path, [Turn(text=_PLAN)])
     project = orch.project(start_preview=False, seed_app=False)
     orch.write_instructions(project, "Always label axes in full.")
 
@@ -253,7 +253,7 @@ def test_the_projects_own_trees_are_kept_out_of_git_at_the_root(tmp_path: Path):
 def test_a_plan_document_gains_its_app_reference_when_it_binds(tmp_path: Path):
     """A plan is drafted in a Thread, before the app exists, so it cannot be born inside one. It
     stays with the Project and gains the reference at the moment it binds."""
-    orch, _oc, _root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN)])
+    orch, _oc, _root = _orch(tmp_path, [Turn(text=_PLAN)])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
 

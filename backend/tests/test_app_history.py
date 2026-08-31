@@ -109,7 +109,10 @@ def _log(root: Path, app_id: str) -> list[dict]:
 def test_each_built_app_keeps_its_own_log_and_its_own_archive(tmp_path: Path):
     """The whole ticket in one file layout: nothing about the log sits at the volume root, where
     two Sage Builders would be writing to the same file."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    # No reply scripted for the desk conversation: "build me a desk dashboard" is an explicit
+    # build request, so it goes straight to the sheet without reaching sage-chat. The P&L one
+    # is asked in ordinary words and still spends a turn, so it keeps its reply.
+    turns = [Turn(text=_DESK),
              Turn(text="A report, then."), Turn(text=_PNL)]
     orch, _oc, root = _orch(tmp_path, turns)
     first, _ = _app_from_chat(orch, "build me a desk dashboard")
@@ -167,7 +170,7 @@ def test_a_stop_rewinds_its_own_apps_log_and_leaves_the_other_alone(tmp_path: Pa
 def test_stopping_a_build_in_one_app_leaves_the_other_apps_transcript_whole(tmp_path: Path):
     """The same thing through a real turn: two confirmed handoffs, a finished build in the first
     app and a stopped one in the second."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="A report, then."), Turn(text=_PNL),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
              Turn(text="Building the P&L table.", writes={"src/App.tsx": "// pnl table\n"})]
@@ -228,7 +231,7 @@ def test_an_entry_from_an_unscoped_caller_still_names_its_app(tmp_path: Path):
 
 
 def test_a_turn_written_through_the_orchestrator_carries_both_references(tmp_path: Path):
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="Built it.", writes={"src/App.tsx": "// desk table\n"})]
     orch, _oc, root = _orch(tmp_path, turns)
     app_id, tid = _app_from_chat(orch, "build me a desk dashboard")

@@ -117,7 +117,7 @@ def _tags(orch: Orchestrator, thread_id: str) -> list[dict]:
 
 def test_a_build_turn_that_changes_an_app_tags_the_conversation_with_it(tmp_path: Path):
     """The whole feature in one turn: the conversation now names the app it changed."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"})]
     orch, _oc, _root = _orch(tmp_path, turns)
     app_id, tid = _app_from_chat(orch, "build me a desk dashboard")
@@ -133,7 +133,7 @@ def test_a_build_turn_that_changes_an_app_tags_the_conversation_with_it(tmp_path
 def test_the_tag_says_built_only_when_this_conversation_made_the_app(tmp_path: Path):
     """"Built X" and "Changed X" are different sentences and the rail renders both. The crossing
     is what tells them apart — the app was already standing when this conversation reached it."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
              Turn(text="Darker now.", writes={"src/App.tsx": "// dark desk table\n"})]
     orch, _oc, _root = _orch(tmp_path, turns)
@@ -154,7 +154,7 @@ def test_the_tag_says_built_only_when_this_conversation_made_the_app(tmp_path: P
 def test_two_turns_on_one_app_leave_one_tag_carrying_the_newer_name(tmp_path: Path):
     """A conversation that spent twenty turns on one app changed one app. The name is the one the
     app is called now, because the tag is a label on a row in today's rail."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
              Turn(text="Darker now.", writes={"src/App.tsx": "// dark desk table\n"})]
     orch, _oc, _root = _orch(tmp_path, turns)
@@ -173,7 +173,7 @@ def test_two_turns_on_one_app_leave_one_tag_carrying_the_newer_name(tmp_path: Pa
 def test_two_apps_in_one_conversation_leave_two_tags(tmp_path: Path):
     """The case that makes filing a conversation under one app wrong (ADR-0008). One row in the
     rail, two tags on it, and the app filter finds the row from either."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="A report, then."), Turn(text=_PNL),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
              Turn(text="Built the P&L table.", writes={"src/App.tsx": "// pnl table\n"})]
@@ -200,7 +200,7 @@ def test_the_tag_reaches_the_list_the_rail_reads(tmp_path: Path, monkeypatch):
     They are one bound Project and therefore one path — this is what says so."""
     import sage.orchestrator.app as appmod
 
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"})]
     orch, _oc, _root = _orch(tmp_path, turns)
     app_id, tid = _app_from_chat(orch, "build me a desk dashboard")
@@ -266,7 +266,7 @@ def test_deleting_an_app_takes_its_tags_with_it(tmp_path: Path):
     """The tag is the one thing naming a Built App from OUTSIDE its directory, so it is the one
     thing a delete leaves behind: a chip nobody can open, and a filter narrowing the rail by an
     appId that is not there. It goes with the app, on the same rule as the plan documents."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="A report, then."), Turn(text=_PNL),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
              Turn(text="Built the P&L table.", writes={"src/App.tsx": "// pnl table\n"})]
@@ -291,7 +291,7 @@ def test_renaming_an_app_relabels_its_tags(tmp_path: Path):
     to reach the tags itself. Until it did, the app rail and the preview took the new name while
     the chip in the conversation rail went on saying the old one, and the two disagreed about the
     same app until somebody happened to build in it again."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="A report, then."), Turn(text=_PNL),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
              Turn(text="Built the P&L table.", writes={"src/App.tsx": "// pnl table\n"})]
@@ -319,7 +319,7 @@ def test_a_rename_reaches_every_conversation_that_changed_the_app(tmp_path: Path
     """One app, several conversations. The sweep is over the Project's records rather than the
     conversation in front of you, because a chip in the rail is drawn from whichever record the row
     belongs to."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
              Turn(text="Darker now.", writes={"src/App.tsx": "// dark desk table\n"})]
     orch, _oc, _root = _orch(tmp_path, turns)
@@ -353,7 +353,7 @@ def test_renaming_an_app_is_not_new_activity_in_the_rails_order(tmp_path: Path):
 def test_resetting_an_app_keeps_its_tags(tmp_path: Path):
     """Reset empties an app and keeps it. The conversation did change that app and the app is still
     there to be named, so the rail has no reason to stop saying so."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"})]
     orch, _oc, _root = _orch(tmp_path, turns)
     app_id, tid = _app_from_chat(orch, "build me a desk dashboard")

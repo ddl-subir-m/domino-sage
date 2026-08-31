@@ -384,7 +384,13 @@ def test_chat_turn_times_out_a_hung_opencode_session(tmp_path: Path):
     assert oc.interrupted == 1
     err = next(e for e in events if e["type"] == "error")
     assert "stopped making progress" in err["message"]
-def test_an_explicit_build_request_does_not_spend_a_chat_turn(tmp_path: Path):
+@pytest.mark.parametrize("prompt", [
+    "lets build the webapp",
+    # Live, and the third phrasing of the same request to reach the classifier instead of the
+    # regex: no "me", no "web", so it spent the tool-quiet window on a sample it could not use.
+    "lets build an app from a sample of 100 rows",
+])
+def test_an_explicit_build_request_does_not_spend_a_chat_turn(tmp_path: Path, prompt: str):
     """sage-chat writes an Artifact under examples/, never an app.
 
     Running the turn first spends up to the turn timeout and ends exactly where the offer starts —
@@ -394,7 +400,7 @@ def test_an_explicit_build_request_does_not_spend_a_chat_turn(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="should never run")])
     tid = orch.create_thread()["id"]
 
-    events = list(orch.chat_stream(tid, "lets build the webapp"))
+    events = list(orch.chat_stream(tid, prompt))
 
     assert oc.prompts == []  # no turn was sent at all
     suggest = next(e for e in events if e["type"] == "handoff-suggest")
@@ -415,6 +421,34 @@ def test_declining_the_offer_leaves_chat_answering_build_words(tmp_path: Path):
 
     assert len(oc.prompts) == 1
     assert not any(e["type"] == "handoff-suggest" for e in events)
+
+
+def test_a_timed_out_turn_still_records_what_it_had_already_written(tmp_path: Path):
+    """A turn that runs out of time has usually written something first, and those files are all
+    the person has to show for the wait. Only the path that reaches the end of the turn recorded
+    them, so a timed-out one left them on disk and unlisted — and `examples/` crosses into Build
+    by that list (handoff.md §1), which made the Build offer on the very same message an offer to
+    start again with none of the work."""
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    table = '{"title": "Sample", "columns": ["desk"], "rows": [["Rates"]]}'
+    oc.turns = [Turn(text="never emitted",
+                     writes={f"examples/{tid}/sample.table.json": table})]
+    oc.stay_running = True
+
+    events = list(orch.chat_stream(tid, "sample 100 rows of the clickstream", timeout_s=0.05))
+
+    arts = next(e for e in events if e.get("type") == "artifacts")["items"]
+    assert arts[0]["path"] == f"examples/{tid}/sample.table.json"
+    assert arts[0]["kind"] == "table"
+    # What the turn produced comes before the reason it stopped, as on the path that finishes.
+    kinds = [e["type"] for e in events]
+    assert kinds.index("artifacts") < kinds.index("error")
+    done = next(e for e in events if e["type"] == "done")
+    assert done["decision"] == "timeout" and done["artifacts"] == arts
+    # And they are the Thread's afterwards, not just this stream's.
+    assert any(e.get("type") == "artifacts" for e in orch.thread_history(tid))
+    assert orch.get_thread(tid)["artifacts"][0]["path"] == arts[0]["path"]
 
 
 def test_a_build_request_the_regex_misses_still_offers_build_after_a_timeout(

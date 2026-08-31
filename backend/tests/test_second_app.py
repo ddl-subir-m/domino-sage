@@ -100,7 +100,10 @@ def _app_from_chat(orch, ask: str, target: dict | None = None) -> str:
 def _two_apps(tmp_path: Path, extra: list[Turn] | None = None):
     """Two conversations, two confirmed handoffs, two Built Apps. The second one is selected,
     because confirming is what put it in front of you."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    # No reply scripted for the desk conversation: "build me a desk dashboard" is an explicit
+    # build request, so it goes straight to the sheet without reaching sage-chat. The P&L one
+    # is asked in ordinary words and still spends a turn, so it keeps its reply.
+    turns = [Turn(text=_DESK),
              Turn(text="A report, then."), Turn(text=_PNL)]
     orch, oc, root = _orch(tmp_path, turns + list(extra or []))
     first = _app_from_chat(orch, "build me a desk dashboard")
@@ -157,7 +160,7 @@ def test_confirming_the_same_handoff_twice_reopens_its_app_rather_than_minting_a
     """Confirming is where an app is born, so it makes a new one — but the same sheet confirmed
     twice is one handoff, not two. The plan document already names the app it bound to, which is
     what says so."""
-    orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_DESK)])
+    orch, _oc, root = _orch(tmp_path, [Turn(text=_DESK)])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
     orch.draft_handoff_plan(tid)
@@ -226,7 +229,7 @@ def test_an_unconfirmed_plan_never_becomes_another_apps_plan(tmp_path: Path):
     """A plan document names the app it bound to, and one that names none is a FALLBACK rather
     than a peer. Drafted in Chat after an app was built it is the NEWEST document, so mixed into
     one list it would become what that app's pin names and what a bare approval builds."""
-    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+    turns = [Turn(text=_DESK),
              Turn(text="A report, then."), Turn(text=_PNL)]
     orch, _oc, _root = _orch(tmp_path, turns)
     first = _app_from_chat(orch, "build me a desk dashboard")
@@ -441,7 +444,7 @@ def test_a_bound_sheet_answered_again_honours_the_app_it_names(tmp_path: Path):
     app that entry bound cannot be allowed to win: it would swallow the answer to the question the
     target row asks, which is criterion 11's failure coming the other way. The old app is the
     FALLBACK, which is what a double-confirm — the same sheet, saying nothing — still lands on."""
-    orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text="A rewrite, then."), Turn(text=_PNL)])
+    orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text=_PNL)])
 
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a third dashboard"))
@@ -480,7 +483,7 @@ def test_confirming_leaves_the_projects_own_name_alone(tmp_path: Path):
     """The Default rename is gone (#73). It renamed the Project to the plan title, which was a
     Project-per-app rule: a Project holds many apps now, and two of them cannot share one name.
     The plan title names the APP."""
-    orch, _oc, _root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_DESK)])
+    orch, _oc, _root = _orch(tmp_path, [Turn(text=_DESK)])
     record = orch.project(start_preview=False).record
     record.mark_untitled(True)
 

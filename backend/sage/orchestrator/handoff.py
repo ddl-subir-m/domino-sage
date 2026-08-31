@@ -58,6 +58,16 @@ _EXPLICIT_BUILD = re.compile(
     # loose — "lets build the webapp" and "build this chart ... as a webapp" both landed on the
     # classifier before, which meant a timed-out turn detected nothing at all.
     r"|\b(?:build|make|turn|ship|publish|deploy)\b[^.?!]{0,60}?\bweb\s?(?:app|site)\b"
+    # The plainest phrasing there is, and the one that fell through: "lets build an app from a
+    # sample of 100 rows" needs neither "me" nor "web", so it missed every branch above and paid
+    # the whole tool-quiet window before the classifier said what the verb had already said.
+    #
+    # Ordered and tight — verb, article, at most one adjective, then the noun — because the noun
+    # alone cannot carry the intent the way "webapp" can. "app" and "dashboard" are ordinary words
+    # in clickstream data, and the gap is what would swallow them: "make a chart of app downloads"
+    # gets no further than "of", and in "which app category converts best?" the noun comes first.
+    # "page" stays out for the same reason, since "build a page view report" would read as intent.
+    r"|\b(?:build|make|create)\s+(?:me\s+)?(?:an?|the|this)\s+(?:\w+\s+)?(?:app|dashboard|ui|tool)\b"
     r")",
     re.IGNORECASE,
 )

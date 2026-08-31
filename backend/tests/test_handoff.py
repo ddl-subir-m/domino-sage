@@ -142,6 +142,13 @@ def test_the_prompt_is_title_plus_last_turn_not_the_whole_history():
     "lets convert this into an app i can share",
     "convert it into an app",
     "can you make that an app",
+    # Live, this one cost the full tool-quiet window: no "me", no "web", so no branch held it.
+    "lets build an app from a sample of 100 rows",
+    "build an app",
+    "can you build a dashboard for this",
+    "make a small app i can share",
+    "create the dashboard",
+    "build an internal tool for the team",
 ])
 def test_explicit_build_requests_skip_the_classifier(prompt):
     assert handoff.looks_like_build_request(prompt) is True
@@ -156,6 +163,11 @@ def test_explicit_build_requests_skip_the_classifier(prompt):
     "convert the timestamps to dates",
     "turn this into a percentage",
     "which app category converts best?",
+    # The noun is data here, not intent. An article and at most one adjective sit between the verb
+    # and the noun, so the gap closes before "app" and "dashboard" can be read as the thing asked for.
+    "make a chart of app downloads",
+    "build a page view report",
+    "create a breakdown of dashboard visits by week",
 ])
 def test_analysis_is_not_an_explicit_build_request(prompt):
     assert handoff.looks_like_build_request(prompt) is False
