@@ -114,7 +114,7 @@
   font-size: var(--fs-12);
   margin-top: 4px;
 }
-.sw-budget-alert.is-warning   { color: #8A7A00; }
+.sw-budget-alert.is-warning   { color: var(--warning-text); }
 .sw-budget-alert.is-exception { color: var(--error); }
 
 /* KPI row ---------------------------------------------------------------- */
@@ -190,7 +190,7 @@
   margin-bottom: var(--s2);
 }
 .sw-attention-row:last-child { margin-bottom: 0; }
-.sw-attention-row.is-warning { background: var(--warning-bg); color: #8A7A00; }
+.sw-attention-row.is-warning { background: var(--warning-bg); color: var(--warning-text); }
 .sw-attention-row.is-error   { background: var(--error-bg);   color: var(--error); }
 .sw-attention-row.is-info    { background: var(--info-bg);    color: var(--info); }
 .sw-attention-main { flex: 1; min-width: 0; }

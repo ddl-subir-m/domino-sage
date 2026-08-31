@@ -4,6 +4,7 @@
   --purple-600: #3B23D1;
   --purple-500: #543FDE;
   --purple-100: #EEEBFC;
+  --purple-200: #D9D2FA;
 
   /* Neutrals */
   --dark-700:   #2E2E38;
@@ -28,11 +29,18 @@
 
   /* Warning is the only bg so far with a border dark enough to need naming. */
   --warning-border: #EFE6A8;
+  /* Warning as ink rather than fill. --warning is too light to read on. */
+  --warning-text: #8A7A00;
+  /* "Required" green, darker than --success, which is a fill colour. */
+  --success-dark: #1B7A4B;
 
   /* Accents — charts, project dots */
   --accent-1: #543FDE;  --accent-2: #0070CC;  --accent-3: #28A464;
   --accent-4: #CCB718;  --accent-5: #FF6543;  --accent-6: #E835A7;
   --accent-7: #2EDCC4;  --accent-8: #A9734C;
+
+  /* Syntax: .sw-tok-* draws the rest from the palette, strings had nothing. */
+  --code-str: #067D62;
 
   /* Layout */
   --nav-h: 44px;  --subnav-h: 48px;  --planbar-h: 40px;
@@ -138,7 +146,7 @@ body {
 }
 .sw-sens-public       { color: var(--gray-600) !important; background: var(--gray-200) !important; }
 .sw-sens-internal     { color: var(--info) !important;     background: var(--info-bg) !important; }
-.sw-sens-confidential { color: #8A7A00 !important;         background: var(--warning-bg) !important; }
+.sw-sens-confidential { color: var(--warning-text) !important;         background: var(--warning-bg) !important; }
 .sw-sens-restricted   { color: var(--error) !important;    background: var(--error-bg) !important; }
 
 /* Status dots ------------------------------------------------------------ */
@@ -267,7 +275,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .sw-kpi-sub { font-size: var(--fs-12); color: var(--gray-500); margin-top: 2px; }
-.sw-kpi.is-warning .sw-kpi-value { color: #8A7A00; }
+.sw-kpi.is-warning .sw-kpi-value { color: var(--warning-text); }
 .sw-kpi.is-error   .sw-kpi-value { color: var(--error); }
 .sw-kpi.is-success .sw-kpi-value { color: var(--success); }
 
@@ -300,7 +308,7 @@ kbd {
   tab-size: 2;
 }
 .sw-tok-key { color: var(--purple-600); font-weight: 500; }
-.sw-tok-str { color: #067D62; }
+.sw-tok-str { color: var(--code-str); }
 .sw-tok-com { color: var(--gray-500); font-style: italic; }
 .sw-tok-num { color: var(--info); }
 

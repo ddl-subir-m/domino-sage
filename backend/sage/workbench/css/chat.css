@@ -158,7 +158,7 @@
   white-space: nowrap;
 }
 .sw-conv-tag:hover { border-color: var(--purple-500); color: var(--purple-600); }
-.sw-thread.is-active .sw-conv-tag { border-color: var(--purple-200, #D9D2FA); }
+.sw-thread.is-active .sw-conv-tag { border-color: var(--purple-200); }
 
 .sw-rail-filter {
   flex: none;
@@ -691,7 +691,7 @@
   padding: 2px 8px !important;
   margin: 0 !important;
   background: var(--purple-100) !important;
-  border-color: #DCD5FA !important;
+  border-color: var(--purple-200) !important;
   color: var(--purple-700) !important;
   font-size: var(--fs-12);
   max-width: 240px;
@@ -775,7 +775,7 @@
 .sw-phase-pill:hover:not(:disabled) { border-color: var(--gray-400); color: var(--dark-700); }
 .sw-phase-pill:disabled { opacity: .55; cursor: default; }
 .sw-phase-pill.is-ask {
-  color: #8A7A00;
+  color: var(--warning-text);
   border-color: color-mix(in srgb, var(--warning) 45%, var(--gray-300));
   background: var(--warning-bg);
 }

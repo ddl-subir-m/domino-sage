@@ -416,7 +416,7 @@
   cursor: pointer;
   font-family: inherit;
 }
-.sw-plan-pin:hover { background: #EDE9FE; }
+.sw-plan-pin:hover { background: var(--purple-100); }
 .sw-plan-pin.is-empty {
   background: var(--gray-100);
   box-shadow: inset 3px 0 0 var(--gray-300);
@@ -550,7 +550,7 @@
    project's row rather than being copied into a second list. Green because it
    belongs to a durable artifact, which is what green means everywhere here. */
 .sw-res-row.is-required { box-shadow: inset 2px 0 0 var(--success); }
-.sw-res-row.is-required .sw-res-sub { color: #1B7A4B; font-weight: 500; }
+.sw-res-row.is-required .sw-res-sub { color: var(--success-dark); font-weight: 500; }
 .sw-res-row.is-highlighted {
   background: var(--purple-100);
   box-shadow: inset 2px 0 0 var(--purple-500);
@@ -627,7 +627,7 @@
   gap: 6px;
 }
 .sw-tree-folder-head:hover, .sw-tree-step:hover, .sw-tree-crumb-btn:hover {
-  color: var(--purple-700, #543FDE);
+  color: var(--purple-700);
 }
 .sw-tree-folder-body { padding-left: 12px; }
 .sw-tree-leaf {
@@ -787,7 +787,7 @@
   border-bottom: 1px solid var(--gray-200);
 }
 .sw-cat-row:hover { background: var(--gray-100); }
-.sw-cat-row.is-in { background: #FBFAFE; }
+.sw-cat-row.is-in { background: var(--gray-100); }
 .sw-cat-open {
   flex: 1;
   min-width: 0;
