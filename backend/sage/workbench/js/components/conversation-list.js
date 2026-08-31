@@ -175,7 +175,7 @@ window.SW = window.SW || {};
   }
 
   SW.ConversationRail = function ConversationRail({ mode }) {
-    const { threads, thread, railHidden, railAppFilter, pendingConversation } = SW.store.get();
+    const { threads, thread, railHidden, railAppFilter, pendingConversation, apps } = SW.store.get();
     const [query, setQuery] = useState('');
 
     if (railHidden) {
@@ -202,7 +202,12 @@ window.SW = window.SW || {};
     // second is why a flat history stays navigable.
     const needle = query.trim().toLowerCase();
     const filtered = threads.filter((t) => {
-      if (railAppFilter && !(t.touched || []).some((x) => x.appId === railAppFilter)) return false;
+      // The open conversation is exempt, for the reason the pending row is: the rail's job is to
+      // say which conversation you are looking at, and a filter that hides it empties the list
+      // under a transcript that is still on screen. Picking an app in the Build header would
+      // otherwise do exactly that to the conversation you were mid-way through.
+      const standingIn = thread && thread.id === t.id;
+      if (railAppFilter && !standingIn && !(t.touched || []).some((x) => x.appId === railAppFilter)) return false;
       if (!needle) return true;
       return (
         t.title.toLowerCase().includes(needle) ||
@@ -211,11 +216,15 @@ window.SW = window.SW || {};
     });
 
     const groups = SW.util.groupThreads(filtered);
+    // The Project's app list first, the tags second. The tag scan alone held while a chip was the
+    // only writer — the app was in some thread's tags by definition — but the Build header can now
+    // filter to an app no conversation has changed, and that read "Only an app".
     const filterName =
       railAppFilter &&
-      ((threads
-        .flatMap((t) => t.touched || [])
-        .find((x) => x.appId === railAppFilter) || {}).appName ||
+      ((apps.find((a) => a.id === railAppFilter) || {}).name ||
+        (threads
+          .flatMap((t) => t.touched || [])
+          .find((x) => x.appId === railAppFilter) || {}).appName ||
         'an app');
 
     return h(
@@ -333,7 +342,7 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-rail-note' },
-          'Tags name the apps a conversation changed. Click one to see everything that touched it.'
+          'Tags name the apps a conversation changed. Click one, or pick an app in the Build header, to see everything that touched it.'
         )
       )
     );

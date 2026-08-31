@@ -539,26 +539,32 @@ function flatten(node, out = [], depth = 0) {
 // The strings a person would read, in order.
 const words = (nodes) => nodes.filter((n) => n.text).map((n) => n.text);
 
-// One element's own subtree, found by name. The build history's claims are about what THE DRAWER
-// says — a flat list of every string on the screen holds the transcript, the composer and the
-// header too, and could not tell "this app has no builds" from the greeting behind it.
-function subtree(node, el, depth = 0) {
+// The first node a question accepts, walking through function components the way `flatten` does.
+// Two things ask it — an element by name, and an element by the class it carries — and the walk is
+// the hard half of both.
+function findNode(node, match, depth = 0) {
   if (!node || depth > 60) return null;
   if (Array.isArray(node)) {
     for (const n of node) {
-      const found = subtree(n, el, depth);
+      const found = findNode(n, match, depth);
       if (found) return found;
     }
     return null;
   }
   if (typeof node !== 'object' || !node.t) return null;
-  const name = tag(node);
-  if (name === el) return node;
-  if (typeof node.t === 'function' && !SKIP.has(name)) {
-    const found = subtree(node.t(Object.assign({}, node.p || {}, { children: node.c })), el, depth + 1);
+  if (match(node)) return node;
+  if (typeof node.t === 'function' && !SKIP.has(tag(node))) {
+    const found = findNode(node.t(Object.assign({}, node.p || {}, { children: node.c })), match, depth + 1);
     if (found) return found;
   }
-  return subtree(node.c, el, depth + 1);
+  return findNode(node.c, match, depth + 1);
+}
+
+// One element's own subtree, found by name. The build history's claims are about what THE DRAWER
+// says — a flat list of every string on the screen holds the transcript, the composer and the
+// header too, and could not tell "this app has no builds" from the greeting behind it.
+function subtree(node, el) {
+  return findNode(node, (n) => tag(n) === el);
 }
 
 // Every handler a click could reach, by the app it acts on. `data-app` is what makes a row in the
@@ -655,6 +661,64 @@ function readDrawer(tree) {
   };
 }
 
+// The same walk asked the other question, so a claim about the filter chip is read off the chip
+// rather than off every word in the rail. `subtree` finds by element name and the chip is a plain
+// div, which is the only reason both questions exist.
+function nodeByClass(node, cls) {
+  return findNode(node, (n) => String((n.p || {}).className || '') === cls);
+}
+
+// The rail beside Build, read as rows rather than as a bag of every string on it: every claim about
+// the filter is about WHICH conversations survive it, and a flat word list cannot tell a row that is
+// gone from one that is merely further down.
+function railOf(mode) {
+  const tree = SW.ConversationRail({ mode: mode || 'build' });
+  const nodes = flatten(tree);
+  const chip = nodeByClass(tree, 'sw-rail-filter');
+  const note = nodeByClass(tree, 'sw-rail-note');
+  return {
+    rows: nodes.filter((n) => n.className === 'sw-thread-title').flatMap((n) => n.texts || []),
+    // The whole sentence, joined, because "Only " and the app name are two elements and the
+    // criterion is what the chip reads as one line.
+    chip: chip ? words(flatten(chip)).join('') : null,
+    // The chip's way out, by the label it says out loud — a filter you cannot drop is a mode.
+    chipClear: chip ? flatten(chip).filter((n) => n.label).map((n) => n.label) : [],
+    note: note ? words(flatten(note)).join('') : null,
+  };
+}
+
+// A click on a row in the header's app list, found by the id the row carries. Shared, because two
+// steps need the pick to have HAPPENED before the thing they are actually about.
+function pickInHeader(thread, appId) {
+  const rows = rowsOf(
+    SW.BuildMode({ conversationId: thread, appId: (SW.store.get().activeApp || {}).id || null })
+  );
+  const row = rows.find((r) => r.id === appId);
+  if (!row) throw new Error(`no row ${appId} in the header's app list`);
+  row.onClick({ stopPropagation() {} });
+  return rows;
+}
+
+// The chip's way out, pressed. Read by its label rather than its class, because the label is what
+// says which control this is — and dropping a filter must leave the previewed app alone, which is
+// only a claim if something actually presses it.
+function clearFilter(mode) {
+  const node = flatten(SW.ConversationRail({ mode }))
+    .find((n) => n.onClick && n.label === 'Show all conversations');
+  if (!node) throw new Error('the rail filter offered no way out');
+  node.onClick({ stopPropagation() {} });
+}
+
+// A click on a tag in the rail, driven the way a person drives it: find the tag by the app name it
+// says, and press it. The step knows no store key — a chip that stopped writing the filter would
+// leave the rail unchanged rather than be asserted around.
+function clickTag(mode, appName) {
+  const node = flatten(SW.ConversationRail({ mode }))
+    .find((n) => n.className === 'sw-conv-tag' && (n.texts || []).includes(appName));
+  if (!node) throw new Error(`no tag ${appName} in the rail`);
+  node.onClick({ stopPropagation() {} });
+}
+
 async function arrive(threadId, appId) {
   // Copies, for the reason `bound` and `attached` are copies: publishing WRITES to a row, and the
   // fixture is shared by every step in the run.
@@ -673,6 +737,9 @@ async function arrive(threadId, appId) {
   // Every step arrives at Build with the history shut, the way a page load does. The store is one
   // object for the whole run, so a step that opened it would otherwise leave it open for the next.
   SW.store.closeBuildHistory();
+  // And with the rail unfiltered, for the same reason: a step that picked an app leaves a filter
+  // behind, and the next step would open on a rail somebody else had narrowed.
+  SW.store.set({ railAppFilter: null });
   await SW.store.openThread(threadId);
   if (appId) await SW.store.selectApp(appId);
   await SW.store.loadApps();
@@ -888,14 +955,33 @@ for (const step of steps) {
     // The rail itself, in each mode, so "the same rows in Build as in Chat" is a comparison rather
     // than a promise.
     await SW.store.reloadThreads();
+    // This step does not `arrive`, so it clears the filter itself — see the note there.
+    SW.store.set({ railAppFilter: null });
+    // A tag clicked before the read, for the half of the one-way rule that is about the chip: it
+    // narrows the rail and must leave the previewed app exactly where it was.
+    if (step.chip) clickTag(step.rail, step.chip);
     const nodes = flatten(SW.ConversationRail({ mode: step.rail }));
-    report.push({ step: `rail ${step.rail}`, words: words(nodes), labels: nodes.filter((n) => n.label).map((n) => n.label) });
+    report.push({
+      step: `rail ${step.rail}`,
+      words: words(nodes),
+      labels: nodes.filter((n) => n.label).map((n) => n.label),
+      railFilter: SW.store.get().railAppFilter,
+      activeApp: (SW.store.get().activeApp || {}).id || null,
+      rail: railOf(step.rail),
+    });
     continue;
   }
   if (step.pick) {
     // What a click on a row in the header's list writes. The criterion is that it writes the
     // ROUTE and nothing else: `activeApp` is the store's answer to the route, never the picker's.
+    // Since the filter moved, it writes one more thing — `railAppFilter` — and the rail beside it
+    // is read here so "the header and the rail name the same app" is one step rather than two.
     await arrive(step.thread, step.select);
+    await SW.store.reloadThreads();
+    // A chip filter set BEFORE the pick, by clicking a tag, which is the case where the two used to
+    // disagree: the rail went on naming the app the tag named while the header named another.
+    if (step.chip) clickTag('build', step.chip);
+    const railBefore = railOf('build');
     const before = (SW.store.get().activeApp || {}).id || null;
     sandbox.location.hash = '';
     const rows = rowsOf(SW.BuildMode({ conversationId: step.thread, appId: before }));
@@ -909,6 +995,19 @@ for (const step of steps) {
       // render, not on the click.
       appAfterClick: (SW.store.get().activeApp || {}).id || null,
       appBefore: before,
+      railFilter: SW.store.get().railAppFilter,
+      railBefore,
+      rail: railOf('build'),
+      // The chip dropped again, by its own control. Dropping a filter is a question about the rail
+      // and nothing else, so the app under the preview has to sit still through it.
+      cleared: step.clear
+        ? (clearFilter('build'),
+          {
+            railFilter: SW.store.get().railAppFilter,
+            activeApp: (SW.store.get().activeApp || {}).id || null,
+            rail: railOf('build'),
+          })
+        : null,
     });
     continue;
   }
@@ -1029,6 +1128,12 @@ for (const step of steps) {
   // passing the one already selected is the tick that changes nothing.
   if (step.poll) {
     await arrive(step.thread, step.select);
+    await SW.store.reloadThreads();
+    // A filter this person set themselves, before the server's selection moves underneath them.
+    // `pickFirst` rather than a write to the store, because the claim is about what a CLICK left
+    // behind — a filter seeded by hand would pass even if nothing wrote it.
+    if (step.pickFirst) pickInHeader(step.thread, step.pickFirst);
+    const railFilterBefore = SW.store.get().railAppFilter;
     calls.length = 0;
     selected = step.poll;
     appsFail = !!step.readFails;
@@ -1043,6 +1148,11 @@ for (const step of steps) {
       calls: ticked,
       activeApp: (s.activeApp || {}).id || null,
       activeName: (s.activeApp || {}).name || null,
+      // The rail's filter across the tick. It is set by a click and by nothing else, so a poll
+      // moving it would be another tab re-filtering this tab's rail.
+      railFilterBefore,
+      railFilter: s.railAppFilter,
+      rail: railOf('build'),
       bindings: (s.bindings || []).map((b) => b.display_name || b.name),
       attachments: (s.appAttachments || []).map((a) => a.file),
       parts: nodes

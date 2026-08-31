@@ -26,6 +26,10 @@ from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
 
+# The rail itself, for the one claim at the foot of this file. It is about the source rather than
+# about a run, because what the tags are FOR is drawn in the browser and asserted there.
+_WORKBENCH = Path(__file__).resolve().parents[1] / "sage" / "workbench"
+
 
 class OkFeedback:
     def check(self, path: Path):
@@ -362,3 +366,19 @@ def test_resetting_an_app_keeps_its_tags(tmp_path: Path):
     orch.reset_app()
 
     assert [t["appId"] for t in _tags(orch, tid)] == [app_id]
+
+
+# ---- the filter has a second writer now ---------------------------------------------------------
+
+
+def test_the_tag_is_still_the_filters_name_of_last_resort():
+    """The filter used to be the chip's alone, so the app it named was in some thread's tags by
+    definition and the rail read the name off them. The Build header writes the filter too, and it
+    can name an app no conversation has changed — so the Project's app list is asked first.
+
+    The tag stays the fallback, and that is what this holds onto: an app the store has not loaded
+    yet, or one dropped from the list, is still named by the conversations that changed it rather
+    than read out as "an app"."""
+    rail = (_WORKBENCH / "js" / "components" / "conversation-list.js").read_text()
+    assert "(apps.find((a) => a.id === railAppFilter) || {}).name" in rail
+    assert ".find((x) => x.appId === railAppFilter) || {}).appName" in rail

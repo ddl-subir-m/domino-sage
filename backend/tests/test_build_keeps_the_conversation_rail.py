@@ -208,6 +208,130 @@ def test_the_grammar_lives_in_the_router_not_in_a_component():
     assert "SW.appRoute" in source
 
 
+# ---- the header's pick and the rail's filter are the same filter --------------------------------
+
+
+@needs_node
+def test_picking_an_app_in_the_header_narrows_the_rail_to_it():
+    """The filter had one writer — the chip on a row — so the header's dropdown moved the preview
+    and left the rail listing every conversation in the Project. Two halves of one screen, one
+    naming an app and the other ignoring it."""
+    step = _run([{"pick": "app_b", "thread": "thr_many", "select": "app_a"}])[-1]
+    assert step["railFilter"] == "app_b"
+    # `thr_one` changed only Desk dashboard, and it is not the conversation on screen, so it goes.
+    assert step["rail"]["rows"] == ["Desks", "Two of them"]
+    assert step["rail"]["chip"] == "Only P&L report"
+
+
+@needs_node
+def test_the_conversation_you_are_standing_in_survives_the_filter():
+    """The failure ADR-0009 exists to stop: picking an app emptied the rail under a transcript that
+    was still on screen, so the furniture beside one Conversation stopped listing it. `thr_one`
+    never touched P&L report and stays anyway, because it is the one you are reading."""
+    step = _run([{"pick": "app_b", "thread": "thr_one", "select": "app_a"}])[-1]
+    assert step["railFilter"] == "app_b"
+    assert "Just the one" in step["rail"]["rows"]
+
+
+@needs_node
+def test_a_chip_filter_set_earlier_does_not_outlive_the_app_it_named():
+    """Only `setScope` cleared the filter, so a chip pressed before an app switch left the rail
+    saying "Only Desk dashboard" beside a header saying P&L report."""
+    step = _run(
+        [{"pick": "app_b", "thread": "thr_many", "select": "app_a", "chip": "Desk dashboard"}]
+    )[-1]
+    assert step["railBefore"]["chip"] == "Only Desk dashboard"
+    assert step["rail"]["chip"] == "Only P&L report"
+    assert step["railFilter"] == "app_b"
+
+
+@needs_node
+def test_the_filter_moves_on_a_click_and_never_on_the_poll():
+    """Why the write is in `pick` and not in an effect on `activeApp`. The selection is per-Project
+    on the server and shared across tabs, and the 30s poll moves it under you — so an effect would
+    let a second tab silently re-filter this tab's rail. Only a person's own click may move it."""
+    step = _run(
+        [{"poll": "app_b", "thread": "thr_many", "select": "app_a", "pickFirst": "app_a"}]
+    )[-1]
+    assert step["activeApp"] == "app_b"
+    assert step["railFilterBefore"] == step["railFilter"] == "app_a"
+    assert step["rail"]["chip"] == "Only Desk dashboard"
+
+
+@needs_node
+def test_the_chip_names_an_app_no_conversation_has_changed():
+    """`filterName` resolved the name by scanning the threads' own tags, which held while a chip was
+    the only writer — the app was in some thread's tags by definition. The header can filter to an
+    app nobody has built in yet, and that read "Only an app"."""
+    step = _run([{"pick": "app_c", "thread": "thr_none", "select": "app_a"}])[-1]
+    assert step["rail"]["chip"] == "Only Rate curve viewer"
+    assert "an app" not in step["rail"]["chip"]
+
+
+@needs_node
+def test_the_filter_is_visible_and_can_be_dropped():
+    """A filter you cannot see is a rail that has silently lost rows, and one you cannot drop is a
+    mode. Both halves are on the chip, and dropping it brings every row back."""
+    step = _run([{"pick": "app_b", "thread": "thr_many", "select": "app_a", "clear": True}])[-1]
+    assert step["rail"]["chip"].startswith("Only ")
+    assert step["rail"]["chipClear"] == ["Show all conversations"]
+    assert step["cleared"]["railFilter"] is None
+    assert step["cleared"]["rail"]["chip"] is None
+    assert step["cleared"]["rail"]["rows"] == [
+        "Desks", "Just the one", "Two of them", "Nothing built here"
+    ]
+
+
+@needs_node
+def test_dropping_the_filter_leaves_the_previewed_app_alone():
+    """The rail and the preview are two questions. Clearing the chip answers the first one — show me
+    everything again — and must not quietly answer the second by putting Build back on another app."""
+    step = _run([{"pick": "app_b", "thread": "thr_many", "select": "app_a", "clear": True}])[-1]
+    assert step["cleared"]["activeApp"] == step["appAfterClick"] == "app_a"
+
+
+@needs_node
+def test_a_tag_shows_history_and_never_moves_the_preview():
+    """The other direction stays one-way. Clicking a tag asks a question about history; switching
+    the app under the preview is an answer to a different one, and `activeApp` keeps its single
+    writer — the route."""
+    step = _run(
+        [{"build": "thr_many", "select": "app_a"}, {"rail": "build", "chip": "P&L report"}]
+    )[-1]
+    assert step["railFilter"] == "app_b"
+    assert step["activeApp"] == "app_a"
+
+
+@needs_node
+def test_the_rail_note_names_both_ways_to_filter_it():
+    """The note described the chip alone, which is the shape of the bug written down."""
+    step = _run([{"rail": "build"}])[-1]
+    assert step["rail"]["note"] == (
+        "Tags name the apps a conversation changed. Click one, or pick an app in the Build "
+        "header, to see everything that touched it."
+    )
+
+
+def test_the_pick_writes_the_filter_and_no_effect_watches_the_selected_app():
+    """The one-line change this must not become. An effect keyed on `activeApp` would pass every
+    assertion above and still re-filter the rail from another tab's click, because the poll writes
+    `activeApp` too. No node here: the claim is about where the write lives."""
+    source = (_WORKBENCH / "js" / "modes" / "builder.js").read_text()
+    # One mention in the whole file, and it is the click's. An effect would have to name the filter
+    # too, so a second line here is the regression whatever it is keyed on.
+    assert [ln.strip() for ln in source.splitlines() if "railAppFilter" in ln] == [
+        "SW.store.set({ railAppFilter: app.id });"
+    ]
+    # And the store stays out of it, `selectApp` above all: that is what the poll and the route both
+    # call, so a write in there is the same effect wearing a different hat. Two lines may name the
+    # filter — where it is declared, and where leaving the Project drops it. Comments stripped, so
+    # the claim is about the code rather than about how a sentence beside it is worded.
+    store = (_WORKBENCH / "js" / "store.js").read_text()
+    assert [
+        ln.split("//")[0].strip() for ln in store.splitlines() if "railAppFilter" in ln
+    ] == ["railAppFilter: null,", "state.railAppFilter = null;"]
+
+
 # ---- rename and delete, on Reset's precedent ----------------------------------------------------
 
 

@@ -351,6 +351,11 @@ window.SW = window.SW || {};
 
     const pick = (app) => {
       setOpen(false);
+      // The rail follows the pick, so the two halves of the screen name the same app. Written HERE
+      // and not in an effect on `activeApp`: the selection is per-Project on the server and the 30s
+      // poll moves it under you, so an effect would let a second tab silently re-filter this tab's
+      // rail. Only a person's own click may move the filter.
+      SW.store.set({ railAppFilter: app.id });
       SW.router.go(SW.appRoute(app));
     };
 
