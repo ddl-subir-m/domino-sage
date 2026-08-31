@@ -34,7 +34,9 @@
   /* "Required" green, darker than --success, which is a fill colour. */
   --success-dark: #1B7A4B;
 
-  /* Accents — charts, project dots */
+  /* Accents — charts, project dots. theme.js keeps the same eight in SW.accents,
+     which is what Highcharts is handed; a brand pack overwrites --accent-1 at
+     runtime. Nothing in css/ reads them, so grep here before calling them dead. */
   --accent-1: #543FDE;  --accent-2: #0070CC;  --accent-3: #28A464;
   --accent-4: #CCB718;  --accent-5: #FF6543;  --accent-6: #E835A7;
   --accent-7: #2EDCC4;  --accent-8: #A9734C;
@@ -46,7 +48,6 @@
   --nav-h: 44px;  --subnav-h: 48px;  --planbar-h: 40px;
   --rail-w: 260px;  --builder-chat-w: 380px;
   --dock-collapsed: 44px;  --dock-expanded: 320px;
-  --drawer-w: 480px;
 
   /* Spacing scale */
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px;
@@ -55,7 +56,6 @@
   --radius: 4px;  --radius-lg: 8px;
   --shadow-card:  0 1px 2px rgba(46, 46, 56, .06);
   --shadow-pop:   0 4px 16px rgba(46, 46, 56, .12);
-  --shadow-modal: 0 8px 32px rgba(46, 46, 56, .16);
 
   --mono: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
 
