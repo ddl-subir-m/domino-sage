@@ -170,6 +170,32 @@ Every app must look intentional and consistent. These rules are what separate a 
   Bar-chart y-axes start at zero. Tooltips show the exact value.
 - An empty or still-loading chart gets the same treatment as any other collection — see below.
 
+### Controls
+A **Control** is an element that changes what the app shows without a rebuild: a select, a date
+range, a search box, a toggle. A screen showing a collection over two or more rows, where one column
+holds a handful of values — a category, a status, a date — gets one over that column.
+- **No package is needed for this.** `<select>`, `<input type="date">` and `<input type="search">`
+  are the whole toolkit. Hold the selection in `useState`, derive the filtered rows with `useMemo`,
+  and feed every view from those derived rows. Style them like any other input — label above the
+  field, visible focus ring — and give a `<select>` an option list, never a free-text box, when the
+  values are a fixed set.
+- **At least two views respond to it.** A Control that moves one chart is a chart option; one that
+  moves the chart *and* the table is a dashboard. Deriving both from the same rows is what keeps
+  them from disagreeing.
+- **State the current selection in words** — "March 2026 · EMEA · 412 rows" — where the viewer reads
+  it before the charts. This is not polish: without it a filtered view and an empty one look
+  identical, and a blank chart under an unstated filter reads as broken data rather than as a narrow
+  selection.
+- **A chart click writes the Control; it never filters beside it.** Clicking the EMEA bar sets the
+  select to EMEA, the select visibly moves, and every view re-reads from that one selection. So
+  there is no second piece of state, nothing extra to reset, and the keyboard path is the select
+  that was already on screen. A chart over a column that has no Control is **not clickable** — a
+  selection the viewer can neither see nor undo is worse than no selection at all.
+- **A selection that matches nothing is a state, not a blank.** Say which selection matched nothing
+  and offer the way back to a wider one, the same as any other empty collection below.
+- If this app reads a store, "The app's data" says how a Control filters there instead — in SQL,
+  through a declared parameter — and that path replaces the `useMemo` above rather than adding to it.
+
 ### States — do not skip these (this is the #1 polish signal)
 Scope these to the screens/collections the current request actually touches — don't add them to
 components outside what was asked.

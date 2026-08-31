@@ -94,6 +94,18 @@ and parameter values, never SQL. The agent writes them during the build, so what
 ask its Data Source is fixed before anyone opens it.
 _Avoid_: query, endpoint, SQL, prepared statement
 
+**Control**:
+An element in a Built App that changes what the app shows without a rebuild: a select, a date
+range, a search box, a toggle. It is fed either by a query parameter, which filters at the store,
+or by state in the browser, which filters only what was already fetched — and the two differ the
+moment a result is truncated. A Built App showing a collection over a dimension ships with at least
+one: two or more views respond to it, and the current selection is stated in words ("March 2026 ·
+EMEA · 412 rows"). A chart click writes the Control for that mark's dimension rather than filtering
+beside it, so there is one selection and it is always on screen; a chart over a dimension with no
+Control is not clickable. See
+[ADR-0016](docs/adr/0016-a-dashboard-ships-with-a-control.md).
+_Avoid_: filter (that is one kind of Control), widget, interactivity, knob, facet
+
 **Sample rows**:
 A few real rows from a bound table, shown to the agent because the creator asked for them. Never a
 default and never inferred: the creator picks the tables and chooses whether the rows are treated as

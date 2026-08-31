@@ -341,6 +341,28 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
          "claims, not decoration. Do not leave a filled primary button that does nothing when "
          "pressed — if the only useful action is to try again, make that the primary action. The "
          "test to apply: a viewer reads **not yet**, rather than **working, but empty**."),
+        ("- **A Control filters in SQL, through a declared parameter.** That is the default and it "
+         "has no row ceiling: the store does the filtering and the app receives the answer to the "
+         "question actually asked. A parameter carrying an `\"enum\"` is the select's option list, "
+         "so the options come from the catalog you wrote rather than from a second query."),
+        (f"- **`runQuery` also answers `truncated`.** It is `true` when the store held more than "
+         f"{max_rows} rows and this app received the first {max_rows}. Filtering THOSE rows in the "
+         "browser gives a confidently wrong answer: the viewer sees the filtered subset of what was "
+         "fetched, not of the data — the chart shows 40 rows where the real answer is 900, and "
+         "nothing on screen looks wrong. So filter in the browser only when `truncated` is `false`, "
+         "and when it is `true` say so on screen beside the row count. A count that is capped reads "
+         "differently from one that is complete, which is the same reason the current selection is "
+         "written out in words."),
+        ("- **Every declared parameter is required**, so an \"All\" option has no value to send: a "
+         "query called without one is refused with a 400, on the app's very first paint. Resolve it "
+         "one way — keep the parameter, give \"All\" a sentinel value, and have the statement test "
+         "for it: `WHERE (:region = '__all__' OR region = :region)`. Do not leave the parameter out "
+         "of the call and do not send an empty string in place of a value."),
+        ("- **A Control that re-queries passes an `AbortSignal`.** `runQuery` takes one in its third "
+         "argument — `runQuery(\"usage_by_account\", params, { signal: controller.signal })` — and "
+         "aborting the previous request when the selection changes again is what keeps a fast "
+         "second change from racing the first. Without it the slowest response wins and the screen "
+         "settles on a selection the Control no longer shows."),
         brand.text(
             "- **Do not read the {dataSource} yourself.** No scripts, no SQL anywhere except "
             "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "
