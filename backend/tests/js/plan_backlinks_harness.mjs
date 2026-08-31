@@ -26,6 +26,9 @@ const json = (body) => ({
 // Where SW.router.go was sent. The back-links are routes, so this IS what the person gets.
 const routed = [];
 
+// What the workspace holds for this plan. Only Build's Markdown tab ever asks for it.
+const RAW = { path: '.sage/plans/001/v1.md', content: '# A desk exposure dashboard.\n\n## Steps\n' };
+
 let cells = [];
 let cursor = 0;
 let effects = [];
@@ -76,7 +79,11 @@ const sandbox = {
   icons: new Proxy({}, { get: (_, name) => String(name) }),
   fetch: async (url) => {
     await new Promise((r) => setTimeout(r, 0));
-    return json(String(url).endsWith(`/plans/${plan.id}`) ? plan : {});
+    const path = String(url);
+    // The document, and the file it is stored as. They are two reads because they are two things:
+    // the sections the sheet renders, and the raw markdown behind the Markdown tab.
+    if (path.endsWith(`/plans/${plan.id}/markdown`)) return json(RAW);
+    return json(path.endsWith(`/plans/${plan.id}`) ? plan : {});
   },
 };
 sandbox.window = sandbox;
@@ -105,6 +112,8 @@ const labelled = (tree, label) =>
   all(tree, (n) => n.t === 'Button' && (n.c || []).flat(Infinity).includes(label))[0];
 const tooltips = (tree) =>
   all(tree, (n) => n.t === 'Tooltip' && n.p && typeof n.p.title === 'string').map((n) => n.p.title);
+const textOf = (node) =>
+  [...walk(node)].flatMap((n) => (n.c || []).flat(Infinity)).filter((c) => typeof c === 'string').join('\n');
 
 async function settle() {
   for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
@@ -140,9 +149,26 @@ const builder = labelled(tree, 'Open in Builder');
 const build = labelled(tree, 'Build this');
 [conversation, builder, build].forEach((b) => b && b.p.onClick && b.p.onClick());
 
+// The raw file behind the document, reached the way a person reaches it: press the toggle, then
+// read what the next render draws. Only Build's sheet offers the toggle at all, so `raw` staying
+// null is the report that the file is out of reach from here.
+const views = all(tree, (n) => n.t === 'Segmented')[0];
+let raw = null;
+if (views) {
+  views.p.onChange('Markdown');
+  // First mount fetches the file, second renders it.
+  await mount(props);
+  const after = await mount(props);
+  const file = all(after, (n) => n.t === 'code')[0];
+  const body = all(after, (n) => n.t === 'pre')[0];
+  raw = { path: file ? textOf(file) : null, text: body ? textOf(body) : null };
+}
+
 console.log(JSON.stringify({
   offers: [conversation && 'conversation', builder && 'builder', build && 'build'].filter(Boolean),
   routed,
   buildDisabled: Boolean(build && build.p.disabled),
   tooltips: tooltips(tree),
+  views: views ? views.p.options : null,
+  raw,
 }));

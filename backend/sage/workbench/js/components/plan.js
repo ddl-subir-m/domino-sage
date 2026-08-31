@@ -205,10 +205,12 @@ window.SW = window.SW || {};
     );
   }
 
-  // One plan document, three homes: its own page, a sheet beside the chat, and
-  // the centre of the IDE in Build. Chat never sees raw markdown; Build does.
+  // One plan document, two homes: its own page, and a sheet beside the work. `variant` says which
+  // home, and it says nothing about what the sheet stands next to — Chat and Build mount the same
+  // 'side' sheet. What Build adds is read off the MODE below, because that is the difference: a
+  // preview on the other side of the sheet, and a builder reading it.
   SW.PlanDoc = function PlanDoc({ planId, variant = 'page', autoReview, onClose }) {
-    const { userIndex, me } = SW.store.get();
+    const { userIndex, me, activeApp } = SW.store.get();
     const [plan, setPlan] = useState(null);
     const [openSection, setOpenSection] = useState(null);
     const [reviewOpen, setReviewOpen] = useState(false);
@@ -216,6 +218,12 @@ window.SW = window.SW || {};
     const [draft, setDraft] = useState('');
     const [view, setView] = useState('Preview');
     const [markdown, setMarkdown] = useState(null);
+
+    // Build's sheet is the builder's copy of the document: it offers the raw file behind the
+    // preview, and it knows which app that preview holds. Both used to ask for a fourth variant,
+    // 'ide', that nothing ever passed — so the raw file was unreachable from anywhere and the
+    // app offer was never withheld. The mode is the question in both cases.
+    const inBuild = SW.router.get().mode === 'build';
 
     const load = () => SW.api.plan(planId).then(setPlan);
     useEffect(() => {
@@ -227,9 +235,9 @@ window.SW = window.SW || {};
 
     // Only Build offers the raw file, so only Build ever fetches it.
     useEffect(() => {
-      if (variant !== 'ide' || view !== 'Markdown') return;
+      if (!inBuild || view !== 'Markdown') return;
       SW.api.planMarkdown(planId).then(setMarkdown);
-    }, [variant, view, planId, plan && plan.updatedAt]);
+    }, [inBuild, view, planId, plan && plan.updatedAt]);
 
     if (!plan) {
       return h(
@@ -347,6 +355,13 @@ window.SW = window.SW || {};
 
     const isPage = variant === 'page';
 
+    // Whether the plan's Built App is the one already in the preview, which is the only reason to
+    // withhold the offer below. It is a mode-and-app question, not a variant one: the sheet is the
+    // same document in Chat and in Build, and what changes between them is what is on screen
+    // beside it. Read the same way the transcript's app card reads it (`message-blocks.js`), so
+    // the two agree about which app you are looking at.
+    const showingApp = inBuild && activeApp && plan.appId && activeApp.id === plan.appId;
+
     return h(
       'div',
       { className: `sw-plan-page is-${variant} sw-scroll` },
@@ -361,7 +376,7 @@ window.SW = window.SW || {};
             h(Tag, { bordered: false, className: 'sw-sens sw-blessed-tag' }, 'PLAN'),
             h('span', { className: 'sw-caption' }, 'Document · open beside your work'),
             h('span', { style: { flex: 1 } }),
-            variant === 'ide' &&
+            inBuild &&
               h(antd.Segmented, {
                 value: view,
                 onChange: setView,
@@ -446,8 +461,13 @@ window.SW = window.SW || {};
                 },
                 'Approve'
               ),
-            // In the IDE you are already in the Builder, so the only offer worth
-            // making is to build again from a plan that has no app yet.
+            // Withheld only when the plan's app is the one already in the preview: you are
+            // looking at it, so "open" it leads back to the page you are on. Open a plan for a
+            // DIFFERENT app while in Build and the offer is real again — it switches apps.
+            //
+            // This asked `variant === 'ide'` until now, a fourth home for the document that was
+            // never built and that nothing ever passed, so the test never matched and Build always
+            // drew the dead button. The question was never which home the document is in.
             //
             // Two different offers wearing one button, and which one it is turns on whether the
             // plan already stands in a Built App. With an app there is nothing to hand off — the
@@ -460,7 +480,7 @@ window.SW = window.SW || {};
             // reading. Since #54 both entry paths record an origin, so the disabled case is no
             // longer "written in Build" — it is a document nobody wrote in a conversation, the
             // blank one the plan list hands you.
-            !(variant === 'ide' && plan.appId) &&
+            !showingApp &&
               (plan.appId
                 ? h(
                     Button,
@@ -534,7 +554,7 @@ window.SW = window.SW || {};
         lead && lead !== plan.title &&
           h('div', { className: 'sw-plan-lead sw-plan-md' }, SW.util.markdown(lead)),
 
-        variant === 'ide' && view === 'Markdown'
+        inBuild && view === 'Markdown'
           ? h(
               'div',
               { className: 'sw-plan-markdown' },

@@ -27,6 +27,10 @@ _PLAN = {
     "comments": [], "approvals": [], "reviewers": [],
 }
 
+# The app the harness gives Build as the one already in the preview. A plan standing in THIS app
+# has nowhere to send you from Build; a plan standing in any other one still does.
+_OPEN_APP = "app_open"
+
 
 def _page(*, origin: str = "", app: str = "") -> dict:
     """The plan on its own page, which is the only place `#/plan/<id>` mounts it."""
@@ -37,6 +41,13 @@ def _sheet_in_build(*, origin: str = "", app: str = "", thread: str = "") -> dic
     """The plan sheet beside a Build conversation, which is the other place a plan is read from and
     the one where the conversation behind it is a Build conversation."""
     return _mounted(origin=origin, app=app, variant="side", mode="build",
+                    thread={"id": thread} if thread else None)
+
+
+def _sheet_in_chat(*, origin: str = "", app: str = "", thread: str = "") -> dict:
+    """The same sheet, beside a Chat conversation. Chat and Build mount one component with one
+    variant, so anything Build's sheet alone offers has to be withheld here on purpose."""
+    return _mounted(origin=origin, app=app, variant="side", mode="chat",
                     thread={"id": thread} if thread else None)
 
 
@@ -113,3 +124,37 @@ def test_a_plan_with_neither_end_recorded_says_why_it_offers_no_way_back():
     assert page["offers"] == ["build"]
     assert page["buildDisabled"] is True
     assert any("no conversation on record" in t for t in page["tooltips"])
+
+
+@needs_node
+def test_a_plan_offers_no_way_into_the_app_you_are_already_looking_at():
+    """The sheet in Build stands beside the preview, so a plan whose app IS that preview has
+    nowhere to send you and withholds the offer. Nowhere else does: the same plan on its own page
+    still makes it, and so does a plan for another app in the same sheet (the test above)."""
+    sheet = _sheet_in_build(origin="thr_1", app=_OPEN_APP, thread="thr_open")
+
+    assert sheet["offers"] == ["conversation"]
+    assert _page(origin="thr_1", app=_OPEN_APP)["offers"] == ["conversation", "builder"]
+
+
+@needs_node
+def test_build_offers_the_raw_file_behind_the_document():
+    """The sheet in Build is the builder's copy: a toggle to the file the preview writes to, and the
+    file itself under it. It asked for a variant nothing passed until now, so the tab existed and
+    nobody could reach it."""
+    sheet = _sheet_in_build(origin="thr_1", app="app_a", thread="thr_open")
+
+    assert sheet["views"] == ["Preview", "Markdown"]
+    assert sheet["raw"]["path"] == ".sage/plans/001/v1.md"
+    assert "# A desk exposure dashboard." in sheet["raw"]["text"]
+
+
+@needs_node
+def test_chat_reads_the_document_and_never_the_file():
+    """Chat mounts the same sheet, so the raw file is withheld by the mode and nothing else. The
+    ways back are not: Chat is where "Open in Builder" earns its place."""
+    sheet = _sheet_in_chat(origin="thr_1", app="app_a", thread="thr_open")
+
+    assert sheet["views"] is None
+    assert sheet["raw"] is None
+    assert sheet["offers"] == ["conversation", "builder"]
