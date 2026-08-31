@@ -389,6 +389,13 @@ def test_chat_turn_times_out_a_hung_opencode_session(tmp_path: Path):
     # Live, and the third phrasing of the same request to reach the classifier instead of the
     # regex: no "me", no "web", so it spent the tool-quiet window on a sample it could not use.
     "lets build an app from a sample of 100 rows",
+    # Live, and the fourth: "build ... into an app" reads as intent to every human and matched no
+    # branch, because the into-an-app branch only knew "turn" and "convert".
+    "ok now lets build this into an app that i can share",
+    # The same sentence about the same thing under its other names. "app" alone made the branch
+    # answer one phrasing of one request and spend a whole turn on the rest.
+    "build this into a dashboard",
+    "make this into a tool the team can use",
 ])
 def test_an_explicit_build_request_does_not_spend_a_chat_turn(tmp_path: Path, prompt: str):
     """sage-chat writes an Artifact under examples/, never an app.

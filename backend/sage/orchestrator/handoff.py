@@ -51,8 +51,18 @@ _EXPLICIT_BUILD = re.compile(
     # "lets convert this into an app i can share" fell through to the classifier — which cannot run
     # before a turn — so it spent the full turn timeout AND a model call to classify, then answered
     # "Building an app is Build's job". That answer was available in the first millisecond.
-    r"|\b(?:turn|convert) (?:this|it|that) into (?:an? )?app\b"
-    r"|\bmake (?:this|it|that)(?: into)? (?:an? )?app\b"
+    # "build" joined them for the third time the same sentence arrived: "lets build this into an
+    # app that i can share". It reads as intent to every human, and it matched nothing — the branch
+    # below cannot take it, because "into" eats the one adjective slot and leaves the article "an"
+    # where the noun has to be.
+    #
+    # The noun set is the generic branch's, not "app" alone. "build this into a dashboard" is the
+    # same sentence with the same intent, and it missed for no reason a person could see. This
+    # frame can hold them safely where the generic branch could not: "into a" pins the noun to the
+    # end of the phrase, so the analysis questions that "dashboard" and "tool" appear in — "which
+    # tool do they use", "a dashboard of app downloads" — never reach it.
+    r"|\b(?:turn|convert|build) (?:this|it|that) into (?:an? )?(?:app|dashboard|ui|tool)\b"
+    r"|\bmake (?:this|it|that)(?: into)? (?:an? )?(?:app|dashboard|ui|tool)\b"
     # A verb of intent anywhere ahead of "web app" / "website". Unlike "dashboard", nobody asks an
     # analysis question about a webapp, so the noun alone carries the intent and the gap can be
     # loose — "lets build the webapp" and "build this chart ... as a webapp" both landed on the
