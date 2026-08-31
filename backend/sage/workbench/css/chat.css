@@ -808,9 +808,13 @@
    the row below. */
 .sw-assignment-row .sw-assignment-detail:last-child { margin: 6px 0 0; }
 /* Preflight's verdict on a slot. Warning-coloured because it is the difference between a setting
-   that looks saved and one that will fail the next build. */
+   that looks saved and one that will fail the next build — and `--warning-text`, not `--warning`,
+   because this is ink: the fill colour measures 2.03:1 on white at 11px, which is a sentence about
+   a broken build that a person cannot read. */
 .sw-assignment-problem {
-  font-size: var(--fs-11);
-  color: var(--warning);
+  /* A step up from the detail line above it. 11px is the scale's fine print — timestamps and
+     metadata — and this sentence is the reason a build will fail. */
+  font-size: var(--fs-12);
+  color: var(--warning-text);
   margin-top: 6px;
 }
