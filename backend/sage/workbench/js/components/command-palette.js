@@ -18,7 +18,7 @@ window.SW = window.SW || {};
   function newConversation() {
     const mode = SW.router.get().mode === 'build' ? 'build' : 'chat';
     const { activeApp } = SW.store.get();
-    SW.store.clearConversation();
+    SW.store.newConversation();
     SW.router.go(mode === 'build' && activeApp ? `#/build?app=${activeApp.id}` : `#/${mode}`);
   }
 

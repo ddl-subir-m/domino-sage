@@ -149,6 +149,10 @@ const CONVERSATIONS = {
 const BROKEN = new Set(['thr_broken']);
 
 const calls = [];
+// Reads and writes are logged apart because one criterion is about a write that must NOT happen:
+// pressing "New conversation" draws a row, and `GET /threads` alone cannot tell an empty
+// conversation being persisted from the rail's list being read.
+const writes = [];
 
 // Which app the server has selected. Build reads one app at a time (#57), so this is what decides
 // which half of a two-app Conversation its transcript is allowed to show.
@@ -160,9 +164,11 @@ const json = (body, status = 200) => ({
   text: async () => JSON.stringify(body),
 });
 
-function serve(url) {
+function serve(url, options) {
   const path = String(url).replace(/^\.\/api/, '');
+  const method = (options && options.method) || 'GET';
   calls.push(path);
+  if (method !== 'GET') writes.push(`${method} ${path}`);
   let m;
   if ((m = path.match(/^\/threads\/([^/]+)\/conversation$/))) {
     if (BROKEN.has(m[1])) return json({ error: 'the merge fell over' }, 500);
@@ -170,7 +176,16 @@ function serve(url) {
   }
   if ((m = path.match(/^\/threads\/([^/]+)\/context$/))) return json({ items: [] });
   if ((m = path.match(/^\/threads\/([^/]+)$/))) return json(THREADS[m[1]] || { id: m[1], history: [] });
-  if (path === '/threads') return json({ items: Object.values(THREADS) });
+  // A bare list, the way `GET /api/threads` answers — `state.threads` is an array, and the
+  // rail filters it directly.
+  if (path === '/threads' && method === 'GET') return json(Object.values(THREADS));
+  // The first message minting the Conversation the rail's placeholder was standing in for.
+  if (path === '/threads' && method === 'POST') {
+    const id = `thr_minted_${Object.keys(THREADS).length}`;
+    THREADS[id] = { id, title: 'New chat', artifacts: [], touched: [], history: [] };
+    CONVERSATIONS[id] = [];
+    return json(THREADS[id]);
+  }
   if ((m = path.match(/^\/apps\/([^/]+)\/select$/))) {
     selected = m[1];
     return json({});
@@ -218,13 +233,13 @@ const sandbox = {
     message: { success() {}, error() {}, info() {}, warning() {} },
   },
   icons: new Proxy({}, { get: (_, name) => String(name) }),
-  fetch: async (url) => serve(url),
+  fetch: async (url, options) => serve(url, options),
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
-                 'components/message-blocks.js']) {
+                 'components/message-blocks.js', 'components/conversation-list.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
@@ -244,6 +259,30 @@ function cardText(block) {
   };
   walk(AppChange({ block: { type: 'app_change', ...block } }));
   return words;
+}
+
+// The rail, called as the function it is — same trick as `cardText`, and for the same reason:
+// which row the rail says you are looking at is decided before React is asked to draw anything.
+// Rows are reported as `className | words`, so "there is a selected row" and "it is the one that
+// says New conversation" are one assertion rather than two hopeful ones.
+function railRows(mode) {
+  const rows = [];
+  const walk = (node, row) => {
+    if (node === null || node === undefined || node === false || node === true) return;
+    if (Array.isArray(node)) { node.forEach((n) => walk(n, row)); return; }
+    if (typeof node !== 'object') { if (row) row.words.push(String(node)); return; }
+    const className = (node.p && node.p.className) || '';
+    // `sw-thread` is the row; `sw-thread-title`, `-meta`, `-more` are inside one.
+    if (/(^|\s)sw-thread(\s|$)/.test(className)) {
+      row = { className, words: [] };
+      rows.push(row);
+    }
+    // A component, not a tag: call it, the way the rail would have.
+    if (typeof node.t === 'function') { walk(node.t(node.p || {}), row); return; }
+    walk(node.c, row);
+  };
+  walk(SW.ConversationRail({ mode }), null);
+  return rows.map((r) => `${r.className} | ${r.words.join(' ')}`);
 }
 
 // What a block says, short enough to assert on. A build run reports its face and its fold
@@ -344,6 +383,52 @@ for (const step of steps) {
     SW.router.go(step.route || '#/chat');
     SW.store.set({ activeApp: (SW.store.get().apps || []).find((a) => a.id === step.activeApp) || null });
     report.push({ step: `card ${step.card.appId}`, words: cardText(step.card) });
+  } else if (step.newConversation) {
+    // The press, whole: the store action the button runs, then the navigation it runs after it —
+    // including the route effect Build fires on arrival, which is the one that used to wipe this.
+    // The rail always has its list; "at the top of the list" is not a claim you can check
+    // against an empty one.
+    await SW.store.reloadThreads();
+    writes.length = 0;
+    SW.store.newConversation();
+    const route = step.route || '#/chat';
+    sandbox.location.hash = route;
+    SW.router.go(route);
+    report.push({
+      step: `newConversation ${route}`,
+      rows: railRows(route.startsWith('#/build') ? 'build' : 'chat'),
+      // Nothing may be written. An empty conversation that survives the press is one the rail
+      // has to list forever, and the row above exists precisely so that none is needed.
+      writes: writes.slice(),
+    });
+  } else if (step.firstMessage) {
+    // What Chat does when someone types into a conversation that does not exist yet: mint it,
+    // then send. Minting is the half the rail cares about — the placeholder was standing in for
+    // exactly this Thread, and now there is one.
+    writes.length = 0;
+    await SW.store.newThread();
+    await SW.store.reloadThreads();
+    report.push({
+      step: 'firstMessage',
+      rows: railRows('chat'),
+      writes: writes.slice(),
+    });
+  } else if (step.clearConversation) {
+    // `clearConversation` on its own. Three real paths run it with no press behind them —
+    // Build's arrival at a conversation-less route (`modes/builder.js`), deleting the open
+    // Conversation (`components/conversation-list.js`) and minting an app (`createApp`) — and
+    // none of them can be driven here, because the harness stubs `useEffect` to a no-op and
+    // mounts nothing. What they have in common is this call, so this is what gets asserted:
+    // the step is the contract, not an imitation of any one caller.
+    SW.store.clearConversation();
+    report.push({ step: 'clearConversation', rows: railRows(step.mode || 'chat') });
+  } else if (step.railRows) {
+    // The rail as it stands right now, after whatever the steps before this one did to it.
+    // `railAppFilter` is store state, so it can be driven; the search box is `useState` inside
+    // the component and the stub cannot type into it. They are the same expression in the rail.
+    await SW.store.reloadThreads();
+    if ('railAppFilter' in step) SW.store.set({ railAppFilter: step.railAppFilter });
+    report.push({ step: `railRows ${step.railRows}`, rows: railRows(step.railRows) });
   } else {
     throw new Error(`unknown step ${JSON.stringify(step)}`);
   }

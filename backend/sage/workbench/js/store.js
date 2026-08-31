@@ -100,6 +100,12 @@ window.SW = window.SW || {};
     thread: null,
     messages: [],
     typing: null,
+    // "New conversation" was pressed and nothing has been said yet. There is no Thread behind
+    // this and there is not going to be one until the first message — it exists so the rail can
+    // draw a row for the conversation you are looking at, the same way the centre pane already
+    // draws its turns. Read with `!thread`, never alone: once a real conversation opens, that is
+    // the row, and this one has nothing left to stand for.
+    pendingConversation: false,
     // A turn is running somewhere in this project. Not "in this conversation": one project runs
     // one turn at a time (the server's turn lock), so a Chat turn, a Build turn and a turn another
     // tab started are all the same fact here. It no longer decides whether Chat can SEND — a second
@@ -1556,6 +1562,7 @@ window.SW = window.SW || {};
       state.railAppFilter = null;
       if (!keepThread) {
         state.thread = null;
+        state.pendingConversation = false;
         state.messages = [];
         state.attachments = [];
         state.touched = [];
@@ -2004,6 +2011,12 @@ window.SW = window.SW || {};
         options.appId
       );
       state.thread = thread;
+      // The conversation the rail's placeholder was standing in for now exists, so the flag has
+      // done its job. Clearing it HERE and not in `clearConversation` is the whole distinction:
+      // this is a conversation opening, that is one closing, and only the first ends a pending
+      // one. Left set, it would outlive this thread and draw a placeholder nobody asked for the
+      // next time anything cleared — deleting this very conversation does exactly that.
+      state.pendingConversation = false;
       state.messages = [];
       state.activePlanId = null;
       state.activePlan = null;
@@ -2089,6 +2102,7 @@ window.SW = window.SW || {};
       const messages = await store.conversationMessages(thread);
       if (gen !== openSeq) return null;
       state.thread = thread;
+      state.pendingConversation = false;
       state.messages = messages;
       state.activePlanId = thread.planId || null;
       state.touched = thread.touched || [];
@@ -2105,6 +2119,12 @@ window.SW = window.SW || {};
 
     // No conversation open. Not the same as an empty one — nothing is persisted
     // and nothing shows up in a list.
+    //
+    // `pendingConversation` is deliberately NOT cleared here. Build's route effect calls this
+    // on every arrival at a conversation-less `#/build`, which is the very navigation
+    // `newConversation` performs — clearing the flag here would wipe the rail's row on the way
+    // in, and the button would look dead again. What ends a pending conversation is a real one
+    // opening (`openThread`) or leaving the Project (`switchScope`).
     clearConversation() {
       state.thread = null;
       state.messages = [];
@@ -2117,6 +2137,20 @@ window.SW = window.SW || {};
       state.assistantTurns = 0;
       state.pendingTurn = null;
       state.typing = null;
+      notify();
+    },
+
+    // "New conversation", from the rail's button or the palette. Two things, and the second is
+    // why this is an action rather than the bare `clearConversation` both call sites used to
+    // make: the clear is what makes the button WORK (see clearConversation — the route may
+    // already be the one we are going to), and the flag is what makes it LOOK like it worked.
+    // Without a row, a press on a conversation-less route changed nothing on screen except the
+    // centre pane someone was not looking at.
+    //
+    // Still nothing written. The first message is what opens a conversation, here as before.
+    newConversation() {
+      store.clearConversation();
+      state.pendingConversation = true;
       notify();
     },
 

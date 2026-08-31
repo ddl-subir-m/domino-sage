@@ -150,8 +150,32 @@ window.SW = window.SW || {};
     );
   };
 
+  // The row for a conversation that does not exist yet. Same markup as a real row and the same
+  // selected state, because it is answering the same question — which conversation am I looking
+  // at — for the one case where the answer is not in the list.
+  //
+  // What it leaves out is what it does not have: no tags, because it has changed nothing; no
+  // actions menu, because there is nothing yet to pin, rename or delete; no click, because it is
+  // already where you are. The meta line carries the next step instead of a timestamp, which is
+  // the honest version of "this is not saved" — clicking any other row discards it.
+  //
+  // `is-pending` is only there to take the pointer cursor back off: every other row in the rail
+  // goes somewhere when clicked, and this is the one that cannot.
+  function PendingConversationRow() {
+    return h(
+      'div',
+      { className: 'sw-thread is-active is-pending' },
+      h(
+        'div',
+        { className: 'sw-thread-main' },
+        h('div', { className: 'sw-thread-title' }, 'New conversation'),
+        h('div', { className: 'sw-thread-meta' }, 'Send a message to start it')
+      )
+    );
+  }
+
   SW.ConversationRail = function ConversationRail({ mode }) {
-    const { threads, thread, railHidden, railAppFilter } = SW.store.get();
+    const { threads, thread, railHidden, railAppFilter, pendingConversation } = SW.store.get();
     const [query, setQuery] = useState('');
 
     if (railHidden) {
@@ -213,10 +237,11 @@ window.SW = window.SW || {};
             // ever naming it (attaching a Resource opens one, and so does typing
             // in Build), so the hash may already be the one we are going to.
             // Navigation alone would then change nothing, and the button would
-            // look dead — which is exactly how it looked.
+            // look dead — which is exactly how it looked. `newConversation` is
+            // that clear plus the rail row that shows the press landed.
             onClick: () => {
               const { activeApp } = SW.store.get();
-              SW.store.clearConversation();
+              SW.store.newConversation();
               SW.router.go(
                 mode === 'build' && activeApp ? `#/build?app=${activeApp.id}` : `#/${mode}`
               );
@@ -269,6 +294,16 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-rail-list sw-scroll' },
+        // Above the groups and outside them: it belongs to no day, and it is not history
+        // until it has been said. `thread` is the guard — the first message opens a real
+        // conversation, and that row is the one to be selected from then on.
+        //
+        // It goes away while the list is being searched or filtered, because those ask a
+        // question about history and this row is not in it. Leaving it drew a conversation
+        // sitting directly above "No conversations match", which is the rail contradicting
+        // itself about what it just found.
+        pendingConversation && !thread && !needle && !railAppFilter &&
+          h(PendingConversationRow, { key: 'pending' }),
         groups.length === 0
           ? h(
               'div',
