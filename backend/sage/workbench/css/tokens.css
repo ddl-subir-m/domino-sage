@@ -26,6 +26,9 @@
   --error-bg:   #FBEAED;
   --info-bg:    #E6F1FA;
 
+  /* Warning is the only bg so far with a border dark enough to need naming. */
+  --warning-border: #EFE6A8;
+
   /* Accents — charts, project dots */
   --accent-1: #543FDE;  --accent-2: #0070CC;  --accent-3: #28A464;
   --accent-4: #CCB718;  --accent-5: #FF6543;  --accent-6: #E835A7;
@@ -47,6 +50,20 @@
   --shadow-modal: 0 8px 32px rgba(46, 46, 56, .16);
 
   --mono: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Type scale. Every step is a size the shell already renders — shell.css and
+     chat.css for 10-16, 19, 26 and 30, the helpers below for 18, 20 and 22 — so
+     this names the vocabulary rather than adding to it. Named by pixel value:
+     a rule snaps to the nearest step without re-arguing what the step means.
+     10.5px and 11.5px are absent on purpose. They are drift, not steps, and
+     round to a neighbour. 12.5px stays a literal on .sw-code below: it is the
+     mono block size, which is a different scale from this one.
+     Only builder.css reads these so far — the other sheets still carry
+     literals, and snapping each one is its own change. */
+  --fs-10: 10px;  --fs-11: 11px;  --fs-12: 12px;  --fs-13: 13px;
+  --fs-14: 14px;  --fs-15: 15px;  --fs-16: 16px;  --fs-18: 18px;
+  --fs-19: 19px;  --fs-20: 20px;  --fs-22: 22px;  --fs-26: 26px;
+  --fs-30: 30px;
 }
 
 /* Builder and Chat both run three columns. On a laptop that is too many full
