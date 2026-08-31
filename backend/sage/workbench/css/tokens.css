@@ -56,14 +56,16 @@
      this names the vocabulary rather than adding to it. Named by pixel value:
      a rule snaps to the nearest step without re-arguing what the step means.
      10.5px and 11.5px are absent on purpose. They are drift, not steps, and
-     round to a neighbour. 12.5px stays a literal on .sw-code below: it is the
-     mono block size, which is a different scale from this one.
-     Only builder.css reads these so far — the other sheets still carry
-     literals, and snapping each one is its own change. */
+     round to a neighbour.
+     Every sheet reads these; no rule should carry a bare px size again. */
   --fs-10: 10px;  --fs-11: 11px;  --fs-12: 12px;  --fs-13: 13px;
   --fs-14: 14px;  --fs-15: 15px;  --fs-16: 16px;  --fs-18: 18px;
   --fs-19: 19px;  --fs-20: 20px;  --fs-22: 22px;  --fs-26: 26px;
   --fs-30: 30px;
+
+  /* Mono blocks are their own scale: 12.5px sets the same optical size as 13px
+     prose, because the monospace face runs wider. Three rules share it. */
+  --fs-code: 12.5px;
 }
 
 /* Builder and Chat both run three columns. On a laptop that is too many full
@@ -91,26 +93,26 @@ body {
 
 /* Shared type helpers ---------------------------------------------------- */
 
-.sw-page-title { font-size: 20px; font-weight: 600; line-height: 1.3; margin: 0; }
-.sw-page-sub { font-size: 13px; color: var(--gray-600); margin: 4px 0 0; line-height: 1.5; }
-.sw-section-title { font-size: 16px; font-weight: 600; line-height: 1.3; margin: 0; }
-.sw-section-sub { font-size: 13px; color: var(--gray-600); margin: 4px 0 var(--s3); line-height: 1.5; }
-.sw-secondary { font-size: 13px; color: var(--gray-600); }
-.sw-caption { font-size: 12px; color: var(--gray-500); }
+.sw-page-title { font-size: var(--fs-20); font-weight: 600; line-height: 1.3; margin: 0; }
+.sw-page-sub { font-size: var(--fs-13); color: var(--gray-600); margin: 4px 0 0; line-height: 1.5; }
+.sw-section-title { font-size: var(--fs-16); font-weight: 600; line-height: 1.3; margin: 0; }
+.sw-section-sub { font-size: var(--fs-13); color: var(--gray-600); margin: 4px 0 var(--s3); line-height: 1.5; }
+.sw-secondary { font-size: var(--fs-13); color: var(--gray-600); }
+.sw-caption { font-size: var(--fs-12); color: var(--gray-500); }
 .sw-group-label {
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
   letter-spacing: .06em;
   text-transform: uppercase;
   color: var(--gray-500);
 }
-.sw-mono { font-family: var(--mono); font-size: 13px; }
+.sw-mono { font-family: var(--mono); font-size: var(--fs-13); }
 .sw-num { font-variant-numeric: tabular-nums; }
 
 /* Provenance badges ------------------------------------------------------ */
 
 .sw-prov {
-  font-size: 11px !important;
+  font-size: var(--fs-11) !important;
   text-transform: uppercase;
   letter-spacing: .04em;
   font-weight: 600;
@@ -126,7 +128,7 @@ body {
 /* Sensitivity badges ----------------------------------------------------- */
 
 .sw-sens {
-  font-size: 11px !important;
+  font-size: var(--fs-11) !important;
   border-radius: 2px !important;
   padding: 0 5px !important;
   margin: 0 !important;
@@ -184,8 +186,8 @@ body {
   gap: var(--s2);
   color: var(--gray-600);
 }
-.sw-empty-title { font-size: 14px; font-weight: 600; color: var(--dark-700); }
-.sw-empty-detail { font-size: 13px; color: var(--gray-600); max-width: 320px; line-height: 1.5; }
+.sw-empty-title { font-size: var(--fs-14); font-weight: 600; color: var(--dark-700); }
+.sw-empty-detail { font-size: var(--fs-13); color: var(--gray-600); max-width: 320px; line-height: 1.5; }
 
 /* Shared primitives ------------------------------------------------------ */
 
@@ -202,7 +204,7 @@ body {
   border-radius: var(--radius);
   background: transparent;
   color: inherit;
-  font-size: 15px;
+  font-size: var(--fs-15);
   line-height: 1;
   cursor: pointer;
   padding: 0;
@@ -214,7 +216,7 @@ body {
 .sw-icon-btn .anticon { display: block; }
 
 .sw-field-label {
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
   color: var(--gray-600);
   margin-bottom: 6px;
@@ -234,7 +236,7 @@ body {
 .sw-plain-list {
   margin: 0;
   padding-left: 18px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.7;
   color: var(--gray-600);
 }
@@ -248,7 +250,7 @@ body {
   min-width: 0;
 }
 .sw-kpi-label {
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
   letter-spacing: .05em;
   text-transform: uppercase;
@@ -258,13 +260,13 @@ body {
   text-overflow: ellipsis;
 }
 .sw-kpi-value {
-  font-size: 22px;
+  font-size: var(--fs-22);
   font-weight: 600;
   line-height: 1.25;
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
 }
-.sw-kpi-sub { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
+.sw-kpi-sub { font-size: var(--fs-12); color: var(--gray-500); margin-top: 2px; }
 .sw-kpi.is-warning .sw-kpi-value { color: #8A7A00; }
 .sw-kpi.is-error   .sw-kpi-value { color: var(--error); }
 .sw-kpi.is-success .sw-kpi-value { color: var(--success); }
@@ -273,7 +275,7 @@ body {
 
 kbd {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-11);
   background: var(--gray-100);
   border: 1px solid var(--gray-300);
   border-bottom-width: 2px;
@@ -286,7 +288,7 @@ kbd {
 
 .sw-code {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-code);
   line-height: 1.65;
   margin: 0;
   padding: var(--s3);
@@ -323,7 +325,7 @@ kbd {
 .sw-passthrough pre {
   margin: 0;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-code);
   line-height: 1.6;
   color: var(--gray-600);
   white-space: pre-wrap;
@@ -347,7 +349,7 @@ kbd {
   gap: var(--s4);
   background: var(--gray-100);
 }
-.sw-boot-label { font-size: 13px; color: var(--gray-600); }
+.sw-boot-label { font-size: var(--fs-13); color: var(--gray-600); }
 
 .sw-boot-error {
   max-width: 640px;
@@ -355,10 +357,10 @@ kbd {
   padding: var(--s5);
   font-family: Inter, system-ui, sans-serif;
 }
-.sw-boot-error h1 { font-size: 18px; margin: 0 0 var(--s3); }
+.sw-boot-error h1 { font-size: var(--fs-18); margin: 0 0 var(--s3); }
 .sw-boot-error pre {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-12);
   background: var(--error-bg);
   color: var(--error);
   padding: var(--s3);

@@ -22,7 +22,7 @@
 }
 .sw-manage-tabs .ant-segmented-item {
   color: var(--dark-700);
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 500;
 }
 .sw-manage-tabs .ant-segmented-item:hover:not(.ant-segmented-item-selected) {
@@ -44,7 +44,7 @@
   background: none;
   padding: 0;
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
   letter-spacing: .05em;
   text-transform: uppercase;
@@ -53,7 +53,7 @@
 }
 .sw-crumb:hover { color: var(--purple-600); }
 .sw-crumb.is-active { color: var(--purple-600); }
-.sw-crumb-sep { font-size: 11px; color: var(--gray-400); }
+.sw-crumb-sep { font-size: var(--fs-11); color: var(--gray-400); }
 
 /* Filter bar ------------------------------------------------------------- */
 
@@ -106,12 +106,12 @@
   gap: 1px;
   margin-bottom: 8px;
 }
-.sw-budget-name { font-size: 13px; font-weight: 600; }
+.sw-budget-name { font-size: var(--fs-13); font-weight: 600; }
 .sw-budget-alert {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   margin-top: 4px;
 }
 .sw-budget-alert.is-warning   { color: #8A7A00; }
@@ -146,8 +146,8 @@
   justify-content: space-between;
   gap: var(--s2);
 }
-.sw-chart-card-title { font-size: 14px; font-weight: 600; }
-.sw-chart-card-sub { font-size: 12px; color: var(--gray-500); margin: 2px 0 var(--s3); }
+.sw-chart-card-title { font-size: var(--fs-14); font-weight: 600; }
+.sw-chart-card-sub { font-size: var(--fs-12); color: var(--gray-500); margin: 2px 0 var(--s3); }
 .sw-chart { width: 100%; }
 .sw-chart.is-unavailable {
   display: flex;
@@ -159,7 +159,7 @@
   border-radius: var(--radius-lg);
   background: var(--gray-100);
   color: var(--gray-500);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 
 /* Tables ----------------------------------------------------------------- */
@@ -194,4 +194,4 @@
 .sw-attention-row.is-error   { background: var(--error-bg);   color: var(--error); }
 .sw-attention-row.is-info    { background: var(--info-bg);    color: var(--info); }
 .sw-attention-main { flex: 1; min-width: 0; }
-.sw-attention-name { font-size: 13px; font-weight: 600; color: var(--dark-700); }
+.sw-attention-name { font-size: var(--fs-13); font-weight: 600; color: var(--dark-700); }
