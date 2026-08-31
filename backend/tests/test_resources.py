@@ -8,7 +8,6 @@ path runs on the injected fake.
 from __future__ import annotations
 
 import json
-import socket
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -202,22 +201,21 @@ def test_a_signed_out_gateway_is_an_error_and_not_an_empty_list():
         DominoResourceProvider(base, lambda: "tok").list_llm_aliases()
 
 
+# Nothing can ever listen here, so a connection to it refuses instantly. Port 1 is privileged (no
+# unprivileged test can bind it) and sits far below the ephemeral range that `bind(port 0)` draws
+# from, so no parallel xdist worker can land on it. Binding port 0 and closing it left a window
+# where another worker claimed the freed port and the connection unexpectedly succeeded.
+_DEAD_PORT = 1
+
+
 def test_an_unreachable_gateway_is_reported_rather_than_raised_raw():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()  # nothing is listening there now
     with pytest.raises(ResourceUnavailable, match="didn't answer"):
-        DominoResourceProvider(f"http://127.0.0.1:{port}/v1", lambda: "tok", timeout_s=1.0).list_llm_aliases()
+        DominoResourceProvider(f"http://127.0.0.1:{_DEAD_PORT}/v1", lambda: "tok", timeout_s=1.0).list_llm_aliases()
 
 
 def test_the_error_message_never_carries_the_token():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
     with pytest.raises(ResourceUnavailable) as e:
-        DominoResourceProvider(f"http://127.0.0.1:{port}/v1", lambda: "dgw_supersecret", timeout_s=1.0).list_llm_aliases()
+        DominoResourceProvider(f"http://127.0.0.1:{_DEAD_PORT}/v1", lambda: "dgw_supersecret", timeout_s=1.0).list_llm_aliases()
     assert "supersecret" not in str(e.value)
 
 

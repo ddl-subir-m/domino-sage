@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import http.client
 import importlib.util
-import socket
 import sys
 import threading
 import time
@@ -280,13 +279,15 @@ def test_probe_reports_a_reachable_sidecar_without_disclosing_the_token():
     assert "SUPERSECRET" not in status  # app logs are readable by anyone who can see the deploy
 
 
-def test_probe_reports_an_unreachable_sidecar_rather_than_raising():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()  # nothing is listening there now
+# Nothing can ever listen here, so a connection to it refuses instantly. Port 1 is privileged (no
+# unprivileged test can bind it) and sits far below the ephemeral range that `bind(port 0)` draws
+# from, so no parallel xdist worker can land on it. Binding port 0 and closing it left a window
+# where another worker claimed the freed port and the connection unexpectedly succeeded.
+_DEAD_PORT = 1
 
-    status = serve.probe_token_sidecar(f"http://127.0.0.1:{port}/access-token", timeout=1.0)
+
+def test_probe_reports_an_unreachable_sidecar_rather_than_raising():
+    status = serve.probe_token_sidecar(f"http://127.0.0.1:{_DEAD_PORT}/access-token", timeout=1.0)
 
     assert "not reachable" in status.lower()
 
