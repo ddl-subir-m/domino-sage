@@ -284,6 +284,32 @@ class ThreadStore:
 
         return self._edit_meta(thread_id, edit)
 
+    def rename_app(self, app_id: str, name: str) -> None:
+        """Relabel every tag naming one Built App, the moment the app is renamed.
+
+        `record_touch` already lets the newest name win, but only a build turn calls it: without
+        this sweep a renamed app keeps its old name in the rail until somebody happens to build in
+        it again, while every other surface — the app rail, the header, the preview — has already
+        moved. The tag is the one place an app is named from OUTSIDE its own directory, which is
+        why a rename cannot reach it on its own, and the same reason a delete needs `forget_app`.
+
+        The transcript's app card is deliberately left alone: it says what the app was called when
+        that turn ran, and a then-fact is not rewritten.
+
+        Deliberately not an `updatedAt` bump, for the reason `record_touch` is not one: renaming an
+        app is not new activity in a conversation for the rail to sort on.
+        """
+        def edit(row: dict) -> None:
+            row["touched"] = [{**t, "appName": name} if t.get("appId") == app_id else t
+                              for t in (row.get("touched") or []) if isinstance(t, dict)]
+
+        for d in self._thread_dirs():
+            # Read before write, as forget_app does: a rename rewrites the few records that name
+            # the app rather than every record in the Project.
+            tags = (self._read_meta(d.name) or {}).get("touched") or []
+            if any(isinstance(t, dict) and t.get("appId") == app_id for t in tags):
+                self._edit_meta(d.name, edit)
+
     def forget_app(self, app_id: str) -> None:
         """Drop every tag naming one Built App, for the moment that app is deleted.
 

@@ -2789,6 +2789,13 @@ class Orchestrator:
         if not name:
             raise ValueError("a name is required")
         self._wm.app_workspace(self._project_id, app_id).set_display_name(name)
+        # The rail's tags name this app from OUTSIDE its directory, so the new name has to be
+        # carried to them here — the same one-place-outside problem a delete solves with
+        # `forget_app`. Left alone, the chip on every conversation that changed this app keeps the
+        # old name until some later build turn happens to rewrite it, while the app rail, the
+        # header and the preview have all already moved.
+        ThreadStore(self.project(start_preview=False, seed_app=False).record.path).rename_app(
+            app_id, name)
         return self._one_app(app_id)
 
     def delete_app(self, app_id: str, *, delete_domino_app: bool = False) -> dict:

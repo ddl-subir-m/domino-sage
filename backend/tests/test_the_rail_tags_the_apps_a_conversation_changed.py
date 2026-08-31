@@ -286,6 +286,70 @@ def test_deleting_an_app_takes_its_tags_with_it(tmp_path: Path):
     assert [t["appId"] for t in _tags(orch, pnl_tid)] == [pnl]
 
 
+def test_renaming_an_app_relabels_its_tags(tmp_path: Path):
+    """The tag says what the app is called NOW, but only a build turn writes one — so a rename has
+    to reach the tags itself. Until it did, the app rail and the preview took the new name while
+    the chip in the conversation rail went on saying the old one, and the two disagreed about the
+    same app until somebody happened to build in it again."""
+    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+             Turn(text="A report, then."), Turn(text=_PNL),
+             Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
+             Turn(text="Built the P&L table.", writes={"src/App.tsx": "// pnl table\n"})]
+    orch, _oc, _root = _orch(tmp_path, turns)
+    desk, desk_tid = _app_from_chat(orch, "build me a desk dashboard")
+    pnl, pnl_tid = _app_from_chat(orch, "now build me a daily P&L report")
+
+    orch.select_app(desk)
+    list(orch.approve_stream(conversation=desk_tid))
+    orch.select_app(pnl)
+    list(orch.approve_stream(conversation=pnl_tid))
+
+    orch.rename_app(desk, "Desk exposure")
+
+    assert _tags(orch, desk_tid) == [
+        {"appId": desk, "appName": "Desk exposure", "kind": "built"},
+    ]
+    # The other conversation names a different app, and a rename is not a reason to touch it.
+    assert _tags(orch, pnl_tid) == [
+        {"appId": pnl, "appName": "A daily P&L report.", "kind": "built"},
+    ]
+
+
+def test_a_rename_reaches_every_conversation_that_changed_the_app(tmp_path: Path):
+    """One app, several conversations. The sweep is over the Project's records rather than the
+    conversation in front of you, because a chip in the rail is drawn from whichever record the row
+    belongs to."""
+    turns = [Turn(text="A dashboard, then."), Turn(text=_DESK),
+             Turn(text="Built the desk table.", writes={"src/App.tsx": "// desk table\n"}),
+             Turn(text="Darker now.", writes={"src/App.tsx": "// dark desk table\n"})]
+    orch, _oc, _root = _orch(tmp_path, turns)
+    app_id, first = _app_from_chat(orch, "build me a desk dashboard")
+    list(orch.approve_stream(conversation=first))
+    later = orch.create_thread()["id"]
+    _implement(orch)
+    list(orch.build_stream("make it dark", conversation=later))
+
+    orch.rename_app(app_id, "Desk exposure")
+
+    assert [t["appName"] for t in _tags(orch, first)] == ["Desk exposure"]
+    assert [t["appName"] for t in _tags(orch, later)] == ["Desk exposure"]
+
+
+def test_renaming_an_app_is_not_new_activity_in_the_rails_order(tmp_path: Path):
+    """Same rule as earning a tag: the rail sorts on `updatedAt`, and renaming an app is not a turn
+    somebody took in a conversation."""
+    store = ThreadStore(tmp_path)
+    row = store.create("Desks")
+    store.record_touch(row["id"], app_id="app_a", app_name="Desks", kind="built")
+
+    store.rename_app("app_a", "Desk exposure")
+
+    assert (store.get(row["id"]) or {})["updatedAt"] == row["updatedAt"]
+    assert (store.get(row["id"]) or {})["touched"] == [
+        {"appId": "app_a", "appName": "Desk exposure", "kind": "built"},
+    ]
+
+
 def test_resetting_an_app_keeps_its_tags(tmp_path: Path):
     """Reset empties an app and keeps it. The conversation did change that app and the app is still
     there to be named, so the rail has no reason to stop saying so."""

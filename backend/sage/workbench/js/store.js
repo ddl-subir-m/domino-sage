@@ -2268,7 +2268,10 @@ window.SW = window.SW || {};
     // move, because a published App's entry point is fixed when the App is created.
     async renameApp(id, name) {
       await SW.api.patchApp(id, { name });
-      await loadAppList();
+      // The conversation rail names this app too — a tag on every conversation that changed it —
+      // and the server has just relabelled those. Read the rail back with the app list, or the
+      // chips go on saying the old name until something else happens to reload it.
+      await Promise.all([loadAppList(), loadThreadList()]);
     },
 
     // Delete a Built App (#76). Nothing here decides anything: the offer was made in the rail and
