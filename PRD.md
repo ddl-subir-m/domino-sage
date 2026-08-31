@@ -75,6 +75,11 @@ it ships with real evals rather than bolted onto this one.
 
 ## 2. Where Sage is today (honest state of play)
 
+> **Corrected 2026-08-31.** This table was accurate when the PRD was written on 2026-08-10.
+> The rows marked _(was: …)_ moved after that date and were re-checked against the repo at
+> the merge to `main`. The epics in §8 are targets and were **not** re-dated — read §2 for
+> what exists, §8 for what is wanted.
+
 Grounded in the repo, not the roadmap. "Proven" = verified live in a Domino workspace per
 `SPIKE-REPORT.md` / `DEPLOY-PLAN.md`; "built" = code + tests exist; "stub/gap" = declared but not wired.
 
@@ -90,15 +95,27 @@ Grounded in the repo, not the roadmap. "Proven" = verified live in a Domino work
 | One Domino project per app; git-based repo; commit+push on clean build | **Proven** | `DEPLOY-PLAN.md` Ph2 |
 | **Hub**: "New app" provisions repo + project + builder; "Open" rehydrates | **Proven live** | `DEPLOY-PLAN.md` Ph4 |
 | **Publish the *hub / builder* itself as a Domino App** | **Proven** | `environment/HUB-AS-APP.md` |
-| **Publish the *generated app* as a Domino App** | **Not built (Phase 5)** | `DEPLOY-PLAN.md` Ph5 — only un-implemented phase; mechanism known |
-| Attach → **inject dataset reference into the build prompt** | **Stub/gap** | `PLAN.md` 6.2: "today attach only drives the sovereign lock" |
+| **Publish the *generated app* as a Domino App** | **Built** _(was: not built, Phase 5)_ | `provision/domino.py` `/api/apps/beta/apps`; `resources/publish_guard.py`, `publish_egress.py`; `tools/app_visibility.py`; ADR-0010, ADR-0012. **E3 is done** — see §8-E3. |
+| Attach → **inject dataset reference into the build prompt** | **Partly built** _(was: stub/gap)_ | `describe()` is wired into the turn prompt at `orchestrator/service.py:690` (`_describe_context_file`). The *runtime* half (R2.1) is still absent. The old evidence quote is void: the sovereign lock it named no longer exists — see the note below. |
 | Data at runtime | **Snapshot only** | `template/.../scripts/rehydrate-data.mjs` freezes data into `public/data/` |
-| Multi-view / routing | **Single screen** | template is one `App.tsx`; `data-table` skill only |
-| Auto mode plan→implement model switch (non-locked) | **Gap** | `PLAN.md` 7, backlog "Auto-mode model override" |
+| Multi-view / routing | **Router shipped, skill missing** _(was: single screen)_ | `react-router-dom ^7.18.2` is in `template/react-vite/package.json`; `.opencode/skills/` still holds only `data-table`, so R1.1 is half-met. |
+| Auto mode plan→implement model switch (non-locked) | **Built** _(was: gap)_ | `router/llm_router.py` `resolve()` returns `catalog.plan` in `Phase.PLAN` and `catalog.implement` otherwise under `Mode.AUTO`. **R6.1 is met.** |
 | Cost dashboard (in-app) / guardrail alarm UI | **Deep-link only / gap** | `PLAN.md` 8; cost is a deep-link to the gateway |
 | IDE mode | **Gap** | `PLAN.md` 9 |
 | Sovereign-path bar (AC12) | **Not closed** | `PLAN.md` 10.2 |
 | Container egress allowlist (airtight zero-vendor) | **Blocked on platform** | `SPIKE-REPORT.md` 1.4/1.5 |
+
+**Two things this PRD assumes that are no longer true (2026-08-31):**
+
+1. **The sensitivity / sovereign lock has been removed from the code.** There is no
+   `sensitivity_lock`, `sovereign_lock`, or `locked=True` anywhere in `backend/sage`;
+   `router/llm_router.py` states its precedence is "per SPEC.md Component 3 **minus the old
+   sensitivity lock**" and that "sensitive attachments do not change the model." **R2.4 and
+   M-AC4 are written on that mechanism and cannot be implemented as worded** — they need
+   rewriting against whatever replaced it before E2 is scheduled.
+2. **There is no CI in this repo** — no `.github/workflows`, no eval suite, no scorecard.
+   E4 (R4.2 "runs in CI on a schedule", M-AC6 "the eval suite runs green") starts from zero,
+   and every AC that says "verified by eval" — M-AC1, M-AC7, R5.1 — inherits that dependency.
 
 **Read of it:** the *enforcement spine*, the *build loop*, the *per-app project/repo model*, and
 *publishing Sage itself* are all real and proven. What's missing for "real apps" is **richer app
@@ -293,6 +310,9 @@ the scoped endpoint; the dataset is not present in the built bundle.
 path are both sovereign; a probe confirms no tagged content in the prompt log or `dist/`.
 
 ### E3 — Publish as a governed Domino App
+
+> **Status 2026-08-31: shipped.** Kept here for the ACs and the rationale. See §2.
+
 Complete the build→run→share loop. This is DEPLOY-PLAN **Phase 5**, and the mechanism is already proven
 by how the Sage hub publishes itself.
 
