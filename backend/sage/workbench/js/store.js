@@ -1467,9 +1467,10 @@ window.SW = window.SW || {};
       const opened = await start();
       const projectId = (opened.project && opened.project.id) || opened.project_id;
       let url = opened.running ? opened.open_url : null;
-      // A launched or resumed workspace reports Started while its session is still booting, so
-      // going in now would land on a page that isn't ready. ~4 minutes, then say so.
-      for (let i = 0; !url && i < 80; i++) {
+      // A launched or resumed workspace reports Started while its session is still booting, and the
+      // builder inside binds its port later still — Domino's proxy answers 502 until it does. The
+      // status route waits for both, so this wait is the longer one: ~6 minutes, then say so.
+      for (let i = 0; !url && i < 120; i++) {
         await new Promise((r) => setTimeout(r, 3000));
         const s = await SW.api.projectStatus(projectId, opened.workspace_id).catch(() => null);
         if (s && s.running && s.open_url) url = s.open_url;

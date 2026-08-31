@@ -47,6 +47,9 @@ BUILDER_WORKSPACE_NAME = "sage"
 # A pre-stop save drives the builder's commit → pull → agent-resolve → push, which can run a model
 # turn to resolve conflicts, so it needs a far longer ceiling than a plain control-plane REST call.
 _SAVE_TIMEOUT_S = 180.0
+# The readiness probe is one round trip to a workspace that may not be answering yet, and the door
+# repeats it every few seconds, so it gets a short leash of its own rather than the 30s default.
+_READY_TIMEOUT_S = 10.0
 # The apps API hands back an /apps-internal/{id} URL that 404s in a browser (verified on
 # cloud-dogfood 2026-08-07). Domino's own "Copy URL" for that same app is the /modelproducts one.
 _APPS_INTERNAL_RE = re.compile(r"/apps-internal/([^/?#]+)")
@@ -140,6 +143,7 @@ class ControlPlane(Protocol):
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def save_workspace_work(self, open_path: str) -> dict[str, Any]: ...
+    def workspace_http_ready(self, open_path: str) -> bool | None: ...
     def archive_project(self, project_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
@@ -349,6 +353,35 @@ class DominoControlPlane:
         with self._client() as c:
             r = c.post(url, headers=self._headers(), timeout=_SAVE_TIMEOUT_S)
         return self._check(r, "POST", url)
+
+    def workspace_http_ready(self, open_path: str) -> bool | None:
+        """Does the builder's own web server answer behind the workspace proxy yet?
+
+        Domino calls a session running as soon as its execution is up, which is well before the Sage
+        process inside it has bound its port — and for that whole gap Domino's proxy answers 502 Bad
+        Gateway. Sending the browser in on the session state alone is what put a 502 on the first
+        page a new viewer ever saw. So ask the same proxy the browser is about to ask, over the
+        internal host, the way save_workspace_work already reaches a running builder.
+
+        True  — something answered, so the browser gets a page rather than the gateway's error.
+        False — the proxy has no upstream yet (the gateway family): keep waiting.
+        None  — the probe could not tell (no route, a timeout, an auth wall in front of the proxy).
+                The caller then falls back to Domino's own answer, so a probe that can never work
+                anywhere leaves the door exactly as it was rather than closing it.
+        """
+        url = f"{self._host}{open_path.rstrip('/')}/healthz"
+        try:
+            with self._client() as c:
+                r = c.get(url, headers=self._headers(), timeout=_READY_TIMEOUT_S)
+        except httpx.HTTPError as e:
+            log.info("readiness probe couldn't reach %s (%s) — trusting the session state", url, type(e).__name__)
+            return None
+        if r.status_code in (502, 503, 504):
+            return False
+        if r.status_code < 500:
+            return True
+        log.info("readiness probe: %s -> %s — trusting the session state", url, r.status_code)
+        return None
 
     def archive_project(self, project_id: str) -> dict[str, Any]:
         # "Delete" a Sage app = archive its Domino project (soft delete; a Domino admin can restore
@@ -637,6 +670,8 @@ class FakeControlPlane:
     app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
     built: list[BuiltApp] = field(default_factory=list)  # what list_all_apps answers (Gallery)
     saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
+    unready_paths: set[str] = field(default_factory=set)  # open_paths whose proxy still has no upstream
+    probed_paths: list[str] = field(default_factory=list)  # open_paths a readiness probe was run for
     deleted_apps: list[str] = field(default_factory=list)  # app_ids a deployment delete was asked for
     user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
     _seq: int = 0
@@ -689,6 +724,10 @@ class FakeControlPlane:
     def save_workspace_work(self, open_path: str) -> dict[str, Any]:
         self.saved_paths.append(open_path)
         return {"saved": True}
+
+    def workspace_http_ready(self, open_path: str) -> bool | None:
+        self.probed_paths.append(open_path)
+        return open_path not in self.unready_paths
 
     def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
         return list(self.workspaces.get(project_id, []))

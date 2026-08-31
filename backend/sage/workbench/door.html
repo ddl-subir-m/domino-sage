@@ -221,10 +221,12 @@
         } catch (e) { /* no brand pack — Domino default */ }
       }
 
-      // A launched or resumed workspace reports Started before its session is running; going in
-      // then lands on a not-ready page. Wait for the session, ~4 minutes at most.
+      // A launched or resumed workspace reports Started before its session is running, and the
+      // session runs for a while before the builder inside it binds its port — Domino's proxy
+      // answers 502 Bad Gateway for that whole second gap. `running` covers both (the status route
+      // probes the builder), so the wait is longer than the session alone needs: ~6 minutes.
       async function waitUntilRunning(projectId, workspaceId) {
-        for (var i = 0; i < 80; i++) {
+        for (var i = 0; i < 120; i++) {
           await sleep(3000);
           try {
             var q = '?project_id=' + encodeURIComponent(projectId) +

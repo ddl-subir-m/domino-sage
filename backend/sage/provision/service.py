@@ -244,11 +244,25 @@ class ProvisionService:
         ws = self._cp.create_workspace(project_id, branch=self._branch)
         return self._open_result(ws, name, launched=True)
 
+    def _reachable(self, running: bool, open_url: str | None) -> bool:
+        """`running` narrowed by whether that workspace's own web server answers yet.
+
+        Domino's session state says running while the Sage process inside is still booting, and the
+        workspace proxy answers 502 Bad Gateway for the whole gap — so a caller that sends the
+        browser in on the session state alone lands a first-time viewer on the gateway's error page.
+        The probe only ever narrows: when it cannot tell, the session state stands.
+        """
+        if not running or not open_url:
+            return running
+        ready = self._cp.workspace_http_ready(open_url)
+        return running if ready is None else ready
+
     def workspace_status(
         self, project_id: str, workspace_id: str | None = None, *, owner: str | None = None
     ) -> dict[str, Any]:
         """Current running-state + open URL for a Project's workspace — the caller polls this after a
-        launch so it only sends the viewer in once the session is actually running.
+        launch so it only sends the viewer in once the builder behind that URL actually answers.
+        `running` means both halves: Domino's session is up AND its web server is serving.
 
         `owner` scopes the answer the same way `open_app` scopes reuse: without it, a collaborator's
         newer builder could answer for the viewer's and hand back a URL that is not theirs to open.
@@ -268,18 +282,22 @@ class ProvisionService:
                 ws = max(pool, key=lambda w: w.get("createdAt") or "")
         if ws is None:
             return {"running": False, "open_url": None, "state": None, "workspace_id": None}
+        open_url = workspace_open_url(ws, name)
         return {
-            "running": workspace_is_running(ws),
-            "open_url": workspace_open_url(ws, name),
+            "running": self._reachable(workspace_is_running(ws), open_url),
+            "open_url": open_url,
             "state": ws.get("state") or ws.get("status"),
             "workspace_id": ws.get("id"),
         }
 
-    @staticmethod
-    def _open_result(ws: dict[str, Any], name: str | None, *, launched: bool) -> dict[str, Any]:
+    def _open_result(self, ws: dict[str, Any], name: str | None, *, launched: bool) -> dict[str, Any]:
+        # `running` is narrowed here too, not only in the status poll: the door and the chip both
+        # skip the poll entirely when this call already says running, which is exactly the reused
+        # workspace whose builder may still be booting.
+        open_url = workspace_open_url(ws, name)
         return {
             "workspace": ws,
-            "open_url": workspace_open_url(ws, name),
-            "running": workspace_is_running(ws),
+            "open_url": open_url,
+            "running": self._reachable(workspace_is_running(ws), open_url),
             "launched": launched,
         }
