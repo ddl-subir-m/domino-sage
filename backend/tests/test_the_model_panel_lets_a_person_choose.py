@@ -172,3 +172,14 @@ def test_a_slot_pointed_at_a_model_that_will_not_answer_says_so_on_the_slot():
     fails on the next build."""
     (_, after_save) = _drawn([{"set": ["plan", "local-llm"]}, {}])
     assert any("Start that endpoint" in p for p in after_save["problems"])
+
+
+def test_a_save_that_lands_survives_the_reload_that_does_not():
+    """The narrow window: the write succeeds, the re-read fails. `applyModelStatus` has already moved
+    the chip onto the new model, so leaving the panel's own rows at their pre-save values puts two
+    controls on screen disagreeing — and the drawer is the one saying the save did not happen. The
+    only honest reading of an old value under "couldn't check every model" is that it was refused,
+    so the person saves again."""
+    (drawn,) = _drawn([{"set": ["plan", "opus"], "failReload": True}])
+    assert drawn["wrote"] == [{"catalog": {"plan": "opus"}}]
+    assert drawn["after"] == "opus", "the panel redrew the pre-save model"

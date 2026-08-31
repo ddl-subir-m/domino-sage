@@ -90,6 +90,11 @@ window.SW = window.SW || {};
       },
     };
 
+    // `row.default` is falsy only in the fallback rows above, and those are built only when
+    // `assignments` is null — which is the same object `aliases` comes from, so the mapped list is
+    // empty in exactly that case. The single option below therefore cannot collide with one of
+    // them. Written down because the two facts sit four lines apart and read as independent: the
+    // guard against a duplicate option value is that coupling, not a check.
     const options = (row) => [
       // The way BACK, so it carries no model id of its own: picking it clears the assignment rather
       // than setting one, which is the difference between "the default" and "this model, which

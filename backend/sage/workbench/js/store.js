@@ -1627,6 +1627,23 @@ window.SW = window.SW || {};
       try {
         const status = await SW.api.setModelAssignment(slot, model);
         applyModelStatus(status);
+        // The POST answered with the whole catalog, so the saved value is already known here — and
+        // writing it into the panel's own rows is what keeps a failed reload honest. Without it the
+        // reload's catch leaves the PRE-save rows in place, and they redraw under "couldn't check
+        // every model" while the chip shows the new one: two controls disagreeing, with the drawer
+        // telling the reader their save was refused. `problem` goes back to null because the
+        // verdict on the new model is exactly what has not been fetched yet.
+        if (state.assignments && state.assignments.slots) {
+          state.assignments = {
+            ...state.assignments,
+            slots: state.assignments.slots.map((r) => (r.slot === slot
+              ? { ...r,
+                  model: (state.catalog || {})[slot] || r.model,
+                  assigned: Boolean(model),
+                  problem: null }
+              : r)),
+          };
+        }
         notify();
         await this.loadAssignments();
       } catch (err) {

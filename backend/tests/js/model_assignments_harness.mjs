@@ -36,6 +36,7 @@ const ALIASES = [
 ];
 
 let listing = 'up';
+let failReloadAfterSave = false;
 const calls = [];
 
 const json = (body) => ({
@@ -81,6 +82,9 @@ function serve(url, options = {}) {
     for (const [slot, value] of Object.entries(body.catalog || {})) {
       if (value) overrides[slot] = value; else delete overrides[slot];
     }
+    // The narrow window the panel has to survive: the write lands, and the read that verifies it
+    // does not. Flipped here rather than by the step so the FIRST read still succeeds.
+    if (failReloadAfterSave) listing = 'throw';
     return json(status());
   }
   return json({});
@@ -137,6 +141,7 @@ const mount = () => SW.ModelAssignmentsDrawer();
 const report = [];
 for (const step of steps) {
   listing = step.listing || 'up';
+  failReloadAfterSave = !!step.failReload;
   SW.store.set({ buildRunning: !!step.running, catalog: status().model.catalog });
   await SW.store.openAssignments(true);
   await settle();
