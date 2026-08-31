@@ -364,6 +364,7 @@ window.SW = window.SW || {};
       h(SW.GraduationModal, null),
       h(SW.InviteModal, null),
       h(SW.CommandPalette, null),
+      h(SW.ModelAssignmentsDrawer, null),
       h(SW.SettingsDrawer, null),
       h(SW.HelpDrawer, null)
     );

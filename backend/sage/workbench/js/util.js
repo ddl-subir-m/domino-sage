@@ -61,6 +61,16 @@ window.SW = window.SW || {};
     PLAN_STATUS,
     APP_STATUS,
 
+    // Which LLM Aliases can hold a conversation. Here rather than in either caller because both
+    // the Chat picker and the model panel offer the same list, and two copies of this rule is how
+    // they come to disagree about what a person may pick (ADR-0017).
+    chatCapable(aliases) {
+      return (aliases || []).filter((a) => {
+        const caps = a.capabilities || [];
+        return !(caps.includes('embeddings') && !caps.includes('chat'));
+      });
+    },
+
     iconFor(kind) {
       return (RESOURCE_META[kind] || RESOURCE_META.file).icon;
     },

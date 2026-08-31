@@ -117,6 +117,13 @@ window.SW = window.SW || {};
     // reading it. Knowing which lets the composer say whether the turn holding it up is the one on
     // screen — "wait" and "wait, over there" send someone to different places.
     chatTurnThread: null,
+    // WHICH turn holds the lock, as `{kind, conversation}` (#126). `chatRunning` and `buildRunning`
+    // above answer "is the Project busy" and are read by the controls that must not fire during
+    // ANY turn — Reset app, the app switcher, the model override. This answers the narrower
+    // question only the Stop bars ask: is the turn holding the lock the one on this screen. Null
+    // when what holds it is not a turn you can Stop — a wedge, or a publish or reset that took the
+    // lock without ever queueing.
+    runningTurn: null,
     // Turns this tab has asked for that have not started yet (#79). A pending turn is an INTENTION,
     // not a commitment: nothing of it has run, nothing of it is on the server's disk, and Cancel
     // drops it without touching whatever is running. `{ ticket, text, message }`, oldest first —
@@ -181,6 +188,17 @@ window.SW = window.SW || {};
     // deployment will accept beyond the four configured slots. On Domino it is [], and the picker
     // is the four slots alone.
     openWeightModels: [],
+    // The model panel (ADR-0017). Its own fetch rather than a slice of `status`, which is polled:
+    // it costs a gateway listing and an endpoint listing, and the drawer is almost always closed.
+    assignmentsOpen: false,
+    assignmentsLoading: false,
+    // { slots: [{slot, model, default, assigned}], aliases: [{name, display_name, capabilities,
+    // serving, problem}], error }. Null until first opened.
+    assignments: null,
+    // Why the Alias list is missing, when it is. The panel stays open and read-only on this rather
+    // than falling back to the models already assigned — a list that can only offer what is already
+    // chosen cannot express a change.
+    assignmentsError: '',
 
     // Build is the project's history.jsonl, not the Chat Thread. Chat ↔ Build
     // is turning your head: the Thread stays selected, this transcript is the app's.
@@ -1280,14 +1298,43 @@ window.SW = window.SW || {};
 
   // A turn this tab asked for that has not started yet (#79). Kept out of the transcript on
   // purpose: the transcript is the receipt, and nothing has happened yet to write one for.
-  function queueTurn(ev) {
+  // `kind` and the conversation are captured HERE rather than read when the row draws: the row is
+  // a record of what was asked and where, and the rail can move while it waits (#126). One shared
+  // Composer draws these in both modes, so without them a queued Chat question appears above the
+  // Build box looking like a queued build.
+  function queueTurn(ev, kind) {
     state.queuedTurns = [...state.queuedTurns,
-                         { ticket: ev.ticket, text: ev.prompt || '', message: ev.message || '' }];
+                         { ticket: ev.ticket, text: ev.prompt || '', message: ev.message || '',
+                           kind, conversation: (state.thread && state.thread.id) || '' }];
   }
 
   function dropQueuedTurn(ticket) {
     if (!ticket) return;
     state.queuedTurns = state.queuedTurns.filter((q) => q.ticket !== ticket);
+  }
+
+  // Is the turn holding the lock the one on THIS screen? Both halves have to match: a Chat turn and
+  // a Build turn in one Conversation are both yours, and only one of them is what you are looking at
+  // (#126). False for a wedge and for a publish, which is right — neither is a turn to Stop.
+  function runningTurnHere(kind, conversationId) {
+    const t = state.runningTurn;
+    return !!(t && t.kind === kind && conversationId && t.conversation === conversationId);
+  }
+
+  // The other side of the same question, for the line a mode shows INSTEAD of Stop. Only ask it
+  // when the Project is busy — it describes the lock, not whether anything holds it.
+  //
+  // `href` is null when the holder has no identity. Publish, reset and the other raw-lock callers
+  // never queued, so there is nowhere to send anyone and nothing to stop; saying the workspace is
+  // busy is the honest answer, and it is also what stops a Stop button rendering over a publish.
+  function runningTurnElsewhere(kind, conversationId) {
+    const t = state.runningTurn;
+    if (!t) return { text: 'The workspace is busy.', href: null };
+    if (runningTurnHere(kind, conversationId)) return null;
+    const row = (state.threads || []).find((x) => x.id === t.conversation);
+    const what = t.kind === 'chat' ? 'Chat is answering' : 'Build is running';
+    return { text: `${what} in ${(row && row.title) || 'another conversation'}`,
+             href: `#/${t.kind}/${t.conversation}` };
   }
 
   // What `/build/state` says, folded into the flags that render. The server's lock is the authority
@@ -1299,6 +1346,13 @@ window.SW = window.SW || {};
     const turn = payload || {};
     state.turnWedged = !!turn.wedged;
     state.turnPending = turn.pending || 0;
+    // The same gap this function's OR already guards, one field along: between two queued turns the
+    // lock is free for an instant, and a poll landing there reports no running turn. Blanking on it
+    // would drop the Stop bar — or swap it to the other mode and back — as the queue drains. So a
+    // named turn is always believed, and only a NAMELESS answer is held back while this tab still
+    // has a turn of its own alive to hand the lock straight on to.
+    if (turn.running_turn) state.runningTurn = turn.running_turn;
+    else if (liveBuildTurns === 0 && liveChatTurns === 0) state.runningTurn = null;
     return !!turn.running || liveBuildTurns > 0 || liveChatTurns > 0;
   }
 
@@ -1532,6 +1586,47 @@ window.SW = window.SW || {};
         state.buildModel = previous;
         notify();
         antd.message.error(String((err && err.message) || err));
+      }
+    },
+
+    // The panel's read. Also its re-verify: a save calls this again, so the reachability check runs
+    // against the assignment that just landed rather than against a cached one (ADR-0017).
+    async loadAssignments() {
+      state.assignmentsLoading = true;
+      notify();
+      try {
+        const panel = await SW.api.modelAssignments();
+        state.assignments = panel;
+        state.assignmentsError = panel.error || '';
+      } catch (err) {
+        state.assignmentsError = String((err && err.message) || err);
+      } finally {
+        state.assignmentsLoading = false;
+        notify();
+      }
+    },
+
+    openAssignments(open) {
+      state.assignmentsOpen = Boolean(open);
+      notify();
+      if (open) this.loadAssignments();
+    },
+
+    // Saves immediately and verifies afterwards (ADR-0017): blocking the write on a live gateway
+    // call would make a setting refusable for a reason outside the person's control, and the greyed
+    // rows already stop the common case at draw time.
+    async setAssignment(slot, model) {
+      try {
+        const status = await SW.api.setModelAssignment(slot, model);
+        applyModelStatus(status);
+        notify();
+        await this.loadAssignments();
+      } catch (err) {
+        antd.message.error(String((err && err.message) || err));
+        // Re-read rather than patch back: the refusal may have been the turn lock, in which case
+        // nothing changed, and guessing which of the three rows to revert is how the panel comes to
+        // disagree with the catalog.
+        await this.loadAssignments();
       }
     },
 
@@ -2408,7 +2503,7 @@ window.SW = window.SW || {};
           if (ev.type === 'stopped') stopped = true;
           // The queue's own two rows, which belong to this send rather than to the app on screen —
           // so they are read before the rail check below, not after it.
-          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev); notify(); return; }
+          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'build'); notify(); return; }
           if (ev.contextChanged) { unran = true; store.seedComposer(ev.prompt || text); }
           if (ev.type === 'done' && ev.decision === 'cancelled') unran = true;
           // Once the rail has moved on, these events describe an app that is no longer on screen.
@@ -2521,7 +2616,7 @@ window.SW = window.SW || {};
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
-          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev); notify(); return; }
+          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'build'); notify(); return; }
           if (ev.contextChanged || (ev.type === 'done' && ev.decision === 'cancelled')) unran = true;
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -2628,10 +2723,14 @@ window.SW = window.SW || {};
     // cleared here any more: `loadBuild` re-reads the server's lock, which is the only thing that
     // knows whether stopping this turn left the project idle or handed it straight to the next
     // question. Clearing them first showed an idle header over a build that had just begun.
+    runningTurnHere,
+    runningTurnElsewhere,
+
     async stopBuild() {
       state.buildTyping = 'Stopping…';
       notify();
-      await SW.api.stopBuild();
+      await SW.api.stopBuild({ kind: 'build',
+                               conversation: (state.thread && state.thread.id) || '' });
       await store.loadBuild({ keepPreview: true });
     },
 
@@ -2836,7 +2935,7 @@ window.SW = window.SW || {};
           // The queue's rows belong to this send wherever the reader has moved to, so they are read
           // before the `mine()` check rather than after it: a Cancel has to be able to find its
           // ticket, and a question handed back has to reach a composer.
-          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev); notify(); return; }
+          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'chat'); notify(); return; }
           if (ev.contextChanged) {
             unran = true;
             store.seedComposer(ev.prompt || text);
@@ -2972,7 +3071,8 @@ window.SW = window.SW || {};
       state.typing = 'Stopping…';
       notify();
       try {
-        await SW.api.stopBuild();
+        await SW.api.stopBuild({ kind: 'chat',
+                                 conversation: (state.thread && state.thread.id) || '' });
       } catch (err) {
         antd.message.error(String((err && err.message) || err));
         state.typing = null;

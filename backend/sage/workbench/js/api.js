@@ -540,12 +540,22 @@ SW.api = {
   // and the router reads it only in Plan and Implement, so sending the mode too would re-assert a
   // standing choice the picker never touched.
   setBuildModel: (pick) => post('/project/model', { pick: pick || null }),
+  // The model panel's two calls (ADR-0017). These write an ASSIGNMENT — the Project's standing
+  // choice, persisted and shared — which is a different thing from `setBuildModel` above, and the
+  // reason they are not folded together. `null` clears one, putting the slot back on the
+  // deployment default; the backend tells that from a slot nobody mentioned.
+  modelAssignments: () => request('/project/model/assignments'),
+  setModelAssignment: (slot, model) =>
+    post('/project/model', { catalog: { [slot]: model || null } }),
   setChatModel: (chat_model, reasoning_effort) =>
     post('/project/model', { chat_model: chat_model || null, reasoning_effort: reasoning_effort || null }),
   // The Conversation is optional and is what makes Undo on a handoff card readable after a
   // reload (#60): the card is rebuilt from the transcript, so the cancel has to leave a row there.
   cancelPlan: (body) => post('/project/plan/cancel', body || {}),
-  stopBuild: () => post('/project/build/stop'),
+  // `target` is `{kind, conversation}` — the turn this Stop was aimed at (#126). Sending it is
+  // what makes a mis-aimed press a no-op instead of a killed question: the queue can hand the lock
+  // on between the press and the POST. Omitting it means "stop whatever is running".
+  stopBuild: (target) => post('/project/build/stop', target || {}),
   // Stop and Cancel are not the same control (#79). Stop interrupts the turn that is RUNNING;
   // this drops one that is still waiting in line, and leaves the running one alone. The ticket
   // comes from the `pending` event that queued turn's own stream yielded.

@@ -18,10 +18,7 @@ window.SW = window.SW || {};
   const PROJECT_MENTION_KINDS = SW.util.MEMBERSHIP_PARENT_KINDS;
 
   function chatAliases(resourceGroups) {
-    return (resourceGroups.model_llm || []).filter((r) => {
-      const caps = r.capabilities || [];
-      return !(caps.includes('embeddings') && !caps.includes('chat'));
-    });
+    return SW.util.chatCapable(resourceGroups.model_llm);
   }
 
   function effortLabel(value) {
@@ -315,6 +312,16 @@ window.SW = window.SW || {};
     // override would mark nothing selected and drop the "(default)" off a control that is running
     // exactly the default.
     const override = buildModel && buildModel !== pinnedModel ? buildModel : '';
+    // Auto has no model of its own — it runs the Plan assignment while it plans and the Implement
+    // assignment while it builds — so a bare id here changes under the person with nothing to say
+    // why. The phase is the missing half of that sentence.
+    const chipLabel = (name) => (activeBuildMode.id === 'auto'
+      ? `${name} · ${buildPhase === 'implement' ? 'building' : 'planning'}`
+      : name);
+    // The way through to the assignments, from the menu that can only make an override. The two do
+    // different things and say so: an override is this Builder's, until it restarts; an assignment
+    // is the Project's (ADR-0017).
+    const ASSIGNMENTS_KEY = '__assignments__';
     const buildModelMenu = {
       selectedKeys: [override || PINNED_KEY],
       items: [
@@ -329,8 +336,13 @@ window.SW = window.SW || {};
               children: extraModels.map((o) => ({ key: o.id, label: `${o.id} (${o.provider})` })),
             }]
           : []),
+        { type: 'divider' },
+        { key: ASSIGNMENTS_KEY, label: 'Model assignments…' },
       ],
-      onClick: ({ key }) => SW.store.setBuildModel(key === PINNED_KEY ? null : key),
+      onClick: ({ key }) => {
+        if (key === ASSIGNMENTS_KEY) return SW.store.openAssignments(true);
+        return SW.store.setBuildModel(key === PINNED_KEY ? null : key);
+      },
     };
 
     const modelMenu = {
@@ -406,7 +418,12 @@ window.SW = window.SW || {};
                 'div',
                 { className: 'sw-composer-queued-text' },
                 h('div', { className: 'sw-composer-queued-prompt' }, queued.text),
-                h('div', { className: 'sw-caption' }, queued.message)
+                // One Composer draws these in both modes, so the row has to say which one it
+                // belongs to (#126). Unlabelled, a Chat question waiting behind a build appears
+                // over the Build box reading like a queued build.
+                h('div', { className: 'sw-caption' },
+                  [queued.kind === 'chat' ? 'Chat' : 'Build', queued.message]
+                    .filter(Boolean).join(' · '))
               ),
               h(
                 Button,
@@ -619,41 +636,61 @@ window.SW = window.SW || {};
           ),
           h('span', { className: 'sw-composer-bar-spacer' }),
 
-          // Beside the mode pill, because the mode is what decides both whether this can be
-          // changed and what it falls back to. Ask and Auto still SAY which model is running —
-          // hiding it there would answer "why can't I change this" with nothing.
+          // Beside the mode pill, because the mode is what decides what this falls back to. Every
+          // mode can be changed now (ADR-0017) — Plan and Implement through an override, Auto and
+          // Ask through the assignment behind them — so the only closed state left is a running
+          // turn.
           showMode && pinnedModel &&
-            (overridable && !buildRunning
+            (buildRunning
               ? h(
-                  Dropdown,
-                  { menu: buildModelMenu, trigger: ['click'], placement: 'topRight' },
-                  h(
-                    Button,
-                    { size: 'small', 'aria-label': 'Build model' },
-                    h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
-                      h(DownOutlined, { style: { fontSize: 9 } }))
-                  )
-                )
-              : h(
                   Tooltip,
                   {
-                    title: buildRunning
-                      // Unlike the mode, a pick is NOT pinned for the turn: ModelControl.snapshot
-                      // reads it live, so a click here would move the rest of this build onto
-                      // another model with the first half's tool calls in context. There is no
-                      // queue to put it in either, so the control closes instead.
-                      ? `This turn is running on ${override || pinnedModel}. Wait for it to finish to pick a different model.`
-                      : activeBuildMode.id === 'ask'
-                        ? `Ask always runs on ${pinnedModel} and can't be changed. Switch to Plan or Implement to pick a model.`
-                        : `Auto picks the model per phase — ${(catalog || {}).plan} to plan, ${(catalog || {}).implement} to build. Switch to Plan or Implement to pick one yourself.`,
+                    // Unlike the mode, neither a pick nor an assignment is pinned for the turn:
+                    // both are read live, so a change here would move the rest of this build onto
+                    // another model with the first half's tool calls in context. There is no queue
+                    // to put it in either, so the control closes instead.
+                    title: `This turn is running on ${override || pinnedModel}. Wait for it to finish to change the model.`,
                   },
                   // The span is load-bearing: a browser dispatches no mouse events on a disabled
                   // button, so a Tooltip put straight on one never opens and the sentence above
                   // becomes the silence it was written to prevent.
                   h('span', { style: { display: 'inline-block' } },
                     h(Button, { size: 'small', disabled: true, 'aria-label': 'Build model' },
-                      override || pinnedModel))
-                )),
+                      chipLabel(override || pinnedModel)))
+                )
+              : overridable
+                ? h(
+                    Dropdown,
+                    { menu: buildModelMenu, trigger: ['click'], placement: 'topRight' },
+                    h(
+                      Button,
+                      { size: 'small', 'aria-label': 'Build model' },
+                      h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
+                        h(DownOutlined, { style: { fontSize: 9 } }))
+                    )
+                  )
+                // Ask and Auto honour no override — Ask is pinned to its slot and Auto follows the
+                // phase — so there is no menu to offer. They open the panel instead: a disabled
+                // control with a working door behind it answers "why can't I change this" with
+                // nothing, which is what this button used to be.
+                : h(
+                    Tooltip,
+                    {
+                      title: activeBuildMode.id === 'ask'
+                        ? `Ask runs on ${pinnedModel}, and so does Chat. Change what every build uses.`
+                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build. Change what every build uses.`,
+                    },
+                    h(
+                      Button,
+                      {
+                        size: 'small',
+                        'aria-label': 'Build model',
+                        onClick: () => SW.store.openAssignments(true),
+                      },
+                      h(Space, { size: 4 }, chipLabel(pinnedModel),
+                        h(DownOutlined, { style: { fontSize: 9 } }))
+                    )
+                  )),
 
           showMode &&
             h(

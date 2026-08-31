@@ -28,7 +28,9 @@ _Avoid_: model, endpoint, prediction API, inference endpoint
 
 **LLM Alias**:
 A named model registration in the LLM Gateway. It is the only name by which Sage or a built
-app refers to a language model.
+app refers to a language model. Sage's own model controls are the one exception: they say
+"model" in plain language, because a person choosing what Sage runs on is not picking a
+Resource for their app.
 _Avoid_: model, model name, LLM, deployment
 
 **Asset**:
@@ -79,7 +81,10 @@ per app. Removing a Binding takes the grant and the Scope with it. There is no u
 stays in the Project and is picked again
 ([ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md)).
 On screen a Binding is named by what it does for the app rather than by the word itself: a Resource
-the selected app holds one for reads "Required by <app>".
+the selected app holds one for reads "Required by <app>", one it does not reads "Not used by <app>",
+and the act that makes one is "Use in <app>". Only Build names an app, so only Build offers the act;
+in Chat the neighbouring act is "Use in this chat", which puts the Resource in Session context and
+binds nothing.
 _Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
 
 **Scope**:
@@ -164,7 +169,32 @@ _Avoid_: Hub, notebook, App container (that is the Workbench process)
 **Chat**:
 The Workbench mode for open-ended questions and analysis. It produces Artifacts. It does not
 edit `src/`. Driven by the OpenCode agent `sage-chat`.
-_Avoid_: ask mode, assistant, sandbox, Jupyter, notebook
+_Avoid_: ask mode (Build has a mode called Ask and this is not it — the collision is why the
+word must not stand in for Chat), assistant, sandbox, Jupyter, notebook
+
+**Build**:
+The Workbench mode that edits a Built App, as against Chat, which does not. It runs in one of
+four modes a person picks: Auto, which plans and then builds; Ask, which answers and writes
+nothing; Plan, which proposes; and Implement, which builds.
+_Avoid_: agent mode, code mode, editor, IDE
+
+**Model assignment**:
+Which model a Build mode runs on, chosen once and kept. There are three: Plan, Implement, and
+Ask and Chat — one assignment, because Chat runs the Ask model whenever the person has not
+chosen their own. Auto has no assignment of its own: it runs the Plan assignment while it
+plans and the Implement assignment while it builds. An assignment belongs to the Project, not
+to the viewer who set it, and it reaches the other people in that Project when the Project
+next syncs. See
+[ADR-0017](docs/adr/0017-the-catalog-is-the-door-for-auto-and-ask.md).
+_Avoid_: slot (that is the field in code), catalog, model setting, default model (the phrase
+names what an assignment reverts to, not the assignment)
+
+**Model override**:
+One person's standing choice to run a model other than the assignment, in their own Sage
+Builder only. It is not shared, it does not survive the Sage Builder, and only Plan and
+Implement honour it. Saving any assignment clears it.
+_Avoid_: pick (that is the field in code), temporary model, per-turn model (it lasts until it
+is cleared, not one turn)
 
 **Conversation**:
 One line of talk inside a Project, and one row in the rail. A Project has many Conversations;

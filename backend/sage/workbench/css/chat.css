@@ -788,3 +788,29 @@
 
 .sw-model-option-name { font-size: var(--fs-13); font-weight: 500; }
 .sw-model-option-detail { font-size: var(--fs-11); color: var(--gray-500); }
+
+/* Model assignments (ADR-0017). Spacing carries the grouping: the label, its sentence and its
+   select are one thing, so the gap inside a row is half the gap between rows. Without that the
+   three rows read as nine loose controls. */
+.sw-assignment-row + .sw-assignment-row { margin-top: 20px; }
+.sw-assignment-label {
+  display: block;
+  font-size: var(--fs-13);
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+.sw-assignment-detail {
+  font-size: var(--fs-11);
+  color: var(--gray-500);
+  margin-bottom: 6px;
+}
+/* The line under a select says what the default was, so it belongs to the control above it, not to
+   the row below. */
+.sw-assignment-row .sw-assignment-detail:last-child { margin: 6px 0 0; }
+/* Preflight's verdict on a slot. Warning-coloured because it is the difference between a setting
+   that looks saved and one that will fail the next build. */
+.sw-assignment-problem {
+  font-size: var(--fs-11);
+  color: var(--warning);
+  margin-top: 6px;
+}

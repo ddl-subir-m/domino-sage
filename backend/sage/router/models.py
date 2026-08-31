@@ -87,6 +87,18 @@ class ModelCatalog:
     ask: ModelId               # read-only ask mode model
 
 
+# The slots a person may assign in the model panel (ADR-0017). The panel lays out its own rows,
+# because the label and the sentence under each one are its to write; this is the set, not the order. A subset
+# of `preflight.SLOTS`, and deliberately so: the three sovereign slots are persisted and preflighted
+# but the router reads none of them — they belong to a sensitivity lock that no longer routes — and
+# a row that changes nothing is worse than no row.
+#
+# `ask` is one row for two consumers. `_resolve_chat` returns `catalog.ask` as CHAT_DEFAULT, so this
+# slot has always driven Chat's default model as well; the panel labels it for both rather than
+# repointing Chat silently.
+ASSIGNABLE_SLOTS: tuple[str, ...] = ("plan", "implement", "ask")
+
+
 @dataclass(frozen=True)
 class SessionState:
     """Everything the router needs. Snapshot taken by the shim per request."""

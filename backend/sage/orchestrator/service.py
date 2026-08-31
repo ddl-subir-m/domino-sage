@@ -80,6 +80,7 @@ from ..resources.pinned_model_api import bound_model_apis
 from ..resources.pinned_model_api import render_config as render_model_api_config
 from ..resources.preflight import (
     SLOTS,
+    alias_problem,
     bindings_on_dead_endpoints,
     credential_message,
     missing_credentials,
@@ -107,7 +108,7 @@ from ..resources.publish_guard import (
     publish_problems,
 )
 from ..router.model_control import ModelControl
-from ..router.models import Mode, ModelCatalog, Phase
+from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager, ensure_ignore_line
@@ -328,15 +329,23 @@ class _TurnTicket:
     `snapshot` is taken when the turn joins the queue and compared to the live context when it
     reaches the front. A turn that never waited carries none: it was written against the context it
     is about to run in, and reading it twice to prove that would cost every turn in the Project a
-    pair of file reads for a comparison that cannot fail."""
+    pair of file reads for a comparison that cannot fail.
 
-    __slots__ = ("granted", "id", "outcome", "snapshot")
+    `kind` and `conversation` are what the turn IS, for the controls that have to be aimed at it
+    (#126). `kind` is the screen you can stop it from — "build" or "chat" — and deliberately NOT the
+    routing `Mode`, which is ask/plan/implement/auto and answers a different question. Both are set
+    before the ticket is admitted, because a queue with nothing in front of it makes a turn running
+    in the same call."""
+
+    __slots__ = ("conversation", "granted", "id", "kind", "outcome", "snapshot")
 
     def __init__(self, ticket_id: str) -> None:
         self.id = ticket_id
         self.snapshot: dict = {}
         self.outcome = ""       # "" while waiting, then "ready" | "cancelled" | "wedged"
         self.granted = False    # the verdict the entry point reads: did this turn get to run?
+        self.kind = ""          # "build" | "chat" — the screen this turn can be stopped from
+        self.conversation = ""
 
 
 class _TurnQueue:
@@ -365,6 +374,11 @@ class _TurnQueue:
         self._poll_s = poll_s
         self._cond = threading.Condition()
         self._waiting: deque[_TurnTicket] = deque()
+        # The ticket holding the lock, or None. Not on the deque — `_take` pops it — so without
+        # this the running turn is the one turn nobody can name (#126). None is a real answer and
+        # not a gap: publish, reset and the other raw-lock callers never queue, so a busy Project
+        # with no running turn is exactly what "busy, and not a turn you can Stop" looks like.
+        self._running: _TurnTicket | None = None
 
     def admit(self, ticket: _TurnTicket) -> bool:
         """Join the queue, taking the lock straight away if nothing else is asking for it."""
@@ -377,6 +391,7 @@ class _TurnQueue:
         if self._waiting[0] is not ticket or not self._lock.acquire(blocking=False):
             return False
         self._waiting.popleft()
+        self._running = ticket
         ticket.outcome = "ready"
         return True
 
@@ -418,6 +433,7 @@ class _TurnQueue:
     def release(self) -> None:
         """Hand the turn lock back and wake whoever is next in line."""
         with self._cond:
+            self._running = None
             self._lock.release()
             self._cond.notify_all()
 
@@ -431,6 +447,11 @@ class _TurnQueue:
                 return self._waiting.index(ticket) + 1
             except ValueError:
                 return 1
+
+    def running(self) -> "_TurnTicket | None":
+        """The ticket that holds the lock, or None when whatever holds it never queued (#126)."""
+        with self._cond:
+            return self._running
 
     def depth(self) -> int:
         with self._cond:
@@ -2391,9 +2412,19 @@ class Orchestrator:
         rather than inferred from a refusal that no longer arrives.
 
         `pending` is how many turns are waiting in line. Without it the composer's own queued rows
-        are the only account of the queue, and a second tab's are invisible."""
+        are the only account of the queue, and a second tab's are invisible.
+
+        `running_turn` is WHICH turn, as `{kind, conversation}` (#126). `running` alone was enough
+        while there was one control for one turn; under a queue a Stop bar has to know whether the
+        turn holding the lock is the one on screen, and a Chat turn, a Build turn and another tab's
+        turn all set `running` alike. It is None for the two holders that cannot be Stopped: a wedge,
+        which has its own sentence naming the restart, and a raw-lock caller like publish or reset,
+        which never queued and has no ticket."""
+        running = self._turns.running()
         return {"running": self.turn_busy(), "wedged": self._turn_wedged,
-                "pending": self._turns.depth()}
+                "pending": self._turns.depth(),
+                "running_turn": None if (self._turn_wedged or running is None) else
+                                {"kind": running.kind, "conversation": running.conversation}}
 
     def cancel_pending_turn(self, ticket_id: str) -> bool:
         """Drop a turn that is still waiting in line. False when there is no such turn (#79).
@@ -3448,7 +3479,8 @@ class Orchestrator:
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = _TurnTicket(new_id("turn"))
-        yield from self._acquire_turn(ticket, conversation=conversation, prompt=prompt, app=True)
+        yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
+                                      prompt=prompt, app=True)
         if not ticket.granted:
             return
         try:
@@ -3791,7 +3823,8 @@ class Orchestrator:
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
         ticket = _TurnTicket(new_id("turn"))
-        yield from self._acquire_turn(ticket, conversation=thread_id, prompt=prompt, app=False)
+        yield from self._acquire_turn(ticket, kind="chat", conversation=thread_id, prompt=prompt,
+                                      app=False)
         if not ticket.granted:
             return
         # The lock goes at `done`, not at the end of this generator. What comes after `done` is
@@ -5230,8 +5263,8 @@ class Orchestrator:
             log.exception("turn queue: could not read the context this turn was written against")
         return snapshot
 
-    def _acquire_turn(self, ticket: _TurnTicket, *, conversation: str | None, prompt: str,
-                      app: bool):
+    def _acquire_turn(self, ticket: _TurnTicket, *, kind: str, conversation: str | None,
+                      prompt: str, app: bool):
         """Take the turn lock for a streaming turn, waiting in line rather than refusing (#79).
 
         Yields what the wait owes the client — a `pending` row the moment the turn joins the queue,
@@ -5244,6 +5277,10 @@ class Orchestrator:
         if self._turn_wedged:
             yield from self._wedged_refusal()
             return
+        # Before admit, not after: a queue with nothing in front of it hands over the lock inside
+        # `admit()`, so a ticket named afterwards would be running and anonymous in between (#126).
+        ticket.kind = kind
+        ticket.conversation = conversation or ""
         if self._turns.admit(ticket):
             ticket.granted = True
             return
@@ -6450,7 +6487,8 @@ class Orchestrator:
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
         ticket = _TurnTicket(new_id("turn"))
-        yield from self._acquire_turn(ticket, conversation=conversation, prompt="", app=True)
+        yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",
+                                      app=True)
         if not ticket.granted:
             return
         try:
@@ -7304,8 +7342,8 @@ class Orchestrator:
                 return self._workspace_id
         return None
 
-    def stop_build(self) -> None:
-        """Interrupt whichever turn is in flight — Build or Chat. Both poll `stop_requested` and
+    def stop_build(self, kind: str = "", conversation: str = "") -> bool:
+        """Interrupt the turn in flight — Build or Chat. Both poll `stop_requested` and
         both clear it as they unwind; Build also reverts the files and history the turn wrote,
         Chat keeps what it wrote (see _chat_stream, _build_stream's handle_stop).
 
@@ -7313,9 +7351,29 @@ class Orchestrator:
         `stop_requested` regardless, and nothing cleared it until a turn tripped over it — so a
         Stop pressed twice, or pressed in the second a turn was already ending, silently killed the
         NEXT question before it ran a step.
+
+        `kind` and `conversation` name the turn the Stop was AIMED at, and it is a no-op when that
+        is no longer the turn running (#126). The queue made this necessary: Stop ends one turn and
+        the queue advances (ADR-0013), so between the press and the POST the lock can change hands
+        and the Stop lands on a question the person never aimed at. Naming nothing keeps the old
+        meaning — stop whatever is running — which is what a caller with only one turn to mean has
+        always sent. A raw-lock holder has no ticket, so an aimed Stop never matches one: you cannot
+        Stop a publish, and that is the answer rather than an omission.
+
+        Returns whether it actually interrupted anything, so the route stops answering
+        `{"stopped": true}` to a Stop it declined to fire — the same class of lie as the button
+        this fixes.
         """
         if not self.turn_busy():
-            return
+            return False
+        if kind or conversation:
+            running = self._turns.running()
+            if running is None:
+                return False
+            if kind and running.kind != kind:
+                return False
+            if conversation and running.conversation != conversation:
+                return False
         project = self.project()
         project.stop_requested = True
         # The LIVE session, not the project's: during a phased build the project session is idle and
@@ -7327,25 +7385,130 @@ class Orchestrator:
                 self._oc_client.interrupt(sid)
             except httpx.HTTPError:
                 pass
+        return True
 
     def _effective_catalog(self, record: ProjectRecord) -> ModelCatalog:
         overrides = record.read_catalog_overrides()
         return replace(self._catalog, **overrides) if overrides else self._catalog
 
-    def set_catalog(self, **fields: str | None) -> ModelCatalog:
-        """Override which model id fills a catalog slot (sovereign/plan/implement/default),
-        persisted so it survives a restart. Only non-empty fields change; the rest keep their
-        current value."""
+    def model_assignments(self) -> dict:
+        """What the model panel is drawn from: the three assignable slots, and the Aliases a person
+        may put in them with whether each will actually answer (ADR-0017).
+
+        Project-scoped, which is why it is not `preflight_slots`. That one answers about the
+        DEPLOYMENT catalog before any project is attached, and its own docstring hands this job here;
+        the value it caches is a module global computed once at startup, over a catalog no project
+        has touched.
+
+        A slot carries the model it runs AND the default it would revert to. The panel cannot derive
+        the second from the first: once a slot is assigned, the catalog it is showing no longer holds
+        what "Use the default" goes back to.
+
+        A gateway that will not answer costs the Alias list, not the slots. The panel opens read-only
+        with the reason rather than falling back to the models already assigned — a list that can
+        only offer what is already chosen cannot express a change, which is the defect being fixed.
+        """
+        defaults = self._catalog
         project = self.project()
-        changes = {k: v for k, v in fields.items() if v}
-        if not changes:
-            return project.shim.catalog
-        new_catalog = replace(project.shim.catalog, **changes)
-        project.shim.set_catalog(new_catalog)
+        live = project.shim.catalog
+        # Key presence, not `live != default`. Assigning a slot to the model that happens to BE the
+        # deployment default writes an override all the same, and reporting that as "following the
+        # default" is a lie with a consequence: the day the deployment default moves, this project
+        # will not follow it, and the panel said it would.
         overrides = project.record.read_catalog_overrides()
-        overrides.update(changes)
-        project.record.write_catalog_overrides(overrides)
-        return new_catalog
+        slots = [
+            {
+                "slot": slot,
+                "model": getattr(live, slot),
+                "default": getattr(defaults, slot),
+                "assigned": slot in overrides,
+                "problem": None,
+            }
+            for slot in ASSIGNABLE_SLOTS
+        ]
+        try:
+            aliases = self._resources.list_llm_aliases()
+        except ResourceUnavailable as e:
+            return {"slots": slots, "aliases": [], "error": str(e)}
+        # One listing for every row, on the same `wanted` skip preflight uses: an all-vendor gateway
+        # has no endpoint to join to and pays nothing for the check.
+        endpoints, errors = self._endpoint_listing(aliases, {a.name for a in aliases})
+        # Preflight's own verdict on the slots as they stand, which is what makes the read after a
+        # save a re-check rather than a redraw: greying a menu row says the model is bad, and only
+        # this says the SLOT is. Both of preflight's questions, in preflight's own words — a second
+        # set of sentences for the same two faults is how they come to disagree.
+        verdicts = {p.slot: p.message for p in
+                    list(unresolved_slots(live, aliases))
+                    + list(slots_on_dead_endpoints(live, aliases, endpoints))}
+        for row in slots:
+            row["problem"] = verdicts.get(row["slot"])
+        return {
+            "slots": slots,
+            "aliases": [
+                {
+                    "name": a.name,
+                    "display_name": a.display_name,
+                    # Carried so the panel can reuse the chat-capable filter the Chat picker already
+                    # applies, rather than growing a second copy of that rule on this side.
+                    "capabilities": a.capabilities,
+                    "serving": (problem := alias_problem(a.name, aliases, endpoints)) is None,
+                    "problem": problem,
+                }
+                for a in aliases
+            ],
+            # A failed endpoint listing is not a failed panel: every Alias is still offered, and
+            # `endpoint_status` already reads "not checked" as "learned nothing".
+            "error": " ".join(errors) or None,
+        }
+
+    def set_catalog(self, **fields: str | None) -> ModelCatalog:
+        """Assign the model a Build mode runs on, or take an assignment back (ADR-0017).
+
+        Three cases, and telling the second from the third is the whole point. A field carrying a
+        model id ASSIGNS that slot. A field carrying `None` or `""` CLEARS it, so the slot falls
+        back to the deployment default `_effective_catalog` layers over — without this an
+        assignment, once made, could never be undone, and the "Use the default" row had nothing to
+        call. A field that is ABSENT is left alone: the drawer saves one row at a time and must not
+        silently revert the other two.
+
+        The new catalog is rebuilt through `_effective_catalog` rather than by patching the live
+        one, because that is the only expression that knows what a cleared slot reverts TO.
+        """
+        unknown = sorted(k for k in fields if k not in SLOTS)
+        if unknown:
+            # Not defensive padding: the write below lands BEFORE the catalog is rebuilt, so an
+            # unknown key would be persisted to `model_overrides.json` and then raise a TypeError
+            # out of `replace()` on every read of this project's catalog afterwards. A transient 400
+            # in place of a durable brick. Checked against `SLOTS` rather than `ASSIGNABLE_SLOTS`
+            # because the sovereign slots have always been settable here and narrowing that would
+            # take away a capability nobody asked to lose.
+            raise ValueError(f"not a model slot: {', '.join(unknown)}")
+        project = self.project()
+        if not fields:
+            return project.shim.catalog
+        # Nothing pins the catalog for the duration of a turn, unlike `arm_turn_mode`, so a change
+        # accepted here would move the rest of a running build onto another model with the first
+        # half's tool calls in context. Same guard the override chip already closes against.
+        if not self._turn_lock.acquire(blocking=False):
+            raise TurnBusy(self._turn_wedged, "change the model")
+        try:
+            overrides = project.record.read_catalog_overrides()
+            for slot, model in fields.items():
+                if model:
+                    overrides[slot] = model
+                else:
+                    overrides.pop(slot, None)
+            project.record.write_catalog_overrides(overrides)
+            new_catalog = self._effective_catalog(project.record)
+            project.shim.set_catalog(new_catalog)
+            # An assignment that saves and visibly does nothing is the worst outcome available
+            # here, and a standing override shadowing the slot would do exactly that. It clears on
+            # ANY assignment rather than on the one being shadowed: `picked_model` is a single
+            # mode-independent field, so a narrower clear is not expressible without reshaping it.
+            project.control.pick(None)
+            return new_catalog
+        finally:
+            self._turn_lock.release()
 
     def history(self, conversation: str | None = None) -> list[dict]:
         """Reads straight from the app's directory on the volume, so the transcript is available

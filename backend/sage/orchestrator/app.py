@@ -889,8 +889,33 @@ async def set_model(request: Request) -> JSONResponse:
         except ValueError as e:
             return JSONResponse(status_code=400, content={"error": str(e)})
     if "catalog" in body:
-        orchestrator.set_catalog(**(body.get("catalog") or {}))
+        try:
+            orchestrator.set_catalog(**(body.get("catalog") or {}))
+        except ValueError as e:
+            # A slot name the catalog does not have. The panel only ever sends names this route's
+            # GET returned, so if it appears the bug is in Sage — but it arrives over the wire, and
+            # a 500 is the wrong way to say so.
+            return JSONResponse(status_code=400, content={"error": str(e)})
+        except TurnBusy as e:
+            # 409, as everywhere else the turn lock refuses: the request is well formed and what is
+            # in the way is a build this change would move onto another model mid-turn. The sentence
+            # is the service's — only that side knows a running turn from a wedge (#97).
+            return JSONResponse(status_code=409, content={"error": str(e)})
     return JSONResponse(content=project.status())
+
+
+@control_app.get("/api/project/model/assignments")
+def model_assignments() -> JSONResponse:
+    """What the model panel draws: the three assignable slots and the Aliases they can hold (#17).
+
+    Its own route rather than a field on `/api/project/status`, which the UI polls: this makes a
+    gateway listing and an endpoint listing, and paying for those on every poll to answer a drawer
+    that is almost always closed is the cost `_endpoint_listing` exists to avoid.
+
+    It is also what re-verifies a save. The panel writes, then reads this again — so the check runs
+    against the assignment that just landed, without a second cache to keep true.
+    """
+    return JSONResponse(content=orchestrator.model_assignments())
 
 
 @control_app.post("/api/project/sync")
@@ -1958,15 +1983,27 @@ def members() -> JSONResponse:
 
 
 @control_app.post("/api/project/build/stop")
-def stop_build() -> JSONResponse:
-    """Stop the in-flight turn, whichever mode started it. A Build turn is interrupted, its file
-    changes reverted and its turn dropped from history, as if it never happened. A Chat turn is
-    interrupted and keeps what it already wrote.
+async def stop_build(request: Request) -> JSONResponse:
+    """Stop the in-flight turn. A Build turn is interrupted, its file changes reverted and its turn
+    dropped from history, as if it never happened. A Chat turn is interrupted and keeps what it
+    already wrote.
 
     Stop ends ONE turn and the queue behind it advances (#79): you stopped that answer, not your
-    other questions. Dropping a question you have changed your mind about is Cancel's job, below."""
-    orchestrator.stop_build()
-    return JSONResponse(content={"stopped": True})
+    other questions. Dropping a question you have changed your mind about is Cancel's job, below.
+
+    An optional `{kind, conversation}` body names the turn the Stop was aimed at, and it is declined
+    when that turn is no longer the one running (#126) — the queue can hand the lock on between the
+    press and the POST. No body means "stop whatever is running", which is what this always did and
+    what a caller with one turn to mean still sends."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    stopped = orchestrator.stop_build(kind=str(body.get("kind") or ""),
+                                      conversation=str(body.get("conversation") or ""))
+    return JSONResponse(content={"stopped": stopped})
 
 
 @control_app.get("/api/project/build/state")

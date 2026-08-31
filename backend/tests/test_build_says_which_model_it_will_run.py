@@ -50,13 +50,17 @@ def test_plan_offers_the_catalog_with_its_own_slot_as_the_default():
     (row,) = _drawn([{"mode": "plan"}])
     assert row["offered"] is True
     assert row["label"] == f"{PLAN_MODEL} (default)"
-    labels = [i["label"] for i in row["items"] if "group" not in i]
+    # `.get`, because a divider is an item with neither key nor label — JSON drops both.
+    labels = [i.get("label") for i in row["items"] if "group" not in i]
     assert f"{PLAN_MODEL} (default)" in labels
     assert IMPLEMENT_MODEL in labels
     # `ask` points at the plan model in the fixture. The menu offers MODELS, so that is one row,
     # not two identical ones the person has to choose between.
     assert labels.count(f"{PLAN_MODEL} (default)") == 1
-    assert len(labels) == 2
+    # Two models, then the way through to the assignments (ADR-0017). The divider between them
+    # carries no label, which is what the filter drops.
+    assert [l for l in labels if l] == [
+        f"{PLAN_MODEL} (default)", IMPLEMENT_MODEL, "Model assignments…"]
 
 
 def test_implement_marks_its_own_slot_rather_than_plans():
@@ -98,23 +102,31 @@ def test_the_default_row_clears_the_override_rather_than_setting_it():
     assert row["afterLabel"] == f"{IMPLEMENT_MODEL} (default)"
 
 
-def test_ask_mode_does_not_offer_an_override():
-    """`llm_router` returns ASK_PINNED without ever reading `picked_model`, so a menu here would be
-    a control that does nothing. It still says which model answers, and why that is fixed."""
+def test_ask_offers_no_override_but_is_no_longer_a_dead_control():
+    """`llm_router` returns ASK_PINNED without ever reading `picked_model`, so an override menu here
+    would be a control that does nothing — that much is unchanged. What changed is the other half:
+    the assignment behind the slot IS settable now (ADR-0017), so the chip is a door rather than a
+    disabled label. A disabled control with a working door behind it is the worst of both."""
     (row,) = _drawn([{"mode": "ask"}])
     assert row["offered"] is False
-    assert row["disabled"] is True
+    assert row["disabled"] is False
     assert row["label"] == PLAN_MODEL  # the fixture's ask slot
-    assert "can't be changed" in row["why"]
-    assert "Switch to Plan or Implement" in row["why"]
+    # One slot, two consumers: `_resolve_chat` returns `catalog.ask` as CHAT_DEFAULT, so a person
+    # setting this repoints Chat as well and has to be told before they do it.
+    assert "so does Chat" in row["why"]
 
 
-def test_auto_names_the_phases_model_without_offering_to_change_it():
+def test_auto_names_the_phase_it_is_in_rather_than_just_a_model():
     """Auto is the other mode the router will not honour a pick in — it answers from the phase, not
-    from `picked_model`. Same treatment as Ask, for the same reason."""
+    from `picked_model`. So it gets the same door and not a menu.
+
+    The label carries the phase because Auto has no model of its own: it runs Plan's assignment
+    while it plans and Implement's while it builds, so a bare id changes under the person with
+    nothing on screen to say why."""
     (row,) = _drawn([{"mode": "auto"}])
     assert row["offered"] is False
-    assert row["disabled"] is True
+    assert row["disabled"] is False
+    assert row["label"] == f"{PLAN_MODEL} · planning"
     assert PLAN_MODEL in row["why"] and IMPLEMENT_MODEL in row["why"]
 
 
@@ -129,12 +141,18 @@ def test_the_picker_closes_while_a_build_is_running():
     assert "This turn is running on" in row["why"]
 
 
-def test_the_unchangeable_picker_can_actually_be_hovered():
-    """A browser dispatches no mouse events on a disabled button, so a Tooltip wrapped straight
-    round one never opens — the explanation for every closed state above would be written and
-    unreachable. The wrapper is the only thing that makes it a sentence a person can get to."""
-    for row in _drawn([{"mode": "ask"}, {"mode": "auto"}, {"mode": "plan", "running": True}]):
-        assert row["wrapsDisabledIn"] == "span", row["step"]
+def test_the_one_closed_state_left_can_actually_be_hovered():
+    """A browser dispatches no mouse events on a disabled button, so a Tooltip wrapped straight round
+    one never opens — the explanation would be written and unreachable. The wrapper is the only thing
+    that makes it a sentence a person can get to.
+
+    Only one state still needs it. Ask and Auto are live controls now, and a Tooltip on an enabled
+    button opens without help; a running turn is the last thing that closes this control."""
+    (running,) = _drawn([{"mode": "plan", "running": True}])
+    assert running["disabled"] is True
+    assert running["wrapsDisabledIn"] == "span"
+    for row in _drawn([{"mode": "ask"}, {"mode": "auto"}]):
+        assert row["disabled"] is False, row["step"]
 
 
 def test_an_override_naming_the_pinned_model_still_reads_as_the_default():

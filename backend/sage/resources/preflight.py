@@ -176,6 +176,30 @@ class EndpointProblem:
                 "status": self.status, "message": self.message}
 
 
+def alias_problem(alias_name: str, aliases: list[LlmAlias],
+                  endpoints: list[HostedEndpoint] | None) -> str | None:
+    """Why picking this Alias would not work, or None when there is nothing to say.
+
+    The same join `slots_on_dead_endpoints` makes, asked one Alias at a time and phrased for someone
+    who is choosing rather than someone who already chose: a slot is not named, because the reader is
+    looking at a menu row and has not picked a slot for it yet.
+
+    Prevention rather than a good error message. `/v1/models` filters on permission alone, so a
+    granted Alias whose Hosted GenAI Endpoint is stopped is offered anyway (#21) — and assigning one
+    is exactly how a build comes to fail opaquely mid-turn.
+    """
+    found = endpoint_status(alias_name, aliases, endpoints)
+    if found is None:
+        return None
+    endpoint, status = found
+    return brand.text(
+        "Its Hosted GenAI Endpoint {endpoint} is {status}, so turns using it will fail. {remedy}.",
+        endpoint=endpoint,
+        status=status,
+        remedy=endpoint_remedy(status, "pick a different model"),
+    )
+
+
 def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
                             endpoints: list[HostedEndpoint] | None) -> list[EndpointProblem]:
     """The configured slots whose Alias resolves but whose endpoint will not answer, in SLOTS order.
