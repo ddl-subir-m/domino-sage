@@ -377,16 +377,10 @@ window.SW = window.SW || {};
       items: [
         { key: 'browse', label: SW.brand.text('Browse {platformName}…') },
         { key: 'upload', label: 'Upload a file' },
-        // "a new {dataSource}", not "a {dataSource}": there is no article engine, and the article
-        // has to sit against a word the pack cannot change. The toast below already said "new".
-        { key: 'connect', label: SW.brand.text('Connect a new {dataSource}') },
       ],
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
         if (key === 'upload') return fileRef.current && fileRef.current.click();
-        return antd.message.info(
-          SW.brand.text('Connecting a new {dataSource} is not wired up in this prototype.')
-        );
       },
     };
 

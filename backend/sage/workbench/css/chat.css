@@ -63,6 +63,10 @@
 }
 .sw-thread:hover { background: var(--gray-200); }
 .sw-thread.is-active { background: var(--purple-100); }
+/* The row for a conversation that has not been started yet. It is the selected row and it stays
+   one, so it keeps every other thread style — but nothing happens when it is clicked, and a
+   pointer promising otherwise is the row lying about itself. */
+.sw-thread.is-pending { cursor: default; }
 .sw-thread-main { flex: 1; min-width: 0; }
 /* Two lines before it truncates. A flat history is scanned by title, and a
    title cut off at "Desk limits moved to the ne" is not scannable. */
