@@ -112,11 +112,6 @@ window.SW = window.SW || {};
     // question is queued now rather than refused (#79) — so what is left is whether to show the
     // turn bar and offer Stop.
     chatRunning: false,
-    // The conversation whose Chat turn THIS tab is streaming, or null. Not the same question as
-    // `chatRunning`: a turn started in another tab, or before a reload, is running with nobody here
-    // reading it. Knowing which lets the composer say whether the turn holding it up is the one on
-    // screen — "wait" and "wait, over there" send someone to different places.
-    chatTurnThread: null,
     // WHICH turn holds the lock, as `{kind, conversation}` (#126). `chatRunning` and `buildRunning`
     // above answer "is the Project busy" and are read by the controls that must not fire during
     // ANY turn — Reset app, the app switcher, the model override. This answers the narrower
@@ -1316,9 +1311,14 @@ window.SW = window.SW || {};
   // Is the turn holding the lock the one on THIS screen? Both halves have to match: a Chat turn and
   // a Build turn in one Conversation are both yours, and only one of them is what you are looking at
   // (#126). False for a wedge and for a publish, which is right — neither is a turn to Stop.
-  function runningTurnHere(kind, conversationId) {
+  // `appId` is the third axis and only Build passes one: the Build transcript is ONE app's log for
+  // one Conversation, so a build you switched the rail away from is as invisible as one in another
+  // conversation (#126, #77). A running turn with no app — every Chat turn, and any build whose app
+  // could not be read — matches whatever is on screen, so the Stop bar fails towards being offered.
+  function runningTurnHere(kind, conversationId, appId) {
     const t = state.runningTurn;
-    return !!(t && t.kind === kind && conversationId && t.conversation === conversationId);
+    if (!t || t.kind !== kind || !conversationId || t.conversation !== conversationId) return false;
+    return !t.app || !appId || t.app === appId;
   }
 
   // The other side of the same question, for the line a mode shows INSTEAD of Stop. Only ask it
@@ -1327,12 +1327,20 @@ window.SW = window.SW || {};
   // `href` is null when the holder has no identity. Publish, reset and the other raw-lock callers
   // never queued, so there is nowhere to send anyone and nothing to stop; saying the workspace is
   // busy is the honest answer, and it is also what stops a Stop button rendering over a publish.
-  function runningTurnElsewhere(kind, conversationId) {
+  function runningTurnElsewhere(kind, conversationId, appId) {
     const t = state.runningTurn;
     if (!t) return { text: 'The workspace is busy.', href: null };
-    if (runningTurnHere(kind, conversationId)) return null;
-    const row = (state.threads || []).find((x) => x.id === t.conversation);
+    if (runningTurnHere(kind, conversationId, appId)) return null;
     const what = t.kind === 'chat' ? 'Chat is answering' : 'Build is running';
+    // Name the axis that actually DIFFERS. A build running in this very conversation on another
+    // Built App, described by its conversation, names the place you are already standing and links
+    // you back to it — a sentence that answers nothing and a link that goes nowhere.
+    if (t.conversation === conversationId && t.app && t.app !== appId) {
+      const app = (state.apps || []).find((a) => a.id === t.app);
+      return { text: `${what} in ${(app && app.name) || 'another app'}`,
+               href: `#/build/${t.conversation}?app=${t.app}` };
+    }
+    const row = (state.threads || []).find((x) => x.id === t.conversation);
     return { text: `${what} in ${(row && row.title) || 'another conversation'}`,
              href: `#/${t.kind}/${t.conversation}` };
   }
@@ -2761,11 +2769,19 @@ window.SW = window.SW || {};
     runningTurnHere,
     runningTurnElsewhere,
 
+    // A Stop names the turn it meant, so the server can refuse to fire it at another one (#126).
+    // Refused is not failed, and it is not silent either: the press did nothing, and the turn bar
+    // re-rendering into a different sentence is the only other thing that would say so — which it
+    // cannot when the reason is simply that the turn ended a moment before the POST landed.
     async stopBuild() {
       state.buildTyping = 'Stopping…';
       notify();
-      await SW.api.stopBuild({ kind: 'build',
-                               conversation: (state.thread && state.thread.id) || '' });
+      const res = await SW.api.stopBuild({
+        kind: 'build',
+        conversation: (state.thread && state.thread.id) || '',
+        app: (state.activeApp && state.activeApp.id) || '',
+      });
+      if (res && res.stopped === false) antd.message.info('That turn had already finished.');
       await store.loadBuild({ keepPreview: true });
     },
 
@@ -2917,7 +2933,6 @@ window.SW = window.SW || {};
       liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
-      state.chatTurnThread = turnThread;
       notify();
 
       const assistant = {
@@ -3078,7 +3093,6 @@ window.SW = window.SW || {};
         // several turns alive at once now, and the flag says "this project is busy", not "this
         // conversation is busy" — so it stays true while any of them is still here.
         state.chatRunning = liveChatTurns > 0;
-        if (!state.chatRunning) state.chatTurnThread = null;
         if (mine()) state.typing = null;
         notify();
       }
@@ -3106,8 +3120,11 @@ window.SW = window.SW || {};
       state.typing = 'Stopping…';
       notify();
       try {
-        await SW.api.stopBuild({ kind: 'chat',
-                                 conversation: (state.thread && state.thread.id) || '' });
+        const res = await SW.api.stopBuild({
+          kind: 'chat',
+          conversation: (state.thread && state.thread.id) || '',
+        });
+        if (res && res.stopped === false) antd.message.info('That turn had already finished.');
       } catch (err) {
         antd.message.error(String((err && err.message) || err));
         state.typing = null;
@@ -3136,7 +3153,6 @@ window.SW = window.SW || {};
         return;
       }
       // The lock is free, so nothing is running whatever this tab still believes.
-      state.chatTurnThread = null;
       state.typing = null;
       notify();
       // It finished while nothing here was listening, so the transcript on screen is behind.

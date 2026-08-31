@@ -255,3 +255,27 @@ def test_a_wedged_lock_reports_no_turn(tmp_path: Path):
     state = orch.turn_state()
     assert state["wedged"] is True
     assert state["running_turn"] is None
+
+
+def test_a_stop_aimed_at_another_app_does_not_reach_this_build(tmp_path: Path):
+    """The Conversation is not the whole identity of a build. The rail is free to move while a turn
+    streams (`_pin_turn_app`, #77) and the Build transcript is ONE app's log for one Conversation, so
+    a build you switched away from is exactly as invisible as one in another conversation — and a
+    Stop gated on the Conversation alone would reach it anyway."""
+    oc = WatchedOpenCode(tmp_path / "mnt" / "code", [Turn(text="building")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    oc.stay_running = True
+    build, build_done = _stream(orch.build_stream("add a chart", conversation=tid))
+    _wait_for(lambda: any(s.get("running_turn") for s in oc.seen))
+
+    running = orch.turn_state()["running_turn"]
+    assert running["app"], "the running build turn did not name the app it writes into"
+
+    before = oc.interrupted
+    assert orch.stop_build(kind="build", conversation=tid, app="another-app") is False
+    assert oc.interrupted == before, "a Stop aimed at another app stopped this build"
+
+    assert orch.stop_build(kind="build", conversation=tid, app=running["app"]) is True
+    assert build_done.wait(30) is True

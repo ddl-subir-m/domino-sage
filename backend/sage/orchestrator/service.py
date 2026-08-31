@@ -337,7 +337,7 @@ class _TurnTicket:
     before the ticket is admitted, because a queue with nothing in front of it makes a turn running
     in the same call."""
 
-    __slots__ = ("conversation", "granted", "id", "kind", "outcome", "snapshot")
+    __slots__ = ("app", "conversation", "granted", "id", "kind", "outcome", "snapshot")
 
     def __init__(self, ticket_id: str) -> None:
         self.id = ticket_id
@@ -346,6 +346,12 @@ class _TurnTicket:
         self.granted = False    # the verdict the entry point reads: did this turn get to run?
         self.kind = ""          # "build" | "chat" — the screen this turn can be stopped from
         self.conversation = ""
+        # Which Built App a build turn writes into. The Conversation is not enough on its own: the
+        # Build transcript is one app's log for one Conversation, and the rail is free to move while
+        # a turn streams (`_pin_turn_app`, #77) — so a Stop gated on the Conversation alone is aimed
+        # at a build you stopped being able to see the moment you switched apps. Empty for Chat,
+        # which writes Artifacts under the Thread rather than into an app.
+        self.app = ""
 
 
 class _TurnQueue:
@@ -2424,7 +2430,8 @@ class Orchestrator:
         return {"running": self.turn_busy(), "wedged": self._turn_wedged,
                 "pending": self._turns.depth(),
                 "running_turn": None if (self._turn_wedged or running is None) else
-                                {"kind": running.kind, "conversation": running.conversation}}
+                                {"kind": running.kind, "conversation": running.conversation,
+                                 "app": running.app}}
 
     def cancel_pending_turn(self, ticket_id: str) -> bool:
         """Drop a turn that is still waiting in line. False when there is no such turn (#79).
@@ -5242,6 +5249,19 @@ class Orchestrator:
         yield {"type": "error", "message": turn_busy_message(wedged=True)}
         yield {"type": "done", "ok": False, "decision": "wedged"}
 
+    def _turn_app_id(self) -> str:
+        """Which Built App a turn is aimed at, for the identity a Stop is checked against (#126).
+
+        Best-effort like `_turn_snapshot`, and for the same reason: an app that cannot be read gives
+        an empty id, which matches any app rather than none. Failing open means a build whose app we
+        could not name is still stoppable from the screen it is running on; failing closed would
+        make it stoppable from nowhere."""
+        try:
+            return self.project(start_preview=False, seed_app=False).workspace.app_id or ""
+        except Exception:
+            log.exception("turn identity: could not read the app this turn is aimed at")
+            return ""
+
     def _turn_snapshot(self, conversation: str | None, *, app: bool) -> dict:
         """What a pending turn was written against, to be compared with the live context when it
         reaches the front of the queue (#79).
@@ -5290,6 +5310,7 @@ class Orchestrator:
         # `admit()`, so a ticket named afterwards would be running and anonymous in between (#126).
         ticket.kind = kind
         ticket.conversation = conversation or ""
+        ticket.app = self._turn_app_id() if app else ""
         if self._turns.admit(ticket):
             ticket.granted = True
             return
@@ -7351,7 +7372,7 @@ class Orchestrator:
                 return self._workspace_id
         return None
 
-    def stop_build(self, kind: str = "", conversation: str = "") -> bool:
+    def stop_build(self, kind: str = "", conversation: str = "", app: str = "") -> bool:
         """Interrupt the turn in flight — Build or Chat. Both poll `stop_requested` and
         both clear it as they unwind; Build also reverts the files and history the turn wrote,
         Chat keeps what it wrote (see _chat_stream, _build_stream's handle_stop).
@@ -7382,6 +7403,10 @@ class Orchestrator:
             if kind and running.kind != kind:
                 return False
             if conversation and running.conversation != conversation:
+                return False
+            # An empty `running.app` matches anything: a Chat turn has no app, and a build whose app
+            # could not be read must not become unstoppable over a field nobody could fill.
+            if app and running.app and running.app != app:
                 return False
         project = self.project()
         project.stop_requested = True

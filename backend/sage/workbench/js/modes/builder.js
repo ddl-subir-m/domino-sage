@@ -1042,14 +1042,16 @@ window.SW = window.SW || {};
                 h(
                   'div',
                   { className: 'sw-build-stop' },
-                  SW.store.runningTurnHere('build', thread && thread.id)
+                  SW.store.runningTurnHere('build', thread && thread.id,
+                                           activeApp && activeApp.id)
                     ? h(
                       Button,
                       { size: 'small', danger: true, onClick: () => SW.store.stopBuild() },
                       'Stop'
                     )
                     : (() => {
-                      const away = SW.store.runningTurnElsewhere('build', thread && thread.id);
+                      const away = SW.store.runningTurnElsewhere('build', thread && thread.id,
+                                                                 activeApp && activeApp.id);
                       return h(
                         'span',
                         { className: 'sw-caption' },

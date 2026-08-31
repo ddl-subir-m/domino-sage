@@ -244,10 +244,17 @@ one project-wide boolean. So: stop a Build turn, the queue advances to a Chat tu
 Build spinner stays on, and a second press kills a question you never aimed at. Chat does the same
 in reverse. The bar also renders during a publish, where pressing it interrupts the session.
 
-**Stop refers to the turn you can see. The spinner refers to the Project.** The gate is `kind` AND
-`conversation`, not Conversation alone: a Chat turn and a Build turn in one Conversation are both
-yours, and only one of them is on screen. Where they do not match, the mode says what is running and
-where, and links there — *"Chat is answering in Sales rollup"*.
+**Stop refers to the turn you can see. The spinner refers to the Project.** The gate is `kind`,
+`conversation` AND, for a build, the Built App — not Conversation alone. A Chat turn and a Build turn
+in one Conversation are both yours, and only one of them is on screen; and the Build transcript is
+ONE app's log for one Conversation, so a build you pointed the rail away from is exactly as invisible
+as one in another Conversation. #77 already established that the rail moves under a running turn.
+That makes the app part of the turn's identity, not just of its target. Where they do not match, the
+mode says what is running and where, and links there — *"Chat is answering in Sales rollup"*.
+
+A turn with no app matches whatever is on screen, and that is deliberate. Chat has no app, and a
+build whose app could not be read must not become stoppable from nowhere; the identity fails towards
+offering the control, the way `_turn_snapshot` fails towards letting the turn run.
 
 The rejected alternative is a single honestly-labelled project-wide Stop: *"Stop — Chat is answering
 in Sales rollup"*. It is cheaper and it is still wrong, because the button sits under the Build
@@ -256,7 +263,7 @@ meant — which the link makes cheap, and which teaches where the turn went.
 
 The identity has to be written when the turn takes the lock, because neither half exists today.
 `Mode` (`router/models.py:14`) is `ask|plan|implement|auto` — model routing, not Chat-vs-Build — and
-`build_conversation` is the Build view's pin, not the running turn's. `_TurnTicket` is where both go:
+`build_conversation` is the Build view's pin, not the running turn's. `_TurnTicket` is where they go:
 it is already made per turn, so a queue that keeps the ticket it popped answers "what is running" and
 "what is waiting" from one object.
 

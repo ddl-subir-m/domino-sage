@@ -2002,7 +2002,8 @@ async def stop_build(request: Request) -> JSONResponse:
     if not isinstance(body, dict):
         body = {}
     stopped = orchestrator.stop_build(kind=str(body.get("kind") or ""),
-                                      conversation=str(body.get("conversation") or ""))
+                                      conversation=str(body.get("conversation") or ""),
+                                      app=str(body.get("app") or ""))
     return JSONResponse(content={"stopped": stopped})
 
 
