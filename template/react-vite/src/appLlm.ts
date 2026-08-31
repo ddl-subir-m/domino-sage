@@ -64,9 +64,15 @@ const models: Model[] = config.models?.length
     ? [{ alias: config.alias, displayName: config.displayName }]
     : [];
 
+// DESCRIBES the act rather than quoting a label, and that is the whole of why it reads this way.
+// The panel draws `Use in {app name}`, which a string compiled into the app cannot know — and the
+// one label it could safely quote, "Use in this chat", is the wrong scope sitting directly above
+// the right one in the same menu. Quoting a label this file cannot resolve is how it came to
+// promise "Use on" for a control that never existed (#127).
 const NO_MODEL =
   "This app has no language model yet. Whoever built it can add one in Sage: open the Resources " +
-  "panel and choose Use on an LLM Alias.";
+  "panel, find the LLM Alias, and choose the Use in action that names this app — not the one " +
+  "that names this chat.";
 
 /** The model a call means, or null when it names one this app does not use. */
 function pick(alias?: string): Model | null {

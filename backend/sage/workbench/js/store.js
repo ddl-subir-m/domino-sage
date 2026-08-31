@@ -1900,6 +1900,41 @@ window.SW = window.SW || {};
       });
     },
 
+    // Into the selected Built App -----------------------------------------
+    //
+    // The act ADR-0011 left unhung: it wrote the door out of a Binding and the door in stayed shut,
+    // so a Resource added to the Project after a plan crossed from Chat could never reach the app
+    // (#127). It lives beside the removals for their reason — the list that owns the scope owns the
+    // act — and the label names that scope, which is what tells it from `Use in this chat`.
+    //
+    // No confirm and no generation guard, unlike the removal below, and both absences are the
+    // point. Binding is additive and its undo is the `Remove from {app}` in the same menu; and that
+    // guard exists because a MODAL can sit open while the selection moves. With no modal the window
+    // is one request round trip, which is the window every other act in this panel already has.
+    async bindToApp(resource) {
+      // The BARE id, off `bindingKey`. Deriving it from `resource.id` would send the prefixed
+      // `llm_alias:al_1`, which resolves to no Alias, answers 404, and leaves the rail redrawing
+      // unchanged — a failure shaped exactly like success.
+      const key = resource.bindingKey;
+      if (!key || key.length < 2) return false;
+      const where = appScopeName();
+      const name = resource.name || key[1];
+      const gen = appGen;
+      let result;
+      try {
+        result = await SW.api.bind(key[0], key[1]);
+      } catch (err) {
+        antd.message.error(`${name} could not be added to ${where}: ${err.message}`);
+        return false;
+      }
+      // The route answers with the list it just wrote, so nothing is re-read — and the ticket is
+      // taken against `gen` for the removal's reason: a `/bindings` read that started before this
+      // and lands after it would take the new Binding back off the screen.
+      applyAppScope(appScopeTicket(gen), { bindings: result.bindings || [] });
+      notify();
+      return true;
+    },
+
     // Out of the selected Built App ---------------------------------------
     //
     // The third of the three removal scopes. Both acts live here — beside the list that owns the

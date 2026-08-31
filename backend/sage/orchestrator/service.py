@@ -3410,8 +3410,17 @@ class Orchestrator:
                          "Attach it in the Data panel, then ask again.")
         if unbound:
             shown = ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in unbound)
-            lines.append(f"Couldn't use {shown} — this app isn't connected to it. "
-                         "Connect it in the Resources panel, then ask again.")
+            # Named, because a Project holds many apps (ADR-0008) and "this app" is the one word
+            # that cannot say which of them is missing the Binding. Through `_app_display_name` and
+            # not `display_name`, which is "" until somebody renames an app: this sentence quotes a
+            # menu label back at the reader, so it has to call the app what the rail calls it —
+            # plan title, or "Unnamed Built App" — or it sends them looking for a row of that name.
+            where = _app_display_name(project.app_for_turn())
+            # The act, spelled the way the menu spells it. The sentence this replaces sent people to
+            # the Resources panel for a control that was not there (#127) and called it "connecting",
+            # a word `CONTEXT.md` bans for exactly the confusion it caused here.
+            lines.append(f"Couldn't use {shown} — {where} doesn't use it yet. "
+                         f"Open the Resources panel and choose Use in {where}, then ask again.")
         return " ".join(lines)
 
     def _chat_context_note(self, project: Project) -> str:

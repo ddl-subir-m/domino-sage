@@ -138,7 +138,11 @@ const RESOURCE_GROUPS = {
     { id: 'data_source:ds_1', name: 'Market data EOD', kind: 'datasource' },
     { id: 'data_source:ds_9', name: 'Risk warehouse', kind: 'datasource' },
   ],
-  model_llm: [{ id: 'llm_alias:al_1', name: 'Claude Sonnet 4', kind: 'model_llm' }],
+  // `bindingKey` is what `SW.api.resources()` puts on every bindable row, and it is the only place
+  // the BARE id survives the prefixing — so a fixture without it could not ask the id-space question
+  // at all. The Data Source rows above gain theirs when their own door does (#129).
+  model_llm: [{ id: 'llm_alias:al_1', name: 'Claude Sonnet 4', kind: 'model_llm',
+    bindingKey: ['llm_alias', 'al_1'] }],
   model_predictive: [], tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
 };
 
@@ -180,6 +184,11 @@ const HISTORY = {
 };
 
 const calls = [];
+// The BODIES posted to `/bindings`, which `calls` cannot hold: it keys on method and path, and a
+// bind names its Resource in the body. The id space is the whole hazard (#99) — a Project row
+// carries `llm_alias:al_1` and a Binding carries the bare `al_1` — so a test that only knew the
+// request happened would pass on the prefixed id that binds nothing.
+const binds = [];
 let selected = 'app_a';
 // Every `useState(false)` starts open, for the step that reads what a fold holds.
 let expanded = false;
@@ -297,6 +306,19 @@ function route(path, init) {
   }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
+  // Recorded before the read below, which matches any method: a POST that fell through to it would
+  // answer with the unchanged list and look exactly like a bind that worked.
+  if (path === '/bindings' && init && init.method === 'POST') {
+    const body = JSON.parse(init.body || '{}');
+    binds.push(body);
+    const row = RESOURCE_GROUPS.model_llm.find((r) => r.id === `${body.kind}:${body.id}`);
+    bound[selected] = [
+      ...(bound[selected] || []),
+      { kind: body.kind, id: body.id, name: row ? row.name : body.id,
+        display_name: row ? row.name : body.id },
+    ];
+    return json({ bindings: bound[selected] });
+  }
   if (path === '/bindings') return json({ bindings: bound[selected] || [] });
   if (path === '/project') return json({ attached: attached[selected] || [] });
   // The two removal routes, answering what the real ones answer. Both report the app source that
@@ -719,7 +741,9 @@ function clickTag(mode, appName) {
   node.onClick({ stopPropagation() {} });
 }
 
-async function arrive(threadId, appId) {
+// `mode` is Build unless a step says otherwise. It is the router's, not a flag the panel reads, so
+// a step asking for Chat gets the mode the same way a person does — by being on that URL (#127).
+async function arrive(threadId, appId, mode) {
   // Copies, for the reason `bound` and `attached` are copies: publishing WRITES to a row, and the
   // fixture is shared by every step in the run.
   apps = APPS.map((a) => ({ ...a }));
@@ -732,6 +756,7 @@ async function arrive(threadId, appId) {
   timers.length = 0;
   timeouts.length = 0;
   calls.length = 0;
+  binds.length = 0;
   holding = null;
   held.length = 0;
   // Every step arrives at Build with the history shut, the way a page load does. The store is one
@@ -744,8 +769,9 @@ async function arrive(threadId, appId) {
   if (appId) await SW.store.selectApp(appId);
   await SW.store.loadApps();
   await SW.store.loadBuild();
-  sandbox.location.hash = `#/build/${threadId}?app=${selected}`;
-  SW.router.go(`#/build/${threadId}?app=${selected}`);
+  const at = `#/${mode || 'build'}/${threadId}?app=${selected}`;
+  sandbox.location.hash = at;
+  SW.router.go(at);
 }
 
 // --- the run ---------------------------------------------------------------
@@ -821,7 +847,7 @@ for (const step of steps) {
   // here rather than served, because `/project/resources` is not what this harness is about and the
   // only thing the panel needs from it is ids in the space Bindings can be joined on (#99).
   if (step.panel) {
-    await arrive(step.panel, step.select);
+    await arrive(step.panel, step.select, step.mode);
     await SW.store.reloadAttachments();
     SW.store.set({ resourceGroups: RESOURCE_GROUPS, resourcesLoading: false });
     // Emptied here rather than in `arrive`, for the reason the build step gives: what survives is
@@ -843,6 +869,39 @@ for (const step of steps) {
         .map((n) => (n.texts || []).join('')),
       parts: nodes.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
       words: words(nodes),
+    });
+    continue;
+  }
+
+  // The mirror of the removal below, on the other list. `Use in {app}` lives on a PROJECT row,
+  // because the app's own section holds only what it already binds — so the row this drives is the
+  // one that has no Binding yet. Found by the label's prefix for the same reason the removal is.
+  if (step.useIn) {
+    await arrive(step.thread, step.select);
+    await SW.store.reloadAttachments();
+    SW.store.set({ resourceGroups: RESOURCE_GROUPS, resourcesLoading: false });
+    said.length = 0;
+    calls.length = 0;
+    binds.length = 0;
+    const rows = panelContents(SW.ResourcePanel());
+    const row = rows.find((r) => r.section === 'Project resources' && r.texts.includes(step.useIn));
+    if (!row) {
+      throw new Error(
+        `no Project row ${step.useIn} — found ${JSON.stringify(rows.map((r) => r.texts))}`
+      );
+    }
+    const item = (row.items || []).find((i) => i.label.startsWith('Use in ')
+      && !i.label.startsWith('Use in this chat'));
+    if (item) await row.onMenu({ key: item.key });
+    report.push({
+      step: `useIn ${step.useIn}`,
+      item: item ? { key: item.key, label: item.label } : null,
+      // What reached the wire, which is the claim: `calls` proves a request happened, `posted`
+      // proves it named the right Resource.
+      posted: binds.slice(),
+      calls: calls.slice(),
+      app: (SW.store.get().activeApp || {}).name || null,
+      rows: panelContents(SW.ResourcePanel()),
     });
     continue;
   }

@@ -528,6 +528,11 @@ SW.api = {
   // next caller does not read.
   appHistory: () => request('/project/history').then((r) => r.history || []),
   bindings: () => request('/bindings'),
+  // The app-scoped ADD, mirror of the removal below and the other half of the pair ADR-0011 hung
+  // the door for. The id is BARE (`al_1`), never the Project row's prefixed one (`llm_alias:al_1`):
+  // the route resolves it against the live listing, so a prefixed id finds no Alias and answers 404
+  // — and the rail, already asked to refresh, redraws unchanged (#127).
+  bind: (kind, id) => post('/bindings', { kind, id }),
   // The two app-scoped removals (ADR-0011). Both answer with the app source that STILL uses what
   // just went — read by the route before the record goes, because a Data Source's queries are found
   // through the record — so neither caller has to scan anything to report it.

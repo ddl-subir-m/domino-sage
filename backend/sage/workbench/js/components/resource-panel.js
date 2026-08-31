@@ -150,6 +150,8 @@ window.SW = window.SW || {};
     required,
     highlighted,
     app,
+    // Set by the Project list only, and false everywhere the act would be wrong — see the call site.
+    canBind,
     // The Built App this row is a record of, and the record itself: `{ app, binding }` or
     // `{ app, attachment }`. Only the "In this app" rows carry it, because only they are the list
     // that owns that scope — a Project row's removal is the Project's (ADR-0011).
@@ -174,6 +176,9 @@ window.SW = window.SW || {};
             key: attached ? 'remove-resource-from-conversation' : 'mention',
             label: attached ? 'Stop using here' : 'Use in this chat',
           },
+          // Directly beneath the Conversation's act, because the two are the same verb at two
+          // scopes and the scope in the label is the whole of what tells them apart (ADR-0011).
+          ...(canBind && app ? [{ key: 'use-in-app', label: `Use in ${app.name}` }] : []),
           ...(resource.source === 'scratch'
             ? writableDatasets.length
               ? writableDatasets.map((d) => ({
@@ -210,6 +215,7 @@ window.SW = window.SW || {};
       if (key === 'remove-resource-from-conversation') {
         return SW.store.removeResourceFromConversation(resource.id);
       }
+      if (key === 'use-in-app') return SW.store.bindToApp(resource);
       if (key === 'remove-from-app') {
         return appScope.binding
           ? SW.store.removeBindingFromApp(appScope.binding)
@@ -228,6 +234,11 @@ window.SW = window.SW || {};
     );
     const secondary = required && app
       ? `Required by ${app.name}`
+      // The negative of the line above, and it outranks the Project-wide count below it because
+      // `canBind` is only ever true in Build — where the question on screen is what THIS app uses,
+      // not how popular the Alias is. In Chat the count keeps the slot (#127).
+      : canBind && app
+      ? `Not used by ${app.name}`
       : showsDependants && used.length
       ? `Used by ${used.length} ${used.length === 1 ? 'app' : 'apps'}`
       : resource.subtitle;
@@ -460,6 +471,13 @@ window.SW = window.SW || {};
           resource,
           required: requiredIds.has(resource.id),
           app: activeApp,
+          // Whether this row can gain a Binding for the selected app (#127). Build only: a Binding
+          // names exactly one app and Chat shows none, so the label would have no subject. Language
+          // models only, because they are the one kind whose bind takes a single argument — a Model
+          // API needs a credential (#128) and a Data Source needs a Scope (#129), and a row offering
+          // an act that cannot complete is the dead end this door exists to remove.
+          canBind: inBuild && Boolean(activeApp) && resource.kind === 'model_llm'
+            && Boolean(resource.bindingKey) && !requiredIds.has(resource.id),
           attached: attachedIds.has(resource.id),
           highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
             && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
