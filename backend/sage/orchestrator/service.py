@@ -1083,6 +1083,35 @@ def _looks_like_approval(prompt: str) -> bool:
     return bool(_APPROVAL_ONLY.match(text)) and bool(re.search(r"[a-z]", text, re.IGNORECASE))
 
 
+# The whole prompt says nothing but "try again" — used only while an approved plan is still live
+# because its build gave up (see _looks_like_retry). Anchored end to end for the same reason
+# _APPROVAL_ONLY is: "try again" retries that build, "try again with a bar chart" is a new request.
+_RETRY_ONLY = re.compile(
+    r"^(?:ok(?:ay)?|yes|yep|yeah|sure|please)?[\s,.!]*"
+    r"(?:(?:please|now|then|just|lets|let's)\s+)*"
+    r"(?:try|run|do|build|go)?\s*(?:it|this|that)?\s*"
+    r"(?:again|one more time|once more|retry)[\s,.!]*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_retry(prompt: str) -> bool:
+    """True when the whole prompt is the user saying "run that again".
+
+    Only consulted while a plan the user ALREADY approved is still live because its build gave up
+    without consuming it (see Workspace.read_plan_retry_step). There, "try again" means the
+    build, not the plan: re-planning it proposes a second plan for a request the user has already
+    approved, and the next failure proposes a third — the loop this exists to break.
+
+    Never consulted while a plan is merely awaiting approval. "Try again" typed at a plan card is
+    the user asking for a different plan, and that must keep gating. Conservative by construction,
+    like _looks_like_approval: anything carrying content beyond the retry itself builds normally."""
+    text = prompt.strip()
+    if not text or len(text) > 40:
+        return False
+    return bool(_RETRY_ONLY.match(text)) and bool(re.search(r"[a-z]", text, re.IGNORECASE))
+
+
 # Phrases that signal the user wants Sage to reach the internet this turn, in three parts: an
 # explicit URL, a standalone verb that only ever means "hit the web", or a fetch-ish verb sitting
 # before a web noun in the same sentence. Deliberately generous on vocabulary — the default is deny,
@@ -3427,8 +3456,19 @@ class Orchestrator:
             self._begin_conversation(conversation)
             project = self.project()
             self._pin_turn_app(project)
-            if _looks_like_approval(prompt) and (project.app_for_turn().read_plan() or "").strip():
-                yield {"type": "plan-stale", "note": "Approved in chat — building this plan."}
+            plan_app = project.app_for_turn()
+            live_plan = (plan_app.read_plan() or "").strip()
+            # And a bare "try again" means the same thing again, when the live plan is one an
+            # approve turn already started building and gave up on (a gateway error, a session that
+            # went quiet). That plan has been approved; sending it back through the gate proposes a
+            # second plan for the same request, and the next failure proposes a third. Read off the
+            # workspace's resume point rather than the words alone, because "try again" at a plan still
+            # WAITING for approval is a request for a different plan and must keep gating.
+            retry = bool(live_plan) and plan_app.read_plan_retry_step() > 0 and _looks_like_retry(prompt)
+            if live_plan and (retry or _looks_like_approval(prompt)):
+                yield {"type": "plan-stale",
+                       "note": ("Building the approved plan again." if retry
+                                else "Approved in chat — building this plan.")}
                 yield from self._approve_locked(user_text=prompt)
                 return
             # Before the Ask check and the gate: "remove everything you have built" is a change
@@ -6104,8 +6144,24 @@ class Orchestrator:
 
             if project.last_gateway_error is not None:
                 err = project.last_gateway_error
+                # This turn gave up, exactly as a wedged one does: the gateway never answered, so
+                # whatever the turn was asked to do did not happen. Said here so an approve turn's
+                # `finally` keeps the plan instead of archiving one it never built from — otherwise
+                # the person's "try again" is met with a fresh plan for the request they approved a
+                # minute ago. A phase says nothing: _phased_approve owns that build's outcome, and
+                # its failed phases are kept on disk rather than retried from the top.
+                if owns_turn:
+                    self._turn_gave_up = True
                 restore_mode()
-                yield persist({"type": "error", "message": f"model call failed: {err['message']}"})
+                message = f"model call failed: {err['message']}"
+                if owns_turn and is_approval:
+                    # The kept plan is invisible: the card's Approve button was spent the moment
+                    # this turn started, and what is left on screen is a gateway's 404. Say the one
+                    # sentence that gets the person out of here, on the row that stopped them.
+                    message += brand.text(
+                        '\n\nThe plan you approved is still here — say "try again" and '
+                        "{assistantName} will build it without planning it again.")
+                yield persist({"type": "error", "message": message})
                 yield persist({"type": "done", "ok": False, "decision": "gateway error"})
                 return
 
@@ -6474,9 +6530,21 @@ class Orchestrator:
         # before the toggle (or by a planner that ignored the format) builds the ordinary way rather
         # than half-phasing, which would be worse than not phasing at all.
         phased = bool(project.record.read_settings().get("phased_build")) and is_phasable(plan_md)
+        # Where an earlier attempt at this plan stopped, or 0 for a plan nobody has built from yet.
+        # Read here, before the build overwrites it, and only phasing can use it — an unphased build
+        # has no seam to resume at, so it runs the plan whole however far the last attempt got.
+        # A plan EDITED in the card resets it above (write_plan), which is the right answer: edited
+        # steps are different steps, and resuming into them would build a plan nobody approved.
+        resume_from = project.app_for_turn().read_plan_retry_step()
+        # And cleared straight away: the resume point belongs to the attempt that wrote it, and this
+        # is now a new one. Left standing, the number the LAST attempt died at would outlive a clean
+        # build and keep its plan alive for ever. What this turn owes is written by the two things
+        # that can know it — the give-up flag below, and a phase as it starts.
+        project.app_for_turn().set_plan_retry_step(0)
         try:
             if phased:
-                yield from self._phased_approve(project, plan_md, answers, user_text)
+                yield from self._phased_approve(project, plan_md, answers, user_text,
+                                                start_step=resume_from)
             else:
                 # The bubble is what the person did, not what we sent. Approving from the card passes
                 # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
@@ -6506,8 +6574,18 @@ class Orchestrator:
             # happened. `_turn_wedged` alone was too narrow — it is false after a stall the session
             # confirmed, which is exactly the case where the person is holding a Try again button and
             # the plan they would be retrying has just been archived out from under it.
-            if not self._turn_gave_up:
-                project.app_for_turn().archive_plan()
+            #
+            # One rule, two writers: a plan that still owes a build is not consumed. `_turn_gave_up`
+            # is the whole-turn version — nothing was built, so the retry starts from the top. A
+            # phased build writes its own step number instead (see _phased_approve), because it got
+            # somewhere before it died and the retry resumes there. Either way the plan stays live
+            # AND says so, which is what lets the next "try again" build it rather than re-plan it:
+            # a plan waiting for its first approval looks identical on disk.
+            app = project.app_for_turn()
+            if self._turn_gave_up and app.read_plan_retry_step() == 0:
+                app.set_plan_retry_step(1)
+            if app.read_plan_retry_step() == 0:
+                app.archive_plan()
 
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
         """The document the approved plan.md belongs to, or None.
@@ -6522,7 +6600,8 @@ class Orchestrator:
         docs = self._app_plan_docs(project)
         return docs[0] if docs else None
 
-    def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None):
+    def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None,
+                        start_step: int = 0):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -6532,6 +6611,11 @@ class Orchestrator:
 
         Owns everything a turn owns and a phase doesn't: the user's chat bubble, the whole-build
         revert point, the failure flag, the git commit, and the single terminal `done`.
+
+        `start_step` resumes an earlier attempt at this same plan rather than repeating it. A build
+        that died at phase 4 of 6 keeps phases 1-3 on disk (see the failure path below), so starting
+        over would buy a session per phase to redo work that is already there — and each redone
+        phase would be editing the files the first attempt wrote. 0 and 1 both mean "from the top".
         """
         import time
 
@@ -6571,6 +6655,24 @@ class Orchestrator:
         failed: tuple[PlanStep, str] | None = None
         notes: list[str] = []  # each finished phase's closing summary, handed to the ones after it
         for step in steps:
+            if step.n < start_step:
+                # Built by the attempt this one resumes, and still on disk. It gets its row so the
+                # transcript shows a whole plan rather than a build that opens at "step 4 of 6" with
+                # no account of the three before it — `kept` is what separates a phase this turn ran
+                # from one it inherited. No note for it: the notes are the phases' own closing
+                # summaries, they died with that turn's memory, and writing one on their behalf
+                # would put words in their mouths. The code is on disk and the next phase's brief
+                # already points at it ("the earlier steps are already done... read it if you need
+                # it"), which is the same standing this phase would have had anyway.
+                yield persist({"type": "step-done", "n": step.n, "total": len(steps),
+                               "ok": True, "kept": True})
+                continue
+            # Where a retry picks up, written BEFORE the phase runs rather than after it fails. A
+            # phase can end in ways that never come back here — a wedged session raises past this
+            # loop entirely — and the resume point has to survive all of them, not just the tidy
+            # failure below. Cleared on the success path; a plan that still owes a step is not
+            # archived (see _approve_locked).
+            project.app_for_turn().set_plan_retry_step(step.n)
             yield persist({"type": "step-start", "n": step.n, "total": len(steps),
                            "label": step.label, "files": step.files})
             outcome = yield from self._run_step(project, client, step, steps, answers, notes)
@@ -6580,6 +6682,9 @@ class Orchestrator:
                 # normal turn: the turn vanishes, files and transcript both.
                 project.snapshot.discard_to(base)
                 project.app_for_turn().truncate_history(history_baseline)
+                # Stop retires the plan, exactly as it does on an unphased build: the person said
+                # they don't want this, so nothing is owed a retry and _approve_locked archives it.
+                project.app_for_turn().set_plan_retry_step(0)
                 yield {"type": "stopped"}
                 return
             if outcome is not True:
@@ -6599,6 +6704,10 @@ class Orchestrator:
             # minutes of good work because step 4 of 6 broke is the worst available behaviour. What
             # we do instead is skip the commit (the durable record stays clean) and flag the failure,
             # which makes the next turn plan first via the existing failure-replan gate.
+            #
+            # Unless the next turn is "try again", which the resume point written before this phase
+            # ran now answers directly: the plan stays live, and the retry opens at the phase that
+            # broke rather than at a second plan card for a plan that is already approved.
             project.app_for_turn().set_last_turn_failed(True)
             # The finished phases are kept on purpose (above), so the app IS changed and still owes
             # the receipt for it — "which app now holds forty minutes of work" is exactly what this
@@ -6611,6 +6720,8 @@ class Orchestrator:
             return
 
         project.app_for_turn().set_last_turn_failed(False)
+        # Every phase ran, so the plan owes nothing and _approve_locked archives it as usual.
+        project.app_for_turn().set_plan_retry_step(0)
         project.app_for_turn().mark_built()
         # One card for the whole phased build, here rather than per phase — the phases swallow their
         # own terminal events for the same reason (#56).

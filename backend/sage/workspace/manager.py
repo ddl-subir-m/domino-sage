@@ -540,6 +540,8 @@ class Workspace:
         self.plan_path.parent.mkdir(parents=True, exist_ok=True)
         self.plan_path.write_text(text)
         self._set_live_plan_doc_id(plan_id)
+        # A new plan.md is a new plan, whatever the last one was owed (see read_plan_retry_step).
+        self.set_plan_retry_step(0)
 
     def live_plan_doc_id(self) -> str:
         """The plan document `plan.md` was written from, or "" if it was written without one —
@@ -557,6 +559,42 @@ class Workspace:
 
     def read_plan(self) -> str | None:
         return self.plan_path.read_text() if self.plan_path.exists() else None
+
+    def read_plan_retry_step(self) -> int:
+        """The step the live `plan.md` still owes a build from, or 0 when it owes none.
+
+        A plan the user approved is one-shot: the build consumes it and it is archived. A build that
+        DIDN'T happen consumes nothing, so the plan stays live and this says where to pick it up —
+        which is the one thing a live plan cannot say for itself. A plan waiting for its first
+        approval and a plan whose build died look identical on disk, and the two want opposite
+        answers to "try again": plan it again, or build it again.
+
+        A step number rather than a flag, because a phased build gets somewhere before it dies. Its
+        finished phases are kept on disk (see _phased_approve), so a retry that started over would
+        pay for a session per phase to redo work that is already there, and each redone phase would
+        be editing files the first attempt wrote. 1 is "from the top", which is also the whole of an
+        unphased build — there, the plan is the one step.
+
+        Lives in settings.json beside `livePlanDocId`, whose two writers are also this one's: any
+        new plan.md, and archiving the one that is live. Fails open on read — missing or corrupt
+        state reads as "owes nothing", the behaviour that predates this."""
+        raw = _read_settings_file(self._settings_path).get("planRetryFromStep")
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+
+    def set_plan_retry_step(self, step: int) -> None:
+        """Record the step the live plan owes a build from, or 0 to clear it. Best-effort, like
+        `set_last_turn_failed`: this runs on the terminal path of an approve turn, and a workspace
+        we cannot write to must not turn a finished build into an exception mid-stream. A lost write
+        just means the next "try again" plans first, which is today's behaviour."""
+        step = max(0, step)
+        try:
+            settings = _read_settings_file(self._settings_path)
+            if self.read_plan_retry_step() == step:
+                return
+            settings["planRetryFromStep"] = step
+            _write_settings_file(self._settings_path, settings)
+        except OSError:
+            pass
 
     @property
     def architecture_path(self) -> Path:
@@ -598,6 +636,7 @@ class Workspace:
             dest = archive_dir / f"{n:03d}{suffix}.md"
         self.plan_path.rename(dest)
         self._set_live_plan_doc_id("")   # nothing is live here now, so no document is the live one
+        self.set_plan_retry_step(0)   # and nothing live is owed a build
         return dest
 
     def read_archived_plan(self) -> str | None:
