@@ -536,6 +536,10 @@ SW.api = {
   detachFile: (path) => post('/project/files/detach', { path }),
   buildState: () => request('/project/build/state'),
   setBuildMode: (mode) => post('/project/model', { mode }),
+  // Build's model override. `pick` alone, without `mode`: ModelControl.pick is mode-independent
+  // and the router reads it only in Plan and Implement, so sending the mode too would re-assert a
+  // standing choice the picker never touched.
+  setBuildModel: (pick) => post('/project/model', { pick: pick || null }),
   setChatModel: (chat_model, reasoning_effort) =>
     post('/project/model', { chat_model: chat_model || null, reasoning_effort: reasoning_effort || null }),
   // The Conversation is optional and is what makes Undo on a handoff card readable after a
@@ -561,6 +565,13 @@ SW.api = {
   buildComplete: async () => ({}),
   buildFiles: () => empty(),
   buildPreview: async () => ({ url: './preview/' }),
+  // Off `BASE` on purpose: /healthz sits outside /api (app.py's _UNPROXIED), and it is the only
+  // route that says which open-weight models this gateway will accept as an override.
+  health: async () => {
+    const res = await fetch('./healthz');
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  },
 
   usage: async () => ({ rows: [] }),
   usageDimensions: async () => ({ dimensions: [] }),

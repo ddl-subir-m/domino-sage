@@ -171,6 +171,16 @@ window.SW = window.SW || {};
     // choice; `buildTurnMode` is what the in-flight turn is pinned to.
     buildMode: 'auto',
     buildTurnMode: 'auto',
+    // The pinned model for each slot, and the standing override on top of it. Build's picker draws
+    // both: the slot the current mode routes to is the "(default)", and `buildModel` is the user's
+    // choice against it. Empty means no override, which is what the pin is for.
+    catalog: null,
+    buildModel: '',
+    buildPhase: 'plan',
+    // Only ever non-empty on an `openai` gateway, where /healthz names the open-weight models this
+    // deployment will accept beyond the four configured slots. On Domino it is [], and the picker
+    // is the four slots alone.
+    openWeightModels: [],
 
     // Build is the project's history.jsonl, not the Chat Thread. Chat ↔ Build
     // is turning your head: the Thread stays selected, this transcript is the app's.
@@ -237,7 +247,15 @@ window.SW = window.SW || {};
     if (!m) return;
     state.buildMode = m.selected_mode || m.mode || state.buildMode;
     state.buildTurnMode = m.mode || state.buildTurnMode;
-    if (m.catalog && m.catalog.ask) state.catalogAsk = m.catalog.ask;
+    // Kept whole, not reduced to `ask`. Build's picker offers every slot and marks the one the
+    // current mode is pinned to, so a status that discarded the rest left the picker with nothing
+    // to draw — which is why Build had no picker at all.
+    if (m.catalog) {
+      state.catalog = m.catalog;
+      if (m.catalog.ask) state.catalogAsk = m.catalog.ask;
+    }
+    if ('picked_model' in m) state.buildModel = m.picked_model || '';
+    if (m.phase) state.buildPhase = m.phase;
     if ('chat_model' in m || m.chat_model === null) {
       state.model = m.chat_model || '';
     }
@@ -1495,6 +1513,27 @@ window.SW = window.SW || {};
       }
     },
 
+    // Build's override, which the router honours in Plan and Implement and ignores everywhere else
+    // (llm_router: Ask is pinned, and Auto follows the phase). `null` clears it and puts the mode
+    // back on its pinned slot — which is the "(default)" row in the menu.
+    async setBuildModel(pick) {
+      const previous = state.buildModel;
+      state.buildModel = pick || '';
+      notify();
+      try {
+        const status = await SW.api.setBuildModel(pick || null);
+        applyModelStatus(status);
+        notify();
+      } catch (err) {
+        // Put back, unlike the two above it. A refused mode change is visible in the next turn's
+        // behaviour; a refused model is not, so a control left showing the pick would name the
+        // wrong model for every build after it.
+        state.buildModel = previous;
+        notify();
+        antd.message.error(String((err && err.message) || err));
+      }
+    },
+
     async setChatModel(alias, effort) {
       state.model = alias || '';
       state.reasoningEffort = effort || null;
@@ -1509,13 +1548,16 @@ window.SW = window.SW || {};
     },
 
     async init() {
-      const [me, projects, charts, starters, notifications, brand] = await Promise.all([
+      const [me, projects, charts, starters, notifications, brand, health] = await Promise.all([
         SW.api.me(),
         SW.api.projects(),
         SW.api.charts(),
         SW.api.starters(),
         SW.api.notifications(),
         SW.api.brand().catch(() => state.brand),
+        // Extra options for Build's picker, not a health check. Caught, because a gateway that
+        // cannot answer this still has four working slots and a picker that must open.
+        SW.api.health().catch(() => null),
       ]);
       state.me = me;
       if (brand) {
@@ -1530,6 +1572,7 @@ window.SW = window.SW || {};
       state.starters = starters;
       state.notifications = notifications;
       state.ready = true;
+      state.openWeightModels = (health && health.open_weight_models) || [];
       state.resourcesLoading = true;
       notify();
       // A reload during a turn lands here with no stream and no memory of one. Ask the lock, so
