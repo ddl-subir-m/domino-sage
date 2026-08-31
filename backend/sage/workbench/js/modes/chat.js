@@ -27,10 +27,15 @@ window.SW = window.SW || {};
   //
   // It no longer means "you cannot ask anything else": a second question queues (#79), and the
   // composer below stays open. What it still means is that there is one turn to Stop.
+  //
+  // `chatRunning` says the Project is busy; it never said WHICH turn, so this bar used to offer a
+  // Stop over a Build turn and revert somebody's app (#126). The turn has a name now, so the Stop
+  // shows only for the Chat turn in this conversation and everything else gets the line.
   function TurnBar() {
-    const { chatRunning, chatTurnThread, thread } = SW.store.get();
+    const { chatRunning, thread } = SW.store.get();
     if (!chatRunning) return null;
-    const here = chatTurnThread && thread && chatTurnThread === thread.id;
+    const here = SW.store.runningTurnHere('chat', thread && thread.id);
+    const away = here ? null : SW.store.runningTurnElsewhere('chat', thread && thread.id);
 
     return h(
       'div',
@@ -40,11 +45,9 @@ window.SW = window.SW || {};
         { className: 'sw-caption' },
         here
           ? SW.brand.text('{assistantName} is working on this conversation.')
-          : SW.brand.text(
-            '{assistantName} is working elsewhere in this project. One turn runs at a time.'
-          )
+          : (away.href ? h('a', { href: away.href }, away.text) : away.text)
       ),
-      h(
+      here && h(
         Button,
         { size: 'small', danger: true, onClick: () => SW.store.stopChat() },
         'Stop'

@@ -384,19 +384,19 @@ def test_the_turn_state_route_reports_a_wedge_and_the_queue_depth(tmp_path: Path
     client = TestClient(appmod.control_app)
 
     assert client.get("/api/project/build/state").json() == {
-        "running": False, "wedged": False, "pending": 0}
+        "running": False, "wedged": False, "pending": 0, "running_turn": None}
 
     assert orch._turn_lock.acquire(blocking=False)
     events, finished = _stream(orch.chat_stream(tid, "anything at all"))
     _pending(events)
     assert client.get("/api/project/build/state").json() == {
-        "running": True, "wedged": False, "pending": 1}
+        "running": True, "wedged": False, "pending": 1, "running_turn": None}
 
     orch._turn_wedged = True
     orch._turns.fail_pending()
     assert finished.wait(20) is True
     assert client.get("/api/project/build/state").json() == {
-        "running": False, "wedged": True, "pending": 0}
+        "running": False, "wedged": True, "pending": 0, "running_turn": None}
 
 
 # ---- Stop, and Cancel, which are not the same control -------------------------------------------

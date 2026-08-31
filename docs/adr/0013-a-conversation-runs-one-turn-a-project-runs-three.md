@@ -129,7 +129,7 @@ compacts — and it is a real reason not to encourage very deep queues.
 
 **The transcript would lie about context.** Chips are read server-side at run time
 (`store.read_context(thread_id)`); the user bubble echoes attachments client-side at send time
-(`store.js:~2409`). Queue those apart and the bubble shows chips the turn did not use. See the
+(`store.js:~2504`). Queue those apart and the bubble shows chips the turn did not use. See the
 snapshot rule below.
 
 ## Six blockers, not four
@@ -234,6 +234,37 @@ build's result appears when you select that app. Per-app previews are now *possi
 Built Apps have their own directories) and are deliberately not in scope: building one grows this
 from "run turns at once" into "run apps at once". If it becomes a complaint it is its own issue.
 
+## Stop's referent
+
+Added 2026-08-31, after #126. The rule above says Stop "targets the running turn of one
+Conversation". Shipping N proved that half a rule — and the code did not follow even that half.
+
+`stop_build()` interrupts whichever turn holds the project-wide lock, and both Stop bars render off
+one project-wide boolean. So: stop a Build turn, the queue advances to a Chat turn you queued, the
+Build spinner stays on, and a second press kills a question you never aimed at. Chat does the same
+in reverse. The bar also renders during a publish, where pressing it interrupts the session.
+
+**Stop refers to the turn you can see. The spinner refers to the Project.** The gate is `kind` AND
+`conversation`, not Conversation alone: a Chat turn and a Build turn in one Conversation are both
+yours, and only one of them is on screen. Where they do not match, the mode says what is running and
+where, and links there — *"Chat is answering in Sales rollup"*.
+
+The rejected alternative is a single honestly-labelled project-wide Stop: *"Stop — Chat is answering
+in Sales rollup"*. It is cheaper and it is still wrong, because the button sits under the Build
+composer and no label overcomes placement. The accepted cost is one extra click to reach the turn you
+meant — which the link makes cheap, and which teaches where the turn went.
+
+The identity has to be written when the turn takes the lock, because neither half exists today.
+`Mode` (`router/models.py:14`) is `ask|plan|implement|auto` — model routing, not Chat-vs-Build — and
+`build_conversation` is the Build view's pin, not the running turn's. `_TurnTicket` is where both go:
+it is already made per turn, so a queue that keeps the ticket it popped answers "what is running" and
+"what is waiting" from one object.
+
+**A lock holder with no ticket is not a turn.** Publish, reset, create and delete app, the
+non-streaming build and the coalesced Chat save take the raw lock and never queue, so they have no
+identity to report. They read as *"the workspace is busy"* with no Stop — which is also what stops
+Stop being offered during a publish.
+
 ## Sequencing, which is a constraint and not a preference
 
 Two orderings are load-bearing.
@@ -256,16 +287,21 @@ commit-lock fix, at close to no extra cost. Doing them apart means computing tha
 ## Consequences
 
 **One code comment is already false and gets worse.** `service.py:2101` claims *"The UI already
-queues composer messages behind a live turn."* It does not — `store.js:2059` refuses
+queues composer messages behind a live turn."* It does not — `store.js:2154` refuses
 (`if (!text.trim() || state.buildRunning) return null`). The comment describes this ADR's N, written
 before it existed. Anyone reasoning about the turn lock from that docstring has been reasoning from
 a queue that was never built.
 
-**`chatRunning` stops being one flag.** `store.js:87` is deliberately project-wide today, and its
-comment explains why: *"a Chat turn, a Build turn and a turn another tab started are all the same
-fact here."* Under N it becomes "can I send" — which is always true — and under K it becomes
-per-Conversation. The single flag is not a bug being fixed; it is a correct model of K = 1 being
-replaced.
+**`chatRunning` stops being one flag** — but not the way this predicted. `store.js:87` is
+deliberately project-wide today, and its comment explains why: *"a Chat turn, a Build turn and a turn
+another tab started are all the same fact here."* Under N it does not become "can I send". #126 found
+`buildRunning` has six consumers doing two jobs, and five of them want the project-wide meaning they
+already have — Reset app (`composer.js:277`), the app-switcher rows (`builder.js:512`), the model
+override (`composer.js:644`), the plan block's pending state (`message-blocks.js:347`). Those are
+exclusion, and exclusion stays project-wide until the tree is split. Only the Stop bar wants the
+narrow one. So the flag is not replaced, it is joined: `running_turn` is added beside it and the old
+name keeps its five readers. `chatRunning` has one consumer (`chat.js:31`) and is the trivial case.
+Both names now mislead, which is a cleanup and not this change.
 
 **One-turn-at-a-time is recorded as a stage, not as doctrine.** Every rule here that reads like a
 restriction — Chat refusing to queue behind a Build, the project-wide wedge, the single preview —

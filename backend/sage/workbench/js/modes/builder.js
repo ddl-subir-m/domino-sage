@@ -1032,15 +1032,32 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-builder-chat-composer' },
+              // Stop refers to the turn you can see; the spinner refers to the Project (#126).
+              // `buildRunning` is still the project-wide fact — it is what disables Reset app and
+              // the app switcher below — so it decides whether anything shows here at all. What it
+              // no longer decides is whether that thing is a Stop: a Chat turn holding the lock
+              // gets the line and the link instead, because a button under the Build composer that
+              // ends a chat question is aimed at something nobody on this screen can see.
               buildRunning &&
                 h(
                   'div',
                   { className: 'sw-build-stop' },
-                  h(
-                    Button,
-                    { size: 'small', danger: true, onClick: () => SW.store.stopBuild() },
-                    'Stop'
-                  )
+                  SW.store.runningTurnHere('build', thread && thread.id)
+                    ? h(
+                      Button,
+                      { size: 'small', danger: true, onClick: () => SW.store.stopBuild() },
+                      'Stop'
+                    )
+                    : (() => {
+                      const away = SW.store.runningTurnElsewhere('build', thread && thread.id);
+                      return h(
+                        'span',
+                        { className: 'sw-caption' },
+                        away.href
+                          ? h('a', { href: away.href }, away.text)
+                          : away.text
+                      );
+                    })()
                 ),
               h(SW.Composer, {
                 onSend: (text) => SW.store.sendBuildPrompt(text),
