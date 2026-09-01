@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..orchestrator import brand
-from ..router.models import ModelCatalog
+from ..router.models import Mode, ModelCatalog
 from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
 from .provider import HostedEndpoint, LlmAlias
 
@@ -219,6 +219,93 @@ def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
         if found:
             problems.append(EndpointProblem(slot, alias, found[0], found[1]))
     return problems
+
+
+# ---- the same two questions, asked at the turn instead of at boot (#125) -------------------------
+
+
+def turn_slots(catalog: ModelCatalog, mode: Mode,
+               picked_model: str | None = None) -> list[tuple[str, str, bool]]:
+    """Every (slot, alias, was-picked) a Build turn in `mode` can route to, in SLOTS order.
+
+    Not the deployment catalog `unresolved_slots` is given at boot, and not one slot either. The
+    catalog passed here is the project's own (`_effective_catalog`), because a per-slot assignment
+    is what the turn will actually run on; and an Auto turn plans on one slot and implements on
+    another, so checking only the first request's model would let a dead implement slot fail the
+    build five tool calls in — which is the failure this exists to move earlier.
+
+    Precedence is `llm_router.resolve`'s, restated over slots rather than models: Ask is pinned and
+    never overridable, Plan and Implement take an explicit pick, and Auto ignores one. Two copies of
+    a rule drift, so if that order ever changes, this changes with it.
+
+    The escalation target is DELIBERATELY absent. A planning stall pins the plan-tier model for an
+    Implement retry (see `escalated_pick`), and in Implement mode that slot is one this turn may
+    never reach. Refusing a turn up front because a rescue path it probably will not take names a
+    dead Alias would stop builds that were going to succeed — a contingency turned into a refusal.
+    The mid-turn gateway-error path is the right owner for that one; it keeps the approved plan.
+
+    A blank slot is not reported, for the reason `unresolved_slots` gives.
+    """
+    if mode is Mode.ASK:
+        wanted = [("ask", catalog.ask, False)]
+    elif mode is Mode.PLAN:
+        picked = picked_model is not None
+        wanted = [("plan", picked_model if picked else catalog.plan, picked)]
+    elif mode is Mode.IMPLEMENT:
+        picked = picked_model is not None
+        wanted = [("implement", picked_model if picked else catalog.implement, picked)]
+    else:
+        wanted = [("plan", catalog.plan, False), ("implement", catalog.implement, False)]
+    return [(slot, (model or "").rsplit("/", 1)[-1], picked)
+            for slot, model, picked in wanted if (model or "").rsplit("/", 1)[-1]]
+
+
+def turn_refusal(slot: str, alias: str, aliases: list[LlmAlias],
+                 endpoints: list[HostedEndpoint] | None, *, picked: bool = False) -> str | None:
+    """Why this turn must not start, in the builder's own words, or None when there is nothing to say.
+
+    Both faults in one sentence, because to the person about to press Build they are one event: the
+    model this turn would run on will not answer. The same two joins `unresolved_slots` and
+    `slots_on_dead_endpoints` make, asked about one slot rather than all six.
+
+    Deliberately NOT `SlotProblem.message`. That one ends "or register {alias} in the LLM Gateway",
+    which is a maintainer's action on the gateway's own configuration — the person standing in the
+    Workbench cannot take it, and a refusal whose only remedy is somebody else's job is the dead end
+    #125 is about. Same fault, same two halves, a remedy the reader can reach from where they are.
+
+    `picked` changes the remedy and nothing else. An override chosen in the composer shadows the
+    slot's own model, so sending that reader to Model assignments would have them change a setting
+    this turn is not going to use.
+    """
+    where = ("pick a different model from the model menu beside the composer" if picked else
+             "open Model assignments from the model menu beside the composer and pick a "
+             f"different model for {slot}")
+    if alias not in {a.name for a in aliases}:
+        fault, remedy = "which this LLM Gateway does not offer", where
+    else:
+        found = endpoint_status(alias, aliases, endpoints)
+        if found is None:
+            return None
+        endpoint, status = found
+        fault = brand.text("whose Hosted GenAI Endpoint {endpoint} is {status}",
+                           endpoint=endpoint, status=status)
+        # Lower-cased because it lands mid-sentence here, where `EndpointProblem` starts a new one.
+        remedy = endpoint_remedy(status, where)
+        remedy = remedy[0].lower() + remedy[1:]
+    # One sentence with the subject swapped, rather than two written out: the fault and the
+    # consequence are the same either way, and only WHICH model the turn runs on differs. The pick
+    # is set off in dashes rather than commas so `fault` still reads against the Alias — with commas
+    # its "which…" clause lands on the slot's own model, which is the one that is NOT broken.
+    subject = brand.text(
+        "the {llmAlias} {alias} — picked in the composer over {assistantName}'s {slot} model —"
+        if picked else "{assistantName}'s {slot} model, the {llmAlias} {alias},",
+        alias=alias, slot=slot)
+    # "This turn", not "the build": the same gate runs on an Ask turn, which was never going to
+    # build anything and should not be told that a build has stopped.
+    return brand.text(
+        "This turn would run on {subject} {fault}. It would fail partway through, so nothing has "
+        "been started — {remedy}.",
+        subject=subject, fault=fault, remedy=remedy)
 
 
 def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],

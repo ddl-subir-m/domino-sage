@@ -813,6 +813,12 @@ window.SW = window.SW || {};
     'architecture ready': true,
     'reset offered': true,
     'incoming changes': true,
+    // A turn refused because the model it would run on will not answer (#125). Here for the same
+    // reason the four above are: the turn never ran, so the plan card must keep its Approve button.
+    // Without it the refusal names a remedy — change the model, approve again — that the person is
+    // left with no button to take. The `error` frame beside it already carries the whole sentence,
+    // so a "Stopped — model unavailable" line under it would only say it worse, twice.
+    'model unavailable': true,
   };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first

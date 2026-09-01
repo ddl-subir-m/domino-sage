@@ -87,6 +87,8 @@ from ..resources.preflight import (
     slots_on_dead_endpoints,
     stale_bindings,
     stale_message,
+    turn_refusal,
+    turn_slots,
     unresolved_slots,
 )
 from ..resources.provider import (
@@ -200,6 +202,28 @@ _CHAT_POLL_MESSAGES = 20
 # in the request body through OpenCode -> shim -> gateway -> provider; anything larger degrades to
 # its descriptor instead. Provider limits sit around 5 MB per image, so this stays well under.
 _MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
+
+# How long a turn-time slot check may reuse the gateway's Alias listing (#125). Sixty seconds, and
+# the number is chosen against what each side costs when it is wrong. Too long and a maintainer who
+# has just re-registered an Alias is refused for another minute; too short and a phased build pays a
+# round trip per phase, plus one for the plan turn and one for the approve, for an answer that
+# cannot have changed in between. What it is NOT protecting is a person fixing this from the
+# Workbench: the remedy the refusal names changes the CATALOG, which is read live and never cached,
+# so picking a different model takes effect on the very next turn.
+#
+# The endpoint half of the answer is the exception to that: "start that endpoint" is a remedy the
+# person may take on the platform rather than in the catalog, and endpoint status IS in the cached
+# pair. So a slot refused for a stopped endpoint can stay refused for one more window after the
+# endpoint comes back. Held anyway, because the alternative is a per-turn round trip for a fault
+# that takes minutes to appear and minutes to clear.
+_TURN_SLOT_TTL_S = 60.0
+
+# And a much longer one for "we could not check". A gateway that hangs rather than refuses costs
+# this check its whole timeout — two requests at 20s each — at the FRONT of a turn, with nothing on
+# screen to say why. Remembering the failure for a minute does not help: real builds are minutes
+# apart, so every one of them would pay it again. Five minutes bounds that to one hang per five,
+# and it is safe to hold for as long as we like, because this state never refuses anything.
+_TURN_SLOT_UNCHECKED_TTL_S = 300.0
 
 # Each explicit mode routes to a named opencode.json agent. Ask/Plan are read-only — their
 # `permission` block is enforced natively by OpenCode (edit/bash denied), not just hidden from the
@@ -2330,6 +2354,7 @@ class Orchestrator:
         gateway_ui_url: str | None = None,
         browser_gateway_base: str | None = None,
         opencode_client: OpenCodeClient | None = None,
+        gateway_mode: str = "fake",
     ) -> None:
         self._wm = WorkspaceManager(workspace_dir, template)
         self._project_id = project_id
@@ -2337,6 +2362,16 @@ class Orchestrator:
         self._catalog = catalog
         self._assets = assets or FakeAssetProvider()
         self._resources = resources or FakeResourceProvider()
+        # Which authority a model id resolves against, so the turn-time slot check (#125) knows
+        # whether an Alias listing is evidence about this turn at all. Only `domino` puts the models
+        # and the listing behind one gateway: in `openai` each model routes to its own vendor and in
+        # `fake` there is no gateway, so a slot missing from the listing there says nothing about
+        # the turn — and refusing on it would be the "we could not check" mistake in its worst form.
+        # The same gate `_run_slot_preflight` already applies at boot, for the same reason.
+        self._gateway_mode = gateway_mode
+        # The listing that check runs on, and when it was taken. See _TURN_SLOT_TTL_S.
+        self._slot_listings_at: float = 0.0
+        self._slot_listings: tuple[list | None, list | None] = (None, None)
         # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
         # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
         self._attach_max_bytes = _env_int("SAGE_ATTACH_MAX_BYTES", 500 * 1024 * 1024)
@@ -3572,6 +3607,16 @@ class Orchestrator:
                 if changed and self._incoming_dismissed.get(app.app_id) != found.head:
                     yield from self._incoming_offer(prompt, changed)
                     return
+            # Last of the gates, and the only one that costs a gateway call: the model this turn
+            # would route to, resolved against what the gateway will actually serve (#125). Here
+            # rather than at the top of the turn because the approve fork above runs on a different
+            # mode and checks itself — and because the two free gates should get their answer in
+            # first. Still before a session is opened and before a single prompt goes out.
+            refusal = self._slot_refusal_events(
+                project, project.control.snapshot().mode, user_text=prompt)
+            if refusal:
+                yield from refusal
+                return
             # A button answering the offer is a click, not a second typing of the request — the
             # prompt is already a bubble in the transcript, put there by _reset_offer. So the turn
             # gets the short line the click deserves, the way an Approve click does, instead of
@@ -6639,6 +6684,14 @@ class Orchestrator:
         # earlier set_mode-then-restore did move their picker, which meant a mode they changed while
         # the build streamed was reverted underneath them when it finished.
         run_as = Mode.IMPLEMENT if prior_mode in (Mode.PLAN, Mode.ASK) else None
+        # The same check `build_stream` makes, on the mode this turn will really run as (#125).
+        # Before `set_plan_retry_step(0)` and before the `finally` that archives the plan, so an
+        # approve refused for its model leaves the card, the plan and a phased build's resume point
+        # exactly as it found them — the person changes the model and presses Approve again.
+        refusal = self._slot_refusal_events(project, run_as or prior_mode)
+        if refusal:
+            yield from refusal
+            return
         # Phased only when the toggle is on AND the plan actually parsed into briefs. A plan written
         # before the toggle (or by a planner that ignored the format) builds the ordinary way rather
         # than half-phasing, which would be worse than not phasing at all.
@@ -8300,6 +8353,107 @@ class Orchestrator:
             "error": " ".join(errors) or None,
             "slots": problems,
         }
+
+    def _slot_listings_now(self) -> tuple[list | None, list | None]:
+        """The Aliases this gateway offers and the endpoints behind them, remembered briefly (#125).
+
+        `(None, None)` means the gateway would not answer — the same value a caller must read as
+        "we could not check", never as "the model is broken".
+
+        The endpoint listing is fetched for EVERY Alias rather than for the ones a particular turn
+        names, unlike `_endpoint_listing`'s callers. One cached pair then answers any turn, whatever
+        it routes to; keyed on one turn's slots it would be a cache that misses whenever the mode
+        changes, which is most of the time. The skip inside `_endpoint_listing` still applies, so an
+        all-vendor gateway pays nothing for the second call.
+        """
+        import time
+
+        ttl = _TURN_SLOT_TTL_S if self._slot_listings[0] else _TURN_SLOT_UNCHECKED_TTL_S
+        if self._slot_listings_at and time.monotonic() - self._slot_listings_at < ttl:
+            return self._slot_listings
+        answer: tuple[list | None, list | None] = (None, None)
+        try:
+            aliases = self._resources.list_llm_aliases()
+            endpoints, errors = self._endpoint_listing(aliases, {a.name for a in aliases})
+            for error in errors:
+                # Said out loud, because silence here reads as "no endpoint is stopped". A failed
+                # endpoint listing means every hosted slot goes unchecked, and nothing else would
+                # record that it did.
+                log.warning("turn preflight: could not check the endpoints behind this turn's "
+                            "model — %s", error)
+            if aliases:
+                answer = (aliases, endpoints)
+            else:
+                # A listing that ARRIVED and offered nothing is not evidence that a slot is wrong.
+                # `/v1/models` answering 200 with no usable `data` — a permission-cache blip, a token
+                # that momentarily resolves to no grants — reaches here as `[]`, not as an exception,
+                # and reading it as "every Alias is missing" would refuse every turn on this gateway
+                # with a remedy that cannot work: there is no model left to pick. Same rule as an
+                # unreachable gateway, because it is the same amount of knowledge.
+                log.warning("turn preflight: the gateway offered no models at all, so the model "
+                            "this turn will use went unchecked")
+        except ResourceUnavailable as e:
+            # Logged, not raised and not reported: a turn goes ahead on an unchecked slot, exactly
+            # as it did before this check existed.
+            log.warning("turn preflight: could not check the model this turn will use — %s", e)
+        self._slot_listings_at = time.monotonic()
+        self._slot_listings = answer
+        return answer
+
+    def _turn_slot_refusal(self, project: Project, mode: Mode) -> str | None:
+        """The sentence that stops this turn before it opens a session, or None to let it run (#125).
+
+        The boot check answers about a moment that has passed and about the DEPLOYMENT catalog, which
+        is not necessarily what a turn routes to: a project may have assigned its own model to a slot,
+        and the composer may be overriding one. This resolves what THIS turn would actually run on —
+        `_effective_catalog` through the shim, plus the standing pick, read through the same
+        precedence `llm_router` applies — and asks the gateway about that.
+
+        Every reason to say nothing is a reason to let the turn run. A gateway that will not answer,
+        a mode with no gateway behind it, a slot left blank: none of them is evidence that a model is
+        broken, and #125's fourth criterion turns on keeping "we could not check" a state rather than
+        a refusal.
+        """
+        if self._gateway_mode != "domino":
+            return None
+        wanted = turn_slots(project.shim.catalog, mode, project.control.snapshot().picked_model)
+        if not wanted:
+            return None
+        aliases, endpoints = self._slot_listings_now()
+        if aliases is None:
+            return None
+        # Every dead slot this turn would touch, not the first: an Auto turn routes to two, and
+        # naming one of them sends the person back to fix the other on the next attempt.
+        found = [m for slot, alias, picked in wanted
+                 if (m := turn_refusal(slot, alias, aliases, endpoints, picked=picked))]
+        for message in found:
+            log.error("turn preflight: %s", message)
+        return "\n\n".join(found) or None
+
+    def _slot_refusal_events(self, project: Project, mode: Mode,
+                             user_text: str | None = None) -> list[dict]:
+        """What a turn refused for its model owes the stream, or [] when it is cleared to run.
+
+        Written to the transcript as well as streamed, the way every other pre-turn refusal is
+        (`_ask_mode_refusal`, `_reset_offer`, `_incoming_offer`): the composer renders the person's
+        prompt optimistically, so a refusal the server never recorded leaves a reload showing neither
+        the question nor the answer. `user_text` is the prompt to keep — None on the approve path,
+        which has no typed prompt and whose "Approved the plan." bubble belongs to an approval that
+        did not happen.
+
+        `model unavailable` is a gate decision on the UI side, so the plan card keeps its Approve
+        button — otherwise the remedy this names has no button left to take it.
+        """
+        message = self._turn_slot_refusal(project, mode)
+        if message is None:
+            return []
+        out = [{"type": "error", "message": message},
+               {"type": "done", "ok": False, "decision": "model unavailable"}]
+        # The user's own bubble goes to history but not to the stream: the composer already put it
+        # on screen, and yielding it again would draw the prompt twice.
+        for ev in ([{"type": "user", "text": user_text}] if user_text else []) + out:
+            project.workspace.append_history(ev, project.build_conversation)
+        return out
 
     def preflight_bindings(self) -> dict:
         """Check this project's recorded Bindings against the gateway. One listing, at session open.

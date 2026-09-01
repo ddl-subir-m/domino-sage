@@ -80,4 +80,8 @@ const blocks = SW.store.get().buildMessages.flatMap((m) => m.blocks || []);
 console.log(JSON.stringify({
   values: blocks.filter((b) => b.type === 'status').map((b) => b.value),
   types: blocks.map((b) => b.type),
+  // Whether each plan card is still offering its buttons. A `done` decides this, so a transcript
+  // that drew the right sentence can still have taken the button that sentence points at (#125).
+  plans: blocks.filter((b) => b.type === 'build_plan')
+    .map((b) => ({ pending: !!b.pending, cancelled: !!b.cancelled })),
 }));

@@ -356,6 +356,9 @@ orchestrator = Orchestrator(
     cost_project_label=_COST_PROJECT_LABEL,
     gateway_ui_url=_gateway_ui_url(_COST_PROJECT_LABEL),
     browser_gateway_base=_browser_gateway_base(),
+    # Which authority a slot resolves against, so the turn-time slot check (#125) runs only where a
+    # gateway actually holds the Alias list — the same gate `_run_slot_preflight` applies below.
+    gateway_mode=GATEWAY_MODE,
 )
 
 # Preflight of Sage's own model slots (#17). Loud but not fatal: a slot resolves against the LLM
