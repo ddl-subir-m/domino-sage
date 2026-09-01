@@ -880,6 +880,38 @@ window.SW = window.SW || {};
     );
   }
 
+  // Build's fold of another app's Lead-in (ADR-0019). Build shows the SELECTED app's Lead-in, so
+  // every Chat turn that led to a different app folds — but it folds WHERE IT SAT, named and
+  // counted, because a transcript that simply dropped those turns would be the loss #57 was filed
+  // about wearing a different coat.
+  //
+  // Open is view state, held here and nowhere else: it closes on an app switch and on reload,
+  // because "show me those two turns" is a glance, not an answer a person gives once.
+  function LeadInFold({ block }) {
+    const [open, setOpen] = useState(false);
+    const turns = block.messages || [];
+    return h(
+      'div',
+      { className: 'sw-leadin' },
+      h(
+        'div',
+        { className: 'sw-leadin-head' },
+        h('span', { className: 'sw-leadin-face' },
+          `${block.count} turn${block.count === 1 ? '' : 's'} about ${block.appName}`),
+        h(
+          Button,
+          { type: 'link', size: 'small', onClick: () => setOpen(!open) },
+          open ? 'Hide the turns' : 'Show the turns'
+        )
+      ),
+      open && h(
+        'div',
+        { className: 'sw-leadin-turns' },
+        turns.map((message) => h(SW.Message, { key: message.id, message }))
+      )
+    );
+  }
+
   function FileCard({ block }) {
     const href = `./api/project/file/raw?path=${encodeURIComponent(block.path || '')}`;
     return h(
@@ -943,6 +975,8 @@ window.SW = window.SW || {};
         return h(AppChange, { block });
       case 'build_run':
         return h(BuildRun, { block });
+      case 'lead_in_fold':
+        return h(LeadInFold, { block });
       case 'plan_card':
         return h(SW.PlanCard, { planId: block.planId });
       case 'build_plan':

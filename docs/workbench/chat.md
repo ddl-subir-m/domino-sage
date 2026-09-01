@@ -253,6 +253,15 @@ preference (#52, `js/prefs.js`) decides which of them Chat draws.
   folds into one collapsed row — Chat has no preview pane, and twenty implementation turns would
   bury the questions around them.
 
+  The same read serves Build, and Build cuts it (ADR-0019): it has a preview bound to one app, so it
+  draws that app's build turns and that app's **Lead-in** — the Chat turns after the previous
+  handoff and before this app's first build turn. Chat is not cut, because it has no app to cut
+  against. The cut is made in `splitConversationHalves` (`js/store.js`), on the `at` stamps and
+  never on the merged index, and each gap it leaves draws a `lead_in_fold` block where the gap is,
+  naming the app whose Lead-in it holds and counting its turns. A turn nobody can place — after the
+  last handoff, with no `at` on it, or in a gap holding no request at all — is shown, and an app with
+  no build turn yet has no boundary and so applies no filter at all.
+
 `SW.prefs.get('conversationView')` has exactly one reader, `store.conversationMessages`. Everything
 downstream draws what the store handed it, so #61 can settle the question by deleting one branch.
 

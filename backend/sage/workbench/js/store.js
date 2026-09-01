@@ -1220,25 +1220,149 @@ window.SW = window.SW || {};
     return out;
   }
 
+  // Chat's handoff OFFER is Chat's alone — it offers a way over to Build, and both readers below
+  // are Build. See `applyBuildRead` for the two shapes it arrives in.
+  function isHandoffOffer(message) {
+    return (message.blocks || []).some((b) => b.type === 'plan_suggestion');
+  }
+
+  // The Chat turns this pane cut away, folded where they sat (ADR-0019). Nothing hidden is hidden
+  // silently: the face carries the count and the app whose Lead-in it holds, so a gap in the
+  // transcript reads as another app's work rather than as a hole.
+  //
+  // The name comes off the rail's app list, which Build has already read — `loadBuild` loads it
+  // beside this very read — the same way a `build_run` builds its face without a request of its
+  // own. Six folds in one Conversation therefore cost nothing.
+  async function leadInFoldMessages(hidden, handoff, selectedAppId) {
+    const out = [];
+    for (const gap of hidden || []) {
+      const app = (state.apps || []).find((a) => a.id === gap.appId);
+      const rows = (await historyToMessages(gap.rows, handoff)).filter((m) => !isHandoffOffer(m));
+      out.push({
+        // Keyed on the app ON SCREEN as well as the app the fold is about. Three apps in one
+        // Conversation can leave app_b's Lead-in folded at the same place under app_a and under
+        // app_c, and on the id alone React would reuse the component across the switch — carrying
+        // an open fold into a transcript the person has not looked at yet.
+        id: `lead_in_${selectedAppId || ''}_${gap.appId}_${gap.order}`,
+        role: 'system',
+        order: gap.order,
+        blocks: [{
+          type: 'lead_in_fold',
+          appId: gap.appId,
+          // Named, always. An app the rail cannot name — deleted, or not in this list yet — still
+          // gets a face that says another app's work is behind the fold, the same fallback
+          // `runningTurnElsewhere` gives a running turn it cannot name.
+          appName: (app && app.name) || 'another app',
+          // TURNS, not rows. A turn is one request and the work it causes (CONTEXT), so a Lead-in
+          // of two questions each with an answer under it is two turns and not four — the face is
+          // a person's count of what they said, not the log's count of what it wrote down.
+          count: gap.rows.filter((row) => row.type === 'user').length,
+          // Ids have to survive being concatenated with the turns still on screen, and the gap's
+          // position in the merged read is already unique.
+          messages: rows.map((m) => ({ ...m, id: `${m.id}_${gap.order}` })),
+        }],
+      });
+    }
+    return out;
+  }
+
+  // Where a Built App's Lead-in ends: the `at` of its FIRST build row in this Conversation
+  // (ADR-0019). An app with no build row, or none carrying a clock, gets no entry here — it has no
+  // boundary, so it has no Lead-in to be cut down to.
+  function leadInBoundaries(rows) {
+    const at = new Map();
+    for (const row of rows) {
+      if (row.half !== 'build' || !row.app || !row.at) continue;
+      if (!at.has(row.app)) at.set(row.app, row.at);
+    }
+    return at;
+  }
+
+  // Which app a Chat turn led to: the app of the NEXT handoff after it. ADR-0019 takes the forward
+  // reading, because that is the product's own story — you think in Chat, then you hand off.
+  //
+  // Null means a turn we cannot place: one after every boundary (the tail), or one written before
+  // there was a clock to stamp. Both are SHOWN, never hidden, which is what the build half already
+  // does with a row that carries no app.
+  //
+  // Read off `at`, never off `order`. `order` is the row's index in the merged read, and that read
+  // sorts an untimed row as "all Chat, then all Build" (ADR-0009) — so attributing by index files
+  // every untimed turn under the FIRST app, the exact opposite of showing it under all of them.
+  //
+  // Compared as strings, which is how `conversation_history` sorts them: the same comparison the
+  // rows arrived in, so the boundary can never disagree with the order they are drawn in.
+  function leadInOwner(row, boundaries) {
+    if (!row.at) return null;
+    let owner = null;
+    let next = null;
+    for (const [appId, at] of boundaries) {
+      if (at <= row.at) continue;
+      if (next === null || at < next) { next = at; owner = appId; }
+    }
+    return owner;
+  }
+
   // The merged read, cut into the two halves their own readers know how to walk. `appId` narrows
-  // the build half to one Built App; Chat passes none, because with no preview to bind it Chat
-  // shows every app the Conversation drove (#56).
+  // BOTH halves to one Built App — the build turns to that app's, the Chat turns to that app's
+  // Lead-in (ADR-0019). Chat passes none, because with no preview to bind it Chat shows every app
+  // the Conversation drove (#56), and with no app there is nothing to attribute against either.
   //
   // A build row with no app at all is one adopted from a log written before there were per-app logs
   // (#68), so there was only one app for it to be in. It stays, because a merged view that hid it
   // would be strictly emptier than the split view it replaces — the failure the server adopts
   // legacy history to avoid.
+  //
+  // `hidden` is what the cut took away, grouped one entry per GAP rather than one per app: the
+  // transcript is ordered, and a fold drawn anywhere but where its turns sat would put them
+  // somewhere they never were.
   function splitConversationHalves(history, appId) {
+    const rows = history || [];
     const chat = [];
     const build = [];
-    (history || []).forEach((row, i) => {
+    const hidden = [];
+    // An app with no boundary cuts nothing. That is a brand-new app started inside a Conversation
+    // already full of talk (#74): it has no handoff yet, and the strict reading would leave it with
+    // the tail alone. It shows the whole Chat half until its first build turn gives it a boundary.
+    const boundaries = appId ? leadInBoundaries(rows) : new Map();
+    const cutsChat = !!appId && boundaries.has(appId);
+    let gap = null;
+    rows.forEach((row, i) => {
       if (row.half === 'build') {
-        if (!appId || !row.app || row.app === appId) build.push({ ...row, order: i });
+        // A gap is a run of rows nobody DRAWS, so a build row this pane keeps ends one. Without
+        // this, two hidden turns either side of a later run of the selected app would fold into a
+        // single row anchored at the first — a fold sitting above a build turn that happened
+        // between its own turns, which is exactly the "somewhere they never were" this is ordered
+        // to avoid. A build row that was filtered out draws nothing, so it ends nothing.
+        if (!appId || !row.app || row.app === appId) {
+          gap = null;
+          build.push({ ...row, order: i });
+        }
         return;
       }
-      chat.push({ ...row, order: i });
+      const owner = cutsChat ? leadInOwner(row, boundaries) : null;
+      if (!owner || owner === appId) {
+        gap = null;
+        chat.push({ ...row, order: i });
+        return;
+      }
+      if (!gap || gap.appId !== owner) {
+        gap = { appId: owner, order: i, rows: [] };
+        hidden.push(gap);
+      }
+      gap.rows.push({ ...row, order: i });
     });
-    return { chat, build };
+    // A gap with no request in it is not a Lead-in. Those rows are the tail of a turn whose
+    // question fell the other side of the boundary, and a fold over them would say "0 turns" above
+    // a control that opens an answer to nothing. They go back on screen, for the same reason every
+    // other row we cannot place does: shown, never hidden. `order` is what puts them back where
+    // they were — every row carries its index in the merged read.
+    const folds = [];
+    for (const g of hidden) {
+      if (g.rows.some((row) => row.type === 'user')) folds.push(g);
+      else chat.push(...g.rows);
+    }
+    chat.sort((a, b) => a.order - b.order);
+    return { chat, build, hidden: folds };
   }
 
   async function mergedHistoryToMessages(history, handoff) {
@@ -1268,10 +1392,11 @@ window.SW = window.SW || {};
   // Build reads the merged read above rather than a second one, and it takes the halves apart
   // instead of taking one list back, because it draws them differently to Chat.
   //
-  // The asymmetry is deliberate. Chat has no preview, so it shows every Built App the Conversation
-  // drove. Build has a preview bound to ONE app, so its build turns are the SELECTED app's — the
-  // other app's work belongs on a screen that can show it. The Chat turns are the whole
-  // Conversation either way: that half is what this ticket exists to stop losing.
+  // Chat has no preview, so it shows every Built App the Conversation drove. Build has a preview
+  // bound to ONE app, so BOTH its halves are that app's: the build turns it can preview, and the
+  // Chat turns that led to them — the app's Lead-in (ADR-0019). The other app's work belongs on a
+  // screen that can show it, and what the cut leaves behind draws a named fold in place, because
+  // losing the Conversation is the failure #57 exists to stop.
   //
   // Nothing here folds a run. Chat folds one because twenty raw implementation turns would bury the
   // questions around them; Build is where those turns belong, so Build draws them.
@@ -1331,10 +1456,12 @@ window.SW = window.SW || {};
       // It offers a way over to Build, and this is Build. Dropped on the block rather than the
       // message id, because the offer arrives in two shapes: the live callout appended at the end,
       // and a suggestion persisted mid-history. Both draw the same control.
-      const chat = await historyToMessages(halves.chat, state.thread && state.thread.handoff);
-      state.conversationChat = chat.filter(
-        (m) => !(m.blocks || []).some((b) => b.type === 'plan_suggestion')
-      );
+      const handoff = state.thread && state.thread.handoff;
+      const chat = (await historyToMessages(halves.chat, handoff)).filter((m) => !isHandoffOffer(m));
+      // The folds carry their own `order`, so they sort into the gaps they came out of rather than
+      // stacking at the top.
+      state.conversationChat = chat.concat(
+        await leadInFoldMessages(halves.hidden, handoff, state.activeApp && state.activeApp.id));
       state.buildHistory = halves.build;
       buildSeq = read.merged.length;
     } else {

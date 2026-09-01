@@ -42,6 +42,10 @@ const THREADS = {
   thr_build_only: { id: 'thr_build_only', title: 'Straight into Build', artifacts: [], touched: [],
                     history: [] },
   thr_two_apps: { id: 'thr_two_apps', title: 'Two apps', artifacts: [], touched: [], history: [] },
+  thr_lead_ins: { id: 'thr_lead_ins', title: 'Two Lead-ins', artifacts: [], touched: [], history: [] },
+  thr_split_gap: { id: 'thr_split_gap', title: 'A gap in two', artifacts: [], touched: [], history: [] },
+  thr_orphan_answer: { id: 'thr_orphan_answer', title: 'An answer alone', artifacts: [], touched: [], history: [] },
+  thr_three_apps: { id: 'thr_three_apps', title: 'Three apps', artifacts: [], touched: [], history: [] },
   thr_empty: { id: 'thr_empty', title: 'New chat', artifacts: [], touched: [], history: [] },
   // The ordinary way a Conversation reaches Build: a confirmed handoff, which writes the plan card
   // and its `done` into the Build log with no user row in front of them.
@@ -99,6 +103,78 @@ const CONVERSATIONS = {
       at: '2026-01-01T12:00:01Z' },
     { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_b',
       at: '2026-01-01T12:00:02Z' },
+  ],
+  // The shape ADR-0019 is about: one Conversation, two Built Apps, and Chat turns on either side of
+  // each handoff. app_a's Lead-in is c1-c3 and app_b's is c4-c5, because the forward reading gives
+  // a turn to the app of the NEXT build after it. c6 came after every handoff, so it belongs to
+  // neither and shows under both.
+  //
+  // `c_untimed` sits FIRST on purpose. A merged read sorts an untimed row as "all Chat, then all
+  // Build" (ADR-0009), so an implementation that attributed by index would file it under app_a and
+  // hide it from app_b — which is the trap, and the opposite of showing a turn nobody can place.
+  thr_lead_ins: [
+    { half: 'chat', type: 'user', text: 'c_untimed' },
+    { half: 'chat', type: 'user', text: 'c1', at: '2026-01-01T09:00:00Z' },
+    { half: 'chat', type: 'user', text: 'c2', at: '2026-01-01T09:01:00Z' },
+    { half: 'chat', type: 'user', text: 'c3', at: '2026-01-01T09:02:00Z' },
+    { half: 'build', type: 'user', text: 'build the dashboard', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'app_change', appId: 'app_a', name: 'Desk dashboard', app: 'app_a',
+      at: '2026-01-01T10:00:01Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:02Z' },
+    // Answers under the questions, so the fold's face has to count TURNS and not rows: a Lead-in
+    // of two questions each with an answer under it is two turns, never four.
+    { half: 'chat', type: 'user', text: 'c4', at: '2026-01-01T11:00:00Z' },
+    { half: 'chat', type: 'agent', kind: 'text', text: 'a4', at: '2026-01-01T11:00:30Z' },
+    { half: 'chat', type: 'user', text: 'c5', at: '2026-01-01T11:01:00Z' },
+    { half: 'chat', type: 'agent', kind: 'text', text: 'a5', at: '2026-01-01T11:01:30Z' },
+    { half: 'build', type: 'user', text: 'now the P&L report', app: 'app_b', at: '2026-01-01T12:00:00Z' },
+    { half: 'build', type: 'app_change', appId: 'app_b', name: 'P&L report', app: 'app_b',
+      at: '2026-01-01T12:00:01Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_b',
+      at: '2026-01-01T12:00:02Z' },
+    { half: 'chat', type: 'user', text: 'c6', at: '2026-01-01T13:00:00Z' },
+  ],
+  // app_a runs TWICE, and both Chat turns between its runs planned app_b. Under app_a the two
+  // turns are hidden and the run between them is drawn, so they are two gaps and not one: a single
+  // fold would have to sit above a build turn that happened between its own turns.
+  thr_split_gap: [
+    { half: 'build', type: 'user', text: 'build the dashboard', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:01Z' },
+    { half: 'chat', type: 'user', text: 'g1', at: '2026-01-01T11:00:00Z' },
+    { half: 'build', type: 'user', text: 'add a date filter', app: 'app_a', at: '2026-01-01T11:30:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T11:30:01Z' },
+    { half: 'chat', type: 'user', text: 'g2', at: '2026-01-01T11:40:00Z' },
+    { half: 'build', type: 'user', text: 'now the P&L report', app: 'app_b', at: '2026-01-01T12:00:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_b',
+      at: '2026-01-01T12:00:02Z' },
+  ],
+  // A Chat answer with no question of its own on this side of the boundary. It is attributed to
+  // app_b like anything else at that moment, but there is no request in it to count, so it is not a
+  // Lead-in and must not fold behind a face reading "0 turns".
+  thr_orphan_answer: [
+    { half: 'build', type: 'user', text: 'build the dashboard', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_a',
+      at: '2026-01-01T10:00:01Z' },
+    { half: 'chat', type: 'agent', kind: 'text', text: 'the answer nobody asked for',
+      at: '2026-01-01T11:00:00Z' },
+    { half: 'build', type: 'user', text: 'now the P&L report', app: 'app_b', at: '2026-01-01T12:00:00Z' },
+    { half: 'build', type: 'done', ok: true, decision: 'typecheck clean', app: 'app_b',
+      at: '2026-01-01T12:00:01Z' },
+  ],
+  // THREE apps, so app_b's Lead-in folds at the SAME place under two different selected apps —
+  // under app_a, and under app_old which has no Lead-in of its own that early. On the fold's own
+  // position alone the two rows would share an id, and React would carry an open fold across the
+  // switch into a transcript nobody has looked at yet.
+  thr_three_apps: [
+    { half: 'chat', type: 'user', text: 't1', at: '2026-01-01T09:00:00Z' },
+    { half: 'build', type: 'user', text: 'build the dashboard', app: 'app_a', at: '2026-01-01T10:00:00Z' },
+    { half: 'chat', type: 'user', text: 't2', at: '2026-01-01T10:30:00Z' },
+    { half: 'chat', type: 'user', text: 't3', at: '2026-01-01T10:40:00Z' },
+    { half: 'build', type: 'user', text: 'now the P&L report', app: 'app_b', at: '2026-01-01T11:00:00Z' },
+    { half: 'build', type: 'user', text: 'now the risk monitor', app: 'app_old', at: '2026-01-01T12:00:00Z' },
   ],
   thr_empty: [],
   // A handoff, then a build, then an app reset. Only the middle one is a run: the other two were
@@ -318,6 +394,16 @@ function describe(block) {
         `${m.role}:${(m.blocks || []).map((b) => b.type).join('+')}`),
     };
   }
+  if (block.type === 'lead_in_fold') {
+    // `count` is the FACE and `holds` is what opens, reported apart because the whole question is
+    // whether the face counts turns or counts rows.
+    return {
+      fold: block.appName,
+      count: block.count,
+      holds: (block.messages || []).map((m) =>
+        (m.blocks || []).map((b) => (b.type === 'text' ? b.value : b.type)).join('+')),
+    };
+  }
   if (block.type === 'app_change') return { card: block.appId, name: block.name };
   if (block.type === 'text') return block.value;
   return block.type;
@@ -368,6 +454,11 @@ for (const step of steps) {
     report.push({
       step: `build ${step.build}`,
       transcript: view(now.buildTranscript),
+      // What React keys the fold rows on. A fold that kept its id across an app switch keeps its
+      // open state with it, and the ADR says a fold closes on a switch.
+      foldIds: (now.buildTranscript || [])
+        .filter((m) => (m.blocks || []).some((b) => b.type === 'lead_in_fold'))
+        .map((m) => m.id),
       // The greeting's own question, kept apart from the transcript because it IS a different
       // question: has THIS app got turns in this Conversation? A brand-new app in a Conversation
       // full of talk answers no, and is still right to say so (#74).
@@ -391,6 +482,13 @@ for (const step of steps) {
   } else if (step.select) {
     await SW.store.selectApp(step.select);
     report.push({ step: `select ${step.select}`, app: (SW.store.get().activeApp || {}).id || null });
+  } else if (step.deselect) {
+    // A Project where the server has no app selected, which is what a Project with no Built App in
+    // it looks like from here. `loadAppList` reads the selection off the list, so moving the
+    // server's answer is the only honest way to leave Build with no app on screen.
+    selected = '';
+    await SW.store.loadApps({ cascade: false });
+    report.push({ step: 'deselect', app: (SW.store.get().activeApp || {}).id || null });
   } else if (step.resolve) {
     // Where a `#/build/<id>` link with no `?app=` lands.
     calls.length = 0;

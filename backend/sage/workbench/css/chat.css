@@ -597,7 +597,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sw-buildrun-turns {
+
+/* Another app's Lead-in, folded in Build (ADR-0019). Quieter than a build run and deliberately so:
+   this row is not work that happened here, it is a marker saying the transcript continues
+   elsewhere. It sits where its turns sat, so it reads as a seam rather than as a heading. */
+.sw-leadin {
+  border: 1px dashed var(--gray-300);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  display: grid;
+  gap: var(--s2);
+}
+.sw-leadin-head { display: flex; align-items: center; gap: var(--s2); }
+.sw-leadin-face {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-13);
+  color: var(--gray-600);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Turns that were behind a fold, opened. The SAME rule and not a copy of it, for the reason the
+   two label rules above share one: a build run and a Lead-in fold both answer "show me what is in
+   there", and two rules drifting apart is how the two answers stop looking like one control. */
+.sw-buildrun-turns,
+.sw-leadin-turns {
   display: grid;
   gap: var(--s2);
   border-top: 1px solid var(--gray-300);
