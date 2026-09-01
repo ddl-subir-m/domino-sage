@@ -100,6 +100,14 @@ for, what you proposed, which steps ran.
   start. Build with what is already installed (listed under "What exists"); if a task truly can't
   be done without a new package, say so plainly instead of trying to install it.
 - Put the app UI in `src/App.tsx` (replace the placeholder). Split into `src/components/` as it grows.
+- **Write a component before the file that imports it.** The preview is a live dev server watching
+  the disk, so it re-reads `src/App.tsx` the moment you save it. An `App.tsx` importing
+  `./components/RowDetail` that you have not written yet is a broken app until you write it —
+  `Failed to resolve import`, again on every save, until the last child lands. {assistantName}
+  hides that error while your turn is running, so it does not alarm the user, but the preview
+  still cannot render the app you are part-way through. Write the leaves first and wire them
+  together last. Adding an import to a file that already exists follows the same order: the new
+  component first, then the line that imports it.
 - **Send one edit at a time to a given file.** Several edits to the same file go out in parallel,
   so every one after the first is applied against a file that already changed under it and comes
   back rejected; you then re-read, re-edit, and race yourself again, and the turn makes no
