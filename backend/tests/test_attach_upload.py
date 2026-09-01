@@ -293,22 +293,23 @@ def test_a_mention_the_turn_cannot_use_is_reported_rather_than_dropped(tmp_path:
     res = orch.upload_file("d.csv", b"x")
 
     used = orch._resolve_mentions(proj, [res["path"]])
-    assert orch._unusable_mentions(proj, used, [res["path"]], None) == ""     # it WAS used: nothing to say
+    # It WAS used: nothing to say, and nothing to offer a button for either.
+    assert orch._unusable_mentions(proj, used, [res["path"]], None) == ("", [])
 
-    chat = orch._unusable_mentions(proj, None, [".sage/scratch/events.csv"], None)
+    chat, _ = orch._unusable_mentions(proj, None, [".sage/scratch/events.csv"], None)
     assert "@events.csv" in chat and "Chat file" in chat and "Data panel" in chat
 
-    plain = orch._unusable_mentions(proj, None, ["public/data/gone.csv"], None)
+    plain, _ = orch._unusable_mentions(proj, None, ["public/data/gone.csv"], None)
     assert "@gone.csv" in plain and "not attached to this app" in plain
 
     ref = {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"}
-    unbound = orch._unusable_mentions(proj, None, None, [ref])
+    unbound, _ = orch._unusable_mentions(proj, None, None, [ref])
     assert "@Warehouse" in unbound and "Resources panel" in unbound
     # And a Resource this app IS bound to is not reported — the report reads the same Binding list the
     # turn honors, so a bound Resource must never come back as one the turn refused.
     proj.workspace.update_bindings(
         lambda entries: [*entries, Binding(KIND_DATA_SOURCE, "ds1", "Warehouse", "Warehouse").to_dict()])
-    assert orch._unusable_mentions(proj, None, None, [ref]) == ""
+    assert orch._unusable_mentions(proj, None, None, [ref]) == ("", [])
 
 
 def test_upload_is_unavailable_when_no_writable_dataset_exists(tmp_path: Path):

@@ -58,6 +58,11 @@ window.SW = window.SW || {};
     railHidden: false,
     railAppFilter: null,  // show only conversations that changed this app
     previewResourceId: null,
+    // The Data Source whose cascade the panel should stand open at, sent from somewhere else in the
+    // Workbench — today a refusal card (#135). The counter is the whole of why there are two fields:
+    // the id alone stops changing, so collapsing the row and asking again would do nothing.
+    cascadeResourceId: null,
+    cascadeSeq: 0,
 
     // The catalogue picker. Browsing the platform is a deliberate, occasional
     // act, so it gets a surface you open and close rather than a column you
@@ -1043,7 +1048,18 @@ window.SW = window.SW || {};
         // Sits above the turn it belongs to rather than beside the composer: what the build could not
         // use is part of the record of that build, and a toast would be gone by the time the app it
         // built came back wrong.
-        ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+        //
+        // `entries` is what turns the sentence into a card (#135): one row per drop somebody can
+        // close in one act, each carrying the Binding identity, the label they picked, and the app
+        // the act would land in. Same `live` rule as the three offers below — a replayed refusal has
+        // none, and the card draws the sentence alone. An event written before this shipped carries
+        // no entries at all and reads identically, which is why no new event type was coined.
+        ensureAssistant().blocks.push({
+          type: 'mentions_unresolved',
+          message: ev.message,
+          entries: ev.entries || [],
+          live: !!ev.live,
+        });
       } else if (ev.type === 'reset-offer' && ev.message) {
         // `live` is set only on the frame that arrived over SSE this session (see applyBuildEvent),
         // and a reload replaces buildHistory with plain server rows that never carry it. So a
@@ -1441,8 +1457,12 @@ window.SW = window.SW || {};
     // The buttons on a reset offer belong to the offer the user is looking at, not to every copy of
     // it the transcript keeps. Marking the live frame is what separates the two — the server row a
     // reload returns has no `live`, so it replays as text (see buildHistoryToMessages).
+    //
+    // A refusal joins them for the sharper version of the same reason (#135): its buttons act on the
+    // app selected NOW, while the refusal names the app that was selected then, and a gap reported
+    // six weeks ago has probably been closed since.
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
-        || ev.type === 'build-stalled') ev.live = true;
+        || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved') ev.live = true;
     appendBuildRow(ev);
   }
 
@@ -2002,6 +2022,80 @@ window.SW = window.SW || {};
       applyAppScope(appScopeTicket(gen), { bindings: result.bindings || [] });
       notify();
       return true;
+    },
+
+    // Closing a gap a refused @mention named --------------------------------
+    //
+    // One act per reason a turn drops a mention, taking the row `_unusable_mentions` wrote (#135).
+    // They live here rather than inside the card because the compose-time guard offers the same
+    // fixes before send (#136), and two copies of "what does an unbound Alias need" would drift.
+    //
+    // None of them is a new way to record anything: each reaches the door that already exists for
+    // its kind, from a second place. And none binds on its own — every one of these runs because a
+    // person clicked it, which is what ADR-0010 asks of a Binding.
+
+    // An LLM Alias, the one kind whose bind takes a single argument, so this one finishes. Reshaped
+    // into what `bindToApp` reads rather than calling `/bindings` again: the app-name reporting, the
+    // generation ticket and the bare-id rule all belong to that act and are not worth a second copy.
+    bindAliasFromMention(entry) {
+      if (!entry || !entry.kind || !entry.id) return Promise.resolve(false);
+      return store.bindToApp({ name: entry.name || entry.id, bindingKey: [entry.kind, entry.id] });
+    },
+
+    // A Data Source. Its Binding records a Scope, and a Scope is the cascade position the creator is
+    // standing on (#129) — a refusal has nothing to derive one from, so this opens the cascade at
+    // that Resource and stops there. The bind is still the door beside the crumb, still a click.
+    openScopeForMention(entry) {
+      if (!entry || !entry.kind || !entry.id) return false;
+      state.dockTab = 'resources';
+      // Cleared rather than set: the filter dims every row outside one group, and the row this is
+      // about is the one that has to be findable.
+      state.panelFilter = null;
+      state.cascadeResourceId = SW.util.bindingId({ kind: entry.kind, id: entry.id });
+      state.cascadeSeq += 1;
+      notify();
+      return true;
+    },
+
+    // A Model API. Sage refuses to record one it holds no access token for, so the credential is the
+    // first half of the fix and the bind is the second — offering the bind here would offer an act
+    // the server is designed to turn down. The sentence names the Resource and not the app on
+    // purpose: a token is stored per model and outlives any one Binding (see UNBIND_COPY), so it is
+    // not a thing an app owns.
+    // No `panelFilter`: it draws "Pick a {kind} to continue" over the list, which is a different
+    // instruction from the one the button gave and the one the sentence below gives. The panel opens
+    // on the whole Project instead, the way the cascade's door leaves it.
+    openCredentialForMention(entry) {
+      if (!entry || !entry.id) return false;
+      state.dockTab = 'resources';
+      state.panelFilter = null;
+      notify();
+      // What the token is for and where it comes from, and no more than that. The form that takes
+      // the paste is #128's — until it exists there is no box to point at, and a sentence promising
+      // one would be the dead end this card removes, rebuilt. When it lands it hangs off this act,
+      // which is the whole reason the act is named rather than inlined into the card.
+      antd.message.info(SW.brand.text(
+        "{assistantName} needs {name}'s access token before an app can call it. Copy the sample "
+        + 'request from its Overview page in {platformName}.',
+        { name: entry.name || entry.id }
+      ));
+      return true;
+    },
+
+    // A Chat file. It lives at the Project root, outside every app, so the fix is to put the bytes
+    // on a Dataset — which attaches them under public/data/ for the selected app in the same act
+    // (see `upload_file`). No Dataset is named: a refusal offers ONE click, and the server's own
+    // default target is the answer the upload box already gives when nobody picks. Choosing a
+    // particular one stays in the panel's menu, where the list is on screen.
+    attachFileForMention(entry) {
+      const path = String((entry && entry.id) || '');
+      if (!path) return Promise.resolve(null);
+      const name = entry.name || path.split('/').pop();
+      return store.addScratchToDataset({ id: `file:${path}`, name, path }, '', { quiet: true })
+        .then((res) => {
+          if (res) antd.message.success(`${name} is attached to ${entry.app}`);
+          return res;
+        });
     },
 
     // Out of the selected Built App ---------------------------------------
@@ -3371,8 +3465,13 @@ window.SW = window.SW || {};
       return true;
     },
 
-    async addScratchToDataset(resource, datasetId) {
-      if (!resource || !resource.path || !datasetId) return null;
+    // `datasetId` may be empty, which asks the server for the same default target an unpicked upload
+    // lands on (`_resolve_upload_target`). The panel always names one — its menu lists them — but a
+    // refusal card offers one click and has no list to show (#135). `quiet` is for that caller too:
+    // it says the file reached the APP, which is the question that was asked, and two toasts saying
+    // one thing is being told twice.
+    async addScratchToDataset(resource, datasetId, options = {}) {
+      if (!resource || !resource.path) return null;
       const res = await SW.api.promoteScratch(resource.path, datasetId);
       const oldId = resource.id;
       await loadScopeData();
@@ -3392,7 +3491,9 @@ window.SW = window.SW || {};
         state.resourceIndex[next.id] = next;
         await store.attach(next.id, 'user', undefined, { silent: true, quiet: true });
       }
-      antd.message.success(SW.brand.text('{name} is on the {dataset}', { name: resource.name }));
+      if (!options.quiet) {
+        antd.message.success(SW.brand.text('{name} is on the {dataset}', { name: resource.name }));
+      }
       return res;
     },
 

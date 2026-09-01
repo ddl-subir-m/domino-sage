@@ -143,7 +143,7 @@ def test_the_refusal_names_the_app_and_the_act_and_stops_once_the_binding_exists
     proj.workspace.set_display_name("Gong sentiment")
     ref = {"kind": KIND_LLM_ALIAS, "id": "al_1", "name": "sonnet"}
 
-    said = orch._unusable_mentions(proj, None, None, [ref])
+    said, _ = orch._unusable_mentions(proj, None, None, [ref])
     assert "@sonnet" in said
     assert "Gong sentiment doesn't use it yet" in said
     assert "Use in Gong sentiment" in said
@@ -151,7 +151,7 @@ def test_the_refusal_names_the_app_and_the_act_and_stops_once_the_binding_exists
 
     proj.workspace.update_bindings(
         lambda entries: [*entries, Binding(KIND_LLM_ALIAS, "al_1", "sonnet", "sonnet").to_dict()])
-    assert orch._unusable_mentions(proj, None, None, [ref]) == ""
+    assert orch._unusable_mentions(proj, None, None, [ref]) == ("", [])
 
 
 def test_an_unnamed_app_is_called_what_the_rail_calls_it(tmp_path: Path):
@@ -162,7 +162,8 @@ def test_an_unnamed_app_is_called_what_the_rail_calls_it(tmp_path: Path):
     through it rather than reading the stored name directly."""
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    said = orch._unusable_mentions(proj, None, None, [{"kind": KIND_LLM_ALIAS, "id": "a", "name": "s"}])
+    said, _ = orch._unusable_mentions(
+        proj, None, None, [{"kind": KIND_LLM_ALIAS, "id": "a", "name": "s"}])
     assert "Unnamed Built App doesn't use it yet" in said
     assert "Use in Unnamed Built App" in said
 

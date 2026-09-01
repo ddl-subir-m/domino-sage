@@ -3459,8 +3459,10 @@ class Orchestrator:
         return mention_note([Mention(known[k], tuple(tables[k])) for k in order], recorded)
 
     def _unusable_mentions(self, project: Project, resolved: list[dict] | None,
-                           mentions: list[str] | None, resources: list[dict] | None) -> str:
-        """What this turn was @-mentioned and cannot use, as one line for the transcript, or "".
+                           mentions: list[str] | None,
+                           resources: list[dict] | None) -> tuple[str, list[dict]]:
+        """What this turn was @-mentioned and cannot use: one line for the transcript, and the rows
+        the refusal card hangs its buttons on. `("", [])` when the turn dropped nothing.
 
         The picker offers more than a build can honor: Chat's own uploads live at the Project root,
         outside every app, and a Resource in the rail is usable only by the app holding a Binding for
@@ -3468,42 +3470,79 @@ class Orchestrator:
         person watches the right one sit in the panel. The two rules are not restated here; the
         answer is read back off `_resolve_mentions` and the same Binding list `_resource_mention_note`
         honors, so what is reported can never drift from what was used.
+
+        The rows are the sentence's other half rather than a second opinion of it: both are built in
+        this one pass, so the card can never offer to fix something the sentence did not report, and
+        neither can go on saying a Resource is refused after the other stops (#135). A row is
+        `{kind, id, name, app, appId}` — the Binding identity rather than the name, because a name is
+        unique only within a kind; the label the creator picked off a list, so the card can quote it
+        back; and the app the fix would act on, because a Project holds many Built Apps (ADR-0008)
+        and "this app" is the one word that cannot say which of them lacks the record. `kind` is the
+        Binding kind for a Resource and `file` for an attachment.
+
+        The app is carried TWICE, as the name the card prints and as the id it checks. Switching
+        Built App mid-build is allowed and the turn carries on (#77), so a card offering "Use in Gong
+        sentiment" can still be on screen after the rail has moved — and every act behind it resolves
+        whatever is selected now. The id is what lets the card notice and stand down rather than bind
+        the app it did not name.
+
+        Only a drop somebody can close in ONE act gets a row. A Chat file can — promoting it onto a
+        Dataset attaches it to the app — and so can an unbound Resource. A workspace path that
+        resolves to nothing cannot: there is no act to offer it, and a button that cannot complete is
+        the dead end this sentence exists to remove. That drop keeps the prose and gets no row.
         """
         kept = {a["path"] for a in (resolved or [])}
         missing = [m for m in (mentions or []) if m not in kept]
         bound = {b.key for b in parse_bindings(project.app_for_turn().read_bindings())}
         unbound = [r for r in (resources or []) if isinstance(r, dict)
                    and (str(r.get("kind") or ""), str(r.get("id") or "")) not in bound]
+        if not missing and not unbound:
+            return "", []
 
         def named(paths: list[str]) -> str:
             return ", ".join("@" + PurePosix(p).name for p in paths)
 
+        # Named, because a Project holds many apps (ADR-0008) and "this app" is the one word that
+        # cannot say which of them is missing the Binding. Through `_app_display_name` and not
+        # `display_name`, which is "" until somebody renames an app: this sentence quotes a menu
+        # label back at the reader, so it has to call the app what the rail calls it — plan title, or
+        # "Unnamed Built App" — or it sends them looking for a row of that name.
+        where = _app_display_name(project.app_for_turn())
+        whose = project.app_for_turn().app_id
         # Chat's uploads, named apart from the rest: "not attached" is true of both, but only this one
         # has a file the person can point at, and telling them to attach a file they can see beats
         # telling them a file they can see isn't there.
         chat_files = [m for m in missing if m.startswith(_SCRATCH_PREFIX)]
         others = [m for m in missing if m not in chat_files]
         lines: list[str] = []
+        entries: list[dict] = []
         if chat_files:
             lines.append(f"Couldn't use {named(chat_files)} — a Chat file lives outside this app. "
                          "Attach it to the app in the Data panel, then ask again.")
+            entries += [{"kind": "file", "id": m, "name": PurePosix(m).name,
+                         "app": where, "appId": whose} for m in chat_files]
         if others:
             lines.append(f"Couldn't use {named(others)} — not attached to this app. "
                          "Attach it in the Data panel, then ask again.")
         if unbound:
             shown = ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in unbound)
-            # Named, because a Project holds many apps (ADR-0008) and "this app" is the one word
-            # that cannot say which of them is missing the Binding. Through `_app_display_name` and
-            # not `display_name`, which is "" until somebody renames an app: this sentence quotes a
-            # menu label back at the reader, so it has to call the app what the rail calls it —
-            # plan title, or "Unnamed Built App" — or it sends them looking for a row of that name.
-            where = _app_display_name(project.app_for_turn())
             # The act, spelled the way the menu spells it. The sentence this replaces sent people to
             # the Resources panel for a control that was not there (#127) and called it "connecting",
             # a word `CONTEXT.md` bans for exactly the confusion it caused here.
             lines.append(f"Couldn't use {shown} — {where} doesn't use it yet. "
                          f"Open the Resources panel and choose Use in {where}, then ask again.")
-        return " ".join(lines)
+            # One row per Resource, not per mention. "@Warehouse and @FCT_USAGE_DAILY" names one
+            # Data Source at one table, and two identical buttons would offer the same bind twice.
+            seen: set[tuple[str, str]] = set()
+            for r in unbound:
+                key = (str(r.get("kind") or ""), str(r.get("id") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append({"kind": key[0], "id": key[1],
+                                "name": str(r.get("name") or r.get("id") or ""),
+                                "app": where, "appId": whose})
+        return " ".join(lines), entries
 
     def _chat_context_note(self, project: Project) -> str:
         """The Chat half of THIS turn's Conversation, rebuilt for this turn. "" when there is none.
@@ -5651,7 +5690,12 @@ class Orchestrator:
         #
         # Read at the same point as `resource_note`, off the same Bindings, so the two can never
         # report a Resource as both used and refused.
-        unusable = self._unusable_mentions(project, mention_files, mentions, resources)
+        # `unusable_rows` is the third reader of that one value, and the only one that is not prose:
+        # it rides the same event as the sentence so the card's buttons and the sentence's claim are
+        # the same answer (#135). The agent is deliberately NOT given the rows — the note it reads
+        # already forbids the repair, and a machine-readable list of fixes is exactly the invitation
+        # `_DROPPED_MENTION_NOTE` spends its length taking away.
+        unusable, unusable_rows = self._unusable_mentions(project, mention_files, mentions, resources)
         unusable_note = _DROPPED_MENTION_NOTE.format(said=unusable) if unusable else ""
         # What was said in the Chat half of this Conversation (#53). Rides the prompt text beside
         # `resource_note`, and for the same reason: the gate/answer/plan forks below wrap `current`
@@ -5914,8 +5958,13 @@ class Orchestrator:
             # because the whole point is to be read while the turn is still worth stopping. The
             # sentence itself was built above, with the other prompt riders — the agent is told the
             # same thing (see `unusable_note`).
+            # `entries` rides beside the prose rather than replacing it, and no new event type is
+            # coined for it: a transcript written before this shipped has the sentence and no rows,
+            # and renders as the sentence — which is also what a replayed row must render as, so the
+            # client needs one branch rather than two (#135).
             if unusable:
-                yield persist({"type": "mentions-unresolved", "message": unusable})
+                yield persist({"type": "mentions-unresolved", "message": unusable,
+                               "entries": unusable_rows})
 
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never
