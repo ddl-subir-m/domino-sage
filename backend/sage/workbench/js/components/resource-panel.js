@@ -233,10 +233,12 @@ window.SW = window.SW || {};
       return undefined;
     };
 
+    // The Built Apps that bind this Resource, each with its Scope — the server's answer, carried
+    // on the Project row (#133). It was a kind list before, because nothing filled the field and a
+    // count of nothing had to be kept off the rows most likely to show it. Now the field is only
+    // ever non-empty for a Resource an app really binds, so the data is its own gate: no kind can
+    // be left out of the count by being forgotten in a list nobody revisits.
     const used = resource.usedBy || [];
-    const showsDependants = ['model_llm', 'model_predictive', 'tool', 'agent', 'skill'].includes(
-      resource.kind
-    );
     const secondary = required && app
       ? `Required by ${app.name}`
       // The negative of the line above, and it outranks the Project-wide count below it because
@@ -244,7 +246,7 @@ window.SW = window.SW || {};
       // uses, not how popular the Resource is. In Chat the count keeps the slot (#127).
       : saysAppUse && app
       ? `Not used by ${app.name}`
-      : showsDependants && used.length
+      : used.length
       ? `Used by ${used.length} ${used.length === 1 ? 'app' : 'apps'}`
       : resource.subtitle;
 
@@ -294,11 +296,14 @@ window.SW = window.SW || {};
             h(
               Tooltip,
               {
-                // The dependants, when there are any. Otherwise whatever the row asked to be
+                // The apps behind the count, each with its Scope, because the count alone says how
+                // many and never which. Otherwise whatever the row asked to be
                 // readable in full: `.sw-res-sub` ellipsises, and a Data Source's Scope is the one
                 // subtitle here whose TAIL is the part that identifies it — `DWH.MARTS` and
                 // `DWH.MARTS_ARCHIVE` truncate to the same pixels in a narrow rail.
-                title: used.length ? used.join(', ') : (resource.subtitleFull || null),
+                title: used.length
+                  ? used.map((u) => (u.scope ? `${u.name} — ${u.scope}` : u.name)).join(', ')
+                  : (resource.subtitleFull || null),
                 mouseEnterDelay: 0.4,
               },
               h('span', { className: 'sw-res-sub' }, secondary)

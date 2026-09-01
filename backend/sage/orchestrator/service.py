@@ -7748,8 +7748,26 @@ class Orchestrator:
         return workspace.read_history(conversation)
 
     def list_project_resources(self) -> list[dict]:
-        """Domino Resources the creator added to this project — the rail, not the catalogue."""
-        return self.project(start_preview=False).record.read_project_resources()
+        """Domino Resources the creator added to this project — the rail, not the catalogue.
+
+        Every row carries `usedBy`: each Built App that records a Binding for it, with the app's id,
+        the name it goes by, and the Scope that Binding recorded (#133). One look answers where a
+        Resource is used, and the rail's `Used by N apps` subtitle finally has data behind it.
+
+        Computed on read, never written to the membership file. The answer lives in the apps' own
+        manifests (ADR-0010) and a copy here would go stale the moment any app bound or unbound —
+        including one nobody was looking at. It is the scan `remove_project_resource` refuses on, so
+        the drawer names exactly the apps the refusal would.
+        """
+        rows = self.project(start_preview=False).record.read_project_resources()
+        scanned = self._app_bindings() if rows else []
+        return [
+            {**row, "usedBy": [
+                {"appId": ws.app_id, "name": _app_display_name(ws), "scope": b.scope}
+                for ws, b in self._apps_that_bind(str(row.get("id") or ""), scanned)
+            ]}
+            for row in rows
+        ]
 
     def add_project_resource(self, item: dict) -> dict:
         """Put one Resource in this project's working set. Idempotent on id."""
@@ -7830,13 +7848,33 @@ class Orchestrator:
         self.project(start_preview=False).record.update_project_resources(change)
         return found["ok"]
 
-    def _apps_that_bind(self, resource_id: str) -> list[tuple[Workspace, Binding]]:
+    def _app_bindings(self) -> list[tuple[Workspace, list[Binding]]]:
+        """Every Built App's recorded Bindings, oldest app first, one manifest read per app.
+
+        Read once and filtered many times. The rail asks where each of its rows is used, and a scan
+        per row would re-read every manifest once per Resource on every refresh of a panel that
+        redraws on each app switch.
+        """
+        out: list[tuple[Workspace, list[Binding]]] = []
+        for app_id in self._wm.app_ids():
+            workspace = self._wm.app_workspace(self._project_id, app_id)
+            out.append((workspace, parse_bindings(workspace.read_bindings())))
+        return out
+
+    def _apps_that_bind(
+        self,
+        resource_id: str,
+        scanned: list[tuple[Workspace, list[Binding]]] | None = None,
+    ) -> list[tuple[Workspace, Binding]]:
         """Every Built App that still records a Binding for this membership id, oldest first.
 
         Every app rather than the selected one: a Binding belongs to one app and a Project holds
         many (ADR-0008), so a guard that reads the manifest in front of you lets a tidy-up break an
         app nobody was looking at. The apps come from the same directory scan the rail is built
         from, so none can be missed by being absent from an index nobody wrote to.
+
+        `scanned` lets a caller with many ids to answer pay for that directory scan once. Left out,
+        this reads the manifests itself — a removal is one deliberate act and can afford it.
         """
         rid = str(resource_id or "").strip()
         if not rid:
@@ -7850,9 +7888,8 @@ class Orchestrator:
             elif kind == "data_source":
                 aliases.add(f"datasource:{rest}")
         out: list[tuple[Workspace, Binding]] = []
-        for app_id in self._wm.app_ids():
-            workspace = self._wm.app_workspace(self._project_id, app_id)
-            for b in parse_bindings(workspace.read_bindings()):
+        for workspace, bindings in (self._app_bindings() if scanned is None else scanned):
+            for b in bindings:
                 if f"{b.kind}:{b.id}" in aliases or b.id in aliases:
                     out.append((workspace, b))
                     break

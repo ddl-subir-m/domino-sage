@@ -181,6 +181,10 @@ function rowFromMember(item) {
     capabilities: item.capabilities || [],
     reasoning_efforts: item.reasoning_efforts || [],
     pins: item.pins || [],
+    // Every Built App that binds this Resource, with its Scope (#133). Server-computed from the
+    // apps' own manifests, so the rail subtitle and the drawer both read one answer — the same one
+    // a removal refusal reads.
+    usedBy: item.usedBy || [],
     membershipParent: true,
     writable: item.writable,
     levels: item.levels,

@@ -871,6 +871,12 @@
 }
 .sw-drawer-meta dt { color: var(--gray-600); }
 .sw-drawer-meta dd { margin: 0; color: var(--dark-700); min-width: 0; }
+/* The label column holds app names, not fixed-width field names, so it takes half rather than
+   132px — and it wraps instead of ellipsising, because there is no hover on a definition list. */
+.sw-drawer-meta.sw-where-used {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-bottom: 0;
+}
 .sw-drawer-section { margin-bottom: var(--s5); }
 .sw-drawer-section > h4 { font-size: var(--fs-13); font-weight: 600; margin: 0 0 var(--s2); }
 .sw-drawer-hero {
