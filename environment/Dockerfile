@@ -84,7 +84,7 @@ ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if 
 ARG SAGE_REV=main
 # `--branch` takes a ref (branch/tag), not a bare SHA — so to force a fresh clone of the SAME branch
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
-ARG SAGE_CACHE_BUST=2026-09-01-lead-in
+ARG SAGE_CACHE_BUST=2026-09-01-manage-link
 # NOTE: if the repo is PRIVATE, this clone needs a build-time credential — pass a token via a
 # secret build-arg and use it in the URL, or make a deploy mirror public. Public clone shown here.
 RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage
