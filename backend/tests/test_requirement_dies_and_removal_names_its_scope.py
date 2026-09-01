@@ -122,7 +122,7 @@ def test_a_project_row_the_app_is_bound_to_reads_required_by_that_app():
     """The subtitle, off Bindings. Joined on `${kind}:${id}` — the Binding's own `id` is `ds_1` and
     the row's is `data_source:ds_1`, so a join on the bare id renders nothing at all."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    bound = _row(step["rows"], "Market data EOD", "Project resources")
+    bound = _row(step["rows"], "Market data EOD", "In this project")
     assert "Required by Desk dashboard" in bound["texts"]
     assert "is-required" in bound["className"]
 
@@ -132,7 +132,7 @@ def test_a_project_row_no_app_is_bound_to_says_nothing_of_the_kind():
     """`data_source:ds_9` is in the Project and bound by nobody. Without this the subtitle could be
     a constant and every test above would still pass."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    loose = _row(step["rows"], "Risk warehouse", "Project resources")
+    loose = _row(step["rows"], "Risk warehouse", "In this project")
     assert not any("Required by" in t for t in loose["texts"])
     assert "is-required" not in loose["className"]
 
@@ -159,7 +159,7 @@ def test_nothing_reads_as_required_twice():
         assert not any("Required by" in t for t in in_app["texts"])
         # The In-this-app row still carries the marker; it just stops repeating its own section.
         assert "is-required" in in_app["className"]
-        assert "Required by Desk dashboard" in _row(step["rows"], name, "Project resources")["texts"]
+        assert "Required by Desk dashboard" in _row(step["rows"], name, "In this project")["texts"]
     said = [t for r in step["rows"] for t in r["texts"] if "Required by" in t]
     assert said == ["Required by Desk dashboard", "Required by Desk dashboard"]
 

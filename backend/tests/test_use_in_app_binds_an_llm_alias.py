@@ -83,7 +83,7 @@ def test_a_row_the_app_does_not_use_says_so():
     and an unbound one read nothing at all, so a person who added an Alias to the Project saw it sit
     in the rail looking exactly as ready as one the app could actually call."""
     step = _run([{"panel": "thr_many", "select": "app_c"}])[-1]
-    loose = _row(step["rows"], "Claude Sonnet 4", "Project resources")
+    loose = _row(step["rows"], "Claude Sonnet 4", "In this project")
     assert "Not used by Rate curve viewer" in loose["texts"]
 
 
@@ -93,7 +93,7 @@ def test_a_row_the_app_already_uses_offers_no_second_way_to_add_it():
     the whole of "one act, one place" (ADR-0011). Loosen the condition and the Project row grows a
     second door to a Binding the app already holds, beside a section that already says so."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    bound = _row(step["rows"], "Claude Sonnet 4", "Project resources")
+    bound = _row(step["rows"], "Claude Sonnet 4", "In this project")
     assert "Required by Desk dashboard" in bound["texts"]
     assert not any(i["label"] == "Use in Desk dashboard" for i in bound["items"])
     # And the act that DOES belong to a held Binding is still the app section's, untouched.
@@ -108,7 +108,7 @@ def test_chat_offers_the_conversation_act_and_nothing_app_scoped():
     none, so both the act and the marker would be naming an app that is not on screen. What Chat
     keeps is the act it has always had, which the handoff turns into a Binding."""
     step = _run([{"panel": "thr_many", "select": "app_c", "mode": "chat"}])[-1]
-    row = _row(step["rows"], "Claude Sonnet 4", "Project resources")
+    row = _row(step["rows"], "Claude Sonnet 4", "In this project")
     assert not any("Not used by" in t for t in row["texts"])
     assert not any(i["label"] == "Use in Rate curve viewer" for i in row["items"])
     assert any(i["label"] == "Use in this chat" for i in row["items"])

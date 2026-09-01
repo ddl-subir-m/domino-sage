@@ -888,7 +888,7 @@ for (const step of steps) {
     calls.length = 0;
     binds.length = 0;
     const rows = panelContents(SW.ResourcePanel());
-    const row = rows.find((r) => r.section === 'Project resources' && r.texts.includes(step.useIn));
+    const row = rows.find((r) => r.section === 'In this project' && r.texts.includes(step.useIn));
     if (!row) {
       throw new Error(
         `no Project row ${step.useIn} — found ${JSON.stringify(rows.map((r) => r.texts))}`
@@ -923,7 +923,7 @@ for (const step of steps) {
     calls.length = 0;
     const rows = panelContents(SW.ResourcePanel());
     const inSection = rows.filter(
-      (r) => r.section && r.section !== 'Project resources' && r.section !== 'In context'
+      (r) => r.section && r.section !== 'In this project' && r.section !== 'In context'
     );
     const row = inSection.find((r) => r.texts.includes(step.removeFrom));
     if (!row) {
