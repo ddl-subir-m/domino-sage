@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator import handoff
 from sage.orchestrator.service import _PLAN_SHAPE, _PLAN_VOICE
 from sage.workspace import plan_doc
@@ -93,13 +94,13 @@ def test_a_timeout_does_not_hang_the_turn():
         released.set()
 
 
-@pytest.mark.parametrize("verdict", ["MAYBE", "", "I think this is an app"])
+@pytest.mark.parametrize("verdict", ["MAYBE", "I think this is an app"])
 def test_an_answer_outside_the_vocabulary_suggests(verdict):
     assert _ask(StubGateway(verdict)) is True
 
 
 def test_three_unreadable_answers_in_a_row_trip_the_breaker(caplog):
-    gw = StubGateway("")
+    gw = StubGateway("MAYBE")
     n = handoff.MAX_UNREADABLE
     assert [_ask(gw) for _ in range(n)] == [True] * (n - 1) + [False]
     assert any(r.levelname == "ERROR" and "BROKEN" in r.message for r in caplog.records)
@@ -141,9 +142,34 @@ def test_an_unreadable_answer_is_not_recorded_as_a_verdict(caplog):
 
 def test_a_readable_verdict_clears_the_streak():
     for _ in range(10):
-        assert _ask(StubGateway("")) is True
+        assert _ask(StubGateway("MAYBE")) is True
         assert _ask(StubGateway("CHAT")) is False
     assert handoff._health.broken is False
+
+
+def test_an_empty_body_is_a_dead_route_not_a_bad_answer(caplog):
+    """A route that said nothing belongs with the timeout and the error, which stay silent.
+
+    Live, a Builder whose Environment was rebuilt without GATEWAY_BASE_URL ran in `fake` mode. The
+    turn answered nothing, and on top of that blank answer this classifier offered to build an app
+    from "what info is there in <file>.json" — a question it never judged, because there was no
+    verdict to judge it with.
+    """
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator.handoff"):
+        assert _ask(StubGateway(""), user="what info is there in @data.json") is False
+    assert _verdict_lines(caplog) == []
+
+
+def test_an_empty_body_does_not_count_towards_broken():
+    """It must not spend the breaker either: three dead calls are not three bad answers."""
+    for _ in range(handoff.MAX_UNREADABLE * 2):
+        assert _ask(StubGateway("")) is False
+    assert handoff._health.broken is False
+
+
+def test_the_fake_gateway_answers_a_dead_route_not_an_app():
+    """The exact live shape: `fake` mode returns a body with no `choices`, so `_extract` yields ""."""
+    assert _ask(FakeGatewayClient(), user="what info is there in @data.json") is False
 
 
 def test_errors_and_timeouts_do_not_count_towards_broken():

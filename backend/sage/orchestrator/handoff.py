@@ -231,6 +231,16 @@ def wants_an_app(
         return hit
 
     verdict = answer.strip().upper()
+    # An empty body is a route that said nothing, not a model that answered badly. It belongs with
+    # the timeout and the exception above, which both return False, and not with the garbage the
+    # breaker below counts. Live, a Builder whose Environment was rebuilt without GATEWAY_BASE_URL
+    # ran in `fake` mode, where every call returns `{"model": ..., "phase": ...}` — no `choices`, so
+    # `_extract` yields "". The turn itself answered nothing for the same reason, and on top of that
+    # blank answer the classifier offered to build an app from "what info is there in <file>.json".
+    # Nothing about that question was judged; there was no verdict to judge it with.
+    if not verdict:
+        log.warning("handoff: classifier returned an empty body — no suggestion")
+        return False
     if verdict.startswith("APP"):
         return _record(True)
     if verdict.startswith("CHAT"):
