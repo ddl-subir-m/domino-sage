@@ -233,6 +233,16 @@ refused rather than run if the Session context it was written against has change
 place comes. Cancelling one is a different act from stopping the turn that is running.
 _Avoid_: queued job, scheduled turn, draft (a draft is text nobody has sent)
 
+**Lead-in**:
+The Chat turns that led to one Built App: every turn after the previous confirmed handoff and before that
+app's first build turn. A Conversation that drove three apps has three Lead-ins, and they do not
+overlap. It is what Build shows of the Chat half once an app is selected, and it looks forward —
+the talk that planned the build that follows it, not the talk that followed the build before it.
+An app that has no build turns yet has no Lead-in, and neither does a turn that came after the
+last handoff.
+_Avoid_: prologue (a prologue stops at the first build turn of the Conversation, not of this app),
+segment, thread, context
+
 **Default**:
 The Sage display name of the caller's one persistent personal Project, created the first
 time they open the Workbench, reused thereafter. Naming it changes the chip only; it stays
@@ -257,6 +267,16 @@ document, not the copy. See
 [ADR-0007](docs/adr/0007-the-plan-document-is-durable-the-handoff-is-not.md).
 _Avoid_: spec, PRD, requirements, ticket, brief, `plan.md` (that is the handoff copy, not the
 document)
+
+**Handoff**:
+Taking a Conversation from Chat into Build: a write to the Project filesystem — the plan, a short
+digest, and a Binding for every Resource the Conversation named — followed by a mode switch. It
+always has a target the person picks, one Built App, and it never copies the Chat session; Build
+opens this Conversation's own. A Conversation may hand off more than once, once for each Built App
+it drives. It is the act and the record of the act, and it is transient: the plan document it
+writes outlives it ([ADR-0007](docs/adr/0007-the-plan-document-is-durable-the-handoff-is-not.md)).
+_Avoid_: crossing, handover, promote, export, "Open in Build" (that is the control that confirms
+one, not the act), publish (that is putting a Built App on Domino)
 
 **Session context**:
 The Resources and Artifacts in scope for this Conversation right now, shown as chips on the
