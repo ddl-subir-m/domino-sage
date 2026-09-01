@@ -293,7 +293,14 @@ window.SW = window.SW || {};
           secondary &&
             h(
               Tooltip,
-              { title: used.length ? used.join(', ') : null, mouseEnterDelay: 0.4 },
+              {
+                // The dependants, when there are any. Otherwise whatever the row asked to be
+                // readable in full: `.sw-res-sub` ellipsises, and a Data Source's Scope is the one
+                // subtitle here whose TAIL is the part that identifies it — `DWH.MARTS` and
+                // `DWH.MARTS_ARCHIVE` truncate to the same pixels in a narrow rail.
+                title: used.length ? used.join(', ') : (resource.subtitleFull || null),
+                mouseEnterDelay: 0.4,
+              },
               h('span', { className: 'sw-res-sub' }, secondary)
             )
         ),
@@ -429,14 +436,29 @@ window.SW = window.SW || {};
         rows
       );
 
-    const bindingRow = (b) =>
-      h(SW.ResourceRow, {
+    // Which part of the Resource the app reads, for the one kind that records a part: the levels
+    // the creator walked to, dotted, exactly as `Binding.scope` joins them for the agent. Empty for
+    // every other kind, and for a Data Source bound above a database — there the kind is still the
+    // most this row can say.
+    //
+    // It earns the slot because it is the only thing on screen that CHANGES when a Scope moves.
+    // The cascade's door deliberately stays after a bind, so re-binding elsewhere had no visible
+    // effect anywhere: the sign already said `Required by {app}` and went on saying it. A row that
+    // names the kind tells you the app reads a Data Source, which its own icon already said.
+    const bindingScope = (b) => [b.database, b.schema, b.table].filter(Boolean).join('.');
+
+    const bindingRow = (b) => {
+      const scope = bindingScope(b);
+      return h(SW.ResourceRow, {
         key: SW.util.bindingId(b),
         resource: {
           id: SW.util.bindingId(b),
           name: b.display_name || b.name,
           kind: kindForBinding(b.kind),
-          subtitle: (b.kind || '').replace(/_/g, ' '),
+          subtitle: scope || (b.kind || '').replace(/_/g, ' '),
+          // Only the Scope is worth a tooltip: the kind words are short enough to never truncate,
+          // and a tooltip repeating a label in full is noise on every row that does not need one.
+          subtitleFull: scope || undefined,
         },
         // These rows ARE the app's list — the literal is them describing themselves, and it keeps
         // the marker the Project rows get. No `app`, though: with one, the subtitle would read
@@ -446,6 +468,7 @@ window.SW = window.SW || {};
         appScope: activeApp ? { app: activeApp, binding: b } : null,
         onOpen: () => {},
       });
+    };
 
     const fileRow = (a) =>
       h(SW.ResourceRow, {

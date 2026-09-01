@@ -291,7 +291,12 @@ function walk(node, out = [], depth = 0) {
   if (typeof node.t === 'function' && !SKIP.has(name)) {
     walk(callComponent(node.t, Object.assign({}, props, { children: node.c })), out, depth + 1);
   }
-  walk(props.title, out, depth + 1);
+  // A Tooltip's words are a PROP, so they are recorded beside the control rather than walked into
+  // the text stream. Walked, the tooltip on a truncating subtitle would land in the row's texts
+  // next to the subtitle itself, and "the row says DWH.MARTS" would pass on a row that only ever
+  // said it in a hover — which is the half a truncation tooltip is supposed to rescue, not replace.
+  if (typeof props.title === 'string' && props.title) entry.tip = props.title;
+  else walk(props.title, out, depth + 1);
   walk(node.c, out, depth + 1);
   return out;
 }
@@ -348,12 +353,13 @@ function rowsOf(nodes) {
     const cls = String(n.className || '');
     if (n.resourceId) { pendingId = n.resourceId; continue; }
     if (cls.startsWith('sw-res-row')) {
-      row = { section, className: cls, id: pendingId, texts: [], items: [] };
+      row = { section, className: cls, id: pendingId, texts: [], items: [], tips: [] };
       pendingId = null;
       out.push(row);
       continue;
     }
     if (row && n.items) { row.items = n.items; continue; }
+    if (row && n.tip) { row.tips.push(n.tip); continue; }
     if (cls === 'sw-panel-section-title') {
       section = (n.texts || []).join('');
       row = null;

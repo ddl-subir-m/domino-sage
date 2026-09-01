@@ -242,6 +242,69 @@ def test_a_failure_at_the_top_still_offers_nothing_to_bind():
     assert step["doors"] == []
 
 
+# ---- what the app's own list says the app reads --------------------------------------------------
+#
+# The feedback half of the door staying open. For an Alias the vanishing door IS the confirmation;
+# here it deliberately stays, so before this the screen looked identical whatever Scope you picked:
+# the sign said `Required by {app}` and went on saying it, and the app's row named the KIND, which
+# its own icon already said. The Scope is the only thing on screen that moves when the Scope moves.
+
+
+@needs_node
+def test_the_app_list_names_the_part_of_the_source_it_reads():
+    """Dotted, the way `Binding.scope` joins the levels for the agent, so the row and the AGENTS.md
+    data block name the same thing the same way."""
+    step = _at(walk=["DWH", "MARTS"], bind="FCT_USAGE_DAILY")
+    assert "DWH.MARTS.FCT_USAGE_DAILY" in _row(step, f"In {APP}")["texts"]
+
+
+@needs_node
+def test_moving_the_scope_moves_what_the_app_list_says():
+    """The claim the whole render exists for. Two walks that end in different places leave the app's
+    list saying different things — which is what makes a re-bind visible at all, given the door is
+    still on screen either way and the Project row's sign cannot change."""
+    at_marts = _at(walk=["DWH", "MARTS"], bind="crumb")
+    moved = _at(walk=["DWH", "MARTS"], bind="crumb",
+                then={"back": "DWH", "walk": ["SANDBOX"], "bind": "crumb"})
+    assert "DWH.MARTS" in _row(at_marts, f"In {APP}")["texts"]
+    assert "SANDBOX" in _row(moved, f"In {APP}")["texts"]
+    assert "DWH.MARTS" not in _row(moved, f"In {APP}")["texts"]
+
+
+@needs_node
+def test_a_scope_is_readable_in_full_where_the_row_cuts_it_off():
+    """`.sw-res-sub` ellipsises, and a Scope is the one subtitle here whose TAIL identifies it —
+    `DWH.MARTS` and `DWH.MARTS_ARCHIVE` truncate to the same pixels in a narrow rail. Asserted off
+    the tooltip PROP rather than the row's words, because a hover is not what the row says."""
+    step = _at(walk=["DWH", "MARTS"], bind="FCT_USAGE_DAILY")
+    assert _row(step, f"In {APP}")["tips"] == ["DWH.MARTS.FCT_USAGE_DAILY"]
+
+
+@needs_node
+def test_a_binding_with_no_scope_at_all_still_says_what_kind_it_is():
+    """The door cannot make one of these — there is no door at the top — but `_bind_from_handoff`
+    can, and `bind_data_source` documents that "the scope may be empty at every level". With nothing
+    to name, the kind is still the most the row can say, so the old subtitle is the fallback rather
+    than something the change deleted."""
+    scopeless = [{"kind": "data_source", "id": "ds_1", "name": "Market data EOD",
+                  "display_name": "Market data EOD"}]
+    row = _row(_at(walk=[], bound=scopeless), f"In {APP}")
+    assert "data source" in row["texts"]
+    # And no tooltip, because there is nothing a hover could add that the row is not already saying.
+    assert row["tips"] == []
+
+
+@needs_node
+def test_a_kind_that_records_no_scope_is_left_exactly_as_it_was():
+    """Only one kind records which part of it the app reads. An Alias has no part to name, so its
+    row keeps the word it had — this render must not reach a kind it has nothing to say about."""
+    alias = [{"kind": "llm_alias", "id": "al_1", "name": "sonnet",
+              "display_name": "Claude Sonnet 4"}]
+    row = _row(_at(walk=[], bound=alias), f"In {APP}", "llm_alias:al_1")
+    assert "llm alias" in row["texts"]
+    assert row["tips"] == []
+
+
 # ---- the removal, which was already there -------------------------------------------------------
 
 
