@@ -74,6 +74,39 @@ window.SW = window.SW || {};
             h('dd', null, resource.lineage.join(', '))
         ),
 
+        // Where this is used, in one look (#133). Three lists decide whether a Resource is reachable
+        // — Project membership, this Conversation's context, and each Built App's Bindings — and
+        // until now nothing on screen laid them beside each other, so the model was invisible until
+        // it bit. The chip is client state and the apps are the server's enrichment of the same
+        // membership row the rail is drawn from; no request of its own.
+        //
+        // This Conversation and no other: a chip belongs to the Conversation it was added in
+        // (ADR-0015), so a scan of other Conversations would report context this one does not have.
+        h(
+          'div',
+          { className: 'sw-drawer-section' },
+          h('h4', null, 'Where this is used'),
+          h(
+            'dl',
+            { className: 'sw-drawer-meta sw-where-used' },
+            h('dt', null, 'This conversation'),
+            h('dd', null, attached ? 'In use' : 'Not in use'),
+            ...(resource.usedBy || []).flatMap((entry) => [
+              h('dt', { key: `app-${entry.appId}` }, entry.name),
+              // The Scope where the Binding recorded one, because for a Data Source which part of
+              // the store the app reads is the answer, not that it reads one. Every other kind
+              // records no Scope, and there "In use" is the whole of what there is to say.
+              h('dd', { key: `scope-${entry.appId}` }, entry.scope || 'In use'),
+            ])
+          ),
+          (resource.usedBy || []).length === 0 &&
+            h(
+              'p',
+              { className: 'sw-secondary', style: { margin: 0 } },
+              `No app in ${scope.name} uses it yet. Use it in one from the project list.`
+            )
+        ),
+
         (resource.schema || []).length > 0 &&
           h(
             'div',
