@@ -107,7 +107,7 @@ OpenCode `permission` is not trusted (same lesson as `sage-ask`: the shim strips
 - **Reject** any edit/write whose path is under `src/`, `public/`, `.sage/` except that Thread dir, or any config file (`package.json`, `AGENTS.md`, `vite.config.ts`, `app.sh`, `serve.py`). The shim rewrites that tool result to an error naming `examples/<threadId>/` so the model retries there instead of `src/` in a loop. Revert the file on disk at turn end.
 - **Do not** run the typecheck feedback loop. A Chat turn that writes a PNG is done.
 
-OpenCode's Chat session directory is `.sage/chat-work/` (Chat `AGENTS.md`, plus links to `examples/` and `.sage/scratch/`). It is not the React app clone. Chat attach does not seed `template/react-vite` or start Vite. Build / the preview proxy seed when they need the app.
+OpenCode's Chat session directory is `.sage/chat-work/` (a stub `AGENTS.md`, plus links to `examples/` and `.sage/scratch/`). The stub holds no rules: OpenCode loads AGENTS.md from the session directory, so writing the body there sent it twice per turn alongside the `sage-chat` prompt. It stays as a stub only so an `AGENTS.md` added at the Project root above it cannot reach a Thread. It is not the React app clone. Chat attach does not seed `template/react-vite` or start Vite. Build / the preview proxy seed when they need the app.
 
 ### Data the agent can see
 

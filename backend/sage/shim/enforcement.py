@@ -18,7 +18,8 @@ from typing import Any
 from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import Mode, ModelCatalog, is_bedrock, supports_vision
+from ..router.models import (Mode, ModelCatalog, is_bedrock, reasoning_efforts_for,
+                            supports_vision)
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
 from .chat_paths import strip_denied_writes
 
@@ -246,6 +247,14 @@ class EnforcementShim:
             and request["model"] == state.chat_model
         ):
             request = {**request, "reasoning_effort": state.reasoning_effort}
+        elif state.chat_thread_id and "low" in reasoning_efforts_for(request["model"]):
+            # Chat on Auto never reached the branch above: no pick means no effort, so a data
+            # question was answered at the alias's own default — a full reasoning pass, paid before
+            # the first token, on turns as small as "hi". Low is the floor for this kind of work;
+            # someone who wants more picks it, and that pick still wins because it is tested first.
+            # Gated the same way, and for the same reason: an alias that does not advertise the
+            # field 400s on it.
+            request = {**request, "reasoning_effort": "low"}
 
         # Handoff note. A rescued step lands on a different model mid-turn with the transcript but
         # no account of why it was called in — so it re-attempts the edit that just failed. Appended

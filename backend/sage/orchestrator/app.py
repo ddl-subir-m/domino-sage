@@ -396,6 +396,28 @@ def _run_slot_preflight() -> None:
 
 threading.Thread(target=_run_slot_preflight, name="sage-preflight-slots", daemon=True).start()
 
+
+def _warm_opencode() -> None:
+    """Boot the OpenCode server now rather than on the first turn.
+
+    `_ensure_opencode` starts a Node server the first time anything asks for one, so that cost
+    landed on whichever turn came first — which is the person's opening message, the one they have
+    the least patience for and the least reason to expect a wait on. Nothing downstream changes:
+    the same lazy start still runs if this thread lost a race or failed.
+
+    Non-fatal by design, like the preflight above. A builder that cannot boot OpenCode has a
+    bigger problem than a cold first turn, and it should report that when a turn asks, not by
+    refusing to serve the port Domino is waiting on.
+    """
+    try:
+        orchestrator._ensure_opencode()
+        log.info("warm: OpenCode server is up before the first turn")
+    except Exception as e:
+        log.warning("warm: OpenCode did not start ahead of the first turn — %s", e)
+
+
+threading.Thread(target=_warm_opencode, name="sage-warm-opencode", daemon=True).start()
+
 control_app = FastAPI(title="sage orchestrator")
 
 # The Domino proxy path prefix, single-sourced from env (empty locally). Baked into Vite's `base`

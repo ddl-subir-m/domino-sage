@@ -177,7 +177,13 @@ def test_chat_agents_md_uses_assistant_name(tmp_path, monkeypatch):
         ),
         project_id="Sage",
     )
-    assert orch._chat_agents_md() == "You are Acme's chat agent.\n"
+    # The rules live in the sage-chat prompt, not here; this file is the stub that keeps an
+    # AGENTS.md from a parent directory out of a Thread. It still speaks the pack's name.
+    written = orch._chat_agents_md()
+    assert "Acme's chat agent" in written
+    assert "Sage" not in written
+    # Proof it is a stub and not the body again: the rules are ~1,700 tokens.
+    assert len(written) < 400
 
 
 def test_install_opencode_config_voices_the_global_copy_only(tmp_path, monkeypatch):

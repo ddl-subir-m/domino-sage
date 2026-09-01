@@ -4506,13 +4506,24 @@ class Orchestrator:
             self._record(binding)
 
     def _chat_agents_md(self) -> str:
+        """The stub AGENTS.md for the Chat workdir. The rules are NOT here.
+
+        `template/chat/AGENTS.md` is the source of truth for what sage-chat is told, and it is
+        inlined into `opencode.json` as that agent's prompt — the copy OpenCode is guaranteed to
+        send. Writing the same body here as well put every rule in front of the model twice on
+        every turn, roughly 1,700 tokens the question had to be read past before an answer could
+        start; a one-word greeting paid for all of it. OpenCode loads AGENTS.md from the session
+        directory, and the session directory is this one.
+
+        A stub rather than no file at all: an absent AGENTS.md lets OpenCode walk up for one, and
+        an AGENTS.md added at the Project root later would then reach a Thread. Build's rules are
+        not this Thread's.
+        """
         from .brand import apply_voice
-        p = self._wm.template.parent / "chat" / "AGENTS.md"
-        if p.is_file():
-            return apply_voice(p.read_text())
         return apply_voice(
-            "You are Sage's chat agent. Answer questions about data. "
-            "Write charts as PNG files under examples/<threadId>/.\n"
+            "# This Thread\n\n"
+            "You are Sage's chat agent. Your instructions arrive with the turn — follow those. "
+            "There is nothing further to read in this directory.\n"
         )
 
     def _chat_mention_files(self, prompt: str, items: list[dict], workspace: Path) -> list[dict] | None:
