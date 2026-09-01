@@ -981,6 +981,10 @@
 }
 .sw-plan-card-actions { display: flex; gap: var(--s2); flex-wrap: wrap; }
 
+/* The folded plan row's own two rules live in `chat.css`, beside the Build run row they share a
+   selector with: the fold is Chat's (#50), and one rule for both rows is what stops them drifting
+   into nearly the same row. */
+
 /* What a handoff carried, on the card the handoff ends on (#60). Tinted and inset so it reads as
    a note about how this plan arrived rather than as part of the plan itself. */
 .sw-crossing {

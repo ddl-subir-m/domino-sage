@@ -326,6 +326,22 @@ window.SW = window.SW || {};
     );
   }
 
+  // The plan's own words, never a summary this file invents: a second description of the plan is
+  // one more thing for the real one to disagree with.
+  //
+  // The FIRST paragraph that is not a heading — which is the opening sentence for a plan written
+  // the usual way, and the first section's opening line for one that starts straight into its
+  // headings. A plan with nothing but headings falls back to the heading text, because a row that
+  // says nothing is worse than a row that says less than it wanted to.
+  const PITCH_MAX = 120;
+  function planPitch(plan) {
+    const paras = String(plan || '').split(/\n\n+/).map((para) => para.trim()).filter(Boolean);
+    const first = paras.find((para) => !/^#{1,6}\s/.test(para))
+      || (paras[0] || '').replace(/^#{1,6}\s+/, '');
+    const line = first.split('\n')[0].replace(/\s+/g, ' ').trim();
+    return line.length > PITCH_MAX ? `${line.slice(0, PITCH_MAX - 1).trimEnd()}…` : line;
+  }
+
   function BuildPlanCard({ block }) {
     const { buildRunning } = SW.store.get();
     const [answers, setAnswers] = useState('');
@@ -352,6 +368,21 @@ window.SW = window.SW || {};
     // Only a plan that arrived through a handoff has a crossing to report. A plan the Build gate
     // wrote crossed nothing, so it keeps the card it always had.
     const crossed = block.crossed;
+    // Handed down, never read from the preference here. The conversation-view preference has
+    // exactly one reader and it is the store (#56): it decides what a Conversation's messages ARE,
+    // once, and every component downstream draws what it was given. A second reader is a second
+    // place for the two views to disagree, and #61 has to be able to delete an arm by deleting one
+    // branch. `test_only_the_store_branches_on_the_preference` reads this file to hold that, so the
+    // preference is named in prose here rather than spelled the way the code would spell it.
+    //
+    // And the fold is a PROMISE that the plan is one click away, so a card with no document to open
+    // does not get to make it. An architecture has none — it is written down nowhere but this card
+    // (`store.js`: "Empty for an architecture, which has no document") — so folding one would file
+    // its only copy behind a button that does not exist. Same for a plan too old to have an id.
+    const folded = !!block.folded && !!block.planId;
+    // `plan`, not `draft`: editing is unreachable folded, so there is no edit for this to be
+    // holding, and reaching for `draft` here would only suggest there might be.
+    const pitch = folded ? planPitch(plan) : '';
 
     return h(
       'div',
@@ -361,22 +392,37 @@ window.SW = window.SW || {};
         { className: 'sw-plan-card-head' },
         h(
           'div',
-          { className: 'sw-plan-card-title' },
+          { className: folded ? 'sw-plan-card-label' : 'sw-plan-card-title' },
           superseded
             ? 'Superseded by a newer plan'
-            : (block.kind === 'architecture' ? 'Architecture' : 'Review the plan before building')
-        )
+            : block.kind === 'architecture'
+              ? 'Architecture'
+              // Folded there is no plan on the screen to review, so the instruction would be
+              // telling the reader to do something the card no longer lets them do. A label is
+              // what the row wants, and it is the grammar the Build run row beside it already uses.
+              : (folded ? 'Plan' : 'Review the plan before building')
+        ),
+        // Unified puts Chat and Build in one transcript, so a plan at full height buries the turns
+        // either side of it. The pitch goes IN the head rather than under it, because a row is what
+        // the fold is for — label, what it is, way in — and a second line is the height coming back.
+        // A plan with no words at all has nothing to pitch, and an empty element is a gap in the
+        // row rather than a sentence in it. The label and the way in carry the row alone.
+        pitch && h('div', { className: 'sw-plan-card-pitch' }, pitch)
       ),
-      editing
-        ? h(Input.TextArea, {
-            value: draft,
-            autoSize: { minRows: 8, maxRows: 20 },
-            onChange: (e) => setDraft(e.target.value),
-          })
-        // `draft`, not `block.plan`. The button that leaves edit mode is labelled "Preview", so
-        // rendering the original showed a person their own edits vanishing. `approveBuild` was
-        // sending `draft` all along — only the screen disagreed.
-        : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(draft)),
+      // Editing is only reachable unfolded — the button for it is dropped below — so `editing` is
+      // never true here. The body is still gated on the fold rather than on that, because the fold
+      // is the reason it is gone.
+      !folded &&
+        (editing
+          ? h(Input.TextArea, {
+              value: draft,
+              autoSize: { minRows: 8, maxRows: 20 },
+              onChange: (e) => setDraft(e.target.value),
+            })
+          // `draft`, not `block.plan`. The button that leaves edit mode is labelled "Preview", so
+          // rendering the original showed a person their own edits vanishing. `approveBuild` was
+          // sending `draft` all along — only the screen disagreed.
+          : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(draft))),
       crossed &&
         crossingReceipt({
           crossed,
@@ -426,7 +472,23 @@ window.SW = window.SW || {};
               'Open the newer plan'
             )
         ),
+      // A settled plan draws no actions at full height because the plan is already on the screen.
+      // Folded it is not, so without this the row would be a pitch and nowhere to go. Superseded
+      // has its own two ways back in above and does not want a third.
+      folded &&
+        !pending &&
+        !superseded &&
+        h(
+          'div',
+          { className: 'sw-plan-card-actions', style: { marginTop: 10 } },
+          h(
+            Button,
+            { size: 'small', onClick: () => SW.store.openPlanArtifact(block.planId) },
+            'Open plan'
+          )
+        ),
       pending &&
+        !folded &&
         h(Input.TextArea, {
           value: answers,
           rows: 2,
@@ -453,11 +515,15 @@ window.SW = window.SW || {};
               ? 'Build this'
               : (block.steps ? `Approve & build (${block.steps} phases)` : 'Approve & build')
           ),
-          h(
-            Button,
-            { size: 'small', onClick: () => setEditing(!editing) },
-            editing ? 'Preview' : (block.kind === 'architecture' ? 'Edit design' : 'Edit plan')
-          ),
+          // Editing needs the body it edits. Folded there is none, so the plan document — which
+          // has the sections, the open questions and the comments too — is the one place to change
+          // a plan rather than the second.
+          !folded &&
+            h(
+              Button,
+              { size: 'small', onClick: () => setEditing(!editing) },
+              editing ? 'Preview' : (block.kind === 'architecture' ? 'Edit design' : 'Edit plan')
+            ),
           // The card is the summary; the document is where the sections, the open questions and
           // the comments are. An architecture has no document, so it gets no way in.
           block.planId &&

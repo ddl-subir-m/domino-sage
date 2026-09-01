@@ -575,7 +575,11 @@
   gap: var(--s2);
 }
 .sw-buildrun-head { display: flex; align-items: center; gap: var(--s2); }
-.sw-buildrun-label {
+/* Two rows, one grammar. A folded plan (#50) says the same three things a Build run row says —
+   what it is, what it is about, the way in — so it is the SAME rule and not a copy of it: a copy
+   is how the two rows end up nearly lining up. */
+.sw-buildrun-label,
+.sw-plan-card-label {
   flex: none;
   font-size: var(--fs-11);
   font-weight: 600;
@@ -583,7 +587,8 @@
   letter-spacing: 0.04em;
   color: var(--gray-600);
 }
-.sw-buildrun-prompt {
+.sw-buildrun-prompt,
+.sw-plan-card-pitch {
   flex: 1;
   min-width: 0;
   font-size: var(--fs-13);

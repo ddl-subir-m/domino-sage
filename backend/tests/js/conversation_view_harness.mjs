@@ -261,6 +261,28 @@ function cardText(block) {
   return words;
 }
 
+// The plan card, called the same way and for the same reason: whether a plan folds is decided by
+// the view preference and the block, before React is asked to draw anything. Reported as words plus
+// the classNames on the way down, because the fold is a claim about BOTH — that the pitch is there
+// and that the plan body is not.
+function planCardText(block) {
+  const PlanCard = SW.MessageBlock({ block: { type: 'build_plan', ...block } }).t;
+  const words = [];
+  // Tags as well as words, because half of what the fold decides is about controls that carry no
+  // text of their own: an antd `Input.TextArea` puts its prompt in a `placeholder` prop, so "the
+  // note field is gone" has nothing in `words` to be read off.
+  const tags = [];
+  const walk = (node) => {
+    if (node === null || node === undefined || node === false || node === true) return;
+    if (typeof node === 'string' || typeof node === 'number') { words.push(String(node)); return; }
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (typeof node.t === 'string') tags.push(node.t);
+    if (node.c) walk(node.c);
+  };
+  walk(PlanCard({ block: { type: 'build_plan', ...block } }));
+  return { words, tags };
+}
+
 // The rail, called as the function it is — same trick as `cardText`, and for the same reason:
 // which row the rail says you are looking at is decided before React is asked to draw anything.
 // Rows are reported as `className | words`, so "there is a selected row" and "it is the one that
@@ -383,6 +405,26 @@ for (const step of steps) {
     SW.router.go(step.route || '#/chat');
     SW.store.set({ activeApp: (SW.store.get().apps || []).find((a) => a.id === step.activeApp) || null });
     report.push({ step: `card ${step.card.appId}`, words: cardText(step.card) });
+  } else if (step.planFold) {
+    // The other side of the same claim: the CARD is a function of its block, so whether a plan
+    // folds is the store's answer, given once. This reports what the store handed down.
+    await SW.store.openThread(step.planFold);
+    if (step.pane === 'build') await SW.store.loadBuild();
+    const plans = [];
+    const where = step.pane === 'build'
+      ? SW.store.get().buildTranscript
+      : SW.store.get().messages;
+    for (const message of where || []) {
+      for (const block of message.blocks || []) {
+        if (block.type === 'build_plan') plans.push(!!block.folded);
+      }
+    }
+    report.push({ step: `planFold ${step.planFold}`, plans });
+  } else if (step.planCard) {
+    // Same two levers the card reads: the route decides the mode, the pref decides the view.
+    sandbox.location.hash = step.route || '#/chat';
+    SW.router.go(step.route || '#/chat');
+    report.push({ step: 'planCard', ...planCardText(step.planCard) });
   } else if (step.newConversation) {
     // The press, whole: the store action the button runs, then the navigation it runs after it —
     // including the route effect Build fires on arrival, which is the one that used to wipe this.

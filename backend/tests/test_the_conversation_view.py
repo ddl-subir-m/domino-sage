@@ -238,3 +238,162 @@ def test_split_leaves_chat_exactly_as_it_is_today():
 
     assert _shape(step) == [["user", ["which desks lost money?"]], ["user", ["thanks"]]]
     assert step["calls"] == ["/threads/thr_both", "/threads/thr_both/context"]
+
+
+# ---- the plan card folds under unified --------------------------------------------------------
+#
+# Unified puts Chat and Build in one transcript, and a plan is long — long enough that the card
+# reviewing it buried the turns around it. So under unified Chat folds the card to a row with the
+# same grammar as the app card beside it: what it is, its pitch, and the way in.
+#
+# Two claims, deliberately apart, because the preference has exactly one reader
+# (`test_only_the_store_branches_on_the_preference`). The STORE decides whether a plan folds; the
+# CARD is a function of the block it was handed. Testing the card through the preference would tie
+# the two together and hide a card that had quietly grown a second reader.
+#
+# The card seam is `_card`'s: called as the function it is, against a stubbed `createElement`.
+
+_PITCH = "An internal dashboard that shows AI usage and spend."
+_DEEP = "Today the consumption data sits in a table nobody can scan."
+_PLAN = f"{_PITCH}\n\n## Problem & outcome\n\n{_DEEP}"
+
+
+def _plan_card(folded: bool = True, **block) -> dict:
+    steps = [{"open": "thr_both"},
+             {"planCard": {"plan": _PLAN, "pending": True, "planId": "pl_1",
+                           "folded": folded, **block}}]
+    return _run(steps)[1]
+
+
+def _plan_folds(view: str, pane: str = "chat") -> list[bool]:
+    return _run([{"pref": view}, {"planFold": "thr_handoff", "pane": pane}])[1]["plans"]
+
+
+def test_chat_folds_a_plan_only_where_it_has_both_halves_to_carry():
+    """The decision, made once, where the preference's only reader lives. Unified puts the build
+    turns in Chat's transcript, so the plan card arrives there and arrives long. Split Chat reads
+    the Chat half alone and never had the card at all — which is why the split answer is no card
+    rather than an unfolded one."""
+    assert _plan_folds("unified") == [True]
+    assert _plan_folds("split") == []
+
+
+def test_build_reads_the_plan_in_full_because_build_has_the_room():
+    """The same asymmetry the run fold has (`buildRunMessages` folds nothing). Chat folds because
+    twenty implementation turns would bury the questions around them; Build is where those turns
+    belong and where a plan is reviewed, so Build draws the card whole under either view."""
+    assert _plan_folds("unified", pane="build") == [False]
+    assert _plan_folds("split", pane="build") == [False]
+
+
+def test_a_folded_plan_shows_its_pitch_and_not_the_whole_plan():
+    """The complaint this fixes: the plan arrived at full height and pushed everything around it
+    off the screen. The pitch is the plan's own first paragraph, so the row says what the plan is
+    without inventing a second description for the real one to disagree with."""
+    words = _plan_card()["words"]
+
+    assert any(_PITCH in w for w in words)
+    assert not any(_DEEP in w for w in words)
+
+
+def test_a_folded_plan_can_still_be_approved_without_being_opened_first():
+    """`store.approveBuild` has exactly one caller in the app, and it is this card. A fold that
+    took the button with it would leave unified with no way to start a build at all — the Approve
+    in the plan document is reviewer sign-off (`api.review`), which is a different act."""
+    drawn = _plan_card()
+
+    assert "Approve & build" in drawn["words"]
+    assert "Open plan" in drawn["words"]
+
+
+def test_a_folded_plan_offers_no_editing_it_has_no_room_for():
+    """Edit plan swaps the body for a textarea and the note field sits under it. Neither has a
+    place on a row, and a button that expands the card is the height this fold exists to remove.
+    Both live on in the plan document, which is what Open plan is for."""
+    drawn = _plan_card()
+
+    assert "Edit plan" not in drawn["words"]
+    assert "Input.TextArea" not in drawn["tags"]
+
+
+def test_a_settled_plan_folds_to_a_row_that_is_still_a_way_in():
+    """A plan that is no longer pending draws no actions at all today, which is fine at full height
+    because the plan is on the screen. Folded it is not, so the same card would be a pitch and a
+    dead end — which is the shape this card exists to avoid."""
+    drawn = _plan_card(pending=False)
+
+    assert any(_PITCH in w for w in drawn["words"])
+    assert "Approve & build" not in drawn["words"]
+    assert "Open plan" in drawn["words"]
+
+
+def test_a_folded_plan_is_labelled_not_instructed():
+    """"Review the plan before building" is an instruction, and it is the right one while the plan
+    is on the screen to be reviewed. Folded it is not, so the head goes back to being a label — the
+    same grammar as the Build run row it now sits beside."""
+    drawn = _plan_card()
+
+    assert drawn["words"][0] == "Plan"
+    assert "Review the plan before building" not in drawn["words"]
+
+
+def test_a_card_with_no_document_behind_it_does_not_fold():
+    """The fold is a promise that the plan is one click away. An architecture has no document —
+    `planId` is empty for one — so folding it would file its only copy behind a button that is not
+    there, and the row would be a label, a pitch and no way in at all. It keeps the whole card.
+
+    The gate is the document and not the kind, so a plan too old to have an id is safe the same
+    way. Written with `planId` empty on purpose: an earlier version of this test handed the card
+    `pl_1`, which an architecture never has, and passed while the dead row shipped."""
+    drawn = _plan_card(kind="architecture", planId="", pending=False)
+
+    assert drawn["words"][0] == "Architecture"
+    assert any(_DEEP in w for w in drawn["words"])          # the card is still the whole design
+
+
+def test_an_architecture_that_can_be_opened_still_reads_as_a_row():
+    """The gate is the document, not the word. Give one an id and it folds like any other."""
+    assert _plan_card(kind="architecture", planId="pl_1")["words"][0] == "Architecture"
+
+
+def test_a_plan_that_is_all_headings_still_says_something():
+    """`planPitch` prefers the first paragraph that is not a heading, and a plan written as nothing
+    but headings has none. The heading text is less than the row wanted, and still better than a
+    row that says nothing at the very moment its whole job is to say what the plan is."""
+    drawn = _plan_card(plan="## Consumption overview\n\n### Filters")
+
+    assert "Consumption overview" in drawn["words"]
+
+
+def test_the_pitch_is_one_line_however_long_the_paragraph_is():
+    """The row is one line and the CSS clips it, but clipping is a picture — the string behind it
+    would still be the whole paragraph, and every reader of `words` would see a pitch that the
+    screen never showed."""
+    drawn = _plan_card(plan="word " * 200)
+
+    pitch = drawn["words"][1]
+    assert len(pitch) <= 120
+    assert pitch.endswith("…")
+
+
+def test_an_unfolded_plan_card_is_exactly_as_it_is_today():
+    """The other half of this change is a promise. Split has a pane to read a plan in, so the card
+    keeps the whole plan, the instruction that goes with it, and every control it has always had."""
+    drawn = _plan_card(folded=False)
+
+    assert any(_DEEP in w for w in drawn["words"])
+    assert drawn["words"][0] == "Review the plan before building"
+    assert "Edit plan" in drawn["words"]
+    assert "Input.TextArea" in drawn["tags"]
+
+
+def test_a_superseded_plan_folds_with_both_ways_back_in():
+    """Nothing was deleted — a newer plan took the app's live plan.md (#59) — so the row owes the
+    reader both plans. The newer one especially: the old document has no link to it, so behind
+    Open plan it would be unreachable from the transcript."""
+    drawn = _plan_card(pending=False, superseded={"by": "pl_2", "app": "Desk dashboard"})
+
+    assert drawn["words"][0] == "Superseded by a newer plan"
+    assert "Reopen this plan" in drawn["words"]
+    assert "Open the newer plan" in drawn["words"]
+    assert not any(_DEEP in w for w in drawn["words"])

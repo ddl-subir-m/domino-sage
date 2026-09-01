@@ -1199,6 +1199,20 @@ window.SW = window.SW || {};
     // Each half is walked by the reader that already knows how to read it — a build turn's tool
     // cards and plan cards are not chat blocks — and `order` is what puts the two back together.
     const messages = (await historyToMessages(chat, handoff)).concat(buildRunMessages(build));
+    // A plan is long, and here it lands in a transcript that already carries both halves — so the
+    // card that reviews it pushed the turns either side of it off the screen. Folded it reads as a
+    // row: what it is, its pitch, and the way in. Stamped here rather than read in the card,
+    // because this is the one reader of the preference (#56) and the card must stay a function of
+    // what it was handed.
+    //
+    // Chat only, deliberately, and the same asymmetry the run fold has: Build draws the plan in
+    // full because Build has a pane to read it in, and `applyBuildTranscript` does not come
+    // through here.
+    for (const message of messages) {
+      for (const block of message.blocks || []) {
+        if (block.type === 'build_plan') block.folded = true;
+      }
+    }
     return messages.sort((a, b) => a.order - b.order);
   }
 
