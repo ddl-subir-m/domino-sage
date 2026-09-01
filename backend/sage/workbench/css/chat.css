@@ -707,6 +707,17 @@
 }
 .sw-chip .ant-tag-close-icon { color: var(--purple-600) !important; }
 
+/* The first chip's one-time note (#137): a chip is Session context, this Conversation's only.
+   It rides below the chips; dismissed, the viewer pref keeps it away for good. */
+.sw-chip-hint {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: var(--s1) var(--s3) 0;
+}
+.sw-chip-hint-text { font-size: var(--fs-12); color: var(--gray-600); }
+
 .sw-composer-input { padding: var(--s2) var(--s3) 0; position: relative; }
 
 /* @-mention autocomplete ------------------------------------------------- */
