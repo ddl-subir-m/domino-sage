@@ -131,8 +131,19 @@ def empty_sections() -> dict:
 
 
 def parse_sections(plan_md: str) -> dict:
-    """`{summary, sections}` from a plan's markdown. Never raises; a plan missing every heading
-    still comes back with its prose as the summary."""
+    """`{title, summary, sections}` from a plan's markdown. Never raises; a plan missing every
+    heading still comes back with its prose as the summary.
+
+    `title` is a `# ` heading before anything else, and it is the document's name. A plan used to
+    open on its first SENTENCE, which three surfaces then read as a name — the plan card, the
+    document, and the Built App's display name. None of them wanted a sentence: live, an app was
+    called "- This app will be an AI consumption dashboard for exploring daily usage, spend," in
+    the rail, bullet marker and trailing comma included, because that is what the first line was.
+
+    Only the first level-1 heading, and only ahead of every section: `# Plan` is a section (it is
+    matched below first), and a `#` further down is a heading inside a document that already began.
+    """
+    title = ""
     summary: list[str] = []
     collected: dict[str, list[str]] = {}
     current: str | None = None
@@ -147,6 +158,10 @@ def parse_sections(plan_md: str) -> dict:
             if key:
                 current = key
                 collected.setdefault(key, [])
+                continue
+            if (len(m.group(1)) == 1 and not title and not collected
+                    and not any(seen.strip() for seen in summary)):
+                title = m.group(2).strip()
                 continue
             # An unknown heading keeps its text rather than vanishing: better a section the page
             # shows as prose than a silently shorter plan.
@@ -163,7 +178,7 @@ def parse_sections(plan_md: str) -> dict:
     trailing = "\n".join(_strip_blanks(unknown)).strip()
     if trailing:
         sections["plan"] = "\n\n".join(p for p in (sections["plan"], trailing) if p)
-    return {"summary": lead, "sections": sections}
+    return {"title": title, "summary": lead, "sections": sections}
 
 
 def _render_body(kind: str, value) -> list[str]:
@@ -184,13 +199,21 @@ def _render_body(kind: str, value) -> list[str]:
     ]
 
 
-def render(summary: str, sections: dict) -> str:
+def render(summary: str, sections: dict, title: str = "") -> str:
     """The markdown a plan document is stored as, and the markdown handed to the builder.
 
     Empty sections are left out rather than written as empty headings — the same reason
     `_drop_empty_questions` exists: a heading with nothing under it reads as a section the user
-    still has to fill in."""
+    still has to fill in.
+
+    `title` last and optional, so every existing caller reads the same. It is written back because
+    the round trip is this module's whole contract: parsed out and not rendered again, a document's
+    name would survive until somebody edited a section, and the copy handed to the builder would
+    then fall back to naming the app after its first sentence — the bug the heading exists to fix.
+    """
     out: list[str] = []
+    if (title or "").strip():
+        out.append(f"# {title.strip()}")
     if (summary or "").strip():
         out.append(summary.strip())
     for section in SECTIONS:

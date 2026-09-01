@@ -188,11 +188,21 @@ def parse_samples(raw: object) -> list[SharedSample]:
 
 
 def agents_block(sources: list[BoundSource], problems: list[str] | None,
-                 max_rows: int, *, samples=(), names: HelperNames = TEMPLATE) -> str:
+                 max_rows: int, *, samples=(), names: HelperNames = TEMPLATE,
+                 reaching: bool = False) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
     Empty when no Data Source is bound. Describing the machinery for a store that is not there would
     cost context on every turn and invite an app built around data it cannot reach.
+
+    `reaching` is that invitation, accepted. It says this app has no Binding and is reading a store
+    anyway — a catalog on disk, or `runQuery` in `src/` — and then the silence is the wrong answer,
+    because silence is what the agent read as permission in the first place. Nothing else in front
+    of it disagrees: the query helper ships in `src/` whether or not anything is bound, so an agent
+    with no block to read has no way to learn that the one API it can see cannot work here. Live,
+    that built a dashboard whose every screen failed, then "fixed" it by guessing four query names,
+    and both turns reported a clean build. So the silence is kept for the apps that are not
+    reaching, which is most of them, and broken for the ones that are.
 
     Prescriptive about the four things an agent gets wrong when left to itself. It writes SQL into a
     component and a fetch to go with it, when the only path is a named query in a manifest. It
@@ -207,7 +217,7 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
     structure that says nothing and is re-read every turn.
     """
     if not sources:
-        return ""
+        return _unbound_block(problems, names) if reaching else ""
     lines = ["## The app's data", ""]
     if len(sources) == 1:
         one = sources[0]
@@ -233,6 +243,44 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
     lines += _how_to_ask(sources, max_rows, names)
     lines += _samples_section(samples)
     lines += _problems_section(problems)
+    return "\n".join(lines)
+
+
+def _unbound_block(problems: list[str] | None, names: HelperNames) -> str:
+    """The whole region for an app reaching for a store it has no Binding for.
+
+    Short on purpose. This is not the bound block with the tables removed — none of that machinery
+    applies, and the agent needs one fact and one instruction, not a smaller version of a section
+    about a store that is not there.
+
+    The third bullet is the one the live failure turned on. Told only that the query is refused, an
+    agent treats it as a name to get right and tries again — four names in one turn, in the run this
+    came from. It cannot bind a {dataSource}; the person can. Saying so is the only move that ends
+    the loop instead of feeding it.
+    """
+    lines = [
+        "## The app's data", "",
+        brand.text("This app has no {dataSource} bound, and it is reading one anyway. That cannot "
+                   "work, and no edit to `src/` makes it work."), "",
+        (f"- **Stop calling `runQuery` and stop writing `.sage/queries.json`.** `{names.query_path}` "
+         "is in `src/` because the template ships it to every app, not because this one can use it. "
+         "With nothing bound, every query is refused and the screen waiting on it shows the viewer "
+         "an error where the data should be."),
+        ("- **The name is not the problem, so do not guess another one.** A refused query here is "
+         "not a name that missed. No name resolves until something is bound, and a list of "
+         "alternatives to try is four ways to fail in one turn."),
+        brand.text("- **Say this to the user, and stop.** They add a {dataSource} to this "
+                   "{builtApp} in {assistantName} — you cannot, from here. Name what the app needs "
+                   "and leave it to them."),
+        ("- Build the rest from what this app already holds — a file under `public/data/`, an "
+         "Attachment, or values the user gave you — or leave that screen out rather than shipping "
+         "one that cannot load."), "",
+    ]
+    if problems:
+        lines += [
+            brand.text("What is already on disk, in the {builtApp}'s own words:"), "",
+            *[f"- {p}" for p in problems], "",
+        ]
     return "\n".join(lines)
 
 

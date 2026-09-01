@@ -648,6 +648,26 @@ window.SW = window.SW || {};
     notify();
   }
 
+  // The question a Build offer was made INSTEAD of answering, or '' when there is none.
+  //
+  // The explicit-build path offers Build before running a turn, so its callout sits directly under
+  // the question, with nothing between them. A callout the classifier raised comes after a turn
+  // that did answer, and that answer is in the way — which is what tells the two apart, since both
+  // are the same block. The server applies the same rule to the transcript and has the last word
+  // (`handoff.unanswered_ask`); this is only here to keep a decline with nothing pending from
+  // flashing a spinner on its way to doing nothing.
+  function pendingAsk() {
+    const messages = state.messages || [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message.role === 'system') continue;
+      if (message.role !== 'user') return '';
+      const text = (message.blocks || []).find((b) => b.type === 'text');
+      return (text && text.value) || '';
+    }
+    return '';
+  }
+
   function summarise(text) {
     const trimmed = text.trim();
     return trimmed.length > 48 ? `${trimmed.slice(0, 48)}…` : trimmed;
@@ -2929,7 +2949,12 @@ window.SW = window.SW || {};
       store._watchTimer = setInterval(tick, 2000);
     },
 
-    async sendMessage(text) {
+    // `opts` is how `Not now` reuses this. Declining a Build offer runs the question the offer was
+    // made instead of answering, and that turn is an ordinary Chat turn in every way but two: the
+    // question is already on the Thread and already on screen, so neither end records it again.
+    //   `echo: false` — do not push a second bubble for a question already in the transcript.
+    //   `url`         — the decline route, which suppresses and then streams that turn.
+    async sendMessage(text, { echo = true, url = '' } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -2959,13 +2984,15 @@ window.SW = window.SW || {};
         kind: a.resourceKind,
         addedBy: a.addedBy,
       }));
-      pushMessage({
-        id: `u_${Date.now()}`,
-        role: 'user',
-        at: new Date().toISOString(),
-        blocks: [{ type: 'text', value: text }],
-        attachments,
-      });
+      if (echo) {
+        pushMessage({
+          id: `u_${Date.now()}`,
+          role: 'user',
+          at: new Date().toISOString(),
+          blocks: [{ type: 'text', value: text }],
+          attachments,
+        });
+      }
       // The queue's two ends of this send (#79): `ticket` is what a Cancel would name, and `unran`
       // is whether it ended without ever running — the one case where the bubble above has to come
       // back off the screen, because the server recorded nothing to replace it with.
@@ -3012,9 +3039,11 @@ window.SW = window.SW || {};
       };
 
       try {
-        const res = await fetch(`./api/threads/${thread.id}/chat/stream`, {
+        const res = await fetch(url || `./api/threads/${thread.id}/chat/stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          // The decline route ignores this and reads the pending question off the Thread, so a
+          // stale tab cannot put a turn under a question it does not match.
           body: JSON.stringify({ prompt: text }),
         });
         if (!res.ok) {
@@ -3237,14 +3266,27 @@ window.SW = window.SW || {};
     },
 
     dismissPlanSuggestion() {
+      // Read BEFORE the callout is filtered out: what makes a question pending is that the offer
+      // sits directly under it, so removing the offer removes the evidence.
+      const pending = pendingAsk();
       state.messages = state.messages.filter(
         (m) => !m.blocks.some((b) => b.type === 'plan_suggestion')
       );
-      if (state.thread) {
-        SW.api.patchThread(state.thread.id, { handoff: 'suppress' }).catch(() => {});
-        state.thread = { ...state.thread, handoff: { ...(state.thread.handoff || {}), suppressed: true, status: 'suppressed' } };
+      if (!state.thread) {
+        notify();
+        return;
       }
+      const id = state.thread.id;
+      state.thread = { ...state.thread, handoff: { ...(state.thread.handoff || {}), suppressed: true, status: 'suppressed' } };
       notify();
+      if (!pending) {
+        // Nothing waiting: the turn that raised this offer answered as well. Suppress and stop.
+        SW.api.patchThread(id, { handoff: 'suppress' }).catch(() => {});
+        return;
+      }
+      // The offer was made INSTEAD of answering, so declining it owes the person that answer.
+      // The route suppresses too, which is why there is no patch on this path.
+      store.sendMessage(pending, { echo: false, url: `./api/threads/${id}/handoff/decline` });
     },
 
     async draftHandoffPlan(threadId) {

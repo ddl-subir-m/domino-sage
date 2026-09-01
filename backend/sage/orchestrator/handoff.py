@@ -81,6 +81,17 @@ _EXPLICIT_BUILD = re.compile(
     # gets no further than "of", and in "which app category converts best?" the noun comes first.
     # "page" stays out for the same reason, since "build a page view report" would read as intent.
     r"|\b(?:build|make|create)\s+(?:me\s+)?(?:an?|the|this)\s+(?:\w+\s+)?(?:app|dashboard|ui|tool)\b"
+    # Naming Build as the DESTINATION, which every branch above missed because none of them names
+    # it. "ok lets move this over to build" is the plainest way there is to ask for the handoff and
+    # it matched nothing — so it ran as a chat turn, and the turn answered that the plan was already
+    # waiting in Build. There was no plan; a Conversation cannot write one from here.
+    #
+    # The whole risk is the infinitive. "move this to build a chart" is the same nine leading
+    # characters and the opposite request, so Build has to be where the clause STOPS — end of the
+    # message or a mark. That one lookahead is what separates them, and it also disposes of the
+    # noun: "how long did the build take" and "send it to the build team" both continue past it.
+    r"|\b(?:move|take|send|bring|continue|carry|do)\s+(?:this|it|that|these)\b"
+    r"[^.?!]{0,20}?\b(?:in|into|to)\s+(?:the\s+)?build(?:er)?\b\s*(?=[.!?,\n]|$)"
     r")",
     re.IGNORECASE,
 )
@@ -309,12 +320,102 @@ def implement_note(workspace: Path) -> str:
     return "\n".join([_HANDOFF_LINE, "", digest])
 
 
+# A leading list marker, which `lstrip("#")` never removed and which the plan shape invites: the
+# shape is itself a bulleted instruction, so a planner writing the opening line to it writes a bullet.
+_BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
+_TITLE_MAX = 80
+
+
 def plan_title(plan_md: str) -> str:
+    """The name this plan gives the plan card, the plan document and the Built App.
+
+    A `# ` heading is the answer whenever there is one, and the plan shape now asks for it. It has
+    to be asked for, because a name is written, not derived: nothing here can turn "This app will be
+    an AI consumption dashboard for exploring daily usage, spend, and model activity across teams
+    and users" into "AI Consumption Dashboard", and the only writer in the loop is the planner.
+
+    Everything else is a plan drafted before the shape asked, and then its first line is the best
+    answer available. That line is cleaned rather than taken raw, which it used to be: live, an app
+    was called `- This app will be an AI consumption dashboard for exploring daily usage, spend,` in
+    the rail — the bullet marker kept because only `#` was stripped, the trailing comma because the
+    cut was at 80 characters and landed mid-clause, and the whole thing shouted in the panel header
+    that uppercases what it is given. Cleaning does not make it a name. It stops it being that.
+    """
     for line in (plan_md or "").splitlines():
-        text = line.strip().lstrip("#").strip()
-        if text:
-            return text[:80]
+        text = _BULLET.sub("", line.strip()).strip()
+        if not text:
+            continue
+        if text.startswith("#"):
+            # A heading is already a name. Any depth, because a plan that opened straight into a
+            # section has always been read this way and a plan is not refused for its shape.
+            return text.lstrip("#").strip()[:_TITLE_MAX] or "App"
+        return _clip(text)
     return "App"
+
+
+def _clip(text: str) -> str:
+    """A long sentence made presentable: whole words, and no punctuation left hanging off the end.
+
+    Not made into a name, and no attempt at it. Cutting at the first comma would have given the live
+    sentence a better ending than cutting at a word does — "...for exploring daily usage" rather than
+    "...for exploring daily usage, spend" — and would be wrong the moment a plan opens on a subclause.
+    Guessing where a sentence's meaning stops is the writer's job, the writer is asked for a name
+    above, and this is only what is left for the plans drafted before it was.
+
+    A full stop is NOT stripped. It only survives when the whole sentence fitted, which means the
+    writer put it there rather than the cut leaving it — and a plan that was already named after its
+    closing full stop keeps that name, instead of every such app being quietly renamed by this fix.
+    """
+    if len(text) > _TITLE_MAX:
+        cut = text[:_TITLE_MAX]
+        space = cut.rfind(" ")
+        text = cut[:space] if space > 0 else cut
+    return text.rstrip(" ,;:—-") or "App"
+
+
+# The two states that mean a plan document exists for this Conversation. `suggested` is an offer
+# nobody has answered and `suppressed` is one that was declined — neither wrote anything.
+_PLANNED = frozenset({"planned", "bound"})
+
+
+def has_plan(entries: list[dict] | None) -> bool:
+    """Whether this Conversation has ever had a plan written from it.
+
+    Any entry, not the newest: a Conversation may hand off more than once (ADR-0008), and a fresh
+    offer sitting unanswered on top of a plan that was built does not un-write the plan.
+    """
+    return any(isinstance(r, dict) and r.get("status") in _PLANNED for r in (entries or []))
+
+
+def unanswered_ask(history: list[dict]) -> str:
+    """The question Chat offered Build instead of answering, or "" when there is no such question.
+
+    The explicit-build regex short-circuits BEFORE the turn (`service.chat_stream`): it records the
+    question, offers Build and returns without running anything. That is the right trade while the
+    offer stands — sage-chat writes an Artifact, never an app, so running the turn first spends
+    ninety seconds to arrive where the offer already is. It is the wrong one the moment the offer is
+    declined, and declining used to do nothing but switch the offer off. Live, that left the question
+    sitting there answered by nothing, and the person retyped it by hand — which worked, because the
+    suppression the decline had just written stopped the regex from firing a second time.
+
+    "Never answered" is: walking back from the end, the offer comes before the question and nothing
+    that answers comes between them. An offer the CLASSIFIER raised cannot match, because it is
+    written after a turn that did answer and that turn's text is in the way — declining one of those
+    has nothing to run, which is the truth about it.
+
+    `done` is skipped rather than treated as an answer: the short-circuit writes one itself, and a
+    turn ending is not a turn saying anything.
+    """
+    offered = False
+    for event in reversed(history or []):
+        kind = event.get("type")
+        if kind == "handoff-suggest":
+            offered = True
+        elif kind == "user":
+            return str(event.get("text") or "") if offered else ""
+        elif kind in ("agent", "artifacts", "stopped", "error"):
+            return ""
+    return ""
 
 
 def user_texts(history: list[dict]) -> list[str]:

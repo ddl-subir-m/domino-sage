@@ -1882,6 +1882,15 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
         media_type="text/event-stream")
 
 
+@control_app.post("/api/threads/{thread_id}/handoff/decline")
+def decline_handoff(thread_id: str) -> StreamingResponse:
+    """`Not now` on a Build offer. Streams, because declining an offer that was made INSTEAD of an
+    answer has to produce the answer — see `Orchestrator.decline_handoff_stream`."""
+    return StreamingResponse(
+        _turn_sse(orchestrator.decline_handoff_stream(thread_id), "decline_handoff"),
+        media_type="text/event-stream")
+
+
 @control_app.post("/api/project/build/approve")
 def build_approve(body: dict) -> StreamingResponse:
     """Approve a gated plan (SPEC P6) and stream the build. Body: {answers?, plan_edits?, plan_id?}."""

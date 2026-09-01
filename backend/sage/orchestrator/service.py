@@ -38,6 +38,7 @@ from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
 from ..preview.supervisor import ViteSupervisor
 from ..provision import naming
+
 # The 404 the publish path has to tell from every other failure (#80). A runtime import, unlike the
 # `ControlPlane` Protocol above, because it is caught rather than annotated with.
 # `app_viewer_url` beside it for the rail row's `Open app` door (#89) — same module, and the same
@@ -125,10 +126,8 @@ from ..workspace.threads import (
     snapshot_files,
     title_from_prompt,
 )
-from . import brand
-from . import chat_compact
+from . import brand, chat_compact, scope
 from . import handoff as chat_handoff
-from . import scope
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
 
@@ -478,7 +477,7 @@ class _TurnQueue:
             except ValueError:
                 return 1
 
-    def running(self) -> "_TurnTicket | None":
+    def running(self) -> _TurnTicket | None:
         """The ticket that holds the lock, or None when whatever holds it never queued (#126)."""
         with self._cond:
             return self._running
@@ -2233,8 +2232,21 @@ _PLAN_VOICE = ("Write the plan as a proposal for work not yet done: future tense
 # Every plan shape opens the same way, and the plan document's sections sit between that
 # opening sentence and '## Plan'. Composed rather than repeated so the step list — the part
 # plan_steps.parse_steps and _count_plan_steps read — stays identical in both shapes.
+# The heading is asked for FIRST because it is the app's name, and until it was asked for nothing
+# ever wrote one. The opening sentence was read as the name instead, by the plan card, the plan
+# document and the Built App's row in the rail — so an app went into the rail called "- This app
+# will be an AI consumption dashboard for exploring daily usage, spend,". Deriving a name from that
+# sentence is not something code can do; asking the writer for one is a line of prompt.
 _PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
-                "- One short sentence saying what the app is.\n")
+                # The example carries no app-shape word on purpose. The Control rule below keys on
+                # the data's shape and never on what an app is called, and a noun in an example is
+                # the easiest way to teach the opposite (see test_a_dashboard_ships_with_a_control).
+                "- A '# ' heading naming the app in 2-4 words. This is its NAME, the way a product "
+                "has one — 'Support Ticket Explorer', not 'An app for looking through support "
+                "tickets'. No leading 'A' or 'The', no trailing full stop, and never a sentence: it "
+                "is shown as a title, in a list beside other apps, and in a header that "
+                "capitalises it.\n"
+                "- Then one short sentence saying what the app is.\n")
 # The sections a colleague reads to decide whether the app is worth building, and the
 # durable half of the plan document. Kept short on purpose: the plan still has to be
 # skimmable in the approval card, so each section is a line or a few bullets, not an essay.
@@ -2606,8 +2618,12 @@ class Orchestrator:
         summary = body.get("summary", current.get("summary", ""))
         sections = {**current.get("sections", {}), **(body.get("sections") or {})}
         meta = {k: v for k, v in body.items() if k in ("title", "status", "appId")}
+        # The document's own name, from the rename if this edit carries one and from the document
+        # otherwise — an edit to Screens must not cost the plan its title.
         doc = project.record.write_plan_doc_version(
-            plan_id, plan_doc.render(summary, sections), **meta)
+            plan_id,
+            plan_doc.render(summary, sections, meta.get("title") or current.get("title", "")),
+            **meta)
 
         # An edit to the document that a live plan.md was copied from has to reach that copy, or the
         # build runs the plan as it was before the edit — and the rail's pin goes on counting the old
@@ -3902,8 +3918,15 @@ class Orchestrator:
             dest.parent, _safe_join(project.record.path, _CHAT_DATA_PREFIX.rstrip("/")))
         return True
 
-    def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None):
-        """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread."""
+    def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
+                    already_asked: bool = False):
+        """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
+
+        `already_asked` means this question is on the Thread and was offered Build rather than an
+        answer, and the person declined the offer (`decline_handoff_stream`). The turn runs; the two
+        things that belong to asking do not. Recording it again would print the person's sentence
+        twice, which is exactly the transcript they produced by hand when declining did nothing.
+        """
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
@@ -3925,7 +3948,8 @@ class Orchestrator:
         # this Thread's handoff.json, so it runs off the lock as it is.
         holding = True
         try:
-            for ev in self._chat_stream(thread_id, prompt, timeout_s=timeout_s):
+            for ev in self._chat_stream(thread_id, prompt, timeout_s=timeout_s,
+                                        already_asked=already_asked):
                 if holding and ev.get("type") == "done":
                     # Released before the yield rather than after, so a client that hangs up on
                     # `done` still frees it here. Baseline first: it means "no turn running", and a
@@ -4017,6 +4041,36 @@ class Orchestrator:
             return self._flush_chat_save(immediate)
         self._arm_chat_idle_save()
         return None
+
+    def decline_handoff_stream(self, thread_id: str):
+        """`Not now` on a Build offer: stop offering, and answer the question if one is waiting.
+
+        Suppression stays permanent, and deliberately so — it is the person saying stop, and the spec
+        says as much (docs/workbench/handoff.md §2, criterion 10). What was wrong was not that the
+        offer never came back. It was that the question underneath it never got answered by anything:
+        the explicit-build path offers Build INSTEAD of running a turn, so declining left a question
+        on the Thread with no reply, and the only way forward was to type it again.
+
+        Which is worse than it sounds, because the suppression this same click wrote is what let the
+        retyped copy through — so the person's own workaround silently changed what Sage did with it.
+
+        The pending question is read from the Thread here rather than taken from the caller. The
+        browser has the text on screen and could send it, but then a stale tab could put a turn under
+        a question it does not match, and the transcript is the only place this can be settled.
+        """
+        store = ThreadStore(self._chat_project().record.path)
+        if store.get(thread_id) is None:
+            yield {"type": "error", "message": "Unknown thread"}
+            yield {"type": "done", "ok": False, "decision": "unknown thread"}
+            return
+        store.suppress_handoff(thread_id)
+        pending = chat_handoff.unanswered_ask(store.read_history(thread_id))
+        if not pending:
+            # An offer the classifier raised, and the turn that raised it already answered. There is
+            # nothing to run, and running the last question again would answer it twice.
+            yield {"type": "done", "ok": True, "decision": "suppressed"}
+            return
+        yield from self.chat_stream(thread_id, pending, already_asked=True)
 
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
         """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
@@ -4585,12 +4639,38 @@ class Orchestrator:
         store.write_session_id(thread_id, sid, directory=work)
         return sid
 
+    @staticmethod
+    def _plan_state_note(entries: list[dict] | None) -> str:
+        """What is true about this Conversation's plan, said to the turn that would otherwise guess.
+
+        sage-chat cannot find this out and has every reason to invent it. Asked to move the work to
+        Build, the helpful-sounding reply is that it is already waiting there — and live, that is the
+        reply: "Head over to the Build tab in this project and the plan is already waiting there",
+        followed by a confident list of the sections it contained. There was no plan. There was no
+        app. The Build tab the person opened said "No plan yet".
+
+        A prohibition alone would not hold. "Never claim a plan exists" asks the model to weigh a
+        rule against a sentence that reads as helpful, about a fact it has no way to check. So it is
+        given the fact instead, on every turn, which makes the true answer also the easy one.
+
+        Two sentences, because this is read on every Chat turn and most of them are about data.
+        """
+        if chat_handoff.has_plan(entries):
+            return ("This conversation has a plan and it is in Build. You did not write it — do not "
+                    "restate what it contains, and do not describe it as yours.")
+        return ("This conversation has no plan and no app, and this turn cannot write either. "
+                "If the person asks to build, or to move this to Build, say plainly that nothing "
+                "has been planned yet — never that a plan is waiting, was drafted, or has been "
+                "handed over.")
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
-                     artifacts: list[dict] | None = None) -> str:
+                     artifacts: list[dict] | None = None,
+                     handoffs: list[dict] | None = None) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
+            self._plan_state_note(handoffs),
             "",
         ]
         items = ctx.get("items") or []
@@ -4635,7 +4715,8 @@ class Orchestrator:
         lines.append(prompt)
         return "\n".join(lines)
 
-    def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None):
+    def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
+                     already_asked: bool = False):
         import time
 
         project = self._chat_project()
@@ -4663,24 +4744,29 @@ class Orchestrator:
             # Names live on the event so a later chip-remove still paints this message.
             "context": [{"id": i["id"], "name": i.get("name"), "kind": i.get("kind")} for i in items],
         }
-        store.append_history(thread_id, user_ev)
-        yield user_ev
+        if not already_asked:
+            store.append_history(thread_id, user_ev)
+            yield user_ev
 
-        # "Build me an app" is answered by Build, so offer it now rather than after a turn.
-        # sage-chat writes an Artifact under examples/, never an app, so running the turn first
-        # spends a whole turn and ends exactly where this starts — which is how a build request
-        # became 90 seconds of spinner and "ask again with a smaller question".
-        #
-        # Only the regex short-circuits. The model classifier still runs after a turn, because it
-        # judges the assistant's reply as well as the ask, and it cannot do that before one exists.
-        early = self._explicit_handoff(store, thread_id, prompt)
-        if early:
-            done = {"type": "done", "ok": True, "decision": "handoff"}
-            store.append_history(thread_id, early)
-            store.append_history(thread_id, done)
-            yield early
-            yield done
-            return
+            # "Build me an app" is answered by Build, so offer it now rather than after a turn.
+            # sage-chat writes an Artifact under examples/, never an app, so running the turn first
+            # spends a whole turn and ends exactly where this starts — which is how a build request
+            # became 90 seconds of spinner and "ask again with a smaller question".
+            #
+            # Only the regex short-circuits. The model classifier still runs after a turn, because
+            # it judges the assistant's reply as well as the ask, and it cannot do that before one
+            # exists.
+            #
+            # Declining that offer is what brings a turn back here with `already_asked` — so this
+            # is skipped on the way through, or the decline would meet the same offer it declined.
+            early = self._explicit_handoff(store, thread_id, prompt)
+            if early:
+                done = {"type": "done", "ok": True, "decision": "handoff"}
+                store.append_history(thread_id, early)
+                store.append_history(thread_id, done)
+                yield early
+                yield done
+                return
 
         immediate = "first" if was_first else None
         artifacts: list[dict] = []
@@ -4715,7 +4801,8 @@ class Orchestrator:
             client.send_prompt(
                 sid, self._chat_prompt(thread_id, prompt, ctx, urls,
                                        workspace=Path(work),
-                                       artifacts=store.read_artifacts(thread_id)),
+                                       artifacts=store.read_artifacts(thread_id),
+                                       handoffs=store.read_handoffs(thread_id)),
                 agent="sage-chat",
                 attachments=mentioned,
                 chat=True)
@@ -8830,8 +8917,7 @@ class Orchestrator:
     def promote_scratch_to_dataset(self, path: str, dataset_id: str) -> dict:
         """Copy a scratch file onto a writable Dataset, then drop the scratch copy."""
         rel = str(path or "").replace("\\", "/")
-        if rel.startswith("./"):
-            rel = rel[2:]
+        rel = rel.removeprefix("./")
         if not rel.startswith(_SCRATCH_PREFIX):
             raise ValueError("not a scratch file")
         src = _safe_join(self._chat_project().record.path, rel)
@@ -9368,8 +9454,42 @@ class Orchestrator:
             getattr(module, "_DEFAULT_MAX_ROWS", 5000),
             samples=self._shared_samples(project),
             names=project.workspace.helpers,
+            # Only asked when nothing is bound, which is the only case it changes.
+            reaching=not bindings and self._reaches_for_a_store(project, module),
         )
         self._splice_agents(project, self._DATA_BEGIN, self._DATA_END, block)
+
+    @staticmethod
+    def _reaches_for_a_store(project: Project, module: object) -> bool:
+        """Whether this app reads a Data Source, judged from the app rather than from its Bindings.
+
+        The two are supposed to agree. When they do not — code that queries, nothing bound — the app
+        is broken in a way neither manifest records, and `agents_block` has to say so instead of
+        going quiet (see its `reaching`).
+
+        Two signals, because the failure arrives as either. The catalog is the declaration and the
+        import is the call, and an agent that wrote one without the other has still decided this app
+        reads a store. The `src/` walk skips the helpers Sage owns: `runQuery` is DEFINED in one of
+        them, so counting it would make every app look like it were reaching.
+
+        Cheap by construction — a stat and a walk of `src/`, once at the end of a build turn, against
+        a tree of tens of files. Errors read as "not reaching": this decides what to say, never what
+        to allow, and an unreadable file is not grounds to start shouting at an app that is fine.
+        """
+        root = project.workspace.path
+        catalog = getattr(module, "_QUERIES_REL", ".sage/queries.json")
+        if (root / catalog).is_file():
+            return True
+        owned = project.workspace.helpers.owned
+        try:
+            for path in (root / "src").rglob("*.ts*"):
+                # Short-circuits left to right, so a helper Sage owns is never read at all.
+                if (path.is_file() and str(path.relative_to(root)) not in owned
+                        and "runQuery" in path.read_text(errors="ignore")):
+                    return True
+        except OSError:
+            return False
+        return False
 
     def _write_app_resources(self, project: Project) -> None:
         """Every pinned-Resource writer, then one baseline move for the set.

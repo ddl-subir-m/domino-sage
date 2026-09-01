@@ -181,6 +181,13 @@ def test_the_prompt_is_title_plus_last_turn_not_the_whole_history():
     "make a small app i can share",
     "create the dashboard",
     "build an internal tool for the team",
+    # Naming Build as the destination. Live, this one matched nothing at all, ran as a chat turn,
+    # and was answered with a plan that did not exist.
+    "ok lets move this over to build",
+    "move this to build",
+    "take this to Build",
+    "can we continue this in the builder?",
+    "lets do this in build",
 ])
 def test_explicit_build_requests_skip_the_classifier(prompt):
     assert handoff.looks_like_build_request(prompt) is True
@@ -200,6 +207,13 @@ def test_explicit_build_requests_skip_the_classifier(prompt):
     "make a chart of app downloads",
     "build a page view report",
     "create a breakdown of dashboard visits by week",
+    # The infinitive, which shares nine leading characters with "move this to build". Build has to
+    # be where the clause stops, or these become handoffs.
+    "move this to build a chart",
+    "take it to build a summary of spend",
+    # And "build" the noun, which carries on past itself.
+    "how long did the build take",
+    "send it to the build team",
 ])
 def test_analysis_is_not_an_explicit_build_request(prompt):
     assert handoff.looks_like_build_request(prompt) is False

@@ -554,6 +554,44 @@ def load_queries(project_root: Path) -> dict:
     return out
 
 
+def catalog_fault(project_root: Path) -> str:
+    """Why the catalog declares queries `load_queries` did not return, or "" when it does not.
+
+    `load_queries` answers with what it could read and says nothing about what it could not. That is
+    right for the app — a name it cannot serve is a 404, which is the truth — and it is the whole
+    hole in the one check made on the creator's behalf. A catalog in a shape this file discards
+    whole reads back as an app with no queries, which is exactly what an app that wanted none reads
+    back as. So `catalog_problems` found nothing to report and the build called itself clean. Live,
+    that shipped an app whose every screen answered "this app has no query called ..." — twice, the
+    second turn spending itself guessing at the name rather than at the file.
+
+    Here rather than in the orchestrator because the rule is this file's own: which shapes are
+    accepted is decided in `load_queries` directly above, and a second copy of that decision would
+    be right today and wrong the day either one moved.
+
+    An absent catalog is not a fault. Most apps read no store and have none.
+    """
+    path = project_root / _QUERIES_REL
+    if not path.is_file():
+        return ""
+    raw = _read_json(path)
+    if raw is None:
+        return (f"{_QUERIES_REL} is not valid JSON, so this app has no queries at all — every name "
+                f"it asks for is refused as one this app does not have.")
+    if not isinstance(raw, list):
+        return (f"{_QUERIES_REL} has to be a LIST of query objects and this one is not, so nothing "
+                f"it declares was read. Every name the app asks for is refused as one this app does "
+                f"not have.")
+    # In step with `load_queries` above, deliberately: an entry it skips is one this has to count,
+    # and the two tests are the same test. A duplicate name is NOT dropped — first declaration wins
+    # there on purpose, and reporting it here would make a deliberate rule read as a fault.
+    dropped = sum(1 for e in raw if not isinstance(e, dict) or not str(e.get("name") or ""))
+    if dropped:
+        return (f"{dropped} of the {len(raw)} entries in {_QUERIES_REL} declare no query, because an "
+                f'entry has to be an object carrying a "name". The app cannot ask for what they hold.')
+    return ""
+
+
 def load_sources(project_root: Path) -> dict:
     """The Data Source Bindings this app recorded, by id.
 

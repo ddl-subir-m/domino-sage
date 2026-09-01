@@ -88,6 +88,13 @@ def catalog_problems(template_dir: Path, workspace_dir: Path) -> list[str] | Non
 
     An app with no catalog has no problems, which is not the same as having no queries — `[]` here
     covers both, because neither is anything for a creator to do.
+
+    A catalog that yields NOTHING is a third thing, and it used to be reported as the first. A file
+    in a shape `load_queries` discards whole leaves an empty catalog behind, and an empty catalog has
+    no per-query problems to list — so this said `[]`, the build said clean, and the app answered
+    "this app has no query called ..." to every name it was asked for. `catalog_fault` is the
+    sentence for that, and it comes first because a file that was not read at all outranks anything
+    read out of it.
     """
     module = serve_module(template_dir)
     if module is None:
@@ -96,4 +103,14 @@ def catalog_problems(template_dir: Path, workspace_dir: Path) -> list[str] | Non
         queries = module.load_queries(workspace_dir)
     except Exception:
         return None
-    return [q.problem for q in queries.values() if q.problem]
+    # `getattr` for the same reason everything here degrades: a template whose `serve.py` predates
+    # this check can still answer the per-query half, and half an answer beats "could not check".
+    check = getattr(module, "catalog_fault", None)
+    fault = ""
+    if check is not None:
+        try:
+            fault = check(workspace_dir)
+        except Exception:
+            fault = ""
+    problems = [q.problem for q in queries.values() if q.problem]
+    return ([fault] if fault else []) + problems
