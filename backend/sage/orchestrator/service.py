@@ -2284,6 +2284,30 @@ _CHAT_CONTEXT_PREAMBLE = (
     "something without naming it — \"that chart\", \"the table we looked at\" — this is what it "
     "points at. It is not a list of work to do. Build only what the request above asks for.")
 
+# What the agent is told about an @mention this turn dropped (#130). `{said}` is filled with the
+# sentence `_unusable_mentions` already put on the screen, so the person and the agent are never
+# told two different things about the same gap.
+#
+# Before this, only the screen was told. The agent received the request with the mention silently
+# removed, which leaves an ordinary-looking hole — and a model fills one of those: it invents a
+# file, quietly uses a Resource this app IS bound to, or writes placeholder data around the gap and
+# reports a clean build. The person then reads a green turn built on nothing they named.
+#
+# The two prohibitions are the load-bearing half. Attaching a file to an app and recording a
+# Binding are both a person's act (ADR-0010), so there is nothing here for the agent to go and fix
+# — being told about a gap it cannot close is exactly the shape of instruction a model answers by
+# trying anyway. Name the gap and stop is the whole of the wanted behaviour.
+_DROPPED_MENTION_NOTE = (
+    "The person @mentioned something this turn cannot use, and it was removed from their request "
+    "above before you saw it. This is what they were told about it:\n\n"
+    "{said}\n\n"
+    "You cannot repair this yourself — attaching a file to an app and recording a Resource for it "
+    "are both acts only a person can do. So do not attach or record anything, do not offer to, do "
+    "not substitute a different file or Resource, and do not write placeholder, mock or example "
+    "data in place of what is missing. Say which mention you could not use. If the rest of the "
+    "request stands on its own, build that part and nothing more; if it does not, stop there and "
+    "say so.")
+
 
 class Orchestrator:
     def __init__(
@@ -5471,6 +5495,21 @@ class Orchestrator:
         # forks wrap `current` in their own preamble, and the block has to stay at the end of what
         # the agent reads — beside the attachment listing, which is rendered the same way.
         resource_note = self._resource_mention_note(project, resources)
+        # What this turn was @-mentioned and cannot use — computed ONCE, here, and spent twice: on
+        # the screen below as a `mentions-unresolved` bubble, and in the prompt as a note to the
+        # agent. One value because two would drift, and the whole defect (#130) was the screen being
+        # told something the agent never heard.
+        #
+        # Deliberately outside the `owns_turn` gate the screen half sits behind. That gate is about
+        # the TRANSCRIPT — a phase must not add a second user bubble — and says nothing about what
+        # the agent should be able to read. A phase is `""` here anyway, since only `build_stream`
+        # ever passes `mentions` or `resources`, so the gate would not be doing any work: it would
+        # only be a second rule to keep in step with this one.
+        #
+        # Read at the same point as `resource_note`, off the same Bindings, so the two can never
+        # report a Resource as both used and refused.
+        unusable = self._unusable_mentions(project, mention_files, mentions, resources)
+        unusable_note = _DROPPED_MENTION_NOTE.format(said=unusable) if unusable else ""
         # What was said in the Chat half of this Conversation (#53). Rides the prompt text beside
         # `resource_note`, and for the same reason: the gate/answer/plan forks below wrap `current`
         # in their own preamble, so a block that has to sit at the END of what the agent reads
@@ -5729,8 +5768,9 @@ class Orchestrator:
                 project.build_conversation)
             # What they @-mentioned and this turn cannot use, said out loud. It goes here, right after
             # their own bubble, because it answers what they just typed — and before the agent runs,
-            # because the whole point is to be read while the turn is still worth stopping.
-            unusable = self._unusable_mentions(project, mention_files, mentions, resources)
+            # because the whole point is to be read while the turn is still worth stopping. The
+            # sentence itself was built above, with the other prompt riders — the agent is told the
+            # same thing (see `unusable_note`).
             if unusable:
                 yield persist({"type": "mentions-unresolved", "message": unusable})
 
@@ -5975,15 +6015,19 @@ class Orchestrator:
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
             client.send_prompt(sid,
-                               "\n\n".join(p for p in (current, chat_note, resource_note) if p),
+                               "\n\n".join(p for p in (current, chat_note, resource_note,
+                                                       unusable_note) if p),
                                agent=agent, attachments=mention_files)
-            # All three ride the first (user) turn only, not the nudge/fix follow-ups: those carry
+            # All four ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
             # Resource. The Chat background goes with them — a nudge is Sage talking to itself
             # about the code it just failed to write, and the conversation behind it hasn't moved.
+            # The dropped-mention note goes with them for the same reason: it answers what the
+            # person typed, and a nudge mentions nothing.
             mention_files = None
             resource_note = ""
             chat_note = ""
+            unusable_note = ""
             appeared = False
             start = time.monotonic()
             # When OpenCode last produced anything, and so what the quiet deadline below is measured
