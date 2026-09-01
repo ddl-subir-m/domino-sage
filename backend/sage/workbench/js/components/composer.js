@@ -641,6 +641,27 @@ window.SW = window.SW || {};
             onChange: (e) =>
               changeText(e.target.value, e.target.selectionStart, e.nativeEvent && e.nativeEvent.inputType),
             onKeyDown: (e) => {
+              // One Backspace takes the whole @mention rather than a letter of it. The token is
+              // plain text in the box and not a chip, so the browser's own key would spend
+              // fourteen strokes on "@BigQuery_Demo" — and every stroke in between leaves a
+              // fragment that names nothing and matches nothing. Only while the picker is CLOSED:
+              // mid-typing, the same key is how a person narrows the query.
+              if (e.key === 'Backspace' && !mention) {
+                const el = e.target;
+                const caret = el.selectionStart;
+                // A selection already says what to delete. A caret inside the token means the
+                // letter behind it, because eating the rest would be a forward delete.
+                const atEnd = caret === el.value.length || /\s/.test(el.value[caret]);
+                if (caret === el.selectionEnd && atEnd) {
+                  // The same reading the picker uses, so the two cannot disagree about where a
+                  // mention starts — a finished mention is textually the unfinished one.
+                  const found = mentionAt(el.value, caret);
+                  // Widen the selection rather than rewrite the value: the browser's own
+                  // Backspace then does the delete, which keeps undo and the caret intact.
+                  if (found && found.query) el.setSelectionRange(found.start, caret);
+                }
+                return;
+              }
               if (!mention || suggestions.length === 0) return;
               if (e.key === 'ArrowDown') {
                 e.preventDefault();

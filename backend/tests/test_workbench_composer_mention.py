@@ -63,6 +63,27 @@ def test_a_deletion_never_opens_a_closed_mention_menu():
     assert "&& !mention) return;" in UI
 
 
+def test_one_backspace_takes_the_whole_mention():
+    # A mention is plain text in the box and not a chip, so the browser's own Backspace charged a
+    # keystroke per letter — and "@BigQuery_Demo" is fourteen of them, each one leaving a token
+    # that names nothing. The key is read only while the picker is closed, because mid-typing the
+    # same key is how the query is narrowed.
+    assert "if (e.key === 'Backspace' && !mention) {" in UI
+    # The picker's own reading of where a mention starts, not a second one free to drift from it:
+    # a finished mention is textually the unfinished one.
+    assert "const found = mentionAt(el.value, caret);" in UI
+    # Widening the selection instead of rewriting the value leaves the delete to the browser,
+    # which is what keeps undo working and the caret where it belongs.
+    assert "el.setSelectionRange(found.start, caret);" in UI
+    branch = UI.split("if (e.key === 'Backspace' && !mention) {")[1].split("return;")[0]
+    assert "setText(" not in branch
+    # A caret inside the token still means the letter behind it. Eating the rest of the token
+    # would be a forward delete, which is not the key that was pressed.
+    assert "const atEnd = caret === el.value.length || /\\s/.test(el.value[caret]);" in UI
+    # A selection already says what to delete.
+    assert "if (caret === el.selectionEnd && atEnd) {" in UI
+
+
 # The sixth group: a resource the project has not joined yet -------------------
 
 STORE = (WB / "js" / "store.js").read_text()
