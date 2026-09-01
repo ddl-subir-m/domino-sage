@@ -153,8 +153,15 @@ The header keeps omitting. When both are empty the panel takes the header's exac
 **Both header pointers change, and one of them was false.** They say *"listed in"*, a read-only word,
 now that the destination can act; and the Attachments pointer sends people to *"Project resources,
 with the app's files"* (`builder.js:481`), a group that does not exist. Both take one shape —
-`in Project resources, under {app} — remove it there` — which names the destination by the head the
-reader will actually see, and names the action.
+`in Project resources, under {app} — remove it there` — which names the destination in the words the
+reader will actually see on the way to it, and names the action.
+
+Those words are the **dock tab's**. When this was written the panel's section head carried them too,
+so the distinction never arose; [#140](https://github.com/ddl-subir-m/domino-sage/issues/140)
+renamed that head to "In this project", because the working set holds Assets as well as Resources
+and a head reading "Project resources" was a claim about the contents that half of them do not meet.
+The rule and the pointers are both unchanged: the tab is what the reader clicks on the way in, so
+the tab is what a pointer names.
 
 **Removal is scoped to the *selected* app, and no route says so.** `unbind` takes a kind and a
 resource id but no app id; it acts on `self.project().workspace`, which resolves through

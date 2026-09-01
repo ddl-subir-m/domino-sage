@@ -942,9 +942,14 @@ window.SW = window.SW || {};
     // guard to keep in step with the first. Only ADDITION moved onto this surface (ADR-0021), and it
     // moved because it had no home at all; removal keeps the one ADR-0011 gave it.
     //
-    // It names the destination by the head the reader will actually see there and names the action,
-    // because the destination can now act (#96). It used to say "listed in", a read-only word, and
-    // the Attachments one pointed at a group that did not exist.
+    // It names the destination in the words the reader will actually see on the way to it and names
+    // the action, because the destination can now act (#96). It used to say "listed in", a read-only
+    // word, and the Attachments one pointed at a group that did not exist.
+    //
+    // Those words are the dock TAB's (`components/shell.js`), not the panel's section head, which
+    // reads "In this project" since #140 — the list holds Assets as well as Resources, so a head
+    // reading "Project resources" claimed something half of it does not meet. The tab is what gets
+    // clicked, so the tab is what the pointer names.
     const pointer = `in Project resources, under ${activeApp.name} — remove it there`;
 
     // One span per name, so one of them can carry a mark the others do not. The separator sits

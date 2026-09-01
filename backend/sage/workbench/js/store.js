@@ -2246,9 +2246,12 @@ window.SW = window.SW || {};
       //
       // "Project resources" and not the working set's own prose label, which is "In this project":
       // this is a POINTER, and ADR-0011 fixed the shape a pointer takes — it names the destination
-      // by the head the reader will actually see when they get there. The Build header's two
-      // pointers already say it in these words (`modes/builder.js`), and a receipt that named the
-      // list differently would send people looking for a heading that is not on the screen.
+      // in the words the reader will actually see on the way to it. Those words are the dock tab's
+      // (`components/shell.js`), which is the thing that gets clicked; the panel's section head
+      // stopped matching the tab in #140, because the list holds Assets as well as Resources. The
+      // Build header's two pointers already say it in these words (`modes/builder.js`), and a
+      // receipt that named the list differently would send people looking for a label that is not
+      // on the screen.
       // A Data Source arrives with no Scope, which is a named unfinished state and not an error
       // (#142) — so the receipt names the second act rather than leaving it to be found. No other
       // kind has a part to choose, so no other kind is told to choose one.
