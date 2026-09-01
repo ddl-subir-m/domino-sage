@@ -1361,9 +1361,13 @@ async def add_binding(request: Request) -> JSONResponse:
     # kind whose record can carry WHERE inside the Resource the choice landed, so it binds with four
     # arguments where the others bind with one, and its 400 is a name rather than a missing Resource.
     #
-    # Since #142 the three scope arguments are usually absent, because the door on the app's own
-    # surface has no cascade position to send and the Scope is set afterwards by the route below.
-    # They stay accepted: the Chat handoff replays a chip that already names a table.
+    # Since #142 the three scope arguments arrive from nobody: the door on the app's own surface has
+    # no cascade position to send, the Scope is set afterwards by the route below, and #144 took the
+    # argument off the client's own `bind` (`workbench/js/api.js`). They stay accepted here because
+    # the capability underneath them is live — `_bind_from_handoff` records a scoped Binding in one
+    # call through `bind_data_source`, which it reaches in process rather than over this route, so
+    # narrowing the route would leave the two ways of recording the same Binding able to say
+    # different things.
     if kind == KIND_DATA_SOURCE:
         try:
             return JSONResponse(content={"bindings": orchestrator.bind_data_source(

@@ -542,13 +542,13 @@ SW.api = {
   // the route resolves it against the live listing, so a prefixed id finds no Alias and answers 404
   // — and the rail, already asked to refresh, redraws unchanged (#127).
   //
-  // `scope` is a Data Source's alone and is usually absent since #142: binding and scoping are two
-  // acts, and the door that posts this has no position inside the Resource to send. The Chat
-  // handoff still sends one, because a chip it replays already names a table. Spread rather than
-  // nested, because the route reads `database`/`schema`/`table` off the top of the body — and
-  // omitted entirely for the kinds that have no Scope, so their request is the two fields it has
-  // always been.
-  bind: (kind, id, scope) => post('/bindings', { kind, id, ...(scope || {}) }),
+  // Two fields and no more. A Data Source used to post a Scope through here as well, when the Scope
+  // was the cascade position the creator was standing on (#129); since #142 that is a second act on
+  // its own route (`scopeBinding` below) and this one records the dependency alone. The parameter
+  // outlived every caller for it and went in #144's sweep. The route still accepts the three fields
+  // for its own reasons — see `orchestrator/app.py` — which is not a reason for a client to offer an
+  // argument no door of ours can fill.
+  bind: (kind, id) => post('/bindings', { kind, id }),
   // The second act (#142, ADR-0021). Its own route rather than a second `bind`: a Scope narrows a
   // dependency, so the server refuses to write one where there is no Binding, and narrowing can
   // never record the Binding it was narrowing. The id is BARE, as every binding route wants it.

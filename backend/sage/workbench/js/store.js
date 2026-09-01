@@ -2213,9 +2213,12 @@ window.SW = window.SW || {};
     // guard exists because a MODAL can sit open while the selection moves. With no modal the window
     // is one request round trip, which is the window every other act on these surfaces already has.
     //
-    // `scope` is left over from #129, when a Data Source's Scope was the cascade position the
-    // creator was standing on and the door that stood there passed it. No caller sends it now: a
-    // Binding is recorded first and scoped afterwards, as two acts (#142, `openScopePick` below).
+    // One argument, and no Scope in it. #129 took a cascade position here, because a Data Source's
+    // Scope was the position the creator was standing on and the door stood in the cascade. #142
+    // split that into two acts — a Binding is recorded first and scoped afterwards, by
+    // `openScopePick` below — so no door has had a position to send since, and the parameter that
+    // took one went with the last caller for it.
+    //
     // The door itself, open and shut. It is controlled from the store rather than left to antd
     // because a second surface asks for it: the refusal card's credential repair points here now
     // (#143), and a control that only ever opened under its own pointer could not be pointed at.
@@ -2229,7 +2232,7 @@ window.SW = window.SW || {};
       notify();
     },
 
-    async bindToApp(resource, scope) {
+    async bindToApp(resource) {
       // The BARE id, off `bindingKey`. Deriving it from `resource.id` would send the prefixed
       // `llm_alias:al_1`, which resolves to no Alias, answers 404, and leaves the rail redrawing
       // unchanged — a failure shaped exactly like success.
@@ -2240,7 +2243,7 @@ window.SW = window.SW || {};
       const gen = appGen;
       let result;
       try {
-        result = await SW.api.bind(key[0], key[1], scope);
+        result = await SW.api.bind(key[0], key[1]);
       } catch (err) {
         antd.message.error(`${name} could not be added to ${where}: ${err.message}`);
         return false;

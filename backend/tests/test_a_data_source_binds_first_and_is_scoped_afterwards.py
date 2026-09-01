@@ -294,6 +294,7 @@ def test_the_scope_route_refuses_where_the_app_holds_no_binding(tmp_path: Path, 
 # the app reads. Nothing is mounted — see `js/build_header_harness.mjs` for why.
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "build_header_harness.mjs"
+_JS = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
 
 needs_node = pytest.mark.skipif(
     shutil.which("node") is None, reason="node not on PATH (it is in the Sage image)"
@@ -333,6 +334,30 @@ def test_the_header_picker_binds_a_data_source_and_sends_no_scope():
     }])[-1]
     assert step["posted"] == [{"kind": "data_source", "id": "ds_9"}]
     assert "data_source:ds_9" in step["bindings"]
+
+
+def test_the_client_cannot_send_a_scope_with_a_bind_at_all():
+    """The behavioural test above says no door SENDS one; this says none CAN. #142 left the argument
+    in place at both client layers — `store.bindToApp(resource, scope)` and `SW.api.bind(kind, id,
+    scope)` — carrying a position inside the Resource that no caller has passed since. A parameter
+    nothing passes reads as a capability, and the next reader wanting a scoped bind in one call
+    would find a signature promising one, take it, and re-make the act #142 split in two.
+
+    Read as source, because the claim is that the argument is GONE and not merely unused: a
+    behavioural test passes just as happily with a dead parameter sitting in the signature.
+
+    The server route still accepts the three fields (`orchestrator/app.py`), and that is a separate
+    question this does not answer — the Chat handoff records a scoped Binding in one call through
+    `bind_data_source`, so the capability is live in-process even with no HTTP caller for it."""
+    store = (_JS / "store.js").read_text(encoding="utf-8")
+    api = (_JS / "api.js").read_text(encoding="utf-8")
+    assert "bindToApp(resource)" in store
+    assert "bindToApp(resource, scope)" not in store
+    assert "bind: (kind, id)" in api
+    assert "bind: (kind, id, scope)" not in api
+    # The second act keeps its own, which is the whole shape of the split: one route records the
+    # dependency, the other narrows it.
+    assert "scopeBinding: (resourceId, scope)" in api
 
 
 @needs_node
