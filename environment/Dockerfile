@@ -77,6 +77,12 @@ ARG SAGE_MODEL_SOVEREIGN_IMPLEMENT=
 ENV SAGE_MODEL_SOVEREIGN_IMPLEMENT=${SAGE_MODEL_SOVEREIGN_IMPLEMENT}
 ARG SAGE_MODEL_SOVEREIGN_ASK=
 ENV SAGE_MODEL_SOVEREIGN_ASK=${SAGE_MODEL_SOVEREIGN_ASK}
+# Optional: absolute URL of the Manage App, for the platform bar's "Manage" link. Leave blank
+# normally — the bar resolves /apps/sage-manage against the host the page came from, which is this
+# Domino deployment's own. Set it only where Manage lives somewhere that grammar does not reach.
+# Non-secret; it is a URL.
+ARG SAGE_MANAGE_URL=
+ENV SAGE_MANAGE_URL=${SAGE_MANAGE_URL}
 
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.

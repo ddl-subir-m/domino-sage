@@ -146,27 +146,47 @@ def test_gateway_ui_url_absent_off_the_domino_gateway(monkeypatch):
     assert _gateway_ui_url("sub_user/Sage") is None
 
 
-def test_manage_app_url_follows_the_domino_host(monkeypatch):
-    # Manage is a Domino App of its own, and the bar has to link out to THIS deployment's copy —
-    # so the host is read from the platform rather than written down. A trailing slash on the host
-    # must not double up in the path.
+def test_manage_app_url_is_host_relative_in_a_workspace(monkeypatch):
+    # Never built from DOMINO_API_HOST: inside Domino that is the internal cluster address, so a
+    # URL carrying it is one no browser can open. The path goes out hostless and the UI resolves it
+    # against the origin the page came from — the same rule app_manage_url/workspace_open_url use.
     monkeypatch.delenv("SAGE_MANAGE_URL", raising=False)
-    monkeypatch.setenv("DOMINO_API_HOST", "https://cloud-dogfood.domino.tech/")
-    assert _manage_app_url() == "https://cloud-dogfood.domino.tech/apps/sage-manage"
+    monkeypatch.delenv("SAGE_PROXY_MODE", raising=False)
+    monkeypatch.setenv("DOMINO_API_HOST", "http://nucleus-frontend.domino-platform:80")
+    monkeypatch.setenv("DOMINO_PROJECT_OWNER", "sub_user")
+    monkeypatch.setenv("DOMINO_PROJECT_NAME", "Sage")
+    monkeypatch.setenv("DOMINO_RUN_ID", "abc123")
+    assert _manage_app_url() == "/apps/sage-manage"
+
+
+def test_manage_app_url_is_host_relative_in_the_published_app(monkeypatch):
+    # App mode has nginx strip the mount, so there is no workspace prefix to read. It is still a
+    # Domino host, and Manage is still one path away — the UI's `apps.` strip is what lands it on
+    # the main host from there.
+    monkeypatch.delenv("SAGE_MANAGE_URL", raising=False)
+    monkeypatch.delenv("DOMINO_PROJECT_OWNER", raising=False)
+    monkeypatch.delenv("DOMINO_RUN_ID", raising=False)
+    monkeypatch.setenv("SAGE_PROXY_MODE", "app")
+    assert _manage_app_url() == "/apps/sage-manage"
 
 
 def test_manage_app_url_can_be_overridden_whole(monkeypatch):
-    # A deployment whose API host is an internal cluster address needs a browser-reachable one
-    # given to it, so the override replaces the URL rather than only its host.
-    monkeypatch.setenv("DOMINO_API_HOST", "http://nucleus-frontend.domino-platform:80")
+    # A Manage deployed somewhere this grammar does not reach needs an absolute URL given to it,
+    # and the UI passes an absolute one straight through.
+    monkeypatch.setenv("SAGE_PROXY_MODE", "app")
     monkeypatch.setenv("SAGE_MANAGE_URL", "https://cloud-dogfood.domino.tech/apps/manage/")
     assert _manage_app_url() == "https://cloud-dogfood.domino.tech/apps/manage"
 
 
 def test_manage_app_url_absent_off_domino(monkeypatch):
-    # A laptop run has no Manage App. None hides the link, which is better than one that 404s.
+    # A laptop run is not served from a Domino host, so nothing sits behind that path. None hides
+    # the link, which is better than one that 404s. DOMINO_API_HOST set (a local .env pointing at a
+    # real Domino for Resource listing) is NOT evidence this page is served from Domino.
     monkeypatch.delenv("SAGE_MANAGE_URL", raising=False)
-    monkeypatch.delenv("DOMINO_API_HOST", raising=False)
+    monkeypatch.delenv("SAGE_PROXY_MODE", raising=False)
+    monkeypatch.delenv("SAGE_BASE_PREFIX", raising=False)
+    monkeypatch.delenv("DOMINO_RUN_ID", raising=False)
+    monkeypatch.setenv("DOMINO_API_HOST", "https://cloud-dogfood.domino.tech")
     assert _manage_app_url() is None
 
 

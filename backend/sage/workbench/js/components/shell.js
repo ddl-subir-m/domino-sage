@@ -144,6 +144,8 @@ window.SW = window.SW || {};
       // normal work — and leaves rather than routes. A new tab because leaving is a detour: the
       // build you were reading about is still here when you come back.
       // Hidden with no URL, which is a local run: a Manage that is not deployed is not a dead link.
+      // The path arrives with no host and is resolved here, against the origin this page came from
+      // — see SW.util.mainHostUrl. An override arrives absolute and passes straight through.
       manageUrl &&
         h(
           Tooltip,
@@ -152,7 +154,7 @@ window.SW = window.SW || {};
             'a',
             {
               className: 'sw-topnav-link',
-              href: manageUrl,
+              href: SW.util.mainHostUrl(manageUrl),
               target: '_blank',
               rel: 'noreferrer',
             },

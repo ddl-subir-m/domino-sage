@@ -34,7 +34,7 @@ window.SW = window.SW || {};
       group: 'Go to',
       label: 'Manage',
       available: () => !!SW.store.get().manageUrl,
-      run: () => window.open(SW.store.get().manageUrl, '_blank', 'noreferrer'),
+      run: () => window.open(SW.util.mainHostUrl(SW.store.get().manageUrl), '_blank', 'noreferrer'),
     },
     // A getter, because this list is built when the file is evaluated — before GET /api/brand has
     // answered — and the label is both what is shown and what the query is matched against.

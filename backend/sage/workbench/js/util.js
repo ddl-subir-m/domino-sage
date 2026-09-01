@@ -61,6 +61,24 @@ window.SW = window.SW || {};
     PLAN_STATUS,
     APP_STATUS,
 
+    // Resolve a host-relative Domino path against the MAIN Domino host.
+    //
+    // The server hands these out with no host on purpose: DOMINO_API_HOST is the internal cluster
+    // address, so the only browser-reachable host it can name is the one this page came from. That
+    // is right in a Builder workspace, which is served from the main host. The published Workbench
+    // App is served from apps.<host>, where the same path would resolve against the apps origin and
+    // 404 — so the `apps.` label comes off first. Same rule as door.html's builderUrl().
+    //
+    // An absolute URL is somebody's deliberate override and passes through untouched.
+    mainHostUrl(path) {
+      if (!path || /^https?:\/\//i.test(path)) return path;
+      const host = window.location.hostname;
+      if (host.indexOf('apps.') === 0) {
+        return `${window.location.protocol}//${host.slice(5)}${path}`;
+      }
+      return path;
+    },
+
     // Which LLM Aliases can hold a conversation. Here rather than in either caller because both
     // the Chat picker and the model panel offer the same list, and two copies of this rule is how
     // they come to disagree about what a person may pick (ADR-0017).

@@ -281,25 +281,33 @@ def _gateway_ui_url(project_label: str | None) -> str | None:
     return f"{root}/#usage?tag={tag}"
 
 
+_MANAGE_APP_PATH = "/apps/sage-manage"
+
+
 def _manage_app_url() -> str | None:
-    """Browser URL of the Manage app, or None when this deployment has no Domino host to reach it on.
+    """Where the platform bar sends a person to Manage, or None when this deployment has no Manage.
 
     Manage is a Domino App of its own, not a mode inside the Workbench — it reads across every
     project and detects an admin persona, neither of which the Workbench's project scope can do.
     So the platform bar links OUT to it rather than routing in.
 
-    Built from DOMINO_API_HOST because that is the host the Workbench itself is served from, so the
-    link follows the deployment instead of naming one. SAGE_MANAGE_URL overrides it whole, for a
-    deployment whose API host is an internal cluster address a browser cannot resolve.
+    Host-RELATIVE, the same rule every other main-host link here follows (`app_manage_url`,
+    `workspace_open_url`, `_open_url`): DOMINO_API_HOST is the INTERNAL cluster address
+    (nucleus-frontend…), so a URL built from it is not one a browser can open. The browser resolves
+    this path against the origin it was served from, which is by definition reachable — the UI drops
+    a leading `apps.` first, since the published Workbench App is served from apps.<host> while
+    Manage lives on the main host.
 
-    None off-Domino: a local run has no Manage app, and a link to one reads as broken rather than
-    absent.
+    SAGE_MANAGE_URL replaces it whole, for a Manage deployed somewhere this grammar does not reach.
+
+    None off-Domino: a laptop run has no Manage App behind that path, and a link that 404s reads as
+    broken rather than absent. Being under Domino's proxy — a workspace prefix, or App mode — is
+    what says otherwise, because that is the same fact as "this page is served from a Domino host".
     """
     explicit = os.environ.get("SAGE_MANAGE_URL", "").strip()
     if explicit:
         return explicit.rstrip("/")
-    host = os.environ.get("DOMINO_API_HOST", "").strip()
-    return f"{host.rstrip('/')}/apps/sage-manage" if host else None
+    return _MANAGE_APP_PATH if (proxy_is_app() or domino_base_prefix()) else None
 
 
 def _browser_gateway_base() -> str | None:
