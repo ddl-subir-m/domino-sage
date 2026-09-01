@@ -64,18 +64,31 @@ _Avoid_: model API, endpoint, vLLM endpoint
 
 ### What Sage produces
 
-**Resource Browser**:
-The panel in which a user sees and picks Resources. What it lists is the Project's working set —
-the Resources this Project uses — and that list is a record of use rather than a permission
-anything checks. A Resource joins it two ways: Browse Domino's Add puts one there before any app
-needs it, and every act that records use puts one there on the way through, whether that is a
-Binding or a Session context chip. Nothing is gated on membership: a Built App reaches a Resource
-because it holds a Binding, and publish reads that Binding and nothing else
+**Working set**:
+Everything this Project has picked up — its Resources and its Assets. It is one list per Project,
+and it is the pool that Session context and Bindings are both drawn from. A thing joins it two ways:
+Browse Domino's Add puts one there before any app needs it, and every act that records use puts one
+there on the way through, whether that is a Binding or a Session context chip. So it fills itself,
+and it can also be primed early — it is a record that keeps itself, never a step you have to take
+first. Nothing is gated on it: a Built App reaches a Resource because it holds a Binding, and publish
+reads that Binding and nothing else
 ([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md),
-[ADR-0018](docs/adr/0018-project-membership-is-a-record-of-use-not-a-gate.md)). Leaving the working
-set is a Remove and has its own refusal, because a Built App may still bind what the Project is
-being asked to drop.
-_Avoid_: resource panel, data panel, sidebar, "add to make available" (membership enables nothing)
+[ADR-0018](docs/adr/0018-project-membership-is-a-record-of-use-not-a-gate.md)).
+Its job is to say what this Project has and where each thing is used. It is never put in front of
+the assistant — a list that permits nothing would name Resources the assistant cannot reach
+([ADR-0020](docs/adr/0020-the-working-set-is-orientation-never-context.md)). Leaving it is a Remove
+and has its own refusal, because a Built App may still bind what the Project is being asked to drop.
+Holding both Resources and Assets is why it is not called "project resources" on screen: the prose
+label is "In this project", which claims no type ([ADR-0014](docs/adr/0014-the-overlay-renames-prose-not-identifiers.md)).
+_Avoid_: project resources, membership (that is the act of joining, not the list), shopping list,
+context (it reaches no prompt), "add to make available" (it enables nothing)
+
+**Resource Browser**:
+The panel in which a user sees the [[Working set]] and picks from it. It draws the list; it does not
+own it. The acts it offers are the ones whose scope it owns — putting something in Session context,
+and the two Removes. Adding a Binding is not among them: that act belongs to the Built App's own
+surface ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)).
+_Avoid_: resource panel, data panel, sidebar, working set (that is the list this panel draws)
 
 **Binding**:
 A recorded link between one Built App and a Resource it uses, and the app's permission to reach
@@ -91,9 +104,12 @@ stays in the Project and is picked again
 ([ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md)).
 On screen a Binding is named by what it does for the app rather than by the word itself: a Resource
 the selected app holds one for reads "Required by <app>", one it does not reads "Not used by <app>",
-and the act that makes one is "Use in <app>". Only Build names an app, so only Build offers the act;
-in Chat the neighbouring act is "Use in this chat", which puts the Resource in Session context and
-binds nothing.
+and the act that makes one is "Use in <app>". That act is offered on the Built App's own surface and
+nowhere else — never beside "Use in this chat", which puts a Resource in Session context and binds
+nothing. The two are kept apart on purpose: one writes a chip, the other writes a manifest a
+published app depends on
+([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). A Binding may be
+made without a Scope and scoped afterwards, as two acts on that same surface.
 _Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
 
 **Scope**:
@@ -300,9 +316,11 @@ _Avoid_: a bare "Remove" (it does not say which of the two), detach or unbind as
 name the app-scoped pair in code, not on screen), delete, drop, clear
 
 **Use in this chat** / **Stop using here**:
-Putting a Resource in front of the assistant for this Conversation, and taking it back out. Not a
-Remove: it writes nothing, the Resource stays wherever it lives, and naming it again is the way
-back. One pair of words on every surface that offers the act. See
+Putting a Resource in front of the assistant for this Conversation, and taking it back out. It does
+write: the Resource joins the Project's [[Working set]] on the way through, and the answer says so
+once. But it is not a Remove, and the reason is reversibility rather than silence — stopping
+discards nothing, the Resource stays wherever it lives, and naming it again is the whole way back.
+One pair of words on every surface that offers the act. See
 [ADR-0015](docs/adr/0015-the-conversation-is-not-a-removal-scope.md).
 _Avoid_: "Remove from this conversation" (it borrows a verb for a cost this act does not have),
 "Add to chat", "Mention in this chat", "Add to this conversation", attach, detach

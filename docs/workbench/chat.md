@@ -176,7 +176,7 @@ Three bags, never one (the prototype's P0 bug was using `planId || threadId` as 
 | Bag | File | Lifetime | UI |
 |-----|------|----------|----|
 | Session context | `.sage/threads/<id>/context.json` | This Thread | Chips on the composer; "IN CONTEXT" in the resource panel |
-| Project membership | `.sage/project-resources.json` | This project | "PROJECT RESOURCES" rail. Parents plus optional **pins** (Dataset files, Data Source tables). Pins are not prompt context. Membership is provisioning, not a step the user has to take first: putting a **parent** in Session context joins it here in the same click, and the answer carries `joinedProject: true` so the rail refreshes. Leaves (a `dsfile:` file, a `table:` table) join nothing — they are reached by expanding a parent that is already a member. |
+| Working set | `.sage/project-resources.json` | This project | The working-set rail. What the list means, and why it never reaches a prompt, is the **Working set** entry in `CONTEXT.md` and [ADR-0020](../adr/0020-the-working-set-is-orientation-never-context.md) — not repeated here. Mechanics: parents plus optional **pins** (Dataset files, Data Source tables), and pins are not prompt context either. Putting a **parent** in Session context joins it here in the same click, and the answer carries `joinedProject: true` so the rail refreshes. Leaves (a `dsfile:` file, a `table:` table) join nothing — they are reached by expanding a parent that is already a member. |
 | Bindings | `.sage/bindings.json` | The Built App | "IN THIS APP" in Build after handoff |
 
 Chat-local files live in gitignored `.sage/scratch/`. They persist on this workspace volume. **Add to a Dataset** copies them onto a writable Dataset so they outlive this workspace.
