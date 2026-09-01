@@ -46,6 +46,7 @@ from ..provision import naming
 from ..provision.domino import NotFound, app_viewer_url
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
+    KIND_DATASET,
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
     Binding,
@@ -8286,6 +8287,29 @@ class Orchestrator:
         return self._record(
             Binding(KIND_MODEL_API, model_api_id, name, name),
             {"description": found.description, "project": found.project_name} if found else {})
+
+    def bind_dataset(self, dataset_id: str) -> list[dict]:
+        """Record that this app uses one Dataset, and return the new Binding list (#141).
+
+        Resolved against `list_assets` for the reason `bind_llm_alias` resolves an Alias against its
+        listing: that listing is Domino's answer about what this caller can reach, and the name that
+        comes out of it is the label the manifest keeps for the moment the gateway is unreachable.
+
+        A Dataset has one name and no separate display name, so both fields carry it — the shape
+        `bind_model_api` already writes. No scope: the Scope fields belong to a Data Source, and a
+        Dataset is reached whole.
+
+        This is not an Attachment and does not write one. An Attachment is a file copied into the
+        app's tree and rebuilt at deploy time (`attach_file`); this says which Dataset the app is
+        recorded as reading. The two are the app's two named things, and they stay two.
+        """
+        asset = next((a for a in self.list_assets() if a["id"] == dataset_id), None)
+        if asset is None:
+            raise LookupError(dataset_id)
+        name = asset["name"] or dataset_id
+        return self._record(
+            Binding(KIND_DATASET, asset["id"], name, name),
+            {"project": asset.get("project"), "path": asset.get("mount_path")})
 
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",

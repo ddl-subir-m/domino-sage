@@ -184,6 +184,40 @@ window.SW = window.SW || {};
       return false;
     },
 
+    // The order a menu offers a Resource in: what this Project already holds, then the wider Domino
+    // catalogue behind it. `groups` is the working set's own groups in the caller's order, and
+    // `catalogue` is what the Project has not joined — always LAST, because it is the only group
+    // whose rows are not here already, and picking one joins the Project on the way in (ADR-0018).
+    //
+    // Shared because two menus draw the same choice and one of them had it inline: the composer's @
+    // menu and the Build header's picker (ADR-0021). The picker was written from the menu's shape,
+    // and a second copy of the ordering is how the two come to disagree about where a Resource is —
+    // which is the one thing a person carries from one surface to the other.
+    //
+    // One row per id, the first occurrence winning, so a Resource two groups both hold is offered by
+    // the nearer one. `query` matches the name or the file's basename, because the basename is what
+    // `mentionToken` builds a token from — asking the same question of the same string keeps what a
+    // person typed and what the menu keeps from drifting apart.
+    workingSetFirst({ groups, catalogue, query, limit }) {
+      const lowered = String(query || '').trim().toLowerCase();
+      const matches = (row) => {
+        if (!lowered) return true;
+        const name = String(row.name || '').toLowerCase();
+        const base = String(row.path || '').split('/').pop().toLowerCase();
+        return name.includes(lowered) || base.includes(lowered);
+      };
+      const seen = new Set();
+      const out = [];
+      [...(groups || []), catalogue || []].forEach((group) => {
+        (group || []).forEach((row) => {
+          if (!row || !row.id || seen.has(row.id) || !matches(row)) return;
+          seen.add(row.id);
+          out.push(row);
+        });
+      });
+      return limit ? out.slice(0, limit) : out;
+    },
+
     thumbUrl(name) {
       return `./img/thumbs/${name || 'thumb-dashboard.svg'}`;
     },

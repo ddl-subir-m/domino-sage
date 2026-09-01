@@ -97,10 +97,13 @@ A Binding is always declared — a person picks a Resource, and picking produces
 never inferred from what the app's code turns out to touch, so the two can disagree and the
 declaration is the one that publishes
 ([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md)). A Data Source Binding
-also records a Scope. A Resource is picked once for the Project and can be bound by several of its
-Built Apps; a Binding always names exactly one of them, so "what does this app read" has an answer
-per app. Removing a Binding takes the grant and the Scope with it. There is no undo: the Resource
-stays in the Project and is picked again
+also records a Scope. A Dataset can be bound too, and it is the one thing a Binding names that is
+an [[Asset]] rather than a Resource: the record says which Dataset the app reads. It is not an
+[[Attachment]] and does not produce one, and the rule that a file never becomes a Binding holds,
+because a Dataset is not a file. A Resource is picked once for the Project and can be bound by
+several of its Built Apps; a Binding always names exactly one of them, so "what does this app
+read" has an answer per app. Removing a Binding takes the grant and the Scope with it. There is no
+undo: the Resource stays in the Project and is picked again
 ([ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md)).
 On screen a Binding is named by what it does for the app rather than by the word itself: a Resource
 the selected app holds one for reads "Required by <app>", one it does not reads "Not used by <app>",
@@ -110,6 +113,9 @@ nothing. The two are kept apart on purpose: one writes a chip, the other writes 
 published app depends on
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). A Binding may be
 made without a Scope and scoped afterwards, as two acts on that same surface.
+_Interim_: the [[Resource Browser]]'s row menu still offers "Use in <app>" as well. The header's door
+opened first so that no window exists in which neither is open; the panel's copy is removed by #142,
+and until it is, "and nowhere else" is where this is going rather than where it is.
 _Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
 
 **Scope**:

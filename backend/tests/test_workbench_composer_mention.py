@@ -101,13 +101,21 @@ def test_the_menu_offers_resources_the_project_has_not_joined_yet():
 def test_the_new_group_is_appended_last():
     # Last because it is the only group whose rows are not already here: everything above is
     # something this project or this thread already holds, and those stay easier to reach.
-    assert "return context.concat(produced, pins, project, files, catalogue).slice(0, 8);" in UI
+    #
+    # The order lives in `SW.util.workingSetFirst` since #141, shared with the Build header's picker
+    # so the two menus that offer a Resource cannot drift. This menu hands it the catalogue AS the
+    # catalogue and never as one more group above it, and the helper is what puts it last.
+    assert "groups: [context, produced, resourceGroups.pin || [], project, files]," in UI
+    assert "catalogue: catalogueParents," in UI
+    assert "[...(groups || []), catalogue || []].forEach(" in UTIL
 
 
 def test_the_cap_of_eight_survives_the_new_group():
-    # A sixth source of rows is a sixth way to overflow the menu. The cap is applied once, after
-    # the concat, so it still counts every group.
-    assert UI.count(".slice(0, 8)") == 1
+    # A sixth source of rows is a sixth way to overflow the menu. The cap is asked for once and
+    # applied once, by the shared helper, after every group has been through it — so it still
+    # counts them all.
+    assert UI.count("limit: 8,") == 1
+    assert "return limit ? out.slice(0, limit) : out;" in UTIL
 
 
 def test_no_table_or_dataset_file_can_reach_the_new_group():

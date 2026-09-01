@@ -529,6 +529,14 @@
    gates nothing (ADR-0010), so styling it as a warning would claim something the record does not.
    Colour alone would carry it to nobody — the word is the label, the colour only its weight. */
 .sw-app-scope-unused { color: var(--gray-500); }
+/* The door, pinned to the far end so it keeps its place while the names beside it truncate. `flex:
+   none` for the reason the label has it: what gives way is the run of names, never the two things
+   that say whose row this is and what can be done to it. */
+.sw-app-scope-add {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--s2);
+}
 
 /* The canvas is the preview's whole height. Without `flex: 1` it falls back to the
    iframe's intrinsic 150px and the app shows through a letterbox. `position: relative`

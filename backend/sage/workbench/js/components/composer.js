@@ -27,77 +27,43 @@ window.SW = window.SW || {};
   }
 
   // Session context, then this Thread's artifacts, then project Resources, then files, then the
-  // catalogue this project has not joined yet. That one is last because it is the only group whose
-  // rows are not here already — picking it joins the project on the way in.
+  // catalogue this project has not joined yet. The working-set-before-catalogue half of that order
+  // is `SW.util.workingSetFirst`, shared with the Build header's picker so the two menus cannot
+  // drift (ADR-0021); the groups above it are this menu's own, because only a Conversation has
+  // Session context and artifacts.
   function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents) {
-    const lowered = query.trim().toLowerCase();
-    const matches = (r) => {
-      if (!lowered) return true;
-      const name = (r.name || '').toLowerCase();
-      const base = String((r.path || '')).split('/').pop().toLowerCase();
-      return name.includes(lowered) || base.includes(lowered);
-    };
-    const seen = new Set();
-    const take = (row) => {
-      if (!row || !row.id || seen.has(row.id) || !matches(row)) return null;
-      seen.add(row.id);
-      return row;
-    };
+    const context = (attachments || []).map((att) => ({
+      id: att.resourceId || att.id,
+      name: att.resourceName,
+      kind: att.resourceKind || 'file',
+      path: att.path,
+      bindingKey: att.bindingKey,
+    }));
 
-    const context = [];
-    (attachments || []).forEach((att) => {
-      const row = take({
-        id: att.resourceId || att.id,
-        name: att.resourceName,
-        kind: att.resourceKind || 'file',
-        path: att.path,
-        bindingKey: att.bindingKey,
-      });
-      if (row) context.push(row);
-    });
-
-    const produced = [];
-    (artifacts || []).forEach((a) => {
+    const produced = (artifacts || []).map((a) => {
       const path = a.path || '';
-      const row = take({
+      return {
         id: a.id || (path ? `artifact:${path}` : ''),
         name: a.name || path.split('/').pop(),
         kind: 'artifact',
         path,
-      });
-      if (row) produced.push(row);
+      };
     });
 
-    const project = [];
-    const pins = [];
-    (resourceGroups.pin || []).forEach((r) => {
-      const row = take(r);
-      if (row) pins.push(row);
-    });
-    PROJECT_MENTION_KINDS.forEach((kind) => {
-      (resourceGroups[kind] || []).forEach((r) => {
-        const row = take(r);
-        if (row) project.push(row);
-      });
-    });
-
-    const files = [];
-    (resourceGroups.file || []).forEach((r) => {
-      if (SW.util.isHiddenFromExplorer(r.path || r.name)) return;
-      const row = take(r);
-      if (row) files.push(row);
-    });
+    const project = PROJECT_MENTION_KINDS.flatMap((kind) => resourceGroups[kind] || []);
+    const files = (resourceGroups.file || []).filter(
+      (r) => !SW.util.isHiddenFromExplorer(r.path || r.name)
+    );
 
     // Parents only — the store filters to `MEMBERSHIP_PARENT_KINDS`, off a listing that has no
     // leaf in it to begin with. That is what keeps a warehouse table out of this menu, which must
     // never fetch a warehouse catalog (docs/workbench/chat.md).
-    const catalogue = [];
-    (catalogueParents || []).forEach((r) => {
-      const row = take(r);
-      if (row) catalogue.push(row);
+    return SW.util.workingSetFirst({
+      groups: [context, produced, resourceGroups.pin || [], project, files],
+      catalogue: catalogueParents,
+      query,
+      limit: 8,
     });
-
-    return context.concat(produced, pins, project, files, catalogue).slice(0, 8);
   }
 
   // Where the caret sits inside an unfinished @mention, if it does.

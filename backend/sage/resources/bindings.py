@@ -34,6 +34,15 @@ KIND_MODEL_API = "model_api"
 # scope runs in the build session, where querying already works; nothing here makes the Built App
 # query, which is a later slice.
 KIND_DATA_SOURCE = "data_source"
+# A Dataset Binding (#141) records that the app depends on one Domino Dataset. Not the same record as
+# an Attachment, and it does not replace one: an Attachment is a FILE copied into the app's own tree
+# and rebuilt at deploy time, while this says which Dataset the app is recorded as reading. The
+# glossary's rule — "a file never becomes a Binding" — holds, because a Dataset is not a file.
+#
+# Inert in every consumer that reads Bindings by kind: nothing is pinned into the app's source, no
+# scope travels with it, and `stale_bindings` is handed no listing for it, so it can never be called
+# gone by a listing that was never fetched.
+KIND_DATASET = "dataset"
 
 
 @dataclass(frozen=True)
