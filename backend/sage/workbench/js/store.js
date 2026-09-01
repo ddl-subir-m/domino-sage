@@ -2106,7 +2106,13 @@ window.SW = window.SW || {};
     // generation ticket and the bare-id rule all belong to that act and are not worth a second copy.
     bindAliasFromMention(entry) {
       if (!entry || !entry.kind || !entry.id) return Promise.resolve(false);
-      return store.bindToApp({ name: entry.name || entry.id, bindingKey: [entry.kind, entry.id] });
+      return store.bindToApp({
+        // The prefixed id is what `resourceIndex` keys on: without it `bindToApp` cannot see the
+        // Alias is already in the rail, and every bind from this door reloads the whole scope.
+        id: SW.util.bindingId({ kind: entry.kind, id: entry.id }),
+        name: entry.name || entry.id,
+        bindingKey: [entry.kind, entry.id],
+      });
     },
 
     // A Data Source. Its Binding records a Scope, and a Scope is the cascade position the creator is

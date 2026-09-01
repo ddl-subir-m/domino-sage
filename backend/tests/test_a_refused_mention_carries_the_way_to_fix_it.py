@@ -250,10 +250,12 @@ def test_the_four_acts_are_the_store_s_and_reach_the_doors_that_already_exist():
     fixes before send (#136) — two copies of "what does an unbound Alias need" would drift."""
     store = _js("store.js")
 
-    # The Alias's bind goes through `bindToApp`, carrying the Binding identity and not the prefixed
-    # row id: the bare pair is what the route resolves.
+    # The Alias's bind goes through `bindToApp`, carrying the Binding identity — the bare pair is
+    # what the route resolves — AND the prefixed row id, which `resourceIndex` keys on: the id is
+    # what lets `bindToApp` skip the full scope reload when the Alias is already in the rail.
     assert "bindAliasFromMention(entry) {" in store
-    assert "bindingKey: [entry.kind, entry.id] });" in store
+    assert "bindingKey: [entry.kind, entry.id]," in store
+    assert "id: SW.util.bindingId({ kind: entry.kind, id: entry.id })," in store
     # The Data Source opens the cascade at that Resource. The counter is what lets a second ask
     # reopen a row somebody collapsed.
     assert "openScopeForMention(entry) {" in store
