@@ -216,6 +216,133 @@ def test_a_conversation_bound_to_nothing_leaves_the_selection_where_it_is():
     assert step["tickWrites"] == []
 
 
+# ---- the rail click, which is what makes the ADR's rule reachable (#139) ----------------------
+#
+# ADR-0009 already said a Build link naming no app resolves the Conversation's newest bound
+# handoff, and the test above proves the resolution works. It never happened on a click, because
+# the rail stamped the selected app into every link it built — so the "names no app" case only
+# ever arrived from a bookmark. The rail stops stamping, and the answer it already holds on the
+# row moves the selection in the same beat as the navigation.
+
+
+def _acts(*acts: dict, at: str = "#/build/thr_many?app=app_a") -> list[dict]:
+    """Acts against ONE tab. "Regardless of what the header did earlier" is a claim about a
+    session, and every step that mounts its own tab has thrown that session away."""
+    return _run([{"at": at, "sequence": list(acts)}])[-1]["acts"]
+
+
+@needs_node
+def test_clicking_a_conversation_moves_build_to_the_app_it_bound():
+    """The whole ticket in one act. The preview, the Build header and the panel's app section all
+    read `activeApp` and are assigned together (#95), so the app moving IS the three of them
+    moving — and the link the click produced names no app, which is the condition ADR-0009's rule
+    needs and never got."""
+    (clicked,) = _acts({"click": "thr_bound"})
+    assert clicked["view"]["app"] == "app_c"
+    assert clicked["view"]["thread"] == "thr_bound"
+    assert clicked["view"]["hash"] == "#/build/thr_bound"
+    assert clicked["writes"] == ["t1 POST /apps/app_c/select"]
+
+
+@needs_node
+def test_a_conversation_that_bound_several_lands_on_the_one_it_bound_last():
+    """`thr_twice` handed off to `app_b` and then to `app_d`, and its tags name them in that
+    order. A follow that read the tags would land on the first one; the answer is the handoff
+    record, which the server has already reduced to the newest bound entry."""
+    (clicked,) = _acts({"click": "thr_twice"})
+    assert clicked["view"]["app"] == "app_d"
+    assert clicked["writes"] == ["t1 POST /apps/app_d/select"]
+
+
+@needs_node
+def test_a_conversation_that_bound_nothing_leaves_the_selection_where_it_is():
+    """The old rail could not tell "this Conversation's app" from "the app in front of me" — it
+    stamped the second into the link and called it the first. Dropping the stamp must not turn
+    into blanking: a Conversation with nothing to say about an app says nothing."""
+    (clicked,) = _acts({"click": "thr_many"}, at="#/build/thr_bound?app=app_a")
+    assert clicked["view"]["thread"] == "thr_many"
+    assert clicked["view"]["app"] == "app_a"
+    assert clicked["view"]["hash"] == "#/build/thr_many"
+    assert clicked["writes"] == []
+
+
+@needs_node
+def test_the_conversation_is_never_drawn_beside_an_app_it_did_not_bind():
+    """The flicker, named. Resolving over the network puts a frame on screen where the new
+    Conversation's transcript sits beside the app you came from — the app card, the Bindings and
+    the preview all describing work this Conversation never did — and then swaps it a round trip
+    later. The answer is on the row the rail is already holding, so there is no such frame.
+
+    Asserted on the frames rather than on the settled view, because the settled view is right
+    either way and is exactly what a flicker hides behind."""
+    (clicked,) = _acts({"click": "thr_bound"})
+    assert clicked["trail"], "the click painted nothing at all"
+    for frame in clicked["trail"]:
+        if frame["thread"] == "thr_bound":
+            assert frame["app"] == "app_c", clicked["trail"]
+    # And the first thing the click asked the server for is the selection itself: a lookup ahead
+    # of it would be the round trip the frame above is spent waiting for.
+    assert clicked["calls"][0] == "t1 POST /apps/app_c/select", clicked["calls"]
+
+
+@needs_node
+def test_a_rail_click_names_no_app_however_the_header_was_used_before_it():
+    """The stamp read `activeApp`, so switching app in the header once poisoned every rail link
+    for the rest of the session — and the case ADR-0009 decided never arose."""
+    picked, clicked = _acts(
+        {"pick": "#/build/thr_many?app=app_d"},
+        {"click": "thr_bound"},
+    )
+    assert picked["view"]["hash"] == "#/build/thr_many?app=app_d"
+    assert clicked["view"]["hash"] == "#/build/thr_bound"
+    assert clicked["view"]["app"] == "app_c"
+
+
+@needs_node
+def test_a_shared_link_still_beats_the_conversations_own_binding():
+    """`?app=` stays readable grammar. `thr_bound` bound `app_c`, and a link that names `app_a`
+    lands on `app_a` — a shared link means what it says, or it is not worth sharing."""
+    step = _run([{"at": "#/build/thr_bound?app=app_a", "sequence": []}])[-1]
+    assert step["acts"] == []
+    seeded = _run([{"tabs": ["#/build/thr_bound?app=app_a"], "ticks": 1}])[-1]
+    assert [v["app"] for v in seeded["views"]] == ["app_a"]
+    assert seeded["views"][0]["hash"] == "#/build/thr_bound?app=app_a"
+
+
+@needs_node
+def test_an_app_started_inside_build_is_still_resolved_the_slow_way():
+    """The fallback the ticket keeps. `thr_infield` never handed off (#74), so no entry names its
+    app and the list has nothing to carry — its build turns are the only record, and reading them
+    costs the round trip the common path no longer pays."""
+    (clicked,) = _acts({"click": "thr_infield"})
+    assert clicked["view"]["app"] == "app_d"
+    assert clicked["writes"] == ["t1 POST /apps/app_d/select"]
+    assert "t1 GET /threads/thr_infield/conversation" in clicked["calls"]
+
+
+def test_the_rail_stops_stamping_the_selected_app_into_its_links():
+    """The comment that said the opposite went with it. "Which app Build has in the preview is a
+    view parameter, so it survives moving between conversations" contradicted an accepted ADR,
+    and a reader who found it first would repair this back."""
+    rail = (_JS / "components" / "conversation-list.js").read_text()
+    route = rail[rail.index("SW.conversationRoute ="):rail.index("SW.openConversation =")]
+    assert "activeApp" not in route, route
+    assert "?app=" not in route, route
+    assert "survives" not in rail
+    assert "boundAppId" in rail
+
+
+def test_the_resolver_asks_the_list_before_it_asks_the_server():
+    """What makes the network call a correction rather than the common path. The answer is on the
+    thread list the rail is drawn from, so a bare link opened beside a loaded rail resolves
+    without asking — and the reads below it stay for the Conversations the list cannot answer."""
+    src = (_JS / "store.js").read_text()
+    body = src[src.index("async resolveConversationApp("):]
+    body = body[:body.index("\n    async ")]
+    assert body.index("boundAppId") < body.index("SW.api.thread("), body
+    assert "SW.api.conversation(" in body
+
+
 # ---- the dependency lists, which is where the difference lives -------------------------------
 
 

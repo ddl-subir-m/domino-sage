@@ -154,6 +154,38 @@ def test_one_conversation_that_hands_off_twice_leaves_two_built_apps(tmp_path: P
     store = ThreadStore(orch.project(start_preview=False).record.path)
     assert [e["appId"] for e in store.read_handoffs(tid)] == [first, second]
 
+    # The rail's row carries the one it bound LAST, which is the app a click on it lands on
+    # (ADR-0009, #139). Reduced here rather than in the browser: the list is a list of entries and
+    # the answer is one id, and only this side has ever read the entries.
+    (row,) = [r for r in orch.list_threads() if r["id"] == tid]
+    assert row["boundAppId"] == second
+
+
+def test_a_conversation_that_never_handed_off_names_no_app_on_its_row(tmp_path: Path):
+    """The rail must be able to tell "this Conversation bound an app" from "I do not know", because
+    a click on the second leaves the selection alone rather than moving it somewhere arbitrary."""
+    orch, _oc, _root = _orch(tmp_path, [Turn(text="A dashboard, then.")])
+    tid = orch.create_thread()["id"]
+    (row,) = [r for r in orch.list_threads() if r["id"] == tid]
+    assert row["boundAppId"] is None
+
+
+def test_a_row_stops_naming_an_app_that_has_been_deleted(tmp_path: Path):
+    """Deleting an app leaves the Conversation that built it alone, so its handoff entry goes on
+    naming an id nothing answers for. Carried through, a click on that row would ask the server to
+    select a Built App that is gone."""
+    orch, _oc, _root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_DESK)],
+                             verdict="APP")
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "put the desk exposure on a dashboard colleagues can open"))
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, {"resources": False, "artifacts": False, "transcript": False})
+    built = orch.project(start_preview=False).workspace.app_id
+    assert [r for r in orch.list_threads() if r["id"] == tid][0]["boundAppId"] == built
+
+    orch.delete_app(built)
+    assert [r for r in orch.list_threads() if r["id"] == tid][0]["boundAppId"] is None
+
 
 def test_confirming_the_same_handoff_twice_reopens_its_app_rather_than_minting_a_twin(
         tmp_path: Path):

@@ -2675,9 +2675,13 @@ window.SW = window.SW || {};
     // app stays — which is what Build did before this ticket.
     async resolveConversationApp(threadId) {
       if (!threadId) return null;
-      // ADR-0009: the Conversation's newest BOUND handoff entry names the app. Only a confirmed
-      // handoff writes `appId`, so its presence is what "bound" means here. The thread is usually
-      // the one already open, and reusing it is what keeps this off the network.
+      // ADR-0009: the Conversation's newest BOUND handoff entry names the app. The rail's own list
+      // carries that answer already — the server reduces the handoff record to `boundAppId` — so
+      // the common path costs nothing and the reads below are the correction (#139).
+      const listed = (state.threads || []).find((t) => t.id === threadId);
+      if (listed && listed.boundAppId) return listed.boundAppId;
+      // Only a confirmed handoff writes `appId`, so its presence is what "bound" means here. The
+      // thread is usually the one already open, and reusing it is what keeps this off the network.
       const thread = state.thread && state.thread.id === threadId
         ? state.thread
         : await SW.api.thread(threadId).catch(() => null);

@@ -33,10 +33,37 @@ const THREADS = {
   thr_many: { id: 'thr_many', title: 'Desks', artifacts: [], history: [], touched: [] },
   // A Conversation with a confirmed handoff, which is what `resolveConversationApp` reads. Its app
   // is NOT the one the server has selected, so a bare link resolving is a selection that moved.
+  //
+  // `boundAppId` is the LIST's field (#139): the newest BOUND handoff, composed by the server so
+  // the rail is holding the answer before anybody clicks. See the single-thread read below, which
+  // deliberately does not carry it.
   thr_bound: {
     id: 'thr_bound', title: 'Bound elsewhere', artifacts: [], history: [], touched: [],
     handoff: { status: 'bound', appId: 'app_c' },
+    boundAppId: 'app_c',
   },
+  // Handed off TWICE — `app_b` first, `app_d` after it. The tags name both and name them in that
+  // order, so a follow that guessed from `touched` would land on the first one. The answer is the
+  // handoff record, and the server has already reduced it to one id.
+  thr_twice: {
+    id: 'thr_twice', title: 'Bound twice', artifacts: [], history: [],
+    touched: [
+      { appId: 'app_b', appName: 'P&L report', kind: 'built' },
+      { appId: 'app_d', appName: 'Risk monitor', kind: 'built' },
+    ],
+    handoff: { status: 'bound', appId: 'app_d' },
+    boundAppId: 'app_d',
+  },
+  // A Built App started inside Build and never handed off (#74). No handoff entry can name it, so
+  // the list has nothing to carry and the async resolver is the only thing that can answer. It is
+  // what that resolver stays for.
+  thr_infield: { id: 'thr_infield', title: 'Started in Build', artifacts: [], history: [], touched: [] },
+};
+
+// What `GET /threads/<id>/conversation` answers — the merged transcript the resolver falls back to
+// reading when no handoff named an app.
+const CONVERSATIONS = {
+  thr_infield: [{ half: 'build', app: 'app_b' }, { half: 'build', app: 'app_d' }],
 };
 
 // The one piece of state the two tabs share: which app the Project has selected. Moved by a
@@ -64,10 +91,16 @@ function route(path, init) {
   }
   if (path === '/bindings') return json({ bindings: [] });
   if (path === '/project') return json({ attached: [] });
-  if (path.match(/^\/threads\/([^/]+)\/conversation$/)) return json({ history: [] });
+  if ((m = path.match(/^\/threads\/([^/]+)\/conversation$/))) {
+    return json({ history: CONVERSATIONS[m[1]] || [] });
+  }
   if (path.match(/^\/threads\/([^/]+)\/context$/)) return json({ items: [] });
   if ((m = path.match(/^\/threads\/([^/?]+)$/))) {
-    return json(THREADS[m[1]] || { id: m[1], history: [], touched: [] });
+    // `get_thread` composes `handoff` and no more. `boundAppId` belongs to the list, so it is
+    // stripped here — otherwise "answered off the row the rail is holding" would be a claim this
+    // harness could not tell from "answered by a second request".
+    const { boundAppId, ...row } = THREADS[m[1]] || { id: m[1], history: [], touched: [] };
+    return json(row);
   }
   if (path === '/threads') return json(Object.values(THREADS));
   return json({});
@@ -177,6 +210,10 @@ function makeTab(name, hash) {
   SW.router.subscribe(() => { dirty = true; });
 
   let renders = 0;
+  // Every frame this tab PAINTED, in the two things a rail click moves (#139). A settled view
+  // cannot show a flicker: "the whole workspace moved together" is a claim about the frames in
+  // between, and a Conversation drawn beside the app it did not bind is one of them.
+  const trail = [];
   function render() {
     renders += 1;
     cursor = 0;
@@ -184,6 +221,12 @@ function makeTab(name, hash) {
     const at = SW.router.get();
     // Exactly what `app.js` hands BuildMode, so the props are the route's rather than a step's.
     SW.BuildMode({ conversationId: at.a, appId: at.query.app || null });
+    const painted = SW.store.get();
+    trail.push({
+      hash: current,
+      app: (painted.activeApp || {}).id || null,
+      thread: painted.thread ? painted.thread.id : null,
+    });
     const queue = pending.slice();
     pending.length = 0;
     for (const fn of queue) {
@@ -221,6 +264,15 @@ function makeTab(name, hash) {
       return settle();
     },
     go(path) { SW.router.go(path); },
+    // The rail's own click. `openConversation` is what a row's `onClick` calls, and the row it
+    // hands over is the one the rail is holding — the list payload, which is the point.
+    clickRow(id) {
+      const row = (SW.store.get().threads || []).find((t) => t.id === id);
+      if (!row) throw new Error(`no row ${id} in the rail`);
+      SW.openConversation(row, 'build');
+    },
+    trailLength() { return trail.length; },
+    trailFrom(n) { return trail.slice(n); },
     view() {
       const state = SW.store.get();
       return {
@@ -300,19 +352,29 @@ for (const step of steps) {
   if (step.sequence) {
     const tab = makeTab('t1', step.at);
     await tab.settle();
+    // The rail draws from the thread list `init` loads on boot. BuildMode does not load it, so it
+    // is loaded here — a rail with no rows is a rail nobody can click.
+    await tab.SW.store.reloadThreads();
+    await tab.settle();
     const acts = [];
     for (const act of step.sequence) {
       const mark = calls.length;
+      const from = tab.trailLength();
       if (act.moveTo) {
         selected = act.moveTo;
         await tab.poll();
         await tab.poll();
+      } else if (act.click) {
+        tab.clickRow(act.click);
+        await tab.settle();
       } else {
         tab.go(act.pick);
         await tab.settle();
       }
-      acts.push({ act: act.moveTo ? `moveTo ${act.moveTo}` : `pick ${act.pick}`,
-                  writes: writes(mark), view: tab.view(), selected });
+      const label = act.moveTo ? `moveTo ${act.moveTo}`
+        : act.click ? `click ${act.click}` : `pick ${act.pick}`;
+      acts.push({ act: label, writes: writes(mark), calls: calls.slice(mark),
+                  trail: tab.trailFrom(from), view: tab.view(), selected });
     }
     tab.unmount();
     report.push({ step: 'sequence', acts });

@@ -90,8 +90,12 @@ def test_a_plan_the_gate_wrote_offers_both_ends_and_they_go_to_different_places(
 def test_the_way_back_to_a_conversation_lands_in_the_mode_you_are_reading_from():
     """The same Thread is a Chat conversation and a Build conversation, and a plan the gate wrote
     came from the Build half, whose turns Chat does not show. Read from Build's sheet, the way back
-    opens it in Build. On its own page there is no mode to read, so it opens in Chat."""
-    assert _sheet_in_build(origin="thr_1", app="app_a")["routed"][0] == "#/build/thr_1?app=app_open"
+    opens it in Build. On its own page there is no mode to read, so it opens in Chat.
+
+    Naming no app, since #139: a Conversation link stopped carrying whichever app happened to be
+    open, so this one resolves the app `thr_1` itself bound. The claim here is the mode, and the
+    mode is what it always was."""
+    assert _sheet_in_build(origin="thr_1", app="app_a")["routed"][0] == "#/build/thr_1"
     assert _page(origin="thr_1", app="app_a")["routed"][0] == "#/chat/thr_1"
 
 
