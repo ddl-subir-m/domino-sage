@@ -38,6 +38,12 @@ window.SW = window.SW || {};
     handoffResources: { fallback: true, values: [true, false] },
     handoffArtifacts: { fallback: true, values: [true, false] },
     handoffTranscript: { fallback: false, values: [true, false] },
+
+    // The first chip's one-time note (#137). A chip is Session context — this Conversation's
+    // only — and the note that teaches it can be dismissed for good. True is the viewer's own
+    // "don't show this again". There is no "seen" value on purpose: an undismissed note may
+    // show again, a dismissed one never does.
+    chipScopeHintDismissed: { fallback: false, values: [true, false] },
   };
 
   // `/api/me` answers "me" when the container has no identity to report, so the key matches what

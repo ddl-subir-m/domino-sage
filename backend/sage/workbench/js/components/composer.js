@@ -137,6 +137,11 @@ window.SW = window.SW || {};
     const [attachHint, setAttachHint] = useState(false);
     const [attachOpen, setAttachOpen] = useState(false);
     const [modeOpen, setModeOpen] = useState(false);
+    // The first chip's note (#137), read once per mount. prefs.js treats storage that cannot be
+    // read as "not dismissed", so a browser that blocks storage still renders the page.
+    const [chipHintDismissed, setChipHintDismissed] = useState(
+      () => SW.prefs.get('chipScopeHintDismissed')
+    );
     const fileRef = useRef(null);
 
     const aliases = chatAliases({
@@ -207,6 +212,13 @@ window.SW = window.SW || {};
     // Every one of these updates the UI first — the token typed, the chip drawn, the picker
     // closed — so a rejected call leaves the screen claiming something that never happened.
     const sayFailed = (err) => antd.message.error(String((err && err.message) || err));
+
+    // State first, pref second: hiding must not wait on a write the browser may refuse. The
+    // state takes the note off screen now; the pref keeps it away on every later visit.
+    const dismissChipHint = () => {
+      setChipHintDismissed(true);
+      SW.prefs.set('chipScopeHintDismissed', true);
+    };
 
     const pickMention = async (resource) => {
       if (!mention) return;
@@ -495,6 +507,31 @@ window.SW = window.SW || {};
                   att.resourceName
                 )
               )
+            )
+          ),
+
+        // The first chip teaches its own scope (#137): a chip is Session context — this
+        // Conversation's only — and the app someone builds declares its own Resources. The same
+        // guard that draws the chip row draws the note, so it appears exactly when the first
+        // chip does and never over an empty composer. Dismissal is for good.
+        attachments.length > 0 && !chipHintDismissed &&
+          h(
+            'div',
+            { className: 'sw-chip-hint' },
+            h(
+              'span',
+              { className: 'sw-chip-hint-text' },
+              'Added to this Conversation only — an app you build declares its own Resources.'
+            ),
+            h(
+              Button,
+              {
+                type: 'link',
+                size: 'small',
+                style: { padding: 0, height: 'auto' },
+                onClick: dismissChipHint,
+              },
+              "Don't show this again"
             )
           ),
 
