@@ -1620,6 +1620,11 @@ window.SW = window.SW || {};
 
     set(patch) {
       Object.assign(state, patch);
+      // The index is a view of the groups, and two readers ask it whether a Resource is in the
+      // working set at all — the drawer's `inProject`, and `bindToApp` deciding whether a bind
+      // just changed membership. Assigning the groups through here without rebuilding it left
+      // those two answering from a list nobody had updated.
+      if ('resourceGroups' in patch) state.resourceIndex = indexResources(state.resourceGroups);
       notify();
     },
 
@@ -2021,6 +2026,14 @@ window.SW = window.SW || {};
       // and lands after it would take the new Binding back off the screen.
       applyAppScope(appScopeTicket(gen), { bindings: result.bindings || [] });
       notify();
+      // Binding records use, and membership is the record of use (ADR-0018), so the server has
+      // just put this Resource in the project. The rail is built from a read this act does not
+      // repeat, so a Resource bound from outside it — a catalogue row, a Chat handoff — would stay
+      // off the list until the next scope load. Asked of the index rather than the row, because
+      // the index IS the working set and a row is whatever the door that drew it chose to carry.
+      // Only when it was absent: a Resource already in the rail changed nothing about membership,
+      // and re-reading the whole scope for it is a handful of calls for no news.
+      if (!state.resourceIndex[resource.id]) await loadScopeData();
       return true;
     },
 

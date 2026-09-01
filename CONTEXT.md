@@ -65,8 +65,17 @@ _Avoid_: model API, endpoint, vLLM endpoint
 ### What Sage produces
 
 **Resource Browser**:
-The panel in which a user sees and picks Resources.
-_Avoid_: resource panel, data panel, sidebar
+The panel in which a user sees and picks Resources. What it lists is the Project's working set —
+the Resources this Project uses — and that list is a record of use rather than a permission
+anything checks. A Resource joins it two ways: Browse Domino's Add puts one there before any app
+needs it, and every act that records use puts one there on the way through, whether that is a
+Binding or a Session context chip. Nothing is gated on membership: a Built App reaches a Resource
+because it holds a Binding, and publish reads that Binding and nothing else
+([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md),
+[ADR-0018](docs/adr/0018-project-membership-is-a-record-of-use-not-a-gate.md)). Leaving the working
+set is a Remove and has its own refusal, because a Built App may still bind what the Project is
+being asked to drop.
+_Avoid_: resource panel, data panel, sidebar, "add to make available" (membership enables nothing)
 
 **Binding**:
 A recorded link between one Built App and a Resource it uses, and the app's permission to reach
