@@ -27,6 +27,9 @@ MAX_UNREADABLE = 3
 # Only the last user + last assistant + title. Truncate rather than refuse.
 _TITLE_CHARS = 200
 _TURN_CHARS = 1500
+# How much of the judged prompt the verdict line carries. Enough to recognise the sentence in a log
+# without copying the turn into it.
+_LOG_CHARS = 120
 
 _SYSTEM = """\
 You decide whether a Chat Thread has started asking for a lasting UI that other people would open, \
@@ -159,6 +162,7 @@ def wants_an_app(
     assistant: str,
     gateway: GatewayClient,
     catalog: ModelCatalog,
+    thread: str | None = None,
     session: str | None = None,
     version: str | None = None,
     timeout_s: float = TIMEOUT_S,
@@ -200,13 +204,26 @@ def wants_an_app(
     finally:
         pool.shutdown(wait=False)
 
+    def _record(hit: bool) -> bool:
+        """Say what was judged and what came back — the only trace a clean verdict leaves (#131).
+
+        Both verdicts used to return in silence, which made an under-firing classifier invisible
+        by construction: a CHAT answer and a call that never happened look identical from outside,
+        and the gateway's own logs are not reachable from the app. `session` and `version` are the
+        identifiers this call is already cost-tagged with, so a gateway-side view, if one ever
+        arrives, keys on the same row this line names.
+        """
+        log.info("handoff: verdict=%s thread=%s session=%s version=%s prompt=%r",
+                 "APP" if hit else "CHAT", thread or "-", session or "-", version or "-",
+                 (user or "").strip()[:_LOG_CHARS])
+        _health.answered()
+        return hit
+
     verdict = answer.strip().upper()
     if verdict.startswith("APP"):
-        _health.answered()
-        return True
+        return _record(True)
     if verdict.startswith("CHAT"):
-        _health.answered()
-        return False
+        return _record(False)
     return _health.unreadable_answer(answer)
 
 

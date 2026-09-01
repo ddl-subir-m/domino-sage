@@ -7,6 +7,7 @@ must stay silent, and APP is the only hit.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,37 @@ def test_three_unreadable_answers_in_a_row_trip_the_breaker(caplog):
     calls = len(gw.seen)
     assert _ask(gw) is False
     assert len(gw.seen) == calls
+
+
+def _verdict_lines(caplog):
+    return [r.getMessage() for r in caplog.records if "verdict=" in r.getMessage()]
+
+
+def test_a_chat_verdict_says_which_thread_and_prompt_it_answered_no_about(caplog):
+    """The verdict returned in silence, so an under-firing classifier could not be told from one
+    that never ran — with no gateway logs to check either (#131)."""
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator.handoff"):
+        assert _ask(StubGateway("CHAT"), user="ok now lets build this into an app i can share",
+                    thread="th_7", session="ses_1", version="ab12cd3") is False
+    line = _verdict_lines(caplog)[0]
+    assert "verdict=CHAT" in line
+    assert "th_7" in line
+    assert "lets build this into an app" in line
+    # The identifiers the call is cost-tagged with, so one log can be lined up with the other.
+    assert "ses_1" in line and "ab12cd3" in line
+
+
+def test_an_app_verdict_is_recorded_the_same_way(caplog):
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator.handoff"):
+        assert _ask(StubGateway("APP"), thread="th_7") is True
+    assert "verdict=APP" in _verdict_lines(caplog)[0]
+
+
+def test_an_unreadable_answer_is_not_recorded_as_a_verdict(caplog):
+    """Otherwise the line meant to answer "did it say no?" answers it wrongly."""
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator.handoff"):
+        assert _ask(StubGateway("perhaps"), thread="th_7") is True
+    assert _verdict_lines(caplog) == []
 
 
 def test_a_readable_verdict_clears_the_streak():

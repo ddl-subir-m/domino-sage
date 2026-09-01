@@ -3982,6 +3982,7 @@ class Orchestrator:
                 assistant=chat_handoff.last_assistant_text(store.read_history(thread_id)),
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
+                thread=thread_id,
                 session=project.session_id,
                 version=project.shim.version,
             )
