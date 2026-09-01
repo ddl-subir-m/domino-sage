@@ -218,27 +218,31 @@ def test_a_card_naming_an_app_the_rail_has_moved_off_stands_down():
     frozen when the turn was refused — so a creator who switches Built App mid-build would read
     "Use in Gong sentiment" and bind somewhere else. The row carries the app's id for exactly this
     comparison; without a match the card is a record again."""
+    store = _js("store.js")
     blocks = _js("components", "message-blocks.js")
 
-    assert "function mentionFixes(entries, activeAppId) {" in blocks
-    assert "if (!entry.appId || entry.appId !== activeAppId) return null;" in blocks
-    assert "? mentionFixes(block.entries, activeApp && activeApp.id)" in blocks
+    assert "mentionFixes(entries, activeAppId) {" in store
+    assert "if (!entry.appId || entry.appId !== activeAppId) return null;" in store
+    assert "? SW.store.mentionFixes(block.entries, activeApp && activeApp.id)" in blocks
 
 
 def test_the_card_offers_one_act_per_kind_and_names_the_app_each_one_lands_in():
-    blocks = _js("components", "message-blocks.js")
+    """The map sits in the store beside the acts it calls rather than in this card: the compose-time
+    warning draws the same fixes before the send (#136), and two copies of "what does an unbound
+    Alias need" would drift."""
+    store = _js("store.js")
 
     # An Alias binds in one click; the other two open the door their kind needs first.
-    assert "llm_alias: (e) => ({ label: `Use in ${e.app}`, act: () => SW.store.bindAliasFromMention(e) })" in blocks
-    assert "label: `Choose a Scope in ${e.app}`," in blocks
-    assert "act: () => SW.store.openScopeForMention(e)," in blocks
-    assert "act: () => SW.store.openCredentialForMention(e)," in blocks
-    assert "file: (e) => ({ label: `Attach to ${e.app}`, act: () => SW.store.attachFileForMention(e) })" in blocks
+    assert "llm_alias: (e) => ({ label: `Use in ${e.app}`, act: () => store.bindAliasFromMention(e) })" in store
+    assert "label: `Choose a Scope in ${e.app}`," in store
+    assert "act: () => store.openScopeForMention(e)," in store
+    assert "act: () => store.openCredentialForMention(e)," in store
+    assert "file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e) })" in store
     # A Model API's token is stored per model and outlives any one Binding, so that one label names
     # the Resource rather than an app.
-    assert "label: 'Add its access token'," in blocks
+    assert "label: 'Add its access token'," in store
     # A kind with no door here draws no button rather than a broken one.
-    assert "if (!make || !entry.id || !entry.app) return null;" in blocks
+    assert "if (!make || !entry.id || !entry.app) return null;" in store
 
 
 def test_the_four_acts_are_the_store_s_and_reach_the_doors_that_already_exist():

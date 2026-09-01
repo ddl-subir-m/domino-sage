@@ -718,6 +718,27 @@
 }
 .sw-chip-hint-text { font-size: var(--fs-12); color: var(--gray-600); }
 
+/* What the prompt names that the selected Built App does not hold, said before the send (#136).
+   Below the box rather than within its border: inside, it reads as a field that has failed
+   validation, which would say the send is blocked — and it never is. Warning ink and not error ink
+   for the same reason: nothing here has gone wrong yet. */
+.sw-mention-guard {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-top: var(--s2);
+  padding: 6px var(--s3);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  font-size: var(--fs-12);
+  color: var(--warning-text);
+}
+/* Takes the row and pushes the acts to the end, so several names wrap rather than shouldering the
+   buttons off the line. */
+.sw-mention-guard-text { flex: 1; min-width: 180px; line-height: 1.5; }
+
 .sw-composer-input { padding: var(--s2) var(--s3) 0; position: relative; }
 
 /* @-mention autocomplete ------------------------------------------------- */

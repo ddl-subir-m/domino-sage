@@ -71,6 +71,27 @@ window.SW = window.SW || {};
       });
     },
 
+    // What every control that offers a one-click act does with a click: mark which button is
+    // running so the row can show a spinner and disable its siblings, report the failure where the
+    // person is looking, and let go either way. Here rather than beside one of them because two
+    // surfaces now draw the same acts — the transcript's refusal card (#135) and the composer's
+    // warning (#136) — and the copies were already at three when the second surface asked.
+    // Returns `[busy, run]`: `busy` is the running button's key or '', `run(key, fn)` an onClick.
+    useBusyAct() {
+      const [busy, setBusy] = React.useState('');
+      const run = (key, fn) => () => {
+        setBusy(key);
+        // `new Promise` and not `Promise.resolve(fn())`: that form calls `fn` BEFORE the chain
+        // exists, so a synchronous throw goes straight past the catch — leaving `busy` set, every
+        // button in the row disabled for good, and no sentence saying why. Two of the four mention
+        // acts return synchronously, so the throw that does this has a caller.
+        new Promise((resolve) => resolve(fn()))
+          .catch((err) => antd.message.error(String(err.message || err)))
+          .finally(() => setBusy(''));
+      };
+      return [busy, run];
+    },
+
     iconFor(kind) {
       return (RESOURCE_META[kind] || RESOURCE_META.file).icon;
     },

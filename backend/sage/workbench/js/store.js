@@ -875,6 +875,11 @@ window.SW = window.SW || {};
   // cannot drift apart. Chat resolves its own tokens server-side against the Thread's context; a
   // Build turn has to carry them in the request, and carried nothing at all until this existed —
   // which made every @mention in Build a plain word the agent had to go looking for.
+  // Where a Chat upload lives: at the Project root, outside every app. `_SCRATCH_PREFIX` in
+  // `sage/orchestrator/service.py` is the same string, and the two are held together by
+  // `test_the_composer_reads_the_same_two_lists_the_refusal_reads`.
+  const SCRATCH_PREFIX = '.sage/scratch/';
+
   function collectTurnRefs(text) {
     const groups = state.resourceGroups || {};
     const mentions = [];
@@ -2047,6 +2052,55 @@ window.SW = window.SW || {};
     // its kind, from a second place. And none binds on its own — every one of these runs because a
     // person clicked it, which is what ADR-0010 asks of a Binding.
 
+    // What a dropped @mention needs, one act per kind (#135, #136).
+    //
+    // Keyed on the Binding's own word for it — the three `sage/resources/bindings.py` names, plus
+    // `file` for an attachment. Only the LLM Alias finishes in one click; the other two open the
+    // door and stop, and that asymmetry is the point rather than a gap. A Data Source's Binding
+    // carries a Scope, which is chosen by standing somewhere in the cascade (#129), and a Model
+    // API's needs an access token the server refuses to record a Binding without. A button that
+    // cannot complete is the dead end these two surfaces exist to remove, so neither one pretends.
+    //
+    // Each label names the app it acts on, because a Project holds many Built Apps (ADR-0008). The
+    // token's does not: a token is stored per model and outlives any one Binding, so naming an app
+    // there would claim something untrue about what the click buys.
+    //
+    // Here rather than inside the refusal card, where it started, because the compose-time warning
+    // offers the same fixes before send (#136) and two copies of "what does an unbound Alias need"
+    // would drift — the same reason the four acts below sit here.
+    //
+    // A row with no act, no identity or no app draws no button rather than a broken one. The server
+    // already withholds a row it cannot offer a fix for — a workspace path that resolves to nothing
+    // keeps the sentence and gets none — and this is the client half of the same rule, for a kind
+    // added on the server before a door exists for it here.
+    //
+    // `activeAppId` is the refusal card's other half of the `live` rule, inside one session.
+    // Switching Built App mid-build is allowed and the turn carries on (#77), so a card promising
+    // "Use in Gong sentiment" can still be on screen after the rail has moved — while every act
+    // behind it resolves whatever is selected NOW. Once the two disagree the card goes back to
+    // being a record. The composer's warning is read off the selected app every render, so its
+    // rows can never disagree; it passes the same id rather than keeping a second entry point.
+    mentionFixes(entries, activeAppId) {
+      const MENTION_FIX = {
+        llm_alias: (e) => ({ label: `Use in ${e.app}`, act: () => store.bindAliasFromMention(e) }),
+        data_source: (e) => ({
+          label: `Choose a Scope in ${e.app}`,
+          act: () => store.openScopeForMention(e),
+        }),
+        model_api: (e) => ({
+          label: 'Add its access token',
+          act: () => store.openCredentialForMention(e),
+        }),
+        file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e) }),
+      };
+      return (entries || []).map((entry) => {
+        const make = entry && MENTION_FIX[entry.kind];
+        if (!make || !entry.id || !entry.app) return null;
+        if (!entry.appId || entry.appId !== activeAppId) return null;
+        return { ...make(entry), key: `${entry.kind}:${entry.id}` };
+      }).filter(Boolean);
+    },
+
     // An LLM Alias, the one kind whose bind takes a single argument, so this one finishes. Reshaped
     // into what `bindToApp` reads rather than calling `/bindings` again: the app-name reporting, the
     // generation ticket and the bare-id rule all belong to that act and are not worth a second copy.
@@ -2109,6 +2163,61 @@ window.SW = window.SW || {};
           if (res) antd.message.success(`${name} is attached to ${entry.app}`);
           return res;
         });
+    },
+
+    // What a Build turn would drop if this text went now (#136) ------------
+    //
+    // The compose-time half of `_unusable_mentions`: the same two questions, asked of the same two
+    // lists, before the send instead of after it. Nothing is fetched — `bindings` and
+    // `appAttachments` are the selected app's own records, already read per app (#101) — and the
+    // mentions come out of `collectTurnRefs`, the very function that decides what the send will
+    // carry. Reading anything else would let the warning and the turn disagree about one prompt.
+    //
+    // Rows come out in `_unusable_mentions`'s shape, so one `mentionFixes` draws both the warning
+    // and the refusal that follows it if the person sends anyway. And like the server's, only a
+    // drop somebody can close in ONE act gets a row: a Chat file can be promoted onto a Dataset,
+    // an unbound Resource can be bound, and a workspace path that resolves to nothing has no act
+    // to offer — that one keeps the refusal it has always had.
+    //
+    // Nothing here binds. It reads two lists and returns rows; every fix is a click (ADR-0010).
+    unusableMentions(text) {
+      const app = state.activeApp;
+      if (!app || !String(text || '').trim()) return [];
+      const refs = collectTurnRefs(text);
+      const bound = new Set((state.bindings || []).map((b) => SW.util.bindingId(b)));
+      // The app's own files, keyed by basename. A mention token IS a basename — `mentionToken`
+      // prefers the file's — so "does the app already hold what this names" is a basename question,
+      // and asking it by full path answers "no" every time: an attachment is always under
+      // `public/data/` (`_attach_dest`) and a Chat upload always under `.sage/scratch/`, so the two
+      // sets never meet. That matters when a promote leaves the original standing —
+      // `promote_scratch_to_dataset` swallows a failed unlink — because the file HAS reached the
+      // app, and a warning offering to send it again would be wrong twice over.
+      const attached = new Set(
+        (state.appAttachments || []).map((a) => String(a.path || '').split('/').pop())
+      );
+      const entries = [];
+      // Chat's uploads first, the order the refusal reports them in. A path anywhere else that the
+      // app does not hold is the case with no act, so it is passed over here and left to the
+      // server's sentence.
+      refs.mentions.forEach((path) => {
+        const name = path.split('/').pop();
+        // Only a Chat upload carries a one-click fix: it lives at the Project root, outside every
+        // app, and promoting it onto a Dataset attaches it in the same act. Any other path the app
+        // does not hold keeps the refusal it has always had, because there is no act to offer it.
+        if (attached.has(name) || !path.startsWith(SCRATCH_PREFIX)) return;
+        entries.push({ kind: 'file', id: path, name, app: app.name, appId: app.id });
+      });
+      // One row per Resource rather than per mention: "@Warehouse and @FCT_USAGE_DAILY" names one
+      // Data Source at one table, and two identical buttons would offer the same bind twice.
+      const seen = new Set();
+      refs.resources.forEach((ref) => {
+        const key = `${ref.kind}:${ref.id}`;
+        if (bound.has(key) || seen.has(key)) return;
+        seen.add(key);
+        entries.push({ kind: ref.kind, id: ref.id, name: ref.name || ref.id,
+                       app: app.name, appId: app.id });
+      });
+      return entries;
     },
 
     // Out of the selected Built App ---------------------------------------

@@ -8,22 +8,6 @@ window.SW = window.SW || {};
     ExportOutlined, DownloadOutlined, ThunderboltOutlined,
   } = icons;
 
-  // What every card in this file that offers a choice does with a click: mark which button is
-  // running so the row can show a spinner and disable its siblings, report a failure where the
-  // person is looking, and let go either way. Extracted when the third card wanted it (#135) —
-  // the offers below had two identical copies, and a fourth would have been the one that drifted.
-  // Returns `[busy, run]`: `busy` is the running button's key or '', `run(key, fn)` an onClick.
-  function useBusyAct() {
-    const [busy, setBusy] = useState('');
-    const run = (key, fn) => () => {
-      setBusy(key);
-      Promise.resolve(fn())
-        .catch((err) => antd.message.error(String(err.message || err)))
-        .finally(() => setBusy(''));
-    };
-    return [busy, run];
-  }
-
   function CodeBlock({ code, language }) {
     const [expanded, setExpanded] = useState(false);
     const lines = String(code).split('\n');
@@ -637,60 +621,15 @@ window.SW = window.SW || {};
     );
   }
 
-  // What the turn was @mentioned and could not use, and the way to close the gap (#135).
-  //
-  // One act per kind, keyed on the Binding's own word for it — the three `sage/resources/bindings.py`
-  // names, plus `file` for an attachment. Only the LLM Alias finishes here; the other two open the
-  // door and stop, and that asymmetry is the point rather than a gap. A Data Source's Binding
-  // carries a Scope, which is chosen by standing somewhere in the cascade (#129), and a Model API's
-  // needs an access token the server refuses to record a Binding without. A button that cannot
-  // complete is the dead end this card exists to remove, so neither one pretends to.
-  //
-  // Each label names the app it acts on, because a Project holds many Built Apps (ADR-0008). The
-  // token's does not: a token is stored per model and outlives any one Binding, so naming an app
-  // there would claim something untrue about what the click buys.
-  const MENTION_FIX = {
-    llm_alias: (e) => ({ label: `Use in ${e.app}`, act: () => SW.store.bindAliasFromMention(e) }),
-    data_source: (e) => ({
-      label: `Choose a Scope in ${e.app}`,
-      act: () => SW.store.openScopeForMention(e),
-    }),
-    model_api: (e) => ({
-      label: 'Add its access token',
-      act: () => SW.store.openCredentialForMention(e),
-    }),
-    file: (e) => ({ label: `Attach to ${e.app}`, act: () => SW.store.attachFileForMention(e) }),
-  };
-
-  // A row with no act, no identity or no app draws no button rather than a broken one. The server
-  // already withholds a row it cannot offer a fix for — a workspace path that resolves to nothing
-  // keeps the sentence and gets none — and this is the client half of the same rule, for a kind
-  // added on the server before a door exists for it here.
-  //
-  // `activeAppId` is the other half of the `live` rule, inside one session. Switching Built App
-  // mid-build is allowed and the turn carries on (#77), so a card promising "Use in Gong sentiment"
-  // can still be on screen after the rail has moved — while every act behind it resolves whatever is
-  // selected NOW. Once the two disagree the card goes back to being a record. That is the answer
-  // `removeBindingFromApp` reaches by refusing (#101), reached earlier because here nothing has been
-  // clicked yet, and there is nothing to warn about in a button that was never offered.
-  function mentionFixes(entries, activeAppId) {
-    return (entries || []).map((entry) => {
-      const make = entry && MENTION_FIX[entry.kind];
-      if (!make || !entry.id || !entry.app) return null;
-      if (!entry.appId || entry.appId !== activeAppId) return null;
-      return { ...make(entry), key: `${entry.kind}:${entry.id}` };
-    }).filter(Boolean);
-  }
-
   // Without `live` this is the status line it has always been: a replayed refusal is a record of a
   // gap, not an offer to close one, and its buttons would act on whichever app is selected today
   // rather than on the app the sentence names. Same rule as the three offers around it, and drawn
   // the old way on purpose so a reloaded transcript reads exactly as it did before this shipped.
   function MentionsUnresolved({ block }) {
     const { activeApp } = SW.store.get();
-    const [busy, run] = useBusyAct();
+    const [busy, run] = SW.util.useBusyAct();
     const fixes = block.live
-      ? mentionFixes(block.entries, activeApp && activeApp.id)
+      ? SW.store.mentionFixes(block.entries, activeApp && activeApp.id)
       : [];
     if (!fixes.length) {
       return h('div', { className: 'sw-status-line is-err' }, block.message);
@@ -731,7 +670,7 @@ window.SW = window.SW || {};
   // of a past decision, and an old message must not be able to reset the app on a page load nobody
   // connected it to.
   function ResetOffer({ block }) {
-    const [busy, run] = useBusyAct();
+    const [busy, run] = SW.util.useBusyAct();
 
     return h(
       'div',
@@ -781,7 +720,7 @@ window.SW = window.SW || {};
   // what the save path does anyway. Same `live` rule as the reset offer: a replayed offer is a
   // record of a decision already made, and an old message must not pull the repo on a page load.
   function IncomingChanges({ block }) {
-    const [busy, run] = useBusyAct();
+    const [busy, run] = SW.util.useBusyAct();
     const hidden = (block.count || 0) - (block.files || []).length;
 
     return h(

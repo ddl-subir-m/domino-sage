@@ -115,6 +115,52 @@ window.SW = window.SW || {};
   // that reads these tokens back out of the prompt, so the two cannot drift apart.
   const mentionToken = (resource) => SW.util.mentionToken(resource);
 
+  // The gap between what the prompt names and what the selected Built App holds, said BEFORE the
+  // send (#136). The dead end it removes is a whole turn long: the mention is dropped, the answer
+  // is prose directions to a panel, and the prompt has to be retyped. The same rows and the same
+  // acts as the refusal that would follow (#135), so a person who reads this and a person who
+  // sends anyway are told the same thing by the same words.
+  //
+  // It never blocks. Send is live behind it, because a mention is often incidental and the rest of
+  // the prompt still runs — and nothing on it binds on its own, because a Binding is a human pick
+  // (ADR-0010). The warning offers the act; the person takes it.
+  //
+  // The sentence is built from the rows that HAVE an act, not from every row, so it can never name
+  // something no button below it can close — the invariant the refusal keeps by building both
+  // halves in one pass.
+  function MentionGuard({ entries, activeAppId }) {
+    const [busy, run] = SW.util.useBusyAct();
+    const fixes = SW.store.mentionFixes(entries, activeAppId);
+    if (!fixes.length) return null;
+    const offered = new Set(fixes.map((fix) => fix.key));
+    // The token the picker INSERTED, not the row's name. `mentionToken` collapses whitespace, so a
+    // Resource called "Sales Warehouse" stands in the box as `@Sales_Warehouse` — and a warning that
+    // quoted the name would send the reader looking for a word their prompt does not contain.
+    const named = entries
+      .filter((e) => offered.has(`${e.kind}:${e.id}`))
+      .map((e) => SW.util.mentionToken({ name: e.name, path: e.kind === 'file' ? e.id : '' }));
+    return h(
+      'div',
+      { className: 'sw-mention-guard' },
+      // Named, because a Project holds many Built Apps (ADR-0008). Future tense and the
+      // consequence rather than a rule: what is worth knowing here is that sending now costs the
+      // mention, and every row carries the same app.
+      h('div', { className: 'sw-mention-guard-text' },
+        `Send now and ${named.join(', ')} won't reach ${entries[0].app}.`),
+      h(Space, { size: 8, wrap: true }, fixes.map((fix, i) =>
+        h(Button, {
+          key: fix.key,
+          // One filled button, whichever gap came first. Three side by side would be three
+          // primary actions in one place, which is no hierarchy at all.
+          type: i === 0 ? 'primary' : 'default',
+          size: 'small',
+          loading: busy === fix.key,
+          disabled: !!busy,
+          onClick: run(fix.key, fix.act),
+        }, fix.label)))
+    );
+  }
+
   SW.Composer = function Composer({
     placeholder,
     onSend,
@@ -183,6 +229,14 @@ window.SW = window.SW || {};
       document.addEventListener('keydown', onKey);
       return () => document.removeEventListener('keydown', onKey);
     }, [modeOpen, showMode]);
+
+    // Build only. Chat has no Binding requirement — a Session context chip is all it needs — so
+    // the guard is hung off the same flag that tells the two composers apart everywhere else.
+    //
+    // Read on every render rather than held in state: the rows are a function of the text and of
+    // the app's two lists, and both lists are written by the very acts the buttons call. So the
+    // warning clears the moment the Binding or the Attachment lands, with nothing to invalidate.
+    const unusable = showMode ? SW.store.unusableMentions(text) : [];
 
     const send = () => {
       const value = text.trim();
@@ -779,6 +833,10 @@ window.SW = window.SW || {};
               type: 'primary',
               shape: 'circle',
               size: 'small',
+              // An empty box and a wedged workspace, and nothing else. The mention warning below
+              // is deliberately absent from this line (#136): a mention is often incidental, the
+              // rest of the prompt still runs, and a guard that closed the send would have taken
+              // the turn away to save the mention.
               disabled: !text.trim() || disabled,
               icon: h(ArrowUpOutlined, null),
               onClick: send,
@@ -797,7 +855,13 @@ window.SW = window.SW || {};
             e.target.value = '';
           },
         })
-      )
+      ),
+
+      // Under the box, not inside it: the box is what you are writing and this is what will happen
+      // to it, and a warning drawn within the border reads as a field that has failed validation —
+      // which would say the send is blocked, the one thing this must never say.
+      unusable.length > 0 &&
+        h(MentionGuard, { entries: unusable, activeAppId: activeApp && activeApp.id })
     );
   };
 })();
