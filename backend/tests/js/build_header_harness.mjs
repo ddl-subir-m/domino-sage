@@ -133,8 +133,18 @@ const CONTEXT = {
 // What the Project holds, in the same id space, so the panel's Project rows and the app's Bindings
 // are joinable at all. `data_source:ds_1` and `llm_alias:al_1` are both `app_a`'s; `data_source:ds_9`
 // is in the Project and bound by nobody, which is what stops "Required by" reading as decoration.
+//
+// The three kinds the Build header's own door offers (#141) are all here, and each is here for a
+// question the other two cannot ask. `dataset:as_ticks` is bound by nobody, so it is the row that
+// proves an unbound Dataset is offered at all. `model_api:ma_1` is bound by `app_a`, so it is the
+// row that proves the picker leaves out what the app already holds — the same question asked of an
+// Alias by `llm_alias:al_1`, which `app_a` binds and `app_c` does not.
 const RESOURCE_GROUPS = {
-  dataset: [], table: [], datasource: [
+  dataset: [
+    { id: 'dataset:as_ticks', name: 'Tick archive', kind: 'dataset',
+      bindingKey: ['dataset', 'as_ticks'] },
+  ],
+  table: [], datasource: [
     { id: 'data_source:ds_1', name: 'Market data EOD', kind: 'datasource',
       bindingKey: ['data_source', 'ds_1'] },
     { id: 'data_source:ds_9', name: 'Risk warehouse', kind: 'datasource',
@@ -147,8 +157,39 @@ const RESOURCE_GROUPS = {
   // reporting the Project-wide answer the server stopped sending.
   model_llm: [{ id: 'llm_alias:al_1', name: 'Claude Sonnet 4', kind: 'model_llm',
     bindingKey: ['llm_alias', 'al_1'] }],
-  model_predictive: [], tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
+  model_predictive: [{ id: 'model_api:ma_1', name: 'Churn risk', kind: 'model_predictive',
+    bindingKey: ['model_api', 'ma_1'] }],
+  tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
 };
+
+// What this viewer can reach in Domino that the Project has NOT joined — the store's
+// `catalogueParents`, built from the same listing with the members taken out. Two rows, so the
+// header's picker can be asked whether the working set really comes first: a list that concatenated
+// the other way round, or sorted by name, would put `Nova micro` above `Tick archive`.
+const CATALOGUE = [
+  { id: 'llm_alias:al_9', name: 'Nova micro', kind: 'model_llm',
+    bindingKey: ['llm_alias', 'al_9'] },
+  { id: 'dataset:as_cold', name: 'Cold storage', kind: 'dataset',
+    bindingKey: ['dataset', 'as_cold'] },
+];
+// Eleven catalogue rows against a picker that shows eight, so the truncation and its count are both
+// real numbers rather than a branch nothing enters. Aliases, because the gateway is the listing that
+// actually runs to this length.
+const BIG_CATALOGUE = Array.from({ length: 11 }, (_, i) => ({
+  id: `llm_alias:al_c${i}`, name: `Catalogue model ${i}`, kind: 'model_llm',
+  bindingKey: ['llm_alias', `al_c${i}`],
+}));
+
+// The same shape with every group empty — a Project nobody has picked anything into yet. Written
+// out rather than derived from the fixture, so a group added above cannot quietly go missing here.
+const NO_RESOURCES = {
+  dataset: [], table: [], datasource: [], model_llm: [], model_predictive: [],
+  tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
+};
+
+// Every row a bind can name, in one list, so the fake `/bindings` can label what it just recorded
+// whatever door named it. Keyed the way the route is asked — bare kind and bare id.
+const BINDABLE = [...Object.values(RESOURCE_GROUPS).flat(), ...CATALOGUE];
 
 // Each app's own build log, as `/api/project/history` hands it back with no conversation named:
 // raw rows off the app's directory, in the order they were appended (#88).
@@ -203,6 +244,10 @@ let appsFail = false;
 // A refused publish, as the sentence the server would send with the 409. Nothing is published on
 // this path, and the confirm has to stay open on it.
 let publishFails = '';
+// A refused bind, the same way. The Model API is the kind this really happens to — Sage will not
+// record one it holds no access token for — and the claim is that the door reports the server's own
+// sentence rather than redrawing as though the record had been written.
+let bindRefusal = '';
 // What the two pre-publish reads answer (#35), and whether either one answers at all. Both are set
 // per step, because the notice's whole behaviour is a function of these two — including the case
 // where a read fails, which must leave the confirm exactly as it opened.
@@ -315,7 +360,14 @@ function route(path, init) {
   if (path === '/bindings' && init && init.method === 'POST') {
     const body = JSON.parse(init.body || '{}');
     binds.push(body);
-    const row = RESOURCE_GROUPS.model_llm.find((r) => r.id === `${body.kind}:${body.id}`);
+    // Recorded BEFORE the refusal, because half of what a refused bind has to prove is that the
+    // right Resource was named: a door that posted the prefixed id would be refused too, for a
+    // different reason, and the two are indistinguishable from the sentence alone.
+    //
+    // 409 is the Model API's — `CredentialRequired`, the refusal the route keeps for a model Sage
+    // holds no demonstrated call for. Nothing is recorded on this path.
+    if (bindRefusal) return json({ error: bindRefusal }, 409);
+    const row = BINDABLE.find((r) => r.id === `${body.kind}:${body.id}`);
     bound[selected] = [
       ...(bound[selected] || []),
       { kind: body.kind, id: body.id, name: row ? row.name : body.id,
@@ -356,6 +408,10 @@ function route(path, init) {
   }
   // A bare list, the way the control API answers it.
   if (path === '/threads') return json(Object.values(THREADS));
+  // Two empty lists rather than the `{}` the fall-through gives. `loadScopeData` spreads both, so
+  // an absent one is a TypeError that takes node down mid-step — and a bind from a door the Project
+  // has not joined is the act that reaches this, because it re-reads the scope on the way out.
+  if (path === '/members') return json({ members: [], directory: [] });
   return json({});
 }
 
@@ -519,13 +575,20 @@ function flatten(node, out = [], depth = 0) {
   // Menus are data, not children — the `…` overflow's items never appear in the tree otherwise,
   // and the whole criterion is about their order and their styling.
   if (props.menu && props.menu.items) {
-    entry.items = props.menu.items.map((i) => ({
+    const read = (i) => ({
       key: i.key || '', label: typeof i.label === 'string' ? i.label : '', danger: !!i.danger,
       divider: i.type === 'divider',
+      // A heading, which is an item that holds items rather than acting. Both halves are the
+      // criterion for the header's picker (#141): the heading is what says which list a row is in,
+      // and the order the two lists run in is the claim.
+      group: i.type === 'group',
       // An item that cannot act yet is still a control, and the claim about it is that it SAYS
       // why rather than disappearing — a claim about the label and the flag together.
       disabled: !!i.disabled,
-    }));
+    });
+    // Groups are flattened in place, heading first, so a claim about order is one list to read
+    // rather than a walk. Menus with no groups are untouched: `children` is empty on every one.
+    entry.items = props.menu.items.flatMap((i) => [read(i), ...(i.children || []).map(read)]);
     // Kept beside the labels so a step can CLICK an item rather than only read it: "reachable from
     // this section" is a claim about what the item does, and a label proves half of it.
     entry.onMenu = props.menu.onClick;
@@ -725,6 +788,30 @@ function pickInHeader(thread, appId) {
   return rows;
 }
 
+// The header's own add control (#141, ADR-0021): the button it says out loud, what its picker
+// offers, and the handler a click reaches.
+//
+// Walked from the span the control sits in rather than found by "the first menu on the screen",
+// because the header holds a second one — the app's `…` overflow — and a reader that took either
+// would answer Publish/Rename/Delete to a question about binding.
+function headerPicker(thread) {
+  const nodes = flatten(SW.BuildMode({
+    conversationId: thread, appId: (SW.store.get().activeApp || {}).id || null,
+  }));
+  const at = nodes.findIndex((n) => n.className === 'sw-app-scope-add');
+  if (at === -1) return null;
+  const after = nodes.slice(at);
+  const menu = after.find((n) => n.items);
+  const button = after.find((n) => n.el === 'Button');
+  return {
+    // The words on the control, which is half of what says which act this is.
+    label: button ? (button.texts || []).join('') : null,
+    tooltip: (after.find((n) => n.el === 'Tooltip') || {}).title || '',
+    items: menu ? menu.items : [],
+    onMenu: menu ? menu.onMenu : null,
+  };
+}
+
 // The chip's way out, pressed. Read by its label rather than its class, because the label is what
 // says which control this is — and dropping a filter must leave the previewed app alone, which is
 // only a claim if something actually presses it.
@@ -761,6 +848,7 @@ async function arrive(threadId, appId, mode) {
   timeouts.length = 0;
   calls.length = 0;
   binds.length = 0;
+  bindRefusal = '';
   holding = null;
   held.length = 0;
   // Every step arrives at Build with the history shut, the way a page load does. The store is one
@@ -873,6 +961,62 @@ for (const step of steps) {
         .map((n) => (n.texts || []).join('')),
       parts: nodes.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
       words: words(nodes),
+    });
+    continue;
+  }
+
+  // The Build header's own door (#141). Driven the way a person drives it: open the control on the
+  // row that names the app, read what the picker offers, and click a row by the id it carries.
+  //
+  // The Project's rows and the catalogue are seeded rather than served, for the reason the panel
+  // step gives — `/project/resources` is not what this harness is about, and all the picker needs
+  // from it is rows in the id space a Binding can be joined on (#99).
+  if (step.addIn) {
+    await arrive(step.thread, step.select);
+    await SW.store.reloadAttachments();
+    SW.store.set({
+      // `noresources` is a Project with nothing bindable anywhere — a brand-new one, and the one
+      // state in which the picker has nothing to draw at all. It empties the catalogue with it,
+      // because "nothing here and nothing out there" is the state, not two of them.
+      resourceGroups: step.noresources ? NO_RESOURCES : RESOURCE_GROUPS,
+      resourcesLoading: false,
+      // Emptied by `nocatalogue`, which is the Project that has joined everything it can reach —
+      // the one state in which the picker draws a single group and must not head it as if there
+      // were a second.
+      // A catalogue longer than the picker shows, which is the one shape that can prove the cap
+      // comes off the CATALOGUE rather than off the end of the whole list — a global cap would eat
+      // this group entirely and leave the working set looking correct.
+      catalogueParents: step.bigcatalogue
+        ? BIG_CATALOGUE
+        : (step.nocatalogue || step.noresources) ? [] : CATALOGUE,
+    });
+    said.length = 0;
+    calls.length = 0;
+    binds.length = 0;
+    bindRefusal = step.refuse || '';
+    const picker = headerPicker(step.thread);
+    if (!picker) throw new Error('the Build header drew no add control');
+    if (step.pick) {
+      if (!(picker.items || []).some((i) => i.key === step.pick)) {
+        throw new Error(
+          `the picker does not offer ${step.pick} — offered ${JSON.stringify(picker.items)}`
+        );
+      }
+      await picker.onMenu({ key: step.pick });
+    }
+    report.push({
+      step: `addIn ${step.select || selected}`,
+      app: (SW.store.get().activeApp || {}).name || null,
+      label: picker.label,
+      tooltip: picker.tooltip,
+      items: picker.items,
+      // What reached the wire, which is the claim: `calls` proves a request happened, `posted`
+      // proves it named the right Resource in the id space the route resolves.
+      posted: binds.slice(),
+      calls: calls.slice(),
+      // The receipt. It is the only place the act says what it did and how to reverse it.
+      said: said.slice(),
+      bindings: (SW.store.get().bindings || []).map((b) => `${b.kind}:${b.id}`),
     });
     continue;
   }

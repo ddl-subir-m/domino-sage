@@ -2173,6 +2173,21 @@ window.SW = window.SW || {};
       // and lands after it would take the new Binding back off the screen.
       applyAppScope(appScopeTicket(gen), { bindings: result.bindings || [] });
       notify();
+      // The receipt ADR-0021 asks of every act that adds: what it did, the scope it wrote, and the
+      // way back out. It stands in for the confirm the ADR deliberately refused — separation carries
+      // the weight, and a repeat user pays for a confirm on every repetition — so it is said AFTER
+      // rather than asked before, which is what "Stop using here" already does on the cheap side.
+      // Here rather than at any one door, because three surfaces now bind through this act and a
+      // sentence written at one of them is a sentence the other two do not say.
+      //
+      // "Project resources" and not the working set's own prose label, which is "In this project":
+      // this is a POINTER, and ADR-0011 fixed the shape a pointer takes — it names the destination
+      // by the head the reader will actually see when they get there. The Build header's two
+      // pointers already say it in these words (`modes/builder.js`), and a receipt that named the
+      // list differently would send people looking for a heading that is not on the screen.
+      antd.message.success(
+        `${where} now uses ${name}. Remove it in Project resources, under ${where}.`
+      );
       // Binding records use, and membership is the record of use (ADR-0018), so the server has
       // just put this Resource in the project. The rail is built from a read this act does not
       // repeat, so a Resource bound from outside it — a catalogue row, a Chat handoff — would stay

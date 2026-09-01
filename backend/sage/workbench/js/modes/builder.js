@@ -635,6 +635,144 @@ window.SW = window.SW || {};
     );
   }
 
+  // The kinds the header's door offers (#141). Data Sources are absent on purpose and land next
+  // (#142): a Data Source Binding carries a Scope, the Scope is still the cascade position the
+  // creator is standing on (#129), and a picker row has none to pass. A control that cannot complete
+  // is the dead end this door exists to remove, so it does not draw one it cannot finish.
+  //
+  // A Model API IS here, and that is the one place this list parts company with the panel's
+  // `canBind` (`components/resource-panel.js`), which keeps to LLM Aliases because a Model API needs
+  // a credential. It parts company deliberately. Sage refuses to record a Model API it holds no
+  // demonstrated call for, and the refusal it sends is not a dead end — it is the instruction, in
+  // the server's own words: open the model's Overview page in Domino, copy the sample request, paste
+  // it. `bindToApp` puts that sentence on the screen unchanged, which is why nothing here rewrites
+  // it. Filtering the kind out instead would need the client to know which models Sage holds a token
+  // for, and no client surface reads `/api/model-api-credentials` — asking would be a new seam for
+  // the sake of hiding a row whose refusal already says what to do about it.
+  //
+  // What is still missing is the box that takes the paste, and that is #128's. Until it exists there
+  // is nothing here to point at, and a sentence promising one would rebuild the dead end.
+  const BINDABLE_KINDS = ['model_llm', 'model_predictive', 'dataset'];
+
+  // How many catalogue rows the picker shows before it stops and says how many it kept back. Only
+  // the catalogue is capped. The working set is what somebody deliberately picked into this Project
+  // and the row beside this control already lists it, so truncating THAT would hide what the header
+  // is otherwise claiming; the catalogue is everything in Domino this viewer can reach, which has
+  // no ceiling and is Browse Domino's list to walk properly.
+  const CATALOGUE_SHOWN = 8;
+
+  // The door into the selected app's Bindings, on the app's own surface (ADR-0021).
+  //
+  // Here rather than on the Resource Browser's rows because the surface that owns a scope owns the
+  // act that writes it. The rail's `Use in {app}` is still live — this is the expand half, so there
+  // is never a window with no door open — and both reach `store.bindToApp`, which is where the
+  // receipt, the id-space rule and the membership re-read live in one copy.
+  //
+  // The picker draws the working set first and the wider Domino catalogue behind it, through the
+  // same `workingSetFirst` the composer's @ menu orders itself with. Shared rather than copied: the
+  // two menus offer the same choice, and a person carries what they learn from one to the other.
+  function AddToApp({ app }) {
+    const { resourceGroups, catalogueParents, bindings } = SW.store.get();
+
+    // Already-bound rows are left out rather than shown ticked. Re-binding an Alias or a Dataset
+    // rewrites the same record with the same values, so the row would be an act with no effect —
+    // and what the app already holds is named two inches to the left, by this very row.
+    const bound = new Set((bindings || []).map((b) => SW.util.bindingId(b)));
+    // `bindingKey` is the Binding identity, and a row without one cannot be posted: the prefixed
+    // Project id resolves to no Resource, answers 404, and leaves the header redrawing unchanged —
+    // a failure shaped exactly like success (#127).
+    const offer = (rows) => (rows || []).filter((r) => r.bindingKey && !bound.has(r.id));
+
+    const working = BINDABLE_KINDS.map((kind) => offer(resourceGroups[kind]));
+    const catalogue = offer(
+      (catalogueParents || []).filter((r) => BINDABLE_KINDS.indexOf(r.kind) !== -1)
+    );
+    // No cap on the whole list. One applied here would come off the END, which is the catalogue —
+    // so a Project holding a dozen bindable Resources would silently lose the entire second group,
+    // and the ordering criterion would be met by a menu that never showed the half it orders last.
+    const rows = SW.util.workingSetFirst({ groups: working, catalogue });
+    // Which half each row came from, asked as "is this in the working set" rather than "is this in
+    // the catalogue". The two are the same question only while the two lists are disjoint, and a
+    // row in both dedupes to the working-set copy — which the catalogue's question would then label
+    // "joins this project" about something the project already holds.
+    const inProject = new Set(working.flat().map((r) => r.id));
+    const held = rows.filter((r) => inProject.has(r.id));
+    const wider = rows.filter((r) => !inProject.has(r.id));
+
+    const option = (r) => ({ key: r.id, label: `${SW.util.iconFor(r.kind)} ${r.name}` });
+    // A disabled item never fires, so the reason has to be the label — and the two empties are two
+    // different states with two different ways out. Everything bound is a finished app; nothing to
+    // bind at all is a Project nobody has picked anything into yet, and Browse Domino is where that
+    // is fixed.
+    const nothingToAdd = bound.size
+      ? { key: 'none', disabled: true,
+          label: `${app.name} already uses everything you can add here` }
+      : { key: 'none', disabled: true,
+          label: SW.brand.text('Nothing to add yet — pick one in Browse {platformName}') };
+
+    const items = rows.length === 0
+      ? [nothingToAdd]
+      : [
+          ...(held.length
+            ? [{ key: 'in-project', type: 'group', label: 'In this project',
+                 children: held.map(option) }]
+            : []),
+          // Last, and named for what picking one costs: these are the rows that are not here yet,
+          // and binding one joins this Project on the way in (ADR-0018).
+          //
+          // Truncated with a count rather than quietly, and the heading stays the same sentence
+          // either way — what a person has to know before clicking is what the click writes, and
+          // that does not change with the length of the list. The remainder is named as Browse
+          // Domino's, which is the surface that owns walking the whole catalogue.
+          ...(wider.length
+            ? [{ key: 'wider', type: 'group',
+                 label: SW.brand.text('Elsewhere in {platformName} — joins this project'),
+                 children: [
+                   ...wider.slice(0, CATALOGUE_SHOWN).map(option),
+                   ...(wider.length > CATALOGUE_SHOWN
+                     ? [{ key: 'more', disabled: true, label: SW.brand.text(
+                         `${wider.length - CATALOGUE_SHOWN} more in Browse {platformName}`) }]
+                     : []),
+                 ] }]
+            : []),
+        ];
+
+    return h(
+      Dropdown,
+      {
+        trigger: ['click'],
+        placement: 'bottomRight',
+        menu: {
+          items,
+          // Returned rather than fired and forgotten, the way the panel's row menu returns its own:
+          // the act is a request, and a caller that cannot wait on it cannot tell a bind that landed
+          // from one still in flight.
+          onClick: ({ key, domEvent }) => {
+            if (domEvent) domEvent.stopPropagation();
+            const row = rows.find((r) => r.id === key);
+            return row ? SW.store.bindToApp(row) : undefined;
+          },
+        },
+      },
+      h(
+        Tooltip,
+        {
+          // Claims no type, because the picker holds two: a Resource and an Asset both bind here,
+          // and a tooltip naming one of them would be wrong under half its own menu (ADR-0014).
+          title: `Record what this app depends on. It joins ${app.name}'s Bindings, `
+            + 'and publishing reads that record.',
+        },
+        h(
+          Button,
+          { size: 'small', icon: h(PlusOutlined, null) },
+          // The same words the panel's row menu says and the refusal card quotes, because the two
+          // doors are one act and a second label would be a second thing to learn (ADR-0011).
+          `Use in ${app.name}`
+        )
+      )
+    );
+  }
+
   // What the selected app ships (#92), in the row #87 reserved for it.
   //
   // The reason the layout could not wait is the problem #85 was filed about. The composer's chips
@@ -675,11 +813,12 @@ window.SW = window.SW || {};
     const paths = (appAttachments || []).map((a) => a.path || a.file || '');
     const files = paths.map((p) => p.split('/').pop());
 
-    // Read-only, and said so rather than left to be discovered: a row that reports a Binding and
-    // says nothing about where it is dealt with is the same dead end the empty state below avoids.
-    // The pointer is where the kind is DEALT WITH, not a second Remove — unbind and detach each
-    // report the app source that still uses what just went, and a second copy of either here would
-    // be a second guard to keep in step with the first.
+    // Where each kind is REMOVED, said rather than left to be discovered: a row that reports a
+    // Binding and says nothing about where it is dealt with is the same dead end the empty state
+    // below avoids. Still a pointer and not a second Remove — unbind and detach each report the app
+    // source that still uses what just went, and a second copy of either here would be a second
+    // guard to keep in step with the first. Only ADDITION moved onto this surface (ADR-0021), and it
+    // moved because it had no home at all; removal keeps the one ADR-0011 gave it.
     //
     // It names the destination by the head the reader will actually see there and names the action,
     // because the destination can now act (#96). It used to say "listed in", a read-only word, and
@@ -749,7 +888,11 @@ window.SW = window.SW || {};
             // question, which detach and delete ask live because they refuse on the answer — a
             // different scanner for a different job, and #85 named it in place of this one.
             files.length > 0 && kindRow('Attachments', files, pointer, paths),
-          ]
+          ],
+      // At the far end of the row that names what the app holds, because it is what puts things
+      // there. The header stops being the read-only glance #92 shipped: that argument held while
+      // this was a summary and stops holding the moment it is the door (ADR-0021).
+      h('span', { className: 'sw-app-scope-add' }, h(AddToApp, { app: activeApp }))
     );
   }
 

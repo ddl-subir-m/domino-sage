@@ -89,6 +89,11 @@ async function fetchDominoListing() {
         project: a.project,
         path: a.mount_path || a.mountPath || undefined,
         writable: !!a.writable,
+        // A Dataset is bindable since #141, so its row carries the Binding identity every other
+        // bindable kind's does — the BARE Domino id beside its kind. Without it the header's picker
+        // would have to rebuild the pair out of the prefixed id, which is the id-space trap that
+        // answers 404 and redraws unchanged.
+        bindingKey: ['dataset', a.id],
       })),
       datasource: (res.data_sources || []).map((d) => ({
         id: `data_source:${d.id}`,

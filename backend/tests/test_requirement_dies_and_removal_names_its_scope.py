@@ -152,16 +152,17 @@ def test_nothing_reads_as_required_twice():
     Project rows' subtitle is real, that literal must not also draw "Required by this app" under a
     head that already names the app (#96 gave the section that head)."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    # `app_a` is bound to two Resources, so both sections draw both — the subtitle belongs to
-    # exactly one of the two copies, and it is the one whose head does not already say it.
-    for name in ("Market data EOD", "Claude Sonnet 4"):
+    # `app_a` is bound to three Resources, so both sections draw all three — the subtitle belongs to
+    # exactly one of each pair, and it is the one whose head does not already say it.
+    names = ("Market data EOD", "Claude Sonnet 4", "Churn risk")
+    for name in names:
         in_app = _row(step["rows"], name, "In Desk dashboard")
         assert not any("Required by" in t for t in in_app["texts"])
         # The In-this-app row still carries the marker; it just stops repeating its own section.
         assert "is-required" in in_app["className"]
         assert "Required by Desk dashboard" in _row(step["rows"], name, "Project resources")["texts"]
     said = [t for r in step["rows"] for t in r["texts"] if "Required by" in t]
-    assert said == ["Required by Desk dashboard", "Required by Desk dashboard"]
+    assert said == ["Required by Desk dashboard"] * len(names)
 
 
 # ---- the words that are gone ----------------------------------------------------------

@@ -50,7 +50,12 @@ from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..preview.prefix import domino_base_prefix, domino_project_label, proxy_is_app, publish_available
 from ..preview.proxy import make_preview_app
-from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API
+from ..resources.bindings import (
+    KIND_DATA_SOURCE,
+    KIND_DATASET,
+    KIND_LLM_ALIAS,
+    KIND_MODEL_API,
+)
 from ..resources.model_api_credentials import CredentialRequired
 from ..resources.provider import (
     DominoResourceProvider,
@@ -1371,6 +1376,14 @@ async def add_binding(request: Request) -> JSONResponse:
         # the same thing to the creator: the app cannot depend on it.
         bind, missing = orchestrator.bind_llm_alias, brand_text(
             "That {llmAlias} is not one you can use, so the app cannot depend on it."
+        )
+    elif kind == KIND_DATASET:
+        # Its own sentence for the same reason the two below have theirs: a Dataset this caller
+        # cannot see is not a grant to ask an admin for and not an undeployed model — it is a
+        # {dataset} that is not mounted into this project.
+        bind, missing = orchestrator.bind_dataset, brand_text(
+            "That {dataset} is not one {platformName} mounts into this project, so the app cannot "
+            "depend on it."
         )
     elif kind == KIND_MODEL_API:
         bind, missing = orchestrator.bind_model_api, brand_text(
