@@ -8055,7 +8055,9 @@ class Orchestrator:
         alias = next((a for a in self.list_llm_aliases() if a["id"] == alias_id), None)
         if alias is None:
             raise LookupError(alias_id)
-        return self._record(Binding(KIND_LLM_ALIAS, alias["id"], alias["name"], alias["display_name"]))
+        return self._record(
+            Binding(KIND_LLM_ALIAS, alias["id"], alias["name"], alias["display_name"]),
+            {k: alias.get(k) for k in ("description", "capabilities", "reasoning_efforts")})
 
     def bind_model_api(self, model_api_id: str) -> list[dict]:
         """Record that this app uses one Model API, and return the new Binding list (#9).
@@ -8094,7 +8096,11 @@ class Orchestrator:
         if credential is None:
             raise CredentialRequired(model_api_id)
         name = found.name if found else model_api_id
-        return self._record(Binding(KIND_MODEL_API, model_api_id, name, name))
+        # Nothing when Domino would not describe the model — the credential alone got it here, and
+        # the rail draws the second line blank rather than inventing one.
+        return self._record(
+            Binding(KIND_MODEL_API, model_api_id, name, name),
+            {"description": found.description, "project": found.project_name} if found else {})
 
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
@@ -8129,7 +8135,9 @@ class Orchestrator:
         # and that render reads this file. One extra query at the end of a cascade the creator has
         # just spent three on, and the last one they wait for.
         self._write_bound_schema(source, binding)
-        return self._record(binding)
+        # `connector` is the connector type's LABEL ("Snowflake"), which is what the rail draws as
+        # the row's second line — not `connector_type`, the config-class string the Binding keeps.
+        return self._record(binding, {"description": source.connector})
 
     def _write_bound_schema(self, source: DataSource, binding: Binding) -> None:
         """Read what the bound tables hold, once, and record it for the agent (#15).
@@ -8385,8 +8393,14 @@ class Orchestrator:
         # from a row learns which Model API it just added only from here, and it has to bind next.
         return {"ok": True, "url": parsed.url, "id": model_api_id}
 
-    def _record(self, new: Binding) -> list[dict]:
-        """Write one Binding into the manifest, and re-derive what the app's source says about it."""
+    def _record(self, new: Binding, catalogue: dict | None = None) -> list[dict]:
+        """Write one Binding into the manifest, and re-derive what the app's source says about it.
+
+        `catalogue` is what the door that resolved this Resource already read about it — the fields
+        a membership row keeps and a Binding does not carry. Passed in rather than fetched here so
+        the join costs no second listing call, and optional because the Chat handoff records a
+        Binding for a Resource whose listing row it may no longer be able to fetch.
+        """
         def change(entries: list[dict]) -> list[dict]:
             # Re-binding replaces IN PLACE rather than moving to the end. Order decides which Alias
             # the app calls (#7), so appending an already-bound one would repin an app that already
@@ -8396,8 +8410,47 @@ class Orchestrator:
                 return [(new if b.key == new.key else b).to_dict() for b in current]
             return [b.to_dict() for b in [*current, new]]
         entries = self.project().workspace.update_bindings(change)
+        self._join_project_on_bind(new, catalogue or {})
         self._write_app_resources(self.project())
         return self._labelled_bindings(entries)
+
+    def _join_project_on_bind(self, new: Binding, catalogue: dict) -> None:
+        """Put the bound Resource in the project's working set, because binding it is using it.
+
+        Membership is a record of use, not a gate (ADR-0018). The bind is the act with a reason
+        behind it — a person picked this Resource for this app — so the membership row follows it
+        rather than standing in front of it. Every door that binds arrives here, so the join is
+        written once: the panel, the rail's tree, the Chat handoff, and anything later that records
+        a Binding all pass through `_record`.
+
+        Idempotent: `add_project_resource` keys on id, and a row already in the working set is left
+        where it is — not duplicated, not renamed, and not thinned back to what this call knows.
+        """
+        # The id space every other surface keys a Resource on — `SW.util.bindingId` in the client
+        # writes the same string. A Binding records the bare Domino id beside its kind, so the
+        # prefix has to be put back or the rail draws a second row for a Resource it already holds.
+        rid = f"{new.kind}:{new.id}"
+        try:
+            self.add_project_resource({
+                "id": rid,
+                "kind": new.kind,
+                "name": new.display_name or new.name,
+                "bindingKey": [new.kind, new.id],
+                # The gateway alias the model picker calls by. It is `Binding.name` for this one
+                # kind, and a row written without it is an option the picker draws blank and
+                # cannot select.
+                **({"alias": new.name} if new.kind == KIND_LLM_ALIAS else {}),
+                # Everything else `add_project_resource` keeps, from the listing the bind already
+                # read. A bind has to write the same row the Browse Domino button writes, for the
+                # reason the mention join writes it too: the model picker reads `reasoning_efforts`
+                # off these rows whenever the Alias listing is unavailable, so a row born without
+                # them is an option nobody can select.
+                **{k: v for k, v in catalogue.items() if v not in (None, [], "")},
+            })
+        except (ValueError, OSError):
+            # The Binding is the record that matters and it is already on disk. A membership row
+            # the disk refused must not fail the bind the creator asked for.
+            log.warning("membership: could not record %s in the project", rid, exc_info=True)
 
     def unbind(self, kind: str, resource_id: str) -> dict:
         """Drop one Binding. Removing a record that is already gone is not an error: the creator

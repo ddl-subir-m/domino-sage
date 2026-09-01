@@ -474,6 +474,18 @@
   color: var(--gray-500);
 }
 
+/* Sits under the section title it belongs to, so the gap above it is the header's own and the gap
+   below it is the one that separates the pair from the filter. Type and colour repeat `.sw-caption`
+   rather than composing with it: that class is how the app section's own sentence is found, and
+   wearing it here would put this line inside that answer. */
+.sw-panel-caption {
+  flex: none;
+  padding: 0 var(--s3) var(--s2);
+  font-size: var(--fs-12);
+  line-height: 1.4;
+  color: var(--gray-500);
+}
+
 .sw-panel-search { padding: 0 var(--s3) var(--s2); border-bottom: 1px solid var(--gray-300); }
 
 /* Collapsible drawers — resources open, files closed. */

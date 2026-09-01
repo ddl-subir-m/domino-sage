@@ -85,6 +85,9 @@ def test_workbench_is_the_default_ui():
     assert panel.status_code == 200
     assert b"In context" in panel.content
     assert b"Project resources" in panel.content
+    # The rail says what the list is, so "Add resources" beside it stops reading as the permission
+    # a Resource needs before anything can use it (#134, ADR-0018).
+    assert b"What this Project uses." in panel.content
     assert b"addToContext" in panel.content
     assert b"MCPs" in panel.content
     assert b"Agents" in panel.content
