@@ -26,7 +26,16 @@ window.SW = window.SW || {};
     { id: 'go_chat', group: 'Go to', label: 'Chat', run: () => goTo('chat') },
     { id: 'go_build', group: 'Go to', label: 'Build', run: () => goTo('build') },
     { id: 'go_code', group: 'Go to', label: 'Code', run: () => SW.router.go('#/code') },
-    { id: 'go_manage', group: 'Go to', label: 'Manage', run: () => SW.router.go('#/manage') },
+    // Manage is a Domino App outside this Workbench, so the palette opens it the way the platform
+    // bar does — and, like the bar, drops the row entirely on a deployment that has no Manage to
+    // open rather than offering a destination that goes nowhere.
+    {
+      id: 'go_manage',
+      group: 'Go to',
+      label: 'Manage',
+      available: () => !!SW.store.get().manageUrl,
+      run: () => window.open(SW.store.get().manageUrl, '_blank', 'noreferrer'),
+    },
     // A getter, because this list is built when the file is evaluated — before GET /api/brand has
     // answered — and the label is both what is shown and what the query is matched against.
     {
@@ -77,7 +86,9 @@ window.SW = window.SW || {};
     const close = () => SW.store.set({ paletteOpen: false });
 
     const q = query.trim().toLowerCase();
-    const actions = STATIC_ACTIONS.filter((a) => !q || a.label.toLowerCase().includes(q));
+    const actions = STATIC_ACTIONS.filter(
+      (a) => (!a.available || a.available()) && (!q || a.label.toLowerCase().includes(q))
+    );
     const GROUP = {
       thread: 'Conversations',
       plan: 'Plans',

@@ -87,6 +87,13 @@
   color: var(--white);
   font-weight: 600;
 }
+/* The bar's one outward link (Manage) sits among buttons, so the anchor has to be given the box
+   and the underline reset that a button gets for free. */
+a.sw-topnav-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
 
 .sw-topnav-user {
   border: none;

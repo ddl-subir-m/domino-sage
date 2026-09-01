@@ -14,7 +14,6 @@ window.SW = window.SW || {};
     { id: 'chat', label: 'Chat', hint: 'Explore data and think out loud' },
     { id: 'build', label: 'Build', hint: 'Turn a plan into a working app' },
     { id: 'code', label: 'Code', hint: 'Work in your own editor' },
-    { id: 'manage', label: 'Manage', hint: 'Cost and app health in this project', path: '#/manage/project' },
   ];
 
   // Concepts that span every project, so they live in the platform bar rather
@@ -23,7 +22,6 @@ window.SW = window.SW || {};
   // evaluated, which is before GET /api/brand has answered.
   const GLOBAL_NAV = [
     { id: 'gallery', label: '{gallery}', hint: 'Find what your organization already built', path: '#/gallery' },
-    { id: 'manage', label: 'Manage', hint: 'Cost and app health across every project', path: '#/manage/org' },
   ];
 
   // The panel is the project's working set, so it is named after the project
@@ -32,13 +30,6 @@ window.SW = window.SW || {};
     { id: 'resources', label: 'Project resources', icon: DatabaseOutlined },
     { id: 'activity', label: 'Activity', icon: HistoryOutlined },
   ];
-
-  // Manage is the one mode that exists at both levels, so which one is lit
-  // depends on the level segment of the route rather than the mode alone.
-  function manageLevel(route) {
-    if (!route || route.mode !== 'manage') return null;
-    return route.a === 'project' ? 'project' : 'org';
-  }
 
   // Switching mode should move you sideways, not send you back to the start.
   // Both modes are two views of one conversation, so the conversation is what
@@ -57,8 +48,7 @@ window.SW = window.SW || {};
   // unchanged from the rest of the product so the workspace reads as part of
   // Domino, not a separate tool.
   function TopNav({ route }) {
-    const { me, brand = {} } = SW.store.get();
-    const level = manageLevel(route);
+    const { me, brand = {}, manageUrl } = SW.store.get();
 
     const product = SW.brand.product();
     // The other products this bar can switch to, from the pack (#115). Empty is the answer for a
@@ -139,9 +129,7 @@ window.SW = window.SW || {};
             h(
               'button',
               {
-                className: `sw-topnav-link${
-                  route.mode === item.id && (item.id !== 'manage' || level === 'org') ? ' is-active' : ''
-                }`,
+                className: `sw-topnav-link${route.mode === item.id ? ' is-active' : ''}`,
                 onClick: () => SW.router.go(item.path),
               },
               SW.brand.text(item.label)
@@ -150,6 +138,27 @@ window.SW = window.SW || {};
         )
       ),
       h('span', { className: 'sw-topnav-spacer' }),
+      // Manage is a Domino App of its own, not a mode: it reads across every project and gives an
+      // admin more controls than a practitioner, neither of which fits under this bar's project
+      // scope. So it sits with the account controls on the right — away from the modes that are
+      // normal work — and leaves rather than routes. A new tab because leaving is a detour: the
+      // build you were reading about is still here when you come back.
+      // Hidden with no URL, which is a local run: a Manage that is not deployed is not a dead link.
+      manageUrl &&
+        h(
+          Tooltip,
+          { title: 'Cost and app health across every project. Opens in a new tab.' },
+          h(
+            'a',
+            {
+              className: 'sw-topnav-link',
+              href: manageUrl,
+              target: '_blank',
+              rel: 'noreferrer',
+            },
+            'Manage'
+          )
+        ),
       h(
         Tooltip,
         { title: 'Search · ⌘K' },
@@ -226,11 +235,10 @@ window.SW = window.SW || {};
 
   // Row 2: project-scoped navigation. Scope on the left because everything to
   // its right is scoped by it.
-  function SubNav({ mode, route }) {
+  function SubNav({ mode }) {
     const [pickerOpen, setPickerOpen] = useState(false);
     const state = SW.store.get();
     const { scopePickerOpen, dockTab } = state;
-    const level = manageLevel(route);
 
     useEffect(() => {
       if (scopePickerOpen) {
@@ -251,7 +259,7 @@ window.SW = window.SW || {};
           h(ModeTab, {
             key: item.id,
             item,
-            active: mode === item.id && (item.id !== 'manage' || level === 'project'),
+            active: mode === item.id,
             onGo: () => SW.router.go(item.path || modePath(item.id, state)),
           })
         )
@@ -351,7 +359,7 @@ window.SW = window.SW || {};
       'div',
       { className: 'sw-app' },
       h(TopNav, { route }),
-      h(SubNav, { mode, route }),
+      h(SubNav, { mode }),
       h(
         'div',
         { className: 'sw-body' },

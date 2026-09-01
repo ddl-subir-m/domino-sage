@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from sage.orchestrator.app import _gateway_ui_url, _PrefixMiddleware, _slot
+from sage.orchestrator.app import _gateway_ui_url, _manage_app_url, _PrefixMiddleware, _slot
 from sage.preview.prefix import domino_base_prefix, domino_project_label, publish_available
 from sage.preview.proxy import make_preview_app
 
@@ -123,21 +123,18 @@ def test_gateway_ui_url_deep_links_filtered_to_this_project(monkeypatch):
     # The dashboard deep-links, so the link must arrive already scoped to this deployment. Both the
     # "=" joining tag key to value and the "/" in "<owner>/<project>" have to survive as data —
     # unescaped they'd read as a query separator and a path segment, and the filter would miss.
-    # The ":" in "tag:sage-phase" is left bare on purpose: it's the dashboard's own breakdown
-    # grammar, not data, and this exact string round-trips through its parser (LLM_gateway PR #30,
-    # static/js/urlstate.js + analytics_panel.js buildSpec).
     monkeypatch.setenv("SAGE_GATEWAY_UI_URL", "https://apps.dogfood.domino.tech/apps/llm_gateway/v1")
     assert _gateway_ui_url("sub_user/Sage") == (
         "https://apps.dogfood.domino.tech/apps/llm_gateway"
-        "/#mine?range=30d&breakdown=tag:sage-phase&tag=sage-project%3Dsub_user%2FSage"
+        "/#usage?tag=sage-project%3Dsub_user%2FSage"
     )
 
 
 def test_gateway_ui_url_unfiltered_without_a_project_label(monkeypatch):
-    # No label means no filter to apply; the link still opens the caller's own usage rather than
+    # No label means no filter to apply; the link still opens the usage view rather than
     # carrying a "sage-project=" that matches nothing and shows an empty dashboard.
     monkeypatch.setenv("SAGE_GATEWAY_UI_URL", "https://apps.dogfood.domino.tech/apps/llm_gateway/")
-    assert _gateway_ui_url("") == "https://apps.dogfood.domino.tech/apps/llm_gateway/#mine"
+    assert _gateway_ui_url("") == "https://apps.dogfood.domino.tech/apps/llm_gateway/#usage"
 
 
 def test_gateway_ui_url_absent_off_the_domino_gateway(monkeypatch):
@@ -147,6 +144,30 @@ def test_gateway_ui_url_absent_off_the_domino_gateway(monkeypatch):
     monkeypatch.setenv("GATEWAY_BASE_URL", "https://api.openai.com/v1")
     monkeypatch.setattr("sage.orchestrator.app.GATEWAY_MODE", "openai")
     assert _gateway_ui_url("sub_user/Sage") is None
+
+
+def test_manage_app_url_follows_the_domino_host(monkeypatch):
+    # Manage is a Domino App of its own, and the bar has to link out to THIS deployment's copy —
+    # so the host is read from the platform rather than written down. A trailing slash on the host
+    # must not double up in the path.
+    monkeypatch.delenv("SAGE_MANAGE_URL", raising=False)
+    monkeypatch.setenv("DOMINO_API_HOST", "https://cloud-dogfood.domino.tech/")
+    assert _manage_app_url() == "https://cloud-dogfood.domino.tech/apps/sage-manage"
+
+
+def test_manage_app_url_can_be_overridden_whole(monkeypatch):
+    # A deployment whose API host is an internal cluster address needs a browser-reachable one
+    # given to it, so the override replaces the URL rather than only its host.
+    monkeypatch.setenv("DOMINO_API_HOST", "http://nucleus-frontend.domino-platform:80")
+    monkeypatch.setenv("SAGE_MANAGE_URL", "https://cloud-dogfood.domino.tech/apps/manage/")
+    assert _manage_app_url() == "https://cloud-dogfood.domino.tech/apps/manage"
+
+
+def test_manage_app_url_absent_off_domino(monkeypatch):
+    # A laptop run has no Manage App. None hides the link, which is better than one that 404s.
+    monkeypatch.delenv("SAGE_MANAGE_URL", raising=False)
+    monkeypatch.delenv("DOMINO_API_HOST", raising=False)
+    assert _manage_app_url() is None
 
 
 @pytest.mark.parametrize(

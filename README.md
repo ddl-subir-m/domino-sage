@@ -81,7 +81,8 @@ Environment (unset → uses an in-process fake so curl works with no creds):
 |-----|---------|
 | `GATEWAY_BASE_URL` | Domino AI Gateway base URL → switches to the real client |
 | `GATEWAY_API_KEY`  | gateway auth (scheme pending gateway-questions Q7) |
-| `SAGE_GATEWAY_UI_URL` | override for the "Usage & cost" link; defaults to `GATEWAY_BASE_URL` minus `/v1`. Set it when the browser-facing gateway URL differs from the inference one |
+| `SAGE_GATEWAY_UI_URL` | override for the "Cost & activity" link; defaults to `GATEWAY_BASE_URL` minus `/v1`. Set it when the browser-facing gateway URL differs from the inference one |
+| `SAGE_MANAGE_URL` | override for the platform bar's "Manage" link; defaults to `DOMINO_API_HOST` + `/apps/sage-manage`. Set it when the API host is an internal cluster address a browser cannot reach |
 | `SAGE_MODEL_SOVEREIGN` / `_PLAN` / `_IMPLEMENT` / `_DEFAULT` | model ids per tier |
 | `SAGE_DEBUG_STREAM` | `1` logs raw SSE chunks from the gateway to `/api/diag` (first 40 per stream), for diagnosing an "Invalid … stream event" from OpenCode, which reports no payload. Sets the initial state only — toggle at runtime with `POST /api/diag/debug-stream {"on": true}`, since on Domino this value is baked at image build time. Verbose, and the chunks contain prompt text |
 

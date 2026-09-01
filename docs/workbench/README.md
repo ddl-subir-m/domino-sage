@@ -1,7 +1,7 @@
 # Workbench
 
-Chat and Build as modes over one Domino project. Manage and Code are tabs in the same chrome and
-are owned by a parallel branch.
+Chat and Build as modes over one Domino project. Code is a tab in the same chrome and is owned by
+a parallel branch. Manage is a separate Domino App the platform bar links out to.
 
 | Doc | What it decides |
 |-----|-----------------|

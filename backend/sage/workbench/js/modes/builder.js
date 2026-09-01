@@ -754,7 +754,7 @@ window.SW = window.SW || {};
   }
 
   function PreviewPane({ resumed }) {
-    const { previewSrc, previewStatus, activeApp } = SW.store.get();
+    const { previewSrc, previewStatus, activeApp, costUrl } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
     const stalled = previewStatus === 'stalled';
@@ -785,6 +785,30 @@ window.SW = window.SW || {};
         // WHICH one is on screen is. Naming it and choosing it are now the same control (#82).
         h(AppBar, { resumed }),
         h('span', { className: 'sw-topnav-spacer' }),
+        // Beside Build history because the two answer the same question from opposite ends: what
+        // this project's building has done, and what it has cost. Sage does not meter spend — the
+        // gateway prices it — so this leaves for the gateway's own dashboard, deep-linked to this
+        // project's `sage-project` tag so it lands filtered instead of on everybody's traffic.
+        //
+        // A link rather than a button: the two controls to its right act on the preview in place,
+        // and this one leaves the Workbench. Hidden with no URL, which is a run pointed at no
+        // Domino gateway — there is no dashboard with this project's spend in it to open.
+        costUrl &&
+          h(
+            Tooltip,
+            { title: "This project's spend on the LLM Gateway. Opens in a new tab." },
+            h(
+              Button,
+              {
+                size: 'small',
+                type: 'link',
+                href: costUrl,
+                target: '_blank',
+                rel: 'noreferrer',
+              },
+              'Cost & activity'
+            )
+          ),
         // Where #86's proposal put a History TAB, and doing the same job without the cost that
         // refused the Plan tab: what it opens overlays the preview instead of replacing it, so the
         // builds stay readable against the app they built (#88).

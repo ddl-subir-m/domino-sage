@@ -65,15 +65,6 @@ window.SW = window.SW || {};
         return h(SW.BuildMode, { conversationId: route.a, appId: route.query.app || null });
       case 'code':
         return h(SW.CodeMode, null);
-      // Manage exists at two levels: across everything, and inside the current
-      // project. The level is the first segment. App usage is the landing view,
-      // so anything that is not explicitly cost lands there — including older
-      // #/manage/apps links.
-      case 'manage':
-        return h(SW.ManageMode, {
-          level: route.a === 'project' ? 'project' : 'org',
-          tab: route.a === 'cost' || route.b === 'cost' ? 'cost' : 'apps',
-        });
       case 'gallery':
         return h(SW.GalleryMode, { appId: route.a });
       case 'plan':

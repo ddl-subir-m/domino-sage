@@ -52,6 +52,13 @@ window.SW = window.SW || {};
     scope: NO_SCOPE,
     scopeFlash: false,
 
+    // Two doors out of the Workbench, both built by the server from this deployment's own hosts so
+    // neither names an environment. `manageUrl` is the Manage App the platform bar opens;
+    // `costUrl` is the gateway's Usage & Cost dashboard, deep-linked to this project's spend.
+    // Null means this deployment has neither, and a null one draws no link rather than a dead one.
+    manageUrl: null,
+    costUrl: null,
+
     // Dock
     dockTab: null,        // null = collapsed
     panelFilter: null,    // resource kind the assistant asked the user to pick
@@ -1866,7 +1873,7 @@ window.SW = window.SW || {};
     },
 
     async init() {
-      const [me, projects, charts, starters, notifications, brand, health] = await Promise.all([
+      const [me, projects, charts, starters, notifications, brand, health, project] = await Promise.all([
         SW.api.me(),
         SW.api.projects(),
         SW.api.charts(),
@@ -1876,6 +1883,10 @@ window.SW = window.SW || {};
         // Extra options for Build's picker, not a health check. Caught, because a gateway that
         // cannot answer this still has four working slots and a picker that must open.
         SW.api.health().catch(() => null),
+        // Read here rather than off the deferred `/project` in loadScopeData, because both links it
+        // carries are drawn in chrome that paints as soon as `ready` flips. Deployment constants,
+        // built once from env at boot, so reading them once at boot is the whole of it.
+        SW.api.project().catch(() => null),
       ]);
       state.me = me;
       if (brand) {
@@ -1889,6 +1900,8 @@ window.SW = window.SW || {};
       state.charts = charts;
       state.starters = starters;
       state.notifications = notifications;
+      state.manageUrl = (project && project.manage) || null;
+      state.costUrl = (project && project.cost && project.cost.url) || null;
       state.ready = true;
       state.openWeightModels = (health && health.open_weight_models) || [];
       state.resourcesLoading = true;

@@ -156,8 +156,9 @@ _Avoid_: Hub, marketplace, catalog, project list
 
 **Workbench**:
 The published Domino App that is Sage. Opening it is how a viewer reaches Chat and Build.
-Code and Manage are tabs in the same chrome and are owned by a parallel branch. It is not a
-Built App and it is not a Hub.
+Code is a tab in the same chrome and is owned by a parallel branch. Manage is a separate Domino
+App, so the platform bar links out to it rather than routing into it. It is not a Built App and it
+is not a Hub.
 _Avoid_: workspace (that word already means the Domino builder session), studio, platform,
 Built App, Hub
 

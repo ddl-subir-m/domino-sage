@@ -2120,6 +2120,9 @@ class Project:
     # a dead link to a dashboard that has no Sage data reads as a bug.
     cost_url: str | None = None
     cost_project: str | None = None
+    # Where the platform bar sends a user to Manage — a Domino App of its own, outside this
+    # Workbench. None off-Domino, which hides the link for the same reason `cost_url` does.
+    manage_url: str | None = None
 
     # Workspace-relative prefixes the PROJECT owns rather than the app: Chat's Artifacts and
     # scratch, and the Threads and plan documents beside them. Everything else a caller names is
@@ -2199,6 +2202,7 @@ class Project:
                 },
             },
             "cost": {"url": self.cost_url, "project": self.cost_project},
+            "manage": self.manage_url,
         }
 
 
@@ -2364,6 +2368,7 @@ class Orchestrator:
         domino_run_id: str | None = None,
         cost_project_label: str | None = None,
         gateway_ui_url: str | None = None,
+        manage_url: str | None = None,
         browser_gateway_base: str | None = None,
         opencode_client: OpenCodeClient | None = None,
         gateway_mode: str = "fake",
@@ -2402,6 +2407,9 @@ class Orchestrator:
         # nothing off-Domino, which hides the link instead of pointing it somewhere dead.
         self._cost_project_label = cost_project_label or project_id
         self._gateway_ui_url = gateway_ui_url
+        # Manage is its own Domino App, so the platform bar links out to it. Same fallback rule as
+        # the dashboard link: nothing to point at means no link at all.
+        self._manage_url = manage_url
         # The LLM Gateway URL a PUBLISHED app's browser code calls (#7). The same URL Sage itself
         # routes through: a published app is served from the gateway's own host, so it is
         # same-origin there and the viewer's Domino session cookie authenticates the call. None
@@ -2706,7 +2714,8 @@ class Orchestrator:
             queries.start()
         self._project = Project(self._project_id, workspace, record, supervisor, queries, control, shim,
                                 cost_url=self._gateway_ui_url,
-                                cost_project=self._cost_project_label if self._gateway_ui_url else None)
+                                cost_project=self._cost_project_label if self._gateway_ui_url else None,
+                                manage_url=self._manage_url)
         if seed_app:
             # A freshly seeded AGENTS.md is the template's, so it is voiced in the pack's words
             # (#114) and then the Project's instructions have to be rendered back into it — they are

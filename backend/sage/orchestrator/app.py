@@ -261,15 +261,9 @@ def _gateway_ui_url(project_label: str | None) -> str | None:
     The dashboard deep-links, so the link arrives already filtered to this deployment rather than
     dropping you on an unfiltered page with instructions to go find yourself in it:
 
-        /#mine?range=30d&breakdown=tag:sage-phase&tag=sage-project%3D<owner>%2F<project>
+        /#usage?tag=sage-project%3D<owner>%2F<project>
 
-    `#mine` (not `#usage`) scopes it to the caller's own traffic — Sage's calls carry the user's
-    workspace JWT, so their builds are all there, and it drops the admin requirement `#usage` has.
-    Breaking down by `sage-phase` answers the question people actually arrive with — how much of
-    this went to planning vs implementing — rather than which model served it; the panel validates
-    `tag:`-prefixed breakdowns structurally, so it holds even though no request has yet taught the
-    dashboard that the key exists. Without a project label we can't filter, so the link falls back
-    to the unfiltered view.
+    Without a project label we can't filter, so the link falls back to the unfiltered view.
 
     None in fake/openai mode: that traffic never reaches the Domino gateway, so the dashboard would
     have nothing to show and the link would read as broken rather than empty.
@@ -280,11 +274,32 @@ def _gateway_ui_url(project_label: str | None) -> str | None:
         return None
     root = base.rstrip("/").removesuffix("/v1").rstrip("/")
     if not project_label:
-        return root + "/#mine"
+        return root + "/#usage"
     # quote(safe="") so the "=" joining key to value and the "/" in "<owner>/<project>" both survive
     # as data — unescaped they'd read as a query separator and a path segment.
     tag = quote(f"sage-project={project_label}", safe="")
-    return f"{root}/#mine?range=30d&breakdown=tag:sage-phase&tag={tag}"
+    return f"{root}/#usage?tag={tag}"
+
+
+def _manage_app_url() -> str | None:
+    """Browser URL of the Manage app, or None when this deployment has no Domino host to reach it on.
+
+    Manage is a Domino App of its own, not a mode inside the Workbench — it reads across every
+    project and detects an admin persona, neither of which the Workbench's project scope can do.
+    So the platform bar links OUT to it rather than routing in.
+
+    Built from DOMINO_API_HOST because that is the host the Workbench itself is served from, so the
+    link follows the deployment instead of naming one. SAGE_MANAGE_URL overrides it whole, for a
+    deployment whose API host is an internal cluster address a browser cannot resolve.
+
+    None off-Domino: a local run has no Manage app, and a link to one reads as broken rather than
+    absent.
+    """
+    explicit = os.environ.get("SAGE_MANAGE_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    host = os.environ.get("DOMINO_API_HOST", "").strip()
+    return f"{host.rstrip('/')}/apps/sage-manage" if host else None
 
 
 def _browser_gateway_base() -> str | None:
@@ -355,6 +370,7 @@ orchestrator = Orchestrator(
     domino_run_id=os.environ.get("DOMINO_RUN_ID"),
     cost_project_label=_COST_PROJECT_LABEL,
     gateway_ui_url=_gateway_ui_url(_COST_PROJECT_LABEL),
+    manage_url=_manage_app_url(),
     browser_gateway_base=_browser_gateway_base(),
     # Which authority a slot resolves against, so the turn-time slot check (#125) runs only where a
     # gateway actually holds the Alias list — the same gate `_run_slot_preflight` applies below.
