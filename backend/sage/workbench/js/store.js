@@ -1975,9 +1975,11 @@ window.SW = window.SW || {};
       const trimmed = String(name || '').trim();
       if (!trimmed) return null;   // the picker disables Create, so this is only belt-and-braces
       return handOver({
-        title: `Creating ${trimmed}`,
+        title: `Creating the project ${trimmed}`,
         detail: 'Setting up the repository and starting your workspace. This takes about a minute.',
-        failure: SW.brand.text("{assistantName} couldn't create {name}", { name: trimmed }),
+        // "couldn't create Sales dashboard" reads as a failure to build the thing named, which is
+        // not what failed — the project it would live in never got made. Name the noun.
+        failure: SW.brand.text("{assistantName} couldn't create the project {name}", { name: trimmed }),
         start: () => SW.api.createProject(trimmed),
       });
     },

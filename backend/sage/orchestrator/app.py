@@ -777,6 +777,22 @@ def me() -> dict:
     }
 
 
+def _git_credential_diag() -> dict:
+    """Which checkouts hold a git credential for the provisioning host, secrets redacted.
+
+    "no HTTPS git credential in this container" is otherwise unfalsifiable from a Builder, which has
+    no terminal: it cannot tell an account with only an SSH key from a credential we asked the wrong
+    directory for. Lengths only — never the token.
+    """
+    from ..provision import credentials
+
+    host = os.environ.get("SAGE_GIT_HOST", "github.com").strip() or "github.com"
+    try:
+        return credentials.credential_probe(host)
+    except Exception as e:  # a diagnostic must never be the thing that breaks the diagnostics page
+        return {"host": host, "error": str(e)}
+
+
 @control_app.get("/api/diag")
 def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
@@ -816,6 +832,7 @@ def diag() -> JSONResponse:
             "last_gateway_error": p.last_gateway_error,
             "session_id": p.session_id,
         },
+        "git_credential": _git_credential_diag(),
         "debug_stream": ka.debug_stream_enabled(),
         "log_tail": list(_LOG_RING)[-60:],
         "opencode_log_tail": orchestrator._opencode_log_tail(30),
