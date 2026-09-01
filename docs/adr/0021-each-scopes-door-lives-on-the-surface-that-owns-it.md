@@ -91,9 +91,15 @@ using here" and the two Removes, which are the acts whose scopes it owns or poin
 picker draws the working set first and Browse Domino behind it — the same ordering the composer's @
 menu already uses (`js/components/composer.js:100`).
 
-**Two composer repair paths need re-pointing.** `openScopeForMention` (`js/store.js:2263`) and
-`openCredentialForMention` (`:2283`) both route into the rail today. Their destination becomes the
-app's surface, because that is where the act they are repairing now lives.
+**Two composer repair paths need re-pointing.** The Data Source repair and the credential repair
+both routed into the rail, because that is where the act they repair used to live. Their destination
+becomes the app's surface. Done in
+[#143](https://github.com/ddl-subir-m/domino-sage/issues/143), and the two did not land the same way:
+the Data Source repair stopped being a signpost altogether, because once the bind carries no Scope
+there is nothing left to walk to and the card records the Binding itself in one click. The credential
+repair could not follow — Sage refuses to record a Model API it holds no access token for, so the
+bind is an act the server is designed to turn down and a card must not spend its one click on it. It
+stays a signpost, and what stands open is the header's own door.
 
 **The Chat handoff stays a door.** It records Bindings without passing through the header
 (`_bind_from_handoff`), and that is consistent: the handoff is the moment a person confirms the
