@@ -153,14 +153,19 @@ def test_the_handoff_door_joins_through_the_same_place(tmp_path: Path):
 
 def test_a_second_bind_changes_nothing_about_the_membership_row(tmp_path: Path):
     """Re-binding is a no-op by design — it is how a Data Source's Scope is corrected — so it must
-    not duplicate the row, move it, or rewrite it."""
+    not duplicate the row, move it, or rewrite it. Only the live `usedBy` enrichment may differ:
+    it is computed from the app's own manifest on every read (#133), so the corrected Scope shows
+    up there — that is the enrichment telling the truth, not the membership row moving."""
     orch = _orch(tmp_path)
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     before = orch.list_project_resources()
 
     orch.bind_data_source("ds-dwh", "DWH", "MARTS_ARCHIVE")
 
-    assert orch.list_project_resources() == before
+    after = orch.list_project_resources()
+    membership = [{k: v for k, v in r.items() if k != "usedBy"} for r in after]
+    assert membership == [{k: v for k, v in r.items() if k != "usedBy"} for r in before]
+    assert [u["scope"] for u in after[0]["usedBy"]] == ["DWH.MARTS_ARCHIVE"]
 
 
 def test_a_resource_already_in_the_project_is_not_renamed_by_a_bind(tmp_path: Path):
