@@ -1,4 +1,4 @@
-"""`Use in {app}` binds an LLM Alias to the selected Built App (#127, ADR-0011).
+"""`Use in {app}` binds an LLM Alias to the selected Built App (#127, ADR-0011, ADR-0021).
 
 WHAT WAS MISSING. `POST /api/bindings` has been live and uncalled since the vanilla `/builder` page
 was deleted (`2e4a205`). The Workbench rail inherited the browse and remove halves of a Binding and
@@ -6,15 +6,29 @@ not the add half, so a Resource added to the Project AFTER a plan crossed from C
 reach the app: `_bind_from_handoff` was the only writer there was. A person who added an Alias, saw
 it in the rail and mentioned it in Build got a refusal pointing at a control that did not exist.
 
-WHERE THE ACT LIVES. On the Project row's menu, directly above `Remove from {app}` — one act, one
-place, in the section that owns the scope (ADR-0011). Build only: a Binding names exactly one app
-(`CONTEXT.md`), and Chat shows no app to name. Language models only for now; the Model API door
-(#128) and the Data Source door (#129) each carry a question this one does not.
+WHERE #127 PUT THE ACT, AND WHERE IT IS NOW. On the Project row's menu, directly above
+`Remove from {app}` — one act, one place, in the section that owns the scope (ADR-0011). ADR-0021
+moved it: a Binding is the Built App's, so its door is the app's own surface, and the panel that
+owns no app scope stopped offering it (#141 opened the header's door, #144 closed the panel's). The
+id-space assertion below went with the act — `test_the_build_header_binds_a_resource.py` makes it at
+the new door — and the panel's absence is
+`test_the_resource_browser_stops_offering_use_in_app.py`'s.
+
+WHAT SURVIVED, and is what this file still asserts:
+
+THE SIGN, which #127 shipped beside the door and which stayed when the door left. A row the selected
+app does not use says so. Absence was invisible before this: a bound row read "Required by {app}"
+and an unbound one read nothing at all, so an Alias sat in the rail looking exactly as ready as one
+the app could actually call.
+
+THE REFUSAL, which is the sentence that reported the bug. A turn that drops an unusable mention
+names the app the Binding would belong to and quotes the label that makes it. It quotes the header's
+label now, which is the same words — the two doors deliberately never had two labels (ADR-0011).
 
 THE ID SPACES, WHICH ARE THE WHOLE JOB — the same trap `test_requirement_dies_and_removal_names_its
 _scope.py` names. A Project Resource id is PREFIXED (`llm_alias:al_1`); a Binding carries the BARE
 id beside its kind (`al_1`). `POST /bindings` reads `id` and looks it up against the live listing,
-so a prefixed id resolves to nothing, raises `LookupError`, answers 404 — and the rail, having
+so a prefixed id resolves to nothing, raises `LookupError`, answers 404 — and the caller, having
 already asked for a refresh, redraws exactly as it was. The failure looks like success. That is why
 the harness records the posted BODY and not just that the request happened.
 
@@ -61,19 +75,6 @@ def _run(steps: list[dict]) -> list[dict]:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-# ---- the request the act issues -------------------------------------------------------
-
-
-@needs_node
-def test_use_in_posts_the_bare_resource_id_not_the_prefixed_one():
-    """`app_c` binds `al_2` only, so the Project's `llm_alias:al_1` is a row it does not hold — the
-    one state the act exists for. The assertion is the body, because a 404 on a prefixed id leaves
-    the panel looking precisely like a bind that worked."""
-    step = _run([{"useIn": "Claude Sonnet 4", "thread": "thr_many", "select": "app_c"}])[-1]
-    assert step["posted"] == [{"kind": "llm_alias", "id": "al_1"}]
-    assert "POST /bindings" in step["calls"]
-
-
 # ---- what the row says before anything is clicked -------------------------------------
 
 
@@ -89,9 +90,10 @@ def test_a_row_the_app_does_not_use_says_so():
 
 @needs_node
 def test_a_row_the_app_already_uses_offers_no_second_way_to_add_it():
-    """Passes on arrival — `canBind` excludes a required row — and is here because that exclusion is
-    the whole of "one act, one place" (ADR-0011). Loosen the condition and the Project row grows a
-    second door to a Binding the app already holds, beside a section that already says so."""
+    """"One act, one place" (ADR-0011), which #127 kept by excluding a required row from the panel's
+    door and ADR-0021 keeps by there being no panel door at all. Still asked of this row, because the
+    claim is about what a person reads here: the section two inches down already says the app holds
+    this Binding, and a second way to add it would be an act with no effect beside a row saying so."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
     bound = _row(step["rows"], "Claude Sonnet 4", "In this project")
     assert "Required by Desk dashboard" in bound["texts"]

@@ -16,9 +16,10 @@ WHAT SURVIVED THE REVERSAL, and is what this file still asserts:
 
 THE FLAG THAT DID TWO JOBS. `canBind` both put the act on a row's menu and switched the row's
 subtitle to `Not used by {app}`. #129 needed the second for a Data Source and had to refuse the
-first, so the two came apart: `saysAppUse` is the sign and `canBind` is the door. The split holds
-under #142 for a different reason — the door is not this panel's at all now — and the sign is still
-the only thing that tells a Resource the app can reach from one merely sitting in the Project.
+first, so the two came apart: `saysAppUse` was the sign and `canBind` the door. #144 took the door
+out of this panel for every kind, so only the sign is left — and the sign is still the only thing
+that tells a Resource the app can reach from one merely sitting in the Project. What the split
+bought is that the door could go without it.
 
 THE CASCADE, WHICH NOW ONLY LOOKS. It still descends, still remembers where it is, and still
 survives a listing that will not answer. What it no longer does is write.
@@ -176,12 +177,15 @@ def test_a_data_source_row_offers_no_act_of_its_own():
 
 
 @needs_node
-def test_the_alias_keeps_the_row_level_act_the_split_took_from_the_data_source():
-    """The control this ticket must not disturb. `canBind` narrowed; it did not move. The whole act
-    leaves this panel in #144, and until it does there is no window in which an Alias has no door."""
+def test_the_alias_lost_the_row_level_act_too_and_kept_the_sign():
+    """The control #142 must not disturb, read after #144 disturbed it on purpose. `canBind` narrowed
+    to an Alias here and then went entirely, so the two kinds this panel can name a Binding for are
+    now the same shape: both carry the sign, neither carries the act. The sign is the assertion that
+    matters — it is what the split was FOR, and it had to survive the door it was separated from."""
     alias = next(r for r in _at(walk=[])["rows"] if r["id"] == "llm_alias:al_1")
     assert f"Not used by {APP}" in alias["texts"]
-    assert any(i["key"] == "use-in-app" and i["label"] == DOOR for i in alias["items"])
+    assert not any(i["label"] == DOOR for i in alias["items"])
+    assert not any(i["key"] == "use-in-app" for i in alias["items"])
 
 
 @needs_node

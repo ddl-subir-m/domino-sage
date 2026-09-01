@@ -116,9 +116,6 @@ nothing. The two are kept apart on purpose: one writes a chip, the other writes 
 published app depends on
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). A Binding may be
 made without a Scope and scoped afterwards, as two acts on that same surface.
-_Interim_: the [[Resource Browser]]'s row menu still offers "Use in <app>" for an LLM Alias. The
-header's door opened first so that no window exists in which neither is open; the panel's copy is
-removed by #144, and until it is, "and nowhere else" is where this is going rather than where it is.
 _Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
 
 **Scope**:

@@ -3560,11 +3560,18 @@ class Orchestrator:
                          "Attach it in the Data panel, then ask again.")
         if unbound:
             shown = ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in unbound)
-            # The act, spelled the way the menu spells it. The sentence this replaces sent people to
+            # The act, spelled the way the door spells it. The sentence this replaces sent people to
             # the Resources panel for a control that was not there (#127) and called it "connecting",
-            # a word `CONTEXT.md` bans for exactly the confusion it caused here.
+            # a word `CONTEXT.md` bans for exactly the confusion it caused here. The panel then grew
+            # the control and lost it again: the act is on the Built App's own surface now (ADR-0021,
+            # #144), so naming that panel would re-make the original bug word for word.
+            #
+            # The destination is named by the heading the reader will actually see over it — "{app}
+            # ships", in the Build header — which is the shape every other pointer in this product
+            # takes (`modes/builder.js`, and the receipt in `store.bindToApp`). A direction on the
+            # screen would be a second thing to keep in step with a layout.
             lines.append(f"Couldn't use {shown} — {where} doesn't use it yet. "
-                         f"Open the Resources panel and choose Use in {where}, then ask again.")
+                         f"Choose Use in {where} in the list of what it ships, then ask again.")
             # One row per Resource, not per mention. "@Warehouse and @FCT_USAGE_DAILY" names one
             # Data Source at one table, and two identical buttons would offer the same bind twice.
             seen: set[tuple[str, str]] = set()

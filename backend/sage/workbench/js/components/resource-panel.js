@@ -150,13 +150,11 @@ window.SW = window.SW || {};
     required,
     highlighted,
     app,
-    // The two halves of "this row and the selected app", which were one flag until #129. The SIGN
-    // and the DOOR: `saysAppUse` switches the subtitle to whether this app uses the Resource, and
-    // `canBind` puts the act on this row's menu. A Data Source needs the first without the second —
-    // its door is on the Built App's own surface (ADR-0021, #142). Both are set by the Project list
-    // only; see the call site.
+    // Whether this row's subtitle answers "does the selected app use this". The SIGN, and all that
+    // is left of the pair it was half of: `canBind` put the ADD on this row's menu until #144, and
+    // that act is on the Built App's own surface now (ADR-0021). Set by the Project list only; see
+    // the call site.
     saysAppUse,
-    canBind,
     // The Built App this row is a record of, and the record itself: `{ app, binding }` or
     // `{ app, attachment }`. Only the "In this app" rows carry it, because only they are the list
     // that owns that scope — a Project row's removal is the Project's (ADR-0011).
@@ -181,9 +179,6 @@ window.SW = window.SW || {};
             key: attached ? 'remove-resource-from-conversation' : 'mention',
             label: attached ? 'Stop using here' : 'Use in this chat',
           },
-          // Directly beneath the Conversation's act, because the two are the same verb at two
-          // scopes and the scope in the label is the whole of what tells them apart (ADR-0011).
-          ...(canBind && app ? [{ key: 'use-in-app', label: `Use in ${app.name}` }] : []),
           ...(resource.source === 'scratch'
             ? writableDatasets.length
               ? writableDatasets.map((d) => ({
@@ -220,7 +215,6 @@ window.SW = window.SW || {};
       if (key === 'remove-resource-from-conversation') {
         return SW.store.removeResourceFromConversation(resource.id);
       }
-      if (key === 'use-in-app') return SW.store.bindToApp(resource);
       if (key === 'remove-from-app') {
         return appScope.binding
           ? SW.store.removeBindingFromApp(appScope.binding)
@@ -513,16 +507,6 @@ window.SW = window.SW || {};
       // the Project, and a Data Source was as silent about that as an Alias ever was.
       const saysAppUse = inBuild && Boolean(activeApp) && Boolean(resource.bindingKey)
         && (resource.kind === 'model_llm' || resource.kind === 'datasource');
-      // Whether the ACT belongs on this row, which is strictly narrower than the sign above and is
-      // why the two came apart. Language models only, because they are the one kind whose bind this
-      // panel can complete: a Model API needs a credential (#128), and a Data Source's door is on
-      // the Built App's own surface, beside the Scope that is now a second act there (#142,
-      // ADR-0021). A row offering an act that cannot complete is a dead end.
-      //
-      // The whole of this act leaves the panel in #144. It is still here so that no window exists
-      // in which an Alias has no door at all.
-      const canBind = saysAppUse && resource.kind === 'model_llm'
-        && !requiredIds.has(resource.id);
       return h(
         Fragment,
         { key: resource.id },
@@ -531,7 +515,6 @@ window.SW = window.SW || {};
           required: requiredIds.has(resource.id),
           app: activeApp,
           saysAppUse,
-          canBind,
           attached: attachedIds.has(resource.id),
           highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
             && SW.util.RESOURCE_META[resource.kind].group === filterGroup,

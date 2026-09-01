@@ -304,7 +304,9 @@ def test_a_mention_the_turn_cannot_use_is_reported_rather_than_dropped(tmp_path:
 
     ref = {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"}
     unbound, _ = orch._unusable_mentions(proj, None, None, [ref])
-    assert "@Warehouse" in unbound and "Resources panel" in unbound
+    # The destination is the Built App's own surface, which is the only place the bind lives
+    # (ADR-0021, #144) — the Resources panel offered it until then and does not now.
+    assert "@Warehouse" in unbound and "in the list of what" in unbound
     # And a Resource this app IS bound to is not reported — the report reads the same Binding list the
     # turn honors, so a bound Resource must never come back as one the turn refused.
     proj.workspace.update_bindings(

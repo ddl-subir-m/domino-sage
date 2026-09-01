@@ -2203,17 +2203,19 @@ window.SW = window.SW || {};
     //
     // The act ADR-0011 left unhung: it wrote the door out of a Binding and the door in stayed shut,
     // so a Resource added to the Project after a plan crossed from Chat could never reach the app
-    // (#127). It lives beside the removals for their reason — the list that owns the scope owns the
-    // act — and the label names that scope, which is what tells it from `Use in this chat`.
+    // (#127). It sat beside the removals in the Resource Browser until #144, on ADR-0011's reason —
+    // the list that owns the scope owns the act. That reason turned out to argue the other way:
+    // the panel owns the working set and never owned the app scope, so the act is on the Built App's
+    // own surface now and the panel keeps the removals it points at (ADR-0021).
     //
     // No confirm and no generation guard, unlike the removal below, and both absences are the
-    // point. Binding is additive and its undo is the `Remove from {app}` in the same menu; and that
+    // point. Binding is additive and its undo is the `Remove from {app}` the receipt names; and that
     // guard exists because a MODAL can sit open while the selection moves. With no modal the window
-    // is one request round trip, which is the window every other act in this panel already has.
+    // is one request round trip, which is the window every other act on these surfaces already has.
     //
-    // `scope` is the Data Source's alone (#129): the cascade position the creator was standing on,
-    // passed by the door that was on screen there rather than derived here. There is nothing on a
-    // Project row to derive it FROM, which is why that row has no door for this kind.
+    // `scope` is left over from #129, when a Data Source's Scope was the cascade position the
+    // creator was standing on and the door that stood there passed it. No caller sends it now: a
+    // Binding is recorded first and scoped afterwards, as two acts (#142, `openScopePick` below).
     // The door itself, open and shut. It is controlled from the store rather than left to antd
     // because a second surface asks for it: the refusal card's credential repair points here now
     // (#143), and a control that only ever opened under its own pointer could not be pointed at.
@@ -2252,8 +2254,9 @@ window.SW = window.SW || {};
       // way back out. It stands in for the confirm the ADR deliberately refused — separation carries
       // the weight, and a repeat user pays for a confirm on every repetition — so it is said AFTER
       // rather than asked before, which is what "Stop using here" already does on the cheap side.
-      // Here rather than at any one door, because three surfaces now bind through this act and a
-      // sentence written at one of them is a sentence the other two do not say.
+      // Here rather than at any one door, because the header's picker and the refusal card's repair
+      // both bind through this act, and a sentence written at one of them is a sentence the other
+      // does not say.
       //
       // "Project resources" and not the working set's own prose label, which is "In this project":
       // this is a POINTER, and ADR-0011 fixed the shape a pointer takes — it names the destination

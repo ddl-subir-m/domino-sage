@@ -103,6 +103,12 @@ def unbound_alias_notice(calls: list[tuple[str, list[str]]]) -> str | None:
 
     Deliberately NOT a prompt. Nothing here records a Binding, offers to, or waits for an answer:
     the agent's nudge runs either way and the turn completes.
+
+    The destination is the Built App's own surface, named by the heading over it — "{app} ships", in
+    the Build header (ADR-0021). It was the Resources panel until #144 took the act off that panel's
+    rows. The act is named and not renamed: the door's label is `Use in {app}` and this sentence does
+    not know the app's name, so it describes the label rather than substituting a different verb for
+    it — the same way `template/react-vite/src/appLlm.ts` does under the same constraint.
     """
     names = sorted({a for _, aliases in calls for a in aliases})
     if not names:
@@ -112,8 +118,8 @@ def unbound_alias_notice(calls: list[tuple[str, list[str]]]) -> str | None:
     return brand.text(
         "{files} asks {platformName}'s LLM Gateway for {models}, which {areModels} this app is not "
         "set up to use. The call is being rewritten to go through askModel, which refuses a model "
-        "the app does not have — so if this app should have {them}, open the Resources panel and "
-        "choose Use on the {aliases}.",
+        "the app does not have — so if this app should have {them}, add the {aliases} to what this "
+        "app ships: choose the Use in action that names this app.",
         files=_join(files),
         models=_join(names),
         areModels="are models" if several else "is a model",

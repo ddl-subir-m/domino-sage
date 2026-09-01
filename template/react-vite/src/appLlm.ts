@@ -65,14 +65,17 @@ const models: Model[] = config.models?.length
     : [];
 
 // DESCRIBES the act rather than quoting a label, and that is the whole of why it reads this way.
-// The panel draws `Use in {app name}`, which a string compiled into the app cannot know — and the
-// one label it could safely quote, "Use in this chat", is the wrong scope sitting directly above
-// the right one in the same menu. Quoting a label this file cannot resolve is how it came to
-// promise "Use on" for a control that never existed (#127).
+// The door draws `Use in {app name}`, which a string compiled into the app cannot know. Quoting a
+// label this file cannot resolve is how it came to promise "Use on" for a control that never
+// existed (#127).
+//
+// The destination is named by the heading over it, in the Build header. It was the Resources panel
+// until #144 moved the act to the Built App's own surface (ADR-0021) — and the clause warning the
+// reader off "Use in this chat" went with it, because the two labels were only ever confusable
+// while they shared one menu.
 const NO_MODEL =
-  "This app has no language model yet. Whoever built it can add one in Sage: open the Resources " +
-  "panel, find the LLM Alias, and choose the Use in action that names this app — not the one " +
-  "that names this chat.";
+  "This app has no language model yet. Whoever built it can add one in Sage: in the list of what " +
+  "this app ships, choose the Use in action that names this app.";
 
 /** The model a call means, or null when it names one this app does not use. */
 function pick(alias?: string): Model | null {

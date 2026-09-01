@@ -641,9 +641,10 @@ window.SW = window.SW || {};
   // second (ADR-0021). A control that cannot complete is the dead end this door exists to remove,
   // and the split is what made this one able to.
   //
-  // A Model API IS here, and that is the one place this list parts company with the panel's
-  // `canBind` (`components/resource-panel.js`), which keeps to LLM Aliases because a Model API needs
-  // a credential. It parts company deliberately. Sage refuses to record a Model API it holds no
+  // A Model API IS here, and it is here deliberately. The panel's own door admitted LLM Aliases
+  // only, on the ground that a Model API needs a credential, and this list never took that rule over
+  // — then #144 took the panel's door away, so this is the only rule there is. Sage refuses to
+  // record a Model API it holds no
   // demonstrated call for, and the refusal it sends is not a dead end — it is the instruction, in
   // the server's own words: open the model's Overview page in Domino, copy the sample request, paste
   // it. `bindToApp` puts that sentence on the screen unchanged, which is why nothing here rewrites
@@ -665,9 +666,11 @@ window.SW = window.SW || {};
   // The door into the selected app's Bindings, on the app's own surface (ADR-0021).
   //
   // Here rather than on the Resource Browser's rows because the surface that owns a scope owns the
-  // act that writes it. The rail's `Use in {app}` is still live — this is the expand half, so there
-  // is never a window with no door open — and both reach `store.bindToApp`, which is where the
-  // receipt, the id-space rule and the membership re-read live in one copy.
+  // act that writes it. This opened first and the rail's `Use in {app}` stayed live beside it, so
+  // no window ever existed with no door open; #144 closed the rail's copy. This is the door a person
+  // goes looking for — the refusal card's repair is the other one, and it comes to them. Both reach
+  // `store.bindToApp`, which is where the receipt, the id-space rule and the membership re-read live
+  // in one copy.
   //
   // The picker draws the working set first and the wider Domino catalogue behind it, through the
   // same `workingSetFirst` the composer's @ menu orders itself with. Shared rather than copied: the
@@ -774,8 +777,9 @@ window.SW = window.SW || {};
         h(
           Button,
           { size: 'small', icon: h(PlusOutlined, null) },
-          // The same words the panel's row menu says and the refusal card quotes, because the two
-          // doors are one act and a second label would be a second thing to learn (ADR-0011).
+          // The same words the refusal card quotes and the panel's row menu said until #144, because
+          // it is one act and a second label would be a second thing to learn (ADR-0011). The words
+          // outlived the other door: they are what the server's refusal sends the reader looking for.
           `Use in ${app.name}`
         )
       )

@@ -6,8 +6,9 @@ items below `Use in this chat` in a panel that owns no app scope. The labels wer
 ADR-0011 had already made them name their scopes, and naming a scope does not carry the weight of
 one act writing a chip and the next writing a manifest a published app depends on weeks later.
 
-THIS IS THE EXPAND HALF. The header's door opens and the panel's `Use in {app}` stays exactly where
-it was, so there is never a window in which no door is open. The contract half is the next ticket's.
+THIS WAS THE EXPAND HALF. The header's door opened while the panel's `Use in {app}` stayed exactly
+where it was, so no window ever existed in which no door was open. #144 closed the window, and the
+panel's absence is asserted from there — `test_the_resource_browser_stops_offering_use_in_app.py`.
 
 WHAT WAS NOT HERE WHEN THIS SHIPPED. Data Sources. A Data Source Binding carried a Scope, the Scope
 was still the cascade position the creator was standing on (#129), and a picker row had none to
@@ -261,19 +262,6 @@ def test_the_act_says_what_it_did_and_how_to_reverse_it():
     said = " ".join(step["said"])
     assert "Rate curve viewer now uses Claude Sonnet 4" in said
     assert "Remove it in Project resources, under Rate curve viewer" in said
-
-
-# ---- nothing was taken away ------------------------------------------------
-
-
-@needs_node
-def test_the_panels_use_in_app_still_works():
-    """The expand half's whole promise. Three later tickets depend on there never being a window
-    with no door open, so the panel's act is asserted here rather than assumed — and it is asserted
-    through the same step the panel's own test drives it with."""
-    step = _run([{"useIn": "Claude Sonnet 4", "thread": "thr_many", "select": "app_c"}])[-1]
-    assert step["item"]["label"] == "Use in Rate curve viewer"
-    assert step["posted"] == [{"kind": "llm_alias", "id": "al_1"}]
 
 
 # ---- the ordering is shared, not copied ------------------------------------

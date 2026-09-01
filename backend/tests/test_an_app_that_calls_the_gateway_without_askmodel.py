@@ -160,8 +160,14 @@ def test_an_undeclared_alias_is_named_to_the_creator_with_the_act_only_they_can_
     assert calls == [("src/Chat.tsx", ["sonnet"])]
     notice = unbound_alias_notice(calls)
     assert "sonnet" in notice and "src/Chat.tsx" in notice
-    # Binding is a person's act (ADR-0010), so the sentence has to end somewhere they can go.
-    assert "Resources panel" in notice
+    # Binding is a person's act (ADR-0010), so the sentence has to end somewhere they can go — and
+    # that somewhere is the Built App's own surface, which is the only place the act lives (ADR-0021).
+    # Named by the heading over it, because this sentence does not know the app's name and the door's
+    # label is `Use in {app}`.
+    assert "what this app ships" in notice
+    # Not the Resources panel. It offered the act until #144 and does not now, so a sentence naming
+    # it would be the #127 bug word for word: a creator sent to a control that is not there.
+    assert "Resources panel" not in notice
     # And it says what the fix does to this app, which is break it until they go there.
     assert "askModel" in notice
 
@@ -346,7 +352,8 @@ def test_an_undeclared_alias_says_so_to_the_creator_too(tmp_path: Path):
 
     said = _of(events, "gateway-alias-unbound")
     assert len(said) == 1
-    assert "sonnet" in said[0]["message"] and "Resources panel" in said[0]["message"]
+    assert "sonnet" in said[0]["message"]
+    assert "what this app ships" in said[0]["message"]
 
 
 def test_the_nudge_is_bounded_and_the_turn_finishes_anyway(tmp_path: Path):
