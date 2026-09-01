@@ -44,9 +44,17 @@ const models: ModelApi[] = config.models?.length
     ? [{ name: config.name || "The model", url: config.url, token: config.token }]
     : [];
 
+// DESCRIBES the act rather than quoting a label, the way its twin in `appLlm.ts` does and for the
+// same reason: the door draws `Use in {app name}`, which a string compiled into the app cannot
+// know. This file did quote one, and invented it — "Use on", for a control that never existed
+// (#127).
+//
+// The destination is named by the heading over it, in the Build header. It said the Resources panel
+// until #144 moved the act to the Built App's own surface (ADR-0021), and for a Model API that
+// panel never carried the act at all, so the old sentence named a place the act has never been.
 const NO_MODEL_API =
-  "This app has no Model API yet. Whoever built it can add one in Sage: open the Resources panel " +
-  "and choose Use on a Model API.";
+  "This app has no Model API yet. Whoever built it can add one in Sage: in the list of what this " +
+  "app ships, choose the Use in action that names this app.";
 
 /** The Model API a call means, or null when it names one this app does not use. */
 function pick(name?: string): ModelApi | null {
