@@ -673,7 +673,7 @@ window.SW = window.SW || {};
   // same `workingSetFirst` the composer's @ menu orders itself with. Shared rather than copied: the
   // two menus offer the same choice, and a person carries what they learn from one to the other.
   function AddToApp({ app }) {
-    const { resourceGroups, catalogueParents, bindings } = SW.store.get();
+    const { resourceGroups, catalogueParents, bindings, addToAppOpen } = SW.store.get();
 
     // Already-bound rows are left out rather than shown ticked. Re-binding an Alias or a Dataset
     // rewrites the same record with the same values, so the row would be an act with no effect —
@@ -743,6 +743,11 @@ window.SW = window.SW || {};
       {
         trigger: ['click'],
         placement: 'bottomRight',
+        // Controlled, because this door is pointed at from somewhere else on the screen: the
+        // refusal card's credential repair opens it (#143) now that the act it repairs lives here
+        // rather than in the panel. A dropdown antd alone owned could only ever be clicked open.
+        open: addToAppOpen,
+        onOpenChange: (next) => (next ? SW.store.openAddToApp() : SW.store.closeAddToApp()),
         menu: {
           items,
           // Returned rather than fired and forgotten, the way the panel's row menu returns its own:
@@ -750,6 +755,9 @@ window.SW = window.SW || {};
           // from one still in flight.
           onClick: ({ key, domEvent }) => {
             if (domEvent) domEvent.stopPropagation();
+            // Shut by hand, which is what being controlled costs: antd closes an uncontrolled menu
+            // on a click, and this one would otherwise stand open over its own receipt.
+            SW.store.closeAddToApp();
             const row = rows.find((r) => r.id === key);
             return row ? SW.store.bindToApp(row) : undefined;
           },
@@ -787,8 +795,9 @@ window.SW = window.SW || {};
   // recorded but the part of it the app reads is not" is a state the glossary already had a word
   // for, and it is the only answer a store Sage has no dialect for can ever give.
   //
-  // `open` is controlled, unlike the picker above. A menu that shut on every click could not walk a
-  // ladder, and the position lives in the store anyway, because this walk ends in a POST.
+  // `open` is controlled, and for a different reason from the picker above: a menu that shut on
+  // every click could not walk a ladder, and the position lives in the store anyway, because this
+  // walk ends in a POST.
   function ScopeDoor({ binding, app }) {
     const { scopePick } = SW.store.get();
     const pick = scopePick && scopePick.id === binding.id ? scopePick : null;

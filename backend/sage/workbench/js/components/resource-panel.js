@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useEffect, useRef, Fragment } = React;
+  const { createElement: h, useState, useRef, Fragment } = React;
   const { Input, Tooltip, Button, Tag, Dropdown } = antd;
   const {
     SearchOutlined, DownOutlined, RightOutlined, PlusOutlined, MoreOutlined,
@@ -354,34 +354,19 @@ window.SW = window.SW || {};
   SW.ResourcePanel = function ResourcePanel() {
     const {
       resourceGroups, resourceErrors, activeApp, panelFilter, projectPlan, bindings, attachments,
-      appAttachments, appRemoval, resourcesLoading, cascadeResourceId, cascadeSeq,
+      appAttachments, appRemoval, resourcesLoading,
     } = SW.store.get();
     const [query, setQuery] = useState('');
     const [collapsed, setCollapsed] = useState({});
     const [filesOpen, setFilesOpen] = useState(false);
     const fileRef = useRef(null);
 
+    // Opened by clicking a row and by nothing else. The refusal card used to ask for one from
+    // outside, because a Data Source Binding carried a Scope and a Scope was a position in here
+    // (#129, #135); since #142 the bind carries none and the card records it in one click, so the
+    // only reader of that pointer is gone and the cascade is what it was before — a way to look
+    // (#143, ADR-0021).
     const [expandedId, setExpandedId] = useState(null);
-
-    // Somewhere else in the Workbench asked for a Data Source's cascade — today the refusal card,
-    // which cannot record a Data Source Binding itself because that Binding carries a Scope and a
-    // Scope is a position in here (#129, #135).
-    //
-    // The two things that could hide the row go with it: a search term left over from earlier, and
-    // a collapsed group. An expanded row nobody can see is a button that appears to have done
-    // nothing — the dead end the card was added to remove, arrived at from the other side. Every
-    // group is reopened rather than the one this row is in, because `{}` is the default state and
-    // finding the group would mean teaching this hook a second row-to-group rule.
-    //
-    // Keyed on the counter alone, `cascadeResourceId` deliberately left out of the deps: someone who
-    // collapses the row and clicks the same button again has to get it back, and the id has not
-    // changed between those two clicks.
-    useEffect(() => {
-      if (!cascadeResourceId) return;
-      setQuery('');
-      setCollapsed({});
-      setExpandedId(cascadeResourceId);
-    }, [cascadeSeq]);
 
     // What the selected app is bound to, keyed the way a Project row is (#99) — see
     // `SW.util.bindingId`. The "In this app" rows below take the same key, and they have to: the

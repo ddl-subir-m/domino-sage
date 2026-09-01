@@ -232,10 +232,12 @@ def test_the_card_offers_one_act_per_kind_and_names_the_app_each_one_lands_in():
     Alias need" would drift."""
     store = _js("store.js")
 
-    # An Alias binds in one click; the other two open the door their kind needs first.
-    assert "llm_alias: (e) => ({ label: `Use in ${e.app}`, act: () => store.bindAliasFromMention(e) })" in store
-    assert "label: `Choose a Scope in ${e.app}`," in store
-    assert "act: () => store.openScopeForMention(e)," in store
+    # An Alias and a Data Source each bind in one click, under one label — the Data Source joined
+    # the Alias when #142 stopped making its Scope a cascade position (#143). The Model API still
+    # opens the door its kind needs first.
+    assert "const bind = (e) => ({ label: `Use in ${e.app}`, act: () => store.bindFromMention(e) });" in store
+    assert "llm_alias: bind," in store
+    assert "data_source: bind," in store
     assert "act: () => store.openCredentialForMention(e)," in store
     assert "file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e) })" in store
     # A Model API's token is stored per model and outlives any one Binding, so that one label names
@@ -250,17 +252,12 @@ def test_the_four_acts_are_the_store_s_and_reach_the_doors_that_already_exist():
     fixes before send (#136) — two copies of "what does an unbound Alias need" would drift."""
     store = _js("store.js")
 
-    # The Alias's bind goes through `bindToApp`, carrying the Binding identity — the bare pair is
-    # what the route resolves — AND the prefixed row id, which `resourceIndex` keys on: the id is
-    # what lets `bindToApp` skip the full scope reload when the Alias is already in the rail.
-    assert "bindAliasFromMention(entry) {" in store
+    # The bind goes through `bindToApp`, carrying the Binding identity — the bare pair is what the
+    # route resolves — AND the prefixed row id, which `resourceIndex` keys on: the id is what lets
+    # `bindToApp` skip the full scope reload when the Resource is already in the rail.
+    assert "bindFromMention(entry) {" in store
     assert "bindingKey: [entry.kind, entry.id]," in store
     assert "id: SW.util.bindingId({ kind: entry.kind, id: entry.id })," in store
-    # The Data Source opens the cascade at that Resource. The counter is what lets a second ask
-    # reopen a row somebody collapsed.
-    assert "openScopeForMention(entry) {" in store
-    assert "state.cascadeResourceId = SW.util.bindingId({ kind: entry.kind, id: entry.id });" in store
-    assert "state.cascadeSeq += 1;" in store
     # The Model API routes into the credential flow rather than offering a bind the server refuses.
     # And it does NOT set `panelFilter`, which draws "Pick a {kind} to continue" over the list — a
     # different instruction from the one the button and the sentence give.
@@ -270,18 +267,22 @@ def test_the_four_acts_are_the_store_s_and_reach_the_doors_that_already_exist():
     # has no list of Datasets to show.
     assert "attachFileForMention(entry) {" in store
     assert "store.addScratchToDataset({ id: `file:${path}`, name, path }, '', { quiet: true })" in store
-    # Nothing here records a Binding on its own: the two that cannot finish in one click set panel
-    # state and return, and the one that can hands off to the act the panel's own menu calls.
-    assert "SW.api.bind(" not in store[store.index("bindAliasFromMention"):store.index("// Out of the selected Built App")]
+    # Nothing here records a Binding on its own: the one that cannot finish in one click opens a
+    # door and returns, and the ones that can hand off to the act every other door calls.
+    assert "SW.api.bind(" not in store[store.index("bindFromMention"):store.index("// Out of the selected Built App")]
 
 
-def test_the_panel_stands_open_where_the_cascade_was_asked_for():
-    """The other end of the Data Source act. Without it the button opens a panel and leaves the
-    person to find the row — which is the walk this whole card exists to remove."""
+def test_no_repair_reaches_into_the_panel_any_more():
+    """The other end of the Data Source act, and where it went (#143).
+
+    This card used to have to open the Resource Browser at a row and leave the person standing in a
+    cascade, because a Data Source Binding carried a Scope and a Scope was a position in there. The
+    bind carries none since #142, so the card records it — and the pointer that stood the panel open
+    at a row has no caller left. It is gone rather than kept warm: state nothing writes is a claim
+    the panel goes on making about a Workbench that stopped asking."""
     panel = _js("components", "resource-panel.js")
-    assert "setExpandedId(cascadeResourceId);" in panel
-    assert "}, [cascadeSeq]);" in panel
-    # An expanded row hidden behind a leftover search term or a collapsed group is a button that
-    # appears to have done nothing.
-    assert "setQuery('');" in panel
-    assert "setCollapsed({});" in panel
+    assert "cascadeResourceId" not in panel
+    assert "cascadeSeq" not in panel
+    store = _js("store.js")
+    assert "cascadeResourceId" not in store
+    assert "cascadeSeq" not in store

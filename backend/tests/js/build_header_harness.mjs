@@ -870,12 +870,17 @@ function headerPicker(thread) {
   const after = nodes.slice(at);
   const menu = after.find((n) => n.items);
   const button = after.find((n) => n.el === 'Button');
+  const dropdown = after.find((n) => n.el === 'Dropdown');
   return {
     // The words on the control, which is half of what says which act this is.
     label: button ? (button.texts || []).join('') : null,
     tooltip: (after.find((n) => n.el === 'Tooltip') || {}).title || '',
     items: menu ? menu.items : [],
     onMenu: menu ? menu.onMenu : null,
+    // Whether the door STANDS open, which is the whole of what a pointer from elsewhere on the
+    // screen leaves behind (#143). The items are in the tree either way, so without this a claim
+    // about being pointed at would pass on a door nobody opened.
+    open: dropdown ? dropdown.open : null,
   };
 }
 
@@ -1125,6 +1130,9 @@ for (const step of steps) {
       calls: calls.slice(),
       // The receipt. It is the only place the act says what it did and how to reverse it.
       said: said.slice(),
+      // Whether the door is still standing open over its own receipt. The picker is controlled
+      // since #143, and a controlled menu does not shut itself.
+      openAfter: (headerPicker(step.thread) || {}).open,
       bindings: (SW.store.get().bindings || []).map((b) => `${b.kind}:${b.id}`),
     });
     continue;
@@ -1227,6 +1235,71 @@ for (const step of steps) {
       bindings: (SW.store.get().bindings || []).map(
         (b) => `${b.kind}:${b.id}${b.database ? ` @${[b.database, b.schema, b.table].filter(Boolean).join('.')}` : ''}`
       ),
+    });
+    continue;
+  }
+
+  // The repairs the refusal card offers on a mention the selected app cannot reach (#143).
+  //
+  // Driven the way the card drives them: the store builds the fixes and the step clicks ONE. The
+  // entry is written in `_unusable_mentions`'s shape, which is the shape the server sends and the
+  // shape the composer's compose-time warning builds for itself — a fixture in any other shape
+  // would assert about a row nothing on screen can produce.
+  //
+  // Reported beside the Build header, because the claim is about where a click LEAVES you: the
+  // dock's tab, the header's door and the Bindings the act wrote are three answers to one
+  // question, and no one of them alone tells a re-pointed signpost from a moved act.
+  if (step.fixMention) {
+    await arrive(step.thread, step.select);
+    await SW.store.reloadAttachments();
+    SW.store.set({
+      resourceGroups: RESOURCE_GROUPS,
+      resourcesLoading: false,
+      catalogueParents: CATALOGUE,
+      // Shut, both of them, so "this did not open the Resource Browser" is a claim about what the
+      // click did rather than about what a previous step happened to leave behind.
+      dockTab: null,
+      panelFilter: null,
+    });
+    SW.store.closeAddToApp();
+    said.length = 0;
+    calls.length = 0;
+    binds.length = 0;
+    scoped.length = 0;
+    // The app the card named. It is the selected one here, which is the only state that draws a
+    // button at all: every act behind one resolves the app on screen NOW (#77, #135).
+    const on = SW.store.get().activeApp || {};
+    const entry = { ...step.fixMention, app: on.name, appId: on.id };
+    const fixes = SW.store.mentionFixes([entry], on.id);
+    if (!fixes.length) throw new Error(`no fix offered for ${JSON.stringify(entry)}`);
+    await fixes[0].act();
+    const picker = headerPicker(step.thread);
+    const s = SW.store.get();
+    report.push({
+      step: `fixMention ${step.fixMention.kind}`,
+      // The words on the button, which are half of what the offer is.
+      labels: fixes.map((f) => f.label),
+      // Where the dock stands afterwards. Null is collapsed, and collapsed is the claim.
+      dockTab: s.dockTab,
+      panelFilter: s.panelFilter,
+      // The door on the app's own surface: whether the click left it standing open, and what it
+      // offers while it is.
+      pickerOpen: picker ? picker.open : null,
+      pickerItems: picker ? picker.items : [],
+      // What reached the wire, in the id space the route resolves — a repair that posted the
+      // prefixed id would answer 404 and redraw unchanged, which reads exactly like success (#127).
+      posted: binds.slice(),
+      // Separately, because the split is the point: a repair that walked a cascade on the way
+      // through would write here as well as above.
+      scoped: scoped.slice(),
+      calls: calls.slice(),
+      said: said.slice(),
+      bindings: (s.bindings || []).map((b) => `${b.kind}:${b.id}`),
+      // The second act, where it now stands: a Data Source the repair bound arrives on the app's
+      // own surface with its Scope door beside it, saying which state it is in.
+      doors: headerScopeDoors(step.thread).map((d) => ({ after: d.after, label: d.label })),
+      // The cascade's own walk, which no repair reaches any more.
+      walkOpen: s.scopePick !== null,
     });
     continue;
   }

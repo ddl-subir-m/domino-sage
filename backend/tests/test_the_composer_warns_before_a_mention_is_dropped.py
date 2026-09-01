@@ -105,10 +105,9 @@ def test_the_acts_are_the_store_s_and_the_chip_writes_no_second_copy():
     per-kind map beside them for the same reason."""
     assert "const fixes = SW.store.mentionFixes(entries, activeAppId);" in UI
     assert "FromMention" not in UI, "the chip reaches the acts through the shared map, never direct"
-    # An Alias finishes in one click; a Data Source opens the Scope cascade at that Resource; a
-    # Model API routes into the credential flow. All three, once, in the store.
-    assert STORE.count("act: () => store.bindAliasFromMention(e)") == 1
-    assert STORE.count("act: () => store.openScopeForMention(e),") == 1
+    # An Alias and a Data Source each finish in one click, through one shared act (#143); a Model
+    # API routes into the credential flow. All of them, once, in the store.
+    assert STORE.count("act: () => store.bindFromMention(e)") == 1
     assert STORE.count("act: () => store.openCredentialForMention(e),") == 1
     assert STORE.count("act: () => store.attachFileForMention(e)") == 1
 

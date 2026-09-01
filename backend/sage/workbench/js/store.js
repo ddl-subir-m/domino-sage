@@ -65,12 +65,6 @@ window.SW = window.SW || {};
     railHidden: false,
     railAppFilter: null,  // show only conversations that changed this app
     previewResourceId: null,
-    // The Data Source whose cascade the panel should stand open at, sent from somewhere else in the
-    // Workbench — today a refusal card (#135). The counter is the whole of why there are two fields:
-    // the id alone stops changing, so collapsing the row and asking again would do nothing.
-    cascadeResourceId: null,
-    cascadeSeq: 0,
-
     // The catalogue picker. Browsing the platform is a deliberate, occasional
     // act, so it gets a surface you open and close rather than a column you
     // live beside.
@@ -84,6 +78,10 @@ window.SW = window.SW || {};
     inviteOpen: false,
     paletteOpen: false,
     scopePickerOpen: false,
+    // The Build header's own add door, open. Controlled from here rather than left to antd because
+    // something else in the Workbench asks for it — the refusal card's credential repair, which
+    // points at this door and no longer at the panel (#143, ADR-0021).
+    addToAppOpen: false,
     helpOpen: false,
     settingsOpen: false,
 
@@ -2216,6 +2214,19 @@ window.SW = window.SW || {};
     // `scope` is the Data Source's alone (#129): the cascade position the creator was standing on,
     // passed by the door that was on screen there rather than derived here. There is nothing on a
     // Project row to derive it FROM, which is why that row has no door for this kind.
+    // The door itself, open and shut. It is controlled from the store rather than left to antd
+    // because a second surface asks for it: the refusal card's credential repair points here now
+    // (#143), and a control that only ever opened under its own pointer could not be pointed at.
+    openAddToApp() {
+      state.addToAppOpen = true;
+      notify();
+    },
+
+    closeAddToApp() {
+      state.addToAppOpen = false;
+      notify();
+    },
+
     async bindToApp(resource, scope) {
       // The BARE id, off `bindingKey`. Deriving it from `resource.id` would send the prefixed
       // `llm_alias:al_1`, which resolves to no Alias, answers 404, and leaves the rail redrawing
@@ -2434,12 +2445,15 @@ window.SW = window.SW || {};
     // being a record. The composer's warning is read off the selected app every render, so its
     // rows can never disagree; it passes the same id rather than keeping a second entry point.
     mentionFixes(entries, activeAppId) {
+      // The two kinds whose bind takes a single argument, so a click on either one finishes. A
+      // Data Source joined the Alias here when #142 stopped deriving its Scope from a cascade
+      // position: the bind records the dependency and nothing else now, and the Scope is a second
+      // act on the app's own surface — which is where `bindToApp`'s receipt sends the reader.
+      // One label for one act, in the words the header's own door already uses.
+      const bind = (e) => ({ label: `Use in ${e.app}`, act: () => store.bindFromMention(e) });
       const MENTION_FIX = {
-        llm_alias: (e) => ({ label: `Use in ${e.app}`, act: () => store.bindAliasFromMention(e) }),
-        data_source: (e) => ({
-          label: `Choose a Scope in ${e.app}`,
-          act: () => store.openScopeForMention(e),
-        }),
+        llm_alias: bind,
+        data_source: bind,
         model_api: (e) => ({
           label: 'Add its access token',
           act: () => store.openCredentialForMention(e),
@@ -2454,37 +2468,23 @@ window.SW = window.SW || {};
       }).filter(Boolean);
     },
 
-    // An LLM Alias, the one kind whose bind takes a single argument, so this one finishes. Reshaped
-    // into what `bindToApp` reads rather than calling `/bindings` again: the app-name reporting, the
-    // generation ticket and the bare-id rule all belong to that act and are not worth a second copy.
-    bindAliasFromMention(entry) {
+    // An LLM Alias or a Data Source, the two kinds whose bind takes a single argument, so a click
+    // on either finishes. Reshaped into what `bindToApp` reads rather than calling `/bindings`
+    // again: the app-name reporting, the generation ticket and the bare-id rule all belong to that
+    // act and are not worth a second copy.
+    //
+    // Which surface the reader is left on is that act's answer and not this one's. `bindToApp`
+    // writes the receipt, and for a Data Source the receipt names the second act — the Scope,
+    // beside the record's own name in the Build header (#142, ADR-0021).
+    bindFromMention(entry) {
       if (!entry || !entry.kind || !entry.id) return Promise.resolve(false);
       return store.bindToApp({
         // The prefixed id is what `resourceIndex` keys on: without it `bindToApp` cannot see the
-        // Alias is already in the rail, and every bind from this door reloads the whole scope.
+        // Resource is already in the rail, and every bind from this door reloads the whole scope.
         id: SW.util.bindingId({ kind: entry.kind, id: entry.id }),
         name: entry.name || entry.id,
         bindingKey: [entry.kind, entry.id],
       });
-    },
-
-    // A Data Source. This opens the Resource Browser at that Resource and stops there.
-    //
-    // It did so because a Scope was the cascade position the creator was standing on (#129), and the
-    // bind was the door beside the crumb. Since #142 it is neither: the bind is on the Built App's
-    // own surface and the Scope is a second act there, so what this reaches is a cascade that only
-    // looks. #143 re-points it — the signpost follows the act — and until it does this points at
-    // where the fix used to be.
-    openScopeForMention(entry) {
-      if (!entry || !entry.kind || !entry.id) return false;
-      state.dockTab = 'resources';
-      // Cleared rather than set: the filter dims every row outside one group, and the row this is
-      // about is the one that has to be findable.
-      state.panelFilter = null;
-      state.cascadeResourceId = SW.util.bindingId({ kind: entry.kind, id: entry.id });
-      state.cascadeSeq += 1;
-      notify();
-      return true;
     },
 
     // A Model API. Sage refuses to record one it holds no access token for, so the credential is the
@@ -2492,14 +2492,19 @@ window.SW = window.SW || {};
     // the server is designed to turn down. The sentence names the Resource and not the app on
     // purpose: a token is stored per model and outlives any one Binding (see UNBIND_COPY), so it is
     // not a thing an app owns.
-    // No `panelFilter`: it draws "Pick a {kind} to continue" over the list, which is a different
-    // instruction from the one the button gave and the one the sentence below gives. The panel opens
-    // on the whole Project instead, the way the cascade's door leaves it.
+    //
+    // So this one stays a signpost, and #143 moved what it points at. It opened the Resource
+    // Browser because that is where the bind was; the bind is on the Built App's own surface now
+    // (ADR-0021), so what stands open is the header's own door — beside a sentence saying what
+    // that door will ask for before it will record anything.
+    //
+    // That door does list this kind, which is not the same as offering the bind here. #141 settled
+    // it: a Model API row in the picker answers 409 with the server's own instruction, and putting
+    // that sentence on screen unchanged is a door doing its job. What a card must not do is spend
+    // its ONE click on it — the rule every button here is drawn under (#135).
     openCredentialForMention(entry) {
       if (!entry || !entry.id) return false;
-      state.dockTab = 'resources';
-      state.panelFilter = null;
-      notify();
+      store.openAddToApp();
       // What the token is for and where it comes from, and no more than that. The form that takes
       // the paste is #128's — until it exists there is no box to point at, and a sentence promising
       // one would be the dead end this card removes, rebuilt. When it lands it hangs off this act,
