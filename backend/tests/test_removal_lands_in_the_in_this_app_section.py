@@ -79,7 +79,7 @@ def _app_rows(step: dict) -> list[dict]:
     return [
         r
         for r in step["rows"]
-        if r["section"] and r["section"] not in ("Project resources", "In context")
+        if r["section"] and r["section"] not in ("In this project", "In context")
     ]
 
 
@@ -164,7 +164,7 @@ def test_the_apps_rows_carry_ids_the_project_answers_in():
     manifest. Removal itself does not depend on any of this: it reads the record off `appScope`."""
     step = _panel("app_a")
     ids = {r["id"] for r in _app_rows(step)}
-    project_ids = {r["id"] for r in step["rows"] if r["section"] == "Project resources"}
+    project_ids = {r["id"] for r in step["rows"] if r["section"] == "In this project"}
     assert {"data_source:ds_1", "llm_alias:al_1"} <= ids
     assert {"data_source:ds_1", "llm_alias:al_1"} <= project_ids
     assert "file:public/data/desks/margins.csv" in ids

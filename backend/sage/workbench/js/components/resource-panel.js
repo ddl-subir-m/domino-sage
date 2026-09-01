@@ -655,7 +655,12 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-panel-section-head' },
-        h('span', { className: 'sw-panel-section-title' }, 'Project resources'),
+        // The head names the Project, not the type of thing underneath it. The working set holds
+        // Assets as well as Resources, so a head reading "Project resources" was a claim about the
+        // contents that half of them do not meet — and the prose label is the one the overlay is
+        // free to change (ADR-0014). The dock tab beside it keeps the identifier's own name, which
+        // is what the removal pointers send people to.
+        h('span', { className: 'sw-panel-section-title' }, 'In this project'),
         h('span', { className: 'sw-panel-section-count' }, resourcesLoading ? '…' : total),
         h(
           Dropdown,

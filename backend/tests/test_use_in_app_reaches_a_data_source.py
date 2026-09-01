@@ -79,7 +79,7 @@ def _row(step: dict, section: str, rid: str = "data_source:ds_1") -> dict:
 
 def _source_row(step: dict) -> dict:
     """The Project's own row for the Data Source — the one the cascade hangs under."""
-    return _row(step, "Project resources")
+    return _row(step, "In this project")
 
 
 # ---- the door, at each of the four positions ----------------------------------------------------
@@ -331,7 +331,7 @@ def test_the_sign_reaches_data_source_rows_in_the_rail_the_other_tests_draw():
     sent one, so a row the selected app does not bind says so there too."""
     step = _run(_PANEL, [{"panel": "thr_many", "select": "app_a"}])[-1]
     loose = [r for r in step["rows"]
-             if r["section"] == "Project resources" and "Risk warehouse" in r["texts"]]
+             if r["section"] == "In this project" and "Risk warehouse" in r["texts"]]
     assert len(loose) == 1
     assert "Not used by Desk dashboard" in loose[0]["texts"]
     assert not any(i["label"] == DOOR for i in loose[0]["items"])

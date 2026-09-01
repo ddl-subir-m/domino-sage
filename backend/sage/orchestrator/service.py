@@ -638,6 +638,12 @@ _LEAF_ID_PREFIXES = ("table:", "dsfile:")
 # stored.
 _MEMBERSHIP_ONLY_FIELDS = ("description", "alias", "capabilities", "reasoning_efforts")
 
+# Set once `_backfill_membership_from_bindings` has reconciled this Project's working set with the
+# Bindings that predate membership-on-bind (#140). In the Project's settings rather than derived
+# from the data, because "already done" is what makes the repair a migration instead of the union
+# on read ADR-0020 rejected.
+_MEMBERSHIP_BACKFILLED = "membershipBackfilled"
+
 
 def _bare_kind_id(value: str, kind: str) -> str:
     """Strip a `kind:` prefix from a membership id. Dataset `dataset:ds_1` and Data Source
@@ -2723,6 +2729,10 @@ class Orchestrator:
             self._voice_agents_md(self._project)
             self._splice_instructions(self._project)
         self._rehydrate_attached(self._project)
+        # Once per Project, on the way in rather than on the way to the rail: a migration belongs to
+        # opening the thing it repairs, and `list_project_resources` promises it never writes to the
+        # membership file (#140).
+        self._backfill_membership_from_bindings(record)
         return self._project
 
     def _chat_project(self) -> Project:
@@ -7844,6 +7854,68 @@ class Orchestrator:
             ]}
             for row in rows
         ]
+
+    def _backfill_membership_from_bindings(self, record: ProjectRecord) -> None:
+        """Give every Binding recorded before membership-on-bind existed its membership row (#140).
+
+        `_join_project_on_bind` landed on 2026-09-01 in `29d4930` with no backfill, so a Project
+        whose Data Source was bound the week before opens on a rail claiming it uses nothing, beside
+        an app that plainly uses it. Under ADR-0020 the working set's job is orientation, which
+        makes completeness a correctness requirement rather than a nicety: the section is true or it
+        is wrong.
+
+        Written through `_join_project_on_bind`, so a migrated row is the row a live bind writes —
+        same prefixed id, same name, same `alias` for the one kind whose picker needs it. The
+        catalogue half a door hands `_record` is the listing that door had just read, and a
+        migration has no door and no listing; it fetches none of its own, exactly as the join does
+        not (ADR-0018). What it leaves out is filled in by the next Add or bind for that Resource,
+        because `add_project_resource` fills a row's gaps rather than replacing it.
+
+        ONE-SHOT, and the flag is what makes it so. Recomputing the missing rows on every read was
+        the cheap alternative and it is the union on read wearing a different hat: it would keep the
+        file reconciled to the Bindings for ever, so a future door that binds without joining would
+        be repaired behind itself instead of showing up as the correctness bug ADR-0020 says it is.
+        Once done, the file is the single source of truth again.
+
+        A write the disk refuses never fails the open — the join swallows it, as it does for a live
+        bind. What it does do is leave the flag down, so the next open tries again: a migration that
+        marked itself done over a row that never landed would leave the section permanently short,
+        and this is the one place that can still tell.
+        """
+        settings = record.read_settings()
+        if settings.get(_MEMBERSHIP_BACKFILLED):
+            return
+        members: set[str] = set()
+        for row in record.read_project_resources():
+            rid = str(row.get("id") or "").strip()
+            if not rid:
+                continue
+            members.add(rid)
+            # The tolerance `_apps_that_bind` extends, for the reason it extends it: an older row
+            # may key a Data Source under `datasource:`, and writing a second row under
+            # `data_source:` is exactly the split the removal guard then cannot join.
+            kind, _, rest = rid.partition(":")
+            if kind == "datasource":
+                members.add(f"{KIND_DATA_SOURCE}:{rest}")
+        joined: set[str] = set()
+        try:
+            for _workspace, bindings in self._app_bindings():
+                for binding in bindings:
+                    rid = f"{binding.kind}:{binding.id}"
+                    if rid in members:
+                        continue
+                    self._join_project_on_bind(binding, {})
+                    members.add(rid)
+                    joined.add(rid)
+        except OSError:
+            log.warning("membership: could not read the app manifests to backfill", exc_info=True)
+            return
+        if joined and not joined <= {
+                str(row.get("id") or "").strip() for row in record.read_project_resources()}:
+            log.warning("membership: backfill did not land; leaving it for the next open")
+            return
+        settings[_MEMBERSHIP_BACKFILLED] = True
+        record.write_settings(settings)
 
     def add_project_resource(self, item: dict) -> dict:
         """Put one Resource in this project's working set. Idempotent on id."""
