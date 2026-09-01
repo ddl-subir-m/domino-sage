@@ -153,8 +153,8 @@ window.SW = window.SW || {};
     // The two halves of "this row and the selected app", which were one flag until #129. The SIGN
     // and the DOOR: `saysAppUse` switches the subtitle to whether this app uses the Resource, and
     // `canBind` puts the act on this row's menu. A Data Source needs the first without the second —
-    // its Binding carries a Scope, a row has no Scope to carry, and the door is hung inside the
-    // cascade instead. Both are set by the Project list only; see the call site.
+    // its door is on the Built App's own surface (ADR-0021, #142). Both are set by the Project list
+    // only; see the call site.
     saysAppUse,
     canBind,
     // The Built App this row is a record of, and the record itself: `{ app, binding }` or
@@ -462,25 +462,29 @@ window.SW = window.SW || {};
       );
 
     // Which part of the Resource the app reads, for the one kind that records a part: the levels
-    // the creator walked to, dotted, exactly as `Binding.scope` joins them for the agent. Empty for
-    // every other kind, and for a Data Source bound above a database — there the kind is still the
-    // most this row can say.
+    // chosen, dotted, exactly as `Binding.scope` joins them for the agent. Empty for every other
+    // kind — there the kind is still the most this row can say.
     //
-    // It earns the slot because it is the only thing on screen that CHANGES when a Scope moves.
-    // The cascade's door deliberately stays after a bind, so re-binding elsewhere had no visible
-    // effect anywhere: the sign already said `Required by {app}` and went on saying it. A row that
-    // names the kind tells you the app reads a Data Source, which its own icon already said.
-    const bindingScope = (b) => [b.database, b.schema, b.table].filter(Boolean).join('.');
-
+    // It earns the slot because it is the only thing on screen that CHANGES when a Scope moves, and
+    // the Scope moves without the Binding moving: the sign says `Required by {app}` before and
+    // after. A row that names the kind tells you the app reads a Data Source, which its own icon
+    // already said.
     const bindingRow = (b) => {
-      const scope = bindingScope(b);
+      const scope = SW.util.scopeText(b);
+      // A Data Source with no Scope is NAMED rather than described by its kind (#142). Binding and
+      // scoping are two acts, so this is the ordinary state between them and the word for it has to
+      // be a state rather than an error — the Binding stands, and what is not chosen yet is which
+      // part of the source the app reads. The door that chooses it is on the Build header, which is
+      // the surface that owns the Scope (ADR-0021); this list says where things are dealt with and
+      // is not where they are dealt with.
+      const unscoped = SW.util.recordsScope(b.kind) && !scope;
       return h(SW.ResourceRow, {
         key: SW.util.bindingId(b),
         resource: {
           id: SW.util.bindingId(b),
           name: b.display_name || b.name,
           kind: kindForBinding(b.kind),
-          subtitle: scope || (b.kind || '').replace(/_/g, ' '),
+          subtitle: scope || (unscoped ? SW.util.NO_SCOPE_YET : (b.kind || '').replace(/_/g, ' ')),
           // Only the Scope is worth a tooltip: the kind words are short enough to never truncate,
           // and a tooltip repeating a label in full is noise on every row that does not need one.
           subtitleFull: scope || undefined,
@@ -525,12 +529,13 @@ window.SW = window.SW || {};
       const saysAppUse = inBuild && Boolean(activeApp) && Boolean(resource.bindingKey)
         && (resource.kind === 'model_llm' || resource.kind === 'datasource');
       // Whether the ACT belongs on this row, which is strictly narrower than the sign above and is
-      // why the two came apart. Language models only, because they are the one kind whose bind takes
-      // a single argument: a Model API needs a credential (#128), and a Data Source needs a Scope
-      // that a row does not have (#129) — its door is hung inside the cascade, where standing
-      // somewhere IS the Scope. A row offering an act that cannot complete is the dead end this door
-      // exists to remove. The `requiredIds` gate is the Alias's alone for the same reason: rebinding
-      // a Data Source is how its Scope moves, so that door has to stay open after it is used.
+      // why the two came apart. Language models only, because they are the one kind whose bind this
+      // panel can complete: a Model API needs a credential (#128), and a Data Source's door is on
+      // the Built App's own surface, beside the Scope that is now a second act there (#142,
+      // ADR-0021). A row offering an act that cannot complete is a dead end.
+      //
+      // The whole of this act leaves the panel in #144. It is still here so that no window exists
+      // in which an Alias has no door at all.
       const canBind = saysAppUse && resource.kind === 'model_llm'
         && !requiredIds.has(resource.id);
       return h(
@@ -551,12 +556,10 @@ window.SW = window.SW || {};
           onToggleExpand: () => setExpandedId(expanded ? null : resource.id),
         }),
         expanded &&
-          // The app the cascade can hang a door for, or null. Passed down rather than read from the
-          // store there, because the answer is this row's — the same three conditions the sign above
-          // is drawn from — and a tree that decided for itself could offer the act on a surface with
-          // no app to name (#129).
-          h(SW.ResourceTree, {
-            resource, query: needle, variant: 'rail', bindApp: saysAppUse ? activeApp : null })
+          // No app is passed down any more (#142). The tree used to be handed one so it could hang
+          // `Use in {app}` beside the crumb; that act is on the Built App's own surface now
+          // (ADR-0021), and what is left here is looking at what the Resource contains.
+          h(SW.ResourceTree, { resource, query: needle, variant: 'rail' })
       );
     };
 

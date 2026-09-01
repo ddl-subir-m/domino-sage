@@ -529,6 +529,15 @@
    gates nothing (ADR-0010), so styling it as a warning would claim something the record does not.
    Colour alone would carry it to nobody — the word is the label, the colour only its weight. */
 .sw-app-scope-unused { color: var(--gray-500); }
+/* The Scope, and the control that chooses it, which are one element (#142). It sits inside the run
+   of names because it qualifies the name before it, so it takes the run's own size and loses the
+   padding a link button brings — a control that changed the line height would push the names it
+   sits among off their baseline. */
+.sw-app-scope-door {
+  height: auto;
+  padding: 0 var(--s1);
+  font-size: var(--fs-12);
+}
 /* The door, pinned to the far end so it keeps its place while the names beside it truncate. `flex:
    none` for the reason the label has it: what gives way is the run of names, never the two things
    that say whose row this is and what can be done to it. */

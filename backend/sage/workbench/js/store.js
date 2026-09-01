@@ -247,6 +247,18 @@ window.SW = window.SW || {};
     // in `APP_SCOPED` below, for the reason `composerSeed` is not: switching app changes WHICH
     // builds are listed, never whether you had asked to see them.
     buildHistoryOpen: false,
+    // The Data Source Binding whose Scope is being chosen, and the ladder it is standing on (#142).
+    // `{ id, name, levels, database, schema, items, error }` — `items` is the names at the current
+    // level, `null` while the read is out. Null when no Scope door is open.
+    //
+    // In the store rather than in the control, unlike the Resource Browser's cascade, and for the
+    // reason everything else async here is: this walk POSTS at the end of it. The cascade only ever
+    // reads, so its position can live and die with the element drawing it; a Scope outlives the
+    // menu that chose it, and the act that writes one belongs beside the act that binds.
+    //
+    // Not in `APP_SCOPED`: it is a control somebody opened, not a record read for an app. The door
+    // is drawn per Binding, so a selection that moves takes the Binding — and the door — with it.
+    scopePick: null,
     // A prompt written into the composer and left there. The cleanup offer above puts work in front
     // of the person rather than firing a build turn, which the per-project turn lock can refuse and
     // which would put work past a plan gate they never read.
@@ -299,6 +311,12 @@ window.SW = window.SW || {};
   // A after B must land on A, not be ignored. So this is a generation counter like `scopeLoad`,
   // and a superseded open drops its answer instead of writing it.
   let openSeq = 0;
+  // Which listing the open Scope door is waiting on (#142). A generation counter for the reason the
+  // two above have one: stepping into B while A's listing is still out has to land on B, however
+  // the two resolve. Everything that SHUTS the door bumps it too — closing it by hand, and the
+  // selection moving — so a listing that arrives for a door nobody is looking at is dropped rather
+  // than reopening one.
+  let scopePickLoad = 0;
 
   // ---------------------------------------------------------------------
   // App-scoped state, sequenced (#101)
@@ -383,6 +401,13 @@ window.SW = window.SW || {};
         // down — did not, nor did `clearApp` or `setScope`.
         state.appRemoval = null;
         appScopeApplied.appRemoval = ticket.seq;
+        // The Scope door goes with it (#142). It is keyed on the BINDING, and two Built Apps in one
+        // Project can bind the same Data Source — so a walk left half-finished under the app you
+        // came from would still match here, and `saveScope` posts to a route carrying no app id:
+        // the server would scope whichever app is selected NOW. Cleared here for the reason the
+        // notice above is, which is that this is the one place that sees the selection move.
+        scopePickLoad += 1;
+        state.scopePick = null;
         // The builds listed are the app's, so the selection moving is what makes them somebody
         // else's (#88). Dropped rather than left up: a list that stayed would be the wrong pairing
         // #95 fixed, printed as prompts under a header naming a different app. Claiming this
@@ -1610,6 +1635,45 @@ window.SW = window.SW || {};
     applyAppScope(ticket, { bindings: body.bindings || [] });
   }
 
+  // The names at whichever level the Scope door is standing on (#142). One request, off the same
+  // three routes the Resource Browser's cascade walks — the two surfaces ask the same store the
+  // same questions, they just do different things with the answer.
+  //
+  // A store that will not answer is not a Scope the creator has lost: the levels they already
+  // chose still stand, and what is missing is the list of what is under them. So the error is
+  // recorded beside the position rather than in place of it, and the door goes on offering the
+  // position as an answer — the same rule `_write_bound_schema` follows when the columns fail.
+  async function loadScopeLevel() {
+    const pick = state.scopePick;
+    if (!pick) return;
+    const gen = ++scopePickLoad;
+    // A ladder with no rungs is not a level that came back empty. Either Sage has no dialect for
+    // this connector, or the Project row that carries the levels is not on hand — and asking the
+    // table route with nothing above it would ask a question neither case has an answer to. The
+    // door says so, which is what `DataSourceCascade` does with the same fact.
+    if (!(pick.levels || []).length) {
+      state.scopePick = { ...pick, items: [], error: null, unreadable: true };
+      notify();
+      return;
+    }
+    const stage = SW.util.cascadeStage(pick.levels, pick.database, pick.schema);
+    let items = [];
+    let error = null;
+    try {
+      const body = stage === 'database'
+        ? await SW.api.dataSourceDatabases(pick.id)
+        : stage === 'schema'
+          ? await SW.api.dataSourceSchemas(pick.id, pick.database)
+          : await SW.api.dataSourceTables(pick.id, pick.database, pick.schema);
+      items = body.items || [];
+    } catch (err) {
+      error = err.message || '';
+    }
+    if (gen !== scopePickLoad || !state.scopePick) return;
+    state.scopePick = { ...state.scopePick, items, error };
+    notify();
+  }
+
   // Every build of the selected app, read on demand (#88). Not folded into `loadBuild`: the log
   // reaches megabytes on a long-lived app (~68KB per user turn), Build already reads the slice it
   // draws, and paying for the whole file on every app switch would buy a list nobody had asked to
@@ -2185,8 +2249,14 @@ window.SW = window.SW || {};
       // by the head the reader will actually see when they get there. The Build header's two
       // pointers already say it in these words (`modes/builder.js`), and a receipt that named the
       // list differently would send people looking for a heading that is not on the screen.
+      // A Data Source arrives with no Scope, which is a named unfinished state and not an error
+      // (#142) — so the receipt names the second act rather than leaving it to be found. No other
+      // kind has a part to choose, so no other kind is told to choose one.
+      const scopeHint = SW.util.recordsScope(key[0])
+        ? ' Choose a Scope beside its name to say which part of it the app reads.'
+        : '';
       antd.message.success(
-        `${where} now uses ${name}. Remove it in Project resources, under ${where}.`
+        `${where} now uses ${name}.${scopeHint} Remove it in Project resources, under ${where}.`
       );
       // Binding records use, and membership is the record of use (ADR-0018), so the server has
       // just put this Resource in the project. The rail is built from a read this act does not
@@ -2196,6 +2266,127 @@ window.SW = window.SW || {};
       // Only when it was absent: a Resource already in the rail changed nothing about membership,
       // and re-reading the whole scope for it is a handful of calls for no news.
       if (!state.resourceIndex[resource.id]) await loadScopeData();
+      return true;
+    },
+
+    // Choosing which part of a bound Data Source the app reads --------------
+    //
+    // The second of the two acts ADR-0021 split the bind into (#142). The bind above records the
+    // dependency and sends no position inside the Resource, because a picker row has none to give.
+    // This answers the narrower question afterwards, against a Binding that already exists — and
+    // answers it again whenever the choice moves, which is what makes a Scope editable at all.
+    //
+    // It walks the same ladder the Resource Browser's cascade walks and stops wherever the person
+    // stops: a database alone is an answer, and so is a database and a schema. What it no longer
+    // does is stand in front of the bind, which is the whole of what #129 got wrong.
+
+    // Open the door on one Binding, at the top of its ladder.
+    //
+    // At the top rather than at the Scope already recorded, because this control MOVES a choice as
+    // often as it makes one: a walk that resumed under the current answer would offer the levels
+    // below it and no way back up out of it.
+    //
+    // The ladder comes off the Project's own row for the Resource, which is where the server puts
+    // it — a store with no database level opens on its schemas, and one Domino pins a database for
+    // opens a rung further down still. With no row there is nothing to enumerate, and the door says
+    // so rather than drawing an empty ladder.
+    openScopePick(binding) {
+      if (!binding || !binding.id) return Promise.resolve(false);
+      const row = state.resourceIndex[SW.util.bindingId(binding)] || {};
+      state.scopePick = {
+        binding,
+        id: binding.id,
+        name: binding.display_name || binding.name || binding.id,
+        levels: row.levels || [],
+        // Seeded from what Domino already answered, the way the cascade seeds itself: a source with
+        // a pinned database opens with that level filled in and the person choosing the next one.
+        database: row.default_database || '',
+        schema: row.default_schema || '',
+        items: null,
+        error: null,
+        // What the Binding records RIGHT NOW, so the door can offer the way back to no Scope at
+        // all. Read at open rather than from the walk, because the walk is about to move.
+        recorded: SW.util.scopeText(binding),
+      };
+      notify();
+      return loadScopeLevel().then(() => true);
+    },
+
+    closeScopePick() {
+      // A listing still in flight is now answering about a door that is shut, so it loses its turn
+      // rather than reopening one.
+      scopePickLoad += 1;
+      state.scopePick = null;
+      notify();
+      return true;
+    },
+
+    // One rung down. WHICH level the name answers is a question about where the person is standing,
+    // not about the name — so the ladder is asked, and the table stage has nothing below it, which
+    // makes naming a table there the answer itself rather than another step.
+    scopePickStep(name) {
+      const pick = state.scopePick;
+      if (!pick || !name) return Promise.resolve(false);
+      const stage = SW.util.cascadeStage(pick.levels, pick.database, pick.schema);
+      if (stage === 'table') {
+        return store.saveScope({ database: pick.database, schema: pick.schema, table: name });
+      }
+      state.scopePick = {
+        ...pick,
+        ...(stage === 'database' ? { database: name } : { schema: name }),
+        items: null,
+        error: null,
+      };
+      notify();
+      return loadScopeLevel().then(() => true);
+    },
+
+    // Back to the top, which is the only way out of a level already answered. A ladder that could
+    // only be climbed downwards would make the first rung permanent for as long as the door is
+    // open, and the door exists to let a choice move.
+    scopePickReset() {
+      return state.scopePick
+        ? store.openScopePick(state.scopePick.binding)
+        : Promise.resolve(false);
+    },
+
+    // Write the Scope. The levels are whatever the walk has answered, and an unanswered one is sent
+    // empty rather than left out — the route flattens "" to "not chosen", and a body that omitted
+    // the level would be asking the route to guess which of the two it meant.
+    async saveScope(scope) {
+      const pick = state.scopePick;
+      if (!pick) return false;
+      const where = appScopeName();
+      const gen = appGen;
+      const dotted = SW.util.scopeText(scope);
+      let result;
+      try {
+        result = await SW.api.scopeBinding(pick.id, {
+          database: scope.database || '',
+          schema: scope.schema || '',
+          table: scope.table || '',
+        });
+      } catch (err) {
+        // Left open on a refusal, unlike the success below: the walk that got here is the work, and
+        // shutting the door would make the person do it again to find out what went wrong.
+        antd.message.error(`${pick.name} could not be scoped in ${where}: ${err.message}`);
+        return false;
+      }
+      store.closeScopePick();
+      // The act's own ticket, taken against `gen` for `bindToApp`'s reason: the route answers with
+      // the list it has just written, and a `/bindings` read that started before this and lands
+      // after it would put the old Scope back on the screen.
+      applyAppScope(appScopeTicket(gen), { bindings: result.bindings || [] });
+      notify();
+      // The receipt, in the shape ADR-0021 asks of every act that adds: what it did, and the way
+      // back. The way back here is the same control, because moving a Scope and setting one are the
+      // same act — which is the difference between this and a Binding, whose undo is a Remove
+      // somewhere else entirely.
+      antd.message.success(dotted
+        ? `${where} reads ${dotted} in ${pick.name}. Choose again from the same control to move it.`
+        // The Scope cleared rather than moved. Named as the state it leaves behind, in the words
+        // the record itself is drawn with, so the sentence and the screen agree.
+        : `${pick.name} is ${SW.util.NO_SCOPE_YET} in ${where}. Choose one from the same control.`);
       return true;
     },
 
@@ -2213,10 +2404,12 @@ window.SW = window.SW || {};
     //
     // Keyed on the Binding's own word for it — the three `sage/resources/bindings.py` names, plus
     // `file` for an attachment. Only the LLM Alias finishes in one click; the other two open the
-    // door and stop, and that asymmetry is the point rather than a gap. A Data Source's Binding
-    // carries a Scope, which is chosen by standing somewhere in the cascade (#129), and a Model
-    // API's needs an access token the server refuses to record a Binding without. A button that
-    // cannot complete is the dead end these two surfaces exist to remove, so neither one pretends.
+    // door and stop, and that asymmetry was the point rather than a gap: a Data Source's Binding
+    // carried a Scope chosen by standing somewhere in the cascade (#129), and a Model API's needs an
+    // access token the server refuses to record a Binding without.
+    //
+    // Half of that reason is gone. A Data Source binds in one argument since #142, so its repair
+    // could finish too — that is #143's, along with where both of these land.
     //
     // Each label names the app it acts on, because a Project holds many Built Apps (ADR-0008). The
     // token's does not: a token is stored per model and outlives any one Binding, so naming an app
@@ -2272,9 +2465,13 @@ window.SW = window.SW || {};
       });
     },
 
-    // A Data Source. Its Binding records a Scope, and a Scope is the cascade position the creator is
-    // standing on (#129) — a refusal has nothing to derive one from, so this opens the cascade at
-    // that Resource and stops there. The bind is still the door beside the crumb, still a click.
+    // A Data Source. This opens the Resource Browser at that Resource and stops there.
+    //
+    // It did so because a Scope was the cascade position the creator was standing on (#129), and the
+    // bind was the door beside the crumb. Since #142 it is neither: the bind is on the Built App's
+    // own surface and the Scope is a second act there, so what this reaches is a cascade that only
+    // looks. #143 re-points it — the signpost follows the act — and until it does this points at
+    // where the fix used to be.
     openScopeForMention(entry) {
       if (!entry || !entry.kind || !entry.id) return false;
       state.dockTab = 'resources';

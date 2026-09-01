@@ -1,4 +1,9 @@
-// Where `Use in {app}` is offered for a Data Source, and what Scope it sends (#129).
+// What the Resource Browser's cascade does for a Data Source, now that it only looks (#142).
+//
+// It used to be where a Data Source was BOUND: #129 hung `Use in {app}` beside the crumb and on
+// every leaf, and the Scope was wherever the walk had got to. ADR-0021 moved the act onto the Built
+// App's own surface and left the walk here, so what this file asserts is a cascade that descends,
+// remembers where it is, survives a listing that will not answer — and offers nothing that writes.
 //
 // Nothing is mounted, for the reason `build_header_harness.mjs` gives: every claim here is about
 // WHICH CONTROL IS WHERE and WHAT A CLICK POSTS, and both are settled before antd draws anything.
@@ -12,9 +17,9 @@
 // cleanup, and a paint loop that re-renders until the reads have landed and nothing more changes.
 //
 // The panel is driven rather than bypassed, all the way down. A step expands the Data Source row by
-// clicking its own control, which is what puts the cascade on screen and hands it `bindApp` — the
-// link that decides whether the door exists at all. A harness that rendered `SW.DataSourceCascade`
-// directly could pass with that link cut.
+// clicking its own control, which is what puts the cascade on screen at all — and it is the panel
+// that decides what to hand it. A harness that rendered `SW.DataSourceCascade` directly could pass
+// with a door the panel had put back.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -321,20 +326,14 @@ async function paint() {
 
 const click = (node) => node.onClick({ preventDefault() {}, stopPropagation() {} });
 
-// The controls a step acts on, found the way a person finds them: by their label.
+// Any control on screen offering the act that is no longer this panel's, found the way a person
+// would find one: by its words. It should come back empty at every position (#142).
 const doorsIn = (nodes) => nodes.filter(
   (n) => (n.texts || []).some((t) => t === `Use in ${APP.name}`)
 );
 const stepNamed = (nodes, name) => nodes.find(
   (n) => n.className === 'sw-tree-step' && (n.texts || []).includes(name)
 );
-const leafDoor = (nodes, table) => {
-  // The door on ONE leaf row, which the flat walk cannot tell from its neighbours by nesting. The
-  // rows come out in order, so the door is the first one after that row's name.
-  const at = nodes.findIndex((n) => n.className === 'sw-tree-leaf-name' && (n.texts || [])[0] === table);
-  if (at < 0) return null;
-  return nodes.slice(at).find((n) => n.className === 'sw-tree-bind') || null;
-};
 
 // The panel's rows, under the section head each one sits below — `build_header_harness.mjs` builds
 // the same shape for the same reason: a flat list of every string on the panel cannot tell a
@@ -416,9 +415,9 @@ for (const step of steps) {
     nodes = await paint();
   }
 
-  // One pass through the cascade: back up a level if asked, down to the named position, then the
-  // act if there is one. Two of these run for a step with a `then`, which is how "the Scope can be
-  // moved after it is set" is asked as a question rather than assumed.
+  // One pass through the cascade: back up a level if asked, then down to the named position. Two of
+  // these run for a step with a `then`, which is how "a walk can be retraced" is asked as a question
+  // rather than assumed.
   async function pass(spec) {
     if (spec.back) {
       const up = nodes.find(
@@ -439,30 +438,23 @@ for (const step of steps) {
       doors: doorsIn(nodes).length,
       crumb: nodes.filter((n) => n.className === 'sw-tree-crumb-btn').flatMap((n) => n.texts || []),
     };
-    // The act, at whichever position the walk reached. `crumb` is the door beside the breadcrumb;
-    // anything else names the table whose row's door is meant.
-    if (spec.bind) {
-      const door = spec.bind === 'crumb'
-        ? nodes.find((n) => n.className === 'sw-tree-bind')
-        : leafDoor(nodes, spec.bind);
-      if (!door) throw new Error(`no door to click for ${spec.bind}`);
-      click(door);
-      await settle();
-      nodes = await paint();
-    }
     return at;
   }
 
   const before = await pass(step);
-  if (step.then) await pass(step.then);
+  // A second walk, when the step asks for one. Where the cascade ENDS UP is what the report carries
+  // — a `then` exists to move it, and reporting the first position would be reporting the thing the
+  // step went on to change.
+  const after = step.then ? await pass(step.then) : before;
 
   report.push({
     step: `${step.mode || 'build'} ${(step.walk || []).join('.') || 'top'}`,
     mode: SW.router.get().mode,
-    crumb: before.crumb,
-    // Every `Use in {app}` on screen, by the class of the control that carries it: `sw-tree-bind`
-    // is the cascade's door and `sw-res-row`'s menu item is the row's. Which one is which is the
-    // whole of #129's placement claim.
+    crumb: after.crumb,
+    // Every `Use in {app}` on screen, by the class of the control that carries it. The cascade's
+    // own was `sw-tree-bind`, and it is gone (#142); what may still show up here is the Alias row's
+    // MENU item, which is data on a prop rather than words on the screen — so this list being empty
+    // and `rows[].items` still holding the Alias's act are two different claims.
     doors: doorsIn(nodes).map((n) => n.className),
     doorsBefore: before.doors,
     steps: nodes.filter((n) => n.className === 'sw-tree-step').flatMap((n) => n.texts || []),

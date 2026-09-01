@@ -9,10 +9,11 @@ one act writing a chip and the next writing a manifest a published app depends o
 THIS IS THE EXPAND HALF. The header's door opens and the panel's `Use in {app}` stays exactly where
 it was, so there is never a window in which no door is open. The contract half is the next ticket's.
 
-WHAT IS NOT HERE. Data Sources. A Data Source Binding carries a Scope, the Scope is still the
-cascade position the creator is standing on (#129), and a picker row has none to pass — so the door
-for that kind waits until the Scope stops being a cascade position (#142). A control that cannot
-complete is the dead end this door exists to remove.
+WHAT WAS NOT HERE WHEN THIS SHIPPED. Data Sources. A Data Source Binding carried a Scope, the Scope
+was still the cascade position the creator was standing on (#129), and a picker row had none to
+pass — so the door for that kind waited until the Scope stopped being a cascade position. #142 did
+that, and the kind is in the picker now: the assertions below list it because the ordering claim is
+about the WHOLE menu, and the acts it can complete are that ticket's own file.
 
 THE PREFACTOR. The working-set-before-catalogue ordering was inline in the composer's `@` menu. It
 is `SW.util.workingSetFirst` now, and both menus read it, because the header's picker was written
@@ -91,12 +92,16 @@ def test_the_picker_lists_the_working_set_before_the_wider_catalogue():
         "🧠 Claude Sonnet 4",
         "🤖 Churn risk",
         "📦 Tick archive",
+        "🔌 Market data EOD",
+        "🔌 Risk warehouse",
+        "🔌 Ledger export",
         "Elsewhere in Domino — joins this project",
         "🧠 Nova micro",
         "📦 Cold storage",
     ]
     # The two headings are headings and not rows: a click on either would bind nothing.
-    assert [i["group"] for i in step["items"]] == [True, False, False, False, True, False, False]
+    assert [i["group"] for i in step["items"]] == [
+        True, False, False, False, False, False, False, True, False, False]
 
 
 @needs_node
@@ -108,6 +113,7 @@ def test_a_project_that_has_joined_everything_draws_one_group_and_no_second_head
     ])[-1]
     assert _labels(step["items"]) == [
         "In this project", "🧠 Claude Sonnet 4", "🤖 Churn risk", "📦 Tick archive",
+        "🔌 Market data EOD", "🔌 Risk warehouse", "🔌 Ledger export",
     ]
 
 
@@ -163,11 +169,12 @@ def test_a_long_catalogue_is_truncated_and_says_so_and_never_squeezes_out_the_wo
     labels = _labels(step["items"])
     # The working set is whole and still first — the group a global cap would have protected while
     # eating the other one.
-    assert labels[:4] == [
-        "In this project", "🧠 Claude Sonnet 4", "🤖 Churn risk", "📦 Tick archive"]
-    assert labels[4] == "Elsewhere in Domino — joins this project"
+    assert labels[:7] == [
+        "In this project", "🧠 Claude Sonnet 4", "🤖 Churn risk", "📦 Tick archive",
+        "🔌 Market data EOD", "🔌 Risk warehouse", "🔌 Ledger export"]
+    assert labels[7] == "Elsewhere in Domino — joins this project"
     # Eight shown out of eleven, and the three held back are counted rather than silently gone.
-    assert len(labels[5:]) == 9
+    assert len(labels[8:]) == 9
     assert labels[-1] == "3 more in Browse Domino"
     # A count is not a control: it says how many, and it cannot be clicked into binding anything.
     assert step["items"][-1]["disabled"] is True

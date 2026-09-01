@@ -635,10 +635,11 @@ window.SW = window.SW || {};
     );
   }
 
-  // The kinds the header's door offers (#141). Data Sources are absent on purpose and land next
-  // (#142): a Data Source Binding carries a Scope, the Scope is still the cascade position the
-  // creator is standing on (#129), and a picker row has none to pass. A control that cannot complete
-  // is the dead end this door exists to remove, so it does not draw one it cannot finish.
+  // The kinds the header's door offers (#141, #142). Data Sources joined the list when a Scope
+  // stopped being the cascade position the creator was standing on: binding and scoping are two
+  // acts now, so a picker row has everything the first one needs, and `ScopeDoor` below is the
+  // second (ADR-0021). A control that cannot complete is the dead end this door exists to remove,
+  // and the split is what made this one able to.
   //
   // A Model API IS here, and that is the one place this list parts company with the panel's
   // `canBind` (`components/resource-panel.js`), which keeps to LLM Aliases because a Model API needs
@@ -652,7 +653,7 @@ window.SW = window.SW || {};
   //
   // What is still missing is the box that takes the paste, and that is #128's. Until it exists there
   // is nothing here to point at, and a sentence promising one would rebuild the dead end.
-  const BINDABLE_KINDS = ['model_llm', 'model_predictive', 'dataset'];
+  const BINDABLE_KINDS = ['model_llm', 'model_predictive', 'dataset', 'datasource'];
 
   // How many catalogue rows the picker shows before it stops and says how many it kept back. Only
   // the catalogue is capped. The working set is what somebody deliberately picked into this Project
@@ -773,6 +774,116 @@ window.SW = window.SW || {};
     );
   }
 
+  // Which part of a Data Source the app reads, and the door that chooses it (#142, ADR-0021).
+  //
+  // The second of the two acts the bind was split into, and the cheaper one: it runs against a
+  // Binding that already exists, so nothing about what the app depends on moves when it is used —
+  // only which part of one thing it points at. It is on this surface because the Binding is, and a
+  // Scope is a part of a Binding.
+  //
+  // Beside the name rather than at the end of the row, because it is a fact about THAT record and
+  // the row can hold several. The unscoped state is the door's own label: the one Binding that is
+  // unfinished is also the one that says how to finish it. It is not an error — "the Resource is
+  // recorded but the part of it the app reads is not" is a state the glossary already had a word
+  // for, and it is the only answer a store Sage has no dialect for can ever give.
+  //
+  // `open` is controlled, unlike the picker above. A menu that shut on every click could not walk a
+  // ladder, and the position lives in the store anyway, because this walk ends in a POST.
+  function ScopeDoor({ binding, app }) {
+    const { scopePick } = SW.store.get();
+    const pick = scopePick && scopePick.id === binding.id ? scopePick : null;
+    const scope = SW.util.scopeText(binding);
+    // What the walk has answered so far. Empty at the top, which is the one position with nothing
+    // to commit — a bind there would name the whole source, and that is what the Binding already
+    // says without this control's help.
+    const at = pick ? SW.util.scopeText({ database: pick.database, schema: pick.schema }) : '';
+
+    const rungs = () => {
+      // No ladder at all: a connector Sage has no dialect for. The Binding is still a real record —
+      // "this app uses this Data Source" was the whole of what one meant before Scopes existed — so
+      // this says why there is nothing to choose rather than drawing an empty list.
+      if (pick.unreadable) {
+        return [{ key: 'unreadable', disabled: true,
+                  label: SW.brand.text('{assistantName} cannot look inside this {dataSource}') }];
+      }
+      if (pick.items === null) return [{ key: 'reading', disabled: true, label: 'Reading…' }];
+      // A disabled item never fires, so the reason has to be the label. The levels already chosen
+      // stay on offer above it: a listing that would not answer is not a choice anybody has lost.
+      if (pick.error) {
+        return [{ key: 'unavailable', disabled: true,
+                  label: SW.brand.text('{assistantName} couldn’t look inside this {dataSource}') }];
+      }
+      if (!pick.items.length) return [{ key: 'empty', disabled: true, label: 'Nothing here' }];
+      return pick.items.map((name) => ({ key: `at:${name}`, label: name }));
+    };
+
+    const items = !pick
+      ? []
+      : [
+          // Stopping is an answer at every level below the top — a database alone is a Scope — so
+          // the commit is offered wherever there is something to commit, beside the way back out
+          // of it. Without the second, the first rung would be permanent for as long as the door
+          // is open.
+          ...(at
+            ? [{ key: 'use', label: `Use ${at}` },
+               { key: 'reset', label: 'Start again' },
+               { type: 'divider' }]
+            // At the top with a Scope already recorded, the answer on offer is the OTHER one: no
+            // part in particular. "Not scoped yet" is a state the product names and draws, and a
+            // door that could reach every state but that one would make the first choice a
+            // one-way trip — the cost the split was made to remove. It is the same empty body the
+            // route already takes from the bind.
+            : pick.recorded
+              ? [{ key: 'clear', label: 'Read all of it — no Scope' }, { type: 'divider' }]
+              : []),
+          ...rungs(),
+        ];
+
+    return h(
+      Dropdown,
+      {
+        trigger: ['click'],
+        placement: 'bottomRight',
+        open: Boolean(pick),
+        onOpenChange: (next) => (next
+          ? SW.store.openScopePick(binding)
+          : SW.store.closeScopePick()),
+        menu: {
+          items,
+          onClick: ({ key, domEvent }) => {
+            if (domEvent) domEvent.stopPropagation();
+            if (!pick) return undefined;
+            if (key === 'use') {
+              return SW.store.saveScope({ database: pick.database, schema: pick.schema });
+            }
+            if (key === 'reset') return SW.store.scopePickReset();
+            if (key === 'clear') return SW.store.saveScope({});
+            // The table stage has no rung below it, so a name chosen there IS the Scope. Which
+            // level a name answers is the store's question, not this menu's — the ladder is not
+            // the same height for every store.
+            if (key.indexOf('at:') === 0) return SW.store.scopePickStep(key.slice(3));
+            return undefined;
+          },
+        },
+      },
+      h(
+        Tooltip,
+        {
+          title: scope
+            ? `${app.name} reads ${scope} in ${binding.display_name || binding.name}. `
+              + 'Choose again to move it.'
+            : `Choose which database, schema or table ${app.name} reads in `
+              + `${binding.display_name || binding.name}. You can change it later.`,
+        },
+        h(
+          Button,
+          { size: 'small', type: 'link', className: 'sw-app-scope-door' },
+          scope || SW.util.NO_SCOPE_YET
+        )
+      )
+    );
+  }
+
   // What the selected app ships (#92), in the row #87 reserved for it.
   //
   // The reason the layout could not wait is the problem #85 was filed about. The composer's chips
@@ -807,6 +918,17 @@ window.SW = window.SW || {};
     // Which of them the last build turn found nothing calling. Positional, against `bound`, so the
     // mark cannot drift onto the name beside it.
     const unused = (bindings || []).map((b) => b.used === false);
+    // The Scope door, for the one kind that has a part to choose (#142). Positional for the same
+    // reason the marks are, and null for every other kind: an Alias has no part to name, and a
+    // Dataset is reached whole.
+    const doors = (bindings || []).map((b) => (SW.util.recordsScope(b.kind) && activeApp
+      ? h(ScopeDoor, { key: SW.util.bindingId(b), binding: b, app: activeApp })
+      : null));
+    // The strip truncates, so the tooltip carries what a Data Source's name alone cannot say. Its
+    // words rather than the door's, because a hover is read and not clicked.
+    const boundFull = (bindings || []).map((b, i) => (SW.util.recordsScope(b.kind)
+      ? `${bound[i]} — ${SW.util.scopeText(b) || SW.util.NO_SCOPE_YET}`
+      : bound[i]));
     // Two Datasets can each hold a `margins.csv`, and the row has room for the leaf name only. So
     // the strip shows the name and the tooltip carries the path that tells the two apart — without
     // it the row would print the same word twice and offer nothing that says why.
@@ -828,18 +950,21 @@ window.SW = window.SW || {};
     // One span per name, so one of them can carry a mark the others do not. The separator sits
     // INSIDE the span that follows it rather than between spans: `sw-app-scope-names` truncates the
     // run with an ellipsis, and a comma of its own would be the thing left dangling at the cut.
-    const nameNodes = (names, marks) =>
+    const nameNodes = (names, marks, doors) =>
       names.map((name, i) =>
         h(
           'span',
           { key: `${name}-${i}`, className: 'sw-app-scope-name' },
           i > 0 ? ', ' : '',
           name,
+          // Immediately after the name it qualifies, because it says what THAT record reads and
+          // the run can hold several.
+          (doors || [])[i],
           (marks || [])[i] && h('span', { className: 'sw-app-scope-unused' }, ' (not used)')
         )
       );
 
-    const kindRow = (label, names, where, full, marks) =>
+    const kindRow = (label, names, where, full, marks, doors) =>
       h(
         Tooltip,
         {
@@ -860,7 +985,7 @@ window.SW = window.SW || {};
           'span',
           { className: 'sw-app-scope-kind' },
           h('span', { className: 'sw-app-scope-kind-label' }, label),
-          h('span', { className: 'sw-app-scope-names' }, nameNodes(names, marks))
+          h('span', { className: 'sw-app-scope-names' }, nameNodes(names, marks, doors))
         )
       );
 
@@ -883,7 +1008,7 @@ window.SW = window.SW || {};
         // over an empty list says the app ships a kind of thing it does not. The panel does name
         // it, because a destination someone arrived at intending to act is not a glance.
         : [
-            bound.length > 0 && kindRow('Bindings', bound, pointer, null, unused),
+            bound.length > 0 && kindRow('Bindings', bound, pointer, boundFull, unused, doors),
             // No marks for the files. Whether the source uses an ATTACHMENT is `_data_usage`'s
             // question, which detach and delete ask live because they refuse on the answer — a
             // different scanner for a different job, and #85 named it in place of this one.

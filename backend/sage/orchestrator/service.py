@@ -522,6 +522,20 @@ class ResourceStillBound(Exception):
         super().__init__(f"{', '.join(self.apps)} {needs} {name}")
 
 
+class ResourceNotBound(Exception):
+    """The app records no Binding for this Resource, so there is no Scope on it to set (#142).
+
+    Its own type rather than the `LookupError` `bind_data_source` raises, because the two refusals
+    are two different sentences: that one means the platform will not offer the Resource, this one
+    means the app does not depend on it yet. Collapsed into one code they would have to share a
+    sentence, and a message naming two causes tells a creator which act to take about neither.
+    """
+
+    def __init__(self, resource_id: str) -> None:
+        self.resource_id = resource_id
+        super().__init__(f"no Binding for {resource_id}")
+
+
 class DataReferenced(Exception):
     """The app's source still uses an attached file — either fetches it (`refs`) or has copied its
     bytes into `src/` (`copies`, the git-leaking pattern we forbid). Deleting the data would leave
@@ -8314,19 +8328,25 @@ class Orchestrator:
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
     ) -> list[dict]:
-        """Record that the app uses one Data Source, and which part of it (#11).
+        """Record that the app uses one Data Source, and which part of it (#11, #142).
 
         Validated against the project's own listing, as the two kinds above are. The scope is not
         validated against the store: proving a schema exists would cost two more queries and several
-        more seconds, and these names did not come from a keyboard — they came from the cascade the
-        creator has just walked, which is the listing.
+        more seconds, and these names did not come from a keyboard — they came from a list Sage
+        enumerated.
 
-        The scope may be empty at every level, and that is a record worth keeping rather than a
-        half-finished one. A connector Sage has no dialect for cannot offer a scope at all, and "this
-        app uses this Data Source" was already the whole of what a Binding meant in #6.
+        THE SCOPE IS OPTIONAL AND USUALLY ABSENT HERE (#142, ADR-0021). Binding and scoping are two
+        acts now: the door on the Built App's own surface has no cascade position to pass, so it
+        calls this with no scope at all and `scope_data_source` answers the narrower question
+        afterwards. A scopeless record is the named, unfinished state the glossary already had a
+        word for — "the Resource is recorded but the part of it the app reads is not" — and not a
+        half-finished one. It is also all a connector Sage has no dialect for can ever offer.
 
-        Re-binding replaces in place, because `Binding.key` leaves the scope out. So changing the
-        chosen schema is one more pass through the cascade, not a Remove and a re-pick.
+        Two callers still arrive with a scope in hand, and both are right to: the handoff replays a
+        chip that carries one, and `scope_data_source` delegates here so that one writer holds the
+        charset check, the column read and the replace-in-place rule.
+
+        Re-binding replaces in place, because `Binding.key` leaves the scope out.
         """
         source = self._data_source(source_id)
         # Charset-checked here as well as where the SQL is built. Not belt-and-braces for its own
@@ -8347,6 +8367,33 @@ class Orchestrator:
         # `connector` is the connector type's LABEL ("Snowflake"), which is what the rail draws as
         # the row's second line — not `connector_type`, the config-class string the Binding keeps.
         return self._record(binding, {"description": source.connector})
+
+    def scope_data_source(
+        self, source_id: str, database: str = "", schema: str = "", table: str = "",
+    ) -> list[dict]:
+        """Say which part of a Data Source the app reads, against a Binding it already holds (#142).
+
+        The second of the two acts ADR-0021 split the bind into, and the only one of them that walks
+        databases, schemas and tables. It is the cheaper act on purpose: the dependency is already
+        recorded, so this narrows a decision rather than making one, and it can be called again
+        whenever the choice moves — which is what "change the Scope without re-binding" means.
+
+        WHAT IT ADDS OVER `bind_data_source` WITH A SCOPE is the refusal. A Scope is a part of a
+        dependency, so writing one where there is no Binding would record the dependency itself as a
+        side effect of narrowing it — a bind arriving through the door that exists because binding
+        and scoping came apart.
+
+        Everything after the guard is `bind_data_source`'s, deliberately. One writer for one record:
+        the charset check, the column re-read and the replace-in-place rule cannot drift between the
+        act that creates the Binding and the act that scopes it.
+
+        An empty scope at every level is a legal argument here too, and it means the same thing it
+        means anywhere else — the Binding stands and the part of it the app reads is not chosen.
+        """
+        recorded = parse_bindings(self.project().workspace.read_bindings())
+        if not any(b.kind == KIND_DATA_SOURCE and b.id == source_id for b in recorded):
+            raise ResourceNotBound(source_id)
+        return self.bind_data_source(source_id, database, schema, table)
 
     def _write_bound_schema(self, source: DataSource, binding: Binding) -> None:
         """Read what the bound tables hold, once, and record it for the agent (#15).

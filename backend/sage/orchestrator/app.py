@@ -69,8 +69,8 @@ from ..shim import keepalive as ka
 from ..workspace.threads import safe_id
 from .brand import text as brand_text
 from .service import (
-    AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceStillBound, TurnBusy,
-    UploadUnavailable,
+    AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceNotBound, ResourceStillBound,
+    TurnBusy, UploadUnavailable,
 )
 
 _feedback = FeedbackRunner()
@@ -1334,6 +1334,15 @@ def list_data_source_tables(source_id: str, database: str = "", schema: str = ""
     return _cascade(orchestrator.list_data_source_tables, source_id, database, schema)
 
 
+# The three levels of a Scope, off a request body, in the order both writers take them (#142).
+#
+# `or ""` is the line that does the work: a level the control is standing on but has not answered
+# arrives as `""` — the empty schema under a chosen database — and an absent key arrives as None.
+# Both mean "not chosen", and flattening them here is what lets a body say either.
+def _scope_levels(body: dict) -> tuple[str, str, str]:
+    return tuple(str(body.get(level) or "") for level in ("database", "schema", "table"))
+
+
 # Bindings are their own route, not part of /api/resources: that one has nothing to list for a kind
 # whose service will not answer, and a creator auditing an app needs the dependency list precisely
 # then.
@@ -1349,16 +1358,16 @@ async def add_binding(request: Request) -> JSONResponse:
     if not resource_id:
         return JSONResponse(status_code=400, content={"error": "id required"})
     # A Data Source is handled before the pair below rather than folded in with them: it is the one
-    # kind whose record carries WHERE inside the Resource the choice landed, so it binds with four
+    # kind whose record can carry WHERE inside the Resource the choice landed, so it binds with four
     # arguments where the others bind with one, and its 400 is a name rather than a missing Resource.
+    #
+    # Since #142 the three scope arguments are usually absent, because the door on the app's own
+    # surface has no cascade position to send and the Scope is set afterwards by the route below.
+    # They stay accepted: the Chat handoff replays a chip that already names a table.
     if kind == KIND_DATA_SOURCE:
         try:
             return JSONResponse(content={"bindings": orchestrator.bind_data_source(
-                resource_id,
-                str(body.get("database") or ""),
-                str(body.get("schema") or ""),
-                str(body.get("table") or ""),
-            )})
+                resource_id, *_scope_levels(body))})
         except LookupError:
             return JSONResponse(status_code=404, content={"error": brand_text(
                 "That {dataSource} is not one {platformName} offers you, so the app cannot depend "
@@ -1409,6 +1418,45 @@ async def add_binding(request: Request) -> JSONResponse:
         )})
     except LookupError:
         return JSONResponse(status_code=404, content={"error": missing})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+# The second act, against a Binding that already exists (#142, ADR-0021). Its own route rather than
+# a second POST to the one above, because the two are refused for opposite reasons: that one turns
+# down a Resource the platform does not offer, this one turns down a Resource the app does not
+# depend on. Folded together, narrowing a Scope would quietly record the Binding it was narrowing.
+#
+# Only a Data Source is in the path, because only a Data Source has a Scope. A `{kind}` here would
+# be a parameter with one legal value and three ways to be wrong.
+@control_app.post("/api/bindings/data_source/{resource_id}/scope")
+async def set_binding_scope(resource_id: str, request: Request) -> JSONResponse:
+    """Choose which database, schema and table of a bound Data Source the app reads.
+
+    The body carries the levels the creator picked, and an absent level is one they did not: an
+    empty `schema` under a chosen `database` means the whole database, which is a real answer and
+    not a half-finished one. Answers with the Binding list, as every binding route does.
+    """
+    body = await request.json()
+    try:
+        return JSONResponse(content={"bindings": orchestrator.scope_data_source(
+            resource_id, *_scope_levels(body))})
+    except ResourceNotBound:
+        # Its own sentence, and its own cause. This is the app not depending on the Resource, which
+        # the creator fixes with the OTHER door on the same surface — so the refusal names that act
+        # rather than sending them to the platform to fix a grant that is not the problem.
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "This app records no Binding for that {dataSource}, so there is no Scope to set. Use "
+            "it in the app first."
+        )})
+    except LookupError:
+        # The other cause, which reads nothing like the first: the Binding is there and the platform
+        # will no longer describe the Resource, so the Scope cannot be enumerated or checked.
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "That {dataSource} is not one {platformName} offers you, so its Scope cannot be set."
+        )})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 

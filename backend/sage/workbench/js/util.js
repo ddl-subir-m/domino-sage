@@ -218,6 +218,45 @@ window.SW = window.SW || {};
       return limit ? out.slice(0, limit) : out;
     },
 
+    // Which level of a Data Source a walk is standing on, given the levels it HAS and the ones
+    // already answered. Not every store has three: a connector with no database level opens on its
+    // schemas, and one Domino pins a `default_database` for opens one rung down again.
+    //
+    // Shared because two surfaces walk the same ladder for two different reasons since #142 — the
+    // Resource Browser's cascade, which walks it to look, and the Build header's Scope door, which
+    // walks it to choose (ADR-0021). Same ladder, and a second copy of "what is a stage" is how the
+    // two come to disagree about which level a person is on.
+    cascadeStage(levels, database, schema) {
+      const has = (name) => (levels || []).includes(name);
+      if (has('database') && !database) return 'database';
+      if (has('schema') && !schema) return 'schema';
+      return 'table';
+    },
+
+    // Whether this kind of record HAS a Scope at all. One Resource kind does, and four surfaces ask
+    // — the panel's row, the header's strip, its door, and the bind's receipt — so the fact lives
+    // here rather than as four `=== 'data_source'` comparisons that have to be found together to be
+    // changed together. Takes the kind, because one caller has a Binding and one has a binding key.
+    recordsScope(kind) {
+      return kind === 'data_source';
+    },
+
+    // What a Binding that records a Scope and has none is CALLED (#142). One word for one named
+    // state, written once: the panel's row and the header's door both say it, and two casings of it
+    // would read as two different states — which is the opposite of what naming it is for. Lower
+    // case because it follows a name on the header's strip and sits among lower-case kind words in
+    // the panel, and because it is a state rather than a title.
+    NO_SCOPE_YET: 'not scoped yet',
+
+    // A Scope as one dotted label, or "" for a record that has none. The join `Binding.scope` does
+    // on the server, so a row, a tooltip and a receipt all name a Scope the way the AGENTS.md data
+    // block names it. Reads any record carrying the three levels — a Binding, or the position a
+    // walk is standing on.
+    scopeText(record) {
+      const at = record || {};
+      return [at.database, at.schema, at.table].filter(Boolean).join('.');
+    },
+
     thumbUrl(name) {
       return `./img/thumbs/${name || 'thumb-dashboard.svg'}`;
     },

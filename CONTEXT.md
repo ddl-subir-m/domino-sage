@@ -86,8 +86,11 @@ context (it reaches no prompt), "add to make available" (it enables nothing)
 **Resource Browser**:
 The panel in which a user sees the [[Working set]] and picks from it. It draws the list; it does not
 own it. The acts it offers are the ones whose scope it owns — putting something in Session context,
-and the two Removes. Adding a Binding is not among them: that act belongs to the Built App's own
-surface ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)).
+and the two Removes. Adding a Binding is not among them, and neither is choosing a [[Scope]]: both
+belong to the Built App's own surface
+([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). It still walks a
+Data Source's databases, schemas and tables, and a Dataset's files, for looking — that is
+orientation, which is this panel's job.
 _Avoid_: resource panel, data panel, sidebar, working set (that is the list this panel draws)
 
 **Binding**:
@@ -113,15 +116,19 @@ nothing. The two are kept apart on purpose: one writes a chip, the other writes 
 published app depends on
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). A Binding may be
 made without a Scope and scoped afterwards, as two acts on that same surface.
-_Interim_: the [[Resource Browser]]'s row menu still offers "Use in <app>" as well. The header's door
-opened first so that no window exists in which neither is open; the panel's copy is removed by #142,
-and until it is, "and nowhere else" is where this is going rather than where it is.
+_Interim_: the [[Resource Browser]]'s row menu still offers "Use in <app>" for an LLM Alias. The
+header's door opened first so that no window exists in which neither is open; the panel's copy is
+removed by #144, and until it is, "and nowhere else" is where this is going rather than where it is.
 _Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
 
 **Scope**:
 The database, schema and optionally table a Data Source Binding is read at. Chosen from lists
 Sage enumerates, never typed. A Binding may have none, which means the Resource is recorded but
-the part of it the app reads is not.
+the part of it the app reads is not — a named unfinished state, drawn as "not scoped yet" and never
+as an error. Choosing one is a second act on the Built App's own surface, taken against a Binding
+that already exists; it can be taken again whenever the choice moves, and it can put the Binding back
+to no Scope at all. Removing the Binding takes its Scope with it, so a later re-bind inherits no old
+table.
 _Avoid_: path, location, target, qualifier, selection
 
 **Named query**:

@@ -141,7 +141,10 @@ def test_each_line_points_at_where_that_kind_is_managed():
     """Read-only is only half an answer: a row that reports a Binding and says nothing about
     where it is dealt with is the dead end the empty state was written to avoid."""
     step = _build(select="app_a")
-    binds = [t for t in step["titles"] if "Market data EOD" in t]
+    # The KIND row's tooltip, which is the one that lists a whole group — a Scope door's tooltip
+    # also names the Data Source it sits beside (#142), and it points at itself rather than at a
+    # list, because a Scope is changed where it was chosen.
+    binds = [t for t in step["titles"] if "Claude Sonnet 4" in t and "Market data EOD" in t]
     files = [t for t in step["titles"] if "margins.csv" in t]
     assert binds and all("Project resources" in t for t in binds)
     assert files and all("Project resources" in t for t in files)
@@ -177,7 +180,9 @@ def test_a_binding_the_apps_source_never_calls_is_marked():
     its source calls two of them, which is the only fixture that can show the mark landing on the
     right name rather than merely appearing somewhere in the row."""
     said = _flat(_build(select="app_a"))
-    assert "Market data EOD (not used)" in said
+    # The Scope sits between the name and the mark, because both qualify the record and the Scope is
+    # the one a person can act on (#142). The mark still lands on this name and no other.
+    assert "Market data EOD not scoped yet (not used)" in said
     assert "Claude Sonnet 4 (not used)" not in said
     assert "Churn risk (not used)" not in said
 
@@ -204,8 +209,9 @@ def test_the_tooltip_says_what_the_mark_means_and_that_it_blocks_nothing():
     """Two words beside a name cannot say what looked or when, and a creator who reads "not used"
     as "this will not publish" has been told the opposite of ADR-0010. The strip also truncates, so
     the tooltip is where a narrow preview's reader finds which name the mark was on."""
-    title = next(t for t in _build(select="app_a")["titles"] if "Market data EOD" in t)
-    assert "Market data EOD (not used)" in title
+    title = next(t for t in _build(select="app_a")["titles"]
+                 if "Market data EOD" in t and "Claude Sonnet 4" in t)
+    assert "Market data EOD — not scoped yet (not used)" in title
     assert "last build" in title
     assert "publishes either way" in title
     # The pointer stays last in both kinds' tooltips — it is the only half the reader can act on.

@@ -144,11 +144,19 @@ const RESOURCE_GROUPS = {
     { id: 'dataset:as_ticks', name: 'Tick archive', kind: 'dataset',
       bindingKey: ['dataset', 'as_ticks'] },
   ],
+  // `levels` is the ladder the server says this store has, and it is what the Build header's Scope
+  // door climbs (#142). Two sources with the same three rungs, because the claim the fixture has to
+  // be able to make is about a walk rather than about a shape.
   table: [], datasource: [
     { id: 'data_source:ds_1', name: 'Market data EOD', kind: 'datasource',
-      bindingKey: ['data_source', 'ds_1'] },
+      bindingKey: ['data_source', 'ds_1'], levels: ['database', 'schema', 'table'] },
     { id: 'data_source:ds_9', name: 'Risk warehouse', kind: 'datasource',
-      bindingKey: ['data_source', 'ds_9'] },
+      bindingKey: ['data_source', 'ds_9'], levels: ['database', 'schema', 'table'] },
+    // No `levels`, which is what the server sends for a connector Sage has no dialect for. It is
+    // the one shape that can show the door saying why there is nothing to choose, rather than
+    // asking the table route a question with nothing above it.
+    { id: 'data_source:ds_flat', name: 'Ledger export', kind: 'datasource',
+      bindingKey: ['data_source', 'ds_flat'] },
   ],
   // `bindingKey` is what `SW.api.resources()` puts on every bindable row, and it is the only place
   // the BARE id survives the prefixing — so a fixture without it could not ask the id-space question
@@ -185,6 +193,17 @@ const BIG_CATALOGUE = Array.from({ length: 11 }, (_, i) => ({
 const NO_RESOURCES = {
   dataset: [], table: [], datasource: [], model_llm: [], model_predictive: [],
   tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
+};
+
+// What each Data Source holds, for the ladder the Scope door climbs (#142). Two databases so the
+// first rung is a real choice, and two schemas under `DWH` so the second one is too — a level with
+// one answer cannot show that the walk descends rather than jumping.
+const TREE = {
+  ds_1: {
+    DWH: { MARTS: ['DIM_ACCOUNT', 'FCT_USAGE_DAILY'], REPORTING: ['V_ARR_WATERFALL'] },
+    SANDBOX: { PUBLIC: ['SCRATCH_FORECAST'] },
+  },
+  ds_9: { RISK: { LIMITS: ['EXPOSURE_DAILY'] } },
 };
 
 // Every row a bind can name, in one list, so the fake `/bindings` can label what it just recorded
@@ -234,6 +253,15 @@ const calls = [];
 // carries `llm_alias:al_1` and a Binding carries the bare `al_1` — so a test that only knew the
 // request happened would pass on the prefixed id that binds nothing.
 const binds = [];
+// The bodies posted to the Scope route, which is a different claim from the one above: `binds`
+// proves a dependency was recorded, and this proves which part of one was chosen — and that the
+// second act did not go through the first.
+const scoped = [];
+// One query parameter off a path, for the two listings that carry the levels above them.
+const param = (path, key) => {
+  const m = path.match(new RegExp(`[?&]${key}=([^&]*)`));
+  return m ? decodeURIComponent(m[1]) : '';
+};
 let selected = 'app_a';
 // Every `useState(false)` starts open, for the step that reads what a fold holds.
 let expanded = false;
@@ -248,6 +276,10 @@ let publishFails = '';
 // record one it holds no access token for — and the claim is that the door reports the server's own
 // sentence rather than redrawing as though the record had been written.
 let bindRefusal = '';
+// The one level listing that refuses to answer, by name. Named rather than a flag over all three,
+// because the claim is about a walk that got PART of the way: a store that will not answer is not a
+// Scope anybody has lost, and the levels already chosen have to stay on offer.
+let failLevel = null;
 // What the two pre-publish reads answer (#35), and whether either one answers at all. Both are set
 // per step, because the notice's whole behaviour is a function of these two — including the case
 // where a read fails, which must leave the confirm exactly as it opened.
@@ -375,7 +407,38 @@ function route(path, init) {
     ];
     return json({ bindings: bound[selected] });
   }
+  // The second act's own route (#142). It EDITS the Binding named in the path and refuses where
+  // there is none, the way the real one does — a fake that appended, or that wrote a Binding on the
+  // way past, would let "scoping never records a dependency" pass on a server that did.
+  if ((m = path.match(/^\/bindings\/data_source\/([^/?]+)\/scope$/)) && init
+      && init.method === 'POST') {
+    const id = decodeURIComponent(m[1]);
+    const body = JSON.parse(init.body || '{}');
+    scoped.push({ id, ...body });
+    const row = (bound[selected] || []).find((b) => b.kind === 'data_source' && b.id === id);
+    if (!row) return json({ error: 'There is no Scope to set.' }, 404);
+    ['database', 'schema', 'table'].forEach((k) => {
+      if (body[k]) row[k] = body[k];
+      else delete row[k];
+    });
+    return json({ bindings: bound[selected] });
+  }
   if (path === '/bindings') return json({ bindings: bound[selected] || [] });
+  // The three listings the ladder is read off, the same routes the Resource Browser's cascade
+  // walks. A level nobody has answered comes back with the names under wherever the walk is.
+  if ((m = path.match(/^\/data-sources\/([^/?]+)\/databases/))) {
+    if (failLevel === 'database') return json({ error: 'Snowflake answered 403.' }, 502);
+    return json({ items: Object.keys(TREE[m[1]] || {}) });
+  }
+  if ((m = path.match(/^\/data-sources\/([^/?]+)\/schemas/))) {
+    if (failLevel === 'schema') return json({ error: 'Snowflake answered 403.' }, 502);
+    return json({ items: Object.keys((TREE[m[1]] || {})[param(path, 'database')] || {}) });
+  }
+  if ((m = path.match(/^\/data-sources\/([^/?]+)\/tables/))) {
+    if (failLevel === 'table') return json({ error: 'Snowflake answered 403.' }, 502);
+    const db = (TREE[m[1]] || {})[param(path, 'database')] || {};
+    return json({ items: db[param(path, 'schema')] || [] });
+  }
   if (path === '/project') return json({ attached: attached[selected] || [] });
   // The two removal routes, answering what the real ones answer. Both report the app source that
   // still uses what just went, and both report it AFTER the act — there is no route here that a
@@ -596,6 +659,10 @@ function flatten(node, out = [], depth = 0) {
   // Same reason, for the controls that are buttons rather than menu items — the notice's cleanup
   // offer and its Dismiss. Dropped by `JSON.stringify` on the way into the report.
   if (typeof props.onClick === 'function') entry.onClick = props.onClick;
+  // How a CONTROLLED overlay is pressed. antd reports the press through `onOpenChange` and not
+  // through a click, so a walk that could only click would have no way to open the Scope door —
+  // whose whole point is that it stays open across several clicks (#142).
+  if (typeof props.onOpenChange === 'function') entry.onOpenChange = props.onOpenChange;
   // The id a row carries, which is what "Use in this chat" POSTs. The app's rows build
   // theirs rather than being handed one, so whether it is an id the Project answers in is a
   // question that has to be asked of the value itself (#96).
@@ -812,6 +879,43 @@ function headerPicker(thread) {
   };
 }
 
+// The Scope doors in the header's Bindings strip, one per Data Source Binding (#142, ADR-0021).
+//
+// Found by the class each control carries rather than by "the second menu in the row", because the
+// row can hold several — one per Data Source the app binds — and WHICH name each one sits after is
+// half of what this ticket claims. The name is carried down from the walk, so a door that drifted
+// onto the Alias beside it would show up rather than reading as the same control.
+function headerScopeDoors(thread) {
+  const nodes = flatten(SW.BuildMode({
+    conversationId: thread, appId: (SW.store.get().activeApp || {}).id || null,
+  }));
+  const out = [];
+  let name = null;
+  nodes.forEach((n, i) => {
+    if (n.className === 'sw-app-scope-name' && (n.texts || []).length) {
+      name = (n.texts || []).filter((t) => t !== ', ').join('');
+    }
+    if (n.className !== 'sw-app-scope-door') return;
+    // The Dropdown and the Tooltip wrap the control, so both are walked BEFORE it — the nearest one
+    // above this node is the one this door is inside.
+    const above = nodes.slice(0, i).reverse();
+    const menu = above.find((m) => m.items);
+    const dropdown = above.find((m) => m.el === 'Dropdown');
+    out.push({
+      after: name,
+      // The words on the control, which for this one are also the state it is in: a Binding with no
+      // Scope says so here, and saying so is the whole of criterion two.
+      label: (n.texts || []).join(''),
+      tooltip: (above.find((m) => m.el === 'Tooltip') || {}).title || '',
+      open: dropdown ? dropdown.open : null,
+      items: menu ? menu.items : [],
+      onMenu: menu ? menu.onMenu : null,
+      onOpenChange: dropdown ? dropdown.onOpenChange : null,
+    });
+  });
+  return out;
+}
+
 // The chip's way out, pressed. Read by its label rather than its class, because the label is what
 // says which control this is — and dropping a filter must leave the previewed app alone, which is
 // only a claim if something actually presses it.
@@ -848,9 +952,14 @@ async function arrive(threadId, appId, mode) {
   timeouts.length = 0;
   calls.length = 0;
   binds.length = 0;
+  scoped.length = 0;
   bindRefusal = '';
+  failLevel = null;
   holding = null;
   held.length = 0;
+  // A Scope door left open by the previous step would still be open here, because the store is one
+  // object for the whole run — and its position would be the previous step's walk.
+  SW.store.closeScopePick();
   // Every step arrives at Build with the history shut, the way a page load does. The store is one
   // object for the whole run, so a step that opened it would otherwise leave it open for the next.
   SW.store.closeBuildHistory();
@@ -1017,6 +1126,107 @@ for (const step of steps) {
       // The receipt. It is the only place the act says what it did and how to reverse it.
       said: said.slice(),
       bindings: (SW.store.get().bindings || []).map((b) => `${b.kind}:${b.id}`),
+    });
+    continue;
+  }
+
+  // The header's SECOND door (#142, ADR-0021): the Scope, chosen against a Binding that already
+  // exists. Driven the way a person drives it — press the control beside the record's name, take
+  // the ladder a rung at a time, and stop where they stop.
+  //
+  // Every rung the door offered on the way is kept, because the claim is about a walk: a control
+  // that showed every level at once, or that jumped, would post the same body at the end of it.
+  if (step.scopeIn) {
+    await arrive(step.thread, step.select);
+    await SW.store.reloadAttachments();
+    SW.store.set({
+      resourceGroups: RESOURCE_GROUPS, resourcesLoading: false, catalogueParents: CATALOGUE,
+    });
+    said.length = 0;
+    calls.length = 0;
+    binds.length = 0;
+    scoped.length = 0;
+    failLevel = step.fail || null;
+
+    // A bind first, when the step asks for one — through the picker, because "the Scope is set
+    // against a Binding that already exists" is only a claim if the Binding got there by the act
+    // that makes one.
+    if (step.bindFirst) {
+      const picker = headerPicker(step.thread);
+      if (!picker) throw new Error('the Build header drew no add control');
+      await picker.onMenu({ key: step.bindFirst });
+    }
+
+    // Re-read every time, never held: the door is drawn from the store, and every press rewrites
+    // what the store says. A cached handle would be asserting on a screen that has moved on.
+    const doorFor = () => {
+      const doors = headerScopeDoors(step.thread);
+      const door = doors.find((d) => d.after === step.scopeIn);
+      if (!door) {
+        throw new Error(`no Scope door beside ${step.scopeIn} — found ${JSON.stringify(doors)}`);
+      }
+      return door;
+    };
+    const press = async (key) => {
+      const at = doorFor();
+      if (!(at.items || []).some((i) => i.key === key)) {
+        throw new Error(`the door offers no ${key} — offered ${JSON.stringify(at.items)}`);
+      }
+      await at.onMenu({ key });
+    };
+
+    const shut = doorFor();
+    const rungs = [];
+    if (step.open !== false) {
+      await shut.onOpenChange(true);
+      rungs.push(doorFor().items);
+      for (const name of step.walk || []) {
+        await press(`at:${name}`);
+        rungs.push(doorFor().items);
+      }
+      // The selection moving WHILE the walk is open, which is the hazard a door keyed on the
+      // Binding alone carries: the Scope route names no app, so a commit after this would land on
+      // whichever app the server now has. Between the walk and the press, because that is the only
+      // window in which it is a hazard at all.
+      if (step.switchTo) await SW.store.selectApp(step.switchTo);
+      for (const key of step.then || []) {
+        // Shutting the control and pressing it again, which is what a person does between two
+        // acts on one record. It matters because what the door offers at the TOP depends on what
+        // the Binding records, and that changes the moment a walk commits.
+        if (key === 'reopen') {
+          await doorFor().onOpenChange(false);
+          await doorFor().onOpenChange(true);
+          rungs.push(doorFor().items);
+          continue;
+        }
+        await press(key);
+        rungs.push(doorFor().items);
+      }
+    }
+
+    const doors = headerScopeDoors(step.thread);
+    const open = doors.find((d) => d.after === step.scopeIn) || { items: [] };
+    report.push({
+      step: `scopeIn ${step.scopeIn}`,
+      app: (SW.store.get().activeApp || {}).name || null,
+      // What the control said before anything was pressed, which for an unscoped Binding IS the
+      // state it is in.
+      shut: { label: shut.label, tooltip: shut.tooltip, open: shut.open },
+      now: { label: open.label, tooltip: open.tooltip, open: open.open, items: open.items },
+      // Whether ANY walk is still open, read off the store rather than off a door. After the
+      // selection moves the door itself may not be drawn at all — the new app binds no Data
+      // Source — and "no door on screen" is not the same claim as "the walk is gone".
+      walkOpen: SW.store.get().scopePick !== null,
+      rungs,
+      // The two acts, separately. `posted` is a dependency being recorded and `scoped` is a part of
+      // one being chosen — the whole of the split is that a walk here writes only the second.
+      posted: binds.slice(),
+      scoped: scoped.slice(),
+      calls: calls.slice(),
+      said: said.slice(),
+      bindings: (SW.store.get().bindings || []).map(
+        (b) => `${b.kind}:${b.id}${b.database ? ` @${[b.database, b.schema, b.table].filter(Boolean).join('.')}` : ''}`
+      ),
     });
     continue;
   }
