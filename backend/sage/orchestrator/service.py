@@ -3760,7 +3760,25 @@ class Orchestrator:
             self._release_chat_file(project, path)
 
     def list_threads(self) -> list[dict]:
-        return ThreadStore(self._chat_project().record.path).list()
+        """Every Thread, each carrying the Built App it bound last.
+
+        ADR-0009 says a Build link naming no app resolves the Conversation's newest bound handoff.
+        That answer is already on the Thread's own record, so the list carries it and the rail can
+        move the whole of Build on the click rather than a network round trip later (#139) — the
+        round trip is what draws a Conversation beside the app it did not bind.
+
+        The newest BOUND entry, not the newest entry: a Thread may hand off more than once, and the
+        one on top may still be an offer nobody has answered. Same read and same guard as
+        `_recross_handoff` — an entry naming an app that has since been deleted names nothing.
+        """
+        store = ThreadStore(self._chat_project().record.path)
+        rows = store.list()
+        live = set(self._wm.app_ids())
+        for row in rows:
+            bound = [r for r in store.read_handoffs(str(row.get("id") or ""))
+                     if r.get("status") == "bound" and str(r.get("appId") or "") in live]
+            row["boundAppId"] = str(bound[-1]["appId"]) if bound else None
+        return rows
 
     def thread_history(self, thread_id: str) -> list[dict]:
         return ThreadStore(self._chat_project().record.path).read_history(thread_id)

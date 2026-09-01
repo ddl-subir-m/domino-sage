@@ -18,15 +18,26 @@ window.SW = window.SW || {};
     DeleteOutlined, EditOutlined, CloseOutlined,
   } = icons;
 
-  // Which app Build has in the preview is a view parameter, so it survives
-  // moving between conversations and does not change when you pick one.
+  // A Build link naming no app resolves the Conversation's own app (ADR-0009). This used to stamp
+  // the selected one in, so that case never arose from a click — every rail link named whatever
+  // was in the preview, and opening a Conversation left Build looking at another one's work.
+  //
+  // `?app=` is still readable grammar: a shared link carries it, and the URL follows a selection
+  // moved in another tab (#100). It is only no longer written here.
   SW.conversationRoute = function conversationRoute(thread, mode) {
-    if (mode !== 'build') return `#/chat/${thread.id}`;
-    const { activeApp } = SW.store.get();
-    return `#/build/${thread.id}${activeApp ? `?app=${activeApp.id}` : ''}`;
+    return mode === 'build' ? `#/build/${thread.id}` : `#/chat/${thread.id}`;
   };
 
   SW.openConversation = function openConversation(thread, mode) {
+    // On the click, not a beat later. The row the rail is holding already carries the answer —
+    // `boundAppId` is the newest bound handoff, composed by the server — so the preview, the Build
+    // header and the panel's app section move with the transcript instead of describing the app
+    // you came from until a resolve lands. A Conversation that bound nothing selects nothing, and
+    // what is on screen is left alone rather than blanked.
+    //
+    // The resolve below this still runs, and still answers for a Built App started inside Build
+    // that no handoff ever named. It is the correction now, not the common path.
+    if (mode === 'build' && thread.boundAppId) SW.store.selectApp(thread.boundAppId);
     return SW.router.go(SW.conversationRoute(thread, mode));
   };
 
