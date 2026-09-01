@@ -150,7 +150,12 @@ window.SW = window.SW || {};
     required,
     highlighted,
     app,
-    // Set by the Project list only, and false everywhere the act would be wrong — see the call site.
+    // The two halves of "this row and the selected app", which were one flag until #129. The SIGN
+    // and the DOOR: `saysAppUse` switches the subtitle to whether this app uses the Resource, and
+    // `canBind` puts the act on this row's menu. A Data Source needs the first without the second —
+    // its Binding carries a Scope, a row has no Scope to carry, and the door is hung inside the
+    // cascade instead. Both are set by the Project list only; see the call site.
+    saysAppUse,
     canBind,
     // The Built App this row is a record of, and the record itself: `{ app, binding }` or
     // `{ app, attachment }`. Only the "In this app" rows carry it, because only they are the list
@@ -235,9 +240,9 @@ window.SW = window.SW || {};
     const secondary = required && app
       ? `Required by ${app.name}`
       // The negative of the line above, and it outranks the Project-wide count below it because
-      // `canBind` is only ever true in Build — where the question on screen is what THIS app uses,
-      // not how popular the Alias is. In Chat the count keeps the slot (#127).
-      : canBind && app
+      // `saysAppUse` is only ever true in Build — where the question on screen is what THIS app
+      // uses, not how popular the Resource is. In Chat the count keeps the slot (#127).
+      : saysAppUse && app
       ? `Not used by ${app.name}`
       : showsDependants && used.length
       ? `Used by ${used.length} ${used.length === 1 ? 'app' : 'apps'}`
@@ -464,6 +469,22 @@ window.SW = window.SW || {};
       const expandable = resource.membershipParent
         && (resource.kind === 'dataset' || resource.kind === 'datasource');
       const expanded = expandable && expandedId === resource.id;
+      // Whether the SUBTITLE answers "does the selected app use this" (#127, #129). Build only: a
+      // Binding names exactly one app and Chat shows none, so the sentence would have no subject.
+      // Both kinds this panel can name a Binding for, because absence reads the same to a person
+      // either way — the sign is what tells a Resource the app can reach from one merely sitting in
+      // the Project, and a Data Source was as silent about that as an Alias ever was.
+      const saysAppUse = inBuild && Boolean(activeApp) && Boolean(resource.bindingKey)
+        && (resource.kind === 'model_llm' || resource.kind === 'datasource');
+      // Whether the ACT belongs on this row, which is strictly narrower than the sign above and is
+      // why the two came apart. Language models only, because they are the one kind whose bind takes
+      // a single argument: a Model API needs a credential (#128), and a Data Source needs a Scope
+      // that a row does not have (#129) — its door is hung inside the cascade, where standing
+      // somewhere IS the Scope. A row offering an act that cannot complete is the dead end this door
+      // exists to remove. The `requiredIds` gate is the Alias's alone for the same reason: rebinding
+      // a Data Source is how its Scope moves, so that door has to stay open after it is used.
+      const canBind = saysAppUse && resource.kind === 'model_llm'
+        && !requiredIds.has(resource.id);
       return h(
         Fragment,
         { key: resource.id },
@@ -471,13 +492,8 @@ window.SW = window.SW || {};
           resource,
           required: requiredIds.has(resource.id),
           app: activeApp,
-          // Whether this row can gain a Binding for the selected app (#127). Build only: a Binding
-          // names exactly one app and Chat shows none, so the label would have no subject. Language
-          // models only, because they are the one kind whose bind takes a single argument — a Model
-          // API needs a credential (#128) and a Data Source needs a Scope (#129), and a row offering
-          // an act that cannot complete is the dead end this door exists to remove.
-          canBind: inBuild && Boolean(activeApp) && resource.kind === 'model_llm'
-            && Boolean(resource.bindingKey) && !requiredIds.has(resource.id),
+          saysAppUse,
+          canBind,
           attached: attachedIds.has(resource.id),
           highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
             && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
@@ -487,7 +503,12 @@ window.SW = window.SW || {};
           onToggleExpand: () => setExpandedId(expanded ? null : resource.id),
         }),
         expanded &&
-          h(SW.ResourceTree, { resource, query: needle, variant: 'rail' })
+          // The app the cascade can hang a door for, or null. Passed down rather than read from the
+          // store there, because the answer is this row's — the same three conditions the sign above
+          // is drawn from — and a tree that decided for itself could offer the act on a surface with
+          // no app to name (#129).
+          h(SW.ResourceTree, {
+            resource, query: needle, variant: 'rail', bindApp: saysAppUse ? activeApp : null })
       );
     };
 

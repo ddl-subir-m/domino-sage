@@ -135,12 +135,16 @@ const CONTEXT = {
 // is in the Project and bound by nobody, which is what stops "Required by" reading as decoration.
 const RESOURCE_GROUPS = {
   dataset: [], table: [], datasource: [
-    { id: 'data_source:ds_1', name: 'Market data EOD', kind: 'datasource' },
-    { id: 'data_source:ds_9', name: 'Risk warehouse', kind: 'datasource' },
+    { id: 'data_source:ds_1', name: 'Market data EOD', kind: 'datasource',
+      bindingKey: ['data_source', 'ds_1'] },
+    { id: 'data_source:ds_9', name: 'Risk warehouse', kind: 'datasource',
+      bindingKey: ['data_source', 'ds_9'] },
   ],
   // `bindingKey` is what `SW.api.resources()` puts on every bindable row, and it is the only place
   // the BARE id survives the prefixing — so a fixture without it could not ask the id-space question
-  // at all. The Data Source rows above gain theirs when their own door does (#129).
+  // at all. The Data Source rows above have theirs since their own door was hung (#129): it is what
+  // switches their subtitle to the selected app, and a fixture without it would have gone on
+  // reporting the Project-wide answer the server stopped sending.
   model_llm: [{ id: 'llm_alias:al_1', name: 'Claude Sonnet 4', kind: 'model_llm',
     bindingKey: ['llm_alias', 'al_1'] }],
   model_predictive: [], tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],

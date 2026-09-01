@@ -648,11 +648,15 @@
 .sw-tree-crumb {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   padding: 4px 0;
   font-size: var(--fs-12);
   color: var(--gray-500);
 }
+/* The Scope's door (#129). Pushed to the far end so the crumb still reads as the path walked so
+   far — beside the steps, it would read as one more of them. */
+.sw-tree-crumb .sw-tree-bind { margin-left: auto; }
 .sw-cat-drill-head {
   display: flex;
   align-items: center;

@@ -88,7 +88,7 @@ window.SW = window.SW || {};
     return root;
   }
 
-  function LeafRow({ name, subtitle, pinned, onMention, onPin, onUnpin }) {
+  function LeafRow({ name, subtitle, pinned, onMention, onPin, onUnpin, bindApp, onUseInApp }) {
     return h(
       'div',
       { className: 'sw-tree-leaf' },
@@ -97,6 +97,16 @@ window.SW = window.SW || {};
         'span',
         { className: 'sw-tree-leaf-acts' },
         h(Button, { size: 'small', type: 'link', onClick: onMention }, 'Use in this chat'),
+        // Directly beneath the Conversation's act, the way the Project row orders the same pair:
+        // two scopes of one verb, told apart by the scope in the label (ADR-0011). A Dataset's files
+        // pass no `bindApp` and draw none — a file is not a Resource an app binds.
+        bindApp
+          ? h(
+              Button,
+              { size: 'small', type: 'link', className: 'sw-tree-bind', onClick: onUseInApp },
+              `Use in ${bindApp.name}`
+            )
+          : null,
         pinned
           ? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin')
           // Pin only reorders the @ menu — it sends nothing. Sitting unlabelled beside the control
@@ -224,7 +234,7 @@ window.SW = window.SW || {};
     );
   };
 
-  SW.DataSourceCascade = function DataSourceCascade({ resource, query, variant }) {
+  SW.DataSourceCascade = function DataSourceCascade({ resource, query, variant, bindApp }) {
     const levels = (resource && resource.levels) || [];
     const sourceId = resource ? bareId(resource.id, 'data_source') : '';
     const defaults = {
@@ -294,12 +304,58 @@ window.SW = window.SW || {};
       hasSchema && schema && { label: schema, onClick: () => setSchema('') },
     ].filter(Boolean);
 
+    // The crumb, and the door beside it. They appear and disappear together because the crumb IS the
+    // Scope: it lists exactly the levels this position has answered, so a cascade with no crumb is
+    // the top of it, where a Binding would name the whole Data Source and no part of it. That is the
+    // one bind #129 does not offer — the levels below are still open, and the record would say the
+    // creator chose something they have not reached yet.
+    //
+    // The act stays on offer after it is taken, unlike the Alias's on the Project row. Re-binding
+    // replaces the record in place — `Binding.key` leaves the Scope out — so a second walk through
+    // the cascade is the ONLY way to move a Scope to another schema. A door that hid once the app
+    // held the Binding would make the choice permanent.
+    const scopeBar = () =>
+      crumb.length
+        ? h(
+            'div',
+            { className: 'sw-tree-crumb' },
+            crumb.map((c) =>
+              h('button', { key: c.label, className: 'sw-tree-crumb-btn', onClick: c.onClick }, c.label)
+            ),
+            bindApp
+              ? h(
+                  Button,
+                  {
+                    size: 'small',
+                    type: 'link',
+                    className: 'sw-tree-bind',
+                    onClick: () => SW.store.bindToApp(parent, {
+                      database: database || '',
+                      schema: schema || '',
+                    }),
+                  },
+                  `Use in ${bindApp.name}`
+                )
+              : null
+          )
+        : null;
+
     if (items === null) return h(Spin, { size: 'small', className: 'sw-tree-spin' });
     if (error) {
-      return treeFailure(
-        error,
-        '{assistantName} couldn’t look inside this {dataSource}.',
-        'Check your credentials for it in {platformName}, then reopen this panel.',
+      // A store that will not answer is not a Scope the creator has lost. They walked here through
+      // listings that DID answer, so the position still holds — and the Binding is a decision about
+      // which part of the source the app reads, not a promise that the next level down is readable
+      // today. Same reason `_write_bound_schema` records the Binding when the columns fail to come
+      // back: what is lost is the listing, and the door stays where the crumb is.
+      return h(
+        'div',
+        { className: `sw-tree sw-tree-${variant || 'rail'}` },
+        scopeBar(),
+        treeFailure(
+          error,
+          '{assistantName} couldn’t look inside this {dataSource}.',
+          'Check your credentials for it in {platformName}, then reopen this panel.',
+        )
       );
     }
 
@@ -308,15 +364,7 @@ window.SW = window.SW || {};
       return h(
         'div',
         { className: 'sw-tree' },
-        crumb.length
-          ? h(
-              'div',
-              { className: 'sw-tree-crumb' },
-              crumb.map((c) =>
-                h('button', { key: c.label, className: 'sw-tree-crumb-btn', onClick: c.onClick }, c.label)
-              )
-            )
-          : null,
+        scopeBar(),
         h(
           'div',
           { className: 'sw-tree-empty' },
@@ -328,15 +376,7 @@ window.SW = window.SW || {};
     return h(
       'div',
       { className: `sw-tree sw-tree-${variant || 'rail'}` },
-      crumb.length
-        ? h(
-            'div',
-            { className: 'sw-tree-crumb' },
-            crumb.map((c) =>
-              h('button', { key: c.label, className: 'sw-tree-crumb-btn', onClick: c.onClick }, c.label)
-            )
-          )
-        : null,
+      scopeBar(),
       visible.map((name) => {
         if (stage !== 'table') {
           return h(
@@ -368,6 +408,11 @@ window.SW = window.SW || {};
           name,
           subtitle: dotted,
           pinned: pins.tables.has(key),
+          bindApp,
+          // The deepest of the four positions, and the only one whose door is on a row rather than
+          // beside the crumb. `leaf.scope` is the same object the chip carries, so the Binding and
+          // the mention agree about which table was meant.
+          onUseInApp: () => SW.store.bindToApp(parent, leaf.scope),
           onMention: () => SW.store.addToContext(leaf, { quiet: true }),
           onPin: () => SW.store.pinLeaf(parent, {
             database: database || '',
@@ -385,13 +430,13 @@ window.SW = window.SW || {};
     );
   };
 
-  SW.ResourceTree = function ResourceTree({ resource, query, variant }) {
+  SW.ResourceTree = function ResourceTree({ resource, query, variant, bindApp }) {
     if (!resource) return null;
     if (resource.kind === 'dataset') {
       return h(SW.DatasetFileTree, { resource, query, variant });
     }
     if (resource.kind === 'datasource') {
-      return h(SW.DataSourceCascade, { resource, query, variant });
+      return h(SW.DataSourceCascade, { resource, query, variant, bindApp });
     }
     return null;
   };

@@ -1956,7 +1956,11 @@ window.SW = window.SW || {};
     // point. Binding is additive and its undo is the `Remove from {app}` in the same menu; and that
     // guard exists because a MODAL can sit open while the selection moves. With no modal the window
     // is one request round trip, which is the window every other act in this panel already has.
-    async bindToApp(resource) {
+    //
+    // `scope` is the Data Source's alone (#129): the cascade position the creator was standing on,
+    // passed by the door that was on screen there rather than derived here. There is nothing on a
+    // Project row to derive it FROM, which is why that row has no door for this kind.
+    async bindToApp(resource, scope) {
       // The BARE id, off `bindingKey`. Deriving it from `resource.id` would send the prefixed
       // `llm_alias:al_1`, which resolves to no Alias, answers 404, and leaves the rail redrawing
       // unchanged — a failure shaped exactly like success.
@@ -1967,7 +1971,7 @@ window.SW = window.SW || {};
       const gen = appGen;
       let result;
       try {
-        result = await SW.api.bind(key[0], key[1]);
+        result = await SW.api.bind(key[0], key[1], scope);
       } catch (err) {
         antd.message.error(`${name} could not be added to ${where}: ${err.message}`);
         return false;

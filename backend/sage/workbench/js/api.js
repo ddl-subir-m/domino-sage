@@ -532,7 +532,12 @@ SW.api = {
   // the door for. The id is BARE (`al_1`), never the Project row's prefixed one (`llm_alias:al_1`):
   // the route resolves it against the live listing, so a prefixed id finds no Alias and answers 404
   // — and the rail, already asked to refresh, redraws unchanged (#127).
-  bind: (kind, id) => post('/bindings', { kind, id }),
+  //
+  // `scope` is the cascade position a Data Source was bound at, and no other kind sends one (#129).
+  // Spread rather than nested, because the route reads `database`/`schema`/`table` off the top of
+  // the body — and omitted entirely for the kinds that have no Scope, so their request is the two
+  // fields it has always been.
+  bind: (kind, id, scope) => post('/bindings', { kind, id, ...(scope || {}) }),
   // The two app-scoped removals (ADR-0011). Both answer with the app source that STILL uses what
   // just went — read by the route before the record goes, because a Data Source's queries are found
   // through the record — so neither caller has to scan anything to report it.
