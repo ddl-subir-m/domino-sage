@@ -81,7 +81,7 @@ ENV SAGE_MODEL_SOVEREIGN_ASK=${SAGE_MODEL_SOVEREIGN_ASK}
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.
 ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if different
-ARG SAGE_REV=workbench-chat-builder
+ARG SAGE_REV=main
 # `--branch` takes a ref (branch/tag), not a bare SHA — so to force a fresh clone of the SAME branch
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
 ARG SAGE_CACHE_BUST=2026-08-31-build-request-detect
