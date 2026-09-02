@@ -72,6 +72,11 @@ short hyphenated slug as the filename.
   useful answer is numbers someone might copy; prefer a chart when the useful answer is a
   comparison or a shape. Write both when they would copy the numbers *and* need the picture
   (top-N with a bar chart; a correlation matrix with a heatmap).
+  `rows` holds one **positional array** per row, and the wrapper around it is not optional.
+  `df.to_json(orient="records")` and `json.dump(df.to_dict("records"), f)` both write a bare
+  array of objects, which has no `columns` and no `rows` — the table then shows "No data" next
+  to a chart that looks fine. Write it this way instead:
+  `json.dump({"title": t, "columns": list(df.columns), "rows": df.values.tolist()}, f)`.
 - A correlation, confusion, or other square matrix is **both**: a heatmap PNG and a `.table.json`
   of the same numbers. Do not dump the matrix into the reply text.
 - SQL you actually ran may be saved as `<slug>.sql` next to the result.

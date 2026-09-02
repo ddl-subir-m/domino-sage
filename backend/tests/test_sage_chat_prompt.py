@@ -21,6 +21,18 @@ def test_sage_chat_prompt_teaches_visuals_without_being_asked():
     assert "greeting, thanks" in prompt
 
 
+def test_sage_chat_prompt_names_the_pandas_shape_that_breaks_a_table():
+    """Stating the `{title, columns, rows}` schema was not enough on its own: a turn asked what was
+    in an uploaded forecast JSON reached for the pandas one-liner, wrote a bare record array, and
+    the card showed "No data" beside a chart that had plotted the same rows. Naming the two idioms
+    that produce that file, and the one that does not, is the part that was missing."""
+    prompt = (Path(__file__).resolve().parents[2] / "template" / "chat" / "AGENTS.md").read_text()
+    assert 'df.to_json(orient="records")' in prompt
+    assert 'json.dump(df.to_dict("records"), f)' in prompt
+    assert "df.values.tolist()" in prompt
+    assert "positional array" in prompt
+
+
 def test_chat_attachment_listing_tells_the_agent_to_read_the_file():
     out = with_attachment_listing(
         "what data is there in @desk.csv",
