@@ -5218,6 +5218,8 @@ class Orchestrator:
                     if m.get("type") != "assistant":
                         continue
                     for i, part in enumerate(m.get("content", [])):
+                        if not isinstance(part, dict):
+                            continue  # OpenCode can emit a bare string part; nothing to key or read
                         key = _part_key(m, i, part)
                         pt = part.get("type", "")
                         # Intermediate "let me save there" text is not the answer. Keep only the
@@ -6476,6 +6478,8 @@ class Orchestrator:
                     if m.get("type") != "assistant":
                         continue
                     for i, part in enumerate(m.get("content", [])):
+                        if not isinstance(part, dict):
+                            continue  # OpenCode can emit a bare string part; nothing to key or read
                         key = _part_key(m, i, part)
                         if key in seen:
                             continue

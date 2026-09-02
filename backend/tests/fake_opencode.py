@@ -38,6 +38,10 @@ class Turn:
     # OpenCode usage on the assistant message. None means the fake omits `tokens` (turn-count
     # fallback). Tests that want the token threshold set this to `{input, output, ...}`.
     tokens: dict | None = None
+    # A live OpenCode has sent a bare string in `content` instead of a `{"type": ...}` dict — real,
+    # not hypothetical (the crash this reproduces). True prepends one ahead of every other part, so
+    # a test can assert the turn survives it rather than reconstructing the shape by hand.
+    stray_content: bool = False
 
 
 class FakeOpenCode:
@@ -114,6 +118,8 @@ class FakeOpenCode:
         msgs = self._by_session.setdefault(session_id, [])
         parts: list[dict] = []
         n = self._next
+        if turn.stray_content:
+            parts.append("a bare string OpenCode sent in place of a part dict")
         for j, tool in enumerate(turn.tools):
             parts.append({"id": f"m{n}-t{j}", "type": "tool", "tool": tool,
                           "state": {"status": "completed"}})
