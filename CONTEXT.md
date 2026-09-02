@@ -14,16 +14,19 @@ person sees — see [ADR-0014](docs/adr/0014-the-overlay-renames-prose-not-ident
 **Resource**:
 Anything Domino has provisioned that the builder can surface for a user to pick — a Data
 Source, a Model API, or an LLM Alias.
+_Kind_: name
 _Avoid_: primitive, composable piece, integration, connector
 
 **Data Source**:
 A Domino connector to an external store, such as Snowflake or BigQuery, usable by anyone
 holding permission on it.
+_Kind_: name
 _Avoid_: database, connection, datasource (one word), data connector
 
 **Model API**:
 A deployed Domino endpoint serving a conventional data-science model — one that answers a
 prediction request rather than a conversation.
+_Kind_: name
 _Avoid_: model, endpoint, prediction API, inference endpoint
 
 **LLM Alias**:
@@ -31,18 +34,33 @@ A named model registration in the LLM Gateway. It is the only name by which Sage
 app refers to a language model. Sage's own model controls are the one exception: they say
 "model" in plain language, because a person choosing what Sage runs on is not picking a
 Resource for their app.
+_Kind_: name
 _Avoid_: model, model name, LLM, deployment
 
 **Asset**:
-A Domino Dataset mounted into the project container, holding files. Predates the term
-Resource and keeps its own surface in the builder.
-_Avoid_: resource, data source, volume
+The category a [[Dataset]] belongs to, as against a Resource: something Domino provisioned before
+the term Resource existed, that a Project holds and that keeps its own surface in the builder.
+Today the category has exactly one member, so this word earns its keep only where the two
+categories are being told apart — the [[Working set]] holds both, and a [[Binding]] names one
+thing that is an Asset. Copy a person reads says [[Dataset]].
+_Kind_: name
+_Avoid_: resource, data source, volume, Dataset (that is the thing; this is the category it is in)
+
+**Dataset**:
+A Domino Dataset mounted into the project container, holding files. It is the one [[Asset]] a
+Project can hold, the one thing a [[Binding]] names that is not a Resource, and what an
+[[Upload]] is written into when it crosses and becomes an [[Attachment]]. The name is Domino's,
+so a pack renames it.
+_Kind_: name
+_Avoid_: volume, folder (that is a directory inside one), data source, Asset (that is the category
+this is in, not this)
 
 **Domino Artifacts**:
 A separate Domino blob store, reachable at `/mnt/artifacts`, that Sage does not use. It is
 hydrated at container start and pushed back only on a manual Sync, so it cannot hold live
 shared state. Named here only so it is not mistaken for a Sage [[Artifact]], which is an
 unrelated thing.
+_Kind_: name
 _Avoid_: Artifact, artifacts
 
 ### Gateways
@@ -50,16 +68,19 @@ _Avoid_: Artifact, artifacts
 **LLM Gateway**:
 The deployed Domino App that fronts every language model, whether hosted in Domino or
 external. Both Sage and the apps Sage builds reach language models only through it.
+_Kind_: name
 _Avoid_: gateway, AI Gateway, proxy
 
 **AI Gateway**:
 A separate, MLflow-based Domino feature that Sage does not use. Named here only so it is not
 mistaken for the LLM Gateway.
+_Kind_: name
 _Avoid_: gateway
 
 **Hosted GenAI Endpoint**:
 A language model deployed inside Domino. It is reached through an LLM Alias, never called
 directly, so it is a deployment detail rather than something a user picks.
+_Kind_: name
 _Avoid_: model API, endpoint, vLLM endpoint
 
 ### What Sage produces
@@ -80,6 +101,7 @@ the assistant — a list that permits nothing would name Resources the assistant
 and has its own refusal, because a Built App may still bind what the Project is being asked to drop.
 Holding both Resources and Assets is why it is not called "project resources" on screen: the prose
 label is "In this project", which claims no type ([ADR-0014](docs/adr/0014-the-overlay-renames-prose-not-identifiers.md)).
+_Kind_: name
 _Avoid_: project resources, membership (that is the act of joining, not the list), shopping list,
 context (it reaches no prompt), "add to make available" (it enables nothing)
 
@@ -91,6 +113,7 @@ belong to the Built App's own surface
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). It still walks a
 Data Source's databases, schemas and tables, and a Dataset's files, for looking — that is
 orientation, which is this panel's job.
+_Kind_: name
 _Avoid_: resource panel, data panel, sidebar, working set (that is the list this panel draws)
 
 **Binding**:
@@ -120,6 +143,7 @@ Built App's surface is headed "Needs to run", and the head says what the app can
 rather than what kind of record they are: it is read by someone who came to answer a question about
 their app, and the mechanism is not that question
 ([ADR-0025](docs/adr/0025-the-app-section-groups-by-relationship-never-by-type.md)).
+_Kind_: name
 _Avoid_: connection (that word is [[Resource]] reach, ADR-0001), link, reference, wiring,
 requirement (that is this, named a second time), "Bindings" as a group label (that is "Needs to
 run" on screen)
@@ -132,12 +156,14 @@ as an error. Choosing one is a second act on the Built App's own surface, taken 
 that already exists; it can be taken again whenever the choice moves, and it can put the Binding back
 to no Scope at all. Removing the Binding takes its Scope with it, so a later re-bind inherits no old
 table.
+_Kind_: name
 _Avoid_: path, location, target, qualifier, selection
 
 **Named query**:
 A statement the app can run, declared by name in the Built App's own repo. The browser sends a name
 and parameter values, never SQL. The agent writes them during the build, so what a published app can
 ask its Data Source is fixed before anyone opens it.
+_Kind_: name
 _Avoid_: query, endpoint, SQL, prepared statement
 
 **Control**:
@@ -150,6 +176,7 @@ EMEA · 412 rows"). A chart click writes the Control for that mark's dimension r
 beside it, so there is one selection and it is always on screen; a chart over a dimension with no
 Control is not clickable. See
 [ADR-0016](docs/adr/0016-a-dashboard-ships-with-a-control.md).
+_Kind_: name
 _Avoid_: filter (that is one kind of Control), widget, interactivity, knob, facet
 
 **Sample rows**:
@@ -157,6 +184,7 @@ A few real rows from a bound table, shown to the agent because the creator asked
 default and never inferred: the creator picks the tables and chooses whether the rows are treated as
 sensitive, which is what decides if the session is [[Sovereign]]. Declining leaves the agent working
 from column names and types, which is fully supported.
+_Kind_: name
 _Avoid_: preview, sample data, examples, peek
 
 **Attachment**:
@@ -171,6 +199,7 @@ several kinds of thing, and this one holds exactly one, so naming it costs nothi
 label becomes the answer a person arrived for — "Files it carries — none" says this app ships none
 of them (ADR-0011,
 [ADR-0025](docs/adr/0025-the-app-section-groups-by-relationship-never-by-type.md)).
+_Kind_: name
 _Avoid_: upload (that is an [[Upload]], a different thing), mount, bundled file (it is copied in,
 not built in), "Attachments" as a group label (that is "Files it carries" on screen)
 
@@ -183,6 +212,7 @@ the crossing. The same file is then two named things in two scopes, each removed
 owns it. An Upload with no writable Dataset to be written into does not cross at all, and the
 handoff says which file stayed behind rather than carrying over something a published app could
 never read. See [ADR-0023](docs/adr/0023-an-upload-crosses-by-becoming-an-attachment.md).
+_Kind_: name
 _Avoid_: attachment, scratch file, temp file, dropped file, data file
 
 **Built App**:
@@ -190,6 +220,7 @@ An app Sage produces for a user, as distinct from Sage itself. It owns its code,
 its plan and its build history. It exists from the moment a handoff is confirmed, so an app that
 has never been published is still a Built App — publishing gives it a URL, not its existence. A
 Project has many. See [ADR-0008](docs/adr/0008-a-project-holds-many-built-apps.md).
+_Kind_: name
 _Avoid_: child app, generated app, output, App (unqualified — that is the Domino thing)
 
 **Domino App**:
@@ -197,12 +228,14 @@ The deployment Domino runs for a Built App: a container serving it at a URL. Pub
 App creates one, and re-publishing gives that same one a new version, so the URL is stable. A
 Domino project can hold many, each started from its own entry script. Distinct from the Built
 App, which exists whether or not it has ever been deployed.
+_Kind_: name
 _Avoid_: app, Built App, published app, deployment
 
 **Gallery**:
 The list of Built Apps a viewer is allowed to see — apps published from Sage Builder
 sessions, filtered by that viewer's Domino credentials. It lives in Sage Builder chrome
 after the door bounce. Opening an item opens that Built App; it does not switch Project.
+_Kind_: name
 _Avoid_: Hub, marketplace, catalog, project list
 
 **Workbench**:
@@ -210,6 +243,7 @@ The published Domino App that is Sage. Opening it is how a viewer reaches Chat a
 Code is a tab in the same chrome and is owned by a parallel branch. Manage is a separate Domino
 App, so the platform bar links out to it rather than routing into it. It is not a Built App and it
 is not a Hub.
+_Kind_: name
 _Avoid_: workspace (that word already means the Domino builder session), studio, platform,
 Built App, Hub
 
@@ -218,6 +252,7 @@ A git-backed Domino project whose Control Plane and git name start with `sage-`.
 Artifacts, Builds, and the Built Apps for that work live in it. It has many of each; it is a
 place work lives, not one app. The chip lists only these.
 Default is a Project. New project creates another, starts Sage Builder, and lands in Chat.
+_Kind_: name
 _Avoid_: folder, sandbox, scratch, workspace (that is Sage Builder)
 
 **Sage Builder**:
@@ -225,11 +260,13 @@ The Domino workspace, belonging to this viewer, in a Project where Chat and Buil
 Workbench App is the door: it starts or resumes that builder, then they work there. Switching
 the chip does the same for another Project. Left running unless something stops it. Two
 viewers in the same Project each have their own Sage Builder.
+_Kind_: name
 _Avoid_: Hub, notebook, App container (that is the Workbench process)
 
 **Chat**:
 The Workbench mode for open-ended questions and analysis. It produces Artifacts. It does not
 edit `src/`. Driven by the OpenCode agent `sage-chat`.
+_Kind_: name
 _Avoid_: ask mode (Build has a mode called Ask and this is not it — the collision is why the
 word must not stand in for Chat), assistant, sandbox, Jupyter, notebook
 
@@ -237,6 +274,7 @@ word must not stand in for Chat), assistant, sandbox, Jupyter, notebook
 The Workbench mode that edits a Built App, as against Chat, which does not. It runs in one of
 four modes a person picks: Auto, which plans and then builds; Ask, which answers and writes
 nothing; Plan, which proposes; and Implement, which builds.
+_Kind_: name
 _Avoid_: agent mode, code mode, editor, IDE
 
 **Model assignment**:
@@ -247,6 +285,7 @@ plans and the Implement assignment while it builds. An assignment belongs to the
 to the viewer who set it, and it reaches the other people in that Project when the Project
 next syncs. See
 [ADR-0017](docs/adr/0017-the-catalog-is-the-door-for-auto-and-ask.md).
+_Kind_: name
 _Avoid_: slot (that is the field in code), catalog, model setting, default model (the phrase
 names what an assignment reverts to, not the assignment)
 
@@ -254,6 +293,7 @@ names what an assignment reverts to, not the assignment)
 One person's standing choice to run a model other than the assignment, in their own Sage
 Builder only. It is not shared, it does not survive the Sage Builder, and only Plan and
 Implement honour it. Saving any assignment clears it.
+_Kind_: name
 _Avoid_: pick (that is the field in code), temporary model, per-turn model (it lasts until it
 is cleared, not one turn)
 
@@ -265,6 +305,7 @@ a Built App each time a handoff is confirmed: two Conversations may drive one Bu
 one Conversation may produce several over its life. It never owns one. What a person is shown
 is one transcript over all of those halves. See
 [ADR-0009](docs/adr/0009-one-conversation-build-is-a-view.md).
+_Kind_: name
 _Avoid_: Thread (what this used to be called; identifiers and stored paths still say `thread`
 and are not being renamed), session (OpenCode already uses session for the harness object),
 chat (that is the mode)
@@ -275,6 +316,7 @@ and an answer; a Build turn edits a Built App. A Conversation runs one turn at a
 two; a Project runs several, one per Conversation, up to a cap. Which Conversation a turn belongs
 to decides everything it may read and write. See
 [ADR-0013](docs/adr/0013-a-conversation-runs-one-turn-a-project-runs-three.md).
+_Kind_: name
 _Avoid_: job, run, request (that is one call to a gateway, of which a turn makes many), message
 (that is one row in the transcript)
 
@@ -283,6 +325,7 @@ A turn a person has asked for that is waiting for the Conversation's running tur
 an intention, not a commitment: it is held in memory, it dies with the Sage Builder, and it is
 refused rather than run if the Session context it was written against has changed by the time its
 place comes. Cancelling one is a different act from stopping the turn that is running.
+_Kind_: name
 _Avoid_: queued job, scheduled turn, draft (a draft is text nobody has sent)
 
 **Lead-in**:
@@ -292,6 +335,7 @@ overlap. It is what Build shows of the Chat half once an app is selected, and it
 the talk that planned the build that follows it, not the talk that followed the build before it.
 An app that has no build turns yet has no Lead-in, and neither does a turn that came after the
 last handoff.
+_Kind_: name
 _Avoid_: prologue (a prologue stops at the first build turn of the Conversation, not of this app),
 segment, thread, context
 
@@ -299,6 +343,7 @@ segment, thread, context
 The Sage display name of the caller's one persistent personal Project, created the first
 time they open the Workbench, reused thereafter. Naming it changes the chip only; it stays
 this viewer's Default. The Domino/git name is `sage-<user-slug>-<id>`, not the word Default.
+_Kind_: name
 _Avoid_: Untitled, sandbox, ephemeral, temporary project, scratch
 
 **Artifact**:
@@ -306,6 +351,7 @@ A file the chat agent wrote under `examples/<threadId>/` and indexed in that Con
 manifest — a PNG chart, a table JSON, a query, a note. The directory is named for the role
 these files play at handoff, not for the term. Handoff names Artifacts by path; it does not
 copy them, and it does not replay a chart object from memory.
+_Kind_: name
 _Avoid_: card, chart DSL, canvas, output, widget, Domino Artifacts
 
 **Plan**:
@@ -317,6 +363,7 @@ question, comment on one, and approve. A separate transient copy is what the bui
 reads, and that copy is archived the moment it does; so "the plan" in conversation means the
 document, not the copy. See
 [ADR-0007](docs/adr/0007-the-plan-document-is-durable-the-handoff-is-not.md).
+_Kind_: name
 _Avoid_: spec, PRD, requirements, ticket, brief, `plan.md` (that is the handoff copy, not the
 document)
 
@@ -326,6 +373,7 @@ never re-plans and never takes an edit: a Plan still awaiting approval is planne
 and a phased build resumes at the step that broke rather than starting over. Distinct from
 [[Build this again]], which only acts once a build has already succeeded, and only on a Plan the
 person has just edited.
+_Kind_: word
 _Avoid_: retry, rebuild (see [[Build this again]] for the term that means something more
 specific), resume
 
@@ -336,6 +384,7 @@ consumes it: nothing is left for a later turn to reread. It is offered only on t
 App's current state actually came from, and stops the moment any other turn moves that app on.
 Distinct from [[Try again]], which repeats a build that has not yet succeeded, unedited. See
 [ADR-0024](docs/adr/0024-build-this-again-is-the-one-way-a-built-plan-can-still-be-edited.md).
+_Kind_: word
 _Avoid_: rebuild, resubmit, re-approve
 
 **Handoff**:
@@ -345,6 +394,7 @@ always has a target the person picks, one Built App, and it never copies the Cha
 opens this Conversation's own. A Conversation may hand off more than once, once for each Built App
 it drives. It is the act and the record of the act, and it is transient: the plan document it
 writes outlives it ([ADR-0007](docs/adr/0007-the-plan-document-is-durable-the-handoff-is-not.md)).
+_Kind_: name
 _Avoid_: crossing, handover, promote, export, "Open in Build" (that is the control that confirms
 one, not the act), publish (that is putting a Built App on Domino)
 
@@ -354,6 +404,7 @@ composer. Distinct from a Binding, which is what the Built App needs to run and 
 reach. A chip is the Session context row the user can see and remove. The two lists move on their own:
 removing a Binding leaves the chip where it is, and removing a chip leaves the app still needing the
 Resource.
+_Kind_: name
 _Avoid_: attachment (that is a file in the Built App), binding (durable app dependency), detach
 (that is the app's word for removing an Attachment)
 
@@ -364,6 +415,7 @@ what the person never sees — the contents of files a turn read, and the tool c
 drift apart on purpose. Compaction shrinks Recall and leaves the transcript whole; clearing Recall
 empties it and leaves the transcript whole. A Conversation has one Recall for Chat and one for each
 Built App it drives, the same shape its history has.
+_Kind_: name
 _Avoid_: context (that is Session context, which is Resources), session (OpenCode's word for the
 harness object that holds Recall), history (that is the transcript), memory
 
@@ -375,37 +427,50 @@ Every label names which — "Remove from <app>", "Remove from <project>" — bec
 only thing that tells the two apart. The act belongs to the list that owns that scope, so a summary
 of a list points at it and never removes on its behalf. See
 [ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md).
+_Kind_: word
 _Avoid_: a bare "Remove" (it does not say which of the two), detach or unbind as a label (those
 name the app-scoped pair in code, not on screen), delete, drop, clear
 
-**Use in this chat** / **Stop using here**:
-Putting a Resource in front of the assistant for this Conversation, and taking it back out. It does
-write: the Resource joins the Project's [[Working set]] on the way through, and the answer says so
-once. But it is not a Remove, and the reason is reversibility rather than silence — stopping
-discards nothing, the Resource stays wherever it lives, and naming it again is the whole way back.
-One pair of words on every surface that offers the act. See
+**Use in this chat**:
+Putting a Resource in front of the assistant for this Conversation. It does write: the Resource
+joins the Project's [[Working set]] on the way through, and the answer says so once. Its inverse is
+[[Stop using here]], and one pair of words is used on every surface that offers the act. See
 [ADR-0015](docs/adr/0015-the-conversation-is-not-a-removal-scope.md).
+_Kind_: word
+_Avoid_: "Add to chat", "Mention in this chat", "Add to this conversation", attach, "Use in <app>"
+(that makes a [[Binding]], on the Built App's own surface, and is a different act)
+
+**Stop using here**:
+Taking a Resource back out of this Conversation, the inverse of [[Use in this chat]]. It is not a
+[[Remove]], and the reason is reversibility rather than silence — stopping discards nothing, the
+Resource stays wherever it lives, and naming it again is the whole way back. See
+[ADR-0015](docs/adr/0015-the-conversation-is-not-a-removal-scope.md).
+_Kind_: word
 _Avoid_: "Remove from this conversation" (it borrows a verb for a cost this act does not have),
-"Add to chat", "Mention in this chat", "Add to this conversation", attach, detach
+detach, a bare "Stop using" (it does not say where)
 
 **Shared credential**:
 A Data Source credential belonging to a service account rather than a person, so every
 Domino user reaches the store as the same principal.
+_Kind_: name
 _Avoid_: service credential, global credential
 
 **Individual credential**:
 A Data Source credential belonging to one person, so using it on their behalf re-exports
 their private access.
+_Kind_: name
 _Avoid_: personal credential, user credential
 
 **Sovereign**:
 The property of a model call that never leaves Domino. Sage's sovereign slots resolve to LLM
 Aliases backed by Hosted GenAI Endpoints.
+_Kind_: word
 _Avoid_: private, local, on-prem
 
 **Vendor-backed Alias**:
 An LLM Alias whose model runs outside Domino, so a call to it is not [[Sovereign]]. Sage can tell
 one from a Domino-hosted Alias, but cannot tell which vendor is behind it, and so never names one.
+_Kind_: name
 _Avoid_: external model, third-party model, public model
 
 **Egress**:
@@ -413,6 +478,7 @@ Rows leaving Domino because a Built App sends them to a Vendor-backed Alias. Dis
 re-export, which is a viewer being handed the publisher's own access to a store: egress is about
 where the data goes, re-export about whose permission it moves under. Publish refuses re-export and
 only names egress ([ADR-0012](docs/adr/0012-every-store-and-alias-combination-publishes.md)).
+_Kind_: name
 _Avoid_: leak, exfiltration, data sharing
 
 **Raw Gateway call**:
@@ -422,4 +488,5 @@ attribute the app's spend, the error messages written for the viewer, session-ex
 streaming. It also leaves the Alias out of the record the [[Egress]] sentence is built from, which
 is why that sentence can understate. The end-of-turn scan flags one and nudges the agent to rewrite
 it (#94); nothing about it refuses a publish.
+_Kind_: name
 _Avoid_: direct call, unregistered model call, hardcoded model

@@ -932,7 +932,7 @@ class DominoResourceProvider:
         """
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
-                "{assistantName} reads Hosted GenAI Endpoint status from the {platformName} API, "
+                "{assistantName} reads {hostedGenaiEndpoint} status from the {platformName} API, "
                 "and it is not running against one, so it cannot tell whether the endpoint behind "
                 "a model is running."
             ))
@@ -1374,7 +1374,7 @@ class DominoResourceProvider:
             # a value is not scanned again, and the sentence stays one literal.
             raise ResourceUnavailable(brand.text(
                 "{service} didn't answer at {path} ({error}). "
-                "Resources will be listed once it responds.",
+                "{resourcePlural} will be listed once it responds.",
                 service=service, path=path, error=type(e).__name__,
             )) from e
         if r.status_code >= 400:

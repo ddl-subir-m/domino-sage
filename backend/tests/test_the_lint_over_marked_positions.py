@@ -7,8 +7,10 @@ docstring and a variable name are invisible to it. That property is asserted her
 hard as the failures are, because it is the one that keeps the lint switched on.
 
 The other half is the computation: a `CONTEXT.md` term needs a noun key **iff** a marked
-position names it, which a marked position does by writing its token. Nobody maintains a
-list of which terms those are, so nothing can drift from what the UI actually says.
+position names it. ADR-0014 read "names it" as "writes its token", which let a bare glossary
+noun in prose through; since ADR-0026 a marked position names a term by writing its token OR
+by spelling it out, and only the terms `CONTEXT.md` marks `_Kind_: name` are held to it.
+Nobody maintains a list of which terms those are, so nothing can drift from what the UI says.
 """
 from __future__ import annotations
 
@@ -88,10 +90,15 @@ def test_the_advice_names_the_token_to_write_instead():
 
 
 def test_the_forbidden_words_come_out_of_the_pack_not_a_list():
-    """A name the pack learns to rename is refused the same day, with nothing edited here."""
+    """A name the pack learns to rename is refused the same day, with nothing edited here.
+
+    The word has to be one `CONTEXT.md` does not carry. Since ADR-0026 every glossary name is
+    refused whether the pack maps it or not — with a key by `bare-name`, without one by
+    `unkeyed-name` — so a glossary word could no longer tell the two apart.
+    """
     pack = copy.deepcopy(brand.DEFAULT)
-    pack["nouns"]["scope"] = {"singular": "Scope", "plural": "Scopes"}
-    marked = [lint.Marked("a.py", 1, "brand.text()", "Pick a Scope.", frozenset())]
+    pack["nouns"]["widget"] = {"singular": "Widget", "plural": "Widgets"}
+    marked = [lint.Marked("a.py", 1, "brand.text()", "Pick a Widget.", frozenset())]
     assert _rules(lint.findings(marked, pack=pack)) == ["bare-name"]
     assert lint.findings(marked) == []
 
@@ -217,20 +224,35 @@ def test_the_terms_needing_a_key_are_computed_from_what_the_ui_says():
     needed = lint.terms_needing_a_key(lint.marked_strings(lint.SOURCE))
     assert set(needed.values()) == {
         "Data Source",
+        "Dataset",
         "Model API",
         "LLM Alias",
         "Built App",
         "Gallery",
+        # ADR-0026's seven. Each was already reaching a person as a bare word, so each already
+        # owed a key under ADR-0014's rule; widening the lint from tokens to names is what made
+        # the debt visible rather than what created it.
+        "LLM Gateway",
+        "Hosted GenAI Endpoint",
+        "Project",
+        "Resource",
+        "Scope",
+        "Chat",
+        "Turn",
     }
     assert set(needed) <= set(brand.DEFAULT["nouns"])
 
 
-@pytest.mark.parametrize(
-    "term", ["AI Gateway", "Domino Artifacts", "Hosted GenAI Endpoint"]
-)
+@pytest.mark.parametrize("term", ["AI Gateway", "Domino Artifacts"])
 def test_a_glossary_only_term_needs_no_key_and_does_not_fail(term):
     """These exist so the LLM Gateway and a Sage Artifact are not mistaken for something
-    else. Nothing renames them, so the pack owes them nothing."""
+    else. Nothing renames them, so the pack owes them nothing.
+
+    `Hosted GenAI Endpoint` stood here until ADR-0026 and should never have: ADR-0014 named it
+    glossary-only, and five strings a person reads said the words out loud. Being named nowhere
+    in copy is what earns a term this exemption, and that is a fact about the copy rather than
+    about the term, so the lint reads it off the copy now.
+    """
     assert term in lint.glossary_terms()
     assert lint.key_for(term) not in lint.terms_needing_a_key(lint.marked_strings(lint.SOURCE))
     assert lint.key_for(term) not in brand.DEFAULT["nouns"]
@@ -329,3 +351,122 @@ def test_both_arms_of_a_conditional_template_are_read(tmp_path):
         ),
     )
     assert _rules(lint.run(tree)) == ["bare-name"]
+
+
+# --------------------------------------------------------------- a name spelled out in prose
+
+
+def _glossary(tmp_path: Path, body: str) -> Path:
+    """A `CONTEXT.md` of its own, so a test names its own terms instead of the real ones."""
+    path = tmp_path / "CONTEXT.md"
+    path.write_text(body)
+    return path
+
+
+def test_a_name_spelled_out_in_prose_fails_even_with_no_key(tmp_path):
+    """The gap ADR-0025 recorded and ADR-0026 closed.
+
+    `Widget` has no noun key, so `forbidden_phrases` knows nothing about it. Before ADR-0026
+    that made it invisible: the lint only refused what the pack already mapped, so the one
+    thing it could not catch was the first person to write a name out longhand.
+    """
+    glossary = _glossary(tmp_path, "**Widget**:\nA thing.\n_Kind_: name\n")
+    marked = [lint.Marked("a.py", 1, "brand.text()", "Pick a Widget.", frozenset())]
+    found = lint.findings(marked, glossary=glossary)
+    assert _rules(found) == ["unkeyed-name"]
+    assert "'Widget'" in found[0].message
+    # Three ways out, and the advice says all three: the copy moves, the pack grows a key, or
+    # `CONTEXT.md` says this was never a name. A refusal with one exit is a refusal that gets
+    # the wrong fix applied.
+    assert "the way the screen says it" in found[0].message
+    assert "'widget' noun key" in found[0].message
+    assert "mark the entry a word" in found[0].message
+
+
+def test_the_plural_of_a_name_fails_too(tmp_path):
+    """`Resources` was the site count's whole shape: five hits, none of them singular.
+
+    A naive `+s` and nothing more. This is a detector, not a renderer — the real plural lives
+    in the pack the moment the key exists, and `brand.text` is what reads it (ADR-0026).
+    """
+    glossary = _glossary(tmp_path, "**Widget**:\nA thing.\n_Kind_: name\n")
+    marked = [lint.Marked("a.py", 1, "brand.text()", "Two Widgets here.", frozenset())]
+    assert _rules(lint.findings(marked, glossary=glossary)) == ["unkeyed-name"]
+
+
+def test_a_word_is_ordinary_english_and_passes(tmp_path):
+    """The distinction ADR-0026 turns on. "Remove it, or bind another" is a verb, and a pack
+    that renamed it would break the sentence rather than translate it."""
+    glossary = _glossary(
+        tmp_path, "**Remove**:\nTaking a thing out.\n_Kind_: word\n"
+    )
+    marked = [lint.Marked("a.py", 1, "brand.text()", "Remove it and try again.", frozenset())]
+    assert lint.findings(marked, glossary=glossary) == []
+
+
+def test_an_unmarked_entry_is_read_as_a_name_and_says_so(tmp_path):
+    """Fail closed, out loud.
+
+    The cost of guessing `name` is a token somebody writes; the cost of guessing `word` is a
+    brand name shipped bare to a partner's customer. So an unmarked entry is held to the
+    stricter rule — and reported, because a default nobody is told about is one people come
+    to rely on.
+    """
+    glossary = _glossary(tmp_path, "**Widget**:\nA thing.\n_Avoid_: gadget\n")
+    marked = [lint.Marked("a.py", 1, "brand.text()", "Pick a Widget.", frozenset())]
+    found = lint.findings(marked, glossary=glossary)
+    assert _rules(found) == ["unmarked-term", "unkeyed-name"]
+    assert "no `_Kind_:` line" in found[0].message
+    assert lint.glossary_kinds(glossary)["Widget"] == "name"
+
+
+def test_every_real_glossary_entry_carries_a_marker():
+    """The fail-closed default is a safety net, not the way the file is kept."""
+    assert lint.unmarked_terms() == []
+
+
+def test_the_glossary_holds_both_kinds():
+    """A file of all names would pass `glossary_kinds` while proving nothing about it."""
+    kinds = lint.glossary_kinds()
+    assert kinds["Turn"] == "name"
+    assert kinds["Remove"] == "word"
+    assert sorted(k for k, v in kinds.items() if v == "word") == [
+        "Build this again",
+        "Remove",
+        "Sovereign",
+        "Stop using here",
+        "Try again",
+        "Use in this chat",
+    ]
+
+
+def test_a_name_the_pack_already_maps_is_answered_once(tmp_path):
+    """Two rules over one word would name it twice and disagree about the fix.
+
+    A name the pack maps is `forbidden_phrases`' business — it has a token to point at — so
+    `unkeyed_name_phrases` steps back from it.
+    """
+    glossary = _glossary(tmp_path, "**Data Source**:\nA store.\n_Kind_: name\n")
+    marked = [lint.Marked("a.py", 1, "brand.text()", "Pick a Data Source.", frozenset())]
+    found = lint.findings(marked, glossary=glossary)
+    assert _rules(found) == ["bare-name"]
+    assert "write {dataSource}" in found[0].message
+
+
+def test_the_advice_names_the_whole_phrase_a_person_wrote(tmp_path):
+    """One alternation over both rules, so the longest phrase still wins.
+
+    `Resource Browser` has no key and `Resource` has one. Run as two passes, the shorter rule
+    would match first and tell somebody to write `{resource} Browser`.
+    """
+    glossary = _glossary(
+        tmp_path,
+        "**Resource Browser**:\nA panel.\n_Kind_: name\n\n"
+        "**Resource**:\nA thing.\n_Kind_: name\n",
+    )
+    pack = copy.deepcopy(brand.DEFAULT)
+    pack["nouns"]["resource"] = {"singular": "Resource", "plural": "Resources"}
+    marked = [lint.Marked("a.py", 1, "brand.text()", "Open the Resource Browser.", frozenset())]
+    found = lint.findings(marked, pack=pack, glossary=glossary)
+    assert _rules(found) == ["unkeyed-name"]
+    assert "'Resource Browser'" in found[0].message

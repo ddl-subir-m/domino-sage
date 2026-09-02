@@ -202,7 +202,7 @@ def _credential_problem(b: Binding, sources: list[DataSource] | None) -> Publish
             "This app is recorded as reading the {dataSource} {name}, which isn't in the "
             "{dataSourcePlural} you have permission on, so {assistantName} can't tell whether its "
             "credential is shared. Check the {dataSource} in {platformName}, or remove it from "
-            "this app's Resources, and publish again.",
+            "this app's {resourcePlural}, and publish again.",
             name=b.display_name,
         ), b.kind, b.id)
     if source.credential_type != SHARED:
@@ -210,8 +210,8 @@ def _credential_problem(b: Binding, sources: list[DataSource] | None) -> Publish
             "This app is recorded as reading the {dataSource} {name}, whose credential "
             "belongs to one person rather than to a service account. A published app reaches the "
             "store as its publisher, so publishing this would hand every viewer that person's "
-            "access. Remove it from this app's Resources, or bind a {dataSource} with a Shared "
-            "credential, and publish again.",
+            "access. Remove it from this app's {resourcePlural}, or bind a {dataSource} whose "
+            "credential is shared, and publish again.",
             name=b.display_name,
         ), b.kind, b.id)
     return None

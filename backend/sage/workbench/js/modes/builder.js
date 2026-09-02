@@ -397,7 +397,7 @@ window.SW = window.SW || {};
               // The label the rail's head carried. It says what this list is, which is also what
               // the button above it is naming one of.
               h('div', { className: 'sw-rail-group sw-group-label' },
-                SW.brand.text('{builtAppPlural} in this Project')),
+                SW.brand.text('{builtAppPlural} in this {project}')),
               filtered.length === 0
                 ? h('div', { className: 'sw-rail-empty sw-secondary' },
                     SW.brand.text('No {builtAppPlural} match "{query}".', { query }))
@@ -464,7 +464,7 @@ window.SW = window.SW || {};
           'span',
           { className: 'sw-caption' },
           SW.brand.text('No {builtAppPlural} yet. Start one with New app, or approve a plan '
-            + 'in Chat.')
+            + 'in {chat}.')
         ),
         newApp
       );

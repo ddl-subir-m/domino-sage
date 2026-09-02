@@ -13,15 +13,36 @@ The marked positions:
 
 Nothing below is a maintained list. The words that may not be written bare are the pack's
 own values, read out of ``brand.DEFAULT``, so a name the pack learns to rename is a name
-this refuses on the same day. Which glossary terms need a noun key is computed the same
-way: **a ``CONTEXT.md`` term needs a key exactly when a marked position names it**, and a
-marked position names a term by writing its token. So a term the pack maps is refused
-written out — ``Data Source`` is answered with ``{dataSource}`` — and a token the pack
-cannot resolve is refused too, by the name of the term behind it. That is the whole
-mechanism: to name a glossary term in copy you write its token, and the token fails until
-the key exists. A term that exists only to disambiguate — ``AI Gateway``,
-``Domino Artifacts``, ``Hosted GenAI Endpoint`` — is never tokenised, so it needs no key
-and this never asks for one.
+this refuses on the same day. So a term the pack maps is refused written out — ``Data
+Source`` is answered with ``{dataSource}`` — and a token the pack cannot resolve is
+refused too, by the name of the term behind it.
+
+Which glossary terms owe a noun key is computed the same way, from ``CONTEXT.md``. The
+glossary holds two kinds of entry and each one says which it is on a ``_Kind_:`` line
+(ADR-0026):
+
+  * a **name** names a thing, so a partner may rename it. It owes a key the moment a
+    marked position says it, whether as a token or spelled out in prose.
+  * a **word** is ordinary English doing ordinary work — ``Remove``, ``Try again``,
+    ``Sovereign``. Renaming one would break the sentence rather than rebrand a thing, so
+    it owes nothing and is never asked for anything.
+
+An entry with no ``_Kind_:`` line is read as a name and also reported, because the
+fail-closed direction is the safe one: an unclassified term is treated as renameable
+until somebody says otherwise, and forgetting the line cannot quietly buy an exemption.
+
+This is wider than ``{token}`` on purpose. Until ADR-0026 the rule was "a term owes a key
+when a marked position writes its token", which let a bare ``Bindings`` in prose through
+while ``{binding}`` failed — the narrow half of what ADR-0014 actually decided. A name
+with no key, written out in prose, is now refused by the name of its own glossary entry.
+An unkeyed name is matched in its glossary spelling and in that spelling plus ``s``: there
+is no pluralisation engine here any more than in the pack, and ``s`` is enough to catch
+the plural anybody actually writes. This is a detector, not a renderer — the real plural
+lives in the pack, once the key exists.
+
+A term that exists only to disambiguate — ``AI Gateway``, ``Domino Artifacts`` — is named
+in no copy, so it is asked for nothing. ADR-0014 listed ``Hosted GenAI Endpoint`` beside
+those two; it was wrong, five strings said it out loud, and it has a key now.
 
 A new marked position is added here. It is never added to an exclusion list.
 
@@ -48,8 +69,13 @@ GLOSSARY = ROOT / "CONTEXT.md"
 # The helper's own token grammar, so what this calls resolvable is what actually resolves.
 _TOKEN = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
 
-# A glossary entry: `**Data Source**:` on a line of its own.
+# A glossary entry: `**Data Source**:` on a line of its own. One heading per entry, which is
+# why `**Use in this chat** / **Stop using here**:` was split in two (ADR-0026): `.+?` ran
+# straight across the ` / ` and made one junk term out of two real ones.
 _TERM = re.compile(r"^\*\*(.+?)\*\*:\s*$", re.MULTILINE)
+
+# The marker each entry carries, beside its `_Avoid_:` block.
+_KIND = re.compile(r"^_Kind_:\s*(name|word)\s*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -130,6 +156,62 @@ def glossary_terms(path: Path | None = None) -> list[str]:
     return _TERM.findall((path or GLOSSARY).read_text(encoding="utf-8"))
 
 
+def _entries(path: Path | None = None) -> Iterator[tuple[str, int, str | None]]:
+    """Each glossary entry as `term, line, kind`, with `kind` None when unmarked."""
+    text = (path or GLOSSARY).read_text(encoding="utf-8")
+    for match in _TERM.finditer(text):
+        nxt = text.find("\n**", match.end())
+        body = text[match.start(): len(text) if nxt < 0 else nxt]
+        kind = _KIND.search(body)
+        yield match.group(1), text.count("\n", 0, match.start()) + 1, (
+            kind.group(1) if kind else None
+        )
+
+
+def glossary_kinds(path: Path | None = None) -> dict[str, str]:
+    """Every term and whether it is a name or a word.
+
+    An unmarked entry answers `name`. That is the fail-closed direction: the cost of
+    guessing name is a token somebody writes, and the cost of guessing word is a brand
+    name shipped bare to a partner's customer.
+    """
+    return {term: kind or "name" for term, _, kind in _entries(path)}
+
+
+def unmarked_terms(path: Path | None = None) -> list[tuple[str, int]]:
+    """The entries carrying no `_Kind_:` line, with the line each heading is on."""
+    return [(term, line) for term, line, kind in _entries(path) if kind is None]
+
+
+def unkeyed_name_phrases(
+    glossary: Path | None = None, pack: dict | None = None
+) -> dict[str, str]:
+    """Every glossary name the pack cannot yet rename, mapped to how to fix it.
+
+    Only names, and only the ones no pack value already covers — a name the pack maps is
+    `forbidden_phrases`' business, and answering twice would name one word with two
+    rules. Each is matched in the glossary's own spelling and that spelling plus `s`,
+    which is the whole of the pluralisation here (ADR-0026).
+    """
+    covered = set(forbidden_phrases(pack))
+    out: dict[str, str] = {}
+    for term, kind in glossary_kinds(glossary).items():
+        if kind != "name" or term in covered:
+            continue
+        # Three ways out, cheapest first. Rewording leads because it is what the
+        # glossary usually already asks for: `Binding` and `Attachment` are named on
+        # screen by what they do for the app, never by the word (ADR-0025), so for
+        # those two a key would be the wrong fix rather than the missing one.
+        advice = (
+            f"{term!r} is a name in CONTEXT.md — say it the way the screen says it, "
+            f"give it a {key_for(term)!r} noun key in brand.DEFAULT, or mark the "
+            f"entry a word"
+        )
+        out.setdefault(term, advice)
+        out.setdefault(term + "s", advice)
+    return out
+
+
 def key_for(term: str) -> str:
     """The noun key a glossary term would have. `Data Source` → `dataSource`,
     `LLM Alias` → `llmAlias`, `Model API` → `modelApi` — the pack's own keys, which is
@@ -144,12 +226,11 @@ def key_for(term: str) -> str:
 def terms_needing_a_key(
     strings: Iterable[Marked], glossary: Path | None = None
 ) -> dict[str, str]:
-    """The glossary terms a marked position names, as `key → term`.
+    """The glossary terms a marked position names by writing a token, as `key → term`.
 
-    This is the computation ADR-0014 asks for: a term needs a noun key **iff** it appears
-    in a user-visible string, and a user-visible string names a term by writing its token.
-    A term nothing tokenises is not in the answer, however many times the glossary
-    defines it.
+    Half of what ADR-0014 asks for, and the half that reads a token. The other half —
+    a name spelled out in prose — is `unkeyed_name_phrases`, because a bare name is
+    caught by matching the word rather than by resolving a key.
     """
     by_key = {key_for(term): term for term in glossary_terms(glossary)}
     used: dict[str, str] = {}
@@ -171,7 +252,13 @@ def findings(
 ) -> list[Finding]:
     pack = pack or brand.DEFAULT
     phrases = forbidden_phrases(pack)
-    pattern = _phrase_pattern(phrases)
+    unkeyed = unkeyed_name_phrases(glossary, pack)
+    # One pattern over both, never two passes: `_phrase_pattern` puts the longest phrase
+    # first so the advice names the whole thing a person wrote, and that ordering only
+    # holds if every phrase is in the same alternation. `Resource Browser` has no key and
+    # `Resource` has one, so two passes would answer the longer phrase with the shorter
+    # rule.
+    pattern = _phrase_pattern({**unkeyed, **phrases})
     resolvable = pack_tokens(pack)
     strings = list(strings)
     # The computation itself: a token the pack cannot resolve is owed a noun key when the
@@ -179,14 +266,27 @@ def findings(
     wanted = terms_needing_a_key(strings, glossary)
 
     out: list[Finding] = []
+    # An entry with no marker is read as a name above; it is also said out loud here, so
+    # the omission is a finding rather than a silent default somebody relies on.
+    for term, line in unmarked_terms(glossary):
+        out.append(
+            Finding(
+                _relative(glossary or GLOSSARY),
+                line,
+                "unmarked-term",
+                f"{term!r} has no `_Kind_:` line — mark it a name or a word. Read as a "
+                f"name until it is.",
+            )
+        )
     for marked in strings:
         for phrase in dict.fromkeys(m.group(1) for m in pattern.finditer(marked.text)):
             out.append(
                 Finding(
                     marked.path,
                     marked.line,
-                    "bare-name",
-                    f"{marked.position} says {phrase!r} — {phrases[phrase]}.",
+                    "bare-name" if phrase in phrases else "unkeyed-name",
+                    f"{marked.position} says {phrase!r} — "
+                    f"{phrases.get(phrase) or unkeyed[phrase]}.",
                 )
             )
         for token in dict.fromkeys(_TOKEN.findall(marked.text)):

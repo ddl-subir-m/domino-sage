@@ -300,7 +300,7 @@ def _tables_section(columns: list[Column]) -> list[str]:
     if not tables:
         return [
             brand.text(
-                "{assistantName} could not read what the tables in this Scope hold, so their "
+                "{assistantName} could not read what the tables in this {scope} hold, so their "
                 "column names are not available here. Ask the user what a table holds rather than "
                 "guessing column names — a query naming a column that does not exist fails for the "
                 "first person who opens the app."),
@@ -374,7 +374,7 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
          "show that message as it is; do not replace it with your own wording."),
         brand.text(
             "- **Queries answer in the preview too**, against the same {dataSource}, the same "
-            "Scope and the same statements the published app will use. So a query that fails while "
+            "{scope} and the same statements the published app will use. So a query that fails while "
             "you are building is a real failure and worth fixing now — do not design a screen "
             "around it, and do not treat an empty result as the normal state. Preview answers are "
             "cached for a few seconds, so a change made in the store may take a moment to show."),

@@ -646,7 +646,7 @@ async def create_project(body: dict) -> JSONResponse:
             status_code=503,
             content={"error": brand_text(
                 "{assistantName} can't reach {platformName} from this container, so it can't "
-                "create a Project. This build runs against the project it is bound to."
+                "create a {project}. This build runs against the project it is bound to."
             )},
         )
     from ..provision.service import workspace_is_running
@@ -681,7 +681,7 @@ async def open_project(project_id: str) -> JSONResponse:
             status_code=503,
             content={"error": brand_text(
                 "{assistantName} can't reach {platformName} from this container, so it can't open "
-                "another Project. This build runs against the project it is bound to."
+                "another {project}. This build runs against the project it is bound to."
             )},
         )
     try:
@@ -1466,14 +1466,14 @@ async def set_binding_scope(resource_id: str, request: Request) -> JSONResponse:
         # the creator fixes with the OTHER door on the same surface — so the refusal names that act
         # rather than sending them to the platform to fix a grant that is not the problem.
         return JSONResponse(status_code=404, content={"error": brand_text(
-            "This app records no Binding for that {dataSource}, so there is no Scope to set. Use "
-            "it in the app first."
+            "This app doesn't need that {dataSource} to run, so there is no {scope} to set. "
+            "Use it in the app first."
         )})
     except LookupError:
         # The other cause, which reads nothing like the first: the Binding is there and the platform
         # will no longer describe the Resource, so the Scope cannot be enumerated or checked.
         return JSONResponse(status_code=404, content={"error": brand_text(
-            "That {dataSource} is not one {platformName} offers you, so its Scope cannot be set."
+            "That {dataSource} is not one {platformName} offers you, so its {scope} cannot be set."
         )})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})

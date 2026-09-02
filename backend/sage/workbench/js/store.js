@@ -33,6 +33,18 @@ window.SW = window.SW || {};
       llmAlias: { singular: 'LLM Alias', plural: 'LLM Aliases' },
       builtApp: { singular: 'Built App', plural: 'Built Apps' },
       gallery: { singular: 'Gallery', plural: 'Galleries' },
+      // ADR-0026's seven, in step with `brand.DEFAULT` on the server. Left out of here, a
+      // `{project}` in the shell's own chrome paints as the literal `{project}` for as long as
+      // /api/brand takes to answer, which is the window this table exists to cover.
+      llmGateway: { singular: 'LLM Gateway', plural: 'LLM Gateways' },
+      hostedGenaiEndpoint: {
+        singular: 'Hosted GenAI Endpoint', plural: 'Hosted GenAI Endpoints',
+      },
+      project: { singular: 'Project', plural: 'Projects' },
+      resource: { singular: 'Resource', plural: 'Resources' },
+      scope: { singular: 'Scope', plural: 'Scopes' },
+      chat: { singular: 'Chat', plural: 'Chats' },
+      turn: { singular: 'Turn', plural: 'Turns' },
     },
     colors: {
       primary: '#543FDE',
@@ -1112,7 +1124,7 @@ window.SW = window.SW || {};
           type: 'status',
           ok: false,
           value: SW.brand.text(
-            "{file} calls {platformName}'s LLM Gateway directly — rewriting it to use askModel",
+            "{file} calls {platformName}'s {llmGateway} directly — rewriting it to use askModel",
             { file: ev.file }
           ),
         });

@@ -53,7 +53,7 @@ Their rule that every turn ends in an edit belongs to Build, and so does the `NO
 line that ends a turn with nothing to build — never write that line here. Answering the question
 is the finished turn.
 
-`@name` in the user's message is the file or Resource they mean; the turn prompt also lists its
+`@name` in the user's message is the file or {resource} they mean; the turn prompt also lists its
 path. Read that path.
 
 When this turn produces a chart or a table, write that file before you reply. The reply is about

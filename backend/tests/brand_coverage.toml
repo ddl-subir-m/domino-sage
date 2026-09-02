@@ -20,6 +20,13 @@ words = [
   "Dataset", "Datasets", "Data Source", "Data Sources",
   "Model API", "Model APIs", "LLM Alias", "LLM Aliases",
   "Built App", "Built Apps", "Gallery", "Galleries",
+  # ADR-0026's seven keys. Each was already reaching a person bare, so each was already
+  # owed a key under ADR-0014; adding a key without adding it here would leave a token
+  # that nothing proves ever resolves, which is the one thing this file is for.
+  "LLM Gateway", "LLM Gateways",
+  "Hosted GenAI Endpoint", "Hosted GenAI Endpoints",
+  "Project", "Projects", "Resource", "Resources",
+  "Scope", "Scopes", "Chat", "Chats", "Turn", "Turns",
 ]
 
 [sentinels]

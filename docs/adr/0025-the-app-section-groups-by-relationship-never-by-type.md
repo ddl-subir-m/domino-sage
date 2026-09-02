@@ -43,8 +43,11 @@ are the same shape, and they are not.
 - **Neither term gets a brand-pack noun key, and that is the point.**
   [ADR-0014](0014-the-overlay-renames-prose-not-identifiers.md) gives a `CONTEXT.md` term a noun
   key *iff* a marked position names it. `Binding` and `Attachment` now name none, so they stay out
-  of the pack — the same class as `AI Gateway` and `Hosted GenAI Endpoint`. The lint's own
+  of the pack — the same class as `AI Gateway` and `Domino Artifacts`. The lint's own
   `Binding` example keeps working precisely because the key never appears.
+  (`Hosted GenAI Endpoint` stood in that list until
+  [ADR-0026](0026-the-glossary-holds-names-and-words-and-only-names-owe-a-key.md) found it in five
+  strings a person reads and gave it a key.)
 - **The labels move to a marked position they were never at.** Four of them were bare literals
   passed to `appGroup` and `kindRow`, so the lint over marked positions could not see them at all:
   the words were user-visible and entirely unwatched, which is why they survived the v1 sweep.
@@ -57,9 +60,13 @@ are the same shape, and they are not.
   prose passes. ADR-0014 states the rule more broadly than that ("no bare … unmapped glossary noun
   may appear"), so the implementation is narrower than the decision it implements. That gap is
   **not closed here**: closing it means deciding whether every glossary term in prose — `Recall`,
-  `Plan`, `Control`, `Scope` — is owed a pack key, which is a bigger question than this rename and
-  would make the lint markedly harder to live with. Recorded so the next person to trust the lint
-  knows what it does and does not check.
+  `Plan`, `Control`, `Scope` — is owed a pack key, which is a bigger question than this rename.
+  Recorded so the next person to trust the lint knows what it does and does not check.
+
+  > **Closed by [ADR-0026](0026-the-glossary-holds-names-and-words-and-only-names-owe-a-key.md).**
+  > The bigger question had an answer: the glossary holds *names* and *words*, and only a name owes
+  > a key. This paragraph also guessed that closing the gap "would make the lint markedly harder to
+  > live with", and that was wrong — measured, it was 2 sites, both the word `Turns`.
 - **The delete copy also stopped overclaiming.** It said the app's `Bindings` "are removed", which
   reads as though the Resources go too. They do not — a Binding is a grant, and ADR-0011 keeps the
   Resource in the Project to be picked again. It now says its *record* of what it needs to run.

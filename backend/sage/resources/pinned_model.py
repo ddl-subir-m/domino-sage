@@ -91,7 +91,7 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None,
     models = f"\n  models: [\n{entries},\n  ],\n" if aliases else "\n  models: [],\n"
     header = brand.text(
         "// Written by {assistantName} — do not edit. {assistantName} rewrites this file whenever "
-        "the app's Resources change.\n"
+        "the app's {resourcePlural} change.\n"
         "//\n"
         "// `models` is every {llmAlias} this app may call — pass one by name to `askModel`. "
         "`alias` is\n"
@@ -192,7 +192,7 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
         ("- **`askModel` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
         brand.text(
-            "- The call goes from the viewer's browser to {platformName}'s LLM Gateway under the "
+            "- The call goes from the viewer's browser to {platformName}'s {llmGateway} under the "
             "viewer's own {platformName} identity. There is no key to add, no server to write, and "
             "no CORS to configure."),
         # Said because the line above it reads like an invitation to write the fetch yourself (#94).
@@ -201,7 +201,7 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
         # one an agent cannot work out by testing — `/api/llm` is Sage's own proxy and answers
         # correctly right up to the moment the app ships.
         brand.text(
-            "- **Never `fetch` the LLM Gateway yourself — always `askModel`.** A raw call loses the "
+            "- **Never `fetch` the {llmGateway} yourself — always `askModel`.** A raw call loses the "
             "`X-LLM-Tag-sage-*` cost tags that attribute this app's spend, the error messages "
             "written for the viewer, the check for an expired {platformName} session, and "
             "streaming. And `/api/llm` is {assistantName}'s PREVIEW proxy: a call written against "

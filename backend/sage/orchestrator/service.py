@@ -5228,7 +5228,7 @@ class Orchestrator:
                         message = brand.text(
                             "The step {assistantName} was running did not finish, so the turn was "
                             "stopped. A large {dataset} file or a broad query can take longer than "
-                            "one Chat turn allows — try a narrower query."
+                            "one {chat} turn allows — try a narrower query."
                         )
                     elif quiet:
                         # Say which of the two happened. The turn did not run out of time doing
@@ -6441,7 +6441,7 @@ class Orchestrator:
             # an app with several, so a quoted heading is wrong in two of the three cases.
             # `{files}` and `{helper}` are not pack keys, so the helper leaves them for the
             # brand.text call at the fix site to fill from the turn (see below).
-            "You called {platformName}'s LLM Gateway with your own fetch in {files}. Rewrite those "
+            "You called {platformName}'s {llmGateway} with your own fetch in {files}. Rewrite those "
             "calls to use `askModel` from `{helper}` — import it and pass it the messages; it "
             "already knows the model, the URL and the headers. A "
             "raw call drops the X-LLM-Tag-sage-* cost tags that attribute this app's spend, the "

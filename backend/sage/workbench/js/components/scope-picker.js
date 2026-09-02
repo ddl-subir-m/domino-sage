@@ -87,7 +87,7 @@ window.SW = window.SW || {};
             {
               // Say why it can't be used, rather than offering a button that fails on click.
               title: canProvision ? '' : SW.brand.text('{assistantName} can’t reach {platformName} '
-                + 'from this container, so it can’t create a Project.'),
+                + 'from this container, so it can’t create a {project}.'),
               placement: 'right',
             },
             h(

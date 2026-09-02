@@ -123,7 +123,7 @@ async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
         # problem, not something the creator can act on. Say which.
         log.warning("preview llm: could not resolve a gateway token: %s", e)
         return JSONResponse(status_code=502, content={"error": {"message": brand.text(
-            "{assistantName} could not get a token for {platformName}'s LLM Gateway, so the preview "
+            "{assistantName} could not get a token for {platformName}'s {llmGateway}, so the preview "
             "cannot make this app's model calls. The published app is unaffected — it calls the "
             "gateway directly."
         )}})
@@ -145,7 +145,7 @@ async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
         await client.aclose()
         log.warning("preview llm: %s %s failed: %s", request.method, url, e)
         return JSONResponse(status_code=502, content={"error": {"message": brand.text(
-            "The preview could not reach {platformName}'s LLM Gateway."
+            "The preview could not reach {platformName}'s {llmGateway}."
         )}})
 
     # Streamed rather than read whole: `askModel` turns on `stream: true` whenever the app passes

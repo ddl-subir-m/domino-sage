@@ -11,8 +11,11 @@ window.SW = window.SW || {};
   // Project-scoped work. Everything here is read through the scope chip that
   // sits to its left.
   const MODES = [
-    { id: 'chat', label: 'Chat', hint: 'Explore data and think out loud' },
-    { id: 'build', label: 'Build', hint: 'Turn a plan into a working app' },
+    { id: 'chat', label: '{chat}', hint: 'Explore data and think out loud' },
+    // "Turn" was the first word here until ADR-0026 gave `Turn` a noun key. It was the
+    // English verb, but the check matches a whole word and cannot tell the two apart, so
+    // the copy moves rather than the rule.
+    { id: 'build', label: 'Build', hint: 'Go from a plan to a working app' },
     { id: 'code', label: 'Code', hint: 'Work in your own editor' },
   ];
 
@@ -27,7 +30,7 @@ window.SW = window.SW || {};
   // The panel is the project's working set, so it is named after the project
   // rather than after the abstract category of thing it contains.
   const DOCK_TABS = [
-    { id: 'resources', label: 'Project resources', icon: DatabaseOutlined },
+    { id: 'resources', label: '{project} resources', icon: DatabaseOutlined },
     { id: 'activity', label: 'Activity', icon: HistoryOutlined },
   ];
 
@@ -230,7 +233,7 @@ window.SW = window.SW || {};
             onGo();
           },
         },
-        item.label
+        SW.brand.text(item.label)
       )
     );
   }
@@ -295,12 +298,12 @@ window.SW = window.SW || {};
         DOCK_TABS.map((tab) =>
           h(
             Tooltip,
-            { key: tab.id, title: tab.label, placement: 'left' },
+            { key: tab.id, title: SW.brand.text(tab.label), placement: 'left' },
             h(
               'button',
               {
                 className: 'sw-dock-rail-btn',
-                'aria-label': tab.label,
+                'aria-label': SW.brand.text(tab.label),
                 onClick: () => SW.store.toggleDock(tab.id),
               },
               h(tab.icon, null)
@@ -324,7 +327,7 @@ window.SW = window.SW || {};
               className: `sw-dock-tab${dockTab === tab.id ? ' is-active' : ''}`,
               onClick: () => SW.store.set({ dockTab: tab.id }),
             },
-            tab.label
+            SW.brand.text(tab.label)
           )
         ),
         h('span', { className: 'sw-topnav-spacer' }),

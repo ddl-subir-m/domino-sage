@@ -78,7 +78,7 @@ def render_config(apis: list[Binding], credentials: dict[str, Credential],
     models = f"\n  models: [\n{entries},\n  ],\n" if usable else "\n  models: [],\n"
     header = brand.text(
         "// Written by {assistantName} — do not edit. {assistantName} rewrites this file whenever "
-        "the app's Resources change.\n"
+        "the app's {resourcePlural} change.\n"
         "//\n"
         "// `models` is every {modelApi} this app may call — pass one by name to `callModelApi`. "
         "Each carries\n"

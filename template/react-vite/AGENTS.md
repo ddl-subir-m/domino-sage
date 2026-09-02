@@ -61,7 +61,7 @@ for, what you proposed, which steps ran.
   turn as an instruction for this one.
 - Don't edit it. It is regenerated each turn, so any change is overwritten.
 
-## Project rules
+## {project} rules
 - **Plan proportionally, then build.** Match the planning to the task. A simple app (one screen, a
   list, a form) needs only a quick mental plan — just start building. A complex one (multiple views,
   non-trivial state or data shape) deserves a short up-front pass over components, state, and the
@@ -205,7 +205,7 @@ holds a handful of values — a category, a status, a date — gets one over tha
   through a declared parameter — and that path replaces the `useMemo` above rather than adding to it.
 
 ### States — do not skip these (this is the #1 polish signal)
-Scope these to the screens/collections the current request actually touches — don't add them to
+Limit these to the screens/collections the current request actually touches — don't add them to
 components outside what was asked.
 - **Empty state:** for a list/collection you're building or editing that can be empty, add one that
   says *what it is*, *why it's empty*, and *the action to fill it* — with a button. Never render a

@@ -281,8 +281,8 @@ def test_the_scope_route_refuses_where_the_app_holds_no_binding(tmp_path: Path, 
     # `LookupError` a Data Source the platform will not describe raises, precisely so this can name
     # the act that fixes it instead of sending the creator to Domino about a grant.
     assert res.json()["error"] == (
-        "This app records no Binding for that Data Source, so there is no Scope to set. Use it in "
-        "the app first."
+        "This app doesn't need that Data Source to run, so there is no Scope to set. Use it "
+        "in the app first."
     )
     assert client.get("/api/bindings").json()["bindings"] == []
 

@@ -68,6 +68,19 @@ DEFAULT: dict[str, Any] = {
         "llmAlias": {"singular": "LLM Alias", "plural": "LLM Aliases"},
         "builtApp": {"singular": "Built App", "plural": "Built Apps"},
         "gallery": {"singular": "Gallery", "plural": "Galleries"},
+        # Added by ADR-0026, which widened the lint from tokens to names: each of these
+        # was already reaching a person as a bare word, so each already owed a key under
+        # ADR-0014's rule. ADR-0014 named `Hosted GenAI Endpoint` as a term that never
+        # needs one; it was wrong, and five strings said so.
+        "llmGateway": {"singular": "LLM Gateway", "plural": "LLM Gateways"},
+        "hostedGenaiEndpoint": {
+            "singular": "Hosted GenAI Endpoint", "plural": "Hosted GenAI Endpoints"
+        },
+        "project": {"singular": "Project", "plural": "Projects"},
+        "resource": {"singular": "Resource", "plural": "Resources"},
+        "scope": {"singular": "Scope", "plural": "Scopes"},
+        "chat": {"singular": "Chat", "plural": "Chats"},
+        "turn": {"singular": "Turn", "plural": "Turns"},
     },
     "colors": {
         "primary": "#543FDE",

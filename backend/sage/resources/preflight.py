@@ -42,9 +42,9 @@ class SlotProblem:
         """What the maintainer reads, in the log and in the builder. Names both halves — the slot
         alone does not say what to change it from, and the alias alone does not say what broke."""
         return brand.text(
-            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, which this LLM "
-            "Gateway does not offer. Turns that route to {slot} will fail. Pick a different model "
-            "for that slot, or register {alias} in the LLM Gateway.",
+            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, which this "
+            "{llmGateway} does not offer. {turnPlural} that route to {slot} will fail. Pick a "
+            "different model for that slot, or register {alias} in the {llmGateway}.",
             slot=self.slot,
             alias=self.alias,
         )
@@ -162,8 +162,9 @@ class EndpointProblem:
     @property
     def message(self) -> str:
         return brand.text(
-            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, whose Hosted GenAI "
-            "Endpoint {endpoint} is {status}. Turns that route to {slot} will fail. {remedy}.",
+            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, whose "
+            "{hostedGenaiEndpoint} {endpoint} is {status}. {turnPlural} that route to {slot} "
+            "will fail. {remedy}.",
             slot=self.slot,
             alias=self.alias,
             endpoint=self.endpoint,
@@ -193,7 +194,7 @@ def alias_problem(alias_name: str, aliases: list[LlmAlias],
         return None
     endpoint, status = found
     return brand.text(
-        "Its Hosted GenAI Endpoint {endpoint} is {status}, so turns using it will fail. {remedy}.",
+        "Its {hostedGenaiEndpoint} {endpoint} is {status}, so turns using it will fail. {remedy}.",
         endpoint=endpoint,
         status=status,
         remedy=endpoint_remedy(status, "pick a different model"),
@@ -287,7 +288,7 @@ def turn_refusal(slot: str, alias: str, aliases: list[LlmAlias],
         if found is None:
             return None
         endpoint, status = found
-        fault = brand.text("whose Hosted GenAI Endpoint {endpoint} is {status}",
+        fault = brand.text("whose {hostedGenaiEndpoint} {endpoint} is {status}",
                            endpoint=endpoint, status=status)
         # Lower-cased because it lands mid-sentence here, where `EndpointProblem` starts a new one.
         remedy = endpoint_remedy(status, where)
@@ -329,7 +330,7 @@ def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
             continue
         endpoint, status = found
         out.append((b, brand.text(
-            "This app is recorded using the {llmAlias} {name}, whose Hosted GenAI Endpoint "
+            "This app is recorded using the {llmAlias} {name}, whose {hostedGenaiEndpoint} "
             "{endpoint} is {status}. Its calls will fail. {remedy}, before you build on it.",
             name=b.display_name,
             endpoint=endpoint,
@@ -412,7 +413,7 @@ def stale_message(b: Binding) -> str:
             name=b.display_name,
         )
     return brand.text(
-        "This app is recorded as using the {llmAlias} {name}, which the LLM Gateway no longer "
+        "This app is recorded as using the {llmAlias} {name}, which the {llmGateway} no longer "
         "offers. Remove it, or pick a different Alias, before you build on it.",
         name=b.display_name,
     )
@@ -422,7 +423,7 @@ def credential_message(b: Binding) -> str:
     """What a creator reads about a Model API Binding whose access token has gone."""
     return brand.text(
         "This app is recorded as using the {modelApi} {name}, but {assistantName} no longer holds "
-        "an access token for it, so the app cannot call it. Use it again in the Resources panel to "
+        "an access token for it, so the app cannot call it. Use it again in the {resourcePlural} panel to "
         "paste a new token, or remove it.",
         name=b.display_name,
     )
