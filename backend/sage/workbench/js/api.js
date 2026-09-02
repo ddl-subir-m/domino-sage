@@ -465,9 +465,11 @@ SW.api = {
   starters: () => Promise.resolve({ chat: { 'cross-industry': [], 'financial-services': [] } }),
 
   // The plan the app is being built from: `{title, markdown, status, steps}`, or `{}` when there
-  // is none. `status` is 'awaiting' while .sage/plan.md is live and 'built' once a build has
-  // archived it. Markdown, because plan.md is markdown — the group below reads the same plan as a
-  // document, which is a different question and outlives the build this one describes.
+  // is none. `status` is 'built' once a build has archived .sage/plan.md; while it's still live,
+  // `status` carries the plan document's own draft/in_review/approved status (or 'awaiting' for a
+  // workspace plan that predates plan documents). Markdown, because plan.md is markdown — the
+  // group below reads the same plan as a document, which is a different question and outlives
+  // the build this one describes.
   projectPlan: () => request('/project/plan').catch(() => ({})),
 
   plans: () => request('/plans').then((r) => r.items || []),

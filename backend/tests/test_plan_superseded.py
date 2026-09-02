@@ -135,7 +135,9 @@ def test_a_superseded_plan_is_not_what_the_app_was_built_from(tmp_path: Path):
     orch, _root, _app_id, _first, _second = _two_conversations_into_one_app(tmp_path)
 
     assert orch.project(start_preview=False).workspace.read_archived_plan() is None
-    assert orch.read_plan_pin()["status"] == "awaiting"
+    # "draft", not "awaiting": the pin now carries the live document's own status rather than a
+    # blanket "not built yet", and nobody has reviewed this one.
+    assert orch.read_plan_pin()["status"] == "draft"
     assert orch.read_plan_pin()["markdown"].startswith("A burndown")
 
 

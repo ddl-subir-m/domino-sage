@@ -2666,10 +2666,15 @@ class Orchestrator:
         # not its plan, and the same title is the plan page's heading and the transcript's plan
         # card, on a document that carries comments and approvals (ADR-0008).
         doc_title = str(docs[0].get("title") or "").strip() if docs else ""
+        # Live no longer means "awaiting approval" — approving a plan sets the DOCUMENT's status
+        # (draft/in_review/approved) but doesn't archive plan.md, so a plan can sit live-and-approved
+        # for a while before a build actually consumes it. Report the doc's real status while live;
+        # fall back to "awaiting" only for a workspace plan that predates plan documents (no doc to ask).
+        doc_status = str(docs[0].get("status") or "").strip() if docs else ""
         return {
             "title": doc_title or chat_handoff.plan_title(markdown),
             "markdown": markdown,
-            "status": "awaiting" if live else "built",
+            "status": (doc_status or "awaiting") if live else "built",
             "steps": _count_plan_steps(markdown),
             "planId": docs[0]["id"] if docs else "",
         }

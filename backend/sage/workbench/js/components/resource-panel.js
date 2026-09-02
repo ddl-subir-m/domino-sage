@@ -87,6 +87,10 @@ window.SW = window.SW || {};
 
     const built = plan.status === 'built';
     const steps = plan.steps === 1 ? '1 step' : `${plan.steps || 0} steps`;
+    // Live doesn't mean "waiting for approval" anymore — the plan doc's own status (draft/
+    // in_review/approved) rides along while plan.md is still live, ahead of any build.
+    const PENDING_LABEL = { draft: 'Draft', in_review: 'In review', approved: 'Approved' };
+    const pendingLabel = PENDING_LABEL[plan.status] || 'Waiting for approval';
 
     return h(
       Fragment,
@@ -114,7 +118,7 @@ window.SW = window.SW || {};
         h(
           'span',
           { className: 'sw-plan-pin-sub' },
-          built ? `Built · ${steps}` : `Waiting for approval · ${steps}`
+          built ? `Built · ${steps}` : `${pendingLabel} · ${steps}`
         )
       ),
       open &&
@@ -124,7 +128,7 @@ window.SW = window.SW || {};
             open: true,
             // Not `plan.title` — that is the plan's own first line, which the body below already
             // renders. The transcript's plan card labels itself the same way for the same reason.
-            title: built ? 'The plan this app was built from' : 'Plan, waiting for approval',
+            title: built ? 'The plan this app was built from' : `Plan, ${pendingLabel.toLowerCase()}`,
             footer: null,
             width: 640,
             onCancel: () => setOpen(false),
