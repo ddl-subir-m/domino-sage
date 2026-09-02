@@ -157,8 +157,20 @@ _Avoid_: preview, sample data, examples, peek
 A file bound into the Built App, reachable by the app's code. A file never becomes a Binding, so
 what one Built App carries is two named things and not one. A Binding may also produce an
 Attachment, but most do not. Removing an Attachment takes the declaration and the app's copy of the
-file. The source it was attached from is never touched.
-_Avoid_: upload, mount, bundled file
+file. The source it was attached from is never touched, unless that source is a Dataset folder Sage
+wrote itself, which is the one case a person can ask to delete outright.
+_Avoid_: upload (that is an [[Upload]], a different thing), mount, bundled file
+
+**Upload**:
+A file a person puts into a Conversation from the composer. It is held at the Project root, outside
+every Built App and outside git, and no app can read it — it exists so that a Chat turn can be asked
+about it. Confirming a handoff turns an Upload into an [[Attachment]] by writing the bytes into a
+writable Dataset, and the Upload itself stays where it is, so the Conversation goes on working after
+the crossing. The same file is then two named things in two scopes, each removed from the list that
+owns it. An Upload with no writable Dataset to be written into does not cross at all, and the
+handoff says which file stayed behind rather than carrying over something a published app could
+never read. See [ADR-0023](docs/adr/0023-an-upload-crosses-by-becoming-an-attachment.md).
+_Avoid_: attachment, scratch file, temp file, dropped file, data file
 
 **Built App**:
 An app Sage produces for a user, as distinct from Sage itself. It owns its code, its Bindings,
