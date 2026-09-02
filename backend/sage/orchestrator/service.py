@@ -7061,10 +7061,15 @@ class Orchestrator:
         # build and keep its plan alive for ever. What this turn owes is written by the two things
         # that can know it — the give-up flag below, and a phase as it starts.
         project.app_for_turn().set_plan_retry_step(0)
+        # An approve turn types no message of its own, so it has no `mentions` to carry — but the
+        # files already attached to this app are exactly what the build may need to read, and
+        # without this the model finds them itself via glob/find and can land on the absolute
+        # mount path _resolve_mentions exists to avoid (OpenCode hangs forever on those).
+        mentions = [e["path"] for e in project.attachments_for_turn()] or None
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
-                                                start_step=resume_from)
+                                                start_step=resume_from, mentions=mentions)
             else:
                 # The bubble is what the person did, not what we sent. Approving from the card passes
                 # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
@@ -7074,7 +7079,7 @@ class Orchestrator:
                 yield from self._build_stream(
                     _approve_prompt(plan_md, answers,
                                    handoff_note=chat_handoff.implement_note(project.app_for_turn().path)),
-                    is_approval=True, mode=run_as,
+                    mentions, is_approval=True, mode=run_as,
                     user_text=user_text if user_text is not None else "Approved the plan.")
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
@@ -7121,7 +7126,7 @@ class Orchestrator:
         return docs[0] if docs else None
 
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None,
-                        start_step: int = 0):
+                        start_step: int = 0, mentions: list[str] | None = None):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -7195,7 +7200,8 @@ class Orchestrator:
             project.app_for_turn().set_plan_retry_step(step.n)
             yield persist({"type": "step-start", "n": step.n, "total": len(steps),
                            "label": step.label, "files": step.files})
-            outcome = yield from self._run_step(project, client, step, steps, answers, notes)
+            outcome = yield from self._run_step(project, client, step, steps, answers, notes,
+                                                mentions)
             if outcome == "stopped":
                 # The user rejected the whole build, so leaving three of six phases on disk would
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
@@ -7252,7 +7258,8 @@ class Orchestrator:
             yield persist(saved)
 
     def _run_step(self, project: Project, client: OpenCodeClient, step: PlanStep,
-                  steps: list[PlanStep], answers: str, notes: list[str] | None = None):
+                  steps: list[PlanStep], answers: str, notes: list[str] | None = None,
+                  mentions: list[str] | None = None):
         """Run one phase, retrying once in another fresh session if it fails. Returns True, the
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
@@ -7283,7 +7290,7 @@ class Orchestrator:
                 outcome: dict | None = None
                 summary = ""
                 for ev in self._build_stream(_phase_prompt(step, steps, answers, notes, errors),
-                                             is_approval=True, mode=Mode.IMPLEMENT,
+                                             mentions, is_approval=True, mode=Mode.IMPLEMENT,
                                              session_id=sid, brief=step):
                     if ev["type"] == "stopped":
                         return "stopped"
