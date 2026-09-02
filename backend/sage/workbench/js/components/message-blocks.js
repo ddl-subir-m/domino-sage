@@ -354,7 +354,16 @@ window.SW = window.SW || {};
                 h(
                   'div',
                   { key: chart.path || chart.title, className: 'sw-crossing-item' },
-                  chart.title || chart.path,
+                  // A span, not a bare string: the title has to be an element for CSS to hold it
+                  // on one line, and `title` is what a reader hovers when a long one is elided.
+                  h(
+                    'span',
+                    {
+                      className: 'sw-crossing-name',
+                      title: chart.title || chart.path,
+                    },
+                    chart.title || chart.path
+                  ),
                   chart.path && h('code', null, chart.path)
                 )
               )

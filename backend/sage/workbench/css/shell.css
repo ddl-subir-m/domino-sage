@@ -996,7 +996,18 @@ a.sw-topnav-link {
   display: flex; align-items: baseline; gap: var(--s2);
   font-size: var(--fs-12); line-height: 1.6; color: var(--gray-600);
 }
-.sw-crossing-item code { font-family: var(--mono); font-size: var(--fs-11); color: var(--dark-700); }
+.sw-crossing-item .sw-crossing-name {
+  /* One line per chart: a wrapped title read as two chart names. It still gives way before the
+     card's edge does, so an unusually long one is elided rather than overflowing. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.sw-crossing-item code {
+  font-family: var(--mono); font-size: var(--fs-11); color: var(--dark-700);
+  /* A chart's path is one long unbreakable token, and a flex item's `auto` minimum keeps it at
+     full width — so it ran past the card's edge. Let it shrink and break instead, and shrink far
+     harder than the title beside it so the path gives way first. */
+  min-width: 0; overflow-wrap: anywhere; flex-shrink: 100;
+}
 
 /* Plan page -------------------------------------------------------------- */
 
