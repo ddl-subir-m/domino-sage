@@ -2519,6 +2519,10 @@ class Orchestrator:
         # use (seeding the volume + rehydrating .sage/ from disk), memoized thereafter.
         self._project: Project | None = None
         self._oc_server: OpenCodeServer | None = None
+        # Two callers reach shutdown() on one exit now: the ASGI lifespan runs it whichever server
+        # hosts control_app, and run()'s `finally` stays as the backstop for a process that dies
+        # before the lifespan gets a turn. The teardown is idempotent; the git save is not.
+        self._shutdown_done = False
         # Pre-supplied client (tests): _ensure_opencode already returns a non-None client untouched,
         # so injecting here means no server is ever started and the seam costs the production path
         # nothing. Same shape as the gateway/feedback/assets fakes above it.
@@ -10168,6 +10172,9 @@ class Orchestrator:
         _ensure_dir_link(ws.path / "examples", project.record.path / "examples")
 
     def shutdown(self) -> None:
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
         # Stop-safe backstop: on a graceful SIGTERM (Domino /stop, idle cull, or the hub button),
         # save any in-progress work first — commit + pull/resolve + push — so stopping never drops
         # uncommitted edits. Done before tearing down opencode, whose server the conflict-resolution

@@ -11,6 +11,7 @@ Run:  uv run python -m sage.orchestrator.app
 from __future__ import annotations
 
 import collections
+import contextlib
 import logging
 import os
 import queue
@@ -447,7 +448,22 @@ def _warm_opencode() -> None:
 
 threading.Thread(target=_warm_opencode, name="sage-warm-opencode", daemon=True).start()
 
-control_app = FastAPI(title="sage orchestrator")
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Tear down the child processes however this app was launched.
+
+    run() below wires shutdown for one launcher: `python -m sage.orchestrator.app`. Every other way
+    into this module — `uvicorn sage.orchestrator.app:control_app`, one of its --reload workers,
+    any embedding host — got no teardown at all. OpenCode spawns with `start_new_session=True`, so
+    it survives the exit rather than dying with it, and each of those exits left one orphaned
+    `opencode serve` holding ~80 MB. Hanging the teardown on the app means the ASGI server runs it,
+    whichever server that is.
+    """
+    yield
+    orchestrator.shutdown()
+
+
+control_app = FastAPI(title="sage orchestrator", lifespan=_lifespan)
 
 # The Domino proxy path prefix, single-sourced from env (empty locally). Baked into Vite's `base`
 # AND stripped from incoming request paths so the bare-registered routes below keep matching.

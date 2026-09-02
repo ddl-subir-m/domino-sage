@@ -438,3 +438,74 @@ def test_the_source_config_is_the_fallback_when_nothing_was_installed(monkeypatc
     env = _spawn_capturing_env(monkeypatch, cwd)
 
     assert env["OPENCODE_CONFIG"] == str(cwd / "opencode.json")
+
+
+class _StubbornProc:
+    """A server that ignores SIGTERM: `wait` times out until something sends SIGKILL."""
+
+    pid = 4242
+
+    def __init__(self):
+        self.killed = False
+
+    def poll(self):
+        return 0 if self.killed else None
+
+    def wait(self, timeout=None):
+        import subprocess
+
+        if not self.killed:
+            raise subprocess.TimeoutExpired(cmd="opencode", timeout=timeout)
+        return 0
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        self.killed = True
+
+
+def test_stop_escalates_to_sigkill_when_sigterm_is_ignored(monkeypatch):
+    """A survivor of SIGTERM is not reaped by anything else.
+
+    `start` uses `start_new_session=True`, so the server outlives this process rather than dying
+    with it. If `stop` only asked and walked away, an OpenCode busy on a gateway stream became a
+    permanent orphan — the shape that left 269 of them holding 22 GB.
+    """
+    import signal
+
+    from sage.driver import server as drv
+
+    proc = _StubbornProc()
+    sent = []
+
+    def _killpg(pgid, sig):
+        sent.append(sig)
+        if sig == signal.SIGKILL:
+            proc.kill()
+
+    monkeypatch.setattr(drv.os, "killpg", _killpg)
+    monkeypatch.setattr(drv.os, "getpgid", lambda pid: pid)
+
+    srv = drv.OpenCodeServer(cwd=".")
+    srv._proc = proc
+    srv.stop(timeout_s=0.01)
+
+    assert sent == [signal.SIGTERM, signal.SIGKILL]
+    assert proc.poll() == 0
+
+
+def test_stop_is_a_no_op_once_the_server_has_exited(monkeypatch):
+    """Nothing to signal, so signal nothing — shutdown() may reach this twice on one exit."""
+    from sage.driver import server as drv
+
+    def _boom(*a, **kw):
+        raise AssertionError("stop() signalled a process that had already exited")
+
+    monkeypatch.setattr(drv.os, "killpg", _boom)
+
+    proc = _StubbornProc()
+    proc.killed = True
+    srv = drv.OpenCodeServer(cwd=".")
+    srv._proc = proc
+    srv.stop()

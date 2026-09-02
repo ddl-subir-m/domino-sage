@@ -86,11 +86,23 @@ class OpenCodeServer:
                 self._url = u
                 self._ready.set()
 
-    def stop(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            import os
+    def stop(self, timeout_s: float = 5.0) -> None:
+        """Stop the server and CONFIRM it died.
 
+        SIGTERM is a request, not an outcome, and `start_new_session=True` in start() means a
+        survivor is not reaped by this process's death either — it keeps running with no parent.
+        So wait for the exit, and escalate to SIGKILL when the wait runs out: a server still
+        draining a gateway stream can be slow to take the hint, and slow here means forever.
+        """
+        if not (self._proc and self._proc.poll() is None):
+            return
+        for sig, fallback in ((signal.SIGTERM, self._proc.terminate), (signal.SIGKILL, self._proc.kill)):
             try:
-                os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+                os.killpg(os.getpgid(self._proc.pid), sig)
             except (ProcessLookupError, PermissionError):
-                self._proc.terminate()
+                fallback()
+            try:
+                self._proc.wait(timeout=timeout_s)
+                return
+            except subprocess.TimeoutExpired:
+                continue
