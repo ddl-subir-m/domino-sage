@@ -1421,6 +1421,35 @@ def _chat_activity(tool: str, subject: str) -> tuple[str, str]:
 # not become the Thread.
 _CHAT_ERROR_MAX = 300
 
+# The gateway's own words for a guardrail refusal. It arrives buried: the gateway answers 400, the
+# shim wraps that in a 502 whose message quotes the body, OpenCode quotes the shim, and the whole
+# nest reaches the Thread as one string. The name is the only part worth keeping.
+_GUARDRAIL = re.compile(r"Blocked by guardrail:\s*([^\"'}\\]+)")
+
+
+def _guardrail_sentence(text: str) -> str:
+    """A refusal by a gateway guardrail, said plainly — or "" when this is some other failure.
+
+    A guardrail block is not a fault, and it is not Sage's: the gateway was asked to police what
+    passes through it and it did. What the raw text cannot say is the part people get wrong, which
+    is WHERE it looked. Live, a Thread asked what was in an attached JSON file, the file held phone
+    numbers, and a "Block phone numbers" guardrail refused the turn — so the message named a policy
+    about phone numbers on a turn whose author had typed none. The data is the half that matched.
+
+    No resolution is offered beyond naming the two people who can act, because Sage has neither:
+    it cannot edit the gateway's policy and it will not quietly redact someone's data to get past
+    one.
+    """
+    match = _GUARDRAIL.search(text)
+    if not match:
+        return ""
+    name = " ".join(match.group(1).split()).strip(" .;:")
+    # The gateway's sentence verbatim, ours around it (ADR-0014). What is dropped is the transport
+    # wrapper it arrived in — three levels of quoted JSON — not a word the gateway wrote.
+    return (f'the gateway refused it: "Blocked by guardrail: {name}". Guardrails read the data a '
+            "turn carries, not only what you typed, so an attached file can trip one. Take the "
+            "matching values out, or ask your Domino administrator about the policy.")
+
 
 def _chat_error_text(err: object) -> str:
     """One plain line for a step that failed, or "" when the frame carries nothing to say.
@@ -1437,7 +1466,10 @@ def _chat_error_text(err: object) -> str:
         text = str(data.get("message") or err.get("message") or err.get("name") or "")
     else:
         text = ""
-    return " ".join(text.split())[:_CHAT_ERROR_MAX]
+    # Before the clip, not after. The live nest put the name at character 200 of 302, so the clip
+    # spared it — by 59 characters, on the shortest of the two gateway URL forms in use. A longer
+    # host, app path or guardrail name eats that margin, and translating first costs nothing.
+    return _guardrail_sentence(text) or " ".join(text.split())[:_CHAT_ERROR_MAX]
 
 
 def _chat_live_event(ev) -> dict | None:

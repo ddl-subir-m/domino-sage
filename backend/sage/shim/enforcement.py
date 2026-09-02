@@ -238,16 +238,28 @@ class EnforcementShim:
         # documented this as the contract: no session-level model, the shim decides per request.
         request = {**request, "model": decision.model}
 
+        # Function tools and `reasoning_effort` are mutually exclusive on chat/completions for the
+        # GPT-5 family: the gateway answers 400 with "Function tools with reasoning_effort are not
+        # supported for gpt-5.4 in /v1/chat/completions". Chat turns always carry tools, so with
+        # gpt-5.4 as the Chat alias EVERY turn failed, down to "hi" — the same request succeeded the
+        # moment it routed to sonnet, which advertises no efforts and so was never given one. The
+        # field is dropped rather than sent as 'none' (the other half of the gateway's advice):
+        # `none` is not in the enum the alias advertises, and an alias that does not advertise a
+        # value 400s on it, which is the failure this whole block already guards against twice.
+        # Cost is what is lost — the turn runs at the alias default. A tool-less Chat turn keeps it.
+        tool_call = bool(request.get("tools"))
+
         # Chat-only: the user picked an effort for THIS alias. Do not send it when routing landed
         # on a different model — qwen-2-5 400s on unknown fields.
         if (
-            state.chat_thread_id
+            not tool_call
+            and state.chat_thread_id
             and state.reasoning_effort
             and state.chat_model
             and request["model"] == state.chat_model
         ):
             request = {**request, "reasoning_effort": state.reasoning_effort}
-        elif state.chat_thread_id and "low" in reasoning_efforts_for(request["model"]):
+        elif not tool_call and state.chat_thread_id and "low" in reasoning_efforts_for(request["model"]):
             # Chat on Auto never reached the branch above: no pick means no effort, so a data
             # question was answered at the alias's own default — a full reasoning pass, paid before
             # the first token, on turns as small as "hi". Low is the floor for this kind of work;

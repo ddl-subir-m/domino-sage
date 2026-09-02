@@ -488,6 +488,43 @@ def test_chat_pick_and_effort_go_to_the_gateway():
     control.disarm_chat(token)
 
 
+def test_a_tool_carrying_turn_is_sent_without_an_effort():
+    """gpt-5.4 refuses function tools and `reasoning_effort` together on chat/completions.
+
+    Live: "Function tools with reasoning_effort are not supported for gpt-5.4 in
+    /v1/chat/completions." Chat turns always carry tools, so with gpt-5.4 as the Chat alias every
+    turn failed, down to "hi". The same turn succeeded on sonnet, which advertises no efforts and
+    so was never given one.
+    """
+    control = ModelControl()
+    control.pick_chat("gpt-5.4", "high")
+    token = control.arm_chat("thr_1")
+    gw = FakeGatewayClient()
+    tools = [{"function": {"name": "read"}}]
+    list(_shim(control, gw).handle({"model": "opencode-default", "messages": [], "tools": tools},
+                                   project="p"))
+    sent = gw.seen[-1][0]
+    assert sent["model"] == "gpt-5.4"          # the pick still routes
+    assert "reasoning_effort" not in sent      # only the effort is dropped
+    control.disarm_chat(token)
+
+
+def test_the_auto_low_effort_is_dropped_for_a_tool_carrying_turn_too():
+    """The cost floor takes the same exit. Both branches send the field the gateway refuses."""
+    control = ModelControl()
+    token = control.arm_chat("thr_1")
+    gw = FakeGatewayClient()
+    # Auto routes Chat to the ask slot, so that is the slot that has to be a GPT-5 for the floor
+    # to apply at all.
+    handler = EnforcementShim(control, _replace(CATALOG, ask="gpt-5.4"), gw)
+    list(handler.handle({"model": "opencode-default", "messages": []}, project="p"))
+    assert gw.seen[-1][0]["reasoning_effort"] == "low"   # no tools: the floor still applies
+    list(handler.handle({"model": "opencode-default", "messages": [],
+                         "tools": [{"function": {"name": "read"}}]}, project="p"))
+    assert "reasoning_effort" not in gw.seen[-1][0]
+    control.disarm_chat(token)
+
+
 def test_chat_default_uses_the_ask_model_not_the_build_mode():
     control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
     token = control.arm_chat("thr_1")
