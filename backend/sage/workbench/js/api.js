@@ -198,7 +198,11 @@ function rowFromMember(item) {
   };
 }
 
-function groupsFromMembership(items, attached) {
+// Membership only. Files are not read here and have not been since `5d12975`: this took an
+// `attached` list and built `groups.file` out of it, and its one caller has passed `[]` ever since,
+// so the block only ever assigned an empty array over the empty one `emptyResourceGroups` already
+// gives. `loadScopeData` fills that group off its own deferred `/project` read.
+function groupsFromMembership(items) {
   const groups = emptyResourceGroups();
   (items || []).forEach((item) => {
     const row = rowFromMember(item);
@@ -209,15 +213,6 @@ function groupsFromMembership(items, attached) {
       if (leaf) groups.pin.push(leaf);
     });
   });
-  groups.file = (attached || [])
-    .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
-    .map((e) => ({
-      id: `file:${e.path}`,
-      name: e.name || (e.path || '').split('/').pop(),
-      kind: 'file',
-      path: e.path,
-      source: e.source || (String(e.path || '').startsWith('.sage/scratch/') ? 'scratch' : undefined),
-    }));
   return groups;
 }
 
@@ -280,7 +275,7 @@ SW.api = {
     // (which starts the preview) — a hard refresh otherwise paints Data (0) for seconds.
     const membership = await request('/project/resources').catch(() => ({ items: [] }));
     return {
-      groups: groupsFromMembership(membership.items || [], []),
+      groups: groupsFromMembership(membership.items || []),
       members: membership.items || [],
       errors: {},
       aliases: [],
