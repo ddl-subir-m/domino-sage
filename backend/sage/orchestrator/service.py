@@ -1432,13 +1432,20 @@ def _guardrail_sentence(text: str) -> str:
 
     A guardrail block is not a fault, and it is not Sage's: the gateway was asked to police what
     passes through it and it did. What the raw text cannot say is the part people get wrong, which
-    is WHERE it looked. Live, a Thread asked what was in an attached JSON file, the file held phone
-    numbers, and a "Block phone numbers" guardrail refused the turn — so the message named a policy
-    about phone numbers on a turn whose author had typed none. The data is the half that matched.
+    is WHERE it looked. Live, a Thread asked what was in an attached JSON file of sales forecasts,
+    and a "Block phone numbers" guardrail refused the turn: three predictions ran over a million,
+    and their seven-digit integer parts matched a pattern that accepts a decimal point as its right
+    boundary. Nobody had typed a phone number, and the file contained none.
 
-    No resolution is offered beyond naming the two people who can act, because Sage has neither:
-    it cannot edit the gateway's policy and it will not quietly redact someone's data to get past
-    one.
+    The refusal then outlived the turn. The value reached the gateway as a tool result, so it was
+    in the Thread, and a Thread re-sends what it holds — every later turn was refused too, on a
+    value from an earlier one. Live, the next question attached a different file with nothing in it
+    that could match, and it was refused; the same file in a new Thread was answered. So the escape
+    is named. Without it the advice is to remove a value the person cannot reach, in a Thread that
+    can no longer answer them.
+
+    No other resolution is offered beyond naming the administrator, because Sage has none: it
+    cannot edit the gateway's policy and it will not quietly redact someone's data to get past one.
     """
     match = _GUARDRAIL.search(text)
     if not match:
@@ -1446,9 +1453,10 @@ def _guardrail_sentence(text: str) -> str:
     name = " ".join(match.group(1).split()).strip(" .;:")
     # The gateway's sentence verbatim, ours around it (ADR-0014). What is dropped is the transport
     # wrapper it arrived in — three levels of quoted JSON — not a word the gateway wrote.
-    return (f'the gateway refused it: "Blocked by guardrail: {name}". Guardrails read the data a '
-            "turn carries, not only what you typed, so an attached file can trip one. Take the "
-            "matching values out, or ask your Domino administrator about the policy.")
+    return (f'the gateway refused it: "Blocked by guardrail: {name}". Guardrails read everything a '
+            "turn carries — the files it opened and the turns before it, not only what you typed. "
+            "A match in an earlier turn keeps refusing every turn after it, so start a new Thread "
+            "to leave it behind, or ask your Domino administrator about the policy.")
 
 
 def _chat_error_text(err: object) -> str:

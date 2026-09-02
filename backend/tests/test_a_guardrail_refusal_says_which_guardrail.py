@@ -5,7 +5,9 @@ passes through it, and it did. But it arrives buried — the gateway answers 400
 that in a 502 whose message quotes the body, OpenCode quotes the shim — and the nest reached the
 Thread whole. Live, a Thread asked what was in an attached JSON file, the file held phone numbers,
 and the person read three levels of escaped JSON to learn that a policy about phone numbers had
-stopped a turn in which they had typed none.
+stopped a turn in which they had typed none. The file held no phone numbers either: three sales
+forecasts ran over a million, and a pattern that accepts a decimal point as its right boundary
+matched their seven-digit integer parts.
 
 The gateway's own sentence is kept verbatim and quoted (ADR-0014). What is dropped is the
 transport wrapper, which the gateway did not write.
@@ -37,6 +39,16 @@ def test_it_says_where_the_guardrail_looked():
     said = _chat_error_text(LIVE)
     assert "not only what you typed" in said
     assert "administrator" in said
+
+
+def test_it_names_the_one_escape_from_a_thread_that_keeps_being_refused():
+    """A blocked value arrives as a tool result, so it is in the Thread, and a Thread re-sends what
+    it holds. Live, the turn after this one attached a different file with nothing in it that could
+    match and was refused anyway; the same file in a new Thread was answered. Without this line the
+    advice is to remove a value the person cannot reach, in a Thread that can no longer answer."""
+    said = _chat_error_text(LIVE)
+    assert "the turns before it" in said
+    assert "new Thread" in said
 
 
 def test_a_longer_nest_still_names_its_guardrail():
