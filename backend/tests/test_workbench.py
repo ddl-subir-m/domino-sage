@@ -164,7 +164,7 @@ def test_the_build_offer_answers_an_explicit_ask_in_its_own_words():
     store = (wb / "store.js").read_text()
 
     assert "reason === 'explicit'" in blocks
-    assert "Let’s build that in Build." in blocks
+    assert "Let’s open this in Build." in blocks
     assert "This is starting to look like an app." in blocks  # the classifier keeps its voice
     assert "h(PlanSuggestion, { block })" in blocks           # the card can see which one it is
     # and the reason reaches it from the turn event, live and on reload

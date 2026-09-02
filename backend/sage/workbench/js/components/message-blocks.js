@@ -196,7 +196,7 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        asked ? 'Let’s build that in Build.' : 'This is starting to look like an app.'
+        asked ? 'Let’s open this in Build.' : 'This is starting to look like an app.'
       ),
       h(
         'div',
