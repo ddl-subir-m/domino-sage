@@ -105,7 +105,11 @@ def test_the_new_group_is_appended_last():
     # The order lives in `SW.util.workingSetFirst` since #141, shared with the Build header's picker
     # so the two menus that offer a Resource cannot drift. This menu hands it the catalogue AS the
     # catalogue and never as one more group above it, and the helper is what puts it last.
-    assert "groups: [context, produced, resourceGroups.pin || [], project, files]," in UI
+    #
+    # `attached` — the selected app's Attachments — joined the working set when the Project stopped
+    # listing them (#148). It goes above the catalogue like every other group here, because those
+    # files are already in this Project and picking one joins nothing.
+    assert "groups: [context, produced, resourceGroups.pin || [], project, files, attached]," in UI
     assert "catalogue: catalogueParents," in UI
     assert "[...(groups || []), catalogue || []].forEach(" in UTIL
 

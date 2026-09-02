@@ -178,6 +178,46 @@ window.SW = window.SW || {};
         || rel.startsWith('sensitive/')));
     },
 
+    // One of the selected app's Attachment records, as a working-set row. Three surfaces need the
+    // same derivation since an Attachment stopped being listed under the Project (#148): the
+    // panel's own "In {app} → Attachments" list, the composer's @ menu, and `collectTurnRefs` —
+    // which has to turn the token the menu inserted back into the `public/data/…` path the turn
+    // carries. A second copy is how the menu comes to offer a row the turn cannot resolve.
+    //
+    // `path` is the workspace-relative path and it is the load-bearing field: `_resolve_mentions`
+    // keys the app's manifest on exactly that string. `file` is the path INSIDE the Dataset, so it
+    // is read for the name only — the two agree on the basename and disagree on everything else.
+    attachmentRow(entry) {
+      const path = String((entry && entry.path) || '');
+      return {
+        id: `file:${path}`,
+        name: String((entry && entry.file) || path).split('/').pop(),
+        kind: 'file',
+        path,
+        // Where the bytes actually live. Keyed on `dataset_id` for the reason
+        // `removeAttachmentFromApp` gives: a rehydrated entry still carries a `dataset`, filled
+        // from the symlink's parent directory, and printing that as a Dataset name would name a
+        // source the entry does not have.
+        subtitle: entry && entry.dataset_id ? entry.dataset : path,
+      };
+    },
+
+    // The app's Attachments as the rows a person can PICK — the menu's question, and the turn's.
+    // Not the same question as the panel's, which lists what the app RECORDS and so draws every
+    // entry through the singular above.
+    //
+    // The filter is what makes the two differ, and it is the Project's old one kept rather than a
+    // new rule: `isHiddenFromExplorer` matches on basename, so a Dataset file that happens to be
+    // called `AGENTS.md` reaches `public/data/<slug>/AGENTS.md` and is hidden. It was hidden from
+    // the @ menu before #148 because the Project's `file` group applied this filter; the app's own
+    // panel row was never filtered and still is not. Same rows offered as before, from the other
+    // list.
+    attachmentRows(entries) {
+      return (entries || [])
+        .filter((e) => !SW.util.isHiddenFromExplorer(e && e.path))
+        .map((e) => SW.util.attachmentRow(e));
+    },
+
     // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path
     // OpenCode reads. Lives here rather than in the composer because the menu that INSERTS a token
     // and the turn that reads it back off the prompt have to derive it the same way — a token only

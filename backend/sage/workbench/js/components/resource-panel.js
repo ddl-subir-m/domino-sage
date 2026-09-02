@@ -537,19 +537,13 @@ window.SW = window.SW || {};
       });
     };
 
+    // This list is the ONE place an Attachment appears (#148, ADR-0011), and since it is also the
+    // only place, the row it draws is the row the @ menu offers and the turn resolves — one
+    // derivation, in `SW.util.attachmentRow`, rather than three that agree until one is edited.
     const fileRow = (a) =>
       h(SW.ResourceRow, {
         key: a.path,
-        resource: {
-          id: `file:${a.path}`,
-          name: fileName(a),
-          kind: 'file',
-          // The Dataset the bytes stay in, which is also the half the removal can promise. Keyed on
-          // `dataset_id` for the reason `removeAttachmentFromApp` gives: a rehydrated entry still
-          // carries a `dataset`, filled from the symlink's parent directory, and printing that as a
-          // Dataset name would name a source the entry does not have.
-          subtitle: a.dataset_id ? a.dataset : a.path,
-        },
+        resource: SW.util.attachmentRow(a),
         required: true,
         appScope: activeApp ? { app: activeApp, attachment: a } : null,
         onOpen: () => {},

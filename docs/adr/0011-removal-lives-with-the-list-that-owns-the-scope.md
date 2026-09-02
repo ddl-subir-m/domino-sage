@@ -22,6 +22,14 @@ words**. One surface per scope, one guard per operation, and no bare verb that c
 > discards nothing — so its control says *"Stop using here"* and names no scope. Everything else in
 > this ADR stands.
 
+> **Extended to the listing, not only the removal (#148).** A row cannot name its scope from a list
+> that is not that scope's. Files were the last place two scopes' records were merged into one list —
+> the Project's `file` group was built from the Project's Uploads AND the selected app's Attachments —
+> and the symptom is what this ADR predicts: the app's record, drawn under "In this project", carried
+> none of the app's doors and none of the Project's either, because the Project has no act to offer
+> for a file it does not own. One list, one scope. An object is now **listed** by the scope that owns
+> it as well as removed there, and a file that really exists in two scopes is two rows saying so.
+
 ## Why a scope-naming rule, and not a new verb
 
 The obvious fix was a distinct verb for app-scoped removal, because `detach` had already been spent

@@ -473,26 +473,22 @@ window.SW = window.SW || {};
       // through `loadBuild`. Without this the Build header would go on saying the app ships
       // nothing until the next app switch (#92).
       applyAppScope(appTicket, { appAttachments: project.attached || [] });
-      const files = [
-        ...(project.scratch || []).map((e) => ({
-          id: `file:${e.path}`,
-          name: e.name || (e.path || '').split('/').pop(),
-          kind: 'file',
-          path: e.path,
-          source: 'scratch',
-        })),
-        ...(project.attached || [])
-          .filter((e) => !SW.util.isHiddenFromExplorer(e.path))
-          .map((e) => ({
-            id: `file:${e.path}`,
-            name: (e.path || '').split('/').pop(),
-            kind: 'file',
-            path: e.path,
-            // Where the bytes actually live, same wording `fileRow` gives the app-scoped copy of
-            // this same record — the thing a Chat-only Upload row does not yet have to say (#147).
-            subtitle: e.dataset_id ? e.dataset : e.path,
-          })),
-      ];
+      // The Project's Uploads, and ONLY those. An Attachment is a record the selected app keeps,
+      // so it is listed under that app and nowhere else — one row per scope, which is the rule
+      // ADR-0011 already held for every other kind (#148). Both lists fed this group before, so
+      // after a crossing (#147) one file was drawn three times in Build: an Upload under the
+      // Project, an Attachment under the Project, and the same Attachment under the app.
+      //
+      // The `public/data/…` row was load-bearing rather than decorative — `collectTurnRefs` walks
+      // these groups to turn "@data.csv" into a path the turn can carry — and that read is off
+      // `appAttachments` now, which is where the record lives.
+      const files = (project.scratch || []).map((e) => ({
+        id: `file:${e.path}`,
+        name: e.name || (e.path || '').split('/').pop(),
+        kind: 'file',
+        path: e.path,
+        source: 'scratch',
+      }));
       applyResourceGroups(
         SW.api.overlayResourceListing({ ...state.resourceGroups, file: files }, listing),
         {
@@ -955,8 +951,12 @@ window.SW = window.SW || {};
     const mentions = [];
     const resources = [];
     const seen = new Set();
-    Object.keys(groups).forEach((group) => {
-      (groups[group] || []).forEach((row) => {
+    // The Project's groups, and beside them the selected app's Attachments — which the Project no
+    // longer lists (#148), so without this line they would be offered by the @ menu and resolved
+    // by no turn. Derived on the read rather than held in state: `appAttachments` is already the
+    // record, and a second copy would need invalidating at every door that attaches or detaches.
+    [...Object.values(groups), SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {
+      (rows || []).forEach((row) => {
         if (!SW.util.mentionedIn(text, SW.util.mentionToken(row))) return;
         // A bindingKey IS the Binding identity, so the rows that carry one are exactly the rows the
         // server can honor as Resources. No second list of kinds to keep in step with that one.
@@ -969,9 +969,11 @@ window.SW = window.SW || {};
           resources.push(ref);
           return;
         }
-        // A Chat upload or a pinned Dataset file is offered by the menu and cannot be read by a
-        // build. Send what names it anyway rather than dropping it here: the turn reports what it
-        // could not use, and a mention nobody hears about is one nobody can fix.
+        // Everything else names a path rather than a Binding, and this one list carries all of
+        // them: an Attachment, which the build CAN read, and a Chat upload or a pinned Dataset
+        // file, which it cannot. The server decides which is which — `_resolve_mentions` honors
+        // exactly the paths in the app's own manifest — so nothing is dropped here: the turn
+        // reports what it could not use, and a mention nobody hears about is one nobody can fix.
         const path = row.path || row.datasetRelPath || row.name;
         if (path && !mentions.includes(path)) mentions.push(path);
       });

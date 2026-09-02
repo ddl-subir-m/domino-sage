@@ -96,15 +96,27 @@ break a Built App, and scratch sits outside the app tree a turn's baseline watch
 
 ## The rows stay duplicated, and get labelled instead
 
-After a crossing the same file appears three times in Build: once under "In `<app>` → Attachments",
+After a crossing the same file appeared three times in Build: once under "In `<app>` → Attachments",
 and twice under "In this project → Files", once as the Upload and once as the `public/data/` entry
-(`backend/sage/workbench/js/store.js:477`, `:484`). This is already true today of a Dataset file that
+(`backend/sage/workbench/js/store.js:477`, `:484`). This was already true of a Dataset file that
 crossed.
 
-We rejected collapsing them. The `public/data/` row is what `collectTurnRefs` (`store.js:941`) reads
-to resolve `@data.csv` in a Build turn, so dropping it would silently stop mentions working — the
-exact class of bug that function was written to end. And the Upload row is not a duplicate of the
-Attachment: they are the two things this ADR just named.
+We rejected collapsing them into one row. The `public/data/` row is what `collectTurnRefs`
+(`store.js:941`) reads to resolve `@data.csv` in a Build turn, so dropping it would silently stop
+mentions working — the exact class of bug that function was written to end. And the Upload row is not
+a duplicate of the Attachment: they are the two things this ADR just named.
 
-So each row states its own scope, and the structural cleanup — one row per scope, with the @ menu
-drawing the app's files from the app section — is filed separately rather than folded in here.
+So each row states its own scope. The structural cleanup was filed separately rather than folded in
+here, and **has since landed (#148)**: the third row is gone. The Project's `file` group is built
+from `project.scratch` alone, so "In this project → Files" lists Uploads only, and the Attachment
+appears once — under the app that records it, which is the scope that owns it.
+
+The `public/data/` row is still load-bearing and still read, off the app's own list rather than out
+of the Project's: `SW.util.attachmentRow` turns one Attachment record into the row the panel draws,
+the row the composer's @ menu offers, and the row `collectTurnRefs` resolves to a path. One
+derivation for three surfaces, because a menu that offers a row the turn cannot resolve is the
+silent failure this section was written about.
+
+Two rows still stand for one file after a crossing, and correctly: the Upload under the Project and
+the Attachment under the app. They are two files in two scopes with two doors, and the labelling
+above is what tells them apart.

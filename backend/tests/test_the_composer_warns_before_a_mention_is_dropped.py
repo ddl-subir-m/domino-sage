@@ -55,6 +55,21 @@ def test_the_check_reads_the_mentions_off_the_function_the_send_reads_them_off()
     assert "mentions: refs.mentions, resources: refs.resources," in STORE
 
 
+def test_the_two_lists_are_still_two_after_the_attachment_moved_scope():
+    """#148 took the app's Attachments out of the Project's `file` group, which is one of the two
+    places `collectTurnRefs` walks — so the shared parser reads the app's own list as well now
+    (`appFileRows`). That is the SAME list this check already keyed by basename, not a third one:
+    the check still reads `bindings` and `appAttachments` and still asks the server for nothing.
+
+    Held here because the coupling is easy to miss from either side. Were the parser left blind to
+    it, this file would go on passing while every @mention of an app's data file resolved to
+    nothing — the guard keys by basename, so it would suppress a warning about a mention that no
+    longer reaches the turn. `test_an_attachment_is_listed_once_in_the_scope_that_owns_it` asserts
+    the path that mention carries, which is the half a source read cannot see."""
+    refs = STORE[STORE.index("function collectTurnRefs(text) {"):STORE.index("function buildHistoryToMessages")]
+    assert "SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {" in refs
+
+
 def test_an_unbound_resource_and_an_unattached_chat_file_are_the_two_rows():
     """The same two the refusal reports, in the same shape, so one `mentionFixes` draws both."""
     guard = STORE[STORE.index("unusableMentions(text) {"):STORE.index("// Out of the selected Built App")]

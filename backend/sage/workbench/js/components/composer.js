@@ -25,12 +25,17 @@ window.SW = window.SW || {};
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
 
-  // Session context, then this Thread's artifacts, then project Resources, then files, then the
-  // catalogue this project has not joined yet. The working-set-before-catalogue half of that order
-  // is `SW.util.workingSetFirst`, shared with the Build header's picker so the two menus cannot
-  // drift (ADR-0021); the groups above it are this menu's own, because only a Conversation has
-  // Session context and artifacts.
-  function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents) {
+  // Session context, then this Thread's artifacts, then project Resources, then the Project's
+  // Uploads, then the selected app's Attachments, then the catalogue this project has not joined
+  // yet. The working-set-before-catalogue half of that order is `SW.util.workingSetFirst`, shared
+  // with the Build header's picker so the two menus cannot drift (ADR-0021); the groups above it
+  // are this menu's own, because only a Conversation has Session context and artifacts.
+  //
+  // The app's Attachments are a group of their own because the Project stopped listing them
+  // (#148). Without it the menu would go on offering every file it ever offered EXCEPT the app's
+  // own data — the one kind a Build prompt names most.
+  function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents,
+                             appAttachments) {
     const context = (attachments || []).map((att) => ({
       id: att.resourceId || att.id,
       name: att.resourceName,
@@ -53,12 +58,16 @@ window.SW = window.SW || {};
     const files = (resourceGroups.file || []).filter(
       (r) => !SW.util.isHiddenFromExplorer(r.path || r.name)
     );
+    // Off the app's own record, through the one derivation the turn reads them back with — filter
+    // included — so a row this menu offers is a row `collectTurnRefs` can resolve to a path, and
+    // nothing hidden from `files` two lines up is let in by the other door.
+    const attached = SW.util.attachmentRows(appAttachments);
 
     // Parents only — the store filters to `MEMBERSHIP_PARENT_KINDS`, off a listing that has no
     // leaf in it to begin with. That is what keeps a warehouse table out of this menu, which must
     // never fetch a warehouse catalog (docs/workbench/chat.md).
     return SW.util.workingSetFirst({
-      groups: [context, produced, resourceGroups.pin || [], project, files],
+      groups: [context, produced, resourceGroups.pin || [], project, files, attached],
       catalogue: catalogueParents,
       query,
       limit: 8,
@@ -138,7 +147,7 @@ window.SW = window.SW || {};
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
       catalog, buildModel, buildPhase, openWeightModels,
-      apps, activeApp, composerSeed, queuedTurns, catalogueParents,
+      apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -167,7 +176,7 @@ window.SW = window.SW || {};
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts,
-                          catalogueParents)
+                          catalogueParents, appAttachments)
       : [];
     const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));
     const buildModes = BUILD_MODES();
