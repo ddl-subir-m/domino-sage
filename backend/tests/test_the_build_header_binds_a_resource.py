@@ -75,8 +75,9 @@ def test_the_header_offers_the_act_that_adds_to_the_selected_app():
     Apps (ADR-0008), so `Use in this app` would answer nothing."""
     step = _run([{"addIn": True, "thread": "thr_many", "select": "app_c"}])[-1]
     assert step["label"] == "Use in Rate curve viewer"
-    # A control that adds has to say what the addition costs, and the cost is that publish reads it.
-    assert "Bindings" in step["tooltip"]
+    # A control that adds has to say what the addition costs, and the cost is that publish reads
+    # it. It names the destination list by the label that list carries, not by the record (ADR-0025).
+    assert "needs to run" in step["tooltip"]
 
 
 @needs_node

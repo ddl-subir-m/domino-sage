@@ -481,8 +481,8 @@ window.SW = window.SW || {};
 
     // Both group labels, always, even over an empty kind. The Build header omits one for the
     // opposite reason: it is a glance, and naming a kind with nothing in it says the app ships
-    // something it does not. This is where the two words are learned and where someone arrived
-    // intending to act, so "Attachments — none" answers the question they came with (ADR-0011).
+    // something it does not. This is where someone arrived intending to act, so
+    // "Files it carries — none" answers the question they came with (ADR-0011).
     //
     // `held` is what the APP records, not what the filter left: a search matching nothing does not
     // make the app's list empty, and a label saying it did would be the wrong answer to a question
@@ -680,8 +680,18 @@ window.SW = window.SW || {};
           (bindings || []).length === 0 && (appAttachments || []).length === 0
             ? h('div', { className: 'sw-caption' }, SW.util.appScopeEmpty('Nothing yet.'))
             : [
-                appGroup('Bindings', (bindings || []).length, inApp.map(bindingRow)),
-                appGroup('Attachments', (appAttachments || []).length, inAppFiles.map(fileRow)),
+                // Named by what the app cannot do without them, never by the record's own word
+                // (ADR-0025). Through `SW.brand.text` because that is a marked position: neither
+                // label carries a token today, and routing them anyway is what puts them where the
+                // lint can read them, so the next edit to either one cannot smuggle a name past it.
+                appGroup(
+                  SW.brand.text('Needs to run'), (bindings || []).length, inApp.map(bindingRow)
+                ),
+                appGroup(
+                  SW.brand.text('Files it carries'),
+                  (appAttachments || []).length,
+                  inAppFiles.map(fileRow)
+                ),
               ]
         ),
 

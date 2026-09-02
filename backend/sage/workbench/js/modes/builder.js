@@ -69,8 +69,12 @@ window.SW = window.SW || {};
       content: h(
         Fragment,
         null,
-        h('div', null, SW.brand.text('This app’s code, its plan and its Bindings are removed and '
-          + 'can’t be recovered. Your other {builtAppPlural} and this conversation stay.')),
+        // "its record of what it needs to run" rather than "its Bindings" (ADR-0025), and a
+        // *record* rather than the things themselves: deleting the app takes the grants, never the
+        // Resources — those stay in the Project and can be picked again (ADR-0011).
+        h('div', null, SW.brand.text('This app’s code, its plan and its record of what it needs '
+          + 'to run are removed and can’t be recovered. Your other {builtAppPlural} and this '
+          + 'conversation stay.')),
         app.published &&
           h(
             'div',
@@ -758,7 +762,18 @@ window.SW = window.SW || {};
         {
           // Claims no type, because the picker holds two: a Resource and an Asset both bind here,
           // and a tooltip naming one of them would be wrong under half its own menu (ADR-0014).
-          title: `Record what this app depends on. It joins ${app.name}'s Bindings.`,
+          //
+          // It names the list the click writes to by the label that list actually carries, so the
+          // promise and the destination read the same. It said `Bindings` until ADR-0025 — a word
+          // this reader never sees anywhere else, least of all on the list the click writes to.
+          //
+          // One literal with the app passed as a value, never interpolated in: that is what keeps
+          // the whole sentence readable to the lint, and an app a user named with braces in it is
+          // not scanned again on the way through.
+          title: SW.brand.text(
+            'Record what this app depends on. It joins what {app} needs to run.',
+            { app: app.name }
+          ),
         },
         h(
           Button,
@@ -1008,15 +1023,20 @@ window.SW = window.SW || {};
             { className: 'sw-app-scope-empty' },
             SW.util.appScopeEmpty('nothing yet.')
           )
-        // A kind with nothing in it is not the same state, so it is not named. `Attachments —`
+        // A kind with nothing in it is not the same state, so it is not named. `Files it carries —`
         // over an empty list says the app ships a kind of thing it does not. The panel does name
         // it, because a destination someone arrived at intending to act is not a glance.
+        //
+        // The same two labels the panel draws, and the same words on purpose: the header and the
+        // panel answer one question, and ADR-0011 already paid for two surfaces disagreeing about
+        // it once. Named by what the app needs and carries rather than by the record (ADR-0025).
         : [
-            bound.length > 0 && kindRow('Bindings', bound, pointer, boundFull, unused, doors),
+            bound.length > 0
+              && kindRow(SW.brand.text('Needs to run'), bound, pointer, boundFull, unused, doors),
             // No marks for the files. Whether the source uses an ATTACHMENT is `_data_usage`'s
             // question, which detach and delete ask live because they refuse on the answer — a
             // different scanner for a different job, and #85 named it in place of this one.
-            files.length > 0 && kindRow('Attachments', files, pointer, paths),
+            files.length > 0 && kindRow(SW.brand.text('Files it carries'), files, pointer, paths),
           ],
       // At the far end of the row that names what the app holds, because it is what puts things
       // there. The header stops being the read-only glance #92 shipped: that argument held while

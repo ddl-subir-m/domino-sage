@@ -117,10 +117,11 @@ def test_the_section_is_headed_by_the_app_it_is_about():
 def test_both_kinds_are_listed_under_their_own_name():
     """Two names rather than one umbrella (#92): the two records have two consumers and two costs
     to undo. Until this, the section held Bindings only — which is why #92's Attachments pointer
-    named a group that was not there."""
+    named a group that was not there. Both are named on screen by the app's relationship to them,
+    never by the record or by the kind the rail below already divides on (ADR-0025)."""
     step = _panel("app_a")
     groups = _texts(step, "sw-app-group")
-    assert groups == ["Bindings", "Attachments"]
+    assert groups == ["Needs to run", "Files it carries"]
     names = [t for r in _app_rows(step) for t in r["texts"]]
     assert "Market data EOD" in names and "Churn risk" in names
     assert "margins.csv" in names and "legacy.csv" in names
@@ -129,12 +130,13 @@ def test_both_kinds_are_listed_under_their_own_name():
 @needs_node
 def test_the_panel_names_an_empty_kind_where_the_header_omits_it():
     """#92's rule — a kind with nothing in it is not named — is right for a glance and wrong for a
-    destination. This is where the two words are learned and where someone arrived intending to
-    act, so a group reading "Attachments — none" answers the question they came with."""
+    destination. This is where someone arrived intending to act, so a group reading "Files it
+    carries — none" answers the question they came with. The label keeps the word *file* for
+    exactly that reason, where the Binding's drops the word *binding* (ADR-0025)."""
     c = _panel("app_c")  # Bindings, no files
-    assert _texts(c, "sw-app-group") == ["Bindings", "Attachments — none"]
+    assert _texts(c, "sw-app-group") == ["Needs to run", "Files it carries — none"]
     d = _panel("app_d")  # files, no Bindings
-    assert _texts(d, "sw-app-group") == ["Bindings — none", "Attachments"]
+    assert _texts(d, "sw-app-group") == ["Needs to run — none", "Files it carries"]
 
 
 @needs_node

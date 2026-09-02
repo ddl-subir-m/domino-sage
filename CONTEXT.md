@@ -115,8 +115,14 @@ nowhere else — never beside "Use in this chat", which puts a Resource in Sessi
 nothing. The two are kept apart on purpose: one writes a chip, the other writes a manifest a
 published app depends on
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). A Binding may be
-made without a Scope and scoped afterwards, as two acts on that same surface.
-_Avoid_: connection, link, reference, wiring, requirement (that is this, named a second time)
+made without a Scope and scoped afterwards, as two acts on that same surface. The list of them on a
+Built App's surface is headed "Needs to run", and the head says what the app cannot do without them
+rather than what kind of record they are: it is read by someone who came to answer a question about
+their app, and the mechanism is not that question
+([ADR-0025](docs/adr/0025-the-app-section-groups-by-relationship-never-by-type.md)).
+_Avoid_: connection (that word is [[Resource]] reach, ADR-0001), link, reference, wiring,
+requirement (that is this, named a second time), "Bindings" as a group label (that is "Needs to
+run" on screen)
 
 **Scope**:
 The database, schema and optionally table a Data Source Binding is read at. Chosen from lists
@@ -159,7 +165,14 @@ what one Built App carries is two named things and not one. A Binding may also p
 Attachment, but most do not. Removing an Attachment takes the declaration and the app's copy of the
 file. The source it was attached from is never touched, unless that source is a Dataset folder Sage
 wrote itself, which is the one case a person can ask to delete outright.
-_Avoid_: upload (that is an [[Upload]], a different thing), mount, bundled file
+On screen the list of them is headed "Files it carries". The head keeps the word *file* where the
+Binding's head drops the word *binding*, because the two lists are not the same shape: one holds
+several kinds of thing, and this one holds exactly one, so naming it costs nothing and the empty
+label becomes the answer a person arrived for — "Files it carries — none" says this app ships none
+of them (ADR-0011,
+[ADR-0025](docs/adr/0025-the-app-section-groups-by-relationship-never-by-type.md)).
+_Avoid_: upload (that is an [[Upload]], a different thing), mount, bundled file (it is copied in,
+not built in), "Attachments" as a group label (that is "Files it carries" on screen)
 
 **Upload**:
 A file a person puts into a Conversation from the composer. It is held at the Project root, outside

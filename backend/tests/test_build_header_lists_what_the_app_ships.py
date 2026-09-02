@@ -87,11 +87,13 @@ def _app_scope_source() -> str:
 @needs_node
 def test_the_row_names_the_selected_apps_bindings_and_its_attachments():
     """Two names, because they are two records with two consumers (ADR-0010) — no umbrella
-    term invented here to cover both (#85 Q3)."""
+    term invented here to cover both (#85 Q3). Named by what the app needs and carries rather
+    than by the record's own word, which is the only place either identifier reached a person
+    (ADR-0025)."""
     said = _said(_build(select="app_a"))
-    assert "Bindings" in said
+    assert "Needs to run" in said
     assert "Market data EOD" in said and "Claude Sonnet 4" in said
-    assert "Attachments" in said
+    assert "Files it carries" in said
     assert "margins.csv" in said
 
 
@@ -111,8 +113,8 @@ def test_a_kind_with_nothing_in_it_is_not_the_same_as_an_app_with_nothing():
     """`app_c` has Bindings and no files, `app_d` files and no Bindings. Naming a kind that is
     empty says the app ships something it does not; the empty state is for neither."""
     c, d = _run([{"build": "thr_many", "select": "app_c"}, {"build": "thr_many", "select": "app_d"}])
-    assert "Bindings" in _said(c) and "Attachments" not in _said(c)
-    assert "Attachments" in _said(d) and "Bindings" not in _said(d)
+    assert "Needs to run" in _said(c) and "Files it carries" not in _said(c)
+    assert "Files it carries" in _said(d) and "Needs to run" not in _said(d)
     assert "nothing yet" not in _said(c) + _said(d)
 
 
