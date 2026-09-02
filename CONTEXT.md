@@ -307,6 +307,24 @@ document, not the copy. See
 _Avoid_: spec, PRD, requirements, ticket, brief, `plan.md` (that is the handoff copy, not the
 document)
 
+**Try again**:
+Retrying a build that failed or never finished, using the Plan exactly as it was approved. It
+never re-plans and never takes an edit: a Plan still awaiting approval is planned again instead,
+and a phased build resumes at the step that broke rather than starting over. Distinct from
+[[Build this again]], which only acts once a build has already succeeded, and only on a Plan the
+person has just edited.
+_Avoid_: retry, rebuild (see [[Build this again]] for the term that means something more
+specific), resume
+
+**Build this again**:
+Resubmitting a Plan's edited text once its Built App has already been produced. It writes a new
+version of the same Plan document, never a second one, and the one click both makes the edit and
+consumes it: nothing is left for a later turn to reread. It is offered only on the Plan a Built
+App's current state actually came from, and stops the moment any other turn moves that app on.
+Distinct from [[Try again]], which repeats a build that has not yet succeeded, unedited. See
+[ADR-0024](docs/adr/0024-build-this-again-is-the-one-way-a-built-plan-can-still-be-edited.md).
+_Avoid_: rebuild, resubmit, re-approve
+
 **Handoff**:
 Taking a Conversation from Chat into Build: a write to the Project filesystem — the plan, a short
 digest, and a Binding for every Resource the Conversation named — followed by a mode switch. It
