@@ -1551,6 +1551,11 @@ window.SW = window.SW || {};
   let liveBuildTurns = 0;
   let liveChatTurns = 0;
 
+  // What a "Build this again" turn is called in the transcript (ADR-0024). Kept in step with
+  // `_BUILD_AGAIN_TEXT` on the server, which writes the row this one stands in for until the
+  // history reloads.
+  const BUILD_AGAIN_TEXT = 'Build this again from the edited plan.';
+
   // A turn this tab asked for that has not started yet (#79). Kept out of the transcript on
   // purpose: the transcript is the receipt, and nothing has happened yet to write one for.
   // `kind` and the conversation are captured HERE rather than read when the row draws: the row is
@@ -3409,7 +3414,11 @@ window.SW = window.SW || {};
       return store.sendBuildPrompt(prompt);
     },
 
-    async approveBuild(answers, planEdits, planId) {
+    // `options.buildAgain` marks the Plan page's "Build this again" (ADR-0024) rather than a first
+    // approval. Everything else about the turn is identical, which is the point: one path, so a
+    // rebuild streams, queues, retries and resumes exactly as the first build did.
+    async approveBuild(answers, planEdits, planId, options = {}) {
+      const buildAgain = !!options.buildAgain;
       if (!state.thread) await store.newThread();
       // Same rule as sendBuildPrompt, twice over: an approve is a build turn, so the person can
       // move to another Built App while it streams (#77) and it waits in line rather than being
@@ -3418,7 +3427,9 @@ window.SW = window.SW || {};
       const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
       let ticket = '';
       let unran = false;
-      appendBuildRow({ type: 'user', text: 'Approved the plan.' });
+      // The same sentence the server writes for this turn, so the optimistic row does not change
+      // wording the moment the transcript reloads underneath it.
+      appendBuildRow({ type: 'user', text: buildAgain ? BUILD_AGAIN_TEXT : 'Approved the plan.' });
       liveBuildTurns += 1;
       state.buildRunning = true;
       state.buildTyping = 'Building…';
@@ -3429,6 +3440,7 @@ window.SW = window.SW || {};
         // Which document this card's plan came from. Without it the server has to assume the newest
         // document is the one being approved, and a plan drafted by hand since then breaks that.
         if (planId) payload.plan_id = planId;
+        if (buildAgain) payload.build_again = true;
         const res = await fetch('./api/project/build/approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3443,7 +3455,13 @@ window.SW = window.SW || {};
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
           if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'build'); notify(); return; }
-          if (ev.contextChanged || (ev.type === 'done' && ev.decision === 'cancelled')) unran = true;
+          // A refused rebuild is a turn that never ran either, so it reloads for the same reason a
+          // cancelled one does: the server persisted no user row, and the optimistic bubble above
+          // the error would otherwise sit there claiming a build that never started.
+          if (ev.contextChanged
+              || (ev.type === 'done' && ['cancelled', 'plan moved on'].includes(ev.decision))) {
+            unran = true;
+          }
           if (movedOn()) return;
           applyBuildEvent(ev);
           notify();
@@ -3463,6 +3481,31 @@ window.SW = window.SW || {};
         await Promise.all([probePreview(), refreshBindings(), loadThreadList()]);
         notify();
       }
+    },
+
+    // "Build this again" on the Plan page (ADR-0024). The page is a full window of its own, and the
+    // build has to be watchable, so this walks over to Build before it starts: select the plan's
+    // app, open the conversation the plan was written in, land on that route, then approve.
+    //
+    // In that order, and awaited, because each step is what makes the next one right. The server
+    // holds one selected app per Project and the turn builds THAT one, so selecting first is not
+    // cosmetic. `SW.appRoute` names the route off the store's open thread, so the conversation has
+    // to be open before the route is written or the URL names the one we are leaving.
+    //
+    // BuildMode's own selection and conversation effects then find both already where they would
+    // have put them and do nothing. Its transcript effect still runs, so a slow approve POST can
+    // see the server's history land over the optimistic row — cosmetic, self-correcting, and the
+    // same race every other build already runs.
+    //
+    // The conversation is the plan's own and never whichever one happens to be open: the server
+    // withholds eligibility from a document that records none, so there is always one to open.
+    async buildPlanAgain(plan) {
+      await store.selectApp({ id: plan.appId });
+      await store.openThread(plan.originThreadId);
+      SW.router.go(SW.appRoute({ id: plan.appId }));
+      // The document's own current text is the edit: the page's per-section editor has already
+      // saved it, so there is nothing here to collect and nothing left over afterwards.
+      return store.approveBuild('', plan.markdown, plan.id, { buildAgain: true });
     },
 
     // The one path that stops a plan, whichever word the card puts on the button — Cancel on a

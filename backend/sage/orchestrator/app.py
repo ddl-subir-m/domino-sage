@@ -2046,14 +2046,21 @@ def clear_recall(thread_id: str, body: dict = Body(default={})) -> dict:
 
 @control_app.post("/api/project/build/approve")
 def build_approve(body: dict) -> StreamingResponse:
-    """Approve a gated plan (SPEC P6) and stream the build. Body: {answers?, plan_edits?, plan_id?}."""
+    """Approve a gated plan (SPEC P6) and stream the build.
+
+    Body: {answers?, plan_edits?, plan_id?, build_again?}. `build_again` is the Plan page's "Build
+    this again" (ADR-0024) — an approve of a plan that has already built once, whose text a person
+    has just edited. It is asked for explicitly rather than worked out from the state on disk, so
+    the two side effects it carries never reach an ordinary approve."""
     answers = (body or {}).get("answers", "") or ""
     plan_edits = (body or {}).get("plan_edits")  # None = approve the plan as proposed
     conversation = (body or {}).get("conversation") or None
     plan_id = (body or {}).get("plan_id") or ""   # "" = no card sent one; fall back to the newest
+    build_again = bool((body or {}).get("build_again"))
 
     return StreamingResponse(
-        _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation, plan_id),
+        _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation, plan_id,
+                                              build_again=build_again),
                   "approve_stream"),
         media_type="text/event-stream")
 

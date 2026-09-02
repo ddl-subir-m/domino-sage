@@ -380,6 +380,30 @@ window.SW = window.SW || {};
     // the two agree about which app you are looking at.
     const showingApp = inBuild && activeApp && plan.appId && activeApp.id === plan.appId;
 
+    // Whether this plan may be built again (ADR-0024), answered by the server: "is this still the
+    // newest plan for its Built App" is the same question the server already settles about which
+    // document owns a live plan.md, and a second copy of it here would drift from that one.
+    //
+    // The full page only. The sheet beside a build is a reader with the app already on screen, and
+    // the rail's pin is a glance rather than a second place to change things — the one new door
+    // stays where "Open in Builder" is, so the pair reads as looking versus rebuilding.
+    const buildAgain = (isPage && plan.buildAgain) || { offered: false, eligible: false };
+    // Why the button is disabled, in the two shapes that can disable it. Both end with what to do
+    // instead, because "you can't" without "here's where you can" is a dead end.
+    const buildAgainWhy = {
+      'moved on':
+        'A later plan already owns this {builtApp}, so this one no longer describes it. ' +
+        'Open the {builtApp} and work from its current plan.',
+      superseded:
+        'Another conversation replaced this plan before it was built again. ' +
+        'Open the {builtApp} and work from its current plan.',
+      // The same shape the "Build this" button beside it refuses in, and for the same reason: a
+      // build is a turn, and a turn needs a conversation to belong to.
+      'no conversation':
+        'This plan has no conversation on record, so there is nowhere to run the build. ' +
+        'Open the {builtApp} and ask for the change there.',
+    }[buildAgain.reason];
+
     return h(
       'div',
       { className: `sw-plan-page is-${variant} sw-scroll` },
@@ -497,7 +521,9 @@ window.SW = window.SW || {};
           ),
           h(
             Space,
-            { size: 8 },
+            // Aligned to the top, not the middle: "Build this again" carries a caption under it and
+            // would otherwise drag the buttons beside it down half a line.
+            { size: 8, align: 'start' },
             plan.status === 'draft' &&
               h(Button, { onClick: () => setReviewOpen(true) }, 'Send for review'),
             isReviewer &&
@@ -572,7 +598,44 @@ window.SW = window.SW || {};
                         'Build this'
                       )
                     )
-                  ))
+                  )),
+            // The one way an already-built plan's own words can reach a build (ADR-0024). Secondary
+            // beside a primary "Open in Builder", because looking at the app is the common, harmless
+            // thing and this one spends a build and clears a review.
+            //
+            // No confirmation dialog: the click IS the approval, exactly as it is for a first build.
+            // What it would destroy is said on the button instead of in a box to click through, so
+            // the count is read before the press rather than regretted after it.
+            buildAgain.offered &&
+              h(
+                'div',
+                { className: 'sw-plan-again' },
+                h(
+                  Tooltip,
+                  { title: buildAgainWhy ? SW.brand.text(buildAgainWhy) : null },
+                  // A disabled button fires no mouse events, so the tooltip needs a wrapper.
+                  h(
+                    'span',
+                    null,
+                    h(
+                      Button,
+                      {
+                        disabled: !buildAgain.eligible,
+                        onClick: () => SW.store.buildPlanAgain(plan),
+                      },
+                      'Build this again'
+                    )
+                  )
+                ),
+                buildAgain.eligible &&
+                  approved.length > 0 &&
+                  h(
+                    'div',
+                    { className: 'sw-caption' },
+                    `This will clear ${approved.length} existing ` +
+                      `${approved.length === 1 ? 'approval' : 'approvals'}`
+                  )
+              )
           )
         ),
 

@@ -1088,6 +1088,12 @@ a.sw-topnav-link {
   color: var(--gray-600);
 }
 
+/* "Build this again" and the line saying what it will clear. The head's actions are a horizontal
+   Space, so the two stack in their own column and the caption hangs under the button it warns
+   about rather than sitting beside it. */
+.sw-plan-again { display: grid; gap: var(--s1); justify-items: start; }
+.sw-plan-again .sw-caption { max-width: 22ch; line-height: 1.35; }
+
 .sw-plan-lead { padding: 0 0 var(--s5); }
 .sw-plan-section { padding: 0 0 var(--s5); }
 .sw-plan-section-head {

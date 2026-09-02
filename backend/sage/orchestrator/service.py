@@ -263,6 +263,11 @@ _SERVER_SCRIPT = "serve.py"
 _RUNNING_STATES = frozenset({"running"})
 _FAILED_STATES = frozenset({"failed", "error"})
 
+# The bubble a "Build this again" turn writes in place of a typed message (ADR-0024). A synthesized
+# sentence rather than a new event type, so the Conversation's build history explains itself with the
+# rendering it already has. The Workbench shows the same words optimistically, so the two agree.
+_BUILD_AGAIN_TEXT = "Build this again from the edited plan."
+
 
 def turn_busy_message(wedged: bool, action: str = "resend") -> str:
     """The sentence a refused operation answers with — the one place both of them live.
@@ -2714,7 +2719,48 @@ class Orchestrator:
         return self._plan_docs_record().list_plan_docs()
 
     def read_plan_doc(self, plan_id: str) -> dict | None:
-        return self._plan_docs_record().read_plan_doc(plan_id)
+        project = self.project(start_preview=False, seed_app=False)
+        doc = project.record.read_plan_doc(plan_id)
+        if doc is None:
+            return None
+        # Answered here rather than on the page, because "may this plan be built again" is the same
+        # question `patch_plan_doc` below asks about which document owns a live plan.md, and two
+        # copies of it would drift (ADR-0024). The list of documents is deliberately not given it:
+        # the panel lists plans, it does not offer to build them.
+        return {**doc, "buildAgain": self._build_again_state(project, doc)}
+
+    def _build_again_state(self, project: Project, doc: dict) -> dict:
+        """Whether this plan document may be built again, and why not when it may not (ADR-0024).
+
+        Three answers rather than two. A plan that has never produced a Built App is not offered the
+        action at all — it has an Approve flow of its own, and a second door onto the same build
+        would be two ways to do one thing. A plan whose app has since moved on IS offered it, so the
+        button has somewhere to say why it is disabled: "no button" and "a button that explains
+        itself" are different answers to "what do I do instead".
+
+        `reason` is a word for the page to write copy from, not the copy itself.
+        """
+        app_id = str(doc.get("appId") or "")
+        if not app_id:
+            return {"offered": False, "eligible": False, "reason": "no app"}
+        app = self._wm.app_workspace(self._project_id, app_id)
+        if not app.exists() or not app.has_built():
+            return {"offered": False, "eligible": False, "reason": "never built"}
+        if app.live_plan_doc_id() == str(doc.get("id") or ""):
+            # This plan is the one awaiting approval right now. Approving it IS the build.
+            return {"offered": False, "eligible": False, "reason": "awaiting approval"}
+        if str(doc.get("status") or "") == "superseded":
+            return {"offered": True, "eligible": False, "reason": "superseded"}
+        if not str(doc.get("originThreadId") or ""):
+            # A build is a turn and a turn lives in a Conversation. A document written before #54
+            # recorded no origin, and running its rebuild in whichever Conversation happens to be
+            # open would file the turn under work it has nothing to do with — the same failure the
+            # "Build this" button next to it was fixed for.
+            return {"offered": True, "eligible": False, "reason": "no conversation"}
+        mine = self._plan_docs_naming_app(project.record.list_plan_docs(), app_id)
+        if not mine or mine[0]["id"] != doc["id"]:
+            return {"offered": True, "eligible": False, "reason": "moved on"}
+        return {"offered": True, "eligible": True, "reason": ""}
 
     def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
         return self._plan_docs_record().read_plan_doc_markdown(plan_id)
@@ -3198,7 +3244,18 @@ class Orchestrator:
         return project
 
     @staticmethod
-    def _app_plan_docs(project: Project) -> list[dict]:
+    def _plan_docs_naming_app(docs: list[dict], app_id: str) -> list[dict]:
+        """The documents that name this app, newest first, minus the ones a newer plan replaced.
+
+        The half of `_app_plan_docs` below that is a real answer rather than a fallback, lifted out
+        so eligibility for "Build this again" can ask it about an app that is not the selected one
+        (ADR-0024) — the Plan page opens any plan in the Project, including another app's.
+        """
+        return [d for d in docs if str(d.get("appId") or "") == app_id
+                and str(d.get("status") or "") != "superseded"]
+
+    @classmethod
+    def _app_plan_docs(cls, project: Project) -> list[dict]:
         """The plan documents that belong to the app in front of us, newest first.
 
         A document is the Project's and names the app it bound to, so once a Project holds several
@@ -3215,10 +3272,8 @@ class Orchestrator:
         rail to one document beside another one's markdown, and would copy an edit made to the
         plan nobody is building over the plan somebody is.
         """
-        app_id = project.workspace.app_id
         docs = project.record.list_plan_docs()
-        mine = [d for d in docs if str(d.get("appId") or "") == app_id
-                and str(d.get("status") or "") != "superseded"]
+        mine = cls._plan_docs_naming_app(docs, project.workspace.app_id)
         return mine or [d for d in docs if not str(d.get("appId") or "")]
 
     @staticmethod
@@ -6986,14 +7041,21 @@ class Orchestrator:
             current = report.as_agent_message()
 
     def approve_stream(self, answers: str = "", plan_edits: str | None = None,
-                       conversation: str | None = None, plan_id: str = ""):
+                       conversation: str | None = None, plan_id: str = "",
+                       build_again: bool = False):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
         this turn pinned to Implement, leaving their own mode alone. Both are read-only: Plan's gate
         would just re-plan, and Ask has every write and shell tool stripped from the request by the
         shim, so the agent would emit edits that never land on disk. An Auto/Implement approve already
-        has history, so it's never re-gated regardless."""
+        has history, so it's never re-gated regardless.
+
+        `build_again` marks the one approve that is not a first approval: the Plan page's "Build this
+        again", where the plan was already built once and a person has edited it (ADR-0024). It is a
+        flag rather than something inferred from the state on disk, because the two side effects it
+        carries — the eligibility refusal and the reset of a review nobody has redone — must never
+        reach the ordinary edit-then-approve flow that has always existed."""
         # Serialize like build_stream: approving while a turn already streams would overlap two turns
         # on one working tree and read-only gate. We hold the lock across the whole approve (plan
         # write + mode swap + build) and call _build_stream directly so it doesn't re-acquire — and
@@ -7009,7 +7071,12 @@ class Orchestrator:
             self._turn_gave_up = False
             self._begin_conversation(conversation)
             self._pin_turn_app(self.project())
-            yield from self._approve_locked(answers, plan_edits, plan_id=plan_id)
+            yield from self._approve_locked(
+                answers, plan_edits, plan_id=plan_id, build_again=build_again,
+                # The transcript replays what the person did, and this is a different act from
+                # approving a plan for the first time (story 10): a build that came from an edited
+                # plan has to be tellable apart from one somebody typed a sentence for.
+                user_text=_BUILD_AGAIN_TEXT if build_again else None)
         except TurnWedged:
             # Swallowed, not re-reported: the turn already said what happened in its own stream, and
             # a traceback on top of it would only be a second, worse version of the same sentence.
@@ -7032,12 +7099,37 @@ class Orchestrator:
                 self._release_turn()
 
     def _approve_locked(self, answers: str = "", plan_edits: str | None = None,
-                        user_text: str | None = None, plan_id: str = ""):
+                        user_text: str | None = None, plan_id: str = "",
+                        build_again: bool = False):
         """The approve turn itself. Assumes the caller holds _turn_lock — approval reaches here both
         from the card's Approve button and from a bare approval typed in the composer (build_stream)."""
         project = self.project()
+        if build_again:
+            # Checked here rather than trusted to the button, and before `write_plan` below, so a
+            # refused rebuild leaves the app, its plan and the document exactly as it found them.
+            # The app the turn is pinned to has to be the plan's own: another tab can move the
+            # selection between the click and this call, and building app B from app A's plan is
+            # the one outcome worth a refusal nobody will ever see.
+            doc = project.record.read_plan_doc(plan_id) if plan_id else None
+            wrong_app = bool(doc) and str(doc.get("appId") or "") != project.app_for_turn().app_id
+            if not (doc and not wrong_app and self._build_again_state(project, doc)["eligible"]):
+                # Two causes, two remedies. Sending somebody to "this app's current plan" when the
+                # real problem is that they are looking at another app's plan is advice that cannot
+                # work, and the mismatch needs no later build to happen: another tab moving the
+                # selection between the click and this call is enough.
+                yield {"type": "error", "message": brand.text(
+                    "This plan belongs to another {builtApp}. Open that one and build it again "
+                    "from there." if wrong_app else
+                    "A later build already changed this {builtApp}, so this plan no longer "
+                    "describes it. Open its current plan and edit that instead.")}
+                yield {"type": "done", "ok": False, "decision": "plan moved on"}
+                return
         if plan_edits is not None:
-            project.app_for_turn().write_plan(plan_edits)
+            # With the document the edit came from, so a plan left live by a build that gave up can
+            # still be superseded by the next one (`_archive_prior_plan` reads this). `plan_id` is
+            # "" for a caller that has no document behind it — the CLI, the tests — and that records
+            # none, exactly as it always did.
+            project.app_for_turn().write_plan(plan_edits, plan_id)
         # Fall back to the architecture when no plan is live: an architecture turn writes only
         # .sage/architecture.md (it isn't a one-shot handoff and must survive the build), so its card's
         # Build button would otherwise approve an empty plan and build nothing.
@@ -7064,14 +7156,16 @@ class Orchestrator:
         # somebody approved it and watched it build. An architecture has no document, so only a live
         # plan marks one. What approval MEANS stays the review flow's own rule: named reviewers who
         # have not signed off keep the plan in review, because building was never their sign-off.
-        if live_plan.strip():
-            doc = self._approved_plan_doc(project, plan_id)
-            if doc:
-                # A version, not an overwrite, for the same reason a document edit makes one: the
-                # draft people commented on has to survive the edit that built over it.
-                if live_plan.strip() != (doc.get("markdown") or "").strip():
-                    project.record.write_plan_doc_version(doc["id"], live_plan)
-                self.review_plan_doc(doc["id"], {"action": "approve"})
+        approved_doc = self._approved_plan_doc(project, plan_id) if live_plan.strip() else None
+        if approved_doc:
+            # A version, not an overwrite, for the same reason a document edit makes one: the
+            # draft people commented on has to survive the edit that built over it.
+            #
+            # Written HERE, above the refusal below, and the sign-offs are moved BELOW it. The two
+            # halves want opposite answers to "did this turn run": nothing a person typed may be
+            # lost to a turn that was refused, and nothing on record may be destroyed by one.
+            if live_plan.strip() != (approved_doc.get("markdown") or "").strip():
+                project.record.write_plan_doc_version(approved_doc["id"], live_plan)
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
         # pinned to this turn only (see arm_turn_mode), never written to the user's picker. The
@@ -7084,8 +7178,29 @@ class Orchestrator:
         # exactly as it found them — the person changes the model and presses Approve again.
         refusal = self._slot_refusal_events(project, run_as or prior_mode)
         if refusal:
+            if build_again:
+                # This turn is what made a plan live at all: the document had already been built,
+                # and its plan.md archived with it. Returning from here without undoing that would
+                # leave a built app holding a live plan.md — the stale-intent hazard ADR-0007 exists
+                # to prevent, resurrected by the one action that promises never to open it
+                # (ADR-0024). Cancelled rather than consumed, because nothing was built from it.
+                # The edit itself is safe: it is a version on the document, which is the durable
+                # half of the pair. The ordinary path deliberately leaves its plan live instead —
+                # there it is the app's first plan, and the card the person presses Approve on again.
+                project.app_for_turn().archive_plan(cancelled=True)
             yield from refusal
             return
+        if approved_doc:
+            if build_again:
+                # The click is the approval — that is why there is no confirmation dialog — but it
+                # is not a REVIEW, and the sign-offs on record were given for words this edit has
+                # replaced. A document still labelled "Approved" would be claiming a review nobody
+                # has done (ADR-0024), so it goes back to Draft with none of them. The reviewers
+                # stay named: re-establishing trust is the review flow's own job, and it needs no
+                # new UI to do it. A plain section edit resets neither, exactly as it never has.
+                project.record.patch_plan_doc_meta(approved_doc["id"], status="draft", approvals=[])
+            else:
+                self.review_plan_doc(approved_doc["id"], {"action": "approve"})
         # Phased only when the toggle is on AND the plan actually parsed into briefs. A plan written
         # before the toggle (or by a planner that ignored the format) builds the ordinary way rather
         # than half-phasing, which would be worse than not phasing at all.
