@@ -3,7 +3,7 @@ window.SW = window.SW || {};
 (function () {
   const { createElement: h, useState, useEffect } = React;
   const {
-    Modal, Input, Select, Space, Button, Tooltip, Popover, Tag, Empty, Badge, List,
+    Modal, Input, Select, Button, Tooltip, Popover, Empty, Badge,
   } = antd;
   const { UserAddOutlined, BellOutlined } = icons;
 

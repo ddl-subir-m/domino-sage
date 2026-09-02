@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useEffect, Fragment } = React;
+  const { createElement: h, useState, useEffect } = React;
   const { Modal, Input, Button, Tooltip, Tag, Skeleton, Empty } = antd;
   const { SearchOutlined, PlusOutlined, CheckOutlined } = icons;
 

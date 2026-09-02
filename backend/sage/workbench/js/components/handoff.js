@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Modal, Radio, Space, Input, Select, Alert, Button, Checkbox } = antd;
+  const { Modal, Radio, Space, Input, Select, Alert, Checkbox } = antd;
   const { FileTextOutlined } = icons;
 
   // The date on an app row. A Project holds many Built Apps and two dashboards read the same in a

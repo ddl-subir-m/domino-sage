@@ -2,8 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useEffect, useRef, Fragment } = React;
-  const { Button, Tooltip } = antd;
-  const { PlusOutlined, MenuFoldOutlined, MenuUnfoldOutlined } = icons;
+  const { Button } = antd;
 
   // The rail itself is shared with Build — same component, same behaviour. Chat
   // only adds the layout wrapper the docked rail needs.

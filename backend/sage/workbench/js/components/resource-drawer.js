@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Drawer, Button, Table, Alert, Space, Tag, Descriptions } = antd;
+  const { Drawer, Button, Table, Alert, Space } = antd;
 
   SW.ResourceDrawer = function ResourceDrawer() {
     const { previewResourceId, attachments, resourceIndex, scope } = SW.store.get();

@@ -3,11 +3,11 @@ window.SW = window.SW || {};
 (function () {
   const { createElement: h, useState, useEffect, Fragment } = React;
   const {
-    Button, Space, Tag, Modal, Input, Tooltip, Avatar, Select, Divider, Alert, Checkbox,
+    Button, Space, Tag, Modal, Input, Tooltip, Avatar, Select, Alert, Checkbox,
   } = antd;
   const {
     CheckCircleFilled, MessageOutlined, EditOutlined, ArrowRightOutlined,
-    ClockCircleOutlined, PlusOutlined, CloseOutlined,
+    ClockCircleOutlined, CloseOutlined,
   } = icons;
 
   const SECTIONS = [

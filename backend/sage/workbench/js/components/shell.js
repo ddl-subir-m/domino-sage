@@ -2,9 +2,9 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect, useRef } = React;
-  const { Tooltip, Dropdown, Button, Space, Tag } = antd;
+  const { Tooltip, Dropdown, Space } = antd;
   const {
-    SearchOutlined, QuestionCircleOutlined, AppstoreOutlined, DatabaseOutlined,
+    SearchOutlined, QuestionCircleOutlined, DatabaseOutlined,
     HistoryOutlined, DoubleRightOutlined, DoubleLeftOutlined, DownOutlined,
   } = icons;
 
