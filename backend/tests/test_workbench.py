@@ -85,9 +85,6 @@ def test_workbench_is_the_default_ui():
     assert panel.status_code == 200
     assert b"In context" in panel.content
     assert b"In this project" in panel.content
-    # The rail says what the list is, so "Add resources" beside it stops reading as the permission
-    # a Resource needs before anything can use it (#134, ADR-0018).
-    assert b"What this Project uses." in panel.content
     assert b"addToContext" in panel.content
     assert b"MCPs" in panel.content
     assert b"Agents" in panel.content
@@ -96,7 +93,6 @@ def test_workbench_is_the_default_ui():
     assert b"resourcesLoading" in panel.content
     assert b"fromCatalog" not in panel.content
     assert b"membershipParent" in panel.content
-    assert b"Files in this workspace" in panel.content
     assert b"e.target.files || []).map((f) => f.name)" not in panel.content
     assert b"SW.store.uploadFile(file)" in panel.content
     # The promote targets are every writable mount, not the curated rail: membership never gated
@@ -155,7 +151,8 @@ def test_workbench_is_the_default_ui():
     assert b"or describe an app" not in chat.content
     assert b"or describe something you want to build" not in chat.content
     assert b"Ask about your data" in chat.content
-    assert b"use @ to bring in a resource" in chat.content
+    # The "@ brings something in" half is one sentence in `util.js`, shared by every composer.
+    assert b"composerPlaceholder" in chat.content
 def test_the_build_offer_answers_an_explicit_ask_in_its_own_words():
     """One card, two moments. The classifier notices an app taking shape in a conversation about
     something else; an explicit "build me a webapp" was already a decision, and meeting that with

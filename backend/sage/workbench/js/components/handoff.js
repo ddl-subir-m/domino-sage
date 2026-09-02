@@ -151,12 +151,6 @@ window.SW = window.SW || {};
               h(FileTextOutlined, { style: { color: '#8F8FA3' } }),
               h('code', null, file)
             )
-          ),
-          h(
-            'div',
-            { className: 'sw-caption', style: { marginTop: 6 } },
-            `Everything is a real file. ${SW.brand.assistant()} reads them in Builder, and so can you. `,
-            'What crosses is yours to change in Account settings.'
           )
         )
       )
@@ -245,15 +239,6 @@ window.SW = window.SW || {};
             { name: 'transcript', checked: answers.transcript, onChange: carry('transcript') },
             'The full conversation transcript'
           )
-        ),
-        // The one asymmetry worth saying out loud: files are rewritten, and a Binding already made
-        // is not withdrawn. Taking a Resource away from an app that may already be reading it is a
-        // deliberate act, not a side effect of tidying a receipt.
-        h(
-          'div',
-          { className: 'sw-caption' },
-          'The files are written again. Resources already connected stay connected — remove those '
-          + 'in the Resource panel.'
         ),
         h(
           Checkbox,
@@ -356,12 +341,7 @@ window.SW = window.SW || {};
               placeholder: 'Pick a project',
               onChange: setProjectId,
               options: projects.map((p) => ({ value: p.id, label: p.name })),
-            }),
-        h(
-          'div',
-          { className: 'sw-caption' },
-          'Your sandbox stays where it is. This copies the work somewhere it will persist and where you can add people.'
-        )
+            })
       )
     );
   };

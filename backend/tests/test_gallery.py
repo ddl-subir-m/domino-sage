@@ -180,7 +180,8 @@ def test_the_empty_gallery_names_the_built_app_in_the_packs_words():
     The claim is unchanged: an empty Gallery says what, why, and what to do next."""
     default = _empty_gallery()
     assert "No Built Apps yet" in default
-    assert any("Build something in Chat, then publish it." in line for line in default)
+    # What to do next is the button beside it, not a second sentence repeating the button.
+    assert any("Go to Chat" in line for line in default)
 
     renamed = _empty_gallery({"nouns": {"builtApp": {"singular": "Cube", "plural": "Cubes"}}})
     assert "No Cubes yet" in renamed

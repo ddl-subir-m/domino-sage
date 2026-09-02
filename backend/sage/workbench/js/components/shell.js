@@ -439,14 +439,6 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-setting' },
         h('div', { className: 'sw-setting-label' }, 'Conversation view'),
-        h(
-          'p',
-          { className: 'sw-setting-hint' },
-          SW.brand.text(
-            'Split keeps Chat and Build as separate halves of a conversation, the way '
-            + '{productName} works today. Unified shows one transcript in both.'
-          )
-        ),
         h(antd.Radio.Group, {
           // antd renders the group as a plain div, so without the role the label is not announced
           // and the buttons read as two loose radios belonging to nothing.
@@ -466,12 +458,6 @@ window.SW = window.SW || {};
         { className: 'sw-setting' },
         h('div', { className: 'sw-setting-label' }, 'What a build carries across'),
         h(
-          'p',
-          { className: 'sw-setting-hint' },
-          'When you build an app from a conversation, this is what crosses with the plan. Building ',
-          'still asks which app to build into.'
-        ),
-        h(
           Space,
           {
             direction: 'vertical',
@@ -487,8 +473,7 @@ window.SW = window.SW || {};
             h(
               'span',
               null,
-              'What is in the conversation',
-              h('span', { className: 'sw-caption' }, ' · becomes what the app needs')
+              'What is in the conversation'
             )
           ),
           h(
@@ -502,12 +487,6 @@ window.SW = window.SW || {};
             'The full conversation transcript'
           )
         )
-      ),
-      h(
-        'p',
-        { className: 'sw-setting-scope' },
-        'These settings are yours. They follow you into every Project, and they do not change ',
-        'what anyone else sees.'
       )
     );
   };

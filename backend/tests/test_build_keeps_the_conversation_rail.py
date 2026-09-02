@@ -302,16 +302,6 @@ def test_a_tag_shows_history_and_never_moves_the_preview():
     assert step["activeApp"] == "app_a"
 
 
-@needs_node
-def test_the_rail_note_names_both_ways_to_filter_it():
-    """The note described the chip alone, which is the shape of the bug written down."""
-    step = _run([{"rail": "build"}])[-1]
-    assert step["rail"]["note"] == (
-        "Tags name the apps a conversation changed. Click one, or pick an app in the Build "
-        "header, to see everything that touched it."
-    )
-
-
 def test_the_pick_writes_the_filter_and_no_effect_watches_the_selected_app():
     """The one-line change this must not become. An effect keyed on `activeApp` would pass every
     assertion above and still re-filter the rail from another tab's click, because the poll writes

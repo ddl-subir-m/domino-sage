@@ -46,7 +46,7 @@ needs_node = pytest.mark.skipif(
 
 # The sentence both surfaces say when the selected app records neither kind. Written once in the
 # source too — see the test at the bottom, which is what keeps the two from drifting again.
-TAIL = "Resources and data files from Chat land here after Open Builder."
+TAIL = "Chat's resources and files land here after Open Builder."
 
 
 def _run(steps: list[dict]) -> list[dict]:

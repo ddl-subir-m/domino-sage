@@ -123,7 +123,7 @@ window.SW = window.SW || {};
               size: 'small',
               icon: h(DownloadOutlined, null),
               'aria-label': 'Export chart',
-              onClick: () => antd.message.success('Chart exported to examples/'),
+              onClick: () => antd.message.info('Exporting charts is not wired up in this prototype.'),
             })
           ),
           onAddToPlan &&
@@ -202,8 +202,7 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-detail' },
         asked
-          ? 'Chat answers questions; Build writes the app. I can turn this conversation into a '
-            + 'plan to start from.'
+          ? 'I can turn this conversation into a plan to start from.'
           : 'I can write a plan so you can review it, share it, and build from it.'
       ),
       h(
@@ -244,9 +243,8 @@ window.SW = window.SW || {};
           ? 'The summary carried over must hold the value too. Clearing Recall completely leaves '
             + 'the model nothing from this conversation. Your transcript stays.'
           : 'The gateway has refused the same way twice, so what it matched is in this '
-            + 'conversation’s Recall and every turn from here will be refused too. Clearing Recall '
-            + 'starts the model over. Your transcript stays, and the model keeps a short summary '
-            + 'of what was said.'
+            + 'conversation’s Recall. Clearing Recall starts the model over: your transcript '
+            + 'stays, and the model keeps a short summary of what was said.'
       ),
       h(
         Space,

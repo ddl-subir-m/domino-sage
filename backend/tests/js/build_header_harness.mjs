@@ -831,7 +831,6 @@ function railOf(mode) {
   const tree = SW.ConversationRail({ mode: mode || 'build' });
   const nodes = flatten(tree);
   const chip = nodeByClass(tree, 'sw-rail-filter');
-  const note = nodeByClass(tree, 'sw-rail-note');
   return {
     rows: nodes.filter((n) => n.className === 'sw-thread-title').flatMap((n) => n.texts || []),
     // The whole sentence, joined, because "Only " and the app name are two elements and the
@@ -839,7 +838,6 @@ function railOf(mode) {
     chip: chip ? words(flatten(chip)).join('') : null,
     // The chip's way out, by the label it says out loud — a filter you cannot drop is a mode.
     chipClear: chip ? flatten(chip).filter((n) => n.label).map((n) => n.label) : [],
-    note: note ? words(flatten(note)).join('') : null,
   };
 }
 

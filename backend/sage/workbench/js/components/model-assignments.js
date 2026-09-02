@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h } = React;
-  const { Drawer, Select, Alert, Button, Space, Spin, Typography } = antd;
+  const { Drawer, Select, Alert, Button, Space, Spin } = antd;
 
   // The three slots a person can assign, in the order the panel lists them, with what each one
   // actually drives. Auto is absent on purpose: it has no assignment of its own, it runs Plan's
@@ -15,17 +15,14 @@ window.SW = window.SW || {};
     {
       slot: 'plan',
       label: 'Plan',
-      detail: 'Auto plans on this, and so does Plan mode.',
     },
     {
       slot: 'implement',
       label: 'Implement',
-      detail: 'Auto builds on this, and so does Implement mode.',
     },
     {
       slot: 'ask',
       label: 'Ask and Chat',
-      detail: "Ask mode, and Chat whenever you haven't picked your own model.",
     },
   ];
 
@@ -124,7 +121,6 @@ window.SW = window.SW || {};
         'div',
         { key: spec.slot, className: 'sw-assignment-row' },
         h('label', { className: 'sw-assignment-label', htmlFor: `assign-${spec.slot}` }, spec.label),
-        h('div', { className: 'sw-assignment-detail' }, spec.detail),
         h(Select, {
           id: `assign-${spec.slot}`,
           'aria-label': `${spec.label} model`,
@@ -161,13 +157,6 @@ window.SW = window.SW || {};
       h(
         Space,
         { direction: 'vertical', size: 16, style: { width: '100%' } },
-
-        h(
-          Typography.Paragraph,
-          { className: 'sw-secondary', style: { marginBottom: 0 } },
-          'These apply to this Project and everyone in it. Teammates get them the next time the ',
-          'Project syncs.'
-        ),
 
         notice
           ? h(Alert, {

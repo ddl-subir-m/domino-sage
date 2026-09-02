@@ -151,13 +151,8 @@ window.SW = window.SW || {};
             rows: 2,
             value: note,
             onChange: (e) => setNote(e.target.value),
-            placeholder: 'Tell them what you want them to look at.',
+            placeholder: 'What to look at (optional)',
           })
-        ),
-        h(
-          'div',
-          { className: 'sw-caption' },
-          'They get access to this project — its conversations, plans, resources, and apps.'
         )
       )
     );

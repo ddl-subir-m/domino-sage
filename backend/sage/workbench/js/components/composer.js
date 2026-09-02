@@ -6,12 +6,11 @@ window.SW = window.SW || {};
   const { PlusOutlined, ArrowUpOutlined, DownOutlined, CloseOutlined } = icons;
 
   function BUILD_MODES() {
-    const who = SW.brand.assistant();
     return [
-      { id: 'auto', label: 'Auto', detail: `${who} picks plan or build per turn`, key: '1' },
-      { id: 'ask', label: 'Ask', detail: 'Answers questions, never changes files', key: '2' },
-      { id: 'plan', label: 'Plan', detail: 'Writes a plan and waits for approval', key: '3' },
-      { id: 'implement', label: 'Implement', detail: 'Builds without a plan gate', key: '4' },
+      { id: 'auto', label: 'Auto', key: '1' },
+      { id: 'ask', label: 'Ask', key: '2' },
+      { id: 'plan', label: 'Plan', key: '3' },
+      { id: 'implement', label: 'Implement', key: '4' },
     ];
   }
   const BUILD_MODE_LABEL = { auto: 'Auto', ask: 'Ask · read-only', plan: 'Plan', implement: 'Implement' };
@@ -417,8 +416,7 @@ window.SW = window.SW || {};
           h(
             'div',
             { style: { flex: 1 } },
-            h('div', { className: 'sw-model-option-name' }, option.label),
-            h('div', { className: 'sw-model-option-detail' }, option.detail)
+            h('div', { className: 'sw-model-option-name' }, option.label)
           ),
           h('span', { className: 'sw-caption' }, option.key)
         ),
@@ -602,7 +600,7 @@ window.SW = window.SW || {};
             value: text,
             autoFocus,
             disabled,
-            placeholder: placeholder || 'Describe your app, or a change to make… use @ to bring in a resource',
+            placeholder: placeholder || SW.util.composerPlaceholder('Describe your app, or a change to make'),
             autoSize: { minRows: compact ? 1 : 2, maxRows: 8 },
             onChange: (e) =>
               changeText(e.target.value, e.target.selectionStart, e.nativeEvent && e.nativeEvent.inputType),
@@ -755,8 +753,8 @@ window.SW = window.SW || {};
                     Tooltip,
                     {
                       title: activeBuildMode.id === 'ask'
-                        ? `Ask runs on ${pinnedModel}, and so does Chat. Change what every build uses.`
-                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build. Change what every build uses.`,
+                        ? `Ask runs on ${pinnedModel}, and so does Chat.`
+                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build.`,
                     },
                     h(
                       Button,

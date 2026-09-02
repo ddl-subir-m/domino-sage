@@ -169,7 +169,7 @@ window.SW = window.SW || {};
           'div',
           { className: 'sw-palette-results sw-scroll' },
           groups.length === 0
-            ? h('div', { className: 'sw-palette-empty sw-secondary' }, `Nothing matches "${query}".`)
+            ? h('div', { className: 'sw-palette-empty sw-secondary' }, SW.util.noMatch(query))
             : groups.map((group) =>
                 h(
                   'div',

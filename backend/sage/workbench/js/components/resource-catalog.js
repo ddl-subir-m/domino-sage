@@ -37,7 +37,7 @@ window.SW = window.SW || {};
             resource.sovereign &&
               h(
                 Tooltip,
-                { title: 'Runs inside your environment.' },
+                { title: SW.util.SOVEREIGN_TITLE },
                 h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
               )
           ),
@@ -241,11 +241,7 @@ window.SW = window.SW || {};
                     )
                   : h('span', { className: 'sw-cat-in' }, 'In project')
               )
-            : h(
-                'div',
-                { className: 'sw-cat-note' },
-                `Adding something makes it available to ${SW.brand.assistant()} in ${scope.name} — in every conversation and every app here, not just this one.`
-              ),
+            : null,
           h(
             'div',
             { className: 'sw-cat-list sw-scroll' },

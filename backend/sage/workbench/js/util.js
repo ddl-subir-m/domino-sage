@@ -61,6 +61,22 @@ window.SW = window.SW || {};
     PLAN_STATUS,
     APP_STATUS,
 
+    // One sentence, two surfaces: the catalogue row and the panel row wear the same tag, so the
+    // tag has to say the same thing in both. It was written out twice and drifted apart once.
+    SOVEREIGN_TITLE: 'Runs inside your environment.',
+
+    // Every composer offers the same @ affordance, so the half of the placeholder that advertises
+    // it is written once. Only the lead changes with what the composer is for.
+    composerPlaceholder(lead) {
+      return `${lead}… use @ to bring in a resource`;
+    },
+
+    // The zero-state for a filter box. Every tree, list and palette that filters uses this one,
+    // so the quoting and the wording stay the same wherever somebody types a query that misses.
+    noMatch(query) {
+      return `Nothing matches "${String(query || '').trim()}".`;
+    },
+
     // Resolve a host-relative Domino path against the MAIN Domino host.
     //
     // The server hands these out with no host on purpose: DOMINO_API_HOST is the internal cluster
@@ -150,7 +166,7 @@ window.SW = window.SW || {};
     // Conversation chip. A sentence naming the upload would leave a first-timer doing as they were
     // told and seeing neither list change.
     appScopeEmpty(lead) {
-      return `${lead} Resources and data files from Chat land here after Open Builder.`;
+      return `${lead} Chat's resources and files land here after Open Builder.`;
     },
 
     // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path

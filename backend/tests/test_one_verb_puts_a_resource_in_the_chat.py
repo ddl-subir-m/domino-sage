@@ -130,8 +130,7 @@ def test_the_drawer_puts_a_catalogue_resource_in_the_chat_in_one_click():
     assert "await SW.store.addToProject(resource);" not in DRAWER
     assert "SW.store\n        .addToContext(resource, { quiet: true })" in DRAWER
     # The alert above the button has to agree with what the button now does.
-    assert "Using it in this chat also " in DRAWER
-    assert "adds it to {scope}" in DRAWER
+    assert "Using it in this chat adds it to " in DRAWER
     assert "SW.brand.text(" in DRAWER
 
 

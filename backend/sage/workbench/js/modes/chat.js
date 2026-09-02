@@ -56,7 +56,7 @@ window.SW = window.SW || {};
   }
 
   function Landing({ onSend, compact }) {
-    const { starters, me, scope, turnWedged } = SW.store.get();
+    const { starters, me, turnWedged } = SW.store.get();
     const catalogue = (starters && starters.chat) || {};
     // Acme is a financial services firm; show its prompts alongside the
     // ones that make sense anywhere.
@@ -64,7 +64,7 @@ window.SW = window.SW || {};
       ...(catalogue['cross-industry'] || []),
       ...(catalogue['financial-services'] || []),
     ].slice(0, compact ? 3 : 6);
-    const placeholder = 'Ask about your data… use @ to bring in a resource';
+    const placeholder = SW.util.composerPlaceholder('Ask about your data');
 
     return h(
       'div',
@@ -73,13 +73,6 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-landing-inner' },
         h('h1', { className: 'sw-landing-title' }, `What do you want to know${me && me.name ? `, ${me.name.split(' ')[0]}` : ''}?`),
-        h(
-          'p',
-          { className: 'sw-landing-sub' },
-          scope.untitled
-            ? 'Ask about your data. This project is saved; rename it when you want a lasting name.'
-            : `Ask about data in ${scope.name}.`
-        ),
         h(
           'div',
           { className: 'sw-landing-composer' },
@@ -227,7 +220,7 @@ window.SW = window.SW || {};
                   h(TurnBar, null),
                   h(SW.Composer, {
                     onSend: send,
-                    placeholder: 'Ask about your data… use @ to bring in a resource',
+                    placeholder: SW.util.composerPlaceholder('Ask about your data'),
                     disabled: turnWedged,
                   })
                 )

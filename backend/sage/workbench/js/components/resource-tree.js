@@ -180,7 +180,7 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-tree-empty' },
         query
-          ? `Nothing matches “${query.trim()}”.`
+          ? SW.util.noMatch(query)
           : SW.brand.text('No files in this {dataset}.')
       );
     }
@@ -349,7 +349,7 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-tree-empty' },
-          query ? `Nothing matches “${query.trim()}”.` : 'Nothing at this level.'
+          query ? SW.util.noMatch(query) : 'Nothing at this level.'
         )
       );
     }

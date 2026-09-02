@@ -213,10 +213,7 @@ window.SW = window.SW || {};
       h(
         'div',
         { style: { marginTop: 12 } },
-        SW.brand.text(
-          'Only this app goes out. Your other {builtAppPlural} and this conversation stay '
-            + 'where they are.'
-        )
+        SW.brand.text('Only this app goes out. Your other {builtAppPlural} and this conversation stay.')
       ),
       // LAST, so nothing above it moves when it arrives. The confirm's own explanation is what a
       // creator starts reading, and a notice inserted over it would shift the paragraph under their
@@ -408,17 +405,7 @@ window.SW = window.SW || {};
                       onPick: () => pick(app),
                     })
                   )
-            ),
-            // Teaching that only makes sense beside a list of several, so it is only there then.
-            apps.length > 1 &&
-              h(
-                'div',
-                { className: 'sw-rail-note' },
-                SW.brand.text(
-                  'Each {builtApp} has its own code, plan and Resources. Building one leaves '
-                    + 'the rest alone.'
-                )
-              )
+            )
           ),
       },
       h(
@@ -771,8 +758,7 @@ window.SW = window.SW || {};
         {
           // Claims no type, because the picker holds two: a Resource and an Asset both bind here,
           // and a tooltip naming one of them would be wrong under half its own menu (ADR-0014).
-          title: `Record what this app depends on. It joins ${app.name}'s Bindings, `
-            + 'and publishing reads that record.',
+          title: `Record what this app depends on. It joins ${app.name}'s Bindings.`,
         },
         h(
           Button,
@@ -995,7 +981,7 @@ window.SW = window.SW || {};
           title:
             `${(full || names).map((n, i) => ((marks || [])[i] ? `${n} (not used)` : n)).join(', ')}`
             + ((marks || []).some(Boolean)
-              ? ' · “not used” is what this app’s source said at the last build, and it publishes either way'
+              ? ' · “not used” is what the last build saw, and it publishes either way'
               : '')
             + ` · ${where}`,
         },
@@ -1314,12 +1300,7 @@ window.SW = window.SW || {};
                   h(
                     'div',
                     { className: 'sw-empty-detail' },
-                    // Pointing at the rail is only worth saying while the conversation is somewhere
-                    // else. With it on screen above, the thing worth saying is whose turns those
-                    // are and why this app has none of them.
-                    buildTranscript.length
-                      ? 'Approve a plan to write this app, or describe a change. The turns above are this conversation — this app has none of them yet.'
-                      : 'Approve a plan to write the app, or describe a change. This conversation stays in the rail — Chat is one click away.'
+                    'Approve a plan to write this app, or describe a change.'
                   ),
                   resumed &&
                     h(

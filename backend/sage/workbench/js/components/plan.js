@@ -197,10 +197,9 @@ window.SW = window.SW || {};
             rows: 3,
             value: note,
             onChange: (e) => setNote(e.target.value),
-            placeholder: 'Anything you want them to look at closely?',
+            placeholder: 'What to look at closely (optional)',
           })
-        ),
-        h('div', { className: 'sw-caption' }, 'Reviewers can comment on any section. You can build before they finish.')
+        )
       )
     );
   }
@@ -393,7 +392,6 @@ window.SW = window.SW || {};
             'div',
             { className: 'sw-plan-sheet-bar' },
             h(Tag, { bordered: false, className: 'sw-sens sw-blessed-tag' }, 'PLAN'),
-            h('span', { className: 'sw-caption' }, 'Document · open beside your work'),
             h('span', { style: { flex: 1 } }),
             inBuild &&
               h(antd.Segmented, {

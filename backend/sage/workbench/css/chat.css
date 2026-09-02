@@ -33,12 +33,6 @@
 .sw-rail-list { flex: 1; min-height: 0; padding-bottom: var(--s4); }
 .sw-rail-group { padding: var(--s3) var(--s3) var(--s1); }
 .sw-rail-empty { padding: var(--s4) var(--s3); line-height: 1.5; }
-.sw-rail-note {
-  padding: var(--s4) var(--s3) 0;
-  font-size: var(--fs-11);
-  color: var(--gray-500);
-  line-height: 1.5;
-}
 .sw-rail-foot {
   flex: none;
   display: flex;
@@ -203,24 +197,16 @@
   font-size: var(--fs-30);
   font-weight: 600;
   line-height: 1.2;
-  margin: 0 0 var(--s2);
-  text-align: center;
-}
-.sw-landing-sub {
-  font-size: var(--fs-14);
-  color: var(--gray-600);
-  text-align: center;
   margin: 0 0 var(--s5);
-  line-height: 1.6;
+  text-align: center;
 }
 .sw-landing-composer { margin-bottom: var(--s5); }
 
 /* With a plan open beside it the landing is no longer the main event, so it
    gives up its display type and stops wrapping the greeting mid-word. */
 .sw-landing.is-compact { align-items: flex-start; padding: var(--s4) var(--s3); }
-.sw-landing.is-compact .sw-landing-title { font-size: var(--fs-19); text-align: left; }
-.sw-landing.is-compact .sw-landing-sub {
-  font-size: var(--fs-13);
+.sw-landing.is-compact .sw-landing-title {
+  font-size: var(--fs-19);
   text-align: left;
   margin-bottom: var(--s3);
 }

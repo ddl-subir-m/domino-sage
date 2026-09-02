@@ -349,12 +349,7 @@ window.SW = window.SW || {};
                   })
                 )
               )
-            ),
-        h(
-          'div',
-          { className: 'sw-rail-note' },
-          'Tags name the apps a conversation changed. Click one, or pick an app in the Build header, to see everything that touched it.'
-        )
+            )
       )
     );
   };

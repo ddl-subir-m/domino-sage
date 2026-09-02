@@ -109,10 +109,9 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-bh-intro' },
-              // Says whose builds these are and why there can be builds in it this conversation
-              // never asked for (#72). Without it the extra rows read as a bug.
-              `Every build of this app, newest first — including builds asked for in other `
-                + `conversations.`
+              // Why there can be rows in here this conversation never asked for (#72). Without it
+              // the extra rows read as a bug.
+              'Includes builds asked for in other conversations.'
             ),
             runs.length === 0
               ? h(
@@ -126,8 +125,7 @@ window.SW = window.SW || {};
                   h(
                     'div',
                     { className: 'sw-empty-detail' },
-                    'Describe a change in the composer, or approve a plan. Every build of this app '
-                      + 'is listed here afterwards.'
+                    'Describe a change in the composer, or approve a plan.'
                   )
                 )
               : runs.map((row) => h(BuildRunRow, { key: row.id, block: row.block }))

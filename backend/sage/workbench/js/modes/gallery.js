@@ -65,7 +65,7 @@ window.SW = window.SW || {};
             // No article engine, so the sentence takes CONTEXT.md's own plural phrasing rather
             // than "a {assistantName} Builder", which a vowel-initial name would have broken.
             ? 'Apps published from {assistantName} Builder sessions show up here, for everyone ' +
-              'who can open them. Build something in Chat, then publish it.'
+              'who can open them.'
             : 'This build runs outside {platformName}, so there are no published Apps to list.'
         ),
         extra: state.provisioning

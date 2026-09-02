@@ -80,7 +80,7 @@ window.SW = window.SW || {};
         h(
           'span',
           { className: 'sw-plan-pin-empty' },
-          `No plan yet. Ask ${SW.brand.assistant()} to draft one when the work is worth writing down.`
+          'No plan yet.'
         )
       );
     }
@@ -306,7 +306,7 @@ window.SW = window.SW || {};
         resource.sovereign &&
           h(
             Tooltip,
-            { title: 'Runs inside your environment.' },
+            { title: SW.util.SOVEREIGN_TITLE },
             h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
           )
       ),
@@ -553,7 +553,7 @@ window.SW = window.SW || {};
             ? h(
                 'div',
                 { className: 'sw-caption' },
-                'Nothing in this conversation yet. Add a resource from the list below, or type @.'
+                'Nothing here yet. Add one below, or type @.'
               )
             : attachments.map((att) =>
                 h(SW.ResourceRow, {
@@ -642,17 +642,6 @@ window.SW = window.SW || {};
             'Add resources'
           )
         )
-      ),
-
-      // What the list IS, under the header that names it. Membership is a record of use rather
-      // than a gate (ADR-0018), so the rail says what this project uses — and "Add resources"
-      // beside it reads as one way in rather than as the permission everything needs first.
-      h(
-        'div',
-        { className: 'sw-panel-caption' },
-        // The nouns are the glossary's, not shorthand: an unqualified "app" is the Domino thing,
-        // and Chat is a mode rather than a countable.
-        SW.brand.text('What this Project uses. Using a Resource in Chat or in a {builtApp} adds it here.')
       ),
 
       h(
@@ -770,8 +759,6 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-drawer-body' },
-              h('div', { className: 'sw-drawer-hint' },
-                SW.brand.text('Files in this workspace. {dataset} contents live under the {dataset}.')),
               files.length
                 ? files.map(rowFor)
                 : h('div', { className: 'sw-group-empty' }, 'No files in this project yet.')
