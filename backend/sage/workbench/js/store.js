@@ -723,11 +723,18 @@ window.SW = window.SW || {};
         try {
           const body = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`).then((r) => r.json());
           const data = JSON.parse(body.content || '{}');
+          const columns = data.columns || [];
           blocks.push({
             type: 'table',
             title: data.title || art.title,
-            columns: data.columns || [],
-            rows: data.rows || [],
+            columns,
+            // The contract is a positional array per row, but sage-chat sometimes writes a
+            // pandas-style record (an object keyed by column name) instead. `TableBlock` looks
+            // cells up by numeric index, so a record row rendered every cell blank while the
+            // header and row count still looked right. Reorder it into the positional shape here
+            // rather than trust every turn's Python to have followed the contract.
+            rows: (data.rows || []).map((row) =>
+              Array.isArray(row) ? row : columns.map((name) => (row || {})[name] ?? null)),
           });
         } catch (err) {
           blocks.push({ type: 'file', name: art.name || path, path });
