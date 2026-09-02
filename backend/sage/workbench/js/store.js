@@ -3576,7 +3576,7 @@ window.SW = window.SW || {};
     // question is already on the Thread and already on screen, so neither end records it again.
     //   `echo: false` — do not push a second bubble for a question already in the transcript.
     //   `url`         — the decline route, which suppresses and then streams that turn.
-    async sendMessage(text, { echo = true, url = '' } = {}) {
+    async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -3600,7 +3600,7 @@ window.SW = window.SW || {};
         return false;
       };
 
-      const attachments = state.attachments.map((a) => ({
+      const attachments = attachmentsOverride || state.attachments.map((a) => ({
         resourceId: a.resourceId,
         name: a.resourceName,
         kind: a.resourceKind,

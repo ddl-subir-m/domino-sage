@@ -1067,6 +1067,30 @@ window.SW = window.SW || {};
     }
   };
 
+  // The message as markdown: prose runs as-is, code stays fenced, a table becomes a real
+  // markdown table since its rows/columns are already structured data. Image/file blocks resolve
+  // to a same-origin, session-gated URL (`./api/project/file/raw?path=...`), so they get named
+  // rather than linked — that URL pasted into Slack or a doc would be dead there anyway.
+  function copyTextFor(message) {
+    return message.blocks
+      .map((b) => {
+        if (b.type === 'text') return b.value;
+        if (b.type === 'code') return `\`\`\`${b.language || ''}\n${b.value}\n\`\`\``;
+        if (b.type === 'table') {
+          const cell = (v) => String(v ?? '').replace(/\|/g, '\\|');
+          const header = `| ${b.columns.map(cell).join(' | ')} |`;
+          const rule = `| ${b.columns.map(() => '---').join(' | ')} |`;
+          const rows = b.rows.map((row) => `| ${row.map(cell).join(' | ')} |`);
+          return [b.title, header, rule, ...rows].filter(Boolean).join('\n');
+        }
+        if (b.type === 'image') return `[Image: ${b.title || 'untitled'}]`;
+        if (b.type === 'file') return `[File: ${b.name || b.path || 'untitled'}]`;
+        return null;
+      })
+      .filter((v) => v !== null)
+      .join('\n\n');
+  }
+
   // Pinning has to land somewhere real. A plan takes it; an app that was never
   // written down keeps it as a decision instead; a conversation about nothing in
   // particular has nowhere to put it, so it does not offer.
@@ -1100,11 +1124,34 @@ window.SW = window.SW || {};
     };
   }
 
+  // The prompt that led to this answer: the nearest user message walking back, stopping at
+  // another assistant message rather than assuming index - 1, since a system notice can sit
+  // between a question and its answer. Its own attachments ride along so the resend reproduces
+  // the original turn, not a text-only echo of it.
+  function retryTargetFor(message) {
+    const { messages } = SW.store.get();
+    const idx = messages.findIndex((m) => m.id === message.id);
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role === 'assistant') return null;
+      if (m.role === 'user') {
+        const text = (m.blocks || [])
+          .filter((b) => b.type === 'text')
+          .map((b) => b.value)
+          .join('\n\n')
+          .trim();
+        return text ? { text, attachments: m.attachments || [] } : null;
+      }
+    }
+    return null;
+  }
+
   SW.Message = function Message({ message, onSave }) {
     const { me } = SW.store.get();
     const isUser = message.role === 'user';
     const isSystem = message.role === 'system';
     const pinTarget = isUser ? null : pinTargetFor(message);
+    const retryTarget = isUser ? null : retryTargetFor(message);
 
     if (isSystem) {
       return h(
@@ -1165,10 +1212,7 @@ window.SW = window.SW || {};
                 size: 'small',
                 icon: h(CopyOutlined, null),
                 'aria-label': 'Copy message',
-                onClick: () =>
-                  SW.util.copy(
-                    message.blocks.filter((b) => b.type === 'text').map((b) => b.value).join('\n\n')
-                  ),
+                onClick: () => SW.util.copy(copyTextFor(message)),
               })
             ),
             pinTarget &&
@@ -1183,17 +1227,19 @@ window.SW = window.SW || {};
                   onClick: pinTarget.onClick,
                 })
               ),
-            h(
-              Tooltip,
-              { title: 'Retry' },
-              h(Button, {
-                type: 'text',
-                size: 'small',
-                icon: h(ReloadOutlined, null),
-                'aria-label': 'Retry',
-                onClick: () => antd.message.info('Retry is not wired up in this prototype.'),
-              })
-            )
+            retryTarget &&
+              h(
+                Tooltip,
+                { title: 'Retry' },
+                h(Button, {
+                  type: 'text',
+                  size: 'small',
+                  icon: h(ReloadOutlined, null),
+                  'aria-label': 'Retry',
+                  onClick: () =>
+                    SW.store.sendMessage(retryTarget.text, { attachments: retryTarget.attachments }),
+                })
+              )
           )
       )
     );
