@@ -314,6 +314,16 @@ Resource.
 _Avoid_: attachment (that is a file in the Built App), binding (durable app dependency), detach
 (that is the app's word for removing an Attachment)
 
+**Recall**:
+What the model has been told about this Conversation so far, and is told again on every turn. Not
+the transcript: the transcript is what the person sees and is never rewritten, while Recall holds
+what the person never sees — the contents of files a turn read, and the tool calls it made. The two
+drift apart on purpose. Compaction shrinks Recall and leaves the transcript whole; clearing Recall
+empties it and leaves the transcript whole. A Conversation has one Recall for Chat and one for each
+Built App it drives, the same shape its history has.
+_Avoid_: context (that is Session context, which is Resources), session (OpenCode's word for the
+harness object that holds Recall), history (that is the transcript), memory
+
 ### Handling rules
 
 **Remove**:

@@ -41,14 +41,27 @@ def test_it_says_where_the_guardrail_looked():
     assert "administrator" in said
 
 
-def test_it_names_the_one_escape_from_a_thread_that_keeps_being_refused():
-    """A blocked value arrives as a tool result, so it is in the Thread, and a Thread re-sends what
-    it holds. Live, the turn after this one attached a different file with nothing in it that could
-    match and was refused anyway; the same file in a new Thread was answered. Without this line the
-    advice is to remove a value the person cannot reach, in a Thread that can no longer answer."""
+def test_it_names_the_file_the_turn_read():
+    """The half the person can act on. The values are theirs and the file is theirs, but nothing on
+    screen said WHICH file — which is the whole reason this took an afternoon to find."""
+    said = _chat_error_text(LIVE, [{"name": "Narnia_LensLogic_20240801_224434.json"}])
+    assert "Narnia_LensLogic_20240801_224434.json" in said
+    assert "files it opened" in said
+
+
+def test_it_still_reads_as_a_sentence_with_no_attachment_to_name():
     said = _chat_error_text(LIVE)
-    assert "the turns before it" in said
-    assert "new Thread" in said
+    assert "Take the matching values out, or ask your Domino administrator" in said
+    assert "This turn read" not in said
+
+
+def test_the_way_out_is_not_named_here(caplog):
+    """A first refusal may be a blip, and the exit costs the model everything it has been told. So
+    the offer is `recall.offer`'s to make on the second identical refusal (ADR-0022), not a
+    sentence shown to everyone whose turn failed once."""
+    said = _chat_error_text(LIVE, [{"name": "f.json"}])
+    assert "Recall" not in said
+    assert "new Conversation" not in said
 
 
 def test_a_longer_nest_still_names_its_guardrail():

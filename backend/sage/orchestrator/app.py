@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -1995,6 +1995,24 @@ def decline_handoff(thread_id: str) -> StreamingResponse:
     return StreamingResponse(
         _turn_sse(orchestrator.decline_handoff_stream(thread_id), "decline_handoff"),
         media_type="text/event-stream")
+
+
+@control_app.post("/api/threads/{thread_id}/recall/clear")
+def clear_recall(thread_id: str, body: dict = Body(default={})) -> dict:
+    """Start the model over on a Conversation the gateway keeps refusing (ADR-0022).
+
+    Not a stream, unlike `Not now` on a Build offer: that one had to produce the answer it was
+    offered instead of, while this one is offered AFTER a turn already failed and has no answer
+    owed. The person asks their question again themselves, which is also the only way to find out
+    whether clearing worked.
+    """
+    scope = str((body or {}).get("scope") or "")
+    try:
+        return orchestrator.clear_recall(thread_id, scope)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "Unknown conversation"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
 
 
 @control_app.post("/api/project/build/approve")

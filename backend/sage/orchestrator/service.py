@@ -129,6 +129,7 @@ from ..workspace.threads import (
 )
 from . import brand, chat_compact, scope
 from . import handoff as chat_handoff
+from . import recall
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
 
@@ -1427,7 +1428,7 @@ _CHAT_ERROR_MAX = 300
 _GUARDRAIL = re.compile(r"Blocked by guardrail:\s*([^\"'}\\]+)")
 
 
-def _guardrail_sentence(text: str) -> str:
+def _guardrail_sentence(text: str, attachments: list[dict] | None = None) -> str:
     """A refusal by a gateway guardrail, said plainly — or "" when this is some other failure.
 
     A guardrail block is not a fault, and it is not Sage's: the gateway was asked to police what
@@ -1437,29 +1438,71 @@ def _guardrail_sentence(text: str) -> str:
     and their seven-digit integer parts matched a pattern that accepts a decimal point as its right
     boundary. Nobody had typed a phone number, and the file contained none.
 
-    The refusal then outlived the turn. The value reached the gateway as a tool result, so it was
-    in the Thread, and a Thread re-sends what it holds — every later turn was refused too, on a
-    value from an earlier one. Live, the next question attached a different file with nothing in it
-    that could match, and it was refused; the same file in a new Thread was answered. So the escape
-    is named. Without it the advice is to remove a value the person cannot reach, in a Thread that
-    can no longer answer them.
+    The refusal then outlived the turn. The value reached the gateway as a tool result, so it was in
+    the Conversation's Recall, and Recall is sent again on every turn — every later turn was refused
+    too, on a value from an earlier one. Live, the next question attached a different file with
+    nothing in it that could match, and it was refused; the same file in a new Conversation was
+    answered.
 
-    No other resolution is offered beyond naming the administrator, because Sage has none: it
+    What this says is therefore only half the answer. It names the suspect, which is the half the
+    person can act on and the half that was missing: the file is theirs, the values are theirs, and
+    nobody could see which file had done it. The other half — the way out of a Conversation that
+    will now refuse everything — is an offer, not a sentence, and it is `recall.offer` that decides
+    when to make it. Naming a way out here as well would put it in front of someone whose first
+    refusal may have been a blip.
+
+    No resolution is offered beyond the file and the administrator, because Sage has no others: it
     cannot edit the gateway's policy and it will not quietly redact someone's data to get past one.
     """
     match = _GUARDRAIL.search(text)
     if not match:
         return ""
     name = " ".join(match.group(1).split()).strip(" .;:")
+    read = _named_files(attachments)
     # The gateway's sentence verbatim, ours around it (ADR-0014). What is dropped is the transport
     # wrapper it arrived in — three levels of quoted JSON — not a word the gateway wrote.
     return (f'the gateway refused it: "Blocked by guardrail: {name}". Guardrails read everything a '
-            "turn carries — the files it opened and the turns before it, not only what you typed. "
-            "A match in an earlier turn keeps refusing every turn after it, so start a new Thread "
-            "to leave it behind, or ask your Domino administrator about the policy.")
+            "turn carries, including the contents of files it opened, not only what you typed. "
+            + (f"This turn read {read}. Take the matching values out of it, "
+               if read else "Take the matching values out, ")
+            + "or ask your Domino administrator about the policy.")
 
 
-def _chat_error_text(err: object) -> str:
+def _named_files(attachments: list[dict] | None) -> str:
+    """The turn's Attachments, said as prose — the suspects a refusal can point at.
+
+    Attachments rather than every file the turn read, for two reasons that agree. They are already
+    in the user's message, so the transcript already holds them and nothing new has to be recorded;
+    tool inputs are deliberately not kept (`chat_summary` calls them "transcript furniture"). And
+    they are the files the person CHOSE, so they are the ones they can go and change. A workspace
+    file the agent opened on its own is noise in a sentence asking someone to act.
+    """
+    names = [str(a.get("name") or "").strip() for a in (attachments or []) if a.get("name")]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _error_raw(err: object) -> str:
+    """The failing frame's own words, before Sage says anything about them.
+
+    Split out because two callers want it and they want different things from it: the sentence
+    below is shown, while `recall.reason_key` reads this to decide whether two refusals are the
+    same refusal. Keying that off the shown sentence would be wrong — it names the turn's
+    Attachment, which is precisely what differs between the turns the ladder has to connect.
+    """
+    if isinstance(err, str):
+        return err
+    if isinstance(err, dict):
+        data = err.get("data") if isinstance(err.get("data"), dict) else {}
+        return str(data.get("message") or err.get("message") or err.get("name") or "")
+    return ""
+
+
+def _chat_error_text(err: object, attachments: list[dict] | None = None) -> str:
     """One plain line for a step that failed, or "" when the frame carries nothing to say.
 
     The frame carries whatever said no, in whatever shape it said it: a bare string, or a dict with
@@ -1467,17 +1510,11 @@ def _chat_error_text(err: object) -> str:
     resort — a class name is a poor sentence, but it beats reporting silence, which is what Chat
     did with these frames before.
     """
-    if isinstance(err, str):
-        text = err
-    elif isinstance(err, dict):
-        data = err.get("data") if isinstance(err.get("data"), dict) else {}
-        text = str(data.get("message") or err.get("message") or err.get("name") or "")
-    else:
-        text = ""
+    text = _error_raw(err)
     # Before the clip, not after. The live nest put the name at character 200 of 302, so the clip
     # spared it — by 59 characters, on the shortest of the two gateway URL forms in use. A longer
     # host, app path or guardrail name eats that margin, and translating first costs nothing.
-    return _guardrail_sentence(text) or " ".join(text.split())[:_CHAT_ERROR_MAX]
+    return _guardrail_sentence(text, attachments) or " ".join(text.split())[:_CHAT_ERROR_MAX]
 
 
 def _chat_live_event(ev) -> dict | None:
@@ -4801,16 +4838,64 @@ class Orchestrator:
                 "has been planned yet — never that a plan is waiting, was drafted, or has been "
                 "handed over.")
 
+    def _maybe_offer_recall(self, store: ThreadStore, thread_id: str):
+        """The offer a twice-refused Conversation is owed, or nothing (ADR-0022).
+
+        Read back out of the store rather than tracked through the turn: the error was appended a
+        moment ago, and the transcript is the thing `recall.offer` reasons over. Tracking it in
+        locals would mean two accounts of the same ladder, and the stored one is the one that
+        survives a restart.
+        """
+        scope = recall.offer(store.read_history(thread_id))
+        if not scope:
+            return
+        ev = {"type": recall.SUGGEST, "scope": scope}
+        store.append_history(thread_id, ev)
+        yield ev
+
+    def clear_recall(self, thread_id: str, scope: str) -> dict:
+        """Start the model over on this Conversation, keeping everything the person can see.
+
+        Recall lives in the OpenCode session, so dropping the stored session id IS the clear:
+        `_ensure_session` finds nothing to recover on the next turn and opens a fresh one. Nothing
+        else rides on that id — `session.json` holds it and a directory and nothing more — so the
+        transcript, the Artifacts, the plan and the Built App links are all untouched, which is
+        what the offer promised.
+
+        Chat holds no live handle to undo alongside it: `_ensure_chat_session` reads `session.json`
+        on every turn rather than caching an id on the Project the way Build does, so the file IS
+        the state. The old OpenCode session is left where it is — OpenCode owns it, it is already
+        unreachable from here, and a Conversation that has just failed repeatedly is the worst
+        possible moment to start deleting things on its behalf.
+        """
+        if scope not in (recall.SUMMARY, recall.EMPTY):
+            raise ValueError(f"unknown scope {scope!r}")
+        store = ThreadStore(self._chat_project().record.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        store.clear_session_id(thread_id)
+        ev = {"type": recall.CLEARED, "scope": scope}
+        store.append_history(thread_id, ev)
+        return ev
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
-                     handoffs: list[dict] | None = None) -> str:
+                     handoffs: list[dict] | None = None,
+                     history: list[dict] | None = None) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
             self._plan_state_note(handoffs),
             "",
         ]
+        # The first turn after a summary-scoped clear keeps the promise the offer made: the model
+        # starts over, but is told what was said. Empty on every other turn, including the first
+        # turn after a complete clear, where being told nothing is the whole point.
+        carried = recall.seed(history or [])
+        if carried:
+            lines += ["What was said in this Conversation before the model was started over:",
+                      carried, ""]
         items = ctx.get("items") or []
         urls = [u for u in (urls or []) if u]
         if items or urls:
@@ -4940,7 +5025,8 @@ class Orchestrator:
                 sid, self._chat_prompt(thread_id, prompt, ctx, urls,
                                        workspace=Path(work),
                                        artifacts=store.read_artifacts(thread_id),
-                                       handoffs=store.read_handoffs(thread_id)),
+                                       handoffs=store.read_handoffs(thread_id),
+                                       history=store.read_history(thread_id)),
                 agent="sage-chat",
                 attachments=mentioned,
                 chat=True)
@@ -4961,6 +5047,7 @@ class Orchestrator:
             # why reported that Sage "stopped making progress", and sent the person to shrink a
             # question that was never the problem.
             step_error = ""
+            step_reason = ""
             answered = False
             idle_quiet = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
             tool_quiet = _CHAT_TOOL_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
@@ -5076,7 +5163,10 @@ class Orchestrator:
                         # Not shown as it happens — a step that fails may still be retried, and the
                         # answer is what the Thread is for. Kept, so the end of the turn can say it,
                         # and logged, because nothing else in Sage records this frame at all.
-                        step_error = _chat_error_text(ev.payload.get("error")) or step_error
+                        raw = _error_raw(ev.payload.get("error"))
+                        said = _chat_error_text(ev.payload.get("error"), mentioned)
+                        if said:
+                            step_error, step_reason = said, recall.reason_key(raw)
                         log.warning("chat: step failed — %s", ev.payload.get("error"))
                         # A turn refused at its first step may never register as running, and
                         # `finished` needs to have seen it run. Without this the loop cannot end on
@@ -5202,12 +5292,17 @@ class Orchestrator:
                 # the shape that sends someone looking for a Sage bug when the provider had already
                 # said what was wrong. Artifacts written before the failing step are still theirs.
                 err = {"type": "error",
+                       "reason": step_reason,
                        "message": brand.text(
                            "{assistantName} could not finish this turn — {reason}",
                            reason=step_error)}
                 store.append_history(thread_id, err)
                 yield err
                 done = {"type": "done", "ok": False, "decision": "step failed"}
+                # After the error and before `done`, so a client reading the stream in order sees
+                # what failed before it is offered a way out of it.
+                for ev_out in self._maybe_offer_recall(store, thread_id):
+                    yield ev_out
             if artifacts:
                 done["artifacts"] = artifacts
             store.append_history(thread_id, done)

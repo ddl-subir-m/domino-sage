@@ -192,6 +192,17 @@ class ThreadStore:
             body["directory"] = directory
         p.write_text(json.dumps(body))
 
+    def clear_session_id(self, thread_id: str) -> None:
+        """Forget which OpenCode session this Conversation was talking to (ADR-0022).
+
+        The file goes rather than the field: `_ensure_chat_session` reads `session.json` and checks
+        the id AND the directory it was made for, so a record with one and not the other is a shape
+        that path does not expect. Removing it puts the Conversation back in the state it was in
+        before its first turn, which is exactly what clearing Recall means.
+        """
+        p = self.thread_dir(thread_id) / "session.json"
+        p.unlink(missing_ok=True)
+
     def history_path(self, thread_id: str) -> Path:
         return self.thread_dir(thread_id) / "history.jsonl"
 

@@ -446,6 +446,7 @@ SW.api = {
   createThread: () => post('/threads', {}),
   flushChat: () => post('/threads/save', {}),
   draftHandoffPlan: (id) => post(`/threads/${id}/handoff/plan`, {}),
+  clearRecall: (id, scope) => post(`/threads/${id}/recall/clear`, { scope }),
   confirmHandoff: (id, include, target) => post(`/threads/${id}/handoff/confirm`, { include, target }),
   // Change on the plan card: the same crossing, different answers (#60). No `target` — which
   // Built App a handoff lands in is decided once, on the sheet (ADR-0008). `planId` says which

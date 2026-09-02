@@ -762,6 +762,11 @@ window.SW = window.SW || {};
     // replaying them puts a dead callout back in the middle of the conversation.
     const liveSuggest = (history || []).reduce(
       (last, ev, i) => (ev.type === 'handoff-suggest' ? i : last), -1);
+    // Only the newest offer is live, for the same reason. Unlike a Build offer there is no
+    // suppressed flag to consult: declining is not permanent (ADR-0022), so a later refusal
+    // re-offers and the older card is simply the dead one.
+    const liveRecall = (history || []).reduce(
+      (last, ev, i) => (ev.type === 'recall-suggest' ? i : last), -1);
     const shownArts = new Set();
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
@@ -798,6 +803,22 @@ window.SW = window.SW || {};
           type: 'status',
           ok: false,
           value: ev.message || (ev.type === 'stopped' ? 'Stopped.' : 'The turn failed.'),
+        });
+      } else if (ev.type === 'recall-cleared') {
+        assistant = null;
+        messages.push({
+          id: `rc_${messages.length}`,
+          role: 'system',
+          order: pos,
+          blocks: [{ type: 'recall_cleared', scope: ev.scope }],
+        });
+      } else if (ev.type === 'recall-suggest' && i === liveRecall) {
+        assistant = null;
+        messages.push({
+          id: `ro_${messages.length}`,
+          role: 'system',
+          order: pos,
+          blocks: [{ type: 'recall_offer', scope: ev.scope }],
         });
       } else if (ev.type === 'handoff-suggest' && !hideSuggest && i === liveSuggest) {
         assistant = null;
@@ -3881,6 +3902,33 @@ window.SW = window.SW || {};
       // The offer was made INSTEAD of answering, so declining it owes the person that answer.
       // The route suppresses too, which is why there is no patch on this path.
       store.sendMessage(pending, { echo: false, url: `./api/threads/${id}/handoff/decline` });
+    },
+
+    // Dismissal is local and lasts until the next refusal re-offers. Nothing is patched: the
+    // transcript is the record, and hiding a card is not an answer worth writing into it.
+    dismissRecallOffer() {
+      state.messages = state.messages.filter(
+        (m) => !m.blocks.some((b) => b.type === 'recall_offer')
+      );
+      notify();
+    },
+
+    async clearRecall(scope) {
+      const id = state.thread && state.thread.id;
+      if (!id) return;
+      state.messages = state.messages.filter(
+        (m) => !m.blocks.some((b) => b.type === 'recall_offer')
+      );
+      notify();
+      try {
+        await SW.api.clearRecall(id, scope);
+      } catch (e) {
+        antd.message.error('Could not clear recall.');
+        return;
+      }
+      // Reopen rather than push the divider in from here: the server wrote the event, and the
+      // transcript is what renders it. One copy of the truth, the way every other turn works.
+      await store.openThread(id);
     },
 
     async draftHandoffPlan(threadId) {

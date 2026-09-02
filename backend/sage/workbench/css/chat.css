@@ -501,6 +501,24 @@
   margin: 4px 0 var(--s3);
 }
 
+/* The line where Recall and the transcript part company (ADR-0022). Quiet on purpose: it is a
+   statement about what the model can no longer see, not an event competing with the conversation
+   for attention. A rule either side so it reads as a break rather than a message. */
+.sw-recall-cleared {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-size: var(--fs-12);
+  color: var(--gray-600);
+  margin: var(--s2) 0;
+}
+.sw-recall-cleared::before,
+.sw-recall-cleared::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--gray-300);
+}
+
 .sw-nudge {
   display: flex;
   gap: var(--s2);

@@ -223,6 +223,65 @@ window.SW = window.SW || {};
     );
   }
 
+  // The only way out of a Conversation the gateway keeps refusing (ADR-0022). Two rungs: the first
+  // keeps a summary of what was said, and when that is refused too — likely, since Sage's own
+  // answers are in the transcript and the summary is built from them — the second keeps nothing.
+  function RecallOffer({ block }) {
+    const complete = (block || {}).scope === 'empty';
+    return h(
+      'div',
+      { className: 'sw-suggestion' },
+      h(
+        'div',
+        { className: 'sw-suggestion-title' },
+        h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
+        complete ? 'It’s still being refused.' : 'This conversation keeps being refused.'
+      ),
+      h(
+        'div',
+        { className: 'sw-suggestion-detail' },
+        complete
+          ? 'The summary carried over must hold the value too. Clearing Recall completely leaves '
+            + 'the model nothing from this conversation. Your transcript stays.'
+          : 'The gateway has refused the same way twice, so what it matched is in this '
+            + 'conversation’s Recall and every turn from here will be refused too. Clearing Recall '
+            + 'starts the model over. Your transcript stays, and the model keeps a short summary '
+            + 'of what was said.'
+      ),
+      h(
+        Space,
+        { size: 8 },
+        h(
+          Button,
+          {
+            type: 'primary',
+            size: 'small',
+            onClick: () => SW.store.clearRecall(complete ? 'empty' : 'summary'),
+          },
+          complete ? 'Clear recall completely' : 'Clear recall'
+        ),
+        // No dismiss. Declining is not a preference about a want, the way it is on a Build offer —
+        // it is a judgment made before trying anything else, and this is the only exit. Hiding it
+        // after one "not now" rebuilds the dead end. The offer cannot nag: it appears only on a
+        // turn that has already failed.
+        h(Button, { size: 'small', onClick: () => SW.store.dismissRecallOffer() }, 'Not now')
+      )
+    );
+  }
+
+  // The transcript would otherwise lie about why the model suddenly forgot what was discussed
+  // above this line. Recall and the transcript are different things and this is where they part.
+  function RecallCleared({ block }) {
+    const complete = (block || {}).scope === 'empty';
+    return h(
+      'div',
+      { className: 'sw-recall-cleared' },
+      complete
+        ? 'Recall cleared completely. The model has nothing from above.'
+        : 'Recall cleared. The model starts over here, with a summary of what was said above.'
+    );
+  }
+
   // Who replaced this plan, in the words the person picked. A plan records the Conversation that
   // produced it (#54), so the newer one can be named rather than pointed at — and a Conversation
   // the rail has not loaded, or one since deleted, still leaves a sentence that reads.
@@ -997,6 +1056,10 @@ window.SW = window.SW || {};
         return h(BuildStalled, { block });
       case 'plan_suggestion':
         return h(PlanSuggestion, { block });
+      case 'recall_offer':
+        return h(RecallOffer, { block });
+      case 'recall_cleared':
+        return h(RecallCleared, { block });
       case 'graduation_nudge':
         return h(GraduationNudge, { onSave });
       default:
