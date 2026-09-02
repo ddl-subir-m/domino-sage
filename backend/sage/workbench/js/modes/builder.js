@@ -1274,6 +1274,11 @@ window.SW = window.SW || {};
     // has selected. That is the truth, but unlabelled it reads as this conversation's work, so say
     // whose app it is. (The preview following the app a build is running in is #77.)
     const resumed = noAppTurns && !!projectPlan && projectPlan.status === 'built';
+    // The sibling case #77 missed: a plan can sit live-and-unapproved (the rail's pin already
+    // shows it) with nothing built yet. A new conversation clears the transcript there too, and
+    // without a note it reads the same as a plan that was never written — the rail disagrees, but
+    // only the rail is looking.
+    const pendingPlan = noAppTurns && !!projectPlan && projectPlan.status !== 'built';
 
     return h(
       'div',
@@ -1315,6 +1320,21 @@ window.SW = window.SW || {};
                         'div',
                         { className: 'sw-empty-detail' },
                         'A new conversation clears the transcript, not the app. Describe a change to keep building on it.'
+                      )
+                    ),
+                  pendingPlan &&
+                    h(
+                      'div',
+                      { className: 'sw-build-resume-note' },
+                      h(
+                        'div',
+                        { className: 'sw-empty-title' },
+                        'There is already a plan waiting'
+                      ),
+                      h(
+                        'div',
+                        { className: 'sw-empty-detail' },
+                        'A new conversation clears the transcript, not the plan. Open it in the rail to review it, or describe a change to replace it.'
                       )
                     )
                 ),
