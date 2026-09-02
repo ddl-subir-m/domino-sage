@@ -387,6 +387,26 @@ window.SW = window.SW || {};
               (crossed.files || []).map((file) =>
                 h('div', { key: file, className: 'sw-crossing-item' }, h('code', null, file))
               )
+            ),
+          // An Upload the composer wrote crosses by becoming an Attachment (ADR-0023) — named here
+          // by the Dataset it landed in, or by the reason it stayed in Chat when no Dataset was
+          // writable to receive it. The refusal is the actionable half of that sentence, so it goes
+          // in bare rather than under `.sw-crossing-name`, whose one-line ellipsis is built for a
+          // short chart title and would hide the reason a person most needs to read.
+          (crossed.uploads || []).length > 0 &&
+            h(
+              'div',
+              { className: 'sw-crossing-group' },
+              h('div', { className: 'sw-field-label' }, 'Uploads'),
+              (crossed.uploads || []).map((u, i) =>
+                h(
+                  'div',
+                  { key: `${u.name}:${i}`, className: 'sw-crossing-item' },
+                  u.crossed && h('span', { className: 'sw-crossing-name' }, u.name),
+                  u.crossed && u.dataset && h('code', null, u.dataset),
+                  !u.crossed && u.reason
+                )
+              )
             )
         )
     );
@@ -412,7 +432,11 @@ window.SW = window.SW || {};
     const { buildRunning } = SW.store.get();
     const [answers, setAnswers] = useState('');
     const [editing, setEditing] = useState(false);
-    const [showCrossing, setShowCrossing] = useState(false);
+    // Open by default only when an Upload stayed in Chat: that refusal is the one crossing outcome
+    // ADR-0023 says must never be silent, and a collapsed panel is silent until someone clicks it.
+    const [showCrossing, setShowCrossing] = useState(
+      () => (block.crossed?.uploads || []).some((u) => !u.crossed)
+    );
     const [changing, setChanging] = useState(false);
     // An edit belongs to the plan it was typed against. This card is keyed by its message id and
     // that id counts messages (`bp_<n>`), so a rebuilt history can hand one instance a different

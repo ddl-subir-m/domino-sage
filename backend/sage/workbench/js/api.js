@@ -362,6 +362,8 @@ SW.api = {
   dataSourceTables: (sourceId, database, schema) =>
     request(`/data-sources/${encodeURIComponent(sourceId)}/tables?database=${encodeURIComponent(database || '')}&schema=${encodeURIComponent(schema || '')}`),
   promoteScratch: (path, datasetId) => post('/project/scratch/promote', { path, dataset: datasetId }),
+  // Deletes an Upload's bytes from .sage/scratch/ — the Project-scope door (ADR-0023).
+  deleteScratchFile: (path) => post('/project/scratch/delete', { path }),
 
   conversationContext: async (id) => {
     const ctx = await request(`/threads/${id}/context`);
@@ -563,6 +565,9 @@ SW.api = {
   unbind: (kind, resourceId) =>
     del(`/bindings/${encodeURIComponent(kind)}/${encodeURIComponent(resourceId)}`),
   detachFile: (path) => post('/project/files/detach', { path }),
+  // Destroys the Dataset bytes a Sage upload wrote, not just the app's declaration of them
+  // (ADR-0023) — distinct from detachFile above, which keeps the data and drops only the symlink.
+  deleteFile: (path) => post('/project/files/delete', { path }),
   buildState: () => request('/project/build/state'),
   setBuildMode: (mode) => post('/project/model', { mode }),
   // Build's model override. `pick` alone, without `mode`: ModelControl.pick is mode-independent

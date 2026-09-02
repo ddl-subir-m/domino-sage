@@ -1702,6 +1702,19 @@ async def delete_file(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "invalid path"})
 
 
+@control_app.post("/api/project/scratch/delete")
+async def delete_scratch(request: Request) -> JSONResponse:
+    path = (await request.json()).get("path")
+    if not path:
+        return JSONResponse(status_code=400, content={"error": "path required"})
+    try:
+        return JSONResponse(content=orchestrator.delete_scratch(path))
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid path"})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not delete {path}: {e}"})
+
+
 def _pump_events(events, q: queue.Queue) -> None:
     """Drain a turn's event generator into a queue on a worker thread, so the response side can
     interleave keepalives during the gaps. The bytes twin of this is `sage.shim.keepalive.pump`."""

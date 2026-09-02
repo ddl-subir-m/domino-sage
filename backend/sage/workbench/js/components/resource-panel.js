@@ -176,25 +176,45 @@ window.SW = window.SW || {};
     // mounts writable (`_default_dataset`), so offering only the ones someone added to the project
     // greyed this out while the copy would have worked.
     const writableDatasets = SW.store.get().datasetTargets || [];
+    // "Use in this chat" / "Stop using here" is a Conversation-scope act, so it only belongs on a
+    // Chat surface — a Build reader has no conversation for the verb to name (#147).
+    const inChat = SW.router.get().mode === 'chat';
+    const isScratch = resource.source === 'scratch';
+    const noWritableDataset = {
+      key: 'to-dataset',
+      // A disabled item never fires onClick, so the reason has to be the label itself.
+      label: SW.brand.text('No writable {dataset} is mounted here'),
+      disabled: true,
+    };
+    const noAppSelected = {
+      key: 'to-app-disabled',
+      label: 'No app is selected',
+      disabled: true,
+    };
     const items = contextItem
       ? [{ key: 'remove-from-conversation', label: 'Stop using here' }]
       : [
-          {
-            key: attached ? 'remove-resource-from-conversation' : 'mention',
-            label: attached ? 'Stop using here' : 'Use in this chat',
-          },
-          ...(resource.source === 'scratch'
-            ? writableDatasets.length
-              ? writableDatasets.map((d) => ({
-                  key: `to-dataset:${d.id}`,
-                  label: `Add to ${d.name}`,
-                }))
-              // A disabled item never fires onClick, so the reason has to be the label itself.
-              : [{
-                  key: 'to-dataset',
-                  label: SW.brand.text('No writable {dataset} is mounted here'),
-                  disabled: true,
-                }]
+          ...(inChat
+            ? [{
+                key: attached ? 'remove-resource-from-conversation' : 'mention',
+                label: attached ? 'Stop using here' : 'Use in this chat',
+              }]
+            : []),
+          ...(isScratch
+            ? inChat
+              ? writableDatasets.length
+                ? writableDatasets.map((d) => ({
+                    key: `to-dataset:${d.id}`,
+                    label: `Add to ${d.name}`,
+                  }))
+                : [noWritableDataset]
+              // In Build the per-Dataset list collapses to the one app on screen: the file lands on
+              // whichever Dataset `_default_dataset` picks, same as an unpicked upload (#147).
+              : !app
+              ? [noAppSelected]
+              : writableDatasets.length
+              ? [{ key: 'to-app', label: `Add to ${app.name}` }]
+              : [noWritableDataset]
             : []),
           // The third of the three scopes, beside the two this menu already named. Every label says
           // which list it acts on, because that is the only thing telling the three apart.
@@ -202,6 +222,15 @@ window.SW = window.SW || {};
             ? [
                 { type: 'divider' },
                 { key: 'remove-from-app', label: `Remove from ${appScope.app.name}`, danger: true },
+                // Sage's own bytes, not a Dataset file someone else already had — the door that
+                // destroys them belongs beside the one that only drops the app's symlink (ADR-0023).
+                ...(appScope.attachment && SW.util.isSageUpload(appScope.attachment)
+                  ? [{
+                      key: 'delete-from-dataset',
+                      label: `Delete from ${appScope.attachment.dataset}`,
+                      danger: true,
+                    }]
+                  : []),
               ]
             : []),
           ...(resource.membershipParent
@@ -209,6 +238,11 @@ window.SW = window.SW || {};
                 { type: 'divider' },
                 { key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true },
               ]
+            : []),
+          // The Project-scope door onto the scratch bytes themselves (ADR-0023) — shown regardless
+          // of mode, like the rest of this list, since it is a Project row rather than a Chat one.
+          ...(isScratch
+            ? [{ type: 'divider' }, { key: 'delete-scratch', label: 'Delete file', danger: true }]
             : []),
         ];
 
@@ -224,7 +258,10 @@ window.SW = window.SW || {};
           ? SW.store.removeBindingFromApp(appScope.binding)
           : SW.store.removeAttachmentFromApp(appScope.attachment);
       }
+      if (key === 'delete-from-dataset') return SW.store.deleteAttachmentFromApp(appScope.attachment);
       if (key === 'remove') return SW.store.removeFromProject(resource);
+      if (key === 'to-app') return SW.store.addScratchToDataset(resource, '');
+      if (key === 'delete-scratch') return SW.store.deleteScratchFile(resource);
       if (key.startsWith('to-dataset:')) {
         return SW.store.addScratchToDataset(resource, key.slice('to-dataset:'.length).replace(/^dataset:/, ''));
       }
@@ -340,11 +377,29 @@ window.SW = window.SW || {};
               onOpenChange: setMenuOpen,
               placement: 'bottomRight',
             },
-            h(
-              'button',
-              { className: 'sw-res-more', 'aria-label': `Actions for ${resource.name}` },
-              h(MoreOutlined, null)
-            )
+            // A disabled button never opens, so a row with nothing to offer reads as a dead end
+            // rather than an empty menu a click reveals (#147's mode gate is what made items=[]
+            // reachable here). menu.items stays [] rather than the node disappearing, which is
+            // what a caller reading the menu off this tree needs to still find.
+            items.length === 0
+              ? h(
+                  Tooltip,
+                  { title: 'No actions here — check the other modes and sections' },
+                  h(
+                    'button',
+                    {
+                      className: 'sw-res-more',
+                      'aria-label': `No actions for ${resource.name}`,
+                      disabled: true,
+                    },
+                    h(MoreOutlined, null)
+                  )
+                )
+              : h(
+                  'button',
+                  { className: 'sw-res-more', 'aria-label': `Actions for ${resource.name}` },
+                  h(MoreOutlined, null)
+                )
           )
     );
   };
@@ -511,11 +566,20 @@ window.SW = window.SW || {};
       // the Project, and a Data Source was as silent about that as an Alias ever was.
       const saysAppUse = inBuild && Boolean(activeApp) && Boolean(resource.bindingKey)
         && (resource.kind === 'model_llm' || resource.kind === 'datasource');
+      // An Upload has crossed into no app yet — said here, at render time, because which app that
+      // is can change without a reload (#147). `resource.subtitle` never sets this for a scratch
+      // row, so filling it in only when absent cannot clobber anything real.
+      const row = resource.source === 'scratch' && !resource.subtitle
+        ? {
+            ...resource,
+            subtitle: activeApp ? `Chat-only — not in ${activeApp.name}` : 'Chat-only — not in any app yet',
+          }
+        : resource;
       return h(
         Fragment,
         { key: resource.id },
         h(SW.ResourceRow, {
-          resource,
+          resource: row,
           required: requiredIds.has(resource.id),
           app: activeApp,
           saysAppUse,

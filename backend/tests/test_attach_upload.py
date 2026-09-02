@@ -18,6 +18,7 @@ from sage.orchestrator.service import (
 )
 from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.router.models import ModelCatalog
+from sage.workspace.threads import ThreadStore
 
 
 def _template(tmp: Path) -> Path:
@@ -893,3 +894,94 @@ def test_the_turns_own_app_stays_covered_after_the_person_looks_away(tmp_path: P
 
     assert orch._detect_leaks(proj) == [("sales.csv", ["src/sales.csv"])]
     assert orch._leaked_copy_paths(proj) == [f"apps/{building}/src/sales.csv"]
+
+
+# ---- an Upload crosses by becoming an Attachment (ADR-0023, #147) --------------------------
+
+
+def test_a_chat_upload_crosses_into_the_default_dataset_and_keeps_the_scratch_copy(tmp_path: Path):
+    orch = _orch(tmp_path)
+    root = orch.project(start_preview=False).record.path
+    scratch = orch.upload_scratch("note.csv", b"x")
+
+    out = orch._cross_chat_upload({"kind": "file", "name": "note.csv", "path": scratch["path"]})
+
+    assert out == {"name": "note.csv", "crossed": True, "dataset": "sales_2026"}
+    assert (root / scratch["path"]).exists()          # scratch bytes survive the crossing
+    assert any(e["dataset_rel_path"] == "uploads/note.csv"
+               for e in orch.project(start_preview=False).attached)
+
+
+def test_a_chat_upload_refuses_to_cross_when_no_dataset_is_writable(tmp_path: Path):
+    prov = FakeAssetProvider()
+    prov.assets = []
+    orch = _orch(tmp_path, assets=prov)
+    root = orch.project(start_preview=False).record.path
+    scratch = orch.upload_scratch("note.csv", b"x")
+
+    out = orch._cross_chat_upload({"kind": "file", "name": "note.csv", "path": scratch["path"]})
+
+    assert out == {"name": "note.csv", "crossed": False,
+                   "reason": "note.csv stayed in Chat — no writable Dataset is mounted here"}
+    assert (root / scratch["path"]).exists()          # nothing moved on a refusal
+    assert orch.project(start_preview=False).attached == []
+
+
+def test_a_dataset_fetched_chip_is_not_treated_as_a_chat_upload(tmp_path: Path):
+    """`_promote_chat_file` already carries this one across — a chip with a datasetId and a
+    datasetRelPath is a question's answer, not the composer's file (ADR-0023)."""
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+
+    out = orch._cross_chat_upload({"kind": "file", "name": "train.csv",
+                                    "path": ".sage/scratch/datasets/sales_2026/train.csv",
+                                    "datasetId": "ds1", "datasetRelPath": "train.csv"})
+
+    assert out is None
+
+
+def test_delete_scratch_removes_the_uploads_bytes(tmp_path: Path):
+    orch = _orch(tmp_path)
+    root = orch.project(start_preview=False).record.path
+    scratch = orch.upload_scratch("note.csv", b"x")
+
+    out = orch.delete_scratch(scratch["path"])
+
+    assert out["deleted"] == scratch["path"]
+    assert not (root / scratch["path"]).exists()
+
+
+def test_delete_scratch_refuses_a_path_outside_scratch(tmp_path: Path):
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+
+    with pytest.raises(ValueError):
+        orch.delete_scratch("public/data/sales_2026/uploads/note.csv")
+
+
+def test_delete_scratch_refuses_a_chat_data_fetch_path(tmp_path: Path):
+    """A Dataset file Chat fetched for a question is not an Upload, so this door does not reach
+    it — closing its chip is the existing "Stop using here" release, not a byte-deleting one."""
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+
+    with pytest.raises(ValueError):
+        orch.delete_scratch(".sage/scratch/datasets/sales_2026/train.csv")
+
+
+def test_a_crossed_upload_shows_up_in_the_confirm_receipts_uploads_list(tmp_path: Path):
+    """The wiring `_write_crossing` relies on: a Chat Upload sitting in a Conversation's context
+    is named in the receipt the plan card reads (ADR-0023)."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    store = ThreadStore(project.record.path)
+    tid = orch.create_thread()["id"]
+    scratch = orch.upload_scratch("note.csv", b"x")
+    orch.add_thread_context(tid, {"kind": "file", "name": "note.csv", "path": scratch["path"]})
+    (project.workspace.path / ".sage").mkdir(parents=True, exist_ok=True)   # a real handoff has one
+
+    crossed = orch._write_crossing(project, store, tid,
+                                    {"resources": True, "artifacts": False, "transcript": False})
+
+    assert crossed["uploads"] == [{"name": "note.csv", "crossed": True, "dataset": "sales_2026"}]
+    assert (project.record.path / scratch["path"]).exists()

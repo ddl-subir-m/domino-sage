@@ -169,6 +169,15 @@ window.SW = window.SW || {};
       return `${lead} Chat's resources and files land here after Open Builder.`;
     },
 
+    // A Sage-managed upload: bytes Sage wrote under a Dataset's uploads/ or sensitive/ folder, and
+    // so safe to destroy — mirrors the backend's own `_is_sage_upload` (service.py). A genuine
+    // pre-existing Dataset file must never get this door (ADR-0023).
+    isSageUpload(entry) {
+      const rel = String((entry && entry.dataset_rel_path) || '');
+      return Boolean(entry && (entry.source === 'upload' || rel.startsWith('uploads/')
+        || rel.startsWith('sensitive/')));
+    },
+
     // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path
     // OpenCode reads. Lives here rather than in the composer because the menu that INSERTS a token
     // and the turn that reads it back off the prompt have to derive it the same way — a token only

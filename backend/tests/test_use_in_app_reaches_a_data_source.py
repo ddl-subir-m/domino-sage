@@ -265,7 +265,9 @@ def test_remove_from_the_app_still_reaches_a_data_source():
     assert any(i["key"] == "remove-from-app" and i["label"] == f"Remove from {APP}"
                for i in in_app["items"])
     # And the removal stayed the app section's: the Project row offers the Project's, not the app's.
-    assert [i["key"] for i in _source_row(step)["items"] if i["key"]] == ["mention", "remove"]
+    # `mention` no longer rides along here: #147 mode-gated `Use in this chat` to Chat, and this
+    # harness stands in Build (the "mode is Build unless a step says otherwise" default).
+    assert [i["key"] for i in _source_row(step)["items"] if i["key"]] == ["remove"]
 
 
 # ---- the panel harness the rest of the rail is asserted through ---------------------------------

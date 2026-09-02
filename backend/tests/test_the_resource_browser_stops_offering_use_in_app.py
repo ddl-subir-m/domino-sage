@@ -122,28 +122,33 @@ def test_every_route_that_binds_a_resource_is_on_the_apps_own_surface():
 
 
 @needs_node
-def test_the_row_keeps_the_conversations_own_act_and_nothing_else():
+def test_the_row_offers_no_menu_in_build_since_the_conversations_act_moved_to_chat():
     """The whole menu, asserted as a whole. Read as a list rather than as an absence, because the
     failure this ticket could cause is not the act coming back — it is the row losing the cheap act
-    that shared the menu with it."""
+    that shared the menu with it.
+
+    `mention` used to be that act regardless of mode — this file's own name for it, before #147
+    mode-gated `Use in this chat` to the surface with a Conversation to put it in
+    (`test_use_in_this_chat_is_a_chat_only_act.py`). In Build the menu is empty now, and that is
+    correct rather than a second door lost: #147 did not reopen anything this ticket closed."""
     row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"],
                "Claude Sonnet 4", "In this project")
-    assert _keys(row) == ["mention"]
-    assert [i["label"] for i in row["items"]] == ["Use in this chat"]
+    assert _keys(row) == []
+    assert [i["label"] for i in row["items"]] == []
     # The sign stays on the row the door left, which is the point of the #129 split: it is the only
     # thing that tells a Resource this app can reach from one merely sitting in the Project.
     assert f"Not used by {APP}" in row["texts"]
 
 
 @needs_node
-def test_a_resource_this_conversation_uses_still_offers_the_way_back_out():
-    """The other half of the pair ADR-0015 named. `Stop using here` is the same menu slot as
-    `Use in this chat` and discards nothing, so it is the act most easily lost by editing around
-    the slot rather than the act."""
+def test_a_resource_this_conversations_uses_offers_no_way_back_out_in_build():
+    """The other half of the pair ADR-0015 named. `Stop using here` shared `Use in this chat`'s menu
+    slot and its mode gate came with it (#147): both are acts on the Conversation, and Build has none
+    to act on. The Chat-mode half of this pair is `test_use_in_this_chat_is_a_chat_only_act.py`."""
     row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"],
                "Market data EOD", "In this project")
-    assert _keys(row) == ["remove-resource-from-conversation"]
-    assert [i["label"] for i in row["items"]] == ["Stop using here"]
+    assert _keys(row) == []
+    assert [i["label"] for i in row["items"]] == []
 
 
 @needs_node

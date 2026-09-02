@@ -611,6 +611,18 @@ def _chat_data_dest(dataset_name: str, file_path: str) -> str:
     return PurePosix(_CHAT_DATA_PREFIX.rstrip("/"), _slug(dataset_name), *parts).as_posix()
 
 
+def _is_chat_upload(item: dict) -> bool:
+    """True for a context item that is an Upload — a file the composer wrote into scratch — and
+    false for a Dataset file Chat fetched to answer a question, which carries a `datasetId` and
+    `datasetRelPath` and crosses through `_promote_chat_file` instead (ADR-0023)."""
+    if str(item.get("kind") or "") != "file":
+        return False
+    if item.get("datasetId") or item.get("datasetRelPath"):
+        return False
+    path = str(item.get("path") or "")
+    return path.startswith(_SCRATCH_PREFIX) and not path.startswith(_CHAT_DATA_PREFIX)
+
+
 def _links_at(workspace: Path, rel: str, target: Path) -> bool:
     """True when an attached path is a symlink standing on `target` — the shape a handoff leaves
     behind when it hands the scratch bytes over instead of fetching them again."""
@@ -4618,12 +4630,16 @@ class Orchestrator:
             transcript_path.write_text(chat_handoff.transcript_markdown(store.read_history(thread_id)))
         else:
             transcript_path.unlink(missing_ok=True)
+        uploads = []
         if include_resources:
             for item in context:
                 binding = chat_handoff.binding_from_context(item)
                 if binding is not None:
                     self._bind_from_handoff(binding)
                 self._promote_chat_file(item)
+                crossed = self._cross_chat_upload(item)
+                if crossed is not None:
+                    uploads.append(crossed)
         charts = [{"title": str(a.get("title") or a.get("name") or ""),
                    "path": str(a.get("path") or "")}
                   for a in artifacts] if include_artifacts else []
@@ -4647,6 +4663,7 @@ class Orchestrator:
             "charts": charts,
             "context": [str(i.get("name") or "") for i in context] if include_resources else [],
             "files": [f for f in files if f],
+            "uploads": uploads,
         }
 
     def _open_app(self, project: Project, handoff_row: dict, chosen: str) -> Project:
@@ -4713,6 +4730,29 @@ class Orchestrator:
             # The handoff is worth more than one file. The app is built from the plan either way,
             # and the Data panel still offers the attach by hand.
             log.warning("handoff: could not attach %s from Dataset %s", rel, dataset_id)
+
+    def _cross_chat_upload(self, item: dict) -> dict | None:
+        """Turn one Upload context item into an Attachment, by writing its bytes into a writable
+        Dataset and keeping the scratch copy (ADR-0023). Returns a named receipt entry — crossed,
+        or refused and why — so the confirm receipt can show what happened rather than something
+        the handoff only trusts happened. Returns None for a context item that is not an Upload.
+
+        Unlike `_promote_chat_file` above, a refusal here is never silent: the composer's file is
+        the reason the person opened Chat, so `_promote_chat_file`'s `log.warning` path is wrong for
+        it, where it is right for a Dataset file Chat merely fetched.
+        """
+        if not _is_chat_upload(item):
+            return None
+        path = str(item.get("path") or "")
+        name = str(item.get("name") or PurePosix(path).name)
+        try:
+            result = self.promote_scratch_to_dataset(path, "", keep_scratch=True)
+        except UploadUnavailable:
+            reason = brand.text("no writable {dataset} is mounted here")
+            return {"name": name, "crossed": False, "reason": f"{name} stayed in Chat — {reason}"}
+        except (FileNotFoundError, ValueError, AttachTooLarge, ResourceUnavailable, OSError) as e:
+            return {"name": name, "crossed": False, "reason": f"{name} stayed in Chat — {e}"}
+        return {"name": name, "crossed": True, "dataset": result.get("dataset")}
 
     def _bind_from_handoff(self, binding: Binding) -> None:
         """Record one Chat context row as a Binding, resolving a Data Source the way the rail does.
@@ -9385,8 +9425,14 @@ class Orchestrator:
         return {"uploaded": name, "path": rel, "size": len(data), "source": "scratch",
                 "status": project.status()}
 
-    def promote_scratch_to_dataset(self, path: str, dataset_id: str) -> dict:
-        """Copy a scratch file onto a writable Dataset, then drop the scratch copy."""
+    def promote_scratch_to_dataset(self, path: str, dataset_id: str, *, keep_scratch: bool = False) -> dict:
+        """Copy a scratch file onto a writable Dataset, then drop the scratch copy.
+
+        `keep_scratch=True` skips the unlink: a handoff crossing (ADR-0023) needs the Conversation's
+        chip to go on resolving after the file becomes an Attachment, and a Conversation outlives any
+        one Built App (ADR-0008). The manual "Add to `<dataset>`" panel action keeps the default —
+        it replaces the chip with one pointing at the new Dataset copy, so the old bytes are dead
+        weight the moment the swap lands."""
         rel = str(path or "").replace("\\", "/")
         rel = rel.removeprefix("./")
         if not rel.startswith(_SCRATCH_PREFIX):
@@ -9396,10 +9442,11 @@ class Orchestrator:
             raise FileNotFoundError(path)
         data = src.read_bytes()
         result = self.upload_file(src.name, data, dataset_id)
-        try:
-            src.unlink()
-        except OSError:
-            pass
+        if not keep_scratch:
+            try:
+                src.unlink()
+            except OSError:
+                pass
         result["scratch"] = rel
         return result
 
@@ -9488,6 +9535,20 @@ class Orchestrator:
                 _prune_empty_dirs(target.parent, Path(asset.mount_path))
         except OSError:
             log.exception("delete_upload_bytes: failed to remove %s", rel)
+
+    def delete_scratch(self, path: str) -> dict:
+        """Delete an Upload's bytes from `.sage/scratch/`. No `DataReferenced` guard and no turn
+        lock: after a crossing the Attachment symlinks to the Dataset mount, not to scratch, so this
+        can never break a Built App, and scratch sits outside the app tree a turn's baseline watches
+        (ADR-0023)."""
+        rel = str(path or "").replace("\\", "/").removeprefix("./")
+        if not rel.startswith(_SCRATCH_PREFIX) or rel.startswith(_CHAT_DATA_PREFIX):
+            raise ValueError(path)
+        project = self._chat_project()
+        target = _safe_join(project.record.path, rel)
+        if target.is_symlink() or target.exists():
+            target.unlink()
+        return {"deleted": rel, "status": project.status()}
 
     def _scan_app_sources(self, workspace: Workspace) -> list[tuple[str, str | None]]:
         """(workspace-relative posix path, text) for each file under the app tree — skips

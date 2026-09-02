@@ -488,6 +488,9 @@ window.SW = window.SW || {};
             name: (e.path || '').split('/').pop(),
             kind: 'file',
             path: e.path,
+            // Where the bytes actually live, same wording `fileRow` gives the app-scoped copy of
+            // this same record — the thing a Chat-only Upload row does not yet have to say (#147).
+            subtitle: e.dataset_id ? e.dataset : e.path,
           })),
       ];
       applyResourceGroups(
@@ -723,17 +726,26 @@ window.SW = window.SW || {};
         try {
           const body = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`).then((r) => r.json());
           const data = JSON.parse(body.content || '{}');
-          const columns = data.columns || [];
+          // The contract is `{title, columns, rows}` with a positional array per row. sage-chat
+          // misses it two ways, and both showed a chart that plotted fine next to a table that
+          // did not: pandas-style record rows (an object keyed by column name) inside the
+          // wrapper, which `TableBlock`'s numeric `dataIndex` lookup rendered as blank cells
+          // under a correct-looking header; and `df.to_dict("records")` dumped with no wrapper at
+          // all, where `columns` and `rows` both fell through to empty and antd painted its
+          // "No data" placeholder. Recover the wrapper from the records rather than trust every
+          // turn's Python to have followed the contract.
+          const bare = Array.isArray(data) ? data : null;
+          const source = bare || data.rows || [];
+          const head = source[0];
+          // Only a record row names its columns. Reading them off a positional row would header
+          // the table "0", "1", … — worse than the empty header that shape renders today.
+          const columns =
+            (bare ? null : data.columns) || (head && !Array.isArray(head) ? Object.keys(head) : []);
           blocks.push({
             type: 'table',
             title: data.title || art.title,
             columns,
-            // The contract is a positional array per row, but sage-chat sometimes writes a
-            // pandas-style record (an object keyed by column name) instead. `TableBlock` looks
-            // cells up by numeric index, so a record row rendered every cell blank while the
-            // header and row count still looked right. Reorder it into the positional shape here
-            // rather than trust every turn's Python to have followed the contract.
-            rows: (data.rows || []).map((row) =>
+            rows: source.map((row) =>
               Array.isArray(row) ? row : columns.map((name) => (row || {})[name] ?? null)),
           });
         } catch (err) {
@@ -2227,6 +2239,47 @@ window.SW = window.SW || {};
       });
     },
 
+    // Off the scratch bytes themselves — the Project-scope door onto an Upload (ADR-0023). Distinct
+    // from `removeFromConversation`, which only drops the chip and leaves the file for Build to
+    // still cross; this destroys it, so it asks first like the removal above, and unlike that one
+    // never needs to name a Built App that refuses: a scratch file is Chat-only by definition and no
+    // app can be bound to it yet.
+    async deleteScratchFile(resource) {
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Delete ${resource.name}?`,
+          content: 'This deletes the file, and there is no undo.',
+          okText: 'Delete',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            try {
+              await SW.api.deleteScratchFile(resource.path);
+            } catch (err) {
+              antd.message.error(err.message);
+              resolve(false);
+              return;
+            }
+            const tid = conversationId();
+            const drop = (state.attachments || []).filter(
+              (a) => a.resourceId === resource.id || a.parentId === resource.id
+            );
+            if (tid) {
+              await Promise.all(
+                drop.map((a) => SW.api.removeFromConversation(tid, a.id).catch(() => null))
+              );
+            }
+            state.attachments = (state.attachments || []).filter(
+              (a) => a.resourceId !== resource.id && a.parentId !== resource.id
+            );
+            await loadScopeData();
+            antd.message.info(`${resource.name} is deleted.`);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
     // Into the selected Built App -----------------------------------------
     //
     // The act ADR-0011 left unhung: it wrote the door out of a Binding and the door in stayed shut,
@@ -2732,6 +2785,51 @@ window.SW = window.SW || {};
       });
       notify();
       return true;
+    },
+
+    // Off the Dataset bytes an Upload wrote — the Dataset-scope door (ADR-0023). Distinct from
+    // `removeAttachmentFromApp` above, which only drops the app's symlink and keeps the data: this
+    // destroys it, so — unlike that one — it confirms first and carries the same race guard as
+    // `removeBindingFromApp`, since the window a confirm leaves open is exactly the length that
+    // guard answers. The menu only ever offers this on a Sage-managed upload (`isSageUpload`);
+    // a genuine pre-existing Dataset file has no door here to delete it.
+    async deleteAttachmentFromApp(attachment) {
+      const asked = state.activeApp;
+      const where = appScopeName();
+      const name = (attachment.file || attachment.path || '').split('/').pop();
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Delete ${name} from ${attachment.dataset}?`,
+          content: 'This deletes the file, and there is no undo.',
+          okText: 'Delete',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            const gen = appGen;
+            if (!asked || !state.activeApp || state.activeApp.id !== asked.id) {
+              antd.message.warning(
+                `Nothing was deleted. The selected app changed to ${appScopeName()} while this was `
+                + `open, and this deletion named ${asked ? asked.name : 'another app'}.`
+              );
+              resolve(false);
+              return;
+            }
+            try {
+              await SW.api.deleteFile(attachment.path);
+            } catch (err) {
+              antd.message.error(err.message);
+              resolve(false);
+              return;
+            }
+            applyAppScope(appScopeTicket(gen), {
+              appAttachments: (state.appAttachments || []).filter((a) => a.path !== attachment.path),
+              appRemoval: removalNotice(where, name, [], "The file's data is gone too."),
+            });
+            notify();
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
     },
 
     dismissAppRemoval() {
@@ -4027,7 +4125,13 @@ window.SW = window.SW || {};
     // one thing is being told twice.
     async addScratchToDataset(resource, datasetId, options = {}) {
       if (!resource || !resource.path) return null;
-      const res = await SW.api.promoteScratch(resource.path, datasetId);
+      let res;
+      try {
+        res = await SW.api.promoteScratch(resource.path, datasetId);
+      } catch (err) {
+        antd.message.error(err.message);
+        return null;
+      }
       const oldId = resource.id;
       await loadScopeData();
       const tid = conversationId();
