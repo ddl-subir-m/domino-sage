@@ -71,10 +71,12 @@ window.SW = window.SW || {};
     manageUrl: null,
     costUrl: null,
 
-    // Dock
+    // Dock and Rail. Both start closed, and both are seeded from the viewer's preferences in
+    // `init` rather than here (#150): prefs.js loads after this file and keys its record by
+    // `state.me`, so there is nothing to read until the store knows who is looking.
     dockTab: null,        // null = collapsed
     panelFilter: null,    // resource kind the assistant asked the user to pick
-    railHidden: false,
+    railHidden: true,
     railAppFilter: null,  // show only conversations that changed this app
     previewResourceId: null,
     // The catalogue picker. Browsing the platform is a deliberate, occasional
@@ -2010,6 +2012,11 @@ window.SW = window.SW || {};
         SW.api.project().catch(() => null),
       ]);
       state.me = me;
+      // Both side panels, before `ready` flips. A preference is keyed by viewer, so this is the
+      // first moment there is a record to read — and it has to happen before the Shell paints, or
+      // the Rail and the dock would open on the fallbacks and then shut again in front of someone.
+      state.railHidden = SW.prefs.get('railHidden');
+      state.dockTab = SW.prefs.get('dockTab');
       if (brand) {
         state.brand = brand;
         applyBrandChrome(brand);
@@ -2132,25 +2139,49 @@ window.SW = window.SW || {};
 
     // Dock ---------------------------------------------------------------
 
+    // The three writers. A person's hand is on the control in each of these, so each records the
+    // answer — a panel you opened is open again on the next load, and a panel you closed stays
+    // closed. `focusPanel` below is the deliberate exception.
     toggleDock(tab = 'resources') {
       state.dockTab = state.dockTab === tab ? null : tab;
       if (!state.dockTab) state.panelFilter = null;
+      SW.prefs.set('dockTab', state.dockTab);
       notify();
     },
 
     openDock(tab = 'resources') {
       state.dockTab = tab;
+      SW.prefs.set('dockTab', tab);
       notify();
     },
 
     toggleRail() {
       state.railHidden = !state.railHidden;
+      // A filter is a question about the list, and a closed Rail is not showing the list. Leaving
+      // it set would bring it back on the next open as a filter nobody could see they had applied.
+      if (state.railHidden) state.railAppFilter = null;
+      SW.prefs.set('railHidden', state.railHidden);
+      notify();
+    },
+
+    // The Rail closing because you picked a Conversation, which is not the same act as closing it.
+    // It does NOT write the preference, and that is the whole point of having a second method:
+    // auto-collapse and the stored choice are one value, so a write here would take a Rail someone
+    // deliberately opened and record it as closed on their very next click — a preference they
+    // never set, overwriting the one they did. One value, one meaning: the pref is the hand-made
+    // choice, and only `toggleRail` above has a hand on it.
+    collapseRail() {
+      state.railHidden = true;
+      state.railAppFilter = null;
       notify();
     },
 
     // Called when a script turn has opensPanel. Sage asking you to pick a kind
     // of thing is a browse task, so it opens the catalogue scoped to that kind
     // rather than filtering a panel that may not contain the answer yet.
+    //
+    // It opens the dock and does not write the preference: Sage asked for the panel, not the
+    // person, and only the person's own choices are on file (#150).
     focusPanel(kind) {
       state.dockTab = 'resources';
       state.panelFilter = kind;

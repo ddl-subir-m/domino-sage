@@ -28,9 +28,69 @@ def _run(steps: list[dict]) -> list:
 
 
 def test_the_conversation_view_starts_where_the_workbench_already_is():
-    """Split is what Chat does today. A preference that seeded anything else would move the
-    furniture for everyone on first load, which is the one thing this ticket must not do."""
+    """Split is what Chat does today, and #52 seeded it deliberately: that ticket was about giving
+    preferences a home, so none of its fallbacks moved anyone's furniture on first load.
+
+    A fallback is not a promise never to change one. #150 changes two on purpose — the Rail now
+    starts collapsed and the dock stops appearing in Build — because Build fanned out to four side
+    columns and the two panels nobody had opened were 580px of them. The rule that survives both
+    tickets is narrower than "never move the furniture": a panel opens and closes when the person
+    opens and closes it, and the preference records only what they chose by hand."""
     assert _run([{"viewer": "u1", "op": "get", "name": "conversationView"}]) == ["split"]
+
+
+def test_the_rail_starts_collapsed_when_nothing_is_on_file():
+    """Build's four side columns took 55% of a 1732px screen before the preview got anything, and
+    the Rail was 260px of it that nobody had asked for. Collapsed is the fallback, so a person who
+    has never touched it gets the preview instead."""
+    assert _run([{"viewer": "u1", "op": "get", "name": "railHidden"}]) == [True]
+
+
+def test_a_rail_opened_by_hand_is_still_open_after_a_reload():
+    """The other half of the same rule. The fallback decides what someone who has chosen nothing
+    sees; once they have chosen, the choice is the answer — including the choice to overrule the
+    fallback."""
+    answers = _run([
+        {"viewer": "u1", "op": "set", "name": "railHidden", "value": False},
+        {"op": "reload"},
+        {"op": "get", "name": "railHidden"},
+    ])
+    assert answers[-1] is False
+
+
+def test_a_closed_dock_stays_closed_across_a_reload():
+    """`null` is a real answer for the dock — it is the closed one — so it has to be in `values`.
+    `get` validates against `values`, so an unlisted `null` would read back as the fallback, and a
+    dock the person closed would re-open on every load. Which is the bug this ticket is fixing, so
+    it must not come back through the preference that fixed it."""
+    answers = _run([
+        {"viewer": "u1", "op": "set", "name": "dockTab", "value": "resources"},
+        {"op": "set", "name": "dockTab", "value": None},
+        {"op": "reload"},
+        {"op": "get", "name": "dockTab"},
+    ])
+    assert answers[0] is True
+    assert answers[1] is True      # closing is a choice worth storing, not a failed write
+    assert answers[3] is None
+
+
+def test_only_a_hand_closed_rail_is_written_down():
+    """Auto-collapse and the stored preference are the same value, so `collapseRail` — the collapse
+    that follows picking a Conversation — must not write it. If it did, a person who deliberately
+    opened the Rail would lose that choice on their next click, without ever closing anything.
+    `toggleRail` is the hand on the control, so `toggleRail` is the one that writes."""
+    store = (_JS / "store.js").read_text()
+    assert "SW.prefs.set('railHidden'" in _method(store, "toggleRail")
+    assert "SW.prefs.set" not in _method(store, "collapseRail")
+    # `focusPanel` is Sage asking for a panel, not the person, so it stays a write-free open.
+    assert "SW.prefs.set" not in _method(store, "focusPanel")
+
+
+def _method(source: str, name: str) -> str:
+    """One method's body, from its `name(` to the dedented `}` that closes it. The claim is about
+    which method writes the preference, and grepping the whole file cannot tell them apart."""
+    start = source.index(f"\n    {name}(")
+    return source[start:source.index("\n    },", start)]
 
 
 def test_a_choice_is_still_there_after_the_page_is_loaded_again():

@@ -39,6 +39,24 @@ window.SW = window.SW || {};
     handoffArtifacts: { fallback: true, values: [true, false] },
     handoffTranscript: { fallback: false, values: [true, false] },
 
+    // The two side panels, and the only two fallbacks here that overrule what the Workbench used
+    // to do (#150). Build fanned out to four columns left to right — Rail, transcript, preview,
+    // dock — and 960px of a 1732px screen was gone before the preview got anything. Both of the
+    // panels paying for that were ones nobody had opened: the Rail was always open, and Build
+    // force-opened the dock on every entry and every conversation switch.
+    //
+    // So both start closed, and both of these record ONE thing: what the person chose by hand.
+    // Nothing the UI does to a panel on its own behalf may be written here — an auto-collapse that
+    // wrote would quietly overwrite a choice the person had just made (see `collapseRail` in
+    // store.js).
+    railHidden: { fallback: true, values: [true, false] },
+
+    // `null` is the closed dock, and it has to be listed: `get` refuses a value it does not
+    // recognise, so an unlisted `null` would read back as the fallback and a dock the person
+    // closed would re-open on the next load. That is the bug this ticket closes, and leaving
+    // `null` out is how it would come back through the preference that fixed it.
+    dockTab: { fallback: null, values: ['resources', 'activity', null] },
+
     // The first chip's one-time note (#137). A chip is Session context — this Conversation's
     // only — and the note that teaches it can be dismissed for good. True is the viewer's own
     // "don't show this again". There is no "seen" value on purpose: an undismissed note may

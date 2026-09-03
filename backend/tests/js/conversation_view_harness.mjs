@@ -363,7 +363,11 @@ function planCardText(block) {
 // which row the rail says you are looking at is decided before React is asked to draw anything.
 // Rows are reported as `className | words`, so "there is a selected row" and "it is the one that
 // says New conversation" are one assertion rather than two hopeful ones.
+// The Rail starts collapsed since #150, and a collapsed Rail draws two icon buttons instead of the
+// list. Every claim here is about a row, so the read opens it first — through `set` rather than
+// `toggleRail`, because this is the harness getting at the list and not a person choosing anything.
 function railRows(mode) {
+  SW.store.set({ railHidden: false });
   const rows = [];
   const walk = (node, row) => {
     if (node === null || node === undefined || node === false || node === true) return;

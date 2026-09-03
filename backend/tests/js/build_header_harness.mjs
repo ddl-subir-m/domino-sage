@@ -827,7 +827,17 @@ function nodeByClass(node, cls) {
 // The rail beside Build, read as rows rather than as a bag of every string on it: every claim about
 // the filter is about WHICH conversations survive it, and a flat word list cannot tell a row that is
 // gone from one that is merely further down.
+// The Rail starts collapsed since #150, and a collapsed Rail draws two icon buttons instead of the
+// list. Every claim in this file is about the list — the same rows in both modes, the app filter,
+// the row a pick lights — so each read opens it first. Through `set` rather than `toggleRail`,
+// because opening it here is the harness getting at the list, not a person choosing anything, and
+// only a person's choice belongs in the preference.
+function openRail() {
+  SW.store.set({ railHidden: false });
+}
+
 function railOf(mode) {
+  openRail();
   const tree = SW.ConversationRail({ mode: mode || 'build' });
   const nodes = flatten(tree);
   const chip = nodeByClass(tree, 'sw-rail-filter');
@@ -923,6 +933,7 @@ function headerScopeDoors(thread) {
 // says which control this is — and dropping a filter must leave the previewed app alone, which is
 // only a claim if something actually presses it.
 function clearFilter(mode) {
+  openRail();
   const node = flatten(SW.ConversationRail({ mode }))
     .find((n) => n.onClick && n.label === 'Show all conversations');
   if (!node) throw new Error('the rail filter offered no way out');
@@ -933,6 +944,7 @@ function clearFilter(mode) {
 // says, and press it. The step knows no store key — a chip that stopped writing the filter would
 // leave the rail unchanged rather than be asserted around.
 function clickTag(mode, appName) {
+  openRail();
   const node = flatten(SW.ConversationRail({ mode }))
     .find((n) => n.className === 'sw-conv-tag' && (n.texts || []).includes(appName));
   if (!node) throw new Error(`no tag ${appName} in the rail`);
@@ -1448,6 +1460,7 @@ for (const step of steps) {
     // A tag clicked before the read, for the half of the one-way rule that is about the chip: it
     // narrows the rail and must leave the previewed app exactly where it was.
     if (step.chip) clickTag(step.rail, step.chip);
+    openRail();
     const nodes = flatten(SW.ConversationRail({ mode: step.rail }));
     report.push({
       step: `rail ${step.rail}`,

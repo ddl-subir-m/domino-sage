@@ -146,7 +146,9 @@ def test_send_is_never_disabled_by_the_warning():
     """
     assert "disabled: !text.trim() || disabled," in UI
     # Two terms, an empty box and a wedged workspace, and the whole control between them.
-    button = UI[UI.index("title: 'Send · ⌘⏎'"):UI.index("'aria-label': 'Send message',")]
+    # The label is written in Mac notation and translated to the reader's own keys on the way out
+    # (#150), so the anchor is the call rather than the finished string.
+    button = UI[UI.index("title: `Send · ${SW.util.shortcut('⌘⏎')}`"):UI.index("'aria-label': 'Send message',")]
     assert button.count("disabled") == 3  # the tooltip's guard, the prop, and the prop's value
     assert "unusable" not in button
     assert "MentionGuard" not in button

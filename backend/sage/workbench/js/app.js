@@ -34,6 +34,12 @@ window.SW = window.SW || {};
         } else if (meta && e.key === '/') {
           e.preventDefault();
           SW.store.toggleDock('resources');
+        } else if (meta && e.key === '\\') {
+          // The Rail's counterpart to ⌘/, and the reason both keys were picked: `/` leans right
+          // and opens the panel on the right, `\` leans left and opens the one on the left. Now
+          // that the Rail starts collapsed, it needs a door that is not the fold button (#150).
+          e.preventDefault();
+          SW.store.toggleRail();
         } else if (meta && e.shiftKey && e.key.toLowerCase() === 'n') {
           e.preventDefault();
           SW.store.newThread().then((thread) => SW.router.go(`#/chat/${thread.id}`));

@@ -1274,7 +1274,6 @@ window.SW = window.SW || {};
     useEffect(() => {
       if (opening) return;
       SW.store.loadBuild();
-      if (!SW.store.get().dockTab) SW.store.set({ dockTab: 'resources' });
     }, [openId, opening]);
 
     useEffect(() => {

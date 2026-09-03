@@ -816,7 +816,7 @@ window.SW = window.SW || {};
           h(
             Tooltip,
             {
-              title: 'Send · ⌘⏎',
+              title: `Send · ${SW.util.shortcut('⌘⏎')}`,
               // A hint for a button that cannot be pressed is noise, and it is
               // also how the hint got stuck: sending empties the box under the
               // pointer, so the mouseleave that would close it never comes.

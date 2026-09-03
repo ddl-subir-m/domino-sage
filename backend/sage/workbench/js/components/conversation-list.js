@@ -11,7 +11,7 @@ window.SW = window.SW || {};
 // one Conversation. Which Built App you are looking at is the Build header's job now. `mode` is
 // only what decides where a row goes — never what a row says.
 (function () {
-  const { createElement: h, useState, Fragment } = React;
+  const { createElement: h, useState, useEffect, Fragment } = React;
   const { Button, Tooltip, Input, Dropdown, Modal } = antd;
   const {
     PlusOutlined, SearchOutlined, MoreOutlined, PushpinOutlined,
@@ -38,6 +38,15 @@ window.SW = window.SW || {};
     // The resolve below this still runs, and still answers for a Built App started inside Build
     // that no handoff ever named. It is the correction now, not the common path.
     if (mode === 'build' && thread.boundAppId) SW.store.selectApp(thread.boundAppId);
+    // The Rail asks one question — which Conversation are you looking at — and picking a row is
+    // the answer. So it gets out of the way (#150): in Build the transcript, the preview and the
+    // Resource Browser are all competing for the same screen, and 260px of a list you have
+    // finished reading is the cheapest of the four to give back.
+    //
+    // `collapseRail` rather than `toggleRail`, because this is not the person closing the Rail and
+    // must not be recorded as if it were. Someone who opened it by hand still has it open on their
+    // next load.
+    SW.store.collapseRail();
     return SW.router.go(SW.conversationRoute(thread, mode));
   };
 
@@ -185,17 +194,70 @@ window.SW = window.SW || {};
     );
   }
 
+  // Starting a Conversation, from either of the Rail's two heads. One function because there is one
+  // act with two doors — the expanded head's button and the collapsed head's icon (#150) — and the
+  // clear-then-navigate order below is load-bearing enough that a second copy of it would be a
+  // second chance to get it wrong.
+  //
+  // Both halves are needed, and neither is enough:
+  //
+  // `newConversation` clears the open Conversation and puts the pending row in the Rail. Alone, it
+  // leaves the route still naming the Conversation it just closed, so Build reads `openId === null`
+  // against a `conversationId` that is still set, decides it is mid-open, and holds the transcript
+  // on the work you were leaving.
+  //
+  // Navigation alone is no better: a Conversation can start without the route ever naming it —
+  // attaching a Resource opens one, and so does typing in Build — so the hash may already be the
+  // one we are going to, and going there would change nothing. That is exactly how this button
+  // looked dead once before.
+  //
+  // In Build the app in the preview comes with you: starting a new line of work on the thing you
+  // are looking at is the common case, and re-picking it would be busywork.
+  function startConversation(mode) {
+    const { activeApp } = SW.store.get();
+    SW.store.newConversation();
+    SW.router.go(mode === 'build' && activeApp ? `#/build?app=${activeApp.id}` : `#/${mode}`);
+  }
+
   SW.ConversationRail = function ConversationRail({ mode }) {
     const { threads, thread, railHidden, railAppFilter, pendingConversation, apps } = SW.store.get();
     const [query, setQuery] = useState('');
+
+    // Collapsing forgets the search. The branch below returns early rather than unmounting, so
+    // the box's text outlives the panel it was typed into and comes back on the next open as a
+    // list with conversations missing from it and nothing on screen saying why. The Build
+    // header's app picker makes this exact argument about closing its dropdown.
+    useEffect(() => {
+      if (railHidden) setQuery('');
+    }, [railHidden]);
 
     if (railHidden) {
       return h(
         'div',
         { className: 'sw-rail is-hidden' },
+        // The Rail's head holds the only "New conversation" button in the Workbench, and the Rail
+        // now starts collapsed — so without this one, Build opens with no visible door to a new
+        // Conversation at all (#150). Icon-only, so it carries a tooltip.
+        //
+        // It sits above the unfold button because that is the order the expanded head reads in,
+        // and because starting a Conversation is the reason you were reaching for the Rail more
+        // often than reading the list is.
         h(
           Tooltip,
-          { title: 'Show conversations', placement: 'right' },
+          { title: 'New conversation', placement: 'right' },
+          h(
+            'button',
+            {
+              className: 'sw-icon-btn is-dark-text',
+              'aria-label': 'New conversation',
+              onClick: () => startConversation(mode),
+            },
+            h(PlusOutlined, null)
+          )
+        ),
+        h(
+          Tooltip,
+          { title: `Show conversations · ${SW.util.shortcut('⌘\\')}`, placement: 'right' },
           h(
             'button',
             {
@@ -250,21 +312,13 @@ window.SW = window.SW || {};
             type: 'primary',
             icon: h(PlusOutlined, null),
             block: true,
-            // A new conversation in Build keeps the app in the preview: you are
-            // starting a new line of work on the thing you are looking at.
-            //
-            // Clear before navigating. A conversation can start without the route
-            // ever naming it (attaching a Resource opens one, and so does typing
-            // in Build), so the hash may already be the one we are going to.
-            // Navigation alone would then change nothing, and the button would
-            // look dead — which is exactly how it looked. `newConversation` is
-            // that clear plus the rail row that shows the press landed.
+            // See `startConversation` above for why this both clears and navigates. The Rail
+            // closes after it, because starting a Conversation is picking one — the same reason
+            // it closes when you click a row (#150). The collapsed head's icon needs no such
+            // line: it is already closed.
             onClick: () => {
-              const { activeApp } = SW.store.get();
-              SW.store.newConversation();
-              SW.router.go(
-                mode === 'build' && activeApp ? `#/build?app=${activeApp.id}` : `#/${mode}`
-              );
+              startConversation(mode);
+              SW.store.collapseRail();
             },
           },
           'New conversation'

@@ -46,7 +46,7 @@
 
   /* Layout */
   --nav-h: 44px;  --subnav-h: 48px;  --planbar-h: 40px;
-  --rail-w: 260px;  --builder-chat-w: 380px;
+  --rail-w: 260px;  --rail-collapsed: 44px;  --builder-chat-w: 380px;
   --dock-collapsed: 44px;  --dock-expanded: 320px;
 
   /* Spacing scale */

@@ -187,8 +187,8 @@ function rowFromMember(item) {
     reasoning_efforts: item.reasoning_efforts || [],
     pins: item.pins || [],
     // Every Built App that binds this Resource, with its Scope (#133). Server-computed from the
-    // apps' own manifests, so the rail subtitle and the drawer both read one answer — the same one
-    // a removal refusal reads.
+    // apps' own manifests, so the Resource Browser subtitle and the drawer both read one answer —
+    // the same one a removal refusal reads.
     usedBy: item.usedBy || [],
     membershipParent: true,
     writable: item.writable,
@@ -287,7 +287,7 @@ SW.api = {
     const { resourceIndex, catalogueParents } = SW.store.get();
     // The index holds the project's working set. A catalogue parent is not in it yet and the
     // drawer opens on one — without this fallback it would show the bare Domino id as the name,
-    // and `Use in this chat` would write that id into the project rail as the resource's name.
+    // and `Use in this chat` would write that id into the Resource Browser as the resource's name.
     const known = resourceIndex[id] || (catalogueParents || []).find((r) => r.id === id);
     return Promise.resolve(known || { id, name: rawFromPrefix(id), kind: kindFromPrefix(id) });
   },
@@ -432,7 +432,8 @@ SW.api = {
       datasetRelPath: row.datasetRelPath || resource.datasetRelPath,
       scope: row.scope || resource.scope,
       // Set only when THIS post is what made the resource a project member. The store refreshes
-      // the rail off it, so dropping it here would leave the panel denying a join that happened.
+      // the Resource Browser off it, so dropping it here would leave the panel denying a join that
+      // happened.
       joinedProject: Boolean(row.joinedProject),
     };
   },
@@ -478,14 +479,14 @@ SW.api = {
 
   handoff: (payload) => post('/handoff', payload),
 
-  // The Built Apps in this Project — the Build rail's list, as /threads is the Chat rail's. A
+  // The Built Apps in this Project — the Build header's list, as /threads is the Rail's. A
   // directory scan on the server: there is no index file to keep in step (ADR-0008).
   apps: () => request('/apps').then((r) => r.items || []),
   // Point Build at another app. 409 while a build is streaming; the caller shows what it says.
   selectApp: (id) => post(`/apps/${encodeURIComponent(id)}/select`, {}),
   // Only the name is writable. The id names the app's directory and never changes.
   patchApp: (id, body) => patch(`/apps/${encodeURIComponent(id)}`, body),
-  // New app in the Build rail: minted, seeded and selected server-side, with no Thread and no plan
+  // New app in the Build header: minted, seeded and selected server-side, with no Thread and no plan
   // behind it. 409 while a build is streaming, because a turn holds one working tree.
   createApp: () => post('/apps', {}),
   // Take a Built App out of the Project. `deleteDominoApp` is the answer to the offer a published
@@ -540,7 +541,7 @@ SW.api = {
   // The app-scoped ADD, mirror of the removal below and the other half of the pair ADR-0011 hung
   // the door for. The id is BARE (`al_1`), never the Project row's prefixed one (`llm_alias:al_1`):
   // the route resolves it against the live listing, so a prefixed id finds no Alias and answers 404
-  // — and the rail, already asked to refresh, redraws unchanged (#127).
+  // — and the Resource Browser, already asked to refresh, redraws unchanged (#127).
   //
   // Two fields and no more. A Data Source used to post a Scope through here as well, when the Scope
   // was the cascade position the creator was standing on (#129); since #142 that is a second act on

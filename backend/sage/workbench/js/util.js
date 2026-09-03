@@ -77,6 +77,29 @@ window.SW = window.SW || {};
       return `Nothing matches "${String(query || '').trim()}".`;
     },
 
+    // A shortcut label in the keys the reader's own keyboard has. Every handler in app.js already
+    // takes `metaKey || ctrlKey`, so the shortcuts have always worked on Windows and Linux — only
+    // the labels were Mac-only, which told a Windows reader that ⌘K was a key they do not have
+    // and therefore that there was no shortcut (#150).
+    //
+    // Labels are written once, in Mac notation, and translated on the way to the screen: one
+    // spelling in the source, so the two platforms cannot drift apart the way two hardcoded
+    // strings would. `navigator.platform` is deprecated and still the only thing that answers
+    // this in every browser Domino is opened in; a missing one reads as not-Mac, which is the
+    // more explicit label of the two and safe to show a Mac user.
+    //
+    // ⇧ has no caller today, and the branch stays: the one ⇧ label in the Workbench is ⌘⇧N, held
+    // back in Mac notation until somebody checks it on live Windows Chrome, which owns
+    // Ctrl+Shift+N for a new incognito window. This is the half of that fix that is already ready.
+    shortcut(label) {
+      const platform = (window.navigator && window.navigator.platform) || '';
+      if (/Mac|iPhone|iPad/.test(platform)) return label;
+      return String(label)
+        .replace(/⌘/g, 'Ctrl+')
+        .replace(/⇧/g, 'Shift+')
+        .replace(/⏎/g, 'Enter');
+    },
+
     // Resolve a host-relative Domino path against the MAIN Domino host.
     //
     // The server hands these out with no host on purpose: DOMINO_API_HOST is the internal cluster

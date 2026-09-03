@@ -114,7 +114,8 @@ belong to the Built App's own surface
 Data Source's databases, schemas and tables, and a Dataset's files, for looking — that is
 orientation, which is this panel's job.
 _Kind_: name
-_Avoid_: resource panel, data panel, sidebar, working set (that is the list this panel draws)
+_Avoid_: resource panel, data panel, sidebar, rail (that is the panel on the LEFT, which lists
+Conversations), working set (that is the list this panel draws)
 
 **Binding**:
 A recorded link between one Built App and a Resource it uses, and the app's permission to reach
@@ -309,6 +310,15 @@ _Kind_: name
 _Avoid_: Thread (what this used to be called; identifiers and stored paths still say `thread`
 and are not being renamed), session (OpenCode already uses session for the harness object),
 chat (that is the mode)
+
+**Rail**:
+The panel down the left of Chat and Build that lists this Project's [[Conversation]]s. One rail,
+both modes: which Conversation you are looking at is the same question in each, so the same panel
+answers it. It is collapsed until a person opens it, and it closes again when they pick a row —
+Build already fans out to a transcript, a preview and the [[Resource Browser]], and a panel that
+answers a question you have finished asking is 260px the preview is not getting.
+_Kind_: name
+_Avoid_: sidebar, conversation list, thread list, left panel
 
 **Turn**:
 One request and the work it causes, from the prompt to the answer. A Chat turn produces Artifacts

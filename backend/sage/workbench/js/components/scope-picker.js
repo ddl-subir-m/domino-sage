@@ -154,7 +154,7 @@ window.SW = window.SW || {};
       },
       h(
         Tooltip,
-        { title: open ? '' : 'Switch project · ⌘P', mouseEnterDelay: 0.6 },
+        { title: open ? '' : `Switch project · ${SW.util.shortcut('⌘P')}`, mouseEnterDelay: 0.6 },
         h(
           'button',
           {

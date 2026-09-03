@@ -55,7 +55,9 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['store.js', 'components/shell.js']) {
+// `util.js` before the shell, because a tooltip's shortcut label is written in Mac notation and
+// translated to the reader's own keys on the way out (SW.util.shortcut).
+for (const f of ['util.js', 'store.js', 'components/shell.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

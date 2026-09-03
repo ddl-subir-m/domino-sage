@@ -166,7 +166,7 @@ window.SW = window.SW || {};
         ),
       h(
         Tooltip,
-        { title: 'Search · ⌘K' },
+        { title: `Search · ${SW.util.shortcut('⌘K')}` },
         h(
           'button',
           {
@@ -274,7 +274,7 @@ window.SW = window.SW || {};
       h('span', { className: 'sw-subnav-divider' }),
       h(
         Tooltip,
-        { title: dockTab ? 'Hide the side panel' : 'Show resources · ⌘/' },
+        { title: dockTab ? 'Hide the side panel' : `Show resources · ${SW.util.shortcut('⌘/')}` },
         h(
           'button',
           {
@@ -325,7 +325,9 @@ window.SW = window.SW || {};
             {
               key: tab.id,
               className: `sw-dock-tab${dockTab === tab.id ? ' is-active' : ''}`,
-              onClick: () => SW.store.set({ dockTab: tab.id }),
+              // Through the store's writers rather than a raw `set`, so which tab you were last
+              // reading survives a reload the same way opening the dock at all does (#150).
+              onClick: () => SW.store.openDock(tab.id),
             },
             SW.brand.text(tab.label)
           )
@@ -339,7 +341,10 @@ window.SW = window.SW || {};
             {
               className: 'sw-icon-btn is-dark-text',
               'aria-label': 'Hide panel',
-              onClick: () => SW.store.set({ dockTab: null, panelFilter: null }),
+              // `toggleDock` on the open tab closes it, nulls `panelFilter` for us, and records
+              // the close. A raw `set` here meant the dock persisted when you closed it with ⌘/
+              // and forgot when you closed it with its own button (#150).
+              onClick: () => SW.store.toggleDock(dockTab),
             },
             h(DoubleRightOutlined, null)
           )
@@ -507,14 +512,27 @@ window.SW = window.SW || {};
       h(
         'dl',
         { className: 'sw-drawer-meta' },
-        h('dt', null, h('kbd', null, '⌘K')),
+        h('dt', null, h('kbd', null, SW.util.shortcut('⌘K'))),
         h('dd', null, 'Search everything'),
-        h('dt', null, h('kbd', null, '⌘P')),
+        h('dt', null, h('kbd', null, SW.util.shortcut('⌘P'))),
         h('dd', null, 'Switch project'),
-        h('dt', null, h('kbd', null, '⌘/')),
+        // The two panels, and the mnemonic they are picked for: `/` leans right and opens the
+        // panel on the right, `\` leans left and opens the one on the left. Chrome claims
+        // neither, on either platform.
+        h('dt', null, h('kbd', null, SW.util.shortcut('⌘/'))),
         h('dd', null, 'Toggle the side panel'),
-        h('dt', null, h('kbd', null, '⌘⏎')),
+        h('dt', null, h('kbd', null, SW.util.shortcut('⌘\\'))),
+        // "Toggle your conversations", not "the Rail". ADR-0026 says a name owes a key the moment
+        // a marked position says it, and this diff is what makes `Rail` a name — but there is no
+        // `rail` key in the pack, and an unmarked string is one the lint cannot catch. The row
+        // above dodges its own noun the same way: "the side panel", never "the Dock".
+        h('dd', null, 'Toggle your conversations'),
+        h('dt', null, h('kbd', null, SW.util.shortcut('⌘⏎'))),
         h('dd', null, 'Send a message'),
+        // Left in Mac notation on purpose. Chrome owns Ctrl+Shift+N for a new incognito window,
+        // so translating this one would print a Windows label for a shortcut that may never
+        // reach the page. Nobody has checked on live Windows Chrome yet, and a label is a
+        // promise — so this row stays honest about the platform it was verified on.
         h('dt', null, h('kbd', null, '⌘⇧N')),
         h('dd', null, 'New conversation'),
         h('dt', null, h('kbd', null, 'esc')),
