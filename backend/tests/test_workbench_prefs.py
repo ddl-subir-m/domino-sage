@@ -203,3 +203,43 @@ def test_the_account_menu_is_where_the_preferences_live():
     assert "'split'" in drawer and "'unified'" in drawer
     assert "settingsOpen" in (_JS / "store.js").read_text()
     assert '"./js/prefs.js"' in (_WB / "index.html").read_text()
+
+
+# ---- a record nobody can key -------------------------------------------------------------
+
+def test_a_choice_made_before_the_viewer_is_known_is_not_filed_under_a_stranger():
+    """`/api/me` answers `me` when the container has no identity to report, so `me` is a real id and
+    that record is a real person's on a laptop run. An ABSENT viewer is a different state: the boot
+    read has not landed, or it failed. Falling back to the shared key there put this session's
+    choices in a record belonging to nobody who was looking.
+
+    The window is not theoretical. ⌘/ and ⌘\\ are live while the boot spinner is up, and both write
+    through here — so a press in that second was taken, filed under `me`, and then overwritten by
+    the real viewer's record when `init` read it. Refused instead, which reads to the caller as a
+    browser that would not store the choice, and is true enough: there is nowhere to put it yet."""
+    assert _run([
+        {"viewer": None, "op": "set", "name": "railHidden", "value": False},
+        {"viewer": None, "op": "dump", "key": "sw.prefs"},
+    ]) == [False, None]
+
+
+def test_a_viewer_who_is_not_known_yet_reads_nobodys_saved_panels():
+    """The other direction, and the one that decides what paints. A record already on this origin
+    under the shared key is not this person's to open — on a shared browser profile it is somebody
+    else's outright. So the fallbacks answer, which is what a first visit gets."""
+    assert _run([
+        {"viewer": "someone", "op": "set", "name": "railHidden", "value": False},
+        {"viewer": "someone", "op": "set", "name": "dockTab", "value": "activity"},
+        {"viewer": None, "op": "get", "name": "railHidden"},
+        {"viewer": None, "op": "get", "name": "dockTab"},
+    ]) == [True, True, True, None]
+
+
+def test_the_laptop_runs_own_record_is_still_read_and_written():
+    """The state this must not be confused with. A container with no identity to report answers
+    `me`, and that answer is an id like any other — refusing it would take preferences away from
+    every local run."""
+    assert _run([
+        {"viewer": "me", "op": "set", "name": "railHidden", "value": False},
+        {"viewer": "me", "op": "get", "name": "railHidden"},
+    ]) == [True, False]

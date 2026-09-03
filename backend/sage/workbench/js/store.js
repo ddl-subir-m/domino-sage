@@ -2018,12 +2018,10 @@ window.SW = window.SW || {};
       const [me, projects, charts, starters, notifications, brand, health, project] = await Promise.all([
         // Null is what `state.me` already holds before this answers, and the greeting is written for
         // it — it drops the first name. It is not free, though, and the cost is not the greeting:
-        // `prefs` keys the viewer's whole preference record on `me.id` and falls back to the
-        // literal `me` that a container with no identity to report answers with. That is the
-        // right key for a laptop run and the WRONG one for a blipped read on a deployment, where it
-        // would read somebody else's panel choices and then write this session's over them. So the
-        // pref reads below are gated on a real viewer. An unreadable viewer costs a name and a
-        // remembered panel, not a session.
+        // `prefs` keys the viewer's whole preference record on `me.id`, so with no id there is no
+        // record of theirs to open and none to write. `prefs` refuses both rather than falling back
+        // to a shared key, which is where this session's panel choices used to land. An unreadable
+        // viewer costs a name and a remembered panel, not a session.
         SW.api.me().catch(() => null),
         // Empty rather than `state.projects`, because empty is what "we could not read the listing"
         // honestly looks like, and the chip must not offer rows to switch to that we did not read.
@@ -2049,14 +2047,11 @@ window.SW = window.SW || {};
       // first moment there is a record to read — and it has to happen before the Shell paints, or
       // the Rail and the dock would open on the fallbacks and then shut again in front of someone.
       //
-      // Only when the viewer read answered, for the reason given above it. With no viewer there is
-      // no record of THIS person's to open, and the fallbacks the two keys carry are the same values
-      // `state` already holds — so a session that does not know who is looking gets the panels a
-      // first visit gets, and leaves no mark in a record it cannot key.
-      if (me) {
-        state.railHidden = SW.prefs.get('railHidden');
-        state.dockTab = SW.prefs.get('dockTab');
-      }
+      // Safe with no viewer, and not by luck: `prefs` refuses to read or write a record it cannot
+      // key, and hands back the fallback a first visit gets. The refusal lives there rather than
+      // here because the writers need it too — ⌘/ and ⌘\ are live while the boot spinner is up.
+      state.railHidden = SW.prefs.get('railHidden');
+      state.dockTab = SW.prefs.get('dockTab');
       if (brand) {
         state.brand = brand;
         applyBrandChrome(brand);

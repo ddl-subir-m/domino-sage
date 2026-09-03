@@ -435,6 +435,10 @@ SW.store.subscribe(() => {
 const report = [];
 for (const step of steps) {
   if (step.pref) {
+    // A viewer, because a preference is keyed by one and `prefs` refuses to write a record it
+    // cannot key. Every control that sets this one lives behind a Workbench that has already booted,
+    // so a harness with no viewer would be exercising a moment nobody can reach.
+    SW.store.set({ me: { id: 'u1', name: 'Dana Reed' } });
     SW.prefs.set('conversationView', step.pref);
     report.push({ step: `pref ${step.pref}`, view: SW.prefs.get('conversationView') });
   } else if (step.open) {

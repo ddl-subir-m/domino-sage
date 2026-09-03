@@ -118,7 +118,10 @@ const byLabel = (tree, label) =>
 
 // One press per door, each from the same starting state, so the three answers are comparable.
 function press(door) {
-  SW.store.set({ dockTab, panelFilter: 'dataset' });
+  // A viewer, because a preference is keyed by one and `prefs` refuses to write a record it cannot
+  // key. By the time anybody can click either of these controls the boot read has answered, so a
+  // harness with no viewer would be testing a moment that does not exist.
+  SW.store.set({ me: { id: 'u1', name: 'Dana Reed' }, dockTab, panelFilter: 'dataset' });
   wrote.length = 0;
 
   let caption = null;

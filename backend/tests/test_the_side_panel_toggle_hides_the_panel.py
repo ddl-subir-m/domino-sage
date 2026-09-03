@@ -74,7 +74,7 @@ def test_hiding_the_panel_drops_the_filter_and_is_remembered():
         pressed = _press("activity")[door]
 
         assert pressed["panelFilter"] is None, door
-        assert pressed["wrote"] == [{"me": {"dockTab": None}}], door
+        assert pressed["wrote"] == [{"u1": {"dockTab": None}}], door  # keyed by the viewer
 
 
 def test_every_door_still_opens_a_closed_panel_on_resources():

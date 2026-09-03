@@ -64,11 +64,21 @@ window.SW = window.SW || {};
     chipScopeHintDismissed: { fallback: false, values: [true, false] },
   };
 
+  // Who the record belongs to, or null when nobody knows yet.
+  //
   // `/api/me` answers "me" when the container has no identity to report, so the key matches what
-  // that said rather than inventing a second name for the same person.
+  // that said rather than inventing a second name for the same person. That is a REAL answer,
+  // arriving as an id like any other. An ABSENT `me` is a different state: the boot read has not
+  // landed, or it failed. Both refuse below, in both directions, because on a deployment the
+  // no-identity record belongs to nobody who is looking — reading it opens somebody else's panels,
+  // and writing it puts this session's choices where the next reader of that record will find them.
+  //
+  // The window is real, not theoretical. ⌘/ and ⌘\ are live while the boot spinner is up, and both
+  // write through here, so a press in that second used to land in the no-identity record and then
+  // be overwritten by the real one — a choice taken, misfiled, and lost.
   function viewer() {
     const me = SW.store && SW.store.get().me;
-    return String((me && me.id) || 'me');
+    return me && me.id ? String(me.id) : null;
   }
 
   // An array answers `typeof === 'object'` but drops named properties on the way back through
@@ -91,7 +101,11 @@ window.SW = window.SW || {};
   SW.prefs = {
     get(name) {
       const spec = PREFS[name];
-      const stored = (asRecord(readAll()[viewer()]) || {})[name];
+      const who = viewer();
+      // No viewer, no record of theirs to open. The fallback is what a first visit gets, and that
+      // is the honest answer for a session that does not know who is looking.
+      if (!who) return spec.fallback;
+      const stored = (asRecord(readAll()[who]) || {})[name];
       return spec.values.includes(stored) ? stored : spec.fallback;
     },
 
@@ -102,8 +116,11 @@ window.SW = window.SW || {};
     set(name, value) {
       const spec = PREFS[name];
       if (!spec.values.includes(value)) return false;
-      const all = readAll();
       const who = viewer();
+      // Same refusal as `get`, and it reads as "this browser would not store the choice" to any
+      // caller that reports the result — which is true enough: there is nowhere to put it yet.
+      if (!who) return false;
+      const all = readAll();
       all[who] = { ...(asRecord(all[who]) || {}), [name]: value };
       try {
         window.localStorage.setItem(KEY, JSON.stringify(all));
