@@ -2222,9 +2222,16 @@ window.SW = window.SW || {};
 
     toggleRail() {
       state.railHidden = !state.railHidden;
-      // A filter is a question about the list, and a closed Rail is not showing the list. Leaving
-      // it set would bring it back on the next open as a filter nobody could see they had applied.
-      if (state.railHidden) state.railAppFilter = null;
+      // A filter is a question about the list, and it is dropped whichever way this goes.
+      //
+      // Closing: a closed Rail is not showing the list, so leaving it set would bring it back on
+      // the next open as a filter nobody could see they had applied.
+      //
+      // Opening: the same unexplained narrowing arrives by the other door, because the filter can
+      // be set WHILE the Rail is hidden — Build's header writes it on every app pick, and the Rail
+      // now starts hidden, so that is the ordinary case rather than a corner. Clearing only on
+      // close was the same rule stated half way.
+      state.railAppFilter = null;
       SW.prefs.set('railHidden', state.railHidden);
       notify();
     },
@@ -3229,6 +3236,15 @@ window.SW = window.SW || {};
     newConversation() {
       store.clearConversation();
       state.pendingConversation = true;
+      // A new Conversation has touched no app, and the Rail's app filter hides every row that has
+      // not touched the app it names — the pending row included, which is why that row is drawn
+      // only when no filter is set. So a filter left standing hides the Conversation somebody just
+      // started, and the Rail says no conversation has changed that app yet.
+      //
+      // Here rather than beside a caller, because all three doors that start one mean the same
+      // thing — the Rail's two heads and the command palette — and only one of them was clearing
+      // it, through the `collapseRail` that happens to follow it.
+      state.railAppFilter = null;
       notify();
     },
 

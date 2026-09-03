@@ -313,20 +313,27 @@ def test_the_pick_writes_the_filter_and_no_effect_watches_the_selected_app():
         "SW.store.set({ railAppFilter: app.id });"
     ]
     # And the store stays out of it, `selectApp` above all: that is what the poll and the route both
-    # call, so a write in there is the same effect wearing a different hat. Four lines may name the
-    # filter — where it is declared, where leaving the Project drops it, and the two ways the Rail
-    # closes (#150). A filter is a question about the list, and a closed Rail is not showing the
-    # list, so it goes with the panel rather than coming back on the next open as a filter nobody
-    # can see they applied. None of the four is keyed on the selected app, which is the claim.
-    # Comments stripped, so the claim is about the code rather than how a sentence beside it reads.
+    # call, so a write in there is the same effect wearing a different hat. Five lines may name the
+    # filter, and every one of them CLEARS it — none is keyed on the selected app, which is the
+    # claim. Comments stripped, so the claim is about the code rather than how a sentence beside it
+    # reads.
+    #
+    # The five, and why each drops it. A filter is a question about the list, and it goes wherever
+    # the list it asks about stops being the one on screen: leaving the Project, and both ways the
+    # Rail closes (#150). Two were added once the Rail began starting hidden. The Rail OPENING,
+    # because Build's header can set the filter while nothing is showing, so the same filter nobody
+    # can see they applied arrives by that door instead. And starting a Conversation, because a new
+    # one has touched no app, so a standing filter hides the row for the Conversation somebody just
+    # pressed for — and the Rail then says nothing has changed that app yet.
     store = (_WORKBENCH / "js" / "store.js").read_text()
     assert [
         ln.split("//")[0].strip() for ln in store.splitlines() if "railAppFilter" in ln
     ] == [
         "railAppFilter: null,",
-        "state.railAppFilter = null;",
-        "if (state.railHidden) state.railAppFilter = null;",   # toggleRail
-        "state.railAppFilter = null;",                          # collapseRail
+        "state.railAppFilter = null;",   # setScope
+        "state.railAppFilter = null;",   # toggleRail, either way
+        "state.railAppFilter = null;",   # collapseRail
+        "state.railAppFilter = null;",   # newConversation
     ]
 
 
