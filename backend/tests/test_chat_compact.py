@@ -236,7 +236,10 @@ def test_the_compaction_threshold_still_weighs_the_real_alias():
     trading a silent failure for a worse one.
     """
     assert chat_compact.context_limit("domino-gcp/claude-sonnet-5") == chat_compact.DEFAULT_CONTEXT
-    assert chat_compact.context_limit(chat_compact.COMPACT_FALLBACK) == 200_000
+    # Asserted as a relationship, not a number: the windows here are measured off the live gateway
+    # and will move. What must stay true is that the fallback's window is the LARGER one, which is
+    # precisely why letting it stand in for an unlisted alias would raise the threshold.
+    assert chat_compact.context_limit(chat_compact.COMPACT_FALLBACK) > chat_compact.DEFAULT_CONTEXT
     # A conversation on an unlisted alias compacts on the conservative default, not on 200k.
     over = int(chat_compact.DEFAULT_CONTEXT * chat_compact.TOKEN_RATIO) + 1
     msgs = [_asst(tokens={"input": over, "output": 0})]

@@ -148,9 +148,26 @@ every accessible one, so `chat_compact.summarize_model_id` falls back to a liste
 that case; `should_compact` keeps weighing the real alias, since substituting a 200k default there
 would let a 32k session sail past its own window.
 
-Its `limit.context` is the conservative 128k default, not a measurement. `/api/aliases` reports
-`inference_params: {}` for this alias — the gateway states no window, so there is nothing to read
-and we do not invent one. Guessing high is the expensive mistake, since claiming more room than the
-model has overflows the prompt mid-turn, while guessing low only compacts a conversation earlier
-than it had to. `chat_compact.CONTEXT_LIMITS` mirrors the same number, and a test compares the two
-maps as sets so neither can drift.
+Its `limit.context` is 1048576 — measured, not advertised. `/api/aliases` reports
+`inference_params: {}` for every alias on this gateway, so there is no window to read anywhere in
+the control plane. The number comes from the gateway's own refusal: send a prompt over the limit and
+the error names it ("The input token count exceeds the maximum number of tokens allowed 1048576",
+and for the Claude aliases "prompt is too long: 1050024 tokens > 1000000 maximum"). An over-limit
+request is rejected before it bills, so the measurement is free to repeat — which matters, because
+these are the gateway's configured ceilings and can be changed under us.
+
+The same pass found every pre-existing entry under-claiming by 2–8x, so they were corrected too:
+`sonnet` and `gpt-5.4` were both recorded as 200000 against measured 1000000 and 922000, and
+`bedrock-qwen3-coder` as 128000 against 262144. Under-claiming is not the safe direction it appears
+to be. This map decides when a Chat conversation is summarised, so a window smaller than the truth
+discards context the model could still hold, and pays for a summarize call to do it. Compacting
+earlier than the window is a cost policy; it belongs in `TOKEN_RATIO`, not in a field that reads as
+the model's limit. `chat_compact.CONTEXT_LIMITS` mirrors these values and a test compares the two
+maps as sets, so neither can drift.
+
+Three aliases the gateway offers are deliberately absent. `opus` and `etan-opus-4.6` were added once
+measured (both back onto `claude-opus-4-6`, both 1000000). `local-domino-llm` and `haiku` keep their
+documented windows because neither could be asked — the sovereign endpoint answers 502 to
+everything, `haiku` is not in this gateway's `/v1/models`. And `domino-gcp/claude-sonnet-5` stays
+out entirely: it 404s upstream from GCP, so any number would be invention.
+`chat_compact.summarize_model_id` is what keeps that safe.

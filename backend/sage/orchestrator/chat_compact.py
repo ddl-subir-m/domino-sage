@@ -29,23 +29,42 @@ TOKEN_RATIO = 0.70
 # in that session (assistant-only lists, as in FakeOpenCode, count the same way).
 TURN_FALLBACK = 12
 
-# Matches opencode.json `provider.sage-gateway.models.*.limit.context`. Unknown aliases get the
-# conservative default so we compact before a 32k window overflows, not after a 200k one.
+# Matches opencode.json `provider.sage-gateway.models.*.limit.context`, and a test compares the two
+# as sets. Unknown aliases get the conservative default so we compact before a 32k window overflows
+# rather than after a 1M one.
+#
+# These are MEASURED, not the models' advertised windows. `/api/aliases` reports
+# `inference_params: {}` for every alias — the gateway states no window anywhere — so each number
+# below was read off the gateway's own refusal on 2026-09-03: send a prompt over the limit and the
+# error names the limit ("prompt is too long: 1050024 tokens > 1000000 maximum"). An over-limit
+# request is rejected before it bills, so this costs nothing to redo.
+#
+# Under-claiming is not the safe direction it looks like. This map decides when a conversation gets
+# summarised, so a window smaller than the truth throws away context the model could still hold and
+# pays for a summarize call to do it. Compacting earlier than the window is a cost policy and
+# belongs in TOKEN_RATIO, not here, where it would read as the model's limit.
 CONTEXT_LIMITS: dict[str, int] = {
+    # Unmeasurable, left as documented: this alias is not served by the dogfood gateway.
     "deepseek-v4-pro": 128_000,
     "qwen-2-5": 32_768,
+    # Unmeasurable: the sovereign endpoint answers 502 to everything, "Say OK" included, so it could
+    # not be asked. Mistral-7B-Instruct-v02's documented window, and conservative.
     "local-domino-llm": 32_768,
-    "bedrock-qwen3-coder": 128_000,
-    "gpt-5.4": 200_000,
-    "sonnet": 200_000,
+    "bedrock-qwen3-coder": 262_144,
+    "gpt-5.4": 922_000,
+    "sonnet": 1_000_000,
+    # Unmeasurable: not in this gateway's /v1/models, so it is not offered here and cannot be asked.
     "haiku": 200_000,
     # Keyed bare, like every entry here, because `context_limit` reduces via `bare_model_id` — the
-    # gateway offers this one as `domino/gemini-3.7-flash`. The number is the conservative default
-    # rather than a measurement: `/api/aliases` reports `inference_params: {}` for this alias
-    # (checked 2026-09-03), so the gateway states no window and there is nothing to read. Guessing
-    # high is the expensive mistake — claiming more room than the model has overflows the prompt
-    # mid-turn — while guessing low only compacts a conversation earlier than it had to.
-    "gemini-3.7-flash": 128_000,
+    # gateway offers this one as `domino/gemini-3.7-flash`. Exactly 1Mi, as the refusal spells out:
+    # "The input token count exceeds the maximum number of tokens allowed 1048576."
+    "gemini-3.7-flash": 1_048_576,
+    # Both back onto claude-opus-4-6 and both measured at the same ceiling. Added because the
+    # gateway offers them and the picker offers every accessible alias — unlisted, they had no
+    # window to compact against. `domino-gcp/claude-sonnet-5` is offered too but stays out: it 404s
+    # upstream from GCP, so it cannot be measured and a number here would be invention.
+    "opus": 1_000_000,
+    "etan-opus-4.6": 1_000_000,
 }
 DEFAULT_CONTEXT = 128_000
 

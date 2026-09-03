@@ -34,22 +34,22 @@
         "bedrock-qwen3-coder": {
           "name": "Qwen3 Coder 30B",
           "limit": {
-            "context": 128000,
+            "context": 262144,
             "output": 16384
           }
         },
         "gpt-5.4": {
           "name": "GPT-5.4",
           "limit": {
-            "context": 200000,
-            "output": 32768
+            "context": 922000,
+            "output": 128000
           }
         },
         "sonnet": {
           "name": "Claude Sonnet 4.6",
           "limit": {
-            "context": 200000,
-            "output": 65536
+            "context": 1000000,
+            "output": 128000
           }
         },
         "haiku": {
@@ -62,8 +62,22 @@
         "gemini-3.7-flash": {
           "name": "Gemini 3.7 Flash",
           "limit": {
-            "context": 128000,
-            "output": 16384
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "opus": {
+          "name": "Claude Opus 4.6",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "etan-opus-4.6": {
+          "name": "Claude Opus 4.6 (etan)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
           }
         }
       }
