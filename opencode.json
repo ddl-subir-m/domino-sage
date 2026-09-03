@@ -6,7 +6,8 @@
       "name": "Sage Enforcement Shim (-> Domino AI Gateway)",
       "options": {
         "baseURL": "http://localhost:8080/v1",
-        "apiKey": "local-shim-no-auth"
+        "apiKey": "local-shim-no-auth",
+        "name": "google"
       },
       "models": {
         "deepseek-v4-pro": {
