@@ -38,10 +38,14 @@ class Reason(str, Enum):
 # Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified by
 # sending a test image through the live Domino gateway on 2026-07-30 — sonnet/gpt-5.4/opus/
 # etan-opus-4.6 described it, bedrock-qwen3-coder returned HTTP 400 ("This model doesn't support the
-# image content block that you provided"), qwen-2-5 returned 502. That is every model the gateway
-# lists today. An unknown model is treated as NOT vision-capable on purpose: guessing wrong costs a
-# hard 400 that kills the whole build turn, guessing conservatively only costs the agent one image.
-VISION_CAPABLE = frozenset({"sonnet", "gpt-5.4", "opus", "etan-opus-4.6"})
+# image content block that you provided"), qwen-2-5 returned 502. Re-run on 2026-09-03 against the
+# aliases the gateway has added since: gemini-3.7-flash answered "Red" to an 8x8 red PNG (HTTP 200),
+# so it is listed; domino-gcp/claude-sonnet-5 is offered but 404s upstream from GCP ("Publisher
+# model ... was not found or your project does not have access to it"), so it stays off the list —
+# it was never shown an image. That is every model the gateway lists today. An unknown model is
+# treated as NOT vision-capable on purpose: guessing wrong costs a hard 400 that kills the whole
+# build turn, guessing conservatively only costs the agent one image.
+VISION_CAPABLE = frozenset({"sonnet", "gpt-5.4", "opus", "etan-opus-4.6", "gemini-3.7-flash"})
 
 
 def supports_vision(model: ModelId) -> bool:

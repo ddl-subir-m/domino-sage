@@ -476,6 +476,21 @@ def test_vision_capability_is_a_closed_list_with_unknown_models_failing_safe():
     assert not supports_vision("some-future-model")    # unknown -> no images
 
 
+def test_gemini_is_vision_capable_under_the_name_the_gateway_offers():
+    """cloud-dogfood offers Gemini as `domino/gemini-3.7-flash`, and it answered "Red" to an 8x8
+    red PNG sent as an image_url part on 2026-09-03. The list holds the bare id because
+    supports_vision reduces the provider prefix away first; both forms must pass."""
+    assert supports_vision("domino/gemini-3.7-flash")
+    assert supports_vision("gemini-3.7-flash")
+
+
+def test_the_broken_gcp_sonnet_alias_is_not_treated_as_vision_capable():
+    """`domino-gcp/claude-sonnet-5` is listed by the gateway but 404s upstream from GCP, so no
+    image was ever seen through it. It also must not inherit `sonnet`: the reduction is exact-match
+    on the bare id, not a substring test."""
+    assert not supports_vision("domino-gcp/claude-sonnet-5")
+
+
 def test_chat_pick_and_effort_go_to_the_gateway():
     control = ModelControl()
     control.pick_chat("gpt-5.4", "high")
