@@ -3,19 +3,26 @@
 One Domino Environment image that carries Sage's code, the agent runtime (OpenCode), and a warm
 React+Vite template with baked `node_modules`. Chat and Build are one orchestrator process.
 
-Two launch paths, same process:
+## Happy path
 
-1. **Published App — the door.** Publish **this repo** as a Domino App. Root `app.sh` starts the
-   workbench (`SAGE_PROXY_MODE=app`, port 8888). Domino's App proxy strips the mount prefix; Vite's
-   prefix is empty. It does **not** run Chat or Build: `/mnt/code` is Sage source, so the App finds
-   or creates the viewer's Default Project and sends them to their own Sage Builder (ADR-0004).
-   Listings, provisioning and model calls all use the sidecar at `:8899`, which is the viewer.
-   To provision, the App's container needs an **HTTPS Git credential** (Account Settings > Git
-   Credentials) — it creates the `sage-*` repo and pushes the seed with it. Set `SAGE_GIT_HOST`
-   when that host is not `github.com`.
-2. **Sage Builder workspace** — launch the `sageBuilder` pluggable tool in a **git-based app
-   project**. [`environment/app.sh`](app.sh) starts the same orchestrator with
-   `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the Built App.
+Publish **this repo** as a Domino App on the Sage Environment (below), and open it. That is the
+only manual launch step. Its UI has a **Create app** button; clicking it provisions the viewer's
+Default Project, starts their own Sage Builder workspace, and builds in that workspace — you never
+launch the `sageBuilder` pluggable tool yourself, it starts automatically as part of that flow.
+
+Under the hood that is two processes running the same orchestrator:
+
+1. **Published App — the door.** Root `app.sh` starts the workbench (`SAGE_PROXY_MODE=app`, port
+   8888). Domino's App proxy strips the mount prefix; Vite's prefix is empty. It does **not** run
+   Chat or Build: `/mnt/code` is Sage source, so the App finds or creates the viewer's Default
+   Project and sends them to their own Sage Builder (ADR-0004). Listings, provisioning and model
+   calls all use the sidecar at `:8899`, which is the viewer. To provision, the App's container
+   needs an **HTTPS Git credential** (Account Settings > Git Credentials) — it creates the `sage-*`
+   repo and pushes the seed with it. Set `SAGE_GIT_HOST` when that host is not `github.com`.
+2. **Sage Builder workspace** — the `sageBuilder` pluggable tool, launched by the App's Create-app
+   flow inside the git-based app project it just provisioned. [`environment/app.sh`](app.sh) starts
+   the same orchestrator with `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the
+   Built App.
 
 There is no Hub, no second server, and no `sageHub` tool.
 
@@ -39,7 +46,10 @@ commits. A published Workbench App must **not** treat that checkout as an app �
 
 ## Fill-ins before it builds
 
-1. **Base image** — `FROM <your-standard-domino-base-image>` at the top of the Dockerfile.
+1. **Base image** — `FROM <your-standard-domino-base-image>` at the top of the Dockerfile. This
+   Dockerfile is written to layer on top of whatever base image your Domino instance already
+   standardizes on. Some instances (e.g. locked-down ones) won't let you create a new/public
+   Environment from scratch — layering on the standard base is the workaround, not a preference.
 2. **`SAGE_REPO_URL` / `SAGE_REV`** — where to clone Sage from. If the repo is **private**, the
    build-time `git clone` needs a credential (secret build-arg token, or a public deploy mirror).
 3. **Gateway** — set `GATEWAY_BASE_URL` in the Environment's **Environment Variables** box so builds

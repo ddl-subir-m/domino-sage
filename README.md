@@ -7,6 +7,16 @@ between vendor and sovereign models through the Domino AI Gateway.
 See `SPEC.md` (what) · `DESIGN.md` (module seams) · `PLAN.md` (execution plan) ·
 `diagrams/` (architecture) · `gateway-questions.md` (open items for the gateway team).
 
+## Deploy as a Domino App
+
+Sage ships as a single Domino App — the Workbench, and it's the door for every user. Publish this
+repo's root `app.sh` as a Domino App on the Sage Environment and open it; its **Create app** button
+provisions the viewer's own Default Project, starts their Sage Builder workspace, and builds in it —
+nothing else needs to be launched separately. See [`environment/README.md`](environment/README.md)
+for the Environment/Dockerfile setup and the full recipe.
+
+The rest of this README covers local development, not deployment.
+
 ## Prerequisites
 
 - **Node ≥ 20** (for the OpenCode coding harness)
