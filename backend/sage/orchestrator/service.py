@@ -5459,8 +5459,11 @@ class Orchestrator:
             provider, model = chat_compact.compact_model(state, project.shim.catalog)
             if not chat_compact.should_compact(messages, model):
                 return
-            log.info("chat compact: session=%s model=%s/%s", sid, provider, model)
-            summarize(sid, provider, model, auto=False)
+            # `model` weighs the threshold above; this is the id OpenCode is asked to resolve, which
+            # is not always the same string — see chat_compact.summarize_model_id.
+            named = chat_compact.summarize_model_id(model)
+            log.info("chat compact: session=%s model=%s/%s named=%s", sid, provider, model, named)
+            summarize(sid, provider, named, auto=False)
             if client.is_running(sid):
                 client.wait_for_idle(sid, appear_grace_s=2.0)
         except Exception:

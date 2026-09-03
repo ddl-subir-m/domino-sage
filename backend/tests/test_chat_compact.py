@@ -121,7 +121,11 @@ def test_long_thread_compacts_opencode_not_ui_history(tmp_path: Path, monkeypatc
     assert oc.compacts == []
     events = list(orch.chat_stream(tid, "second"))
     assert len(oc.compacts) == 1
-    assert oc.compacts[0]["modelID"] == "a"  # catalog.ask
+    # catalog.ask here is the fixture's "a", which no `provider.sage-gateway.models` key matches, so
+    # the summarize call names the fallback rather than an id OpenCode would fail to resolve. The
+    # thread's own alias IS named verbatim when the config lists it —
+    # test_compact_uses_the_thread_chat_model covers that with `sonnet`.
+    assert oc.compacts[0]["modelID"] == chat_compact.COMPACT_FALLBACK
     assert oc.compacts[0]["providerID"] == "sage-gateway"
     assert oc.compacts[0]["auto"] is False
     hist = orch.thread_history(tid)
@@ -200,3 +204,41 @@ def test_compaction_leaves_a_session_the_next_turn_has_taken(tmp_path: Path):
     oc.turns.append(Turn(text="still ok", tokens={"input": over, "output": 1}))
     list(orch.chat_stream(tid, "again"))
     assert len(oc.compacts) == 1
+
+
+def test_summarize_names_an_alias_opencode_can_resolve():
+    """A summarize call must name a model `provider.sage-gateway.models` lists.
+
+    OpenCode does not fall back for an unlisted alias — it fails the whole request with
+    "UnknownError: Unexpected server error" (verified live against opencode 1.18.4: `opus` unlisted
+    failed, `opus` listed answered, nothing else changed). The gateway offers aliases the config
+    does not list and the picker offers every accessible one, so this is reachable by picking one.
+    """
+    cfg = json.loads((Path(__file__).resolve().parents[2] / "opencode.json").read_text())
+    listed = set(cfg["provider"]["sage-gateway"]["models"])
+    # The fallback is only useful if it is itself resolvable.
+    assert chat_compact.COMPACT_FALLBACK in listed
+
+    for known in listed:
+        assert chat_compact.summarize_model_id(known) == known
+    # Provider-prefixed spellings reduce to the bare key rather than falling back.
+    assert chat_compact.summarize_model_id("domino/gemini-3.7-flash") == "gemini-3.7-flash"
+    # Aliases the gateway serves but the config does not list, which used to break compaction.
+    for unlisted in ("domino-gcp/claude-sonnet-5", "opus", "etan-opus-4.6"):
+        assert chat_compact.summarize_model_id(unlisted) in listed
+
+
+def test_the_compaction_threshold_still_weighs_the_real_alias():
+    """The fallback is a naming detail and must not leak into the threshold.
+
+    `should_compact` reads the window of the alias actually in use. Were it handed the fallback,
+    an unlisted 32k alias would be measured against gpt-5.4's 200k and never compact in time —
+    trading a silent failure for a worse one.
+    """
+    assert chat_compact.context_limit("domino-gcp/claude-sonnet-5") == chat_compact.DEFAULT_CONTEXT
+    assert chat_compact.context_limit(chat_compact.COMPACT_FALLBACK) == 200_000
+    # A conversation on an unlisted alias compacts on the conservative default, not on 200k.
+    over = int(chat_compact.DEFAULT_CONTEXT * chat_compact.TOKEN_RATIO) + 1
+    msgs = [_asst(tokens={"input": over, "output": 0})]
+    assert chat_compact.should_compact(msgs, "domino-gcp/claude-sonnet-5")
+    assert not chat_compact.should_compact(msgs, chat_compact.COMPACT_FALLBACK)

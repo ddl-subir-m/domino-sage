@@ -64,6 +64,35 @@ def compact_model(state: SessionState, catalog: ModelCatalog) -> tuple[str, str]
     return PROVIDER_ID, bare_model_id(decision.model)
 
 
+# The alias named on a summarize call has to be one OpenCode can RESOLVE, and OpenCode resolves
+# only what `provider.sage-gateway.models` lists: an alias missing from that map fails the whole
+# request with "UnknownError: Unexpected server error" rather than falling back (verified live
+# against opencode 1.18.4 — `opus` unlisted failed, `opus` listed answered, nothing else changed).
+# CONTEXT_LIMITS holds exactly those keys and a test compares the two as sets, so asking this map is
+# the same question as asking the config.
+#
+# It needs a fallback because the gateway offers aliases the config does not list — `opus`,
+# `etan-opus-4.6` and `domino-gcp/claude-sonnet-5` today — and the picker offers every accessible
+# one. Their turns are fine: the shim overwrites `model` on every request and OpenCode stays on its
+# configured default, so it is never asked to resolve them. Summarize is the one call that hands
+# OpenCode the alias itself, which made compaction the only place the gap showed: it raised,
+# `_maybe_compact_chat` swallowed it (fail-open, by design), and the session then grew unbounded
+# until the gateway refused the prompt for context, with nothing in the UI to say why.
+#
+# Naming a different alias here costs nothing, because the shim rewrites this request like any
+# other — `_maybe_compact_chat` keeps Chat arming live precisely so the summary routes as the
+# Thread's own model. This is a local handle, not a routing decision. Deliberately NOT used for
+# `should_compact`, which must weigh the REAL alias: substituting a 200k default there would let a
+# 32k session sail past its own window.
+COMPACT_FALLBACK = "gpt-5.4"
+
+
+def summarize_model_id(model: str) -> str:
+    """The modelID to name on a summarize call: this alias when OpenCode knows it, else one it does."""
+    bare = bare_model_id(model)
+    return bare if bare in CONTEXT_LIMITS else COMPACT_FALLBACK
+
+
 def should_compact(messages: list[dict], model: str) -> bool:
     used = last_usage_tokens(messages)
     if used is not None:

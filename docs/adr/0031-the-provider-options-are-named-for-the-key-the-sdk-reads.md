@@ -68,8 +68,25 @@ signature is stored, found by nobody, and silently dropped. Naming the options b
 the two halves meet. OpenCode then keeps the signature in its own session state and persists it to
 `opencode.db`, so session resume and parallel tool calls work with nothing added on our side.
 
-The namespace is inert for a model that sends no signature, which is why one global setting is safe
-for the whole catalog rather than something that needs to be per-model.
+One global setting is safe for the whole catalog rather than something that needs to be per-model:
+`gpt-5.4` and `sonnet` send no signature, so nothing is stored under either key for them and the
+rename changes nothing they do.
+
+It is worth being exact about what the rename touches, though, because it is **not** signature-
+specific. `providerOptionsName` is the namespace for this provider's whole `providerOptions` /
+`providerMetadata` bag, and the SDK derives it from the same string:
+
+```js
+get providerOptionsName(){ return this.config.provider.split(".")[0].trim() }
+// config.provider is `${options.name}.chat`, so this is now "google"
+```
+
+So the setting does not add a key beside the others — it moves which key the SDK reads for
+everything provider-scoped. Nothing else in `opencode.json` uses a `providerOptions` bag today
+(`provider.sage-gateway.options` is the only `options` block in the file, and the shim sets
+`reasoning_effort` on the request itself rather than through OpenCode), so there is no live effect
+beyond the fix. But a per-model or per-agent `options` block added later is where this would bite,
+and it would bite silently. Verify such a block reaches the wire before trusting it.
 
 ## Why not the alternatives
 
@@ -116,6 +133,20 @@ offers it as `domino/gemini-3.7-flash`. `chat_compact.compact_model` hands OpenC
 slash-prefixed key would not resolve there. Outbound spelling is not at stake: the shim overwrites
 `model` with the router's decision on every request, and the gateway answers 200 to either
 spelling.
+
+An unlisted alias is worse than nameless: OpenCode resolves only what this map lists, and fails the
+whole request with `UnknownError: Unexpected server error` for anything else — it does not fall back
+to the id as given. Verified by changing one thing: `opus` unlisted failed that way instantly, and
+`opus` listed read a file and answered.
+
+That is survivable only because of how Sage routes. No turn hands OpenCode an alias at all —
+`_ensure_session` deliberately creates sessions with no session-level model, OpenCode stays on its
+configured default, and the shim overwrites `model` per request. Summarize is the single call that
+names an alias, which is why an unlisted model shows up as a session that never compacts rather
+than as a turn that fails. The gateway offers aliases this file does not list, and the picker offers
+every accessible one, so `chat_compact.summarize_model_id` falls back to a listed id for exactly
+that case; `should_compact` keeps weighing the real alias, since substituting a 200k default there
+would let a 32k session sail past its own window.
 
 Its `limit.context` is the conservative 128k default, not a measurement. `/api/aliases` reports
 `inference_params: {}` for this alias — the gateway states no window, so there is nothing to read
