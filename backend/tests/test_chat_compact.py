@@ -34,10 +34,20 @@ def _asst(n: int = 1, tokens: dict | None = None, **extra) -> dict:
 
 
 def test_context_limits_match_opencode_json():
+    """The two lists name the same aliases and agree on every window.
+
+    Compared as sets, not just walked one way: `context_limit` falls back to DEFAULT_CONTEXT, so an
+    alias whose window happens to BE 128k (gemini-3.7-flash is one) satisfied the old one-way walk
+    while missing from the map entirely — and would then have silently kept the default if
+    DEFAULT_CONTEXT ever moved. The reverse direction catches the other drift: an alias dropped from
+    opencode.json but left in the map, which is a limit nothing can reach.
+    """
     root = Path(__file__).resolve().parents[2]
     cfg = json.loads((root / "opencode.json").read_text())
     models = cfg["provider"]["sage-gateway"]["models"]
+    assert set(models) == set(chat_compact.CONTEXT_LIMITS)
     for name, spec in models.items():
+        assert chat_compact.CONTEXT_LIMITS[name] == spec["limit"]["context"]
         assert chat_compact.context_limit(name) == spec["limit"]["context"]
 
 

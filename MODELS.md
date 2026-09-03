@@ -17,6 +17,12 @@ one OpenAI-compatible endpoint, selectable by the gateway **alias** name in the 
 | `opus` / `etan-opus-4.6` | claude-opus-4-6 | Anthropic | vendor | $5 / $25 |
 | `etan-opus-4.8` / `etan-take2-opus-4-8` | claude-opus-4-8 | Anthropic | vendor | $1 / $2 |
 | `nova` | amazon.nova-pro-v1:0 | Bedrock | vendor | $1 / $2 |
+| `domino/gemini-3.7-flash` | gemini-3.7-flash | Vertex (GCP) | vendor | $0.75 / $3.75 |
+
+`domino/gemini-3.7-flash` carries its `domino/` prefix as part of the alias name — the whole string
+is what `model` takes, and the slash is not a provider separator (see `unresolved_slots`). Agentic
+turns on it need `provider.sage-gateway.options.name` pinned to `"google"` or every build fails on
+its first tool result: ADR-0031.
 
 **Sovereign tier = `Domino Platform` provider** (`qwen-2-5`, `local-domino-llm`). These run on
 Domino infra and are what the sensitivity lock routes to. Everything else is a vendor API.

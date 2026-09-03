@@ -58,6 +58,13 @@
             "context": 200000,
             "output": 32768
           }
+        },
+        "gemini-3.7-flash": {
+          "name": "Gemini 3.7 Flash",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
         }
       }
     }

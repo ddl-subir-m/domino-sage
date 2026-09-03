@@ -39,6 +39,13 @@ CONTEXT_LIMITS: dict[str, int] = {
     "gpt-5.4": 200_000,
     "sonnet": 200_000,
     "haiku": 200_000,
+    # Keyed bare, like every entry here, because `context_limit` reduces via `bare_model_id` — the
+    # gateway offers this one as `domino/gemini-3.7-flash`. The number is the conservative default
+    # rather than a measurement: `/api/aliases` reports `inference_params: {}` for this alias
+    # (checked 2026-09-03), so the gateway states no window and there is nothing to read. Guessing
+    # high is the expensive mistake — claiming more room than the model has overflows the prompt
+    # mid-turn — while guessing low only compacts a conversation earlier than it had to.
+    "gemini-3.7-flash": 128_000,
 }
 DEFAULT_CONTEXT = 128_000
 
