@@ -93,6 +93,7 @@ from ..resources.preflight import (
     stale_fault,
     stale_fix,
     turn_refusal,
+    slot_alias,
     turn_slots,
     unresolved_slots,
 )
@@ -9068,7 +9069,7 @@ class Orchestrator:
             # that is a Problem. Failing further down — the endpoint listing behind an Alias that
             # resolved — reports the same `unreachable` state and must stay silent.
             return {"state": "unreachable", "error": str(e), "slots": [], "reached": False}
-        slot_aliases = {(getattr(self._catalog, slot, "") or "").rsplit("/", 1)[-1] for slot in SLOTS}
+        slot_aliases = {slot_alias(getattr(self._catalog, slot, ""), aliases) for slot in SLOTS}
         endpoints, errors = self._endpoint_listing(aliases, slot_aliases)
         # Sorted back into SLOTS order across BOTH checks. Each returns its own findings in that
         # order, but concatenating them does not preserve it, and a reader met with `implement`

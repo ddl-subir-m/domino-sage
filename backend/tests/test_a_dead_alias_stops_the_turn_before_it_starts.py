@@ -194,10 +194,14 @@ def test_auto_ignores_a_pick_exactly_as_the_router_does():
                                                            ("implement", "implement-model", False)]
 
 
-def test_a_provider_prefixed_slot_is_reduced_to_the_name_a_request_carries():
+def test_a_slot_is_handed_on_exactly_as_it_was_configured():
+    """A provider-prefixed slot is reduced in `turn_refusal`, not here. Only there is the alias
+    listing in hand, and only the listing tells an OpenCode provider prefix from an Alias whose own
+    name has a slash in it — reducing here, with nothing to compare against, refused every turn on a
+    gateway that offered `domino/gemini-3.7-flash` under that whole name."""
     catalog = ModelCatalog(sovereign_plan="", sovereign_implement="", sovereign_ask="",
                            plan="domino/plan-model", implement="i", ask="a")
-    assert turn_slots(catalog, Mode.PLAN) == [("plan", "plan-model", False)]
+    assert turn_slots(catalog, Mode.PLAN) == [("plan", "domino/plan-model", False)]
 
 
 def test_a_blank_slot_is_not_reported_as_a_missing_alias():
@@ -245,6 +249,19 @@ def test_a_slot_whose_endpoint_is_stopped_reads_as_a_stopped_endpoint_not_a_miss
 
 def test_a_slot_the_gateway_serves_says_nothing():
     assert turn_refusal("plan", "plan-model", ALIASES, None) is None
+
+
+def test_a_provider_prefixed_slot_resolves_on_its_bare_id_and_says_nothing():
+    """The prefix is the provider Sage registers with OpenCode, not part of any Alias name."""
+    assert turn_refusal("plan", "sage-gateway/plan-model", ALIASES, None) is None
+
+
+def test_an_alias_whose_own_name_contains_a_slash_does_not_stop_the_turn():
+    """cloud-dogfood offers `domino/gemini-3.7-flash` under that whole name, so the whole name is
+    what a turn resolves against. Reducing it first refused turns that were going to work."""
+    offered = [LlmAlias("id-gemini", "domino/gemini-3.7-flash", "Gemini 3.7 Flash", None,
+                        ["chat"], {})]
+    assert turn_refusal("plan", "domino/gemini-3.7-flash", offered, None) is None
 
 
 # ---- the turn stops before it spends anything ----------------------------------------------------

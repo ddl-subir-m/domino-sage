@@ -117,6 +117,43 @@ def test_a_provider_prefixed_slot_resolves_on_its_bare_id():
     assert unresolved_slots(catalog, ALIASES) == []
 
 
+# Aliases whose own `name` contains a slash. Measured live against cloud-dogfood: `/v1/models`
+# offers `domino/gemini-3.7-flash` and `domino-gcp/claude-sonnet-5`, and the whole string — slash and
+# all — is the name a request's `model` field has to carry.
+SLASH_ALIASES = [
+    LlmAlias("id-gemini", "domino/gemini-3.7-flash", "Gemini 3.7 Flash", None, ["chat"], {}),
+    LlmAlias("id-sonnet-5", "domino-gcp/claude-sonnet-5", "Claude Sonnet 5", None, ["chat"], {}),
+]
+
+
+def _every_slot(model: str) -> ModelCatalog:
+    return ModelCatalog(sovereign_plan=model, sovereign_implement=model, sovereign_ask=model,
+                        plan=model, implement=model, ask=model)
+
+
+def test_an_alias_whose_own_name_contains_a_slash_is_offered_not_missing():
+    """The live regression, in one line: every slot set to `domino/gemini-3.7-flash`, an Alias this
+    gateway really offers, and all six came back "which this LLM Gateway does not offer" — because
+    the slot was reduced to its bare id before the comparison was made."""
+    assert unresolved_slots(_every_slot("domino/gemini-3.7-flash"), SLASH_ALIASES) == []
+
+
+def test_the_bare_half_of_a_slash_named_alias_is_still_a_missing_alias():
+    """The reduction is a fallback and never runs in reverse. `gemini-3.7-flash` on its own is not a
+    name this gateway answers to, so a slot set to it would 404 mid-turn and must be reported."""
+    (p,) = unresolved_slots(replace(GOOD_CATALOG, ask="gemini-3.7-flash"), SLASH_ALIASES + ALIASES)
+    assert (p.slot, p.alias) == ("ask", "gemini-3.7-flash")
+
+
+def test_a_slot_that_resolves_neither_way_is_reported_as_it_was_configured():
+    """Not shortened. The remedy names this string twice — pick another model, or register it — and a
+    name trimmed by a rule that has just failed to match would send an administrator to register
+    something nobody configured."""
+    (p,) = unresolved_slots(replace(GOOD_CATALOG, ask="domino/ghost-model"), ALIASES)
+    assert p.alias == "domino/ghost-model"
+    assert "domino/ghost-model" in p.message
+
+
 def test_an_empty_gateway_reports_every_slot():
     # No aliases at all is the shape of a gateway the caller has no grants on. It must not read as
     # "everything is fine because there was nothing to compare against".
@@ -624,6 +661,36 @@ class _DeadEndpointListing(_HostedProvider):
 def test_startup_reports_a_slot_whose_endpoint_is_stopped(tmp_path):
     orch = _orch(tmp_path, catalog=_hosted_catalog(), resources=_CountingProvider())
     result = orch.preflight_slots()
+    assert result["state"] == "problems"
+    assert [(s["slot"], s["status"]) for s in result["slots"]] == [("sovereign_plan", "Stopped")]
+
+
+# The same slash-bearing name, but Domino-hosted, so the endpoint join has to survive it too.
+SLASH_HOSTED = [
+    LlmAlias("id-qwen", "domino/qwen-2-5", "Qwen 2.5 (Domino-hosted)", None, ["chat"], {},
+             "https://apps.example.tech/endpoints/308f788c/v1"),
+    HOSTED[1],
+]
+
+
+class _SlashNamedHosted(_CountingProvider):
+    """A gateway whose hosted Alias has a slash in its own name, which is cloud-dogfood's shape."""
+
+    def list_llm_aliases(self) -> list[LlmAlias]:
+        return list(SLASH_HOSTED)
+
+
+def test_a_slash_named_alias_is_still_joined_to_the_endpoint_behind_it():
+    (p,) = slots_on_dead_endpoints(_hosted_catalog(sovereign_plan="domino/qwen-2-5"),
+                                   SLASH_HOSTED, [_endpoint("Stopped")])
+    assert (p.slot, p.alias, p.status) == ("sovereign_plan", "domino/qwen-2-5", "Stopped")
+
+
+def test_startup_still_asks_about_the_endpoint_behind_a_slash_named_alias(tmp_path):
+    """The endpoint call is keyed on the Alias names the slots actually name, so a slot reduced to a
+    bare id skipped the call altogether and a stopped endpoint went unreported."""
+    result = _orch(tmp_path, catalog=_hosted_catalog(sovereign_plan="domino/qwen-2-5"),
+                   resources=_SlashNamedHosted()).preflight_slots()
     assert result["state"] == "problems"
     assert [(s["slot"], s["status"]) for s in result["slots"]] == [("sovereign_plan", "Stopped")]
 

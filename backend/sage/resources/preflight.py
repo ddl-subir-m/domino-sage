@@ -70,12 +70,45 @@ class SlotProblem:
                 "fault": self.fault, "fix": self.fix}
 
 
+def slot_alias(model: str | None, aliases: list[LlmAlias]) -> str:
+    """The Alias name a configured slot resolves to, or the slot's own text when it resolves to none.
+
+    Two different strings reach a slot and only one of them is an Alias name. `sage-gateway/sonnet`
+    is an OpenCode model id, whose first segment is the only provider Sage registers with OpenCode
+    (`chat_compact.PROVIDER_ID`) and is part of no Alias name. `domino/gemini-3.7-flash` is an Alias
+    name in full — measured live, the dogfood gateway's `/v1/models` offers that and
+    `domino-gcp/claude-sonnet-5` under names that contain a slash, and that whole string is what a
+    request's `model` field has to carry. Note which prefix is which: `domino/` is Domino's own, and
+    a slot carrying it is far more likely to be a whole Alias name than a prefixed one.
+
+    Nothing in either string tells the two apart, so the offered set decides: the whole string
+    first, the bare id second. Reducing first — which every caller here used to do — turned each
+    slash-bearing Alias into a slot "this LLM Gateway does not offer", six of six on a deployment
+    where six of six were right.
+
+    The bare-id fallback resolves a NAME and does not make the call work. The shim sends the
+    configured string verbatim — `enforcement.py` sets `request["model"] = decision.model`, and
+    nothing between here and the gateway strips a prefix — so a slot left as `sage-gateway/sonnet`
+    still arrives prefixed and still 404s. Preflight has always been quiet about that, and this
+    keeps it quiet rather than opening the hole; the honest fix is upstream, in what a slot is
+    allowed to hold. Do not read a resolved fallback as "this slot will work".
+
+    When neither resolves, the slot comes back verbatim. That is what somebody configured, so it is
+    the string to change or to register; a name shortened by the rule that has just failed to match
+    would send an administrator to register something nobody asked for.
+    """
+    configured = model or ""
+    offered = {a.name for a in aliases}
+    bare = configured.rsplit("/", 1)[-1]
+    return bare if configured not in offered and bare in offered else configured
+
+
 def unresolved_slots(catalog: ModelCatalog, aliases: list[LlmAlias]) -> list[SlotProblem]:
     """The configured slots that name an Alias the gateway does not offer, in SLOTS order.
 
     Matched on `name`, not `id`: the name is what a request's `model` field carries, so it is the
-    identity a slot has to resolve to. A provider-prefixed slot (`domino/sonnet`) is reduced to its
-    bare id first, the same reduction the router already makes in `supports_vision`.
+    identity a slot has to resolve to. `slot_alias` does the resolving, and owns the one subtlety —
+    a slash in a slot may be an OpenCode provider prefix or may be part of the Alias name itself.
 
     A blank slot is not reported. `_build_catalog` promotes an empty environment variable back to
     its default before a catalog is ever built, so a blank here means a caller constructed one
@@ -84,7 +117,7 @@ def unresolved_slots(catalog: ModelCatalog, aliases: list[LlmAlias]) -> list[Slo
     offered = {a.name for a in aliases}
     problems: list[SlotProblem] = []
     for slot in SLOTS:
-        alias = (getattr(catalog, slot, "") or "").rsplit("/", 1)[-1]
+        alias = slot_alias(getattr(catalog, slot, ""), aliases)
         if alias and alias not in offered:
             problems.append(SlotProblem(slot, alias))
     return problems
@@ -242,7 +275,7 @@ def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
     """
     problems: list[EndpointProblem] = []
     for slot in SLOTS:
-        alias = (getattr(catalog, slot, "") or "").rsplit("/", 1)[-1]
+        alias = slot_alias(getattr(catalog, slot, ""), aliases)
         if not alias:
             continue
         found = endpoint_status(alias, aliases, endpoints)
@@ -275,6 +308,9 @@ def turn_slots(catalog: ModelCatalog, mode: Mode,
     The mid-turn gateway-error path is the right owner for that one; it keeps the approved plan.
 
     A blank slot is not reported, for the reason `unresolved_slots` gives.
+
+    Each slot is handed on exactly as it was configured. `turn_refusal` resolves it against the
+    alias listing, because a slash in a slot cannot be read without one — see `slot_alias`.
     """
     if mode is Mode.ASK:
         wanted = [("ask", catalog.ask, False)]
@@ -286,8 +322,7 @@ def turn_slots(catalog: ModelCatalog, mode: Mode,
         wanted = [("implement", picked_model if picked else catalog.implement, picked)]
     else:
         wanted = [("plan", catalog.plan, False), ("implement", catalog.implement, False)]
-    return [(slot, (model or "").rsplit("/", 1)[-1], picked)
-            for slot, model, picked in wanted if (model or "").rsplit("/", 1)[-1]]
+    return [(slot, model or "", picked) for slot, model, picked in wanted if model]
 
 
 def turn_refusal(slot: str, alias: str, aliases: list[LlmAlias],
@@ -310,6 +345,8 @@ def turn_refusal(slot: str, alias: str, aliases: list[LlmAlias],
     where = ("pick a different model from the model menu beside the composer" if picked else
              "open Model assignments from the model menu beside the composer and pick a "
              f"different model for {slot}")
+    # Resolved here rather than in `turn_slots`, which has no listing to resolve against.
+    alias = slot_alias(alias, aliases)
     if alias not in {a.name for a in aliases}:
         fault, remedy = "which this LLM Gateway does not offer", where
     else:
