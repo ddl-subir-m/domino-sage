@@ -542,7 +542,16 @@ window.SW = window.SW || {};
   }
 
   async function loadThreadList() {
-    state.threads = await SW.api.threads(state.scope.id);
+    // Caught here rather than at each caller, because every caller has the same answer and one of
+    // them is `init`. A reject out of this reaches `app.js` as a boot failure, and its error branch
+    // wins over `ready` — so the Workbench painted and was then replaced by the full-page "The
+    // workspace could not load", which is the wall the eight caught boot reads above exist to
+    // prevent. A dead Thread index costs the conversation list, not the ability to build.
+    //
+    // Falls back to the list already on screen, which is `[]` at boot and, mid-session, the rows
+    // somebody is looking at. Blanking the rail because one re-read failed would take rows away
+    // that are still true.
+    state.threads = await SW.api.threads(state.scope.id).catch(() => state.threads);
     notify();
   }
 

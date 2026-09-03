@@ -1,16 +1,18 @@
 """One dead boot read must not take the whole Workbench with it (ADR-0027).
 
-`init()` reads eight things at boot from four different places, and not one of them is the thing
-somebody came here to do. Who is looking, the other Projects they could switch to, the chart
+`init()` reads eight things at boot from four different places, then three more in a deferred tail,
+and not one of the eleven is the thing somebody came here to do. Who is looking, the other Projects they could switch to, the chart
 registry, the starter deck, the bell: a Builder with all five dead still builds. Three of the eight
 were already caught. The other five rejected the Promise.all, and a rejected `init()` is not a
 missing panel — `app.js` turns it into the full-page "The workspace could not load", so one dead
 service became a jail for somebody whose Builder was fine. ADR-0027 names that exact shape as the
 reason a Problem informs and never blocks.
 
-Only running the store shows this. `ready` is set INSIDE the Promise.all that can reject, so
-whether somebody gets a Workbench or a wall depends on which read threw and on whether `init()`
-itself resolved. Both facts have to be read from outside, together.
+Only running the store shows this, and `ready` on its own proves nothing. It is set inside the
+Promise.all that can reject, and the deferred tail rejects AFTER it is set and after the Workbench
+has painted — and `app.js` tests its error branch before it tests `ready`, so a late reject pulls a
+working Workbench down. Whether somebody got one depends on `ready` and on whether `init()` itself
+resolved, so both are read from outside, together, in every test below.
 
 Two things the ticket for this said are worth writing down, because the harness disagreed with both.
 
@@ -117,6 +119,20 @@ def test_charts_and_starters_that_cannot_be_read_leave_a_workbench_and_say_nothi
     assert out["starters"] is None  # what `state.starters` already holds before the read lands
     assert out["notificationCount"] == 0
     # Not one toast, notification or modal, on any channel.
+    assert out["said"] == []
+
+
+def test_a_thread_index_that_answers_502_still_leaves_a_workbench():
+    """The read the first pass at this missed, and the one that shows why `ready` alone proves
+    nothing. `/api/threads` is not in the boot Promise.all — it is in the deferred tail below it, so
+    `ready` was already true and the Workbench had already painted when the reject landed. `app.js`
+    tests its error branch BEFORE it tests `ready`, so the wall went up over a Workbench that was
+    working. A dead Thread index costs the conversation list, not the ability to build."""
+    out = _boot("thread-index-502")
+
+    assert out["ready"] is True
+    assert out["initResolved"] is True, out["initError"]
+    assert out["threadCount"] == 0
     assert out["said"] == []
 
 

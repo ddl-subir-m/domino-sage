@@ -8,7 +8,7 @@
 // Both facts have to be read from outside init, together, and only running it gives them.
 //
 // Input on stdin: `{ "mode": "listing-502" | "listing-unreadable" | "soft-reads-unreadable"
-//                            | "viewer-unreadable" }`.
+//                            | "viewer-unreadable" | "thread-index-502" }`.
 //
 //   listing-502            The real 502 the control plane returns when it cannot list this viewer's
 //                          Sage Projects. Driven all the way through api.js, because the layer that
@@ -26,6 +26,11 @@
 //                          nameless boot that still read prefs would open on a record belonging to
 //                          somebody else — and write this session's panel choices over it. Storage
 //                          is seeded with such a record here, so a boot that read it is visible.
+//   thread-index-502       `/api/threads` answers 502. Not one of the eight reads above — this one
+//                          is in the deferred tail, which the first pass at this left uncaught. It
+//                          is the mode that shows why `ready` alone proves nothing: the Workbench
+//                          paints, and `app.js` then replaces it with the wall, because its error
+//                          branch is tested before `ready` is.
 //
 // Every antd call is recorded rather than dropped, because "and it says nothing" is an assertion
 // here: ADR-0027 puts a Problem in the chip, and a missing starter list is not a Problem at all.
@@ -117,7 +122,14 @@ const sandbox = {
       }
       return json({ id: 'u1', name: 'Dana Reed' });
     }
-    if (path === '/threads') return json([]);
+    if (path === '/threads') {
+      if (mode === 'thread-index-502') {
+        return { ok: false, status: 502, statusText: 'Bad Gateway',
+                 headers: { get: () => 'application/json' },
+                 json: async () => ({ error: 'thread index unreachable' }), text: async () => '' };
+      }
+      return json([]);
+    }
     if (path === '/members') return json({ members: [], directory: [] });
     if (path === '/assets') return json({ assets: [] });
     return json({});
@@ -163,6 +175,7 @@ console.log(JSON.stringify({
   chartKeys: Object.keys(state.charts || {}),
   starters: state.starters,
   notificationCount: state.notifications.length,
+  threadCount: state.threads.length,
   me: state.me,
   // The two panel preferences, which are the observable half of "did this boot open somebody else's
   // preference record". `SEEDED_PREFS` holds the opposite of both defaults.
