@@ -63,6 +63,17 @@ unrelated thing.
 _Kind_: name
 _Avoid_: Artifact, artifacts
 
+**Collaborator**:
+A person Domino records as working on the [[Project]], alongside its owner. Sage adds one role and
+offers no choice of role, because the roles differ in ways a creator has no way to judge from the
+Workbench. Adding is immediate: there is no invitation, no acceptance, and nothing the person has
+to do — they are on the Project the moment the creator picks them. A Collaborator can open a
+[[Built App]] published from that Project; the one Domino role that cannot is named on its own row,
+because a role name does not carry that fact.
+_Kind_: word
+_Avoid_: invite, invitee (Sage cannot invite — there is no acceptance step to wait on), member,
+teammate
+
 ### Gateways
 
 **LLM Gateway**:
@@ -432,9 +443,9 @@ harness object that holds Recall), history (that is the transcript), memory
 ### Handling rules
 
 **Remove**:
-Taking something out of one of the two durable lists that can hold it: a Built App or the Project.
-Every label names which — "Remove from <app>", "Remove from <project>" — because the scope is the
-only thing that tells the two apart. The act belongs to the list that owns that scope, so a summary
+Taking something out of a durable list that holds it: a Built App, or the Project — which holds
+both Resources and people. Every label names which — "Remove from <app>", "Remove from <project>",
+"Remove <person>" — because the scope is the only thing that tells them apart. The act belongs to the list that owns that scope, so a summary
 of a list points at it and never removes on its behalf. See
 [ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md).
 _Kind_: word

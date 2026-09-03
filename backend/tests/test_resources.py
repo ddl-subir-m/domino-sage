@@ -1093,46 +1093,7 @@ def test_a_vendor_alias_has_no_endpoint_url():
     assert alias.endpoint_url is None
 
 
-# ---- collaborators, for naming a plan's reviewers ------------------------------------------------
-
-
-def test_collaborators_come_back_as_people_with_names():
-    """Domino answers /v4/projects/{id}/collaborators with Person records, so there is no second
-    lookup to turn ids into the names a plan comment is shown under."""
-    people = [
-        {"id": "u-a", "fullName": "Ada Lovelace", "userName": "ada", "avatarUrl": "/a.png"},
-        {"id": "u-b", "fullName": "Grace Hopper", "userName": "grace", "avatarUrl": ""},
-    ]
-    with stub_domino_api([people]) as (api_host, listings):
-        out = DominoResourceProvider(
-            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
-        ).list_collaborators("proj-1")
-
-    assert [(p.id, p.name, p.title) for p in out] == [
-        ("u-a", "Ada Lovelace", "ada"),
-        ("u-b", "Grace Hopper", "grace"),
-    ]
-    assert listings[0] == "/v4/projects/proj-1/collaborators"
-
-
-def test_a_collaborator_with_no_full_name_is_still_nameable():
-    with stub_domino_api([[{"id": "u-a", "userName": "ada"}]]) as (api_host, _):
-        out = DominoResourceProvider(
-            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
-        ).list_collaborators("proj-1")
-    assert out[0].name == "ada"
-
-
-def test_a_project_record_the_caller_cannot_read_is_no_reviewers_not_an_error():
-    """The plan page then shows ids where it would show names. That is worse than names and better
-    than a page that will not load, which is the same call `_member_projects` makes."""
-    with stub_domino_api([None]) as (api_host, _):
-        out = DominoResourceProvider(
-            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
-        ).list_collaborators("proj-1")
-    assert out == []
-
-
-def test_off_domino_there_is_nobody_to_review_a_plan():
-    assert FakeResourceProvider().list_collaborators("proj-1") == []
-    assert DominoResourceProvider("http://gw/v1", lambda: "t").list_collaborators("proj-1") == []
+# Collaborators used to be tested here, when they were one read for one caller. They are now two
+# reads Domino disagrees on, with writes beside them, and they live in
+# `test_a_collaborator_is_added_not_invited.py` — including the contract change ADR-0028 made to
+# what an unreadable project record costs.

@@ -287,30 +287,38 @@ a.sw-topnav-link {
 .sw-scope-row-count { font-size: var(--fs-12); color: var(--gray-500); white-space: nowrap; }
 .sw-scope-pop-footer { border-top: 1px solid var(--gray-300); padding: var(--s2) var(--s4); }
 
-/* Presence --------------------------------------------------------------- */
+/* Collaborators ----------------------------------------------------------- */
 
+/* The stack carried a status dot in each corner. Nothing on the server has ever implemented
+   presence, so the dot said "offline" about everybody, always. It is gone rather than greyed:
+   a stack of avatars is who works here, which is a fact Domino actually holds. */
 .sw-presence { display: flex; align-items: center; gap: 2px; }
 .sw-presence-slot { position: relative; display: inline-flex; margin-right: -4px; }
 .sw-presence-slot .sw-avatar { box-shadow: 0 0 0 2px var(--white); }
-.sw-presence-slot::after {
-  content: '';
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1.5px solid var(--white);
-  background: var(--gray-400);
-}
-.sw-presence-slot.is-active::after  { background: var(--success); }
-.sw-presence-slot.is-viewing::after { background: var(--info); }
-.sw-presence-slot.is-idle::after    { background: var(--gray-400); }
 .sw-presence-more {
   font-size: var(--fs-12);
   color: var(--gray-500);
   margin: 0 var(--s2) 0 var(--s2);
 }
+
+.sw-people-list { display: grid; gap: var(--s2); }
+.sw-people-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--gray-200);
+}
+.sw-people-row:last-child { border-bottom: none; }
+.sw-people-main { flex: 1; min-width: 0; }
+.sw-people-name { color: var(--dark-700); }
+/* The raw platform role. Sized down and set apart because it is a value, not a label we chose. */
+.sw-people-role {
+  font-size: var(--fs-12);
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+.sw-people-error { display: grid; gap: var(--s3); justify-items: start; }
 
 /* Notifications ---------------------------------------------------------- */
 

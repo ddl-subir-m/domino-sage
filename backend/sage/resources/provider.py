@@ -120,6 +120,28 @@ class Person:
 
 
 @dataclass(frozen=True)
+class Collaborator:
+    """A Person Domino records as working on this Project, and the role it records them under.
+
+    A Person plus two facts, rather than two more optional fields on Person, because a directory row
+    is a Person and has neither: somebody who is not on this Project has no role on it, and a field
+    that is empty for most of its uses stops meaning anything.
+
+    `role` is the RAW platform value — `Contributor`, `ProjectImporter` — never a word of Sage's. It
+    is also read back in a different case from the one the write takes, so anything comparing it
+    folds case. The owner carries no role at all: the read that names people includes them and the
+    read that carries roles does not, so `owner` is what says which row they are.
+    """
+
+    id: str
+    name: str
+    title: str = ""
+    avatar: str = ""
+    role: str = ""
+    owner: bool = False
+
+
+@dataclass(frozen=True)
 class HostedEndpoint:
     """A Domino-hosted GenAI Endpoint — the vLLM deployment an LLM Alias can point at.
 
@@ -577,11 +599,27 @@ class ResourceProvider(Protocol):
     # endpoint behind an Alias is serving (#21).
     def list_hosted_endpoints(self) -> list[HostedEndpoint]: ...
 
-    # Who else works on this project, for naming a plan's reviewers and attributing its comments.
-    # Takes the project explicitly for the same reason list_model_apis does. Empty is a real answer:
-    # a solo project has no collaborators, and a caller that cannot read the record gets the same
-    # empty list rather than an error, because a plan page is still usable without names on it.
-    def list_collaborators(self, project_id: str | None) -> list[Person]: ...
+    # Who works on this project, with the role Domino records each of them under. Takes the project
+    # explicitly for the same reason list_model_apis does. RAISES when it cannot read (ADR-0028):
+    # empty is a real answer only for a project genuinely worked on alone, and a caller that cannot
+    # tell that from a failed read cannot say anything true about either. What a failure costs is
+    # the caller's judgement — the plan page catches and shows ids where it would show names.
+    def list_collaborators(self, project_id: str | None) -> list[Collaborator]: ...
+
+    # Everyone on the deployment, for the picker that adds one of them to the project. Unscoped, and
+    # deliberately not built from the list above: the whole point of the picker is the people who are
+    # NOT on the project yet. One call for the lot — the browser filters it.
+    def list_directory(self) -> list[Person]: ...
+
+    # Whoever this adapter's token acts as, in the id space a collaborator is named in. `/api/me`
+    # answers in the identity provider's, which does not join. "" when Domino will not say.
+    def caller_id(self) -> str: ...
+
+    # Add somebody to the project, in the one role Sage assigns, and take somebody off it. Both are
+    # per person rather than bulk: a partial failure has to name who it failed on.
+    def add_collaborator(self, project_id: str | None, user_id: str) -> None: ...
+
+    def remove_collaborator(self, project_id: str | None, user_id: str) -> None: ...
 
     # No project argument, unlike the two above, and that asymmetry is the finding: a Data Source is
     # permission-scoped to the person, not the project.
@@ -1106,22 +1144,91 @@ class DominoResourceProvider:
         rows = parse_model_apis([record] if isinstance(record, dict) else record)
         return rows[0] if rows else None
 
-    def list_collaborators(self, project_id: str | None) -> list[Person]:
-        """GET /v4/projects/{id}/collaborators — Domino answers with Person records directly, so
-        there is no second lookup to turn ids into names.
+    def list_collaborators(self, project_id: str | None) -> list[Collaborator]:
+        """Who is on this project and under which role — two Domino reads that disagree.
 
-        Degrades to empty rather than raising, the way `_member_projects` degrades to the home
-        project: the plan page works with ids in place of names, and a review panel is not worth
-        failing a page load over.
+        `GET /v4/projects/{id}/collaborators` answers Person records directly, so there is no second
+        lookup to turn ids into names, and it INCLUDES the owner. The role lives on the project
+        record instead, whose `collaborators[]` EXCLUDES the owner. Neither read answers the question
+        on its own, so both are made and joined on the user id (verified live, 2026-09-03).
+
+        Raises rather than degrading (ADR-0028), including when the role read is the one that failed.
+        Names without an ownerId would render a list that is not safe to act on: nothing would say
+        whose row must not offer Remove, and the design refuses to learn that from a refusal after
+        the click. The plan page catches this and shows ids where it would show names.
+
+        No project id or no host is a different thing and answers empty: there is nothing to read,
+        rather than a read that failed.
         """
         if not project_id or not self._api_host:
             return []
-        try:
-            payload = self._domino_get(f"/v4/projects/{project_id}/collaborators")
-        except ResourceUnavailable:
+        payload = self._domino_get(f"/v4/projects/{project_id}/collaborators")
+        record = self._project_record(project_id)
+        owner_id = str(record.get("ownerId") or "")
+        if not owner_id:
+            # A record that answered but named no owner is the same hazard as one that did not
+            # answer at all, and it is the quieter of the two: every row would come back
+            # `owner=False`, the modal would offer Remove on the Project owner, and the creator
+            # would learn better from a refusal after the click — which is the thing this read
+            # exists to prevent. Refused here rather than rendered.
+            raise ResourceUnavailable(brand.text(
+                "{service} did not say who owns this {project}, so {assistantName} cannot show who "
+                "may be removed from it.",
+                service=_platform_api(),
+            ))
+        # `collaboratorId`, not `id` — the role-bearing record spells the user id differently from
+        # the name-bearing one (verified live, 2026-09-03; a first pass read `id`, matched nothing,
+        # and every role came back empty with no error to show for it). `id` is still accepted
+        # because it costs one clause and the alternative failure is silent.
+        roles = {
+            str(c.get("collaboratorId") or c.get("id") or ""): str(c.get("projectRole") or "")
+            for c in record.get("collaborators") or []
+            if isinstance(c, dict)
+        }
+        out: list[Collaborator] = []
+        for person in payload or []:
+            if not isinstance(person, dict):
+                continue
+            uid = str(person.get("id") or "")
+            if not uid:
+                continue
+            out.append(Collaborator(
+                id=uid,
+                name=str(person.get("fullName") or person.get("userName") or uid),
+                title=str(person.get("userName") or ""),
+                avatar=str(person.get("avatarUrl") or ""),
+                role=roles.get(uid, ""),
+                owner=uid == owner_id,
+            ))
+        return out
+
+    def _project_record(self, project_id: str) -> dict:
+        """This one project's record, which carries `ownerId` and the roles.
+
+        The single-project read, not the listing. A first pass picked the project out of
+        `GET /v4/projects`, and that is a paging bug waiting for a builder who belongs to enough
+        projects: the listing would answer 200 without their project in it, and a healthy project
+        would report as a failed read. This route answers about the project asked for or refuses,
+        which is the only two things worth telling apart.
+
+        (`/api/projects/beta/projects/{id}` is NOT the equivalent — it 404s. Verified 2026-09-03,
+        along with the fields read below.)
+        """
+        record = self._domino_get(f"/v4/projects/{project_id}")
+        return record if isinstance(record, dict) else {}
+
+    def list_directory(self) -> list[Person]:
+        """Everyone on the deployment: `GET /v4/users`, which needs no paging (the `/api/users/v1`
+        equivalent caps at 10 unless asked otherwise, and answers the same set).
+
+        Not filtered here. A creator picks from the people who are NOT on the project yet, and that
+        subtraction needs both lists at once — so the whole directory travels and the browser does
+        it. 397 rows was the live figure, around 60KB.
+        """
+        if not self._api_host:
             return []
         out: list[Person] = []
-        for record in payload or []:
+        for record in records_of(self._domino_get("/v4/users")):
             if not isinstance(record, dict):
                 continue
             uid = str(record.get("id") or "")
@@ -1134,6 +1241,87 @@ class DominoResourceProvider:
                 avatar=str(record.get("avatarUrl") or ""),
             ))
         return out
+
+    def caller_id(self) -> str:
+        """Whoever this adapter's token acts as, in Domino's own id space.
+
+        `/api/me` cannot answer this: it reads the viewer JWT, whose subject is the identity
+        provider's id, and that does not join against a collaborator row. Not knowing costs two
+        Remove buttons that Domino would refuse anyway, so this degrades to "" rather than raising —
+        the one read in this feature whose failure is not worth a wall.
+        """
+        if not self._api_host:
+            return ""
+        try:
+            user = (self._domino_get("/api/users/v1/self") or {}).get("user") or {}
+        except ResourceUnavailable:
+            return ""
+        return str(user.get("id") or "")
+
+    # The public API's collaborator routes. `/api/projects/v1/...` registers only POST and DELETE on
+    # this path, so a GET or an OPTIONS against it 404s while the write works — never read a path's
+    # existence off an OPTIONS on this platform.
+    def _collaborators_path(self, project_id: str) -> str:
+        return f"/api/projects/v1/projects/{project_id}/collaborators"
+
+    def add_collaborator(self, project_id: str | None, user_id: str) -> None:
+        """Add one person, in the one role Sage assigns.
+
+        Lowercase `contributor` is what the write takes; the read answers `Contributor`. Adding
+        somebody who is already on the project is a 400 whose only marker is an English sentence
+        ("... is already part of project ..."), and matching that sentence would break silently the
+        day Domino rewords it. So ANY 400 is answered by re-reading the list once: if the person is
+        on the project, the creator's intent holds however it came about. A 400 the re-read does not
+        confirm is still a refusal, and a 403 is never re-read — asking twice cannot turn a no into
+        a yes.
+        """
+        if not project_id or not self._api_host:
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} is not running against {platformName}, so it cannot add anybody "
+                "to this {project}."
+            ))
+        try:
+            self._post(
+                self._collaborators_path(project_id),
+                {"id": user_id, "role": "contributor"},
+                root=self._api_host,
+                service=_platform_api(),
+                token_provider=self._api_token_provider,
+            )
+        except ResourceUnavailable as e:
+            if e.status == 400 and self._is_on_project(project_id, user_id):
+                return
+            raise
+
+    def _is_on_project(self, project_id: str, user_id: str) -> bool:
+        """Whether this person is on the project, asked once. A read that fails here answers False:
+        the add is then reported as the refusal it already was, rather than as a success nobody
+        confirmed."""
+        try:
+            payload = self._domino_get(f"/v4/projects/{project_id}/collaborators")
+        except ResourceUnavailable:
+            return False
+        return any(
+            isinstance(p, dict) and str(p.get("id") or "") == user_id
+            for p in payload or []
+        )
+
+    def remove_collaborator(self, project_id: str | None, user_id: str) -> None:
+        """Take one person off the project. Under `GRANT_BASED` visibility this is also what takes
+        away their access to any App published from it — one act, which is why the confirm names
+        both effects."""
+        if not project_id or not self._api_host:
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} is not running against {platformName}, so it cannot change who is "
+                "on this {project}."
+            ))
+        self._send(
+            "DELETE",
+            f"{self._collaborators_path(project_id)}/{user_id}",
+            root=self._api_host,
+            service=_platform_api(),
+            token_provider=self._api_token_provider,
+        )
 
     def list_data_sources(self) -> list[DataSource]:
         """Data Sources this caller has permission on, SQL kinds only, with readiness asked for.
@@ -1535,7 +1723,12 @@ class FakeResourceProvider:
     # Empty by default: none of the fake aliases is Domino-hosted, so there is nothing for one to
     # point at, and a local run should not invent an endpoint the alias list does not reference.
     hosted_endpoints: list[HostedEndpoint] = field(default_factory=list)
-    collaborators: list[Person] = field(default_factory=list)
+    # Both empty for the same reason as `hosted_endpoints`, and it is the reason a local run reads
+    # as "not connected" rather than "nobody to add": the difference is drawn from whether there is
+    # a project id at all, not from these being short. Seed them to walk the People flow locally.
+    collaborators: list[Collaborator] = field(default_factory=list)
+    directory: list[Person] = field(default_factory=list)
+    caller: str = ""
     data_sources: list[DataSource] = field(default_factory=lambda: list(_FAKE_DATA_SOURCES))
     # source id -> database -> schema -> tables, for the cascade (#11).
     tree: dict[str, dict[str, dict[str, list[str]]]] = field(
@@ -1562,10 +1755,34 @@ class FakeResourceProvider:
         ids absent from its own listing would let a test pass on a model Domino never had."""
         return next((m for m in self.model_apis if m.id == model_api_id), None)
 
-    def list_collaborators(self, project_id: str | None) -> list[Person]:
+    def list_collaborators(self, project_id: str | None) -> list[Collaborator]:
         """Empty by default, like `hosted_endpoints`: a local run has no Domino directory behind it,
         and inventing colleagues would put names on a review panel nobody can actually send to."""
         return list(self.collaborators)
+
+    def list_directory(self) -> list[Person]:
+        return list(self.directory)
+
+    def caller_id(self) -> str:
+        return self.caller
+
+    def add_collaborator(self, project_id: str | None, user_id: str) -> None:
+        """Refuses an id the directory does not hold, the way Domino would. A picker offers the
+        directory, so an id that is not in it did not come from the picker — a fake that accepted it
+        would let a test pass on a person Domino has never heard of."""
+        person = next((p for p in self.directory if p.id == user_id), None)
+        if person is None:
+            raise ResourceUnavailable(brand.text(
+                "{platformName} has no such person, so there is nobody to add."))
+        if any(c.id == user_id for c in self.collaborators):
+            return
+        self.collaborators.append(Collaborator(
+            id=person.id, name=person.name, title=person.title, avatar=person.avatar,
+            role="Contributor",
+        ))
+
+    def remove_collaborator(self, project_id: str | None, user_id: str) -> None:
+        self.collaborators[:] = [c for c in self.collaborators if c.id != user_id]
 
     def list_data_sources(self) -> list[DataSource]:
         return list(self.data_sources)

@@ -329,11 +329,17 @@ def test_approving_twice_is_one_approval(tmp_path: Path, monkeypatch):
 
 def test_members_are_empty_rather_than_an_error_when_there_is_no_directory(tmp_path: Path, monkeypatch):
     """Off Domino there are no collaborators to name. The plan page has to open anyway — it shows
-    ids where it would show names, which beats a page that will not load."""
+    ids where it would show names, which beats a page that will not load.
+
+    The payload grew when the People modal became its second caller, and `connected` is the field
+    that keeps the two apart: this is the not-on-the-platform state, not a failed read. That
+    distinction is the modal's, and the plan page reads what it always read.
+    """
     client, _ = _routed(tmp_path, monkeypatch)
     r = client.get("/api/members")
     assert r.status_code == 200
-    assert r.json() == {"members": [], "directory": []}
+    assert r.json()["members"] == [] and r.json()["directory"] == []
+    assert r.json()["connected"] is False and r.json()["error"] == ""
 
 
 def test_editing_the_live_plan_reaches_the_build_not_just_the_page(tmp_path: Path, monkeypatch):

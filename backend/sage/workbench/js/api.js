@@ -695,10 +695,19 @@ SW.api = {
   remix: async () => ({}),
   requestAccess: async () => ({}),
 
-  // The project's collaborators. Empty off Domino, and empty when the record can't be read —
-  // the plan page then shows ids where it would show names rather than failing to load.
-  members: () => request('/members').catch(() => ({ members: [], directory: [] })),
-  invite: async () => ({}),
+  // Who is on the Project, everyone who could be added, and which rows may not be removed. The
+  // route always answers 200 and carries its own `error`, so this catch is for the route not
+  // answering at all — our own server, not Domino. That is a FAILED READ and not the not-connected
+  // state: we tried and got nothing back, so the honest offer is a Retry rather than a claim about
+  // whether Sage is running against the platform, which this answer cannot support either way.
+  members: () => request('/members').catch((e) => ({
+    members: [], directory: [], ownerId: '', self: '', connected: false, error: e.message,
+  })),
+  // No project id in the body: the server uses its own. Answers 200 with per-person outcomes even
+  // when some of them failed, so the caller reads `failed`, not the status.
+  addCollaborators: (userIds) => request('/collaborators', { method: 'POST', body: { userIds } }),
+  removeCollaborator: (userId) =>
+    request(`/collaborators/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
   activity: async () => [],
   notifications: () => empty(),
   readNotification: async () => ({}),

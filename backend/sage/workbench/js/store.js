@@ -93,7 +93,7 @@ window.SW = window.SW || {};
     handoffOpen: false,
     handoffDraft: null,
     graduationOpen: false,
-    inviteOpen: false,
+    peopleOpen: false,
     paletteOpen: false,
     scopePickerOpen: false,
     // The Build header's own add door, open. Controlled from here rather than left to antd because
@@ -117,6 +117,18 @@ window.SW = window.SW || {};
     resourcesLoading: true,
     members: [],
     directory: [],
+    // The three states `/api/members` keeps apart, held apart here too. `connected` false is "not
+    // running against the platform"; `error` set is "the read failed"; neither set with no members
+    // is a Project genuinely worked on alone. Collapsing any two of them would tell a creator their
+    // colleagues do not exist when what is true is that Sage could not look.
+    membersConnected: false,
+    membersError: '',
+    membersLoading: true,
+    // The two rows the People modal must not offer Remove on, in Domino's id space. `state.me`
+    // cannot stand in for `selfId`: it is read off the viewer JWT, whose subject is the identity
+    // provider's id and does not join against a collaborator row.
+    ownerId: '',
+    selfId: '',
     userIndex: {},
     activity: [],
     charts: {},
@@ -541,18 +553,43 @@ window.SW = window.SW || {};
       notify();
     }).catch(() => {});
 
-    const members = await SW.api.members(scope.id || null);
+    const read = await SW.api.members();
     if (gen !== scopeLoad) return;
-    state.members = members.members;
-    state.directory = members.directory;
+    applyMembers(read);
+    notify();
+  }
+
+  // Split out of the scope load because the People modal re-reads it on its own: a Retry after a
+  // failed read, and a refresh after an add or a remove. One writer for these fields, so the modal
+  // and the plan page can never end up looking at different answers.
+  function applyMembers(read) {
+    state.members = read.members || [];
+    state.directory = read.directory || [];
+    state.ownerId = read.ownerId || '';
+    state.selfId = read.self || '';
+    state.membersConnected = read.connected === true;
+    state.membersError = read.error || '';
+    state.membersLoading = false;
 
     // Anything that renders a name or avatar looks the person up here, so
     // author IDs on plans and comments resolve even for non-members.
     state.userIndex = {};
-    [...members.directory, ...members.members].forEach((user) => {
+    [...state.directory, ...state.members].forEach((user) => {
       state.userIndex[user.id] = user;
     });
     if (state.me) state.userIndex[state.me.id] = state.me;
+  }
+
+  // Under the same generation guard as the scope load, because it writes the same fields. A Retry
+  // in flight when the creator switches Project would otherwise land the old Project's people on
+  // the new one — and these particular fields decide who a Remove button is offered for.
+  async function reloadMembers() {
+    const gen = scopeLoad;
+    state.membersLoading = true;
+    notify();
+    const read = await SW.api.members();
+    if (gen !== scopeLoad) return;
+    applyMembers(read);
     notify();
   }
 
@@ -4587,6 +4624,7 @@ window.SW = window.SW || {};
     reloadScopeData: loadScopeData,
     reloadThreads: loadThreadList,
     reloadAttachments: refreshAttachments,
+    reloadMembers,
 
     // The panel's pin names the plan document, so renaming one on the plan page has to reach the
     // pin without a reload. `refreshProjectPlan` does not notify on its own — its other callers

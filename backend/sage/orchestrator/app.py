@@ -2227,10 +2227,58 @@ def review_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
 
 @control_app.get("/api/members")
 def members() -> JSONResponse:
-    """The people a plan can be sent to for review. Empty off Domino, and empty when the caller
-    cannot read the project record — the plan page then shows ids where it would show names, which
-    is worse than names and better than a page that will not load."""
+    """Who is on this Project, and everyone who could be added to it.
+
+    Two callers, deliberately one route. The plan page names a reviewer and resolves a comment's
+    author out of `members`; the People modal adds and removes, and needs `directory`, `ownerId` and
+    `self` beside them. A second endpoint would answer the same question twice and drift.
+
+    Always 200. A read that failed says so in `error` rather than in a status, because one of the
+    two callers must open anyway — see `list_members`, where that choice is made and stated.
+    """
     return JSONResponse(content=orchestrator.list_members())
+
+
+@control_app.post("/api/collaborators")
+async def add_collaborators(request: Request) -> JSONResponse:
+    """Add people to this Project, in the one role Sage assigns.
+
+    The body names people and nothing else. A project id in it would be an authorization surface —
+    whoever reached this route could add people to a Project this Builder is not bound to — so the
+    server uses its own, and a `projectId` sent anyway is ignored rather than honoured.
+
+    There is no permission pre-check: ADR-0018 rejected exactly this shape of Sage-side
+    authorization list. Domino refuses, and the refusal is what the creator reads.
+
+    200 with per-person outcomes, including when some of them failed. A partial failure is a normal
+    answer here, not an error condition — two people added and one refused is two people added.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # A list, checked rather than assumed: a bare string is iterable, so `{"userIds": "u-ada"}` —
+    # the obvious singular-for-plural slip — would otherwise be read one CHARACTER at a time and
+    # answer 200 with five refusals naming "u", "-", "a", "d", "a".
+    sent = body.get("userIds")
+    user_ids = [str(u) for u in sent if str(u)] if isinstance(sent, list) else []
+    if not user_ids:
+        return JSONResponse(status_code=400, content={"error": "userIds required"})
+    try:
+        return JSONResponse(content=orchestrator.add_collaborators(user_ids))
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@control_app.delete("/api/collaborators/{user_id}")
+def remove_collaborator(user_id: str) -> JSONResponse:
+    """Take one person off this Project, and with it their access to any App published from it."""
+    try:
+        return JSONResponse(content=orchestrator.remove_collaborator(user_id))
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @control_app.post("/api/project/build/stop")

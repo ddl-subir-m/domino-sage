@@ -2707,14 +2707,96 @@ class Orchestrator:
     # cheap way the pin does: a plan page is not a reason to boot Vite or seed an app.
 
     def list_members(self) -> dict:
-        """Who can be named as a reviewer, and whose id a comment resolves to. `directory` is the
-        wider set the Workbench looks names up in; here they are the same list, because Sage only
-        ever learns about the people on this project."""
-        people = [
-            {"id": p.id, "name": p.name, "title": p.title, "avatar": p.avatar}
-            for p in self._resources.list_collaborators(self._domino_project_id)
-        ]
-        return {"members": people, "directory": people}
+        """Who is on this Project, and everyone who could be added to it. Two callers, one truth.
+
+        The plan page reads `members` to name a reviewer and resolve a comment's author. The People
+        modal reads all of it: `directory` is the wider set it offers to add — everyone on the
+        deployment, filtered in the browser against `members` — and `ownerId` and `self` are the two
+        rows that must not offer Remove.
+
+        This is where ADR-0028's forgiveness lives. The provider now raises when it cannot read, and
+        this catches, because the plan page must open either way: ids where names would be is worse
+        than names and much better than a page that will not load. What it does NOT do is spend the
+        distinction to buy that — three states leave here as three different answers:
+
+          connected false          Sage is not running against the platform. Nothing was read
+                                   because there was nothing to read.
+          connected, error ""      A working read. Empty members means a Project worked on alone.
+          error set                The read failed, and the modal offers a Retry rather than an
+                                   empty picker that says the creator has no colleagues.
+        """
+        connected = bool(self._domino_project_id)
+        out: dict = {"members": [], "directory": [], "ownerId": "", "self": "",
+                     "connected": connected, "error": ""}
+        if not connected:
+            return out
+        # Two reads, caught separately, because they fail independently and cost different callers
+        # different things. Sharing one `try` meant a directory outage — a read the plan page never
+        # makes — took the reviewer names down with it, which is the exact failure ADR-0028 is about,
+        # one layer up.
+        try:
+            people = self._resources.list_collaborators(self._domino_project_id)
+            out["members"] = [
+                {"id": c.id, "name": c.name, "title": c.title, "avatar": c.avatar, "role": c.role}
+                for c in people
+            ]
+            out["ownerId"] = next((c.id for c in people if c.owner), "")
+            out["self"] = self._resources.caller_id()
+        except ResourceUnavailable as e:
+            out["error"] = str(e)
+        try:
+            out["directory"] = [
+                {"id": p.id, "name": p.name, "title": p.title, "avatar": p.avatar}
+                for p in self._resources.list_directory()
+            ]
+        except ResourceUnavailable as e:
+            # First failure wins the field: both are "the read failed", the modal's answer to either
+            # is the same Retry, and a second error field would ask every caller to learn which.
+            out["error"] = out["error"] or str(e)
+        return out
+
+    def add_collaborators(self, user_ids: list[str]) -> dict:
+        """Add each person, and report per person.
+
+        One call each rather than the bulk route, because a partial failure has to name who it
+        failed on: the modal keeps that person selected for a one-click retry. Nothing is rolled
+        back — the people who were added are added, and undoing them would be a second act the
+        creator did not ask for.
+
+        The reason travels as the platform said it. It is a runtime value, so no Sage prose is
+        invented for it and the brand lint never scans it.
+        """
+        project_id = self._project_to_share()
+        added: list[str] = []
+        failed: list[dict] = []
+        for user_id in user_ids:
+            try:
+                self._resources.add_collaborator(project_id, user_id)
+            except ResourceUnavailable as e:
+                failed.append({"id": user_id, "reason": str(e)})
+            else:
+                added.append(user_id)
+        return {"added": added, "failed": failed}
+
+    def remove_collaborator(self, user_id: str) -> dict:
+        """Take one person off the Project. Under `GRANT_BASED` visibility that is also what takes
+        away their access to any App published from it, which is why the confirm names both."""
+        self._resources.remove_collaborator(self._project_to_share(), user_id)
+        return {"removed": user_id}
+
+    def _project_to_share(self) -> str:
+        """The Project a write is aimed at, refused up front when there is not one.
+
+        A write off the platform is refused whole rather than per person: with no Project there is
+        nothing to have failed at, and reporting it against each name would say the people were the
+        problem.
+        """
+        if not self._domino_project_id:
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} is not running against {platformName}, so it cannot change who is "
+                "on this {project}."
+            ))
+        return self._domino_project_id
 
     def _plan_docs_record(self) -> ProjectRecord:
         return self.project(start_preview=False, seed_app=False).record
