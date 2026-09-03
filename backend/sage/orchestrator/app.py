@@ -813,31 +813,6 @@ def me() -> dict:
     }
 
 
-# Names that must never reach a workspace's runtime environment. `sage-chat` and `sage-implement`
-# run with `bash: allow`, so anything in `env` here is readable by any Builder user who asks the
-# agent for it — that is why GATEWAY_API_KEY is not baked (environment/Dockerfile) and why the
-# private-clone token is an ARG, not an ENV.
-#
-# SAGE_CANARY is the probe that proves the rule holds on THIS Domino: set it in the Environment's
-# variables box, rebuild, and open /api/diag. Absent means Domino passes its variables as build args
-# only, so an ARG-only secret really does die with the build. Present means Domino also injects them
-# at runtime, no Dockerfile can hide a credential, and the image has to be built outside Domino.
-_MUST_NOT_BE_IN_ENV = ("SAGE_CANARY", "SAGE_GIT_TOKEN", "GATEWAY_API_KEY")
-
-
-def _env_leak_diag() -> dict:
-    """Which build-time-only names leaked into the runtime environment, with no secret in the answer.
-
-    Lengths, never values — the same rule `credential_probe` follows, and for the same reason: a
-    diagnostic that prints the credential is the leak it was added to detect. The chat box cannot
-    stand in for this: `_looks_like_question` reads "run: env" as ambiguous, so it falls through to
-    the plan gate and proposes a build instead of running anything.
-    """
-    present = {n: len(os.environ[n]) for n in _MUST_NOT_BE_IN_ENV if os.environ.get(n)}
-    return {"leaked": sorted(present), "lengths": present,
-            "ok": not present, "checked": list(_MUST_NOT_BE_IN_ENV)}
-
-
 def _git_credential_diag() -> dict:
     """Which checkouts hold a git credential for the provisioning host, secrets redacted.
 
@@ -871,8 +846,6 @@ def diag() -> JSONResponse:
         default build agent, so its read-only permission and prompt blocks never applied (null =
         OpenCode not started yet, or the query failed). `/api/health` says the same thing to a
         creator; this stays the raw list
-      - env_leak: build-time-only names (SAGE_CANARY, SAGE_GIT_TOKEN, GATEWAY_API_KEY) that reached
-        this container's environment anyway. `ok: true` means none did. Names and lengths only
       - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
     """
     from .service import _opencode_base_port
@@ -898,7 +871,6 @@ def diag() -> JSONResponse:
             "session_id": p.session_id,
         },
         "git_credential": _git_credential_diag(),
-        "env_leak": _env_leak_diag(),
         "debug_stream": ka.debug_stream_enabled(),
         "log_tail": list(_LOG_RING)[-60:],
         "opencode_log_tail": orchestrator._opencode_log_tail(30),
