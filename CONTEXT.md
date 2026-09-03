@@ -205,6 +205,11 @@ what one Built App carries is two named things and not one. A Binding may also p
 Attachment, but most do not. Removing an Attachment takes the declaration and the app's copy of the
 file. The source it was attached from is never touched, unless that source is a Dataset folder Sage
 wrote itself, which is the one case a person can ask to delete outright.
+A folder is the unit of the act and a file is the unit of the record, so attaching a folder
+makes one Attachment per file below it and never an Attachment named after the folder. Above a
+threshold the app's own description of them collapses to the folder, because the block that
+carries it is re-read on every turn
+([ADR-0029](docs/adr/0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)).
 On screen the list of them is headed "Files it carries". The head keeps the word *file* where the
 Binding's head drops the word *binding*, because the two lists are not the same shape: one holds
 several kinds of thing, and this one holds exactly one, so naming it costs nothing and the empty
@@ -469,6 +474,18 @@ Resource stays wherever it lives, and naming it again is the whole way back. See
 _Kind_: word
 _Avoid_: "Remove from this conversation" (it borrows a verb for a cost this act does not have),
 detach, a bare "Stop using" (it does not say where)
+
+**Attach folder**:
+Putting every file below one Dataset folder into a Built App in a single act, at any depth and
+including the Dataset's own root. It is the same word the app's single-file door already uses, so
+the label is "Attach folder to <app>" and its inverse is "Remove folder from <app>". Both refuse
+whole rather than land half: over the size cap, or with any file still read by the app's code,
+nothing moves and the sentence names the numbers or the files. Offered only where the size is
+knowable, which is a mounted Dataset with a complete listing. See
+[ADR-0029](docs/adr/0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md).
+_Kind_: word
+_Avoid_: "Attach all", "Add folder", import, sync, upload (that makes an [[Upload]]), "Attach
+dataset" (the root is a folder like any other, and the whole-Dataset chip is a different act)
 
 **Shared credential**:
 A Data Source credential belonging to a service account rather than a person, so every
