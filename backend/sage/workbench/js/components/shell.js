@@ -280,7 +280,7 @@ window.SW = window.SW || {};
           {
             className: 'sw-icon-btn is-dark-text',
             'aria-label': 'Toggle side panel',
-            onClick: () => SW.store.toggleDock('resources'),
+            onClick: () => SW.store.toggleDockOpen(),
           },
           h(dockTab ? DoubleRightOutlined : DoubleLeftOutlined, null)
         )
@@ -341,10 +341,11 @@ window.SW = window.SW || {};
             {
               className: 'sw-icon-btn is-dark-text',
               'aria-label': 'Hide panel',
-              // `toggleDock` on the open tab closes it, nulls `panelFilter` for us, and records
-              // the close. A raw `set` here meant the dock persisted when you closed it with ⌘/
-              // and forgot when you closed it with its own button (#150).
-              onClick: () => SW.store.toggleDock(dockTab),
+              // `toggleDockOpen` closes whichever tab is open, nulls `panelFilter` for us, and
+              // records the close. A raw `set` here meant the dock persisted when you closed it
+              // with ⌘/ and forgot when you closed it with its own button (#150). Through the same
+              // writer as the other two doors that mean this, so the three cannot drift again.
+              onClick: () => SW.store.toggleDockOpen(),
             },
             h(DoubleRightOutlined, null)
           )

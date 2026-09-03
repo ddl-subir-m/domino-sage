@@ -33,7 +33,7 @@ window.SW = window.SW || {};
           SW.store.set({ scopePickerOpen: true });
         } else if (meta && e.key === '/') {
           e.preventDefault();
-          SW.store.toggleDock('resources');
+          SW.store.toggleDockOpen();
         } else if (meta && e.key === '\\') {
           // The Rail's counterpart to ⌘/, and the reason both keys were picked: `/` leans right
           // and opens the panel on the right, `\` leans left and opens the one on the left. Now

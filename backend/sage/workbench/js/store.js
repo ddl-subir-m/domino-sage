@@ -2196,7 +2196,7 @@ window.SW = window.SW || {};
 
     // Dock ---------------------------------------------------------------
 
-    // The three writers. A person's hand is on the control in each of these, so each records the
+    // The four writers. A person's hand is on the control in each of these, so each records the
     // answer — a panel you opened is open again on the next load, and a panel you closed stays
     // closed. `focusPanel` below is the deliberate exception.
     toggleDock(tab = 'resources') {
@@ -2210,6 +2210,19 @@ window.SW = window.SW || {};
       state.dockTab = tab;
       SW.prefs.set('dockTab', tab);
       notify();
+    },
+
+    // Open or closed, whichever tab the panel is holding. A different act from `toggleDock`, which
+    // toggles ONE tab and is what the collapsed rail's per-tab buttons mean.
+    //
+    // Both doors labelled for this act passed a constant `resources` to `toggleDock` instead, and
+    // `toggleDock` only closes when its argument is the tab already open. So with the panel open on
+    // Activity, a control captioned "Hide the side panel" switched tab, and the shortcut the help
+    // drawer advertises as a toggle took two presses to close. #150 fixed the dock's own fold button
+    // for exactly this and left its two siblings behind — which is the case for the intent living
+    // here once rather than being spelled out at each of the three doors.
+    toggleDockOpen() {
+      store.toggleDock(state.dockTab || 'resources');
     },
 
     toggleRail() {
