@@ -16,10 +16,11 @@ from sage.orchestrator.service import Orchestrator
 from sage.resources.bindings import KIND_DATA_SOURCE, KIND_MODEL_API, Binding
 from sage.resources.preflight import (
     bindings_on_dead_endpoints,
+    endpoint_binding_fix,
     missing_credentials,
     slots_on_dead_endpoints,
     stale_bindings,
-    stale_message,
+    stale_fault,
     unresolved_slots,
 )
 from sage.resources.provider import (
@@ -90,7 +91,11 @@ def test_the_report_names_both_the_slot_and_the_alias():
     catalog = replace(GOOD_CATALOG, sovereign_implement="ghost-model")
     (p,) = unresolved_slots(catalog, ALIASES)
     assert "sovereign_implement" in p.message and "ghost-model" in p.message
-    assert p.to_dict() == {"slot": "sovereign_implement", "alias": "ghost-model", "message": p.message}
+    assert p.to_dict() == {"slot": "sovereign_implement", "alias": "ghost-model",
+                           "message": p.message, "fault": p.fault, "fix": p.fix}
+    # `message` is the two halves joined, so the log line and the builder read as they always did
+    # while ADR-0027's payload can put the remedy in a field of its own.
+    assert p.message == f"{p.fault} {p.fix}"
 
 
 def test_every_broken_slot_is_reported_not_just_the_first():
@@ -122,7 +127,8 @@ def test_an_empty_gateway_reports_every_slot():
 
 
 def test_startup_reports_ok_when_the_configured_models_all_exist(tmp_path):
-    assert _orch(tmp_path).preflight_slots() == {"state": "ok", "error": None, "slots": []}
+    assert _orch(tmp_path).preflight_slots() == {
+        "state": "ok", "error": None, "slots": [], "reached": True}
 
 
 def test_startup_reports_the_configured_alias_that_does_not_exist(tmp_path):
@@ -218,10 +224,10 @@ def test_one_listing_failing_does_not_suppress_another():
 def test_each_kind_gets_the_sentence_that_leads_where_its_fix_is():
     # Three reasons, three screens. One message for all of them would send two thirds of the people
     # who read it to the wrong place.
-    assert "LLM Gateway" in stale_message(_binding("id", "a"))
-    assert "deployed in this project" in stale_message(
+    assert "LLM Gateway" in stale_fault(_binding("id", "a"))
+    assert "deployed in this project" in stale_fault(
         Binding(KIND_MODEL_API, "id", "churn", "churn"))
-    assert "permission on" in stale_message(Binding(KIND_DATA_SOURCE, "id", "dwh", "dwh"))
+    assert "permission on" in stale_fault(Binding(KIND_DATA_SOURCE, "id", "dwh", "dwh"))
 
 
 def test_a_model_api_whose_token_has_gone_is_reported_too():
@@ -307,7 +313,7 @@ def test_healthz_carries_the_startup_slot_verdict(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(appmod, "GATEWAY_MODE", "domino")
     appmod._run_slot_preflight()
     assert client.get("/healthz").json()["preflight_slots"] == {
-        "state": "ok", "error": None, "slots": []}
+        "state": "ok", "error": None, "slots": [], "reached": True}
 
 
 def test_startup_logs_an_error_naming_the_slot_and_the_alias(tmp_path: Path, monkeypatch, caplog):
@@ -329,24 +335,9 @@ def test_openai_gateway_mode_skips_the_slot_check(tmp_path: Path, monkeypatch):
     assert client.get("/healthz").json()["preflight_slots"]["state"] == "skipped"
 
 
-def test_the_preflight_route_reports_a_stale_binding(tmp_path: Path, monkeypatch):
-    appmod, client = _client(tmp_path, monkeypatch)
-    appmod.orchestrator.bind_llm_alias("id-sonnet")
-    appmod.orchestrator._resources = FakeResourceProvider([ALIASES[1]])
-    body = client.get("/api/preflight").json()["bindings"]
-    assert body["state"] == "problems"
-    assert [b["id"] for b in body["bindings"]] == ["id-sonnet"]
-
-
-def test_the_preflight_route_is_200_even_when_the_gateway_will_not_answer(tmp_path: Path, monkeypatch):
-    # "We could not check" is a state, not a failed request. A 502 here would read to the UI exactly
-    # like the rail's, where it means "you have no models".
-    appmod, client = _client(tmp_path, monkeypatch)
-    appmod.orchestrator.bind_llm_alias("id-sonnet")
-    appmod.orchestrator._resources = _DeadGateway()
-    r = client.get("/api/preflight")
-    assert r.status_code == 200
-    assert r.json()["bindings"]["state"] == "unreachable"
+# `/api/preflight` is gone (ADR-0027): it had no caller, and `preflight_bindings` is one of the six
+# reads `/api/health` composes. Both halves of what it proved are asserted there —
+# `test_a_problem_says_what_broke_and_who_owns_it.py`.
 
 
 # ---- Bindings of every kind, through the orchestrator (#23) ---------------------------------------
@@ -577,14 +568,16 @@ def test_the_slot_report_carries_the_status_verbatim_for_the_log():
 
 def test_a_binding_whose_endpoint_is_stopped_is_reported():
     b = _binding("id-qwen", "qwen-2-5", "Qwen 2.5 (Domino-hosted)")
-    ((got, message, status),) = bindings_on_dead_endpoints([b], HOSTED, [_endpoint("Stopped")])
+    ((got, fault, status),) = bindings_on_dead_endpoints([b], HOSTED, [_endpoint("Stopped")])
     assert got is b
     # The status travels beside the sentence, for the rail's chip. A chip reading "Gone" here would
     # send the creator to remove an Alias that is registered, granted and offered.
     assert status == "Stopped"
-    assert "Qwen 2.5 (Domino-hosted)" in message and "is Stopped" in message
-    # A Binding is changed in the Resources rail, so its fallback is an Alias, not a "model".
-    assert "Start that endpoint, or pick a different Alias" in message
+    assert "Qwen 2.5 (Domino-hosted)" in fault and "is Stopped" in fault
+    # The remedy is the other half, composed from the status the caller already holds. A Binding is
+    # changed in the Resources rail, so its fallback is an Alias, not a "model".
+    assert endpoint_binding_fix(status) == "Start that endpoint, or pick a different Alias, " \
+                                           "before you build on it."
 
 
 def test_a_binding_whose_endpoint_is_running_is_not_reported():
@@ -650,7 +643,7 @@ def test_a_gateway_with_no_hosted_alias_makes_no_endpoint_call_at_all(tmp_path):
     catalog = _hosted_catalog(sovereign_plan="sonnet")
     result = _orch(tmp_path, catalog=catalog, resources=_VendorOnlyCounting()).preflight_slots()
     assert _VendorOnlyCounting.calls == 0
-    assert result == {"state": "ok", "error": None, "slots": []}
+    assert result == {"state": "ok", "error": None, "slots": [], "reached": True}
 
 
 def test_an_endpoint_listing_that_will_not_answer_is_unreachable_not_a_broken_slot(tmp_path):
@@ -730,7 +723,7 @@ def test_a_gateway_with_hosted_aliases_the_app_does_not_use_still_pays_nothing(t
     result = _orch(tmp_path, catalog=catalog, resources=_MixedGateway()).preflight_slots()
 
     assert _MixedGateway.calls == 0
-    assert result == {"state": "ok", "error": None, "slots": []}
+    assert result == {"state": "ok", "error": None, "slots": [], "reached": True}
 
 
 def test_a_binding_on_a_vendor_alias_pays_nothing_either(tmp_path: Path):

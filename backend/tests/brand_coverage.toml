@@ -214,6 +214,11 @@ shows_pack = true
 
 [[surface]]
 kind = "python-prose"
+module = "sage/resources/health.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
 module = "sage/resources/model_api_credentials.py"
 shows_pack = true
 

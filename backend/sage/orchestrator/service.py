@@ -84,11 +84,14 @@ from ..resources.preflight import (
     SLOTS,
     alias_problem,
     bindings_on_dead_endpoints,
-    credential_message,
+    credential_fault,
+    credential_fix,
+    endpoint_binding_fix,
     missing_credentials,
     slots_on_dead_endpoints,
     stale_bindings,
-    stale_message,
+    stale_fault,
+    stale_fix,
     turn_refusal,
     turn_slots,
     unresolved_slots,
@@ -9060,7 +9063,11 @@ class Orchestrator:
         try:
             aliases = self._resources.list_llm_aliases()
         except ResourceUnavailable as e:
-            return {"state": "unreachable", "error": str(e), "slots": []}
+            # `reached` is the whole of ADR-0027's line on silence, recorded at the one call site
+            # that can tell the two apart. Failing HERE is failing to reach the gateway itself, and
+            # that is a Problem. Failing further down — the endpoint listing behind an Alias that
+            # resolved — reports the same `unreachable` state and must stay silent.
+            return {"state": "unreachable", "error": str(e), "slots": [], "reached": False}
         slot_aliases = {(getattr(self._catalog, slot, "") or "").rsplit("/", 1)[-1] for slot in SLOTS}
         endpoints, errors = self._endpoint_listing(aliases, slot_aliases)
         # Sorted back into SLOTS order across BOTH checks. Each returns its own findings in that
@@ -9076,6 +9083,7 @@ class Orchestrator:
             "state": "problems" if problems else "unreachable" if errors else "ok",
             "error": " ".join(errors) or None,
             "slots": problems,
+            "reached": True,
         }
 
     def _slot_listings_now(self) -> tuple[list | None, list | None]:
@@ -9208,18 +9216,23 @@ class Orchestrator:
                    if b not in gone]
         # The third element is the endpoint's status, or None for the two problems that are not about
         # an endpoint. It exists for the rail's chip: see `bindings_on_dead_endpoints`.
-        problems = ([(b, stale_message(b), None) for b in gone]
-                    + [(b, credential_message(b), None) for b in tokenless]
-                    + stalled)
+        # Four-wide since ADR-0027: the remedy travels in its own field as well as inside the
+        # sentence, so the Problem drawer can render it apart without the Rail's message changing.
+        problems = ([(b, stale_fault(b), stale_fix(b), None) for b in gone]
+                    + [(b, credential_fault(b), credential_fix(), None) for b in tokenless]
+                    + [(b, fault, endpoint_binding_fix(st), st) for b, fault, st in stalled])
         return {
             # `problems` outranks `unreachable`, because one listing failing does not unlearn what
             # another one answered. `error` still carries what could not be checked, so a caller is
             # never told that a partial answer was the whole one.
             "state": "problems" if problems else "unreachable" if errors else "ok",
             "error": " ".join(errors) or None,
-            "bindings": [{**b.to_dict(), "message": message,
+            # `message` is the two halves joined and reads exactly as it always did — the Rail
+            # renders one sentence. `fault` and `fix` are the same words apart, because ADR-0027's
+            # Problem drawer renders the remedy as its own line and would otherwise say it twice.
+            "bindings": [{**b.to_dict(), "message": f"{fault} {fix}", "fault": fault, "fix": fix,
                           **({"status": status} if status else {})}
-                         for b, message, status in problems],
+                         for b, fault, fix, status in problems],
         }
 
     # Which listing is authoritative for which kind, and how to fetch it. An LLM Alias comes off the

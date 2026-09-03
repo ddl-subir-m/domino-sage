@@ -51,6 +51,7 @@ from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..preview.prefix import domino_base_prefix, domino_project_label, proxy_is_app, publish_available
 from ..preview.proxy import make_preview_app
+from ..resources import health
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
     KIND_DATASET,
@@ -839,9 +840,11 @@ def diag() -> JSONResponse:
         model call never got to the gateway (OpenCode stuck earlier, e.g. on a tool), not a gateway hang
       - last_gateway_error: set if a model call failed/severed
       - ports: base_port (what opencode.json tells OpenCode to dial) must equal control_port
-      - agents: the agents OpenCode actually resolved. Missing sage-ask/sage-plan/sage-implement means
-        every mode silently ran the default build agent, so their read-only permission and prompt blocks
-        never applied (null = OpenCode not started yet, or the query failed)
+      - agents: the agents OpenCode actually resolved. There are five — sage-chat, sage-ask, sage-plan,
+        sage-architect, sage-implement — and any of them missing means that mode silently ran the
+        default build agent, so its read-only permission and prompt blocks never applied (null =
+        OpenCode not started yet, or the query failed). `/api/health` says the same thing to a
+        creator; this stays the raw list
       - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
     """
     from .service import _opencode_base_port
@@ -1580,19 +1583,60 @@ def stop_sharing_samples(source: str = "") -> JSONResponse:
     return JSONResponse(content=orchestrator.clear_sample_rows(source))
 
 
-@control_app.get("/api/preflight")
-def preflight() -> JSONResponse:
-    """The Bindings this app records that the gateway no longer offers (#17).
+# The ids the previous Preflight found, and the whole of ADR-0027's survival rule on this side: a
+# Problem is reported only when the Preflight before this one found it too. Process-wide rather than
+# per-session, because the condition is the deployment's rather than any one reader's — two open
+# Workbenches asking are two Preflights, not two separate counts of the same fault.
+_PREFLIGHT_SEEN: set[str] = set()
+# FastAPI runs a sync route on a threadpool, so two open Workbenches asking at once would otherwise
+# read-modify-write that set against each other — and the interleaving that loses is the one where
+# a fault sighted once by one tab is reported as a survivor to the other, which is exactly the
+# self-clearing blip the rule exists to swallow.
+_PREFLIGHT_LOCK = threading.Lock()
 
-    Its own route, called by the UI just after the project view is live, rather than folded into
-    /api/project: that call is what boot blocks on, and a stale Binding is worth a warning, not
-    worth holding the builder shut while a gateway decides whether to answer. An app with no
-    Bindings — most apps, most of the time — makes no gateway call at all.
 
-    Always 200, never 502: "we could not check" is a `state`, not a failure of the request. A 502
-    here would read to the UI exactly like the rail's, where it means "you have no models".
+@control_app.get("/api/health")
+def health_problems() -> JSONResponse:
+    """Every [[Problem]] this deployment has, in the creator's own words (ADR-0027).
+
+    One composed route rather than six raw ones. The person reading it opened a Workbench to build
+    something; `/api/diag` is the maintainer's surface and stays exactly as it is.
+
+    No probe of its own. Four of the five reads are free — a global the boot Preflight filled, two
+    numbers, an import that has already happened — and the fifth is the Binding check `/api/preflight`
+    used to make, which costs a listing only for an app that has a Binding at all. The slot verdict
+    is the boot one: `_run_slot_preflight` writes it once, `/healthz` serves the same global, and the
+    two cannot drift because there is only one.
+
+    Always 200, never 502. "We could not check" is a state, not a failure of the request; a 502 here
+    would read to the UI exactly like the Resource rail's, where it means "you have no models". Each
+    read is caught on its own, so one dead dependency costs its own answer and not the other four —
+    a route that reports Problems must not become one.
     """
-    return JSONResponse(content={"bindings": orchestrator.preflight_bindings()})
+    from .service import _opencode_base_port
+
+    def _read(fn, fallback):
+        try:
+            return fn()
+        except Exception:
+            log.exception("health: one read did not answer")
+            return fallback
+
+    found = health.problems(
+        slots=PREFLIGHT_SLOTS,
+        bindings=_read(orchestrator.preflight_bindings, {}),
+        # Read inside `_read` rather than above it: a port that will not parse is a deployment this
+        # route still has to answer for, and the port Problem it cannot judge stays silent.
+        ports={"control_port": _read(lambda: int(os.environ.get("SAGE_CONTROL_PORT", "8080")), None),
+               "base_port": _read(lambda: _opencode_base_port(orchestrator._opencode_cwd), None)},
+        agents=_read(orchestrator.resolved_agents, None),
+        data_library=_read(data_library_ready, ""),
+    )
+    global _PREFLIGHT_SEEN
+    with _PREFLIGHT_LOCK:
+        reported = health.survivors(_PREFLIGHT_SEEN, found)
+        _PREFLIGHT_SEEN = {p.id for p in found}
+    return JSONResponse(content={"problems": [p.to_dict() for p in reported]})
 
 
 @control_app.get("/api/project/assets/{dataset_id}/files")

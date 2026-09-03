@@ -41,16 +41,33 @@ class SlotProblem:
     def message(self) -> str:
         """What the maintainer reads, in the log and in the builder. Names both halves — the slot
         alone does not say what to change it from, and the alias alone does not say what broke."""
+        return f"{self.fault} {self.fix}"
+
+    @property
+    def fault(self) -> str:
+        """What is wrong, with no remedy in it. Its own half since ADR-0027, which gives a
+        creator-facing Problem a `fix` field of its own; `message` still joins the two, so the log
+        line and the builder banner read exactly as they always did."""
         return brand.text(
             "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, which this "
-            "{llmGateway} does not offer. {turnPlural} that route to {slot} will fail. Pick a "
-            "different model for that slot, or register {alias} in the {llmGateway}.",
+            "{llmGateway} does not offer. {turnPlural} that route to {slot} will fail.",
             slot=self.slot,
             alias=self.alias,
         )
 
+    @property
+    def fix(self) -> str:
+        """Both halves of the remedy, because this fault has two owners: the creator picks another
+        model, an administrator registers the Alias. ADR-0027 sorts it under the creator and keeps
+        the administrator's half in the sentence."""
+        return brand.text(
+            "Pick a different model for that slot, or register {alias} in the {llmGateway}.",
+            alias=self.alias,
+        )
+
     def to_dict(self) -> dict:
-        return {"slot": self.slot, "alias": self.alias, "message": self.message}
+        return {"slot": self.slot, "alias": self.alias, "message": self.message,
+                "fault": self.fault, "fix": self.fix}
 
 
 def unresolved_slots(catalog: ModelCatalog, aliases: list[LlmAlias]) -> list[SlotProblem]:
@@ -161,20 +178,32 @@ class EndpointProblem:
 
     @property
     def message(self) -> str:
+        return f"{self.fault} {self.fix}"
+
+    @property
+    def fault(self) -> str:
+        """See `SlotProblem.fault` — split for the same reason, and joined back the same way."""
         return brand.text(
             "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, whose "
             "{hostedGenaiEndpoint} {endpoint} is {status}. {turnPlural} that route to {slot} "
-            "will fail. {remedy}.",
+            "will fail.",
             slot=self.slot,
             alias=self.alias,
             endpoint=self.endpoint,
             status=self.status,
+        )
+
+    @property
+    def fix(self) -> str:
+        return brand.text(
+            "{remedy}.",
             remedy=endpoint_remedy(self.status, "pick a different model for that slot"),
         )
 
     def to_dict(self) -> dict:
         return {"slot": self.slot, "alias": self.alias, "endpoint": self.endpoint,
-                "status": self.status, "message": self.message}
+                "status": self.status, "message": self.message, "fault": self.fault,
+                "fix": self.fix}
 
 
 def alias_problem(alias_name: str, aliases: list[LlmAlias],
@@ -311,15 +340,18 @@ def turn_refusal(slot: str, alias: str, aliases: list[LlmAlias],
 
 def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
                                endpoints: list[HostedEndpoint] | None) -> list[tuple[Binding, str, str]]:
-    """The LLM Alias Bindings whose endpoint will not answer: the Binding, the sentence, the status.
+    """The LLM Alias Bindings whose endpoint will not answer: the Binding, the fault, the status.
 
     Returned as triples because neither of the other two facts can be derived from the Binding —
-    unlike `stale_message`, which can. The sentence needs the endpoint's name, and the **status has
+    unlike `stale_fault`, which can. The sentence needs the endpoint's name, and the **status has
     to travel separately** even though the sentence already contains it: the rail badges the row with
     a short chip, and a chip that said "Gone" here would send the creator to remove an Alias that is
     registered, granted and offered, whose endpoint is merely stopped. That is the exact confusion
     this issue exists to prevent, so the chip gets Domino's own word rather than a guess made by
     pattern-matching the prose.
+
+    The remedy is NOT in the sentence returned here — `endpoint_binding_fix` composes it from the
+    status the caller already holds, so the two halves are separable for ADR-0027's Problem payload.
     """
     out: list[tuple[Binding, str, str]] = []
     for b in bindings:
@@ -329,15 +361,28 @@ def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
         if not found:
             continue
         endpoint, status = found
-        out.append((b, brand.text(
+        fault = brand.text(
             "This app is recorded using the {llmAlias} {name}, whose {hostedGenaiEndpoint} "
-            "{endpoint} is {status}. Its calls will fail. {remedy}, before you build on it.",
+            "{endpoint} is {status}. Its calls will fail.",
             name=b.display_name,
             endpoint=endpoint,
             status=status,
-            remedy=endpoint_remedy(status, "pick a different Alias"),
-        ), status))
+        )
+        out.append((b, fault, status))
     return out
+
+
+def endpoint_binding_fix(status: str) -> str:
+    """The remedy half of what `bindings_on_dead_endpoints` says, on its own.
+
+    A function rather than a fourth element of that tuple: its caller already carries the status,
+    which is all this needs, and ADR-0027's Problem payload is the only thing that wants the two
+    halves apart. The joined sentence that function returns is unchanged.
+    """
+    return brand.text(
+        "{remedy}, before you build on it.",
+        remedy=endpoint_remedy(status, "pick a different Alias"),
+    )
 
 
 def stale_bindings(bindings: list[Binding], listings: dict[str, list | None]) -> list[Binding]:
@@ -386,20 +431,22 @@ def missing_credentials(bindings: list[Binding], held: set[str] | None) -> list[
     return [b for b in bindings if b.kind == KIND_MODEL_API and b.id not in held]
 
 
-def stale_message(b: Binding) -> str:
-    """What a creator reads about one stale Binding. Names the label the row showed when they made
-    the choice, since that is the only version of the Resource they ever saw.
+def stale_fault(b: Binding) -> str:
+    """What a creator reads about one stale Binding, without the remedy. Names the label the row
+    showed when they made the choice, since that is the only version of the Resource they ever saw.
 
     One sentence per kind, because the three go missing for different reasons and lead to different
     places: an Alias is de-registered on the gateway, a Model API is undeployed from this project, and
     a Data Source is a grant the creator no longer holds. One message for all three would send two
     thirds of the people who read it to the wrong screen.
+
+    Split from `stale_fix` for ADR-0027's Problem payload, which renders the remedy on its own line.
+    The caller joins the two with a space for the sentence the Rail has always shown.
     """
     if b.kind == KIND_MODEL_API:
         return brand.text(
             "This app is recorded as using the {modelApi} {name}, which is no longer deployed in "
-            "this project. Its prediction calls will fail. Remove it, or pick a different "
-            "{modelApi}, before you build on it.",
+            "this project. Its prediction calls will fail.",
             name=b.display_name,
         )
     if b.kind == KIND_DATA_SOURCE:
@@ -408,22 +455,36 @@ def stale_message(b: Binding) -> str:
         return brand.text(
             "This app is recorded as reading the {dataSource} {name}, which is no longer among the "
             "{dataSourcePlural} you have permission on. {assistantName} will not publish an app "
-            "that reads a store it cannot check. Remove it, or pick a different {dataSource}, "
-            "before you build on it.",
+            "that reads a store it cannot check.",
             name=b.display_name,
         )
     return brand.text(
         "This app is recorded as using the {llmAlias} {name}, which the {llmGateway} no longer "
-        "offers. Remove it, or pick a different Alias, before you build on it.",
+        "offers.",
         name=b.display_name,
     )
 
 
-def credential_message(b: Binding) -> str:
-    """What a creator reads about a Model API Binding whose access token has gone."""
+def stale_fix(b: Binding) -> str:
+    """Where to go about it, which is a different screen per kind — the reason `stale_fault` is
+    also written per kind rather than once."""
+    if b.kind == KIND_MODEL_API:
+        return brand.text("Remove it, or pick a different {modelApi}, before you build on it.")
+    if b.kind == KIND_DATA_SOURCE:
+        return brand.text("Remove it, or pick a different {dataSource}, before you build on it.")
+    return brand.text("Remove it, or pick a different Alias, before you build on it.")
+
+
+def credential_fault(b: Binding) -> str:
+    """What a creator reads about a Model API Binding whose access token has gone. Split from
+    `credential_fix` for the reason `stale_fault` is."""
     return brand.text(
         "This app is recorded as using the {modelApi} {name}, but {assistantName} no longer holds "
-        "an access token for it, so the app cannot call it. Use it again in the {resourcePlural} panel to "
-        "paste a new token, or remove it.",
+        "an access token for it, so the app cannot call it.",
         name=b.display_name,
     )
+
+
+def credential_fix() -> str:
+    return brand.text(
+        "Use it again in the {resourcePlural} panel to paste a new token, or remove it.")
