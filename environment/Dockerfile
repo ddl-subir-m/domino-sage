@@ -91,9 +91,61 @@ ARG SAGE_REV=main
 # `--branch` takes a ref (branch/tag), not a bare SHA — so to force a fresh clone of the SAME branch
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
 ARG SAGE_CACHE_BUST=2026-09-02-table-cells-fill
-# NOTE: if the repo is PRIVATE, this clone needs a build-time credential — pass a token via a
-# secret build-arg and use it in the URL, or make a deploy mirror public. Public clone shown here.
-RUN git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage
+# Canary probe for the ARG-vs-ENV question below. NOT YET RUN — see #151. Set SAGE_CANARY to a junk
+# value in the Environment's variables box, rebuild, then open a workspace terminal (a VS Code
+# workspace on this Environment; a Sage Builder has no terminal, and its chat box is not one — a
+# shell command there reads as ambiguous and gets planned, see #150) and run:
+#
+#     env | grep -E 'GATEWAY_BASE_URL|SAGE_CANARY'
+#
+# GATEWAY_BASE_URL is the control: it is ARG+ENV, so it MUST appear. SAGE_CANARY is ARG-only, so it
+# must not. Both are set in the same box, which is what makes the pair conclusive. Checking only for
+# the canary proves nothing — an absent canary and a never-set canary look identical.
+# Delete this line once the pair has been seen.
+ARG SAGE_CANARY=
+
+# ############################################################################################
+# THE TOKEN HERE MUST BE SHORT-LIVED. Expiry is the control, not this Dockerfile. See #151.
+#
+# A build arg is NOT a secret. Docker's own ARG documentation: "Build-time variable values are
+# visible to any user of the image with the `docker history` command." So a PAT passed through the
+# Environment's variables box is recoverable in plaintext from the built image by anyone who can
+# pull it, whatever this Dockerfile then does with the value. The fix Docker intends,
+# `RUN --mount=type=secret`, needs `--secret` on the build command line; Domino gives a Dockerfile
+# box and a variables box, not the build command, so it is out of reach from here.
+#
+# What works instead is making the leaked value worthless. Mint a fine-grained PAT — read-only
+# Contents, this repo only, EXPIRY SET TO TOMORROW — paste it in, bump SAGE_CACHE_BUST, rebuild,
+# then delete the variable. `docker history` still yields the token; it is dead by the time anyone
+# reads it. The cost is a fresh token per rebuild of this layer, which is every code change.
+#
+# The two mitigations below are real but PARTIAL. Both cover the RUNTIME half only; neither touches
+# image metadata, and neither is a reason to use a long-lived token:
+#   - ARG and never ENV keeps the value out of the running container's `env`. This matters because
+#     sage-chat and sage-implement run with `bash: allow` (opencode.json), so a Builder user needs
+#     no terminal to read the environment — they just ask the agent to. UNVERIFIED on this Domino:
+#     the canary pair above is the test, and it has not been run.
+#   - The header form keeps the value off the filesystem. `git clone https://<token>@…` writes that
+#     whole URL into /opt/sage/.git/config, which is a plain file the agent can cat; `git -c` placed
+#     BEFORE the subcommand applies to this process only and is not copied into the new repo, so the
+#     saved remote is the clean SAGE_REPO_URL. The grep below asserts THAT, and only that. Verified
+#     against the real repo 2026-09-03.
+#
+# The durable fix is to build this image where a secret is really a secret (CI) and have Domino pull
+# it. That needs a registry for a ~500MB-of-layers image; GHCR's free tier gives 500MB and will not
+# hold it. Only 4.78 MiB of this is source — the rest is built here — so the short-lived token above
+# moves the small private thing without needing a registry at all.
+ARG SAGE_GIT_TOKEN=
+RUN if [ -n "$SAGE_GIT_TOKEN" ]; then \
+      git -c http.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$SAGE_GIT_TOKEN" | base64 | tr -d '\n')" \
+          clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage; \
+    else \
+      git clone --depth 1 --branch "$SAGE_REV" "$SAGE_REPO_URL" /opt/sage; \
+    fi \
+ && if [ -n "$SAGE_GIT_TOKEN" ] && grep -rqF "$SAGE_GIT_TOKEN" /opt/sage/.git 2>/dev/null; then \
+      echo "[sage] FATAL: the clone credential landed in /opt/sage/.git — refusing to bake it"; exit 1; \
+    fi \
+ && echo "[sage] clone OK, no credential on the filesystem (image metadata NOT covered — see above)"
 
 # The Workbench serves Inter and nine vendor bundles from its own origin, so the image distributes
 # them and their licence text has to travel with it. The clone brings the file; this asserts it

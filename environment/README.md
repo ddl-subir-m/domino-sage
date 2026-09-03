@@ -40,8 +40,35 @@ commits. A published Workbench App must **not** treat that checkout as an app �
 ## Fill-ins before it builds
 
 1. **Base image** — `FROM <your-standard-domino-base-image>` at the top of the Dockerfile.
-2. **`SAGE_REPO_URL` / `SAGE_REV`** — where to clone Sage from. If the repo is **private**, the
-   build-time `git clone` needs a credential (secret build-arg token, or a public deploy mirror).
+2. **`SAGE_REPO_URL` / `SAGE_REV`** — where to clone Sage from.
+
+   If the repo is **private**, set `SAGE_GIT_TOKEN` in the Environment's **Environment Variables**
+   box — but **only ever a short-lived token.** A build arg is not a secret: Docker's `ARG`
+   documentation says build-time values "are visible to any user of the image with the
+   `docker history` command", so the PAT is recoverable in plaintext from the built image by anyone
+   who can pull it. Expiry is what protects you, not the Dockerfile.
+
+   Recipe, per rebuild of the clone layer:
+   1. Mint a fine-grained PAT — read-only Contents, this repo only, **expiry tomorrow**.
+   2. Paste it into the variables box, bump `SAGE_CACHE_BUST`, rebuild.
+   3. Delete the variable. Let the token expire.
+
+   The Dockerfile's two mitigations (`ARG` never `ENV`; the header clone) are real but cover the
+   **runtime** half only — the container's `env` and its filesystem. Neither touches image metadata.
+   See #151 for the full reasoning and the durable fix (build in CI, have Domino pull the image).
+
+   **Unverified:** whether Domino passes its Environment Variables as build args only. `SAGE_CANARY`
+   in the Dockerfile is the test and has not been run. Run it from a **VS Code workspace terminal**
+   on this Environment — a Sage Builder has no terminal, and its chat box is not a substitute (#150):
+
+   ```bash
+   env | grep -E 'GATEWAY_BASE_URL|SAGE_CANARY'
+   ```
+
+   `GATEWAY_BASE_URL` (`ARG`+`ENV`) must appear; `SAGE_CANARY` (`ARG` only) must not. Both are set
+   in the same box, which is what makes the pair conclusive — checking only for the canary proves
+   nothing, because an absent canary and a never-set canary look identical.
+
 3. **Gateway** — set `GATEWAY_BASE_URL` in the Environment's **Environment Variables** box so builds
    can reach a model. Without it the UI and preview still work; builds can't call the LLM.
    - Set it at the **Environment** level, not the project level. Workspaces inherit the
