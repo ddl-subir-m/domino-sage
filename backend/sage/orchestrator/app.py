@@ -424,9 +424,6 @@ def _run_slot_preflight() -> None:
     PREFLIGHT_SLOTS = result
 
 
-threading.Thread(target=_run_slot_preflight, name="sage-preflight-slots", daemon=True).start()
-
-
 def _warm_opencode() -> None:
     """Boot the OpenCode server now rather than on the first turn.
 
@@ -446,8 +443,6 @@ def _warm_opencode() -> None:
         log.warning("warm: OpenCode did not start ahead of the first turn — %s", e)
 
 
-threading.Thread(target=_warm_opencode, name="sage-warm-opencode", daemon=True).start()
-
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Tear down the child processes however this app was launched.
@@ -458,7 +453,25 @@ async def _lifespan(app: FastAPI):
     it survives the exit rather than dying with it, and each of those exits left one orphaned
     `opencode serve` holding ~80 MB. Hanging the teardown on the app means the ASGI server runs it,
     whichever server that is.
+
+    Startup is the other half of the same rule: the preflight and the warm-up used to run on
+    threads started at MODULE IMPORT, which is one event the teardown below can never be paired
+    with. Importing this module — a test collecting, a tool reading `control_app` — spawned a real
+    `opencode serve` that nothing then stopped, one per import. Booting them here means every
+    launcher that starts them is a launcher that also stops them. run()'s
+    `_install_opencode_config` now lands before the warm-up too, instead of racing it.
     """
+    def _boot(step) -> None:
+        # Neither step is worth the port Domino is waiting on, so a thread that dies logs and
+        # leaves the lazy paths to report the problem when a turn asks.
+        try:
+            step()
+        except Exception:
+            log.exception("startup: %s did not finish", step.__name__)
+
+    for step, name in ((_run_slot_preflight, "sage-preflight-slots"),
+                       (_warm_opencode, "sage-warm-opencode")):
+        threading.Thread(target=_boot, args=(step,), name=name, daemon=True).start()
     yield
     orchestrator.shutdown()
 
