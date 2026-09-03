@@ -1996,12 +1996,36 @@ window.SW = window.SW || {};
     },
 
     async init() {
+      // Every read below is caught, because the Workbench is not one service. Who is looking, the
+      // Project listing, the chart registry, the starter deck and the bell answer from different
+      // places, and any of them can be down while the thing somebody came here to do — build —
+      // still works, since not one of these eight reads is that thing. An
+      // uncaught reject in this Promise.all is not a missing panel: it reaches `app.js`, which turns
+      // a boot failure into the full-page "The workspace could not load", so ONE dead service takes
+      // the whole Builder with it. ADR-0027 names that shape as the reason it informs and never
+      // blocks: a dead Project listing must not become a jail for somebody who could still have
+      // built. Each fallback is that read's own honest empty value, and none of them says anything —
+      // reporting is a separate concern with its own placement (the chip), not a boot-time throw.
       const [me, projects, charts, starters, notifications, brand, health, project] = await Promise.all([
-        SW.api.me(),
-        SW.api.projects(),
-        SW.api.charts(),
-        SW.api.starters(),
-        SW.api.notifications(),
+        // Null is what `state.me` already holds before this answers, and the greeting is written for
+        // it — it drops the first name. It is not free, though, and the cost is not the greeting:
+        // `prefs` keys the viewer's whole preference record on `me.id` and falls back to the
+        // literal `me` that a container with no identity to report answers with. That is the
+        // right key for a laptop run and the WRONG one for a blipped read on a deployment, where it
+        // would read somebody else's panel choices and then write this session's over them. So the
+        // pref reads below are gated on a real viewer. An unreadable viewer costs a name and a
+        // remembered panel, not a session.
+        SW.api.me().catch(() => null),
+        // Empty rather than `state.projects`, because empty is what "we could not read the listing"
+        // honestly looks like, and the chip must not offer rows to switch to that we did not read.
+        // The scope fallback below keeps it naming where you are.
+        SW.api.projects().catch(() => []),
+        SW.api.charts().catch(() => ({})),
+        SW.api.starters().catch(() => null),
+        // Caught for the same reason as the four above, even though `api.js` cannot reject it today:
+        // it is the stub `empty()`, and the four reads beside it that already carry a URL say what
+        // happens the day this one does. A bell with nothing in it is not worth a wall.
+        SW.api.notifications().catch(() => []),
         SW.api.brand().catch(() => state.brand),
         // Extra options for Build's picker, not a health check. Caught, because a gateway that
         // cannot answer this still has four working slots and a picker that must open.
@@ -2015,16 +2039,40 @@ window.SW = window.SW || {};
       // Both side panels, before `ready` flips. A preference is keyed by viewer, so this is the
       // first moment there is a record to read — and it has to happen before the Shell paints, or
       // the Rail and the dock would open on the fallbacks and then shut again in front of someone.
-      state.railHidden = SW.prefs.get('railHidden');
-      state.dockTab = SW.prefs.get('dockTab');
+      //
+      // Only when the viewer read answered, for the reason given above it. With no viewer there is
+      // no record of THIS person's to open, and the fallbacks the two keys carry are the same values
+      // `state` already holds — so a session that does not know who is looking gets the panels a
+      // first visit gets, and leaves no mark in a record it cannot key.
+      if (me) {
+        state.railHidden = SW.prefs.get('railHidden');
+        state.dockTab = SW.prefs.get('dockTab');
+      }
       if (brand) {
         state.brand = brand;
         applyBrandChrome(brand);
       }
       state.projects = projects;
       state.canProvision = !!(projects[0] && projects[0].provisioning);
-      state.scope = projects[0] || state.scope;
-      applyModelStatus(projects[0]);
+      // `projects[0]` is this container's own row, and it is the only row that carries the bound
+      // Project's display name and its model slots — the rest are Domino names and an id to attach
+      // by. When the listing read failed there is no such row at all, so both come off `/project`
+      // instead: `Project.status()` is built from this container and asks the control plane nothing,
+      // which is exactly why it can still answer when the listing cannot. The chip then goes on
+      // saying where you are and loses only the ability to move somewhere else, and the picker
+      // already explains that loss on the control itself, because `canProvision` is false above and
+      // the disabled New project button draws its own reason.
+      state.scope = projects[0] || (project && {
+        ...NO_SCOPE,
+        id: project.id,
+        name: project.name || project.id,
+        untitled: !!project.untitled,
+        current: true,
+      }) || state.scope;
+      // Same substitution, same reason: the model block in `projects[0]` was read off `/project` in
+      // the first place, so reading it from `/project` directly loses nothing. Without this, Build's
+      // picker would open on the seeded catalog with no slot marked current.
+      applyModelStatus(projects[0] || project);
       state.charts = charts;
       state.starters = starters;
       state.notifications = notifications;
