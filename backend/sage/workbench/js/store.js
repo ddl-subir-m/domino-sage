@@ -2812,6 +2812,70 @@ window.SW = window.SW || {};
       return true;
     },
 
+    // A folder of Dataset files, into the selected Built App ---------------
+    //
+    // The one act in the Dataset tree that is not a single file, which is why it is the one that
+    // confirms (ADR-0029). The numbers are not politeness: the total attach budget is what decides
+    // whether the act can succeed at all, so what the folder weighs and what the app already
+    // carries have to be on screen BEFORE the click rather than inside the refusal after it.
+    //
+    // Every number in the question comes from the row that asked it, never from a second read. The
+    // row's count and size are the listing's own, and the server measures the same subtree again
+    // before it links anything — so a stale tree costs a refusal that names real numbers, never a
+    // partial attach.
+    //
+    // The app is captured where the question is asked and checked again before the act, exactly as
+    // `removeBindingFromApp` does it: a modal can sit open for as long as somebody leaves it there,
+    // and the title is a promise about which app gains the files.
+    async attachFolderToApp({ datasetId, label, folder, files, bytes }) {
+      const asked = state.activeApp;
+      if (!asked || !datasetId || !files) return false;
+      const where = asked.name;
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Attach ${SW.util.number(files)} ${files === 1 ? 'file' : 'files'}`
+            + ` (${SW.util.bytes(bytes)}) to ${where}?`,
+          // What the act commits to, in one sentence. Not "there is no undo" — there is one, and
+          // naming it is what keeps this confirm from reading as a warning about a cheap act.
+          content: `${where} carries every file below ${label} from then on, and ships them when `
+            + 'you publish it. Take one back out from the app’s own list.',
+          okText: `Attach folder to ${where}`,
+          onOk: async () => {
+            let result;
+            if (!state.activeApp || state.activeApp.id !== asked.id) {
+              antd.message.warning(
+                `Nothing was attached. The selected app changed to ${appScopeName()} while this `
+                + `was open, and this attach named ${where}.`
+              );
+              resolve(false);
+              return;
+            }
+            try {
+              result = await SW.api.attachDatasetFolder(datasetId, folder);
+            } catch (err) {
+              // The server's own sentence, which is the only one that can name the three numbers a
+              // cap refusal turns on. Retold here it would be a second, vaguer copy.
+              antd.message.error(`${label} could not be attached to ${where}: ${err.message}`);
+              resolve(false);
+              return;
+            }
+            // The whole scope, because an attach moves two lists at once: the app's files and the
+            // Build header's account of what it ships. Same refresh the crossing makes.
+            await loadScopeData();
+            // The receipt names what the act ADDED, which is not always what the row counted: a
+            // file already in the app is passed over rather than attached twice, and a receipt
+            // claiming otherwise would be a count nobody could reconcile with the list.
+            antd.message.success(result.attached
+              ? `${SW.util.number(result.attached)} files from ${label} are in ${where}. `
+                + 'Remove one from the app’s own list.'
+              : `${where} already carries every file in ${label}.`);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
     // Closing a gap a refused @mention named --------------------------------
     //
     // One act per reason a turn drops a mention, taking the row `_unusable_mentions` wrote (#135).

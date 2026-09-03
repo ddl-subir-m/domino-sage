@@ -401,6 +401,10 @@ SW.api = {
   assetFiles: (datasetId) => request(`/project/assets/${encodeURIComponent(datasetId)}/files`),
   attachDatasetFile: (datasetId, path) =>
     post(`/project/assets/${encodeURIComponent(datasetId)}/files/attach`, { path }),
+  // Every file below one folder, in one act. `folder` is `''` for the Dataset root — that is this
+  // act at depth 0 rather than a second call with its own name (ADR-0029).
+  attachDatasetFolder: (datasetId, folder) =>
+    post(`/project/assets/${encodeURIComponent(datasetId)}/files/attach-folder`, { folder }),
   dataSourceDatabases: (sourceId) => request(`/data-sources/${encodeURIComponent(sourceId)}/databases`),
   dataSourceSchemas: (sourceId, database) =>
     request(`/data-sources/${encodeURIComponent(sourceId)}/schemas?database=${encodeURIComponent(database || '')}`),

@@ -119,8 +119,13 @@ def test_the_pin_tooltip_goes_through_the_brand_pack():
 def test_only_pin_carries_the_tooltip():
     """Unpin needs no explanation — the thing is already pinned, and whoever pinned it has seen the
     tooltip. Counted over the `h(` call rather than the word, so that importing another antd
-    component whose name sits beside Tooltip in the destructure does not read as a second one."""
-    assert TREE_FLAT.count("h( Tooltip,") == 1
+    component whose name sits beside Tooltip in the destructure does not read as a second one.
+
+    Counted over `LeafRow`, which is the row this claim is about. The folder row beside it carries
+    one too, for the opposite reason: its act is sometimes UNAVAILABLE, and a disabled control that
+    does not say why is the dead end (ADR-0029)."""
+    leaf = _flat(TREE.split("function LeafRow(")[1].split("\n  }")[0])
+    assert leaf.count("h( Tooltip,") == 1
 
 
 # Membership stopped being a gate in front of the verb ------------------------

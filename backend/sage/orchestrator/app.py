@@ -70,9 +70,10 @@ from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from ..workspace.threads import safe_id
 from .brand import text as brand_text
+from .describe import human_bytes
 from .service import (
-    AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceNotBound, ResourceStillBound,
-    TurnBusy, UploadUnavailable,
+    AttachTooLarge, DataReferenced, FolderActUnavailable, Orchestrator, ResetBusy,
+    ResourceNotBound, ResourceStillBound, TurnBusy, UploadUnavailable,
 )
 
 _feedback = FeedbackRunner()
@@ -1699,6 +1700,43 @@ async def attach_file(dataset_id: str, request: Request) -> JSONResponse:
             status_code=413,
             content={"error": f"attaching this file would exceed the {mb:.0f} MB limit for attached data"},
         )
+
+
+@control_app.post("/api/project/assets/{dataset_id}/files/attach-folder")
+async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
+    """Attach every file below one Dataset folder, in one act (ADR-0029).
+
+    `folder` is required and may be `""` — the Dataset root is this act at depth 0, not a second
+    route with its own name. A missing key is a malformed body rather than a root attach, because
+    the two are far too different to guess between.
+    """
+    folder = (await request.json()).get("folder")
+    if folder is None:
+        return JSONResponse(status_code=400, content={"error": "folder required"})
+    try:
+        return JSONResponse(content=orchestrator.attach_folder(dataset_id, folder))
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "folder not found in the {dataset}")})
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid folder"})
+    except FolderActUnavailable as e:
+        # The reason the row already carried, said again by the act it withheld — one sentence,
+        # composed once, so the two can never disagree.
+        return JSONResponse(status_code=409, content={"error": e.reason})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    except AttachTooLarge as e:
+        # The three numbers ADR-0029 asks a refusal to name: what the folder weighs, what the app
+        # already carries, and the cap. A refusal that names them is a decision a person can act on.
+        return JSONResponse(status_code=413, content={"error": brand_text(
+            "Attaching this folder ({folder}) would take this app over the {cap} limit for "
+            "attached data. It already carries {current}.",
+            folder=human_bytes(e.incoming), cap=human_bytes(e.cap),
+            current=human_bytes(e.current),
+        )})
 
 
 @control_app.post("/api/project/files/detach")

@@ -693,6 +693,36 @@ a.sw-topnav-link {
   color: var(--purple-700);
 }
 .sw-tree-folder-body { padding-left: 12px; }
+/* A folder's own row: the name it opens by, and the act that takes everything under it
+   (ADR-0029). The head keeps its own hit area and the acts sit beside it, so opening a folder and
+   attaching one are two targets rather than one ambiguous row. */
+.sw-tree-folder-row, .sw-tree-root-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.sw-tree-folder-row .sw-tree-folder-head { flex: 1; min-width: 0; }
+.sw-tree-root-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-12);
+  color: var(--gray-500);
+  padding: 4px 0;
+}
+.sw-tree-folder-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* The numbers the act confirms with, on screen BEFORE the click rather than inside the refusal
+   after it: the attach cap is what decides whether this act can succeed at all. */
+.sw-tree-folder-meta {
+  font-size: var(--fs-11);
+  color: var(--gray-500);
+  white-space: nowrap;
+}
 .sw-tree-leaf {
   display: flex;
   align-items: center;

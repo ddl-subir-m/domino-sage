@@ -28,7 +28,7 @@ import httpx
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
-from ..assets.provider import Asset, AssetProvider, FakeAssetProvider
+from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, FileListing
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
@@ -134,7 +134,7 @@ from ..workspace.threads import (
 from . import brand, chat_compact, scope
 from . import handoff as chat_handoff
 from . import recall
-from .describe import describe, fit_image
+from .describe import describe, fit_image, human_bytes
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
 
 log = logging.getLogger("sage.orchestrator")
@@ -506,6 +506,26 @@ class AttachTooLarge(Exception):
         super().__init__(f"attach would exceed cap: {current + incoming} > {cap} bytes")
 
 
+class FolderActUnavailable(Exception):
+    """The folder act cannot be offered for this Dataset, because a subtree cannot be measured.
+
+    Both causes break the same two halves of ADR-0029 at once — the cap cannot be pre-flighted and
+    the confirmation has no numbers to show — so both refuse rather than attach on a guess:
+
+      * a Dataset this container has no mount for is read through the Domino data library, whose
+        listing carries no sizes, so every file reports 0 (`provider.py`);
+      * a truncated listing is a sorted prefix, so early folders are whole and late ones are cut
+        or absent with nothing downstream able to tell which.
+
+    `reason` is composed here rather than at the two ends, so the sentence the row draws before the
+    click and the sentence the refusal carries after it are the same sentence.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 class UploadUnavailable(Exception):
     """No writable dataset is mounted to receive an upload."""
 
@@ -580,11 +600,70 @@ def _slug(name: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name).strip("_") or "dataset"
 
 
+def _path_parts(path: str) -> tuple[str, ...]:
+    """A caller's path as the segments it really names — no separator confusion, no traversal.
+
+    One copy, because a file path and the folder path that contains it have to be normalised by the
+    same rule or a folder act could name a subtree its own files are not in.
+    """
+    rel = PurePosix(str(path or "").replace("\\", "/"))
+    return tuple(p for p in rel.parts if p not in ("", ".", ".."))
+
+
 def _attach_dest(dataset_name: str, file_path: str) -> str:
     """Workspace-relative POSIX path a dataset file is symlinked to."""
-    rel = PurePosix(file_path.replace("\\", "/"))
-    parts = [p for p in rel.parts if p not in ("", ".", "..")]
-    return PurePosix("public/data", _slug(dataset_name), *parts).as_posix()
+    return PurePosix("public/data", _slug(dataset_name), *_path_parts(file_path)).as_posix()
+
+
+def _link_attachment(dest: Path, src: Path) -> None:
+    """Stand an attachment's path on the bytes it serves, replacing whatever was there.
+
+    One copy, because both acts that attach a Dataset file make this same link and a difference
+    between them would be a difference in what the preview serves.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink() or dest.exists():
+        dest.unlink()
+    dest.symlink_to(src)
+
+
+def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
+                   size: int) -> dict:
+    """The manifest record one Dataset file gets, whichever act put it there.
+
+    The file is the unit of the record (ADR-0029), so the folder act writes exactly what the single
+    attach writes — one shape, from one place, because rehydrate, detach, leak detection and the
+    commit backstop all read it and none of them learns a second one.
+
+    `source="dataset"`: the Dataset's own bytes are never Sage's to delete. Detach removes only what
+    sits in the workspace — the symlink, or the copy downloaded in its place.
+    """
+    return {"dataset_id": dataset_id, "dataset": dataset_name, "file": file_path, "path": rel,
+            "size": size, "source": "dataset", "dataset_rel_path": file_path}
+
+
+# Above this many attached files, a folder is described once instead of file by file (ADR-0029).
+#
+# Read today by the managed `AGENTS.md` block the agent re-reads every turn
+# (`_write_agents_data_block`). ONE number rather than a literal in that function, because the `@`
+# menu a person picks from is to follow the same rule for the same reason (ADR-0030) and the two
+# must not come to disagree about what a Dataset mention means.
+#
+# Per-file lines are right for five files and ruinous for two hundred — the prompt would then grow
+# with the file count, on every turn, forever.
+FOLDER_COLLAPSE_THRESHOLD = 10
+
+
+def _folder_prefix(folder: str) -> str:
+    """A Dataset folder as a path prefix its files start with — `""` for the root.
+
+    The root is the same act at depth 0 rather than a second feature, so `""`, `"/"` and `"."` all
+    mean the whole Dataset. Anything else goes through `_path_parts`, the same normalisation
+    `_attach_dest` puts a file path through, so a `..` in the middle of one cannot widen the subtree
+    it names — and so a folder prefix and the paths under it cannot disagree.
+    """
+    parts = _path_parts(folder)
+    return PurePosix(*parts).as_posix() + "/" if parts else ""
 
 
 # Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept so a
@@ -3639,7 +3718,12 @@ class Orchestrator:
         runtime, so the raw bytes have no business in a prompt. Computing it here is deliberate:
         Python reads the /mnt/data mounts fine (the agent is the one that can't), and caching it in
         the committed manifest means each mount file is described once, not once per turn. Entries
-        written before descriptors existed are backfilled on first use."""
+        written before descriptors existed are backfilled on first use.
+
+        The cache is filled into the entry here and PERSISTED BY THE CALLER. This wrote the manifest
+        itself once per file, which made a 200-file folder attach rewrite the whole manifest 200
+        times through `_write_agents_data_block` (ADR-0029). Every caller already writes it once for
+        its own act, so the write belongs there — one per act rather than one per file."""
         cached = entry.get("descriptor")
         if cached:
             return cached
@@ -3655,7 +3739,6 @@ class Orchestrator:
             d = {"kind": "unavailable", "summary": f"not described ({type(e).__name__})",
                  "detail": "", "size": 0}
         entry["descriptor"] = d
-        project.workspace.write_attachments(project.attached)
         return d
 
     def _resolve_mentions(self, project: Project, mentions: list[str] | None) -> list[dict] | None:
@@ -3670,6 +3753,10 @@ class Orchestrator:
         if not mentions:
             return None
         known = {e["path"]: e for e in project.attached}
+        # Whether this turn learned a shape worth keeping. `_descriptor` fills the cache into the
+        # entry and leaves the write to its caller (ADR-0029), so a turn that describes a file for
+        # the first time persists it once here rather than once per mention.
+        fresh = any(not known[m].get("descriptor") for m in mentions if m in known)
         out: list[dict] = []
         for m in mentions:
             entry = known.get(m)
@@ -3687,6 +3774,8 @@ class Orchestrator:
             if d["kind"] == "image":
                 item["image_uri"] = self._image_data_uri(real)
             out.append(item)
+        if fresh:
+            project.workspace.write_attachments(project.attached)
         return out or None
 
     def _resource_mention_note(self, project: Project, resources: list[dict] | None) -> str:
@@ -5645,6 +5734,9 @@ class Orchestrator:
                 self._voice_agents_md(project)
                 self._splice_instructions(project)
                 self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
+                # The list is unchanged; any SHAPE the block just described is not, and
+                # `_descriptor` leaves that write to its caller now (ADR-0029).
+                project.workspace.write_attachments(project.attached)
                 project.workspace.clear_built()
                 # The usage label is derived from the source Reset just put back to the template, so
                 # it goes with it (#93). Unlike the Bindings themselves, which are setup and survive.
@@ -9393,12 +9485,36 @@ class Orchestrator:
             raise LookupError(dataset_id)
         return asset
 
+    @staticmethod
+    def _folder_act_reason(asset: Asset, listing: FileListing) -> str:
+        """Why the folder act is unavailable for this Dataset, or "" when it is available.
+
+        One sentence, composed once. The Dataset tree draws it on the folder row before the click
+        and `attach_folder` refuses with it after one, so a row that offers the act and a route that
+        would turn it down cannot exist (ADR-0029).
+        """
+        if listing.truncated:
+            return brand.text(
+                "{assistantName} could not list all of this {dataset}, so it cannot tell which "
+                "folders in it are whole. Attach the files you need one at a time."
+            )
+        if not asset.mount_path:
+            return brand.text(
+                "This {dataset} isn't mounted in this workspace, so {assistantName} cannot measure "
+                "a folder in it before attaching it. Attach the files you need one at a time."
+            )
+        return ""
+
     def list_asset_files(self, dataset_id: str) -> dict:
         """Files in a Dataset, each with its size and whether it's already attached. Size is 0 for
         a Dataset with no mount here — the API listing names files without measuring them.
 
         `truncated` says the listing stopped at the provider's cap, so what came back is part of
-        the Dataset and no subtree in it can be proven whole (ADR-0029)."""
+        the Dataset and no subtree in it can be proven whole (ADR-0029).
+
+        `folder_act` is whether a folder row in this tree may offer **Attach folder**, and the
+        reason when it may not. Read off the same listing rather than asked for separately, because
+        the two things that withhold the act — no mount, a cut tail — are both facts about it."""
         asset = self._find_asset(dataset_id)
         attached = {e["path"] for e in self.project(start_preview=False).attached}
         listing = self._assets.list_files(asset)
@@ -9406,7 +9522,9 @@ class Orchestrator:
         for f in listing.files:
             dest = _attach_dest(asset.name, f.path)
             out.append({"path": f.path, "size": f.size, "dest": dest, "attached": dest in attached})
-        return {"files": out, "truncated": listing.truncated}
+        reason = self._folder_act_reason(asset, listing)
+        return {"files": out, "truncated": listing.truncated,
+                "folder_act": {"available": not reason, "reason": reason}}
 
     def _download_attachment(self, asset: Asset, file_path: str, dest: Path, total: int,
                              prune_root: Path) -> int:
@@ -9462,10 +9580,7 @@ class Orchestrator:
             dest = _safe_join(project.workspace.path, rel)
             if local_source is not None:
                 size = local_source.stat().st_size
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if dest.is_symlink() or dest.exists():
-                    dest.unlink()
-                dest.symlink_to(local_source)
+                _link_attachment(dest, local_source)
             elif not asset.mount_path:
                 size = self._download_attachment(
                     asset, file_path, dest, total,
@@ -9478,16 +9593,9 @@ class Orchestrator:
                 size = src.stat().st_size
                 if total + size > self._attach_max_bytes:
                     raise AttachTooLarge(self._attach_max_bytes, total, size)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if dest.is_symlink() or dest.exists():
-                    dest.unlink()
-                dest.symlink_to(src)
-            # source="dataset": the Dataset's own bytes are never Sage's to delete. Detach removes
-            # only what sits in the workspace — the symlink, or the copy downloaded in its place.
+                _link_attachment(dest, src)
             project.attached.append(
-                {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel,
-                 "size": size, "source": "dataset", "dataset_rel_path": file_path}
-            )
+                _dataset_entry(dataset_id, asset.name, file_path, rel, size))
             self._ensure_gitignored(project.workspace.path, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
@@ -9496,6 +9604,82 @@ class Orchestrator:
         return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size,
                 "descriptor": entry.get("descriptor"),
                 "status": project.status()}
+
+    def attach_folder(self, dataset_id: str, folder: str) -> dict:
+        """Attach every file below one Dataset folder, at any depth including the root (ADR-0029).
+
+        The folder is the unit of the ACT and the file stays the unit of the RECORD: this writes the
+        same `.sage/attachments.json` entry per file that `attach_file` writes for one, so rehydrate,
+        detach, leak detection and the commit backstop are all untouched and none of them learns a
+        second entry shape.
+
+        No partial state, in either direction. The subtree is measured first and the whole act is
+        refused when it crosses the cap — a part-attached folder would leave the Built App with a
+        data directory nobody chose — and a link that cannot be made unwinds the ones that were.
+
+        One write per record, not one per file. N single attaches rewrote the whole manifest N times
+        (`_descriptor` used to persist its own cache), so the set is computed first and then written
+        once: one `_ensure_gitignored`, one `_write_agents_data_block`, one `write_attachments`, and
+        the one `_rebaseline_turn` the block already makes.
+
+        Mounted Datasets only, and only while the listing is whole — see `_folder_act_reason`.
+        Already-attached files are passed over rather than counted twice, so the act is idempotent
+        and `attached` reports what it actually added.
+        """
+        project = self.project()
+        asset = self._find_asset(dataset_id)
+        listing = self._assets.list_files(asset)
+        reason = self._folder_act_reason(asset, listing)
+        if reason:
+            raise FolderActUnavailable(reason)
+        prefix = _folder_prefix(folder)
+        below = [f for f in listing.files if f.path.startswith(prefix)]
+        if not below:
+            raise FileNotFoundError(folder)
+        held = {e["path"] for e in project.attached}
+        wanted = [f for f in below if _attach_dest(asset.name, f.path) not in held]
+        if not wanted:
+            # Everything below it is already carried. Nothing to write, and nothing to re-baseline
+            # a running turn over either — the same no-op `attach_file` makes for one file.
+            return {"attached": 0, "bytes": 0, "dataset": asset.name,
+                    "folder": prefix.rstrip("/"), "status": project.status()}
+        total = sum(e["size"] for e in project.attached)
+        incoming = sum(f.size for f in wanted)
+        if total + incoming > self._attach_max_bytes:
+            raise AttachTooLarge(self._attach_max_bytes, total, incoming)
+        data_root = project.workspace.path / "public" / "data"
+        # Not `or ""`: `_folder_act_reason` has already refused an unmounted Dataset, and a fallback
+        # here would resolve to the working directory and link against it rather than fail.
+        mount = Path(asset.mount_path)
+        made: list[Path] = []
+        entries: list[dict] = []
+        try:
+            for f in wanted:
+                rel = _attach_dest(asset.name, f.path)
+                src = _safe_join(mount, f.path)
+                if not src.is_file():
+                    raise FileNotFoundError(f.path)
+                dest = _safe_join(project.workspace.path, rel)
+                _link_attachment(dest, src)
+                made.append(dest)
+                entries.append(_dataset_entry(dataset_id, asset.name, f.path, rel, f.size))
+        except Exception:
+            # Nothing attached, and nothing left in the tree the preview serves either — including
+            # the directories the links needed, which is what `_prune_empty_dirs` is for.
+            for link in reversed(made):
+                try:
+                    if link.is_symlink() or link.exists():
+                        link.unlink()
+                    _prune_empty_dirs(link.parent, data_root)
+                except OSError:
+                    log.exception("attach_folder: could not unwind %s", link)
+            raise
+        project.attached.extend(entries)
+        self._ensure_gitignored(project.workspace.path, "public/data/")
+        self._write_agents_data_block(project)
+        project.workspace.write_attachments(project.attached)
+        return {"attached": len(entries), "bytes": incoming, "dataset": asset.name,
+                "folder": prefix.rstrip("/"), "status": project.status()}
 
     def fetch_dataset_file_for_chat(self, dataset_id: str, file_path: str) -> dict:
         """One Dataset file, put where a Chat turn can read it and nowhere else.
@@ -10016,6 +10200,95 @@ class Orchestrator:
         except OSError:
             return None
 
+    def _attached_file_line(self, project: Project, entry: dict) -> str:
+        """One attached file, told to the agent. One-line shape only: this block is re-read every
+        turn, so the full descriptor stays out of it — that one is inlined by `send_prompt` for
+        @mentioned files alone."""
+        path = entry["path"]
+        return (f"- disk `{path}` — {self._descriptor(project, entry)['summary']} "
+                f"— fetch `{path.removeprefix('public/')}` (relative to base) "
+                f"— from dataset **{entry['dataset']}**")
+
+    @staticmethod
+    def _shared_shape(descriptors: list[dict]) -> str:
+        """The shape a folder's files share, for the line that stands in for all of them.
+
+        A folder of 200 CSVs sharing one schema is described better once than 200 times, so an
+        identical summary is simply said once. When they differ, the KINDS are named instead of the
+        first file's summary standing in for files it does not describe."""
+        summaries = {d["summary"] for d in descriptors}
+        if len(summaries) == 1:
+            return summaries.pop()
+        kinds = sorted({d["kind"] for d in descriptors})
+        return f"{', '.join(kinds[:-1])} and {kinds[-1]} files" if len(kinds) > 1 \
+            else f"{kinds[0]} files"
+
+    @staticmethod
+    def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
+        """Attachments grouped by the folder that will stand for them, rolled up until there are
+        few enough groups to be worth calling a collapse.
+
+        Grouping by the immediate parent alone is not enough, and the shape that breaks it is a
+        normal one: a Dataset partitioned to the day — `raw/2024/01/01/part.csv` — gives one folder
+        per file, so a block of 365 folder lines still grows with the file count on every turn,
+        which is the whole cost ADR-0029 removes. So the deepest level is merged into its own parent
+        until the block is back under the threshold.
+
+        The floor is `public/data/<slug>`, one line per Dataset. Rolling past it would merge two
+        Datasets into a single line about `public/data`, and the served path is the one thing this
+        block exists to be exact about.
+        """
+        floor = len(PurePosix("public/data").parts) + 1     # public/data/<slug>
+        folders: dict[str, list[dict]] = {}
+        for e in entries:
+            folders.setdefault(PurePosix(e["path"]).parent.as_posix(), []).append(e)
+        while len(folders) > FOLDER_COLLAPSE_THRESHOLD:
+            deepest = max(len(PurePosix(f).parts) for f in folders)
+            if deepest <= floor:
+                break
+            rolled: dict[str, list[dict]] = {}
+            for folder, held in folders.items():
+                up = PurePosix(folder)
+                key = up.parent.as_posix() if len(up.parts) == deepest else folder
+                rolled.setdefault(key, []).extend(held)
+            folders = rolled
+        return folders
+
+    def _attached_data_lines(self, project: Project) -> list[str]:
+        """What the managed block says about the attached files: one line each, or one line per
+        folder once there are enough of them to matter (ADR-0029).
+
+        The block is re-read every turn, so above `FOLDER_COLLAPSE_THRESHOLD` the prompt would grow
+        with the file count forever — attachment-driven context bloat has already wedged OpenCode
+        mid-build once. The collapse keeps the block's whole reason for existing, which is why it is
+        safe: it is prescriptive because agents otherwise guess a flat `/data/<name>`, hit the SPA
+        fallback instead of the CSV, and "fix" it by copying the file into `src/`. A served-path
+        PATTERN teaches that as well as an enumeration does.
+
+        A folder holding one file keeps its file line: naming the file describes it exactly as well
+        as summarising it would, and better.
+        """
+        if len(project.attached) <= FOLDER_COLLAPSE_THRESHOLD:
+            return [self._attached_file_line(project, e) for e in project.attached]
+        folders = self._by_folder(project.attached)
+        lines: list[str] = []
+        for folder, entries in folders.items():
+            if len(entries) == 1:
+                lines.append(self._attached_file_line(project, entries[0]))
+                continue
+            shape = self._shared_shape([self._descriptor(project, e) for e in entries])
+            # Nearly always one name: `_by_folder` never rolls past `public/data/<slug>`. Nearly,
+            # because `_slug` collapses punctuation, so two Datasets named `my data` and `my-data`
+            # share a slug and land in one tree — and naming only the first would credit one
+            # Dataset for the other's files.
+            sources = sorted({e["dataset"] for e in entries})
+            lines.append(
+                f"- {len(entries)} files in `{folder}` — {shape} "
+                f"— fetch `{folder.removeprefix('public/')}/<name>` (relative to base) "
+                f"— from dataset **{'**, **'.join(sources)}**"
+            )
+        return lines
+
     _AGENTS_BEGIN = "<!-- sage:attached-data:begin -->"
     _AGENTS_END = "<!-- sage:attached-data:end -->"
 
@@ -10054,14 +10327,7 @@ class Orchestrator:
                  "skips them and returns no matches even when the value IS present. A search that "
                  "finds nothing here proves nothing — read the file instead."), "",
             ]
-            for e in project.attached:
-                path = e["path"]
-                served = path.removeprefix("public/")
-                # One-line shape only. This block is re-read every turn, so the full descriptor stays
-                # out of it — that one is inlined by send_prompt for @mentioned files alone.
-                shape = self._descriptor(project, e)["summary"]
-                lines.append(f"- disk `{path}` — {shape} — fetch `{served}` (relative to base) "
-                             f"— from dataset **{e['dataset']}**")
+            lines += self._attached_data_lines(project)
             block = f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}"
         else:
             block = ""

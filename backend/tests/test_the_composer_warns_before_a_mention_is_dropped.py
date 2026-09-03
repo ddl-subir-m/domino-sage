@@ -204,7 +204,8 @@ def test_a_file_the_app_already_holds_leaves_no_row_even_when_the_upload_survive
     assert "if (attached.has(name)" in guard
     # Both halves of the reason the two sets never meet, held where they are decided.
     assert "def _attach_dest(" in SERVICE
-    assert 'return PurePosix("public/data", _slug(dataset_name), *parts).as_posix()' in SERVICE
+    assert ('return PurePosix("public/data", _slug(dataset_name), *_path_parts(file_path))'
+            ".as_posix()" in SERVICE)
 
 
 def test_the_sentence_quotes_the_token_the_picker_typed_not_the_row_s_name():

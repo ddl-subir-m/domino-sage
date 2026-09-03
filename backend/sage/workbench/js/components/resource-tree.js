@@ -30,7 +30,89 @@ window.SW = window.SW || {};
     return { files, tables };
   }
 
-  function FolderNode({ name, children, query, depth, renderFile }) {
+  // What one folder holds, all the way down, for every folder in a listing — computed in one pass
+  // over the files rather than per row.
+  //
+  // Off the WHOLE listing, never off the filtered tree below. The act attaches the subtree, so a
+  // count that narrowed as you typed would be a number the act does not honour — and a
+  // filter-driven attach is the thing ADR-0029 turned down, because a set that changes as you type
+  // leaves nothing stable to name in a confirmation. `''` is the Dataset root, which is this act at
+  // depth 0.
+  // Two counts per folder, because the row and the act ask different questions. The row says what
+  // the folder HOLDS; the confirmation and the cap turn on what this act would ADD, and a file the
+  // app already carries is passed over rather than attached twice. Counting the held ones into the
+  // question would promise 43 files and attach 3.
+  // One shape for a folder's counts, so a row that has none and a row that has some are read the
+  // same way and a fifth count cannot be added to one and forgotten in the other.
+  const noFiles = () => ({ files: 0, bytes: 0, pending: 0, adds: 0 });
+
+  function folderTotals(files) {
+    const totals = {};
+    const add = (key, file) => {
+      const at = totals[key] || (totals[key] = noFiles());
+      at.files += 1;
+      at.bytes += Number(file.size || 0);
+      if (!file.attached) {
+        at.pending += 1;
+        at.adds += Number(file.size || 0);
+      }
+    };
+    (files || []).forEach((f) => {
+      const parts = String(f.path || '').split('/').filter(Boolean);
+      add('', f);
+      let prefix = '';
+      for (let i = 0; i < parts.length - 1; i += 1) {
+        prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+        add(prefix, f);
+      }
+    });
+    return totals;
+  }
+
+  // The numbers a folder row carries, and the act they are there for.
+  //
+  // The size is drawn only when there is one to draw. A Dataset this container has no mount for is
+  // listed through the Domino data library, whose listing carries no sizes at all, so every file in
+  // it reports 0 — and "0 B" beside 43 files is a measurement, not a missing one.
+  //
+  // The act is a link rather than a menu, for the reason `LeafRow` beside it is: this is the one
+  // row in the tree that acts on more than one file, and hiding it behind a second click would
+  // make the bulk act cost more than the per-file one it exists to replace.
+  function FolderActs({ path, label, totals, act }) {
+    const stat = totals[path] || noFiles();
+    if (!stat.files) return null;
+    const held = `${SW.util.number(stat.files)} ${stat.files === 1 ? 'file' : 'files'}`;
+    const meta = stat.bytes ? `${held} · ${SW.util.bytes(stat.bytes)}` : held;
+    // Nothing left to add is its own unavailable state, with its own reason. Offered anyway it
+    // would open a confirmation about zero files and answer with a no-op.
+    const reason = act.reason || (stat.pending ? '' : act.carried);
+    return h(
+      'span',
+      { className: 'sw-tree-folder-acts' },
+      h('span', { className: 'sw-tree-folder-meta' }, meta),
+      reason
+        // Unavailable WITH its reason, rather than absent: a folder row that simply offers nothing
+        // is indistinguishable from one nobody has built the act for yet.
+        ? h(
+            Tooltip,
+            { title: reason },
+            h(Button, { size: 'small', type: 'link', disabled: true }, act.label)
+          )
+        : h(
+            Button,
+            {
+              size: 'small',
+              type: 'link',
+              // What the act would ADD, which is the number the cap turns on and therefore the
+              // number the question has to name.
+              onClick: () => act.run({ path, label, files: stat.pending, bytes: stat.adds }),
+            },
+            act.label
+          )
+    );
+  }
+
+  function FolderNode({ name, path, children, query, depth, renderFile, totals, act }) {
     const [open, setOpen] = useState(depth < 1);
     const files = (children.files || []).filter((f) => filterName(f.path.split('/').pop(), query));
     const folders = Object.keys(children.folders || {}).filter((n) => {
@@ -42,10 +124,15 @@ window.SW = window.SW || {};
       'div',
       { className: 'sw-tree-folder' },
       h(
-        'button',
-        { className: 'sw-tree-folder-head', onClick: () => setOpen(!open) },
-        h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
-        h('span', null, name)
+        'div',
+        { className: 'sw-tree-folder-row' },
+        h(
+          'button',
+          { className: 'sw-tree-folder-head', onClick: () => setOpen(!open) },
+          h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
+          h('span', null, name)
+        ),
+        h(FolderActs, { path, label: name, totals, act })
       ),
       open &&
         h(
@@ -55,10 +142,13 @@ window.SW = window.SW || {};
             h(FolderNode, {
               key: n,
               name: n,
+              path: path ? `${path}/${n}` : n,
               children: children.folders[n],
               query,
               depth: depth + 1,
               renderFile,
+              totals,
+              act,
             })
           ),
           files.map((f) => renderFile(f))
@@ -137,6 +227,10 @@ window.SW = window.SW || {};
     // folder among them can be shown to be whole (ADR-0029). Said on screen rather than kept for
     // the act alone: a tree that looks complete is the thing that misleads.
     const [truncated, setTruncated] = useState(false);
+    // Whether a folder row here may offer **Attach folder**, and the server's reason when it may
+    // not. Composed there rather than worked out here, so the sentence this row draws before the
+    // click and the one the refusal carries after it are the same sentence (ADR-0029).
+    const [folderAct, setFolderAct] = useState(null);
     // The platform's own body, held apart from our copy so it can be quoted rather than retold
     // (#121). `null` is "nothing failed"; a failure with a silent platform is `{ body: '' }`.
     const [error, setError] = useState(null);
@@ -150,6 +244,7 @@ window.SW = window.SW || {};
       if (!resource) {
         setFiles([]);
         setTruncated(false);
+        setFolderAct(null);
         setError(null);
         return undefined;
       }
@@ -166,12 +261,14 @@ window.SW = window.SW || {};
           if (!cancelled) {
             setFiles(body.files || []);
             setTruncated(!!body.truncated);
+            setFolderAct(body.folder_act || null);
           }
         })
         .catch((err) => {
           if (!cancelled) {
             setFiles([]);
             setTruncated(false);
+            setFolderAct(null);
             setError({ body: err.message || '' });
           }
         });
@@ -243,18 +340,55 @@ window.SW = window.SW || {};
       });
     };
     const folders = Object.keys(tree.folders);
+    // One act, drawn on every folder row and on the Dataset's own. What withholds it is settled
+    // once, here: the server's answer about this listing, and the one thing only the client knows
+    // — which Built App the label would name (ADR-0008 makes that a question every surface has to
+    // answer, and a door promising "to this app" with none selected is a dead end).
+    const app = SW.store.get().activeApp;
+    const act = {
+      label: app ? `Attach folder to ${app.name}` : 'Attach folder',
+      reason: !folderAct || folderAct.available
+        ? (app ? '' : 'No app selected — a folder is attached to one app.')
+        : folderAct.reason,
+      carried: app ? `${app.name} already carries every file here.` : '',
+      run: ({ path, label, files: count, bytes }) =>
+        SW.store.attachFolderToApp({
+          datasetId,
+          label,
+          folder: path,
+          files: count,
+          bytes,
+        }),
+    };
+    const totals = folderTotals(files);
     return h(
       'div',
       { className: `sw-tree sw-tree-${variant || 'rail'}` },
       cut,
+      // The Dataset root, which is this act at depth 0 rather than a second feature with its own
+      // name and its own edge cases. A row rather than a folder around the tree: the Dataset is
+      // already named by the row this tree hangs under, and wrapping it would indent every folder
+      // to say so again.
+      h(
+        'div',
+        { className: 'sw-tree-root-row' },
+        // Not "the whole Dataset". The root is a folder like any other here, and borrowing the
+        // whole-Dataset chip's words would give one phrase two meanings — that chip reads the
+        // mount to answer a question, and this ships the bytes (ADR-0029).
+        h('span', { className: 'sw-tree-root-name' }, 'All files'),
+        h(FolderActs, { path: '', label: resource.name, totals, act })
+      ),
       folders.map((n) =>
         h(FolderNode, {
           key: n,
           name: n,
+          path: n,
           children: tree.folders[n],
           query,
           depth: 0,
           renderFile,
+          totals,
+          act,
         })
       ),
       tree.files.map(renderFile)

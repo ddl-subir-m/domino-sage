@@ -370,6 +370,20 @@ window.SW = window.SW || {};
       return Number(value || 0).toLocaleString('en-US');
     },
 
+    // A size a person reads. `human_bytes` in `sage/orchestrator/describe.py`, digit for digit:
+    // the Dataset tree shows what a folder weighs BEFORE the click and the server's refusal names
+    // the same number after it (ADR-0029), so a mismatch here would read as two different folders.
+    bytes(value) {
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let n = Number(value || 0);
+      let unit = 0;
+      while (n >= 1024 && unit < units.length - 1) {
+        n /= 1024;
+        unit += 1;
+      }
+      return unit === 0 ? `${Math.round(n)} B` : `${n.toFixed(1)} ${units[unit]}`;
+    },
+
     compactNumber(value) {
       const n = Number(value || 0);
       if (n >= 1000000000) return `${(n / 1000000000).toFixed(1)}B`;
