@@ -133,6 +133,10 @@ window.SW = window.SW || {};
 
   SW.DatasetFileTree = function DatasetFileTree({ resource, query, variant }) {
     const [files, setFiles] = useState(null);
+    // The listing stopped at the provider's cap, so these files are part of the Dataset and no
+    // folder among them can be shown to be whole (ADR-0029). Said on screen rather than kept for
+    // the act alone: a tree that looks complete is the thing that misleads.
+    const [truncated, setTruncated] = useState(false);
     // The platform's own body, held apart from our copy so it can be quoted rather than retold
     // (#121). `null` is "nothing failed"; a failure with a silent platform is `{ body: '' }`.
     const [error, setError] = useState(null);
@@ -145,19 +149,29 @@ window.SW = window.SW || {};
     useEffect(() => {
       if (!resource) {
         setFiles([]);
+        setTruncated(false);
         setError(null);
         return undefined;
       }
       let cancelled = false;
       setFiles(null);
+      // Cleared with the files, not left standing. The instance survives a change of `resource`,
+      // so without this a Dataset that answered fine drew the previous one's failure — the read
+      // landed, `files` was replaced, and the stale `error` won the branch above it. The Data
+      // Source cascade beside this one has always reset both.
+      setError(null);
       SW.api
         .assetFiles(datasetId)
         .then((body) => {
-          if (!cancelled) setFiles(body.files || []);
+          if (!cancelled) {
+            setFiles(body.files || []);
+            setTruncated(!!body.truncated);
+          }
         })
         .catch((err) => {
           if (!cancelled) {
             setFiles([]);
+            setTruncated(false);
             setError({ body: err.message || '' });
           }
         });
@@ -174,15 +188,31 @@ window.SW = window.SW || {};
         'Check it is still shared with this project in {platformName}, then reopen this panel.',
       );
     }
+    // Drawn above the files in both branches, including the one where the filter matched nothing:
+    // `No files match` is a lie about a listing whose tail was never read.
+    const cut = truncated && h(
+      'div',
+      { className: 'sw-tree-truncated' },
+      // No claim about WHICH files these are. The mounted walk is sorted, so its cap cuts the
+      // tail; the data library answers in its own order, and neither promise would hold for both.
+      SW.brand.text(
+        'This {dataset} holds more files than {assistantName} can list. The listing stopped at '
+        + '{count}, so what is here is part of it, not all of it.',
+        { count: SW.util.number((files || []).length) }
+      )
+    );
     const visible = (files || []).filter((f) => filterName(f.path, query));
     if (!visible.length) {
-      return h(
+      const empty = h(
         'div',
         { className: 'sw-tree-empty' },
         query
           ? SW.util.noMatch(query)
           : SW.brand.text('No files in this {dataset}.')
       );
+      // Returned bare when there is nothing to qualify, so a complete listing draws exactly what
+      // it drew before — the wrapper carries the tree's own indent, and this row is not in a tree.
+      return cut ? h('div', { className: `sw-tree sw-tree-${variant || 'rail'}` }, cut, empty) : empty;
     }
     const tree = nestFiles(visible);
     const parent = {
@@ -216,6 +246,7 @@ window.SW = window.SW || {};
     return h(
       'div',
       { className: `sw-tree sw-tree-${variant || 'rail'}` },
+      cut,
       folders.map((n) =>
         h(FolderNode, {
           key: n,

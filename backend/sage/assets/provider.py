@@ -22,7 +22,10 @@ from ..resources.provider import ResourceUnavailable
 # /domino/datasets/local; git-based projects use /mnt/data (local) and /mnt/imported/data (shared).
 # DOMINO_DATASET_MOUNT_PATH / DOMINO_MOUNT_PATHS override (os.pathsep- or comma-separated).
 DEFAULT_DATASET_MOUNT_ROOTS = ("/domino/datasets/local", "/mnt/data", "/mnt/imported/data")
-# Backstop so a pathological dataset (millions of files) can't wedge a file listing.
+# How many files a listing returns, and how far it will stat to build one. It does NOT bound the
+# directory traversal: `walk_files` sorts the whole mount before taking a prefix, because the
+# prefix has to be the sorted one (ADR-0029) and nothing can know which names sort first without
+# seeing all of them. A pathological mount still costs one full traversal per listing.
 _MAX_FILES = 5000
 
 
@@ -68,25 +71,41 @@ class DatasetFile:
     size: int  # bytes, or 0 when only the API listing named this file (it carries no sizes)
 
 
-def walk_files(root: Path) -> list[DatasetFile]:
+@dataclass(frozen=True)
+class FileListing:
+    """A Dataset's files, and whether the listing stopped short of the end of them.
+
+    The mounted walk is sorted, so its cap cuts the tail: early folders are whole, late ones are
+    cut or missing, and nothing downstream can tell which is which (ADR-0029). `truncated` is what
+    lets a caller refuse an act it cannot prove the scope of, rather than act on a silent partial
+    answer.
+    """
+
+    files: list[DatasetFile]
+    truncated: bool = False
+
+
+def walk_files(root: Path) -> FileListing:
     """List regular files under a dataset mount, relative + sized. Skips dotfiles and caps count."""
     out: list[DatasetFile] = []
     for p in sorted(root.rglob("*")):
-        if len(out) >= _MAX_FILES:
-            break
         if not p.is_file() or any(part.startswith(".") for part in p.relative_to(root).parts):
             continue
         try:
             size = p.stat().st_size
         except OSError:
             continue
+        # Measured after the filters, so the cap is reported cut only by a file it would have
+        # listed. A `.ipynb_checkpoints` directory sorting last is not a lost tail.
+        if len(out) >= _MAX_FILES:
+            return FileListing(out, truncated=True)
         out.append(DatasetFile(p.relative_to(root).as_posix(), size))
-    return out
+    return FileListing(out)
 
 
 class AssetProvider(Protocol):
     def list_datasets(self, project_id: str | None) -> list[Asset]: ...
-    def list_files(self, asset: Asset) -> list[DatasetFile]: ...
+    def list_files(self, asset: Asset) -> FileListing: ...
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int: ...
 
 
@@ -99,8 +118,8 @@ class UnconfiguredAssetProvider:
             "configured to reach one, so it cannot tell which {datasetPlural} you have."
         ))
 
-    def list_files(self, asset: Asset) -> list[DatasetFile]:
-        return []
+    def list_files(self, asset: Asset) -> FileListing:
+        return FileListing([])
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         raise ResourceUnavailable(brand.text(
@@ -145,8 +164,8 @@ class FakeAssetProvider:
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         return list(self.assets)
 
-    def list_files(self, asset: Asset) -> list[DatasetFile]:
-        return walk_files(Path(asset.mount_path)) if asset.mount_path else []
+    def list_files(self, asset: Asset) -> FileListing:
+        return walk_files(Path(asset.mount_path)) if asset.mount_path else FileListing([])
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         import shutil
@@ -315,7 +334,7 @@ class DominoAssetProvider:
                 break
         return found
 
-    def list_files(self, asset: Asset) -> list[DatasetFile]:
+    def list_files(self, asset: Asset) -> FileListing:
         """The files in a Dataset: from the mount when this container has one, from the Domino data
         library when it does not.
 
@@ -325,7 +344,13 @@ class DominoAssetProvider:
         if asset.mount_path:
             return walk_files(Path(asset.mount_path))
         try:
-            names = [getattr(f, "name", "") for f in self._sdk_dataset(asset).list_files()]
+            # One more than we will show, and asked for explicitly: `domino_data.list_files`
+            # defaults to `page_size=1000` and makes a single request with no continuation, so a
+            # listing left to that default could never reach the cap — `truncated` would be dead
+            # code, and a 3,000-file Dataset would come back as 1,000 files claiming to be all of
+            # them. A page that comes back full is the only evidence that more is behind it.
+            names = [getattr(f, "name", "")
+                     for f in self._sdk_dataset(asset).list_files(page_size=_MAX_FILES + 1)]
         except ResourceUnavailable:
             raise
         except Exception as e:
@@ -335,7 +360,12 @@ class DominoAssetProvider:
                     name=asset.name, err=type(e).__name__,
                 )
             ) from e
-        return [DatasetFile(n, 0) for n in names if n][:_MAX_FILES]
+        # Counted on what the library returned, not on what survived `if n`: the evidence is the
+        # page coming back full. Measured after the filter, one blank name in the last page drops
+        # the count back to the cap and a Dataset that overflows it reports itself complete.
+        truncated = len(names) > _MAX_FILES
+        listed = [DatasetFile(n, 0) for n in names if n]
+        return FileListing(listed[:_MAX_FILES], truncated=truncated)
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         """Copy one file out of a Dataset this container has no mount for. Returns bytes written."""

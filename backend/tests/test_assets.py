@@ -59,8 +59,8 @@ class _FakeDataset:
         self._names = names
         self.downloaded = []
 
-    def list_files(self):
-        return [SimpleNamespace(name=n) for n in self._names]
+    def list_files(self, page_size):
+        return [SimpleNamespace(name=n) for n in self._names][:page_size]
 
     def download_file(self, rel, local):
         self.downloaded.append((rel, local))
@@ -84,7 +84,7 @@ def _provider(client):
 
 def test_unmounted_dataset_lists_its_files_through_the_data_library():
     client = _FakeDatasetClient(_FakeDataset(["raw/train.csv", "notes.md"]))
-    files = _provider(client).list_files(Asset(id="i1", name="shared_ds"))
+    files = _provider(client).list_files(Asset(id="i1", name="shared_ds")).files
     assert [f.path for f in files] == ["raw/train.csv", "notes.md"]
     # The API listing carries no sizes; 0 means "not known from here", not "empty".
     assert [f.size for f in files] == [0, 0]
@@ -96,14 +96,15 @@ def test_a_mounted_dataset_still_reads_from_disk(tmp_path):
     # The mount stays a fast path: no data-library call when the files are already here.
     (tmp_path / "on_disk.csv").write_text("a,b\n")
     client = _FakeDatasetClient(_FakeDataset(["should-not-be-used"]))
-    files = _provider(client).list_files(Asset(id="i1", name="local_ds", mount_path=str(tmp_path)))
+    files = _provider(client).list_files(
+        Asset(id="i1", name="local_ds", mount_path=str(tmp_path))).files
     assert [f.path for f in files] == ["on_disk.csv"]
     assert client.asked == []
 
 
 def test_listing_failure_is_reported_not_swallowed():
     class _Boom:
-        def list_files(self):
+        def list_files(self, page_size):
             raise RuntimeError("proxy said no")
 
     with pytest.raises(ResourceUnavailable, match="did not answer"):
@@ -160,7 +161,7 @@ def _oem_pack(tmp_path, monkeypatch):
 
 def test_a_listing_failure_renames_the_platform_and_the_noun_but_not_the_users_name(_oem_pack):
     class _Boom:
-        def list_files(self):
+        def list_files(self, page_size):
             raise RuntimeError("proxy said no")
 
     with pytest.raises(ResourceUnavailable) as e:
@@ -173,7 +174,7 @@ def test_a_listing_failure_renames_the_platform_and_the_noun_but_not_the_users_n
 
 def test_a_download_failure_leaves_the_path_the_creator_asked_for_alone(_oem_pack, tmp_path):
     class _Boom:
-        def list_files(self):
+        def list_files(self, page_size):
             return []
 
         def download_file(self, rel, local):

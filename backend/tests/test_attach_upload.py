@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.assets.provider import Asset, DatasetFile, FakeAssetProvider
+from sage.assets.provider import Asset, DatasetFile, FakeAssetProvider, FileListing
 from sage.orchestrator.service import (
     AttachTooLarge,
     DataReferenced,
@@ -634,7 +634,7 @@ def test_promote_scratch_copies_onto_a_dataset_and_drops_the_scratch_copy(tmp_pa
 
 def test_list_asset_files_accepts_a_membership_id(tmp_path: Path):
     orch = _orch(tmp_path)
-    files = orch.list_asset_files("dataset:ds_sales_2026")
+    files = orch.list_asset_files("dataset:ds_sales_2026")["files"]
     names = {f["path"] for f in files}
     assert "train.csv" in names
 
@@ -655,7 +655,7 @@ class _UnmountedAssets:
         return [self.asset]
 
     def list_files(self, asset):
-        return [DatasetFile("raw/wells.csv", 0)]   # the API listing carries no sizes
+        return FileListing([DatasetFile("raw/wells.csv", 0)])  # the API listing carries no sizes
 
     def download_file(self, asset, rel_path, dest):
         self.downloads.append(rel_path)
@@ -666,7 +666,7 @@ class _UnmountedAssets:
 
 def test_a_dataset_with_no_mount_still_lists_its_files(tmp_path: Path):
     orch = _orch(tmp_path, assets=_UnmountedAssets())
-    files = orch.list_asset_files("ds_shared")
+    files = orch.list_asset_files("ds_shared")["files"]
     assert [f["path"] for f in files] == ["raw/wells.csv"]
     assert files[0]["attached"] is False
 

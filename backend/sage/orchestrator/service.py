@@ -9393,16 +9393,20 @@ class Orchestrator:
             raise LookupError(dataset_id)
         return asset
 
-    def list_asset_files(self, dataset_id: str) -> list[dict]:
+    def list_asset_files(self, dataset_id: str) -> dict:
         """Files in a Dataset, each with its size and whether it's already attached. Size is 0 for
-        a Dataset with no mount here — the API listing names files without measuring them."""
+        a Dataset with no mount here — the API listing names files without measuring them.
+
+        `truncated` says the listing stopped at the provider's cap, so what came back is part of
+        the Dataset and no subtree in it can be proven whole (ADR-0029)."""
         asset = self._find_asset(dataset_id)
         attached = {e["path"] for e in self.project(start_preview=False).attached}
+        listing = self._assets.list_files(asset)
         out = []
-        for f in self._assets.list_files(asset):
+        for f in listing.files:
             dest = _attach_dest(asset.name, f.path)
             out.append({"path": f.path, "size": f.size, "dest": dest, "attached": dest in attached})
-        return out
+        return {"files": out, "truncated": listing.truncated}
 
     def _download_attachment(self, asset: Asset, file_path: str, dest: Path, total: int,
                              prune_root: Path) -> int:
