@@ -91,19 +91,7 @@ ARG SAGE_REV=main
 # `--branch` takes a ref (branch/tag), not a bare SHA — so to force a fresh clone of the SAME branch
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
 ARG SAGE_CACHE_BUST=2026-09-02-table-cells-fill
-# Canary probe for the ARG-vs-ENV question below. NOT YET RUN — see #151. Set SAGE_CANARY to a junk
-# value in the Environment's variables box, rebuild, then open a workspace terminal (a VS Code
-# workspace on this Environment; a Sage Builder has no terminal, and its chat box is not one — a
-# shell command there reads as ambiguous and gets planned, see #150) and run:
-#
-#     env | grep -E 'GATEWAY_BASE_URL|SAGE_CANARY'
-#
-# GATEWAY_BASE_URL is the control: it is ARG+ENV, so it MUST appear. SAGE_CANARY is ARG-only, so it
-# must not. Both are set in the same box, which is what makes the pair conclusive. Checking only for
-# the canary proves nothing — an absent canary and a never-set canary look identical.
-# Delete this line once the pair has been seen.
-ARG SAGE_CANARY=
-
+ENV SAGE_CACHE_BUST=${SAGE_CACHE_BUST}
 # ############################################################################################
 # THE TOKEN HERE MUST BE SHORT-LIVED. Expiry is the control, not this Dockerfile. See #151.
 #
@@ -123,8 +111,14 @@ ARG SAGE_CANARY=
 # image metadata, and neither is a reason to use a long-lived token:
 #   - ARG and never ENV keeps the value out of the running container's `env`. This matters because
 #     sage-chat and sage-implement run with `bash: allow` (opencode.json), so a Builder user needs
-#     no terminal to read the environment — they just ask the agent to. UNVERIFIED on this Domino:
-#     the canary pair above is the test, and it has not been run.
+#     no terminal to read the environment — they just ask the agent to. UNVERIFIED on this Domino,
+#     and the token is its own test: on the FIRST build with a token actually set, run
+#     `env | grep SAGE_GIT_TOKEN` from a VS Code workspace terminal on this Environment (a Sage
+#     Builder has no terminal, and its chat box is not one — #150). Absent means an unpromoted ARG
+#     really does die with the build. Present means delete the variable from the box straight after
+#     every build, because a runtime `env` is readable by EVERY Sage user, a wider audience than
+#     `docker history`. Running this while no token is set proves nothing: an unset variable and a
+#     correctly-dropped one are both simply absent.
 #   - The header form keeps the value off the filesystem. `git clone https://<token>@…` writes that
 #     whole URL into /opt/sage/.git/config, which is a plain file the agent can cat; `git -c` placed
 #     BEFORE the subcommand applies to this process only and is not copied into the new repo, so the

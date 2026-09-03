@@ -57,17 +57,22 @@ commits. A published Workbench App must **not** treat that checkout as an app �
    **runtime** half only — the container's `env` and its filesystem. Neither touches image metadata.
    See #151 for the full reasoning and the durable fix (build in CI, have Domino pull the image).
 
-   **Unverified:** whether Domino passes its Environment Variables as build args only. `SAGE_CANARY`
-   in the Dockerfile is the test and has not been run. Run it from a **VS Code workspace terminal**
-   on this Environment — a Sage Builder has no terminal, and its chat box is not a substitute (#150):
+   **Unverified:** whether Domino passes its Environment Variables as build args only, i.e.
+   whether an `ARG` that is never promoted to `ENV` stays out of a workspace's `env`. The token is
+   its own test — on the **first build with a token actually set**, from a VS Code workspace
+   terminal on this Environment (a Sage Builder has no terminal, and its chat box is not one, #150):
 
    ```bash
-   env | grep -E 'GATEWAY_BASE_URL|SAGE_CANARY'
+   env | grep SAGE_GIT_TOKEN
    ```
 
-   `GATEWAY_BASE_URL` (`ARG`+`ENV`) must appear; `SAGE_CANARY` (`ARG` only) must not. Both are set
-   in the same box, which is what makes the pair conclusive — checking only for the canary proves
-   nothing, because an absent canary and a never-set canary look identical.
+   Absent means an unpromoted `ARG` dies with the build. Present means delete the variable from the
+   box straight after every build — a runtime `env` is readable by every Sage user through the chat
+   box, a wider audience than `docker history`. Running this while no token is set proves nothing:
+   an unset variable and a correctly-dropped one are both simply absent.
+
+   To confirm a rebuild actually took effect, `SAGE_CACHE_BUST` is promoted to `ENV` and shows in
+   `env`. Bump its value per rebuild, or every image reports the same string.
 
 3. **Gateway** — set `GATEWAY_BASE_URL` in the Environment's **Environment Variables** box so builds
    can reach a model. Without it the UI and preview still work; builds can't call the LLM.
