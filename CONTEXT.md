@@ -500,3 +500,27 @@ is why that sentence can understate. The end-of-turn scan flags one and nudges t
 it (#94); nothing about it refuses a publish.
 _Kind_: name
 _Avoid_: direct call, unregistered model call, hardcoded model
+
+**Problem**:
+A condition Sage already knows about that will make the person's next act fail, or make it silently
+do something other than what it says it does. Three things are true of every one: the act would
+fail or misbehave, Sage knows before it does, and the sentence can name a remedy or the person who
+owns one. A condition failing any of the three is not a Problem and gets no sentence — that test is
+what keeps the count low enough to be worth reading. A Problem informs and never blocks; the two
+places Sage does refuse an act are older and stay as they are. Standing only: a Problem is true the
+moment the Workbench opens, so what only becomes true at a particular act — a missing git
+credential at Publish — is not one. Found by a [[Preflight]]. See
+[ADR-0027](docs/adr/0027-a-problem-informs-and-the-chip-holds-what-the-toast-points-at.md).
+_Kind_: word
+_Avoid_: error (that is one that already happened), fault, blocker (it never blocks), warning,
+issue, health, status, incident
+
+**Preflight**:
+The check that looks for a [[Problem]] before the act rather than after it. It is the asking, never
+the finding: a Preflight that learns nothing reports nothing, and "we could not check" stays a state
+rather than becoming a sentence. The one exception is reaching the dependency itself — a gateway or
+a sidecar that will not answer is a Problem in its own right, because there the failure to check
+*is* the fault. A Problem must survive two consecutive Preflights before it is said, so one blip
+never lights the chip.
+_Kind_: word
+_Avoid_: health check, healthcheck, probe, validation, diagnostics, readiness
