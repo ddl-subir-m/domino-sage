@@ -223,6 +223,17 @@ window.SW = window.SW || {};
     // chosen cannot express a change.
     assignmentsError: '',
 
+    // Every standing [[Problem]] GET /api/health reported, as it came (ADR-0027): `{ id, message,
+    // fix, owner, body }`, the server's own sentences, rendered and never rewritten here. Empty is
+    // the normal state and the chip draws nothing on it, which is the whole reason a standing fault
+    // can have a permanent home in a crowded bar.
+    //
+    // Empty is also what a read that never landed leaves behind, and that is deliberate: the route
+    // answers 200 even when all five of its own reads failed, so a rejection here is the route
+    // itself being gone. Reporting THAT as a Problem would be a client composing a sentence.
+    problems: [],
+    problemsOpen: false,
+
     // Build is the project's history.jsonl, not the Chat Thread. Chat ↔ Build
     // is turning your head: the Thread stays selected, this transcript is the app's.
     buildHistory: [],
@@ -902,6 +913,7 @@ window.SW = window.SW || {};
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
+    let failed = false;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -916,11 +928,37 @@ window.SW = window.SW || {};
             // flight, and the dedupe Set was built from blocks the first call had not appended
             // yet — so a table artifact rendered twice. Awaiting also puts a handler's own
             // rejection inside this catch, where it was previously invisible.
-            try { await onEvent(JSON.parse(line.slice(6))); } catch (err) { /* keep-alive or partial */ }
+            const ev = JSON.parse(line.slice(6));
+            if (endedBadly(ev)) failed = true;
+            try { await onEvent(ev); } catch (err) { /* keep-alive or partial */ }
           }
         }
       }
     }
+    // Here rather than in the three turn functions, because this is the one place every mode's
+    // frames pass through and a deployment fault does not care which mode asked. Once per stream,
+    // after it closes: a turn that failed on ten tool calls is one failed turn.
+    if (failed) store.refreshProblems();
+  }
+
+  // Whether this frame says the turn went wrong, as opposed to stopping the way it was asked to.
+  // The second Preflight ADR-0027 allows hangs off this: a turn that has just failed is the one
+  // moment after boot when the answer is worth paying a gateway listing for, and it is very often
+  // the reason the turn failed in the first place.
+  //
+  // Every deliberate ending is excluded, and there are more of them than there are failures. A
+  // Stop, a Cancel, a context change and all five gate decisions are turns that ended ON PURPOSE,
+  // and re-asking after one of those is the background poll again — arrived at by somebody pressing
+  // buttons instead of by a timer, which makes it no less a poll.
+  //
+  // Read off `decision` rather than off the frame type, because a Stop arrives as BOTH: a `stopped`
+  // frame, which is not a failure, and the `done` that closes it, which carries `ok: false` like
+  // every other unhappy ending and would otherwise be one. `ASKED_FOR` is the whole list, and it is
+  // declared below with the gate decisions it is built from.
+  function endedBadly(ev) {
+    if (!ev || ev.contextChanged) return false;
+    if (ev.type === 'error') return true;
+    return ev.type === 'done' && ev.ok === false && !ASKED_FOR[ev.decision];
   }
 
   // Decisions whose own card already says what happened and what to do next. A red "Stopped —"
@@ -938,6 +976,12 @@ window.SW = window.SW || {};
     // so a "Stopped — model unavailable" line under it would only say it worse, twice.
     'model unavailable': true,
   };
+
+  // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
+  // failure. Below GATE_DECISIONS rather than beside `endedBadly`, because it spreads that object
+  // and a `const` cannot be read before the line that makes it.
+  const ASKED_FOR = { stopped: true, cancelled: true, 'context changed': true,
+                      'plan moved on': true, ...GATE_DECISIONS };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
@@ -1578,6 +1622,22 @@ window.SW = window.SW || {};
   let liveBuildTurns = 0;
   let liveChatTurns = 0;
 
+  // Which Problems this tab has already pointed a toast at (ADR-0027). Per session and per id: the
+  // toast fires on a Problem's FIRST appearance and never again, so a fault that stands for an hour
+  // interrupts once and then lives in the chip, which is the placement that can hold it.
+  //
+  // Deliberately outside `state` and never cleared. It is bookkeeping about what the reader has
+  // been shown, not a fact about the deployment, and nothing renders it. A Problem that clears and
+  // comes back stays quiet for the rest of the session, which is the right way round: a flapping
+  // fault is the one a repeated toast would be worst for.
+  const toastedProblems = new Set();
+
+  // How long the boot leaves between its two Preflights. Long enough that a workspace whose proxy
+  // was still coming up on the first ask is serving by the second — Domino reports one running
+  // about a second early — and short enough that a real fault is on the chip before somebody has
+  // finished reading the greeting and typed a question.
+  const PREFLIGHT_SETTLE_MS = 4000;
+
   // What a "Build this again" turn is called in the transcript (ADR-0024). Kept in step with
   // `_BUILD_AGAIN_TEXT` on the server, which writes the row this one stands in for until the
   // history reloads.
@@ -2008,6 +2068,58 @@ window.SW = window.SW || {};
       }
     },
 
+    // Problems -----------------------------------------------------------
+    //
+    // One Preflight, and the toast for whatever it turned up that this session has not seen
+    // (ADR-0027). Called at boot and after a failed turn, and from nowhere else: a background poll
+    // is the thing that decision rejects by name, because it would be one gateway listing
+    // multiplied by every open Workbench forever to learn what the next turn reports for free.
+    //
+    // Nothing here blocks anything, and nothing here composes a sentence. `state.problems` is the
+    // payload as it came, and every control on screen stays exactly as usable as it was — a chip
+    // that also locked controls would turn one dead service into a jail, which is the boot failure
+    // this work started from.
+    async refreshProblems() {
+      // The list already on screen survives a read that did not land. The route answers 200 even
+      // when every one of its own five reads failed, so a rejection is the route being unreachable
+      // rather than a verdict of "clean" — and replacing a true chip with silence on that is how a
+      // person comes to report a failed build as a bug.
+      const found = await SW.api.health().then(
+        (body) => (body && Array.isArray(body.problems) ? body.problems : []),
+        () => null,
+      );
+      if (found === null) return state.problems;
+      state.problems = found;
+
+      // One toast for however many are new, not one each. The count is the whole message: a toast
+      // may point at content and may never BE the content, which is the rule that lets ADR-0027
+      // have a toast at all while ADR-0011's "never a toast" stands unchanged for anything somebody
+      // has to read. The sentences, the remedies and the quoted platform bodies are in the drawer,
+      // where they stay on screen for as long as they are true.
+      const fresh = found.filter((p) => p && p.id && !toastedProblems.has(p.id));
+      for (const p of fresh) toastedProblems.add(p.id);
+      if (fresh.length) {
+        // No {tokens} and no glossary noun, so this one sentence is written here rather than
+        // server-side like every Problem's own: a count and a direction carry no term the pack
+        // could rename, and routing it through the payload would mean the server composing copy
+        // about the client's own furniture.
+        antd.message.warning(fresh.length === 1
+          ? '1 problem needs your attention. Open the problem chip in the top bar to read it.'
+          : `${fresh.length} problems need your attention. Open the problem chip in the top bar `
+            + 'to read them.');
+      }
+      notify();
+      return found;
+    },
+
+    // The chip's drawer. No read of its own: opening is not a Preflight, because the answer it
+    // would give is the answer already on screen, and pressing the chip is not evidence that
+    // anything changed.
+    openProblems(open) {
+      state.problemsOpen = Boolean(open);
+      notify();
+    },
+
     async init() {
       // Domino reports a workspace as running before its proxy serves, so the first call out of a
       // Workbench somebody has just opened can come back 502 from nginx — not from Sage, which is
@@ -2027,8 +2139,9 @@ window.SW = window.SW || {};
       // platform's own words on it — ten seconds of 502 is a container that is not coming up by
       // itself, and a silent empty Workbench gives nobody anything to reload past. Anything else is
       // /healthz alone being unhappy, and /healthz is only the picker's open-weight list here:
-      // caught, exactly as it was when it sat in the batch below.
-      const health = await SW.api.throughStartup(() => SW.api.health(), {
+      // caught, exactly as it was when it sat in the batch below. The Problems this deployment has
+      // are `/api/health`'s, further down, and were never this route's to report.
+      const healthz = await SW.api.throughStartup(() => SW.api.healthz(), {
         onWaiting: () => {
           if (state.bootStatus === 'waiting') return;
           state.bootStatus = 'waiting';
@@ -2115,13 +2228,30 @@ window.SW = window.SW || {};
       state.costUrl = (project && project.cost && project.cost.url) || null;
       state.ready = true;
       state.bootStatus = null;
-      state.openWeightModels = (health && health.open_weight_models) || [];
+      state.openWeightModels = (healthz && healthz.open_weight_models) || [];
       state.resourcesLoading = true;
       notify();
       // A reload during a turn lands here with no stream and no memory of one. Ask the lock, so
       // the composer opens disabled with a Stop beside it rather than taking a question the
       // server is about to refuse.
       await Promise.all([loadScopeData(), loadThreadList(), store.refreshTurnState()]);
+      // The boot Preflight (ADR-0027). Last in the boot because it is the one read nothing else on
+      // screen is built out of, so every panel above is already drawn while this asks.
+      //
+      // TWICE, and this is the survival rule rather than a retry. A Problem is reported only when
+      // the Preflight BEFORE it found the same one, and that count is kept server-side across the
+      // whole process — so on a Workbench that is first through the door, one ask can never report
+      // anything, whatever is wrong. Two is the smallest number that can, and the pause between
+      // them is what a self-clearing fault falls through: Domino reports a workspace running before
+      // its proxy serves, so the first ask sees faults that are gone by the second.
+      //
+      // Two and then stop. It is not the poll ADR-0027 rejects, because it does not repeat: the
+      // only other Preflight this tab ever makes is after a turn has actually failed. And when
+      // another tab has already been through here the process has its count, the first ask answers
+      // in full, and the second is skipped.
+      if (!(await store.refreshProblems()).length) {
+        setTimeout(() => store.refreshProblems(), PREFLIGHT_SETTLE_MS);
+      }
     },
 
     // Scope --------------------------------------------------------------
@@ -3501,6 +3631,10 @@ window.SW = window.SW || {};
         if (stopped) await store.loadBuild({ keepPreview: true });
       } catch (err) {
         applyBuildEvent({ type: 'error', message: String(err.message || err) });
+        // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame to
+        // notice it by. This is where a refused POST lands — including `_turn_slot_refusal`, which
+        // refuses on exactly the dead model slot the chip is about (ADR-0027).
+        store.refreshProblems();
       } finally {
         liveBuildTurns -= 1;
         dropQueuedTurn(ticket);
@@ -3625,6 +3759,10 @@ window.SW = window.SW || {};
         if (stopped) await store.loadBuild({ keepPreview: true });
       } catch (err) {
         applyBuildEvent({ type: 'error', message: String(err.message || err) });
+        // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame to
+        // notice it by. This is where a refused POST lands — including `_turn_slot_refusal`, which
+        // refuses on exactly the dead model slot the chip is about (ADR-0027).
+        store.refreshProblems();
       } finally {
         liveBuildTurns -= 1;
         dropQueuedTurn(ticket);
@@ -4077,6 +4215,9 @@ window.SW = window.SW || {};
           assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
         }
         notify();
+        // Same reason as the two build paths: a turn refused before its stream opened is a failed
+        // turn that `readSSE` never saw a frame of, and it is refused most often by the slot check.
+        store.refreshProblems();
       } finally {
         liveChatTurns -= 1;
         dropQueuedTurn(ticket);

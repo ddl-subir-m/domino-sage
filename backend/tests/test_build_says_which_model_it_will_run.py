@@ -167,6 +167,9 @@ def test_an_override_naming_the_pinned_model_still_reads_as_the_default():
 def test_the_open_weight_list_is_read_from_healthz():
     """/healthz is the only route the Workbench reads off `BASE`, because it is one of the two the
     orchestrator leaves unproxied. A path that drifted under /api would 404 and leave the picker
-    silently short of every extra option."""
+    silently short of every extra option.
+
+    `SW.api.healthz`, not `SW.api.health`. Both were called `health` until ADR-0027, and the
+    readiness probe is not the route that reports Problems."""
     (row,) = _drawn([{"health": True}])
     assert row["fetched"] == ["./healthz"]

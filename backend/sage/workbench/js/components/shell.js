@@ -5,7 +5,7 @@ window.SW = window.SW || {};
   const { Tooltip, Dropdown, Space } = antd;
   const {
     SearchOutlined, QuestionCircleOutlined, DatabaseOutlined,
-    HistoryOutlined, DoubleRightOutlined, DoubleLeftOutlined, DownOutlined,
+    HistoryOutlined, DoubleRightOutlined, DoubleLeftOutlined, DownOutlined, WarningOutlined,
   } = icons;
 
   // Project-scoped work. Everything here is read through the scope chip that
@@ -45,6 +45,45 @@ window.SW = window.SW || {};
       return thread ? `#/build/${thread.id}${app}` : `#/build${app}`;
     }
     return `#/${id}`;
+  }
+
+  // The chip (ADR-0027). Row 1 and on the right, with the account controls and Manage, for the
+  // reason the Manage link below states for itself: what is scoped to the DEPLOYMENT belongs away
+  // from the modes that are normal work, and away from Row 2, which is scoped to one project. A
+  // Problem outlives the project you are standing in and follows you into the next one.
+  //
+  // It draws NOTHING when there is nothing wrong, which is what earns a standing fault a permanent
+  // home in a bar this crowded — and it goes silent by itself when the fault clears. There is no
+  // dismiss, because dismissal is for repetition and one element that is either lit or absent does
+  // not repeat. A chip somebody could hide is a dead model slot somebody can hide, and then report
+  // the failed build it caused as a bug.
+  //
+  // Icon-only, so the count is in the tooltip and in the label a screen reader gets. It is a button
+  // and nothing else: opening the drawer is the whole of what it does, and no control anywhere goes
+  // grey because it is lit.
+  function ProblemChip() {
+    const { problems } = SW.store.get();
+    const found = Array.isArray(problems) ? problems : [];
+    if (!found.length) return null;
+
+    const label = found.length === 1
+      ? '1 problem needs your attention'
+      : `${found.length} problems need your attention`;
+    return h(
+      Tooltip,
+      { title: `${label}. Open to read ${found.length === 1 ? 'it' : 'them'}.` },
+      h(
+        'button',
+        {
+          // `sw-icon-btn` is the shared 30px target every other control on this row uses, which is
+          // over the 24px minimum an icon-only control owes a pointer.
+          className: 'sw-icon-btn sw-problem-chip',
+          'aria-label': label,
+          onClick: () => SW.store.openProblems(true),
+        },
+        h(WarningOutlined, null)
+      )
+    );
   }
 
   // Row 1: Domino platform chrome plus the global concepts. Deliberately
@@ -141,6 +180,10 @@ window.SW = window.SW || {};
         )
       ),
       h('span', { className: 'sw-topnav-spacer' }),
+      // First in the right-hand cluster: it is absent almost always, and when it is not it is the
+      // most urgent thing on the row. Ahead of Manage rather than beside the bell, because the bell
+      // reports on the reader's own work and this reports on the deployment underneath it.
+      h(ProblemChip, null),
       // Manage is a Domino App of its own, not a mode: it reads across every project and gives an
       // admin more controls than a practitioner, neither of which fits under this bar's project
       // scope. So it sits with the account controls on the right — away from the modes that are
@@ -384,6 +427,7 @@ window.SW = window.SW || {};
       h(SW.InviteModal, null),
       h(SW.CommandPalette, null),
       h(SW.ModelAssignmentsDrawer, null),
+      h(SW.ProblemsDrawer, null),
       h(SW.SettingsDrawer, null),
       h(SW.HelpDrawer, null)
     );

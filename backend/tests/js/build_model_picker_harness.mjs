@@ -161,7 +161,7 @@ for (const step of steps) {
     // Workbench reads off `BASE` — a path that quietly became `./api/healthz` would 404 and leave
     // the picker silently short of every extra option, with nothing else here to notice.
     fetched.length = 0;
-    await SW.api.health();
+    await SW.api.healthz();
     report.push({ step: 'health', fetched: fetched.slice() });
     continue;
   }

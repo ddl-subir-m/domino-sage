@@ -119,6 +119,44 @@ a.sw-topnav-link {
   line-height: 1;
 }
 
+/* Problems — the chip and its drawer ------------------------------------- */
+
+/* The chip (ADR-0027). It inherits the shared 30px icon target from `sw-icon-btn` and changes only
+   the colour, because the size is the part every other control on this row already agreed on and an
+   icon-only control owes a pointer at least 24px of it.
+
+   Warning colour rather than the bar's own white, because it is the one control up here that means
+   something is wrong. `--warning` and not `--warning-text`: the ink token exists for warning text on
+   WHITE, and this sits on the dark bar, where the darker of the two is the unreadable one. It is
+   never greyed and never disabled — the chip informs, it does not gate. */
+.sw-problem-chip { color: var(--warning); }
+.sw-problem-chip:hover { color: var(--warning); background: rgba(204, 183, 24, .18); }
+
+/* The drawer groups by who owns the remedy, and the 1:2 rule is what draws the split: the gap
+   between two Problems in one group is half the gap to the next group's heading, so the grouping
+   reads without a rule between them. */
+.sw-problems-group + .sw-problems-group { margin-top: var(--s5); }
+.sw-problems-group-title {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--gray-600);
+  margin: 0 0 var(--s2);
+}
+.sw-problem + .sw-problem { margin-top: var(--s3); }
+/* Each one is a card, because two of them running together read as one long complaint. The fault,
+   the remedy and any quoted platform body belong to ONE fault, and the reader has to be able to see
+   where the next one starts. Nothing here re-spaces the inside: `.sw-platform-error` is already a
+   column with its own gap, and that gap is half this card's gap to the next — the rule again. */
+.sw-problem {
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  border-radius: var(--radius);
+  padding: var(--s3);
+}
+.sw-problems-empty { color: var(--gray-600); margin: 0; }
+
 /* Row 2 — Workspace nav -------------------------------------------------- */
 
 .sw-subnav {

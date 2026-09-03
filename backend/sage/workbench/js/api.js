@@ -655,9 +655,25 @@ SW.api = {
   buildComplete: async () => ({}),
   buildFiles: () => empty(),
   buildPreview: async () => ({ url: './preview/' }),
-  // Off `BASE` on purpose: /healthz sits outside /api (app.py's _UNPROXIED), and it is the only
-  // route that says which open-weight models this gateway will accept as an override.
-  health: async () => {
+  // Every standing [[Problem]] this deployment has, each already composed into a sentence by the
+  // server (ADR-0027). The client renders these and writes none of them: a client that composed
+  // them would put un-branded nouns on an OEM screen, which ADR-0014 forbids.
+  //
+  // `{ problems: [{ id, message, fix, owner, body }] }`, and always a 200 — "we could not check" is
+  // a state rather than a failed request, so a caught reject here means the route itself did not
+  // answer, not that the deployment is clean. Callers fall back to the list they already hold.
+  //
+  // Named `health` for the route; `healthz` below is the readiness probe and a different thing.
+  // They were both called `health` until this ticket, which is how /healthz came to be read for one
+  // field of its body while the composed Problems went unasked for by anybody.
+  health: () => request('/health'),
+  // Off `BASE` on purpose: /healthz sits outside /api (app.py's _UNPROXIED). READINESS, not
+  // Problems: the door redirect waits on it, `throughStartup` retries on it, and the one field of
+  // its body the Workbench reads is the open-weight list the override menu offers. The rest of what
+  // it carries is not dropped for want of a reader — `preflight_slots` is the same global
+  // `/api/health` composes the slot Problems from, and `gateway_mode`, `domino` and `project` are
+  // answered for the client by `/api/brand` and `/api/project`.
+  healthz: async () => {
     const res = await fetch('./healthz');
     if (!res.ok) {
       // Carries `status` for the same reason `request` does: `stillStarting` reads it, and an
