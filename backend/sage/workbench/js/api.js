@@ -49,6 +49,49 @@ async function request(path, options = {}) {
   }
 }
 
+// Domino reports a workspace as running before its proxy serves it, so the first call out of a
+// freshly opened Workbench can come back 502 from an nginx in front of a port nobody is listening
+// on yet. It clears itself in a few seconds. ADR-0027 rejects reporting on first detection for
+// exactly this: a wall that clears itself teaches people to reload past the faults that do not.
+//
+// Here rather than at the caller, because the boot gate is not the only thing that waits on a
+// warming proxy — Preflight retries on the same budget — and two answers to "is the proxy serving
+// yet" is how they drift apart.
+const STARTUP_BUDGET_MS = 10000;
+
+// 502/503/504 are the proxy's own. Sage answers every fault of its own with a JSON body and a 4xx
+// or a 500, so a status we recognise means Sage was reached and has something to say, which is
+// never a warm-up. No `status` at all is a fetch that got no answer — the same warm-up one moment
+// earlier, before the proxy would even accept the connection.
+function stillStarting(err) {
+  if (!err) return false;
+  return err.status === undefined || err.status === 502 || err.status === 503
+    || err.status === 504;
+}
+
+// Run `read` until it answers or the budget is spent, backing off between tries. Anything that is
+// not a warming proxy is rethrown on the first try: this waits out a start-up, it does not paper
+// over a fault. What is left at the end is the last error, so whoever called still reports the
+// real one.
+async function throughStartup(read, options = {}) {
+  const onWaiting = options.onWaiting || (() => {});
+  const deadline = Date.now() + STARTUP_BUDGET_MS;
+  let backoff = 250;
+  for (;;) {
+    try {
+      return await read();
+    } catch (err) {
+      const left = deadline - Date.now();
+      if (left <= 0 || !stillStarting(err)) throw err;
+      // Only once the first try has failed, so nothing on screen says "waiting" for a workspace
+      // that answered straight away.
+      onWaiting(err);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(backoff, left)));
+      backoff = Math.min(backoff * 2, 2000);
+    }
+  }
+}
+
 const post = (path, body) => request(path, { method: 'POST', body });
 const patch = (path, body) => request(path, { method: 'PATCH', body });
 const del = (path) => request(path, { method: 'DELETE' });
@@ -231,6 +274,13 @@ function overlayListing(groups, listing) {
 }
 
 SW.api = {
+  // Exposed because the boot gate in store.js is one caller of two: ADR-0027's Preflight is the
+  // other. `stillStarting` goes with it, because "the budget is spent and it is STILL the proxy"
+  // is a different verdict from "the budget is spent", and only the caller knows what to do with
+  // it.
+  throughStartup,
+  stillStarting,
+
   me: () => request('/me'),
   brand: () => request('/brand'),
   project: () => request('/project'),
@@ -609,7 +659,15 @@ SW.api = {
   // route that says which open-weight models this gateway will accept as an override.
   health: async () => {
     const res = await fetch('./healthz');
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      // Carries `status` for the same reason `request` does: `stillStarting` reads it, and an
+      // error without one is read as a fetch that got no answer at all. Without it every refusal
+      // /healthz can make — a 500 from a Sage that is up and answering the rest of the boot
+      // fine — would be waited out as a warm-up and then walled.
+      const err = new Error(`${res.status} ${res.statusText}`);
+      err.status = res.status;
+      throw err;
+    }
     return res.json();
   },
 

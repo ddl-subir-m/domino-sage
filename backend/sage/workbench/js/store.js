@@ -55,6 +55,10 @@ window.SW = window.SW || {};
 
   const state = {
     ready: false,
+    // `'waiting'` while the boot is sitting out a proxy that is not serving yet, so the boot screen
+    // can say what it is doing instead of spinning. Same shape and the same job as `previewStatus:
+    // 'starting'`, which already covers Vite's own warm-up.
+    bootStatus: null,
     me: null,
     brand: BRAND_DEFAULT,
     projects: [],
@@ -2005,17 +2009,47 @@ window.SW = window.SW || {};
     },
 
     async init() {
+      // Domino reports a workspace as running before its proxy serves, so the first call out of a
+      // Workbench somebody has just opened can come back 502 from nginx — not from Sage, which is
+      // why it arrives with no sentence in it. It clears itself in seconds, and while it lasts
+      // every read below falls back to its own empty value: a Workbench with no Projects, no
+      // conversations and no viewer, silent about all three, because each of those catches is
+      // right about one dead service and wrong about a container that has not opened yet. So the
+      // boot waits for the proxy before it reads anything, and reports only what is still broken
+      // after the wait (ADR-0027).
+      //
+      // /healthz is the probe because it is already the readiness signal the door redirect waits
+      // on, and it is already read here for the picker's open-weight list. This is that read moved
+      // in front of the others, not a second readiness mechanism.
+      //
+      // The two failures out of it are not caught the same way. A proxy that never started serving
+      // is rethrown once the budget is spent, so `app.js`'s full-page error stands with the
+      // platform's own words on it — ten seconds of 502 is a container that is not coming up by
+      // itself, and a silent empty Workbench gives nobody anything to reload past. Anything else is
+      // /healthz alone being unhappy, and /healthz is only the picker's open-weight list here:
+      // caught, exactly as it was when it sat in the batch below.
+      const health = await SW.api.throughStartup(() => SW.api.health(), {
+        onWaiting: () => {
+          if (state.bootStatus === 'waiting') return;
+          state.bootStatus = 'waiting';
+          notify();
+        },
+      }).catch((err) => {
+        if (SW.api.stillStarting(err)) throw err;
+        return null;
+      });
+
       // Every read below is caught, because the Workbench is not one service. Who is looking, the
       // Project listing, the chart registry, the starter deck and the bell answer from different
       // places, and any of them can be down while the thing somebody came here to do — build —
-      // still works, since not one of these eight reads is that thing. An
+      // still works, since not one of these seven reads is that thing. An
       // uncaught reject in this Promise.all is not a missing panel: it reaches `app.js`, which turns
       // a boot failure into the full-page "The workspace could not load", so ONE dead service takes
       // the whole Builder with it. ADR-0027 names that shape as the reason it informs and never
       // blocks: a dead Project listing must not become a jail for somebody who could still have
       // built. Each fallback is that read's own honest empty value, and none of them says anything —
       // reporting is a separate concern with its own placement (the chip), not a boot-time throw.
-      const [me, projects, charts, starters, notifications, brand, health, project] = await Promise.all([
+      const [me, projects, charts, starters, notifications, brand, project] = await Promise.all([
         // Null is what `state.me` already holds before this answers, and the greeting is written for
         // it — it drops the first name. It is not free, though, and the cost is not the greeting:
         // `prefs` keys the viewer's whole preference record on `me.id`, so with no id there is no
@@ -2034,9 +2068,6 @@ window.SW = window.SW || {};
         // happens the day this one does. A bell with nothing in it is not worth a wall.
         SW.api.notifications().catch(() => []),
         SW.api.brand().catch(() => state.brand),
-        // Extra options for Build's picker, not a health check. Caught, because a gateway that
-        // cannot answer this still has four working slots and a picker that must open.
-        SW.api.health().catch(() => null),
         // Read here rather than off the deferred `/project` in loadScopeData, because both links it
         // carries are drawn in chrome that paints as soon as `ready` flips. Deployment constants,
         // built once from env at boot, so reading them once at boot is the whole of it.
@@ -2083,6 +2114,7 @@ window.SW = window.SW || {};
       state.manageUrl = (project && project.manage) || null;
       state.costUrl = (project && project.cost && project.cost.url) || null;
       state.ready = true;
+      state.bootStatus = null;
       state.openWeightModels = (health && health.open_weight_models) || [];
       state.resourcesLoading = true;
       notify();

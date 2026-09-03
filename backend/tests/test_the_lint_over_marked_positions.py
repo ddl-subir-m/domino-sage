@@ -432,6 +432,8 @@ def test_the_glossary_holds_both_kinds():
     assert kinds["Remove"] == "word"
     assert sorted(k for k, v in kinds.items() if v == "word") == [
         "Build this again",
+        "Preflight",
+        "Problem",
         "Remove",
         "Sovereign",
         "Stop using here",

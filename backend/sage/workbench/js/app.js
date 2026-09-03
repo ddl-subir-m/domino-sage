@@ -114,11 +114,21 @@ window.SW = window.SW || {};
         extra: h(Button, { type: 'primary', onClick: () => window.location.reload() }, 'Reload'),
       });
     } else if (!state.ready) {
+      // A workspace whose proxy is still warming up is not a slow load, and a bare spinner over a
+      // wait that can run to ten seconds reads as a hang — right up until it flips to the wall
+      // below, over a fault that was clearing itself the whole time. So the wait says it is a
+      // wait, the way Build's `previewStatus: 'starting'` overlay already does for Vite.
       body = h(
         'div',
         { className: 'sw-boot' },
         h(Spin, { size: 'large' }),
-        h('div', { className: 'sw-boot-label' }, 'Loading your workspace…')
+        h(
+          'div',
+          { className: 'sw-boot-label' },
+          state.bootStatus === 'waiting'
+            ? 'Waiting for this workspace to finish starting…'
+            : 'Loading your workspace…'
+        )
       );
     } else {
       body = h(SW.Shell, { mode: shellMode, route }, h(Routes, { route }));
