@@ -161,16 +161,23 @@ def test_the_group_is_dropped_when_the_scope_changes_rather_than_when_it_refills
     opposite of true, until the listing lands."""
     reset = "state.catalogueParents = [];"
     assert reset in STORE
-    # Beside the synchronous members write, ahead of the deferred listing that refills it.
+    # Beside the synchronous members write, ahead of the deferred listing that refills it. The
+    # refill is `applyListing`, which the deferred `.then` calls and Browse Domino reuses (#159).
     before, after = STORE.split(reset, 1)
     assert "applyResourceGroups(resources.groups," in before.rsplit("async function loadScopeData", 1)[-1]
-    assert "state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(" in after
+    assert "applyListing(listing);" in after
 
 
 def test_the_store_asks_for_nothing_new_to_fill_the_group():
     """`resourceListing()` already returned the whole catalogue and `overlayResourceListing` threw
-    the non-members away. Keeping them costs no request; a second fetch on every scope load would."""
-    assert STORE.count("SW.api.resourceListing()") == 1
+    the non-members away. Keeping them costs no request; a second fetch on every scope load would.
+
+    Counted inside `loadScopeData` rather than over the file: the other call site is Browse Domino
+    re-reading the platform when it opens (#159), which is a different act on a different door.
+    """
+    load = STORE[STORE.index("async function loadScopeData"):
+                 STORE.index("  // Split out of the scope load because the People modal")]
+    assert load.count("SW.api.resourceListing()") == 1
 
 
 def test_the_join_flag_reaches_the_store_that_reads_it():

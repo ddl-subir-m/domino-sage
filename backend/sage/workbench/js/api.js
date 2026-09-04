@@ -169,6 +169,33 @@ async function fetchDominoListing() {
   };
 }
 
+// The error keys `fetchDominoListing` reports, against the group each failed leg leaves empty.
+const ERROR_KEY_BY_KIND = {
+  dataset: 'datasets',
+  datasource: 'data_sources',
+  model_llm: 'llm_aliases',
+  model_predictive: 'model_apis',
+};
+
+// Carry the rows of every kind the new listing could not read over from the one already in hand. A
+// leg that refused answers with an error string and no rows, which is NOT the same fact as a kind
+// Domino no longer holds: applied as it stands it empties the promote picker and the catalogue half
+// of the @ menu until the next scope load. The error travels with the carried rows, so what is on
+// screen is the last good answer plus a line saying the fresh read failed.
+function keepUnreadKinds(held, listing) {
+  if (!held || !listing || !listing.errors) return listing;
+  const groups = { ...(listing.groups || {}) };
+  let carried = false;
+  Object.keys(ERROR_KEY_BY_KIND).forEach((kind) => {
+    if (!listing.errors[ERROR_KEY_BY_KIND[kind]]) return;
+    const previous = (held.groups || {})[kind];
+    if (!previous || !previous.length) return;
+    groups[kind] = previous;
+    carried = true;
+  });
+  return carried ? { ...listing, groups } : listing;
+}
+
 function membershipKind(item) {
   const kind = item && item.kind;
   return (SW.util && SW.util.uiKind(kind)) || kind;
@@ -333,6 +360,7 @@ SW.api = {
   },
   resourceListing: () => fetchDominoListing(),
   overlayResourceListing: overlayListing,
+  keepUnreadKinds,
   resource: (id) => {
     const { resourceIndex, catalogueParents } = SW.store.get();
     // The index holds the project's working set. A catalogue parent is not in it yet and the
@@ -343,21 +371,35 @@ SW.api = {
   },
   restrictedIn: () => Promise.resolve([]),
 
-  catalog: async ({ q, kind } = {}) => {
-    const [listing, membership] = await Promise.all([
-      fetchDominoListing(),
-      request('/project/resources').catch(() => ({ items: [] })),
-    ]);
-    const memberIds = new Set((membership.items || []).map((i) => i.id));
+  // A view of the listing the store already holds — the same listing the rail and the @ menu are
+  // drawn from — rather than a read of its own. So this is synchronous, and a keystroke costs a
+  // filter over rows already in memory instead of a fan-out to Domino that answers what the last
+  // one answered (#159).
+  //
+  // `null`, not an empty result, while the store has not read the platform yet. "Sage has not
+  // looked" and "Domino holds nothing you can add" are different sentences, and the caller is the
+  // only one that can draw them apart.
+  catalog: ({ q, kind } = {}) => {
+    const { resourceListing, resourceGroups } = SW.store.get();
+    if (!resourceListing) return null;
+    const groups = resourceListing.groups || {};
+    // Membership off the working set the store keeps, for the same reason the rows come from the
+    // store: it is the answer `/project/resources` would give, already read.
+    const memberIds = new Set(SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+      (k) => ((resourceGroups || {})[k] || []).map((r) => r.id)
+    ));
     const allKeys = ['dataset', 'datasource', 'model_llm', 'model_predictive', 'agent', 'skill', 'mcp'];
     const keys = kind ? [kind] : allKeys;
     const needle = (q || '').trim().toLowerCase();
+    const matches = (r) => !needle || (r.name || '').toLowerCase().includes(needle);
     const counts = {};
-    allKeys.forEach((k) => { counts[k] = (listing.groups[k] || []).length; });
+    // Counted after the search, so a kind offering `12` never opens on nothing: with a query
+    // standing, the sidebar's numbers are where the matches are.
+    allKeys.forEach((k) => { counts[k] = (groups[k] || []).filter(matches).length; });
     const results = [];
     keys.forEach((k) => {
-      (listing.groups[k] || []).forEach((r) => {
-        if (needle && !(r.name || '').toLowerCase().includes(needle)) return;
+      (groups[k] || []).forEach((r) => {
+        if (!matches(r)) return;
         results.push({
           ...r,
           inProject: memberIds.has(r.id),
@@ -367,7 +409,7 @@ SW.api = {
         });
       });
     });
-    return { results, counts, errors: listing.errors };
+    return { results, counts, errors: resourceListing.errors || {} };
   },
   addToProject: (projectId, resource) => {
     const row = typeof resource === 'string'

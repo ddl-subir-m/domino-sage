@@ -113,6 +113,17 @@ window.SW = window.SW || {};
     // The catalogue parents this viewer can reach that are NOT in the project rail. The @ menu
     // offers them last, because picking one joins the project on the way in (see `attach`).
     catalogueParents: [],
+    // The last listing read off the platform, whole and unfiltered — what `/api/resources` and
+    // `/api/assets` answered together. Browse Domino is drawn from this rather than reading the
+    // platform again per keystroke (#159). `null` means Sage has not looked yet, which nothing may
+    // draw as "there is nothing to add".
+    resourceListing: null,
+    // Which project the listing above was read under. The listing itself describes the platform
+    // rather than the project, but the membership it is read against does not, so a scope change
+    // is the one thing that has to drop it. Held here rather than compared against the scope on
+    // every load: `loadScopeData` also runs after an Add, and dropping the listing there would
+    // blank the open catalogue for the length of a round trip.
+    resourceListingScope: null,
     gatewayAliases: [],
     resourcesLoading: true,
     members: [],
@@ -349,6 +360,11 @@ window.SW = window.SW || {};
   }
 
   let scopeLoad = 0;
+  // Which platform listing read is the current one (#159). Two are routinely in the air — the one
+  // a scope load defers and the one Browse Domino fires when it opens — and the older answering
+  // last would put a row somebody just deleted back in the rail. A generation counter for the same
+  // reason the two below have one: the newest read is the one that gets to write.
+  let listingRead = 0;
   // Which open is the current one. `selectApp` guards with `selecting`, which makes a second
   // asker bail — right there, because you are already going where it asked. Wrong here: clicking
   // A after B must land on A, not be ignored. So this is a generation counter like `scopeLoad`,
@@ -488,6 +504,38 @@ window.SW = window.SW || {};
     }
   }
 
+  // Everything a fresh platform listing decides, in one place, because two writers for these
+  // fields is how the rail and the catalogue end up disagreeing about what Domino holds. Called
+  // once on a scope load and again each time Browse Domino opens.
+  function applyListing(read) {
+    // A leg that refused reports an error and no rows. Keeping the rows it could not re-read is
+    // what stops an open of Browse Domino during an outage from emptying the promote picker and
+    // the @ menu's catalogue half.
+    const listing = SW.api.keepUnreadKinds(state.resourceListing, read);
+    state.resourceListing = listing;
+    state.resourceListingScope = state.scope && state.scope.id;
+    applyResourceGroups(
+      SW.api.overlayResourceListing(state.resourceGroups, listing),
+      {
+        aliases: (listing.groups && listing.groups.model_llm) || [],
+        errors: listing.errors || {},
+      }
+    );
+    // The overlay keeps only the Datasets already in the rail. A scratch file can be promoted
+    // onto any Dataset this container mounts writable, so that set is kept whole here.
+    state.datasetTargets = ((listing.groups && listing.groups.dataset) || []).filter((d) => d.writable);
+    // Same read, same reason: the overlay discards every non-member, and the @ menu needs them.
+    // Parents only — a warehouse table is a level down and this listing never fetched one.
+    const members = new Set(
+      SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+        (kind) => (state.resourceGroups[kind] || []).map((r) => r.id)
+      )
+    );
+    state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+      (kind) => (((listing.groups && listing.groups[kind]) || []).filter((r) => !members.has(r.id)))
+    );
+  }
+
   async function loadScopeData() {
     const scope = state.scope;
     const gen = ++scopeLoad;
@@ -503,11 +551,16 @@ window.SW = window.SW || {};
     // the scope just picked but was not a member of the last one would otherwise sit in the @ menu
     // captioned `not in {project}` — the opposite of true — until the listing landed.
     state.catalogueParents = [];
+    // Only when the project actually changed. `loadScopeData` also runs after an Add and after a
+    // Remove, and a listing dropped there would replace the open catalogue with a spinner for the
+    // length of a round trip — the flicker the rows-from-the-store change exists to remove.
+    if (state.resourceListingScope !== scope.id) state.resourceListing = null;
     state.resourcesLoading = false;
     state.activity = activity;
     notify();
 
     const appTicket = appScopeTicket();
+    const listingGen = ++listingRead;
     Promise.all([
       SW.api.project().catch(() => ({ attached: [] })),
       SW.api.resourceListing(),
@@ -534,26 +587,10 @@ window.SW = window.SW || {};
         path: e.path,
         source: 'scratch',
       }));
-      applyResourceGroups(
-        SW.api.overlayResourceListing({ ...state.resourceGroups, file: files }, listing),
-        {
-          aliases: (listing.groups && listing.groups.model_llm) || [],
-          errors: listing.errors || {},
-        }
-      );
-      // The overlay keeps only the Datasets already in the rail. A scratch file can be promoted
-      // onto any Dataset this container mounts writable, so that set is kept whole here.
-      state.datasetTargets = ((listing.groups && listing.groups.dataset) || []).filter((d) => d.writable);
-      // Same read, same reason: the overlay discards every non-member, and the @ menu needs them.
-      // Parents only — a warehouse table is a level down and this listing never fetched one.
-      const members = new Set(
-        SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
-          (kind) => (state.resourceGroups[kind] || []).map((r) => r.id)
-        )
-      );
-      state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
-        (kind) => (((listing.groups && listing.groups[kind]) || []).filter((r) => !members.has(r.id)))
-      );
+      applyResourceGroups({ ...state.resourceGroups, file: files });
+      // Unless a later read has already landed — the files above are this load's own and are
+      // written either way, but the platform's answer is only the newest one's to write.
+      if (listingGen === listingRead) applyListing(listing);
       notify();
     }).catch(() => {});
 
@@ -2517,6 +2554,33 @@ window.SW = window.SW || {};
     openCatalog(kind) {
       state.catalogOpen = true;
       state.catalogKind = kind || null;
+      notify();
+    },
+
+    // These are shared platform Resources: another person can delete one, or add one, between a
+    // scope load and somebody opening Browse Domino. So the catalogue re-reads the platform once
+    // when it opens and redraws when the read lands — one refresh per open, in the background,
+    // with the rows already on screen the whole time.
+    async refreshResourceListing() {
+      const scopeGen = scopeLoad;
+      const gen = ++listingRead;
+      const listing = await SW.api.resourceListing().catch(() => null);
+      if (gen !== listingRead || scopeGen !== scopeLoad) return;
+      if (!listing) {
+        // A platform that refused is answered with error strings rather than a rejection, and
+        // `applyListing` carries the unread kinds over — so reaching here at all takes a fault in
+        // the read itself. Whatever the cause, what must not be left standing is "Sage has not
+        // looked yet", which is a spinner with nothing left to end it.
+        if (state.resourceListing) return;
+        state.resourceListing = {
+          errors: { listing: SW.brand.text('Could not read {platformName}.') },
+          groups: {},
+        };
+        state.resourceListingScope = state.scope && state.scope.id;
+        notify();
+        return;
+      }
+      applyListing(listing);
       notify();
     },
 

@@ -197,6 +197,7 @@ def test_the_project_s_file_group_is_built_from_one_list():
     """The bug in one line: `files` was a concatenation of two scopes' lists. A `project.attached`
     reader here is that shape coming back."""
     store = (WB / "js" / "store.js").read_text()
-    files = store[store.index("const files = (project.scratch"):store.index("applyResourceGroups(\n        SW.api.overlayResourceListing(")]
+    files = store[store.index("const files = (project.scratch"):
+                  store.index("applyResourceGroups({ ...state.resourceGroups, file: files });")]
 
     assert "project.attached" not in files
