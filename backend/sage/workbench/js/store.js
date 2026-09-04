@@ -517,6 +517,68 @@ window.SW = window.SW || {};
     }
   }
 
+  // The kinds whose listing is complete by construction, so absence from one that answered means
+  // Domino no longer holds the row. `model_predictive` is deliberately not here: `list_model_apis`
+  // fans out over the creator's member projects, SKIPS any non-home project that fails and caps the
+  // fan-out at twenty-five — so a Model API can be permanently absent from a listing that reports
+  // complete success. Absence there is not evidence. The cost is that a deleted Model API goes on
+  // looking live, and we took it knowingly: a false death is a new harm where a false life is an
+  // old one (ADR-0034). #163 is the provider-side repair that would upgrade the kind.
+  const CHECKABLE_KINDS = ['dataset', 'datasource', 'model_llm'];
+
+  // The one group holding rows a level below the listing: a warehouse table and a pinned Dataset
+  // path, both of which `groupsFromMembership` puts in `pin` whatever their kind. They take their
+  // parent's word.
+  const CHILD_GROUPS = ['pin'];
+
+  // Whether Domino still holds what each working-set row names. Members MINUS the listing — the
+  // other subtraction `catalogueParents` is one half of, over the same two collections, which is
+  // why it costs nothing here and why it is written here and nowhere else.
+  //
+  // Computed on read and never written to the membership file, for the reason `usedBy` is not: a
+  // stored copy is wrong the moment anybody deletes anything.
+  //
+  // Three values, because two would state a fact Sage does not have. `unchecked` is not a residue:
+  // `state.resourceListing` is null until the deferred read lands, a kind that refused has its
+  // previous rows carried forward by `keepUnreadKinds` — present, stale and wrong at once — and one
+  // kind can never be checked at all.
+  function stampLiveness(groups, listing) {
+    const next = { ...groups };
+    const byParent = {};
+    SW.util.MEMBERSHIP_PARENT_KINDS.forEach((kind) => {
+      // The error is asked BEFORE the rows, because a refused leg arrives here holding the rows it
+      // could not re-read. Reading those as the platform's answer would mark nothing dead and call
+      // the rest alive off a listing nobody got.
+      //
+      // And the group has to BE an array. `fetchDominoListing` writes all four keys on every real
+      // answer, so a kind with none never came from a read: `refreshResourceListing` writes a
+      // synthetic `{ errors: { listing }, groups: {} }` when the read itself faults, and that error
+      // is keyed on the whole listing rather than on any kind. Without this the next working-set
+      // change would re-apply it, find no per-kind error and an empty group, and mark every Dataset,
+      // Data Source and Alias in the project dead at once — the false death ADR-0034 gave up a whole
+      // kind to avoid.
+      const group = (listing && listing.groups && listing.groups[kind]) || null;
+      const checkable = CHECKABLE_KINDS.indexOf(kind) !== -1
+        && Array.isArray(group)
+        && !(listing.errors || {})[SW.api.LISTING_ERROR_KEY[kind]];
+      const held = new Set((group || []).map((r) => r.id));
+      next[kind] = (groups[kind] || []).map((row) => {
+        const liveness = !checkable ? 'unchecked' : (held.has(row.id) ? 'live' : 'missing');
+        byParent[row.id] = liveness;
+        return { ...row, liveness };
+      });
+    });
+    // A Table under a missing Data Source is certainly unreachable, so this direction is sound. The
+    // converse is not covered: a Table dropped from a Data Source that still exists stays live, and
+    // finding it would cost a cascade call per row on every scope load.
+    CHILD_GROUPS.forEach((kind) => {
+      next[kind] = (groups[kind] || []).map(
+        (row) => (byParent[row.parentId] ? { ...row, liveness: byParent[row.parentId] } : row)
+      );
+    });
+    return next;
+  }
+
   // Everything a fresh platform listing decides, in one place, because two writers for these
   // fields is how the rail and the catalogue end up disagreeing about what Domino holds. Called
   // once on a scope load and again each time Browse Domino opens.
@@ -528,7 +590,7 @@ window.SW = window.SW || {};
     state.resourceListing = listing;
     state.resourceListingScope = state.scope && state.scope.id;
     applyResourceGroups(
-      SW.api.overlayResourceListing(state.resourceGroups, listing),
+      stampLiveness(SW.api.overlayResourceListing(state.resourceGroups, listing), listing),
       {
         aliases: (listing.groups && listing.groups.model_llm) || [],
         errors: listing.errors || {},
@@ -2688,6 +2750,31 @@ window.SW = window.SW || {};
       return result;
     },
 
+    // Where a Binding is taken back: the app's own list, which is the list that owns the scope
+    // (ADR-0011). Pointed at from a Project row whose Resource is gone from Domino and is still
+    // bound — that row's Remove is refused by `remove_project_resource` with a 409 naming this very
+    // app, so the row offers the act that would work instead of the one that cannot (ADR-0034). The
+    // guard on the Resource itself is left alone: relaxing it for a dead Resource would silently
+    // break an app that still ships the Binding.
+    //
+    // Selected before the route is written, in that order and for the reason `buildPlanAgain` does
+    // it: the server holds one selected app per Project, so a route that lands ahead of the
+    // selection lands on somebody else's Bindings.
+    async openAppBindings(appId) {
+      if (!appId) return;
+      // `selectApp` returns early when the app is already selected, and the route written below is
+      // then the one already in the bar — so a creator looking at that app would click and watch
+      // nothing move. The list they need is on screen; say where rather than leave the act looking
+      // broken.
+      const alreadyThere = (state.activeApp || {}).id === appId
+        && SW.router.get().mode === 'build';
+      await store.selectApp({ id: appId });
+      SW.router.go(SW.appRoute({ id: appId }));
+      if (alreadyThere) {
+        antd.message.info(`Take it out of ${appScopeName()} in the list of what this app uses.`);
+      }
+    },
+
     async removeFromProject(resource) {
       const scopeName = state.scope.name;
       return new Promise((resolve) => {
@@ -3409,6 +3496,17 @@ window.SW = window.SW || {};
               appRemoval: removalNotice(where, result.name || name, result.refs || []),
             });
             notify();
+            // `usedBy` is the Project row's, computed by `list_project_resources` off the apps' own
+            // manifests — and this act just changed one of them. The read above answers with the
+            // APP's list and says nothing about the Project's, so without this the rail would go on
+            // naming an app that no longer binds anything. Since #161 that is not only a wrong
+            // subtitle: a row whose Resource is gone from Domino offers the app's door INSTEAD of
+            // the Project's, so a stale `usedBy` leaves the row pointing at an app it has already
+            // left, with no way out short of a reload.
+            //
+            // Membership only, which is a 145 ms local read — the platform listing an unbind cannot
+            // change is not re-read (#162).
+            await refreshWorkingSet();
             resolve(true);
           },
           onCancel: () => resolve(false),

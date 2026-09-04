@@ -66,6 +66,30 @@ window.SW = window.SW || {};
     // tag has to say the same thing in both. It was written out twice and drifted apart once.
     SOVEREIGN_TITLE: 'Runs inside your environment.',
 
+    // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —
+    // the rail, the @ menu and the bind picker — so the words are written once, the way
+    // `SOVEREIGN_TITLE` is: a person carries what they read from one menu to the other (ADR-0021).
+    //
+    // It marks and never withholds. A missing row stays selectable and says why at the point of
+    // picking, because a Problem informs and never blocks (ADR-0027) and the two acts Sage refuses
+    // already catch this downstream, knowing more about the failure than a picker does.
+    missingMark() {
+      return SW.brand.text('not in {platformName}');
+    },
+    // Says what the check actually proves, and no more. All three checkable listings are filtered
+    // to what the CALLER may see — Datasets by `minimumPermission`, Data Sources and Aliases by the
+    // accessible set — so an absence is a deletion or a revoked grant, and Sage cannot tell which
+    // from here. A sentence asserting the Resource is gone would be flatly wrong for the second
+    // case, and the second case is the one where somebody else can put it back.
+    missingTitle() {
+      return SW.brand.text(
+        'You can no longer reach this on {platformName}: it was deleted, or your access to it was.'
+      );
+    },
+    isMissing(row) {
+      return !!row && row.liveness === 'missing';
+    },
+
     // Every composer offers the same @ affordance, so the half of the placeholder that advertises
     // it is written once. Only the lead changes with what the composer is for.
     composerPlaceholder(lead) {

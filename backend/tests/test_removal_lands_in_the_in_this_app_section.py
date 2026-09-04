@@ -205,7 +205,15 @@ def test_the_removal_label_follows_the_selected_app():
 @needs_node
 def test_removing_a_binding_calls_the_route_and_takes_the_row_away():
     step = _remove("Market data EOD", confirm=True)
-    assert step["calls"] == ["DELETE /bindings/data_source/ds_1"]
+    # The membership re-read behind it is #161's: `usedBy` is computed per read off the apps' own
+    # manifests, so an unbind changes what the Project rail says about this Resource and only a
+    # fresh read can tell it. Membership and the app's manifest, and NOT the platform listing —
+    # giving a Binding back cannot change what Domino holds (#162).
+    assert step["calls"] == [
+        "DELETE /bindings/data_source/ds_1",
+        "GET /project/resources",
+        "GET /project",
+    ]
     assert "Market data EOD" not in step["bindings"]
     assert not [r for r in _app_rows(step) if "Market data EOD" in r["texts"]]
 

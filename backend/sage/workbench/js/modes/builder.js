@@ -694,7 +694,16 @@ window.SW = window.SW || {};
     const held = rows.filter((r) => inProject.has(r.id));
     const wider = rows.filter((r) => !inProject.has(r.id));
 
-    const option = (r) => ({ key: r.id, label: `${SW.util.iconFor(r.kind)} ${r.name}` });
+    // A row Domino no longer holds carries its mark into the label, because a disabled item never
+    // fires and this one must stay pickable: the mark informs and the bind is refused downstream by
+    // code that knows why, if it is refused at all (ADR-0034). In the label rather than a node of
+    // its own — antd draws this list, and the working set's own rows are the only ones that can be
+    // missing, so the catalogue half below never wears it.
+    const option = (r) => ({
+      key: r.id,
+      label: `${SW.util.iconFor(r.kind)} ${r.name}`
+        + (SW.util.isMissing(r) ? ` — ${SW.util.missingMark()}` : ''),
+    });
     // A disabled item never fires, so the reason has to be the label — and the two empties are two
     // different states with two different ways out. Everything bound is a finished app; nothing to
     // bind at all is a Project nobody has picked anything into yet, and Browse Domino is where that

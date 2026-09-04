@@ -776,6 +776,15 @@ a.sw-topnav-link {
   white-space: nowrap;
 }
 
+/* A kind that would not list, said once above its rows. It sits between the group head and the
+   first row because it is a fact about the KIND — it is as true of a group holding twelve carried
+   rows as of an empty one, and only the group head is above both (#161). */
+.sw-group-note {
+  padding: 0 var(--s3) var(--s2) 28px;
+  font-size: var(--fs-12);
+  color: var(--warning-text);
+  line-height: 1.5;
+}
 .sw-group-empty {
   padding: var(--s1) var(--s3) var(--s3) 28px;
   font-size: var(--fs-12);
@@ -797,6 +806,20 @@ a.sw-topnav-link {
   border-radius: 9px;
   background: var(--purple-100);
   color: var(--purple-700);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The @ menu's copy of the rail's `missing` mark. Same words, told apart from `in context` beside
+   it by colour rather than shape: both are facts about the row, and one of them is a warning (#161). */
+.sw-mention-missing {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--error-bg);
+  color: var(--error);
   font-size: var(--fs-11);
   font-weight: 600;
   white-space: nowrap;

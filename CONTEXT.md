@@ -558,3 +558,15 @@ a sidecar that will not answer is a Problem in its own right, because there the 
 never lights the chip.
 _Kind_: word
 _Avoid_: health check, healthcheck, probe, validation, diagnostics, readiness
+
+**Liveness**:
+Whether Domino still holds the Resource a [[Working set]] row names. It takes three values — live,
+missing and unchecked — because two would state a fact Sage does not have: the platform listing may
+not be read yet, a kind's read may have failed, and one kind's listing can drop rows without saying
+so. Absence proves deletion only where the listing is complete. Computed from the listing already in
+hand and never written down, as `usedBy` is. It informs and never refuses: a missing row can still
+be picked, and says why at the point of picking. See
+[ADR-0034](docs/adr/0034-absence-proves-deletion-only-where-the-listing-is-complete.md).
+_Kind_: word
+_Avoid_: health, status (both belong to [[Problem]]), availability or unavailable (those describe a
+Resource that exists but will not serve), dead, stale, orphaned, existence check, validation

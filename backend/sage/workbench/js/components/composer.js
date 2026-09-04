@@ -654,6 +654,16 @@ window.SW = window.SW || {};
                   // where it lives without spending a row's width on it.
                   h('span', { className: 'sw-mention-name', title: resource.path || resource.name },
                     resource.name),
+                  // Domino no longer holds it (ADR-0034). Marked, not withheld: the row stays
+                  // selectable and carries its reason at the point of picking, because a refusal
+                  // here would be Sage's third and would only pre-empt one the creator gets a step
+                  // later, from code that knows more about the failure than this menu does
+                  // (ADR-0027). Its own slot rather than the caption ladder below, which is
+                  // first-match — a missing file with a folder caption would otherwise be marked in
+                  // the rail and nowhere here.
+                  SW.util.isMissing(resource)
+                    ? h('span', { className: 'sw-mention-missing' }, SW.util.missingMark())
+                    : null,
                   caption ? h('span', { className: 'sw-caption' }, caption) : null,
                   attachedIds.has(resource.id)
                     ? h('span', { className: 'sw-incontext-tag' }, 'in context')

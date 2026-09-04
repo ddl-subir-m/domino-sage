@@ -361,6 +361,11 @@ SW.api = {
   resourceListing: () => fetchDominoListing(),
   overlayResourceListing: overlayListing,
   keepUnreadKinds,
+  // Which key in `listing.errors` speaks for a kind. Exposed because `keepUnreadKinds` is not the
+  // only reader since #161: the store asks the same question a second way — a kind that refused
+  // marks none of its rows, and its rows here are the previous ones carried forward, so the error
+  // is the only thing telling a stale row from a live one (ADR-0034).
+  LISTING_ERROR_KEY: ERROR_KEY_BY_KIND,
   resource: (id) => {
     const { resourceIndex, catalogueParents } = SW.store.get();
     // The index holds the project's working set. A catalogue parent is not in it yet and the
