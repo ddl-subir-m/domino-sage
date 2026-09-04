@@ -173,3 +173,64 @@ def test_the_open_weight_list_is_read_from_healthz():
     readiness probe is not the route that reports Problems."""
     (row,) = _drawn([{"health": True}])
     assert row["fetched"] == ["./healthz"]
+
+
+# ---- the signing pin, which the picker cannot compute (ADR-0032) --------------------------------
+SIGNING_MODEL = "google/gemini-3.7-flash"
+
+
+def test_a_pinned_session_names_the_model_it_will_actually_run():
+    """The picker restated the router's precedence in JS, and the pin is the one rule that copy
+    could not see. Plan showed its own slot's model and the turn ran on the signing one."""
+    _, row = _drawn([{"mode": "plan"}, {"mode": "plan", "signing": "implement"}])
+    assert row["label"] == f"{SIGNING_MODEL} (default)"
+
+
+def test_a_pinned_session_says_why_it_is_not_running_the_slot_you_assigned():
+    """Q4 of ADR-0032: a guarantee the person cannot see is one they file as a bug. Plan and
+    Implement carry no tooltip normally, so this is the only place the reason can land."""
+    (row,) = _drawn([{"mode": "plan", "signing": "implement"}])
+    assert "signs its tool calls" in row["why"]
+    assert "Implement is assigned to it" in row["why"]
+
+
+def test_a_pinned_session_still_offers_the_override_that_beats_the_pin():
+    """Precedence is in-session act > pin, so taking the menu away would be a lie in the other
+    direction — the pick really does win."""
+    (row,) = _drawn([{"mode": "plan", "signing": "implement",
+                      "pick": "deepseek/deepseek-v3"}])
+    assert row["offered"] is True
+    assert row["wrote"] == [{"pick": "deepseek/deepseek-v3"}]
+    assert row["afterLabel"] == "deepseek/deepseek-v3"
+
+
+def test_the_default_row_goes_back_to_the_pinned_model_not_the_slots_own():
+    """`(default)` calls setBuildModel(null), so it has to mark where routing actually returns to.
+    Marking the phase's slot offered a way back to a model the turn would not go back to."""
+    keys = _drawn([{"mode": "plan", "signing": "implement"}])[0]["items"]
+    labels = [i.get("label") for i in keys if "group" not in i]
+    assert f"{SIGNING_MODEL} (default)" in labels
+    assert f"{PLAN_MODEL} (default)" not in labels
+
+
+def test_auto_stops_claiming_two_models_when_only_one_can_run():
+    """The worst sentence in the control: "Auto runs X to plan and Y to build" is specific,
+    confident and false under the pin."""
+    (row,) = _drawn([{"mode": "auto", "signing": "implement"}])
+    assert row["label"] == f"{SIGNING_MODEL} · planning"
+    assert "to plan and" not in row["why"]
+    assert "signs its tool calls" in row["why"]
+
+
+def test_ask_under_the_pin_names_the_pinned_model_too():
+    # Ask shares the harness session with Build, and read tools survive the read-only strip, so an
+    # Ask turn signs history like any other.
+    (row,) = _drawn([{"mode": "ask", "signing": "implement"}])
+    assert row["label"] == SIGNING_MODEL
+    assert "signs its tool calls" in row["why"]
+
+
+def test_no_signing_slot_leaves_every_word_of_the_picker_alone():
+    plain, _ = _drawn([{"mode": "auto"}, {"mode": "auto", "signing": None}])
+    assert plain["label"] == f"{PLAN_MODEL} · planning"
+    assert "to plan and" in plain["why"]

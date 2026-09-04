@@ -154,7 +154,7 @@ window.SW = window.SW || {};
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
-      catalog, buildModel, buildPhase, openWeightModels,
+      catalog, buildModel, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
     } = SW.store.get();
     const [text, setText] = useState('');
@@ -353,12 +353,27 @@ window.SW = window.SW || {};
     // menu answers, and the router (llm_router) is the only authority on it: Ask is pinned to
     // `ask`, Auto follows the phase, and Plan and Implement take their own slot — and are the only
     // two that will honour an override at all.
-    const pinnedSlot = activeBuildMode.id === 'ask'
+    //
+    // `signingSlot` outranks all of that and is NOT recomputed here. A model that signs its tool
+    // calls cannot share a session with one that does not, so one assignment takes every mode and
+    // every phase (ADR-0032). This copy of the precedence could not see that rule, and every line
+    // below reads `pinnedModel` — so the label, the `(default)` marker and the override comparison
+    // were all naming a model the turn would not run on.
+    const pinnedSlot = signingSlot || (activeBuildMode.id === 'ask'
       ? 'ask'
       : activeBuildMode.id === 'auto'
         ? (buildPhase === 'implement' ? 'implement' : 'plan')
-        : activeBuildMode.id;
+        : activeBuildMode.id);
     const pinnedModel = (catalog && catalog[pinnedSlot]) || '';
+    // Why the mode is not running its own slot's model. Without this the person who assigned
+    // gpt-5.4 to Plan sees Gemini and has nothing to read — the guarantee they cannot see is the
+    // one they file as a bug.
+    const SLOT_NAME = { plan: 'Plan', implement: 'Implement', ask: 'Ask' };
+    const pinWhy = signingSlot
+      ? `${pinnedModel} signs its tool calls, so one session cannot mix it with another model. `
+        + `Every Build turn runs on it while ${SLOT_NAME[signingSlot] || signingSlot} is assigned `
+        + 'to it.'
+      : '';
     const overridable = activeBuildMode.id === 'plan' || activeBuildMode.id === 'implement';
     // The four configured slots reduced to the models behind them: two slots pointing at one model
     // are one row, not two the person has to tell apart.
@@ -796,16 +811,23 @@ window.SW = window.SW || {};
                       chipLabel(override || pinnedModel)))
                 )
               : overridable
-                ? h(
-                    Dropdown,
-                    { menu: buildModelMenu, trigger: ['click'], placement: 'topRight' },
-                    h(
-                      Button,
-                      { size: 'small', 'aria-label': 'Build model' },
-                      h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
-                        h(DownOutlined, { style: { fontSize: 9 } }))
-                    )
-                  )
+                ? (() => {
+                    const control = h(
+                      Dropdown,
+                      { menu: buildModelMenu, trigger: ['click'], placement: 'topRight' },
+                      h(
+                        Button,
+                        { size: 'small', 'aria-label': 'Build model' },
+                        h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
+                          h(DownOutlined, { style: { fontSize: 9 } }))
+                      )
+                    );
+                    // Wrapped only when there IS something to say. Plan and Implement have never
+                    // carried a tooltip, and the menu still works — an in-session pick outranks the
+                    // pin, which is the router's own rule (ADR-0032). So this explains the label
+                    // without taking the control away.
+                    return pinWhy ? h(Tooltip, { title: pinWhy }, control) : control;
+                  })()
                 // Ask and Auto honour no override — Ask is pinned to its slot and Auto follows the
                 // phase — so there is no menu to offer. They open the panel instead: a disabled
                 // control with a working door behind it answers "why can't I change this" with
@@ -813,9 +835,12 @@ window.SW = window.SW || {};
                 : h(
                     Tooltip,
                     {
-                      title: activeBuildMode.id === 'ask'
+                      // `pinWhy` first: the Auto sentence below names two models, and under the
+                      // pin there is only one. A confident, specific, false sentence is the worst
+                      // thing this control can say.
+                      title: pinWhy || (activeBuildMode.id === 'ask'
                         ? `Ask runs on ${pinnedModel}, and so does Chat.`
-                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build.`,
+                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build.`),
                     },
                     h(
                       Button,

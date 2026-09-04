@@ -219,6 +219,9 @@ window.SW = window.SW || {};
     catalog: null,
     buildModel: '',
     buildPhase: 'plan',
+    // Which slot pinned the whole session, or '' (ADR-0032). Server-computed: the picker
+    // restates the router's precedence below, and the signing pin is the one rule it cannot see.
+    signingSlot: '',
     // Only ever non-empty on an `openai` gateway, where /healthz names the open-weight models this
     // deployment will accept beyond the four configured slots. On Domino it is [], and the picker
     // is the four slots alone.
@@ -332,6 +335,7 @@ window.SW = window.SW || {};
     }
     if ('picked_model' in m) state.buildModel = m.picked_model || '';
     if (m.phase) state.buildPhase = m.phase;
+    if ('signing_slot' in m) state.signingSlot = m.signing_slot || '';
     if ('chat_model' in m || m.chat_model === null) {
       state.model = m.chat_model || '';
     }

@@ -136,8 +136,15 @@ reach is dead. Its own docstring warned about that failure two paragraphs before
 
 The third reader is the Build picker, which restates the precedence in JavaScript from a raw
 catalog. It cannot compute the pin, so `status()["model"]["signing_slot"]` sends the slot name and
-the picker marks it. Until it does, the panel names the slot's own model while the turn runs on the
-signing one — the log line is correct, the panel is not.
+`composer.js` lets it outrank the local copy. Everything there reads `pinnedModel`, so one field
+repairs the button label, the `(default)` row and the override comparison at once — that row calls
+`setBuildModel(null)`, so marking the phase's own slot offered a way back to a model routing would
+not go back to.
+
+The pin also carries the reason, which is the Q4 half of this decision. Plan and Implement have
+never had a tooltip; they get one only while the pin is in force, and they keep their menu, because
+an in-session pick genuinely beats the pin. Auto's tooltip needed the opposite treatment: it read
+"Auto runs X to plan and Y to build", which under the pin is specific, confident and false.
 
 **The predicate refuses more than the gateway would.** Probed live on 2026-09-04: unsigned history
 is accepted when the last message is a user turn, and rejected only when the model must continue
