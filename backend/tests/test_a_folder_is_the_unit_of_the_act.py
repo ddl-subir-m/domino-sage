@@ -509,6 +509,29 @@ def test_a_stale_symlink_is_replaced_rather_than_refused(route):
     assert stale.is_symlink() and stale.read_text() == "a,b\n1,2\n"
 
 
+def test_a_record_that_cannot_be_written_unwinds_the_links(route, monkeypatch):
+    """Detach cannot take bytes back, so it tells the truth when the record fails to follow.
+    Attach still can: the links it made unwind, and "Nothing was attached" stays a true sentence
+    rather than a 500 over a data directory nobody chose."""
+    client, ds, orch, ws = route
+
+    def refuse(self, entries):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(type(orch.project().workspace), "write_attachments", refuse)
+
+    failed = _post(client, ds, "raw/2024")
+
+    assert failed.status_code == 500
+    assert "Nothing was attached" in failed.json()["error"]
+    monkeypatch.undo()
+    assert orch.project().attached == []
+    assert _manifest(ws) == []
+    assert not (ws / "public" / "data" / "sales_2026").exists()
+    agents = (ws / "AGENTS.md").read_text() if (ws / "AGENTS.md").exists() else ""
+    assert "part-0.csv" not in agents
+
+
 def test_the_route_does_not_blame_the_folder_for_a_file_the_mount_lost(route):
     """The folder plainly exists — the person picked it off a row showing its count and its size —
     so "folder not found" contradicts the screen and points at the wrong thing to fix. What changed

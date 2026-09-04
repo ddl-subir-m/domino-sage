@@ -1806,6 +1806,7 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
         if path:
             return brand.text(
                 "- {dataset} {name}{where}, files at {path}. Read those files. "
+                "This chip does not put them in an app; Attach folder on this {dataset} is that act. "
                 "Do not search the rest of this workspace for a substitute.",
                 name=name, where=where, path=path,
             )
@@ -9840,6 +9841,7 @@ class Orchestrator:
                     raise AttachWouldClobber(ancestor.relative_to(stop).as_posix())
         made: list[Path] = []
         entries: list[dict] = []
+        described = False
         try:
             for f in wanted:
                 rel = _attach_dest(asset.name, f.path)
@@ -9850,10 +9852,21 @@ class Orchestrator:
                 _link_attachment(dest, src)
                 made.append(dest)
                 entries.append(_dataset_entry(dataset_id, asset.name, f.path, rel, f.size))
+            # The record is inside the same try the links are. A write that failed after `extend`
+            # used to leave the files in the preview and answer "Nothing was attached" — the lie
+            # detach cannot unwind (the bytes are gone) and attach still can. The sentence the
+            # route already carries stays true because the tree goes back to empty with it.
+            project.attached.extend(entries)
+            self._ensure_gitignored(project.workspace.path, "public/data/")
+            self._write_agents_data_block(project)
+            described = True
+            project.workspace.write_attachments(project.attached)
         except Exception:
             # Nothing attached, and nothing left in the tree the preview serves either — including
             # the directories the links needed, which is what `_prune_empty_dirs` is for. Every link
             # this made stood on nothing, because the pre-flight above refused over anything real.
+            gone = {e["path"] for e in entries}
+            project.attached[:] = [e for e in project.attached if e["path"] not in gone]
             for link in reversed(made):
                 try:
                     if link.is_symlink() or link.exists():
@@ -9861,11 +9874,14 @@ class Orchestrator:
                     _prune_empty_dirs(link.parent, data_root)
                 except OSError:
                     log.exception("attach_folder: could not unwind %s", link)
+            if described:
+                # AGENTS.md was rewritten for files that are about to not exist. Best-effort: the
+                # raise below is the one the person sees, and a second failure here must not hide it.
+                try:
+                    self._write_agents_data_block(project)
+                except OSError:
+                    log.exception("attach_folder: could not restore AGENTS.md after unwind")
             raise
-        project.attached.extend(entries)
-        self._ensure_gitignored(project.workspace.path, "public/data/")
-        self._write_agents_data_block(project)
-        project.workspace.write_attachments(project.attached)
         return {"attached": len(entries), "bytes": incoming, "dataset": asset.name,
                 "folder": prefix.rstrip("/"), "status": project.status()}
 

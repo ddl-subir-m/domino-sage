@@ -104,6 +104,17 @@ def test_a_mounted_dataset_row_renames_the_noun_and_not_the_name(acme):
     assert "Dataset" not in line
 
 
+def test_a_mounted_dataset_row_says_this_chip_does_not_attach(acme):
+    """The chip is 'read this and answer me'. Attach folder is 'the app ships these bytes'.
+    The line used to read as though the mount were the only route (ADR-0029)."""
+    line = _chat_context_line(
+        {"kind": "dataset", "name": "domino-demo", "path": "/mnt/data/domino-demo"}
+    )
+    assert "Read those files." in line
+    assert "This chip does not put them in an app; Attach folder on this Cube is that act." in line
+    assert "Dataset" not in line
+
+
 def test_an_unmounted_dataset_row_keeps_the_import_path_it_names(acme):
     """Prose and identifier in one breath: the library is the platform's, so the WORD moves — the
     module path `domino_data.datasets` is code the agent is about to type, so it does not."""
