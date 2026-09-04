@@ -282,7 +282,8 @@ _Avoid_: Hub, notebook, App container (that is the Workbench process)
 
 **Chat**:
 The Workbench mode for open-ended questions and analysis. It produces Artifacts. It does not
-edit `src/`. Driven by the OpenCode agent `sage-chat`.
+edit `src/`. Driven by the OpenCode agent `sage-chat`. It is not a terminal: code a person types
+is run, and its result is explained rather than echoed back as raw output.
 _Kind_: name
 _Avoid_: ask mode (Build has a mode called Ask and this is not it — the collision is why the
 word must not stand in for Chat), assistant, sandbox, Jupyter, notebook
