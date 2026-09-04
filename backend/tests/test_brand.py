@@ -366,26 +366,22 @@ def test_an_actor_string_names_the_packs_platform(tmp_path, monkeypatch):
 def test_a_destination_string_names_the_packs_platform(tmp_path, monkeypatch):
     """Copy that sends a person to a page Sage does not own has to say the partner's word, or it
     is a dead end. The git host in the same sentence is a literal and stays."""
-    import httpx
-
-    from sage.provision.domino import DominoControlPlane
+    from sage.provision.domino import FakeControlPlane
+    from sage.provision.github import FakeRepoProvider
+    from sage.provision.service import ProvisionService
 
     path = tmp_path / "brand.json"
     path.write_text(json.dumps({"platformName": "Acme Cloud"}))
     monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
 
-    def handler(request):
-        if request.url.path == "/api/users/v1/self":
-            return httpx.Response(200, json={"user": {"id": "user-1"}})
-        return httpx.Response(200, json={"credentials": []})
-
-    cp = DominoControlPlane(
-        "https://acme.example", lambda: "tok",
-        environment_id="env-1", hardware_tier_id="tier-1",
-        transport=httpx.MockTransport(handler),
+    # No credential the create loop could use, so the sentence that sends the person to the
+    # platform's own settings page is the one they read (ADR-0033 moved this text to the caller).
+    svc = ProvisionService(
+        FakeControlPlane(credentials=[]), FakeRepoProvider(), tmp_path / "work",
+        seed=lambda *a, **k: None,
     )
     with pytest.raises(RuntimeError) as e:
-        cp.create_project("X", git_url="https://github.com/me/sage-x.git")
+        svc.create_app("X")
     assert "in your Acme Cloud account" in str(e.value)
     assert "github.com" in str(e.value)      # the literal in the same sentence
     assert "Domino" not in str(e.value)

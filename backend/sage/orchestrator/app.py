@@ -830,6 +830,21 @@ def _git_credential_diag() -> dict:
         return {"host": host, "error": str(e)}
 
 
+def _git_credential_list_diag() -> dict:
+    """Which of the caller's platform Git credentials the create loop would try, in order (#157).
+
+    `_git_credential_diag` above answers the container side. This is the API-list side, which had
+    nothing — so a user whose Project create was refused could not see that Sage held three
+    credentials and tried them in an order they cannot influence. No secret, and no fingerprint.
+    """
+    if _provision is None:
+        return {"error": "not connected to the platform"}
+    try:
+        return _provision.git_credential_diag()
+    except Exception as e:  # a diagnostic must never be the thing that breaks the diagnostics page
+        return {"error": str(e)}
+
+
 @control_app.get("/api/diag")
 def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
@@ -872,6 +887,7 @@ def diag() -> JSONResponse:
             "session_id": p.session_id,
         },
         "git_credential": _git_credential_diag(),
+        "git_credential_list": _git_credential_list_diag(),
         "debug_stream": ka.debug_stream_enabled(),
         "log_tail": list(_LOG_RING)[-60:],
         "opencode_log_tail": orchestrator._opencode_log_tail(30),

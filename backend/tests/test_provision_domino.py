@@ -39,7 +39,8 @@ def test_create_project_uses_public_api_shape():
     seen = {}
     # ProjectEnvelopeV1: {project: {...}, metadata: {...}}
     resp = httpx.Response(200, json={"project": {"id": "proj-42", "name": "My App"}, "metadata": {}})
-    ref = _cp(_creds_handler(resp, seen)).create_project("My App", git_url="https://github.com/me/sage-my-app.git")
+    ref = _cp(_creds_handler(resp, seen)).create_project(
+        "My App", git_url="https://github.com/me/sage-my-app.git", git_credential_id="cred-gh")
     assert ref.id == "proj-42"
     assert ref.name == "My App"
     assert seen["path"] == "/api/projects/beta/projects"
@@ -48,7 +49,7 @@ def test_create_project_uses_public_api_shape():
     assert "ownerId" not in b
     assert "tags" not in b
     assert b["visibility"] == "Private"
-    # Matched the github.com https credential, not the gitlab one.
+    # The credential the caller chose, sent through untouched (ADR-0033).
     assert b["mainRepository"] == {
         "uri": "https://github.com/me/sage-my-app.git",
         "serviceProvider": "Github",
@@ -57,86 +58,58 @@ def test_create_project_uses_public_api_shape():
     }
 
 
-def test_create_project_errors_without_matching_credential():
-    def handler(request):
-        if request.url.path == "/api/users/v1/self":
-            return httpx.Response(200, json={"user": {"id": "user-1"}})
-        if request.url.path == "/api/users/beta/credentials/user-1":
-            return httpx.Response(200, json={"credentials": []})  # none for github.com
-        raise AssertionError("should not POST without a credential")
-
-    try:
-        _cp(handler).create_project("X", git_url="https://github.com/me/sage-x.git")
-    except RuntimeError as e:
-        assert "github.com" in str(e)
-    else:
-        raise AssertionError("expected RuntimeError when no git credential matches")
-
-
-def test_no_credential_error_lists_the_ones_you_do_have():
-    """#157: a user holding credentials for other hosts used to read "add one" as the only advice."""
+def test_git_credentials_reports_labels_and_usability():
+    """The provider reports; it picks nothing (ADR-0028/0033). Live field set verified 2026-09-04:
+    domain, fingerprint, gitServiceProvider, id, name, protocol — and no username."""
     def handler(request):
         if request.url.path == "/api/users/v1/self":
             return httpx.Response(200, json={"user": {"id": "user-1"}})
         if request.url.path == "/api/users/beta/credentials/user-1":
             return httpx.Response(200, json={"credentials": [
-                {"id": "c1", "domain": "gitlab.com", "protocol": "https", "name": "work GitLab"},
+                {"id": "c1", "domain": "github.com", "protocol": "https", "name": "old PAT",
+                 "fingerprint": "3b:0f:6f:db", "gitServiceProvider": "Github"},
                 {"id": "c2", "domain": "github.com", "protocol": "ssh", "name": "my key"},
+                {"id": "c3", "domain": "gitlab.com", "protocol": "https", "name": "work GitLab"},
+                {"domain": "github.com", "protocol": "https", "name": "no id"},  # unusable, skipped
             ]})
-        raise AssertionError("should not POST without a credential")
+        raise AssertionError(f"unexpected call to {request.url.path}")
 
-    try:
-        _cp(handler).create_project("X", git_url="https://github.com/me/sage-x.git")
-    except RuntimeError as e:
-        msg = str(e)
-        assert "work GitLab (gitlab.com)" in msg
-        assert "my key (github.com) [SSH]" in msg  # an SSH credential for the right host is still not one
-        assert "Add an HTTPS credential for github.com" in msg
-    else:
-        raise AssertionError("expected RuntimeError when no git credential matches")
+    creds = _cp(handler).git_credentials()
+    assert [c.id for c in creds] == ["c1", "c2", "c3"]  # the id-less entry is dropped
+    assert [c.usable for c in creds] == [True, False, False]
+    assert [c.label for c in creds] == [
+        "old PAT (github.com)",
+        "my key (github.com) [SSH]",     # right host, wrong protocol — and it says so
+        "work GitLab (gitlab.com)",
+    ]
+    # No secret leaves the provider, and the fingerprint is left out on purpose (ADR-0033).
+    assert not any("3b:0f" in c.label for c in creds)
 
 
-def test_rejected_credential_is_named_with_the_ones_not_tried():
-    """#157: Domino says a credential is invalid without saying which. The picker knows."""
+def test_create_project_reports_a_refusal_without_judging_it():
+    """A rejection goes back as Domino wrote it. Deciding what it costs is the caller's (ADR-0028),
+    and the real body is `errors[]` with a fresh requestId, not `message`."""
+    body = ('{"requestId":"5974-abc","errors":["Cannot access Git repository with URI: '
+            'https://github.com/me/sage-x.git. This may be due to invalid Git credentials."]}')
+
     def handler(request):
-        if request.url.path == "/api/users/v1/self":
-            return httpx.Response(200, json={"user": {"id": "user-1"}})
-        if request.url.path == "/api/users/beta/credentials/user-1":
-            return httpx.Response(200, json={"credentials": [
-                {"id": "cred-a", "domain": "github.com", "protocol": "https", "name": "old PAT"},
-                {"id": "cred-b", "domain": "github.com", "protocol": "https", "name": "new PAT"},
-            ]})
-        return httpx.Response(400, text='{"message":"git credential is not valid"}')
+        return httpx.Response(500, text=body)
 
     try:
-        _cp(handler).create_project("X", git_url="https://github.com/me/sage-x.git")
+        _cp(handler).create_project("X", git_url="https://github.com/me/sage-x.git",
+                                    git_credential_id="cred-a")
     except RuntimeError as e:
-        msg = str(e)
-        assert "git credential is not valid" in msg   # Domino's own words, kept
-        assert "old PAT (github.com)" in msg          # the one that went out
-        assert "new PAT (github.com)" in msg          # the one that did not
-        assert "not tried" in msg
+        assert "Cannot access Git repository" in str(e)
+        assert "cred-a" not in str(e)  # the provider adds nothing of its own
     else:
-        raise AssertionError("expected RuntimeError when Domino rejects the credential")
-
-
-def test_unrelated_create_failure_gets_no_credential_note():
-    """The note is keyed on Domino blaming a credential — a bad-visibility error must stay clean."""
-    resp = httpx.Response(400, text='{"message":"bad visibility"}')
-    try:
-        _cp(_creds_handler(resp, {})).create_project("X", git_url="https://github.com/me/sage-x.git")
-    except RuntimeError as e:
-        assert "bad visibility" in str(e)
-        assert "Git credential" not in str(e)
-    else:
-        raise AssertionError("expected RuntimeError")
+        raise AssertionError("expected RuntimeError on 500")
 
 
 def test_create_project_surfaces_error_body():
     resp = httpx.Response(400, text='{"message":"bad visibility"}')
     cp = _cp(_creds_handler(resp, {}))
     try:
-        cp.create_project("X", git_url="https://github.com/me/sage-x.git")
+        cp.create_project("X", git_url="https://github.com/me/sage-x.git", git_credential_id="cred-gh")
     except RuntimeError as e:
         assert "400" in str(e)
         assert "bad visibility" in str(e)
@@ -508,11 +481,13 @@ def test_the_new_projects_description_names_the_packs_assistant(tmp_path, monkey
     resp = httpx.Response(200, json={"project": {"id": "p1", "name": "My App"}, "metadata": {}})
 
     seen = {}
-    _cp(_creds_handler(resp, seen)).create_project("My App", git_url="https://github.com/me/sage-x.git")
+    _cp(_creds_handler(resp, seen)).create_project(
+        "My App", git_url="https://github.com/me/sage-x.git", git_credential_id="cred-gh")
     assert seen["body"]["description"] == "Created by Ada"
 
     seen = {}
     _cp(_creds_handler(resp, seen)).create_project(
-        "My App", git_url="https://github.com/me/sage-x.git", description="Domino demo",
+        "My App", git_url="https://github.com/me/sage-x.git", git_credential_id="cred-gh",
+        description="Domino demo",
     )
     assert seen["body"]["description"] == "Domino demo"

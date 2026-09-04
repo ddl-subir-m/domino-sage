@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from sage.provision.domino import DominoControlPlane, FakeControlPlane
+from sage.provision.domino import CredentialRef, DominoControlPlane, FakeControlPlane
 from sage.provision.github import FakeRepoProvider
 from sage.provision.service import ProvisionService
 
@@ -73,7 +73,8 @@ def test_rollback_deletes_repo_when_seed_fails(tmp_path):
 
 def test_rollback_deletes_repo_when_project_create_fails(tmp_path):
     class FailingCP(FakeControlPlane):
-        def create_project(self, name, *, git_url, branch="main", description=""):
+        def create_project(self, name, *, git_url, git_credential_id="cred-1", branch="main",
+                           description=""):
             raise RuntimeError("project rejected")
 
     repo = FakeRepoProvider()
@@ -81,6 +82,110 @@ def test_rollback_deletes_repo_when_project_create_fails(tmp_path):
     with pytest.raises(RuntimeError, match="project rejected"):
         svc.create_app("My App")
     assert repo.created == []
+
+
+def test_a_dead_credential_does_not_win_the_pick(tmp_path):
+    """ADR-0033: Sage cannot tell a live credential from a dead one, so it lets Domino say. The
+    dead one is listed first, exactly the #157 case that used to fail the whole create."""
+    cp = FakeControlPlane(
+        credentials=[
+            CredentialRef(id="dead", label="old PAT (github.com)", domain="github.com",
+                          protocol="https", usable=True),
+            CredentialRef(id="live", label="new PAT (github.com)", domain="github.com",
+                          protocol="https", usable=True),
+        ],
+        dead_credentials={"dead"},
+    )
+    created = _service(tmp_path, cp).create_app("My App")
+
+    assert created.project.name == "sage-my-app"
+    assert cp.tried_credentials == ["dead", "live"]  # in list order, and it did not stop at the first
+
+
+def test_unusable_credentials_are_never_tried(tmp_path):
+    """An SSH credential for the right host and an HTTPS one for another host are both out."""
+    cp = FakeControlPlane(credentials=[
+        CredentialRef(id="ssh", label="my key (github.com) [SSH]", domain="github.com",
+                      protocol="ssh", usable=False),
+        CredentialRef(id="gl", label="work GitLab (gitlab.com)", domain="gitlab.com",
+                      protocol="https", usable=False),
+        CredentialRef(id="ok", label="PAT (github.com)", domain="github.com",
+                      protocol="https", usable=True),
+    ])
+    _service(tmp_path, cp).create_app("My App")
+    assert cp.tried_credentials == ["ok"]
+
+
+def test_no_usable_credential_lists_what_the_account_holds(tmp_path):
+    """#157: a user with credentials for other hosts used to read "add one" as the only advice."""
+    cp = FakeControlPlane(credentials=[
+        CredentialRef(id="gl", label="work GitLab (gitlab.com)", domain="gitlab.com",
+                      protocol="https", usable=False),
+        CredentialRef(id="ssh", label="my key (github.com) [SSH]", domain="github.com",
+                      protocol="ssh", usable=False),
+    ])
+    repo = FakeRepoProvider()
+    with pytest.raises(RuntimeError) as e:
+        _service(tmp_path, cp, repo).create_app("My App")
+
+    msg = str(e.value)
+    assert "work GitLab (gitlab.com)" in msg
+    assert "my key (github.com) [SSH]" in msg
+    assert "Add an HTTPS credential for github.com" in msg
+    assert cp.tried_credentials == []
+    assert repo.created == []  # and the orphaned repo still gets rolled back
+
+
+def test_every_credential_failing_groups_them_by_what_domino_said(tmp_path):
+    """ADR-0033 Q7: one line per distinct message, not per credential. Domino's refusal runs to
+    three sentences and stamps a fresh requestId on each, so the grouping has to survive both."""
+    class AllDeadCP(FakeControlPlane):
+        def create_project(self, name, *, git_url, git_credential_id="cred-1", branch="main",
+                           description=""):
+            self.tried_credentials.append(git_credential_id)
+            if git_credential_id == "odd":
+                raise RuntimeError('POST /api/projects/beta/projects -> 400: '
+                                   '{"requestId":"r-3","errors":["Repository not found."]}')
+            raise RuntimeError(
+                f'POST /api/projects/beta/projects -> 500: {{"requestId":"r-{git_credential_id}",'
+                '"errors":["Cannot access Git repository with URI: x. This may be due to invalid '
+                'Git credentials."]}')
+
+    cp = AllDeadCP(credentials=[
+        CredentialRef(id="a", label="old PAT (github.com)", domain="github.com",
+                      protocol="https", usable=True),
+        CredentialRef(id="b", label="new PAT (github.com)", domain="github.com",
+                      protocol="https", usable=True),
+        CredentialRef(id="odd", label="CI token (github.com)", domain="github.com",
+                      protocol="https", usable=True),
+    ])
+    with pytest.raises(RuntimeError) as e:
+        _service(tmp_path, cp).create_app("My App")
+
+    msg = str(e.value)
+    assert cp.tried_credentials == ["a", "b", "odd"]  # uncapped: all of them
+    # The two that failed the same way share one line; the odd one out keeps its own.
+    assert "old PAT (github.com), new PAT (github.com) — Cannot access Git repository" in msg
+    assert "CI token (github.com) — Repository not found." in msg
+    # The per-call requestId is gone, or the identical failures would never have grouped.
+    assert "requestId" not in msg
+    assert msg.count("Cannot access Git repository") == 1
+
+
+def test_the_diag_says_which_credentials_the_loop_would_try(tmp_path):
+    """#157: the container side had `credential_probe`; the API-list side had nothing, so a refused
+    create could not be told from a credential Sage never considered."""
+    cp = FakeControlPlane(credentials=[
+        CredentialRef(id="a", label="PAT (github.com)", domain="github.com",
+                      protocol="https", usable=True),
+        CredentialRef(id="ssh", label="my key (github.com) [SSH]", domain="github.com",
+                      protocol="ssh", usable=False),
+    ])
+    assert _service(tmp_path, cp).git_credential_diag() == {
+        "host": "github.com",
+        "will_try": ["PAT (github.com)"],
+        "skipped": ["my key (github.com) [SSH]"],
+    }
 
 
 def test_no_rollback_once_project_exists(tmp_path):
