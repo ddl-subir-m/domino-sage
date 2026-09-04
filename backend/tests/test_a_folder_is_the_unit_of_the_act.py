@@ -29,6 +29,7 @@ from sage.assets.provider import FakeAssetProvider
 from sage.orchestrator import service as svc
 from sage.orchestrator.service import (
     AttachTooLarge,
+    AttachWouldClobber,
     FolderActUnavailable,
     Orchestrator,
 )
@@ -295,9 +296,25 @@ def test_a_folder_partitioned_to_the_day_still_collapses(tmp_path: Path):
     orch.attach_folder(_dataset_id(orch), "raw")
 
     block = [ln for ln in (ws / "AGENTS.md").read_text().splitlines() if ln.startswith("- ")]
+    # `<subpath>`, never `<name>`: the roll-up put the line's folder a level ABOVE where the files
+    # are, and `raw/2026/part.csv` does not exist. An agent following that pattern would get the SPA
+    # fallback instead of the CSV and "fix" it by copying the file into `src/` — the leak this block
+    # exists to prevent.
     assert block == ["- 24 files in `public/data/sales_2026/raw/2026` — CSV — 2 columns, 1 rows "
-                     "— fetch `data/sales_2026/raw/2026/<name>` (relative to base) "
+                     "— fetch `data/sales_2026/raw/2026/<subpath>` (relative to base) "
                      "— from dataset **sales_2026**"]
+
+
+def test_a_folder_whose_files_really_are_in_it_still_says_name(tmp_path: Path):
+    """The other branch. `<subpath>` where the roll-up moved the line up, `<name>` where it did not
+    — a pattern that is vaguer than the paths it describes teaches less than it could."""
+    orch, ds, ws = _ready(tmp_path, per_year=8)      # 16 files, two folders, neither rolled up
+
+    orch.attach_folder(ds, "raw")
+
+    block = [ln for ln in (ws / "AGENTS.md").read_text().splitlines() if ln.startswith("- ")]
+    assert all("<name>` (relative to base)" in ln for ln in block)
+    assert len(block) == 2
 
 
 def test_the_collapse_never_rolls_two_datasets_into_one_line(tmp_path: Path):
@@ -415,6 +432,107 @@ def test_the_route_takes_the_root_as_the_same_act(route):
 def test_the_route_refuses_a_folder_the_dataset_does_not_hold(route):
     client, ds, _, _ = route
     assert _post(client, ds, "raw/2027").status_code == 404
+
+
+def test_the_act_refuses_rather_than_overwrite_a_file_it_did_not_put_there(route):
+    """`_link_attachment` replaces whatever is at the path, which is right for a stale symlink and
+    for a single attach. Over a folder it is not: destroyed bytes are the one thing the unwind
+    cannot give back, so this is settled before the first link rather than after the fifth."""
+    client, ds, orch, ws = route
+    theirs = ws / "public" / "data" / "sales_2026" / "raw" / "2024" / "part-1.csv"
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text("not Sage's")
+
+    refused = _post(client, ds, "raw")
+
+    assert refused.status_code == 409
+    assert "raw/2024/part-1.csv" in refused.json()["error"]
+    assert theirs.read_text() == "not Sage's"                 # untouched
+    assert orch.project().attached == []                      # and nothing else attached either
+
+
+def test_a_file_standing_where_a_directory_must_go_is_named_too(route):
+    """The pre-flight has to cover the directories the links need, not only the leaves. A real file
+    at `public/data/<slug>/raw` is no leaf path, so it slipped through and surfaced as a
+    `NotADirectoryError` out of `mkdir` — a generic 500 in place of the refusal that names it."""
+    client, ds, orch, ws = route
+    theirs = ws / "public" / "data" / "sales_2026" / "raw"
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text("not a directory")
+
+    refused = _post(client, ds, "raw")
+
+    assert refused.status_code == 409
+    assert "public/data/sales_2026/raw" in refused.json()["error"]
+    assert theirs.read_text() == "not a directory"
+    assert orch.project().attached == []
+
+
+def test_the_clobber_refusal_survives_a_workspace_reached_through_a_symlink(tmp_path: Path):
+    """`_safe_join` builds on `root.resolve()`, so the path being checked is resolved. Comparing it
+    against an unresolved workspace root never matched where a component of that root is a symlink:
+    the ancestor walk ran past the workspace to `/`, and naming the result raised `ValueError` —
+    answered as "invalid folder", a 400 for a refusal that had a path to give."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    orch = Orchestrator(
+        workspace_dir=link / "code",                  # reached through the symlink, not the target
+        template=_template(tmp_path),
+        gateway=object(),
+        catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",
+                             plan="p", implement="i", ask="a"),
+        project_id="Sage",
+        assets=_partitioned(tmp_path),
+    )
+    ws = orch.project(start_preview=False).workspace.path
+    theirs = ws / "public" / "data" / "sales_2026" / "raw"
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text("not a directory")
+
+    with pytest.raises(AttachWouldClobber) as caught:
+        orch.attach_folder(_dataset_id(orch), "raw")
+
+    assert caught.value.path == "public/data/sales_2026/raw"
+    assert theirs.read_text() == "not a directory"
+
+
+def test_a_stale_symlink_is_replaced_rather_than_refused(route):
+    """A symlink is how a re-attach works, and how this act's own leftovers clear on a retry."""
+    client, ds, orch, ws = route
+    stale = ws / "public" / "data" / "sales_2026" / "raw" / "2024" / "part-1.csv"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.symlink_to(ws / "package.json")
+
+    assert _post(client, ds, "raw").json()["attached"] == 4
+    assert stale.is_symlink() and stale.read_text() == "a,b\n1,2\n"
+
+
+def test_the_route_does_not_blame_the_folder_for_a_file_the_mount_lost(route):
+    """The folder plainly exists — the person picked it off a row showing its count and its size —
+    so "folder not found" contradicts the screen and points at the wrong thing to fix. What changed
+    is the Dataset, under a listing already drawn."""
+    from sage.assets.provider import DatasetFile
+
+    client, ds, orch, _ = route
+    real = orch._assets.list_files
+    # A listing naming a file the mount does not hold — the state a Dataset that changed since the
+    # tree was drawn leaves behind.
+    def stale(asset):
+        listing = real(asset)
+        listing.files.append(DatasetFile("raw/2024/ghost.csv", 12))
+        return listing
+
+    orch._assets.list_files = stale
+
+    refused = _post(client, ds, "raw/2024")
+
+    assert refused.status_code == 404
+    error = refused.json()["error"]
+    assert "raw/2024/ghost.csv" in error
+    assert "folder not found" not in error
+    assert orch.project().attached == []          # and still nothing attached
 
 
 def test_the_route_refuses_over_the_cap_with_the_three_numbers(route, monkeypatch):

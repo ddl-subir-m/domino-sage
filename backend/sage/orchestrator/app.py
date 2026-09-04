@@ -72,8 +72,9 @@ from ..workspace.threads import safe_id
 from .brand import text as brand_text
 from .describe import human_bytes
 from .service import (
-    AttachTooLarge, DataReferenced, FolderActUnavailable, Orchestrator, ResetBusy,
-    ResourceNotBound, ResourceStillBound, TurnBusy, UploadUnavailable,
+    AttachSourceMissing, AttachTooLarge, AttachWouldClobber, DataReferenced, DetachStopped,
+    FolderActUnavailable,
+    Orchestrator, ResetBusy, ResourceNotBound, ResourceStillBound, TurnBusy, UploadUnavailable,
 )
 
 _feedback = FeedbackRunner()
@@ -1674,6 +1675,20 @@ async def attach_file(dataset_id: str, request: Request) -> JSONResponse:
         )
 
 
+async def _folder_of(request: Request) -> object | None:
+    """The `folder` a folder-act body names, or `None` when the body cannot carry one.
+
+    `None` for a body that is not a JSON object, so both routes answer a malformed envelope with the
+    same 400 their `folder` guard gives a malformed field, rather than the 500 an `AttributeError`
+    on `[]` or a decode error on an empty body used to reach.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return None
+    return body.get("folder") if isinstance(body, dict) else None
+
+
 @control_app.post("/api/project/assets/{dataset_id}/files/attach-folder")
 async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
     """Attach every file below one Dataset folder, in one act (ADR-0029).
@@ -1682,13 +1697,31 @@ async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
     route with its own name. A missing key is a malformed body rather than a root attach, because
     the two are far too different to guess between.
     """
-    folder = (await request.json()).get("folder")
-    if folder is None:
+    # The ENVELOPE as well as the field. `[]`, `"raw"` and `null` have no `.get`, and an empty body
+    # has no JSON at all — both raise before the guard below and left the route answering an opaque
+    # framework 500 for a body it can perfectly well call malformed.
+    folder = (await _folder_of(request))
+    # A STRING, not merely present: `0`, `false` and `[]` all read as `""` further in, which is the
+    # Dataset root — the one value this route refuses to guess its way to.
+    if not isinstance(folder, str):
         return JSONResponse(status_code=400, content={"error": "folder required"})
     try:
         return JSONResponse(content=orchestrator.attach_folder(dataset_id, folder))
     except LookupError:
         return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except AttachWouldClobber as e:
+        # Nothing was attached, and nothing was overwritten either — which is the point of saying so
+        # instead of writing over it. Named at the path, because that is where the person looks.
+        return JSONResponse(status_code=409, content={"error": brand_text(
+            "Nothing was attached. Something already sits at {path} that {assistantName} did not "
+            "put there, and it is not overwritten. Move or remove it, then attach the folder.",
+            path=e.path)})
+    except AttachSourceMissing as e:
+        # The folder is there; a file the listing named is not. Saying "folder not found" would
+        # contradict the row that was just clicked, which showed the count and the size.
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "Nothing was attached. {assistantName} listed a file this {dataset} no longer holds "
+            "({path}). Reopen this panel to list it again.", path=e.path)})
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": brand_text(
             "folder not found in the {dataset}")})
@@ -1700,6 +1733,11 @@ async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
         return JSONResponse(status_code=409, content={"error": e.reason})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
+    except OSError:
+        # The unwind above already took back every link this act made, so nothing is half-attached.
+        log.exception("attach_folder: could not write the links")
+        return JSONResponse(status_code=500, content={"error": brand_text(
+            "Nothing was attached. {assistantName} could not write into this app's files.")})
     except AttachTooLarge as e:
         # The three numbers ADR-0029 asks a refusal to name: what the folder weighs, what the app
         # already carries, and the cap. A refusal that names them is a decision a person can act on.
@@ -1709,6 +1747,93 @@ async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
             folder=human_bytes(e.incoming), cap=human_bytes(e.cap),
             current=human_bytes(e.current),
         )})
+
+
+@control_app.post("/api/project/assets/{dataset_id}/files/detach-folder")
+async def detach_folder(dataset_id: str, request: Request) -> JSONResponse:
+    """Remove every file the app carries below one Dataset folder, in one act (ADR-0029).
+
+    The mirror of `attach-folder`, including the shape of its body: `folder` is required and may be
+    `""` for the Dataset root, and a missing key is malformed rather than a silent whole-Dataset
+    removal.
+    """
+    folder = (await _folder_of(request))
+    if not isinstance(folder, str):
+        return JSONResponse(status_code=400, content={"error": "folder required"})
+    try:
+        return JSONResponse(content=orchestrator.detach_folder(dataset_id, folder))
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except DataReferenced as e:
+        # No partial state: nothing was removed. The refusal names the FILES rather than a count,
+        # because the files are the thing a person can go and act on — and it names the way out,
+        # which is the per-file door, since that one reports what still uses a file instead of
+        # refusing over it.
+        if not e.files:
+            # No file to name: the source fetches the FOLDER, building each path from a pattern, so
+            # one line of code is the dependency and it stands for every file below it.
+            where = ", ".join(e.refs[:3]) + (", …" if len(e.refs) > 3 else "")
+            return JSONResponse(status_code=409, content={
+                "error": f"Can't remove this folder — your app reads files from it ({where}). "
+                         "Nothing was removed. Edit the app to stop reading from this folder first.",
+                "files": [], "refs": e.refs, "copies": e.copies,
+            })
+        served = [f.removeprefix("public/data/") for f in e.files]
+        named = ", ".join(served[:3]) + (", …" if len(served) > 3 else "")
+        # The way out names the per-file door for what it is. That one REPORTS what still uses a
+        # file instead of refusing over it, which is the whole reason it remains a way out — and
+        # saying "remove them one at a time" without that reads like a trick for getting past this.
+        tail = ("Nothing was removed. Edit the app to stop using {them}, or remove {it} from the "
+                "app's own file list, which says what still uses a file rather than refusing.")
+        if len(served) == 1:
+            msg = (f"Can't remove this folder — your app still uses one of its files ({named}). "
+                   + tail.format(them="that file", it="it"))
+        else:
+            msg = (f"Can't remove this folder — your app still uses {len(served)} of its files "
+                   f"({named}). " + tail.format(them="them", it="them"))
+        return JSONResponse(status_code=409, content={
+            "error": msg, "files": e.files, "refs": e.refs, "copies": e.copies,
+        })
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid folder"})
+    except ResourceUnavailable as e:
+        # Only reachable when the app carries nothing from this Dataset yet, since that is the one
+        # branch that has to ask the platform for its name. The sibling route answers the same way.
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    except DetachStopped as e:
+        # The record follows the disk, so the count is real. Which SENTENCE is true depends on it:
+        # the first entry can fail as easily as the hundredth, and telling someone to go looking for
+        # files that all turned out to still be there is its own wrong answer.
+        log.exception("detach_folder: removal stopped after %s", e.detached)
+        if not e.recorded:
+            # The files went and the manifest did not follow, so the file list every other sentence
+            # here points at is not the record of anything.
+            msg = brand_text(
+                "The removal ran, but {assistantName} could not write this app's record of it. "
+                "Reopen the app to see what it carries now.")
+        elif e.detached:
+            msg = brand_text(
+                "The removal stopped part way through. Some of the folder is out of this app "
+                "already — its own file list is the record of what it still carries.")
+        else:
+            msg = brand_text(
+                "Nothing was removed — {assistantName} could not change this app's files.")
+        if e.removed:
+            # Copies deleted out of `src/` on the way. They were never in the manifest, so the file
+            # list this points at for everything else is no record of them.
+            msg += " These copies went with them: " + ", ".join(e.removed) + "."
+        if e.kept:
+            msg += (" These share a name and were left in place: " + ", ".join(e.kept)
+                    + " — check they are yours before saving.")
+        return JSONResponse(status_code=500, content={
+            "error": msg, "removed_copies": e.removed, "kept_copies": e.kept})
+    except OSError:
+        # AFTER `DetachStopped`, which is one of these and carries what actually happened. Anything
+        # left here failed OUTSIDE the removal — opening the project, reading its status — so this
+        # claims nothing about what moved, because nothing did.
+        log.exception("detach_folder: failed before the removal")
+        return JSONResponse(status_code=500, content={"error": brand_text(
+            "Nothing was removed — {assistantName} could not read this app.")})
 
 
 @control_app.post("/api/project/files/detach")

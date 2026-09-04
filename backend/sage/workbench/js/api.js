@@ -405,6 +405,10 @@ SW.api = {
   // act at depth 0 rather than a second call with its own name (ADR-0029).
   attachDatasetFolder: (datasetId, folder) =>
     post(`/project/assets/${encodeURIComponent(datasetId)}/files/attach-folder`, { folder }),
+  // The mirror, in the same body shape. It takes back every file the app carries below the folder,
+  // or none of them — the app's source still using one refuses the whole act (ADR-0029).
+  detachDatasetFolder: (datasetId, folder) =>
+    post(`/project/assets/${encodeURIComponent(datasetId)}/files/detach-folder`, { folder }),
   dataSourceDatabases: (sourceId) => request(`/data-sources/${encodeURIComponent(sourceId)}/databases`),
   dataSourceSchemas: (sourceId, database) =>
     request(`/data-sources/${encodeURIComponent(sourceId)}/schemas?database=${encodeURIComponent(database || '')}`),

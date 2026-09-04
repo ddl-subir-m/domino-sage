@@ -701,6 +701,10 @@ a.sw-topnav-link {
   align-items: center;
   gap: 8px;
   min-height: 28px;
+  /* A row can carry both directions at once — attach what is missing, remove what is carried — and
+     both labels name the app, so in a narrow rail they wrap under the folder name rather than
+     overflowing it. */
+  flex-wrap: wrap;
 }
 .sw-tree-folder-row .sw-tree-folder-head { flex: 1; min-width: 0; }
 .sw-tree-root-name {

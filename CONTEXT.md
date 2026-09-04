@@ -480,8 +480,11 @@ Putting every file below one Dataset folder into a Built App in a single act, at
 including the Dataset's own root. It is the same word the app's single-file door already uses, so
 the label is "Attach folder to <app>" and its inverse is "Remove folder from <app>". Both refuse
 whole rather than land half: over the size cap, or with any file still read by the app's code,
-nothing moves and the sentence names the numbers or the files. Offered only where the size is
-knowable, which is a mounted Dataset with a complete listing. See
+nothing moves and the sentence names the numbers or the files. The attach is offered only where the
+size is knowable, which is a mounted Dataset with a complete listing; the removal reads the app's
+own record and needs nothing from the Dataset at all, so one that has lost its mount, had its
+listing truncated, or been unshared from the project outright does not strand what it already gave.
+See
 [ADR-0029](docs/adr/0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md).
 _Kind_: word
 _Avoid_: "Attach all", "Add folder", import, sync, upload (that makes an [[Upload]]), "Attach

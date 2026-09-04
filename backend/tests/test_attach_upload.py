@@ -221,6 +221,37 @@ def test_detach_removes_a_leaked_copy_so_it_cant_reach_git(tmp_path: Path):
     assert _manifest(proj.workspace.path) == []
 
 
+def test_detach_keeps_a_source_file_that_only_shares_the_name(tmp_path: Path):
+    # _data_usage calls any app file with the attachment's BASENAME a copy, and reads neither — right
+    # for spotting a leaked CSV cheaply, not enough to delete on. An upload named App.tsx must not
+    # take src/App.tsx with it, or the app stops building over a name collision nobody chose.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("App.tsx", b"export default function FromTheDataset() {}")
+    theirs = (proj.workspace.path / "src" / "App.tsx").read_text()
+
+    out = orch.detach_file(res["path"])
+
+    assert out["removed_copies"] == []
+    assert (proj.workspace.path / "src" / "App.tsx").read_text() == theirs
+
+
+def test_detach_names_a_same_named_copy_it_could_not_prove_and_left(tmp_path: Path):
+    # The other half of the trade _is_leaked_copy makes: what it cannot prove stays, and the entry
+    # leaves the record either way — so _leaked_copy_paths stops covering the file and it would
+    # otherwise reach the next save with nothing on screen having mentioned it.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n")
+    (proj.workspace.path / "src" / "d.csv").write_text("a,b\n")   # the first row only, not the file
+
+    out = orch.detach_file(res["path"])
+
+    assert out["removed_copies"] == []
+    assert out["kept_copies"] == ["src/d.csv"]
+    assert (proj.workspace.path / "src" / "d.csv").exists()
+
+
 def test_detach_reports_still_referenced_files_without_deleting_source(tmp_path: Path):
     # A fetch (or bytes inlined into a code file) is app logic, not a raw-file copy: detach must NOT
     # delete the source, but must report it so the UI can warn and offer the agent cleanup.

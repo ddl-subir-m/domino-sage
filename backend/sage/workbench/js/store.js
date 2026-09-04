@@ -2866,9 +2866,105 @@ window.SW = window.SW || {};
             // file already in the app is passed over rather than attached twice, and a receipt
             // claiming otherwise would be a count nobody could reconcile with the list.
             antd.message.success(result.attached
-              ? `${SW.util.number(result.attached)} files from ${label} are in ${where}. `
+              ? `${SW.util.number(result.attached)} ${result.attached === 1 ? 'file' : 'files'} `
+                + `from ${label} ${result.attached === 1 ? 'is' : 'are'} in ${where}. `
                 + 'Remove one from the app’s own list.'
               : `${where} already carries every file in ${label}.`);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
+    // The same folder, back out of the selected Built App -------------------
+    //
+    // The mirror of the attach above, and it inherits the removal vocabulary rather than inventing
+    // a second one: the label names the app it acts on, because that is the only thing telling the
+    // three removal scopes apart (ADR-0011).
+    //
+    // It names a COUNT and no size. The attach half shows both because the cap is what its numbers
+    // are for — it is the thing that decides whether the act can succeed — and no cap decides a
+    // removal. A size here would be decoration that can also be wrong, since a Dataset with no
+    // mount reports every file as 0 bytes and the removal is offered on one anyway.
+    //
+    // The app is captured where the question is asked and checked again before the act, exactly as
+    // the attach does it: a modal can sit open for as long as somebody leaves it there.
+    // Resolves `true` when the folder came out, `'stale'` when a request was sent and failed —
+    // which can still have moved files, so the caller re-reads — and `false` when nothing was
+    // asked of the server at all.
+    async removeFolderFromApp({ datasetId, label, folder, files }) {
+      const asked = state.activeApp;
+      if (!asked || !datasetId || !files) return false;
+      const where = asked.name;
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Remove ${SW.util.number(files)} ${files === 1 ? 'file' : 'files'} from ${where}?`,
+          // What is taken and what is kept, in one sentence. The Dataset's own bytes are never
+          // Sage's to remove, and the folder can be attached again from the same tree — so this
+          // says what it costs rather than warning about an act that is cheap to undo.
+          content: SW.brand.text(
+            `${where} stops carrying them and stops shipping them when you publish it. The files `
+            + 'stay in the {dataset}, and the folder can be attached again from here.'
+          ),
+          okText: `Remove folder from ${where}`,
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            if (!state.activeApp || state.activeApp.id !== asked.id) {
+              antd.message.warning(
+                `Nothing was removed. The selected app changed to ${appScopeName()} while this was `
+                + `open, and this removal named ${where}.`
+              );
+              resolve(false);
+              return;
+            }
+            let result;
+            try {
+              result = await SW.api.detachDatasetFolder(datasetId, folder);
+            } catch (err) {
+              // The server's own sentence, because only it can name the files the app still uses.
+              // Retold here it would be a second, vaguer copy of the one thing a person can act on.
+              antd.message.error(`${label} could not be removed from ${where}: ${err.message}`);
+              // A failure here is not always "nothing happened": a removal that stops part way
+              // commits what it did, and the message points at the app's file list as the record
+              // of what is left. That list has to be re-read for the message to be true. A refusal
+              // moved nothing, so this only costs it a fetch.
+              await loadScopeData();
+              // `'stale'` rather than `false`, because the DATASET LISTING has to be re-read too:
+              // its `attached` flags still say the part-removed files are carried, so their rows
+              // would offer no way to put them back. Truthy, so the caller's re-read fires; not
+              // `true`, so nobody reads this as the act having succeeded.
+              resolve('stale');
+              return;
+            }
+            // The whole scope, because a removal moves the same two lists an attach does: the app's
+            // files and the Build header's account of what it ships.
+            await loadScopeData();
+            // No `appRemoval` notice: that one exists to report what the app's source STILL uses
+            // after a removal went through, and here nothing can — source that still used a file is
+            // what refuses this act outright rather than something to report afterwards.
+            const leaked = result.removed_copies || [];
+            const copies = leaked.length
+              ? ` ${leaked.length === 1 ? 'A copy' : 'Copies'} left in ${leaked.join(', ')} `
+                + `went with ${leaked.length === 1 ? 'it' : 'them'}.`
+              : '';
+            // What was left behind, because the server could not prove it was the data rather than
+            // a file somebody wrote. Said out loud: the app stops covering these once its record
+            // drops them, so they would otherwise turn up unannounced in the next save's diff.
+            const left = result.kept_copies || [];
+            const kept = left.length
+              ? ` ${left.join(', ')} ${left.length === 1 ? 'shares a name with one of them and was'
+                : 'share names with them and were'} left in place — check ${left.length === 1
+                ? 'it is' : 'they are'} yours before saving.`
+              : '';
+            // The no-op branch its attach mirror has. The row's count can be stale against the
+            // record — a build turn may have detached something since — and a receipt reading
+            // "0 files are out" would be a success message about nothing happening.
+            antd.message.success(result.detached
+              ? `${SW.util.number(result.detached)} ${result.detached === 1 ? 'file' : 'files'} `
+                + `from ${label} ${result.detached === 1 ? 'is' : 'are'} out of `
+                + `${where}.${copies}${kept}`
+              : `${where} was already carrying nothing from ${label}.`);
             resolve(true);
           },
           onCancel: () => resolve(false),
@@ -3161,12 +3257,20 @@ window.SW = window.SW || {};
         );
       const leaked = result.removed_copies || [];
       const copies = leaked.length ? ` A copy left in ${leaked.join(', ')} went with it.` : '';
+      // What could not be proven to be the data, so was left where it is. Said out loud because the
+      // app stops covering it the moment its record drops the file, and the bytes would otherwise
+      // turn up in a save nobody expected them in.
+      const left = result.kept_copies || [];
+      const kept = left.length
+        ? ` ${left.join(', ')} shares its name and was left in place — check it is yours before `
+          + 'saving.'
+        : '';
       // The route hands back no manifest, so the list is the one on screen minus what just went —
       // filtered HERE, off whatever the newest read left, and installed under the act's own ticket
       // so a `/project` read that started before the detach cannot put the file back (#101).
       applyAppScope(appScopeTicket(gen), {
         appAttachments: (state.appAttachments || []).filter((a) => a.path !== attachment.path),
-        appRemoval: removalNotice(where, name, result.refs || [], `${source}${copies}`),
+        appRemoval: removalNotice(where, name, result.refs || [], `${source}${copies}${kept}`),
       });
       notify();
       return true;

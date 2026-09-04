@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useEffect } = React;
+  const { createElement: h, useState, useEffect, useRef } = React;
   const { Button, Spin, Tooltip } = antd;
   const { DownOutlined, RightOutlined } = icons;
 
@@ -69,6 +69,44 @@ window.SW = window.SW || {};
     return totals;
   }
 
+  // What the selected app carries below each folder, keyed the same way `folderTotals` is.
+  //
+  // Off the APP's own attachment records, never off the Dataset listing's `attached` flags, because
+  // that is what the server's removal acts on: a file attached earlier and since deleted from the
+  // Dataset is still carried and still removable, and a truncated listing does not mention its tail
+  // at all. Counting the listing would then promise five and remove six.
+  //
+  // A folder ROW still comes from the listing, so a folder wholly inside a cut tail draws none —
+  // "All files" is where its files can be taken back in one act, and the app's own list is where
+  // they can be taken back one at a time (ADR-0011). The count is right wherever a row exists,
+  // which is the part that had to be true before an irreversible act.
+  //
+  // `root` is `public/data/<slug>/`, sent by the listing. Not rebuilt here: `_slug` is a server
+  // function and a second copy would be one edit away from disagreeing — and derived instead from
+  // whichever entry happens to name this Dataset, a workspace whose attachments were all rebuilt by
+  // the rehydrate fallback (which records no `dataset_id`) would have no entry to derive it from,
+  // and the removal would vanish from a tree the server would happily have acted on.
+  //
+  // The matching rule is the server's, including its exception: an entry with no `dataset_id` is
+  // rehydrated, records no Dataset to be attributed to, and goes with the folder it sits in.
+  function carriedTotals(attachments, datasetId, root) {
+    if (!root) return {};
+    const totals = {};
+    (attachments || []).forEach((a) => {
+      if (!a || !a.path) return;
+      if (a.dataset_id && a.dataset_id !== datasetId) return;
+      if (!a.path.startsWith(root)) return;
+      const parts = a.path.slice(root.length).split('/').filter(Boolean);
+      totals[''] = (totals[''] || 0) + 1;
+      let prefix = '';
+      for (let i = 0; i < parts.length - 1; i += 1) {
+        prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+        totals[prefix] = (totals[prefix] || 0) + 1;
+      }
+    });
+    return totals;
+  }
+
   // The numbers a folder row carries, and the act they are there for.
   //
   // The size is drawn only when there is one to draw. A Dataset this container has no mount for is
@@ -78,14 +116,22 @@ window.SW = window.SW || {};
   // The act is a link rather than a menu, for the reason `LeafRow` beside it is: this is the one
   // row in the tree that acts on more than one file, and hiding it behind a second click would
   // make the bulk act cost more than the per-file one it exists to replace.
-  function FolderActs({ path, label, totals, act }) {
+  function FolderActs({ path, label, totals, carried, act, remove }) {
     const stat = totals[path] || noFiles();
+    // What the APP carries below this folder, which is what the removal acts on — never
+    // `stat.files - stat.pending`, which is what this LISTING happens to mention.
+    const held = carried[path] || 0;
     if (!stat.files) return null;
-    const held = `${SW.util.number(stat.files)} ${stat.files === 1 ? 'file' : 'files'}`;
-    const meta = stat.bytes ? `${held} · ${SW.util.bytes(stat.bytes)}` : held;
+    const shown = `${SW.util.number(stat.files)} ${stat.files === 1 ? 'file' : 'files'}`;
+    const meta = stat.bytes ? `${shown} · ${SW.util.bytes(stat.bytes)}` : shown;
     // Nothing left to add is its own unavailable state, with its own reason. Offered anyway it
     // would open a confirmation about zero files and answer with a no-op.
     const reason = act.reason || (stat.pending ? '' : act.carried);
+    // The other direction, and it does NOT share the attach's gate. Attach is withheld wherever the
+    // subtree cannot be measured, because the cap has to be pre-flighted; the removal reads the
+    // app's own record, so a Dataset that has since lost its mount does not strand what it already
+    // gave (ADR-0029). What it needs is only that the app carries something here — offered
+    // otherwise, it would open a question about zero files and answer with a no-op.
     return h(
       'span',
       { className: 'sw-tree-folder-acts' },
@@ -108,11 +154,26 @@ window.SW = window.SW || {};
               onClick: () => act.run({ path, label, files: stat.pending, bytes: stat.adds }),
             },
             act.label
+          ),
+      remove && held
+        ? h(
+            Button,
+            {
+              size: 'small',
+              type: 'link',
+              // The existing removal styling, and for the existing reason: it is the one act on
+              // this row that takes something away (ADR-0011).
+              danger: true,
+              onClick: () => remove.run({ path, label, files: held }),
+            },
+            remove.label
           )
+        : null
     );
   }
 
-  function FolderNode({ name, path, children, query, depth, renderFile, totals, act }) {
+  function FolderNode({ name, path, children, query, depth, renderFile, totals, carried, act,
+                       remove }) {
     const [open, setOpen] = useState(depth < 1);
     const files = (children.files || []).filter((f) => filterName(f.path.split('/').pop(), query));
     const folders = Object.keys(children.folders || {}).filter((n) => {
@@ -132,7 +193,7 @@ window.SW = window.SW || {};
           h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
           h('span', null, name)
         ),
-        h(FolderActs, { path, label: name, totals, act })
+        h(FolderActs, { path, label: name, totals, carried, act, remove })
       ),
       open &&
         h(
@@ -148,7 +209,9 @@ window.SW = window.SW || {};
               depth: depth + 1,
               renderFile,
               totals,
+              carried,
               act,
+              remove,
             })
           ),
           files.map((f) => renderFile(f))
@@ -231,9 +294,20 @@ window.SW = window.SW || {};
     // not. Composed there rather than worked out here, so the sentence this row draws before the
     // click and the one the refusal carries after it are the same sentence (ADR-0029).
     const [folderAct, setFolderAct] = useState(null);
+    // Where this Dataset's files are served from, `public/data/<slug>/`. The removal counts what the
+    // app carries under it, which is the set the server acts on.
+    const [attachRoot, setAttachRoot] = useState('');
+    // Which Dataset the files on screen belong to, so a re-read of the SAME one can leave them
+    // standing. A ref rather than state: nothing redraws because of it.
+    const drawn = useRef('');
     // The platform's own body, held apart from our copy so it can be quoted rather than retold
     // (#121). `null` is "nothing failed"; a failure with a silent platform is `{ body: '' }`.
     const [error, setError] = useState(null);
+    // Bumped by a folder act that changed something, because the listing carries the `attached`
+    // flag every row's numbers are built from. Without it an attach leaves every row still offering
+    // to attach what it just attached, and a removal leaves its own button standing over a folder
+    // the app no longer carries — until somebody closes the panel and opens it again.
+    const [reread, setReread] = useState(0);
     const datasetId = resource ? bareId(resource.id, 'dataset') : '';
     const pins = pinSet(resource && resource.pins);
 
@@ -245,11 +319,21 @@ window.SW = window.SW || {};
         setFiles([]);
         setTruncated(false);
         setFolderAct(null);
+        setAttachRoot('');
         setError(null);
+        // Forgotten with them, or picking the SAME Dataset again would find its id still standing
+        // here, skip the blanking below, and draw the empty tree until the fetch lands.
+        drawn.current = '';
         return undefined;
       }
       let cancelled = false;
-      setFiles(null);
+      // Blanked only when the DATASET changed. A re-read after a folder act is the same tree
+      // answering again, and dropping to the spinner would remount every `FolderNode` — collapsing
+      // four levels of expansion and scrolling the row just acted on off the screen. Not covered by
+      // the harness beside this file: its React re-invokes components rather than mounting them, so
+      // a remount is the one thing it cannot see.
+      if (datasetId !== drawn.current) setFiles(null);
+      drawn.current = datasetId;
       // Cleared with the files, not left standing. The instance survives a change of `resource`,
       // so without this a Dataset that answered fine drew the previous one's failure — the read
       // landed, `files` was replaced, and the stale `error` won the branch above it. The Data
@@ -262,6 +346,7 @@ window.SW = window.SW || {};
             setFiles(body.files || []);
             setTruncated(!!body.truncated);
             setFolderAct(body.folder_act || null);
+            setAttachRoot(body.attach_root || '');
           }
         })
         .catch((err) => {
@@ -269,13 +354,14 @@ window.SW = window.SW || {};
             setFiles([]);
             setTruncated(false);
             setFolderAct(null);
+            setAttachRoot('');
             setError({ body: err.message || '' });
           }
         });
       return () => {
         cancelled = true;
       };
-    }, [datasetId]);
+    }, [datasetId, reread]);
 
     if (files === null) return h(Spin, { size: 'small', className: 'sw-tree-spin' });
     if (error) {
@@ -345,9 +431,21 @@ window.SW = window.SW || {};
     // — which Built App the label would name (ADR-0008 makes that a question every surface has to
     // answer, and a door promising "to this app" with none selected is a dead end).
     const app = SW.store.get().activeApp;
+    // A cancelled confirmation changed nothing, so it costs no fetch. A removal that FAILED can
+    // still have moved files — it commits what it unlinked — and answers `'stale'`, which is
+    // truthy here for exactly that reason.
+    const rereadIfChanged = (changed) => {
+      if (changed) setReread((n) => n + 1);
+      return changed;
+    };
     const act = {
       label: app ? `Attach folder to ${app.name}` : 'Attach folder',
-      reason: !folderAct || folderAct.available
+      // Fails CLOSED on a listing that carried no answer. Reading a missing `folder_act` as
+      // "available" would draw an enabled button on exactly the Datasets the route turns down,
+      // which is the one arrangement this field exists to make impossible.
+      reason: !folderAct
+        ? SW.brand.text('{assistantName} could not tell whether this folder can be attached.')
+        : folderAct.available
         ? (app ? '' : 'No app selected — a folder is attached to one app.')
         : folderAct.reason,
       carried: app ? `${app.name} already carries every file here.` : '',
@@ -358,9 +456,29 @@ window.SW = window.SW || {};
           folder: path,
           files: count,
           bytes,
-        }),
+        }).then(rereadIfChanged),
     };
+    // The removal, which names the app for the reason every removal label does: the scope is the
+    // only thing telling the three of them apart (ADR-0011). With no app selected there is no scope
+    // to name and nothing carried to remove, so it is absent rather than disabled — unlike the
+    // attach, which is a door somebody came looking for and has to say why it is shut.
+    const remove = app
+      ? {
+          label: `Remove folder from ${app.name}`,
+          run: ({ path, label, files: count }) =>
+            SW.store.removeFolderFromApp({
+              datasetId,
+              label,
+              folder: path,
+              files: count,
+            }).then(rereadIfChanged),
+        }
+      : null;
     const totals = folderTotals(files);
+    // Read at render off the store, which `loadScopeData` has already refreshed by the time either
+    // act resolves — so the counts the rows redraw with are the app's newest record, not the one
+    // this listing was fetched beside.
+    const carried = carriedTotals(SW.store.get().appAttachments, datasetId, attachRoot);
     return h(
       'div',
       { className: `sw-tree sw-tree-${variant || 'rail'}` },
@@ -376,7 +494,7 @@ window.SW = window.SW || {};
         // whole-Dataset chip's words would give one phrase two meanings — that chip reads the
         // mount to answer a question, and this ships the bytes (ADR-0029).
         h('span', { className: 'sw-tree-root-name' }, 'All files'),
-        h(FolderActs, { path: '', label: resource.name, totals, act })
+        h(FolderActs, { path: '', label: resource.name, totals, carried, act, remove })
       ),
       folders.map((n) =>
         h(FolderNode, {
@@ -388,7 +506,9 @@ window.SW = window.SW || {};
           depth: 0,
           renderFile,
           totals,
+          carried,
           act,
+          remove,
         })
       ),
       tree.files.map(renderFile)

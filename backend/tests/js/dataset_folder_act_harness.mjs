@@ -95,6 +95,16 @@ function runEffects() {
 // --- the browser -----------------------------------------------------------
 const APP = input.app ? [{ id: 'app_a', name: input.app, selected: true }] : [];
 const posted = [];
+// The app's own attachment records, which is what the removal counts off (never the listing's
+// `attached` flags). `attached` in the input overrides them, for the cases where the two disagree —
+// a file deleted from the Dataset since it was attached, or a listing whose tail was cut.
+let listing = input.files || [];
+const recordsFor = (files) => files.filter((f) => f.attached).map((f) => ({
+  path: `public/data/revenue/${f.path}`, file: f.path, dataset_id: 'ds_1', dataset: 'Revenue',
+  size: f.size,
+}));
+let attached = input.attached || recordsFor(listing);
+const underFolder = (rel, folder) => !folder || String(rel || '').startsWith(`${folder}/`);
 const confirms = [];
 
 const json = (body) => ({
@@ -107,25 +117,66 @@ const json = (body) => ({
 function serve(url, init) {
   const path = String(url).replace(/^\.\/api/, '');
   const method = ((init && init.method) || 'GET').toUpperCase();
-  if (/\/files\/attach-folder$/.test(path) && method === 'POST') {
+  if (/\/files\/(at|de)tach-folder$/.test(path) && method === 'POST') {
     const body = JSON.parse((init && init.body) || '{}');
     posted.push({ path, folder: body.folder });
+    // What the act changed, so a re-read after it answers differently from the read before it —
+    // which is the whole claim a "the tree does not go stale" test can make.
+    if (!input.refuse && !input.partial) {
+      if (/detach-folder$/.test(path)) {
+        attached = attached.filter((a) => !underFolder(a.file, body.folder));
+        listing = listing.map((f) =>
+          (underFolder(f.path, body.folder) ? { ...f, attached: false } : f));
+      } else {
+        listing = listing.map((f) =>
+          (underFolder(f.path, body.folder) ? { ...f, attached: true } : f));
+        attached = recordsFor(listing);
+      }
+    }
     if (input.refuse) {
       return {
-        ok: false, status: 413, statusText: 'Payload Too Large',
+        ok: false, status: /detach-folder$/.test(path) ? 409 : 413,
+        statusText: 'Conflict',
         headers: { get: () => 'application/json' },
         json: async () => ({ error: input.refuse }),
         text: async () => JSON.stringify({ error: input.refuse }),
       };
     }
-    return json({ attached: 4, bytes: 40, dataset: 'Revenue', folder: body.folder });
+    // A removal that stopped part way: the server answers 500 AND has moved SOME of the files —
+    // the first one only, so the listing left behind genuinely still calls the rest attached. That
+    // is the state a re-read has to correct, and a fixture that removed all of them would pass
+    // whether or not the tree re-read at all.
+    if (input.partial && /detach-folder$/.test(path)) {
+      let first = true;
+      listing = listing.map((f) => {
+        if (!underFolder(f.path, body.folder) || !f.attached || !first) return f;
+        first = false;
+        return { ...f, attached: false };
+      });
+      attached = recordsFor(listing);
+      return {
+        ok: false, status: 500, statusText: 'Internal Server Error',
+        headers: { get: () => 'application/json' },
+        json: async () => ({ error: input.partial }),
+        text: async () => JSON.stringify({ error: input.partial }),
+      };
+    }
+    return /detach-folder$/.test(path)
+      ? json({ detached: 2, bytes: 40, dataset: 'Revenue', folder: body.folder,
+               removed_copies: [] })
+      : json({ attached: 4, bytes: 40, dataset: 'Revenue', folder: body.folder });
   }
   if (/^\/project\/assets\/[^/]+\/files$/.test(path)) {
-    return json({ files: input.files || [], truncated: !!input.truncated,
-                  folder_act: input.folder_act || { available: true, reason: '' } });
+    return json({ files: listing, truncated: !!input.truncated,
+                  attach_root: input.attach_root || 'public/data/revenue/',
+                  // `false` in the input is a listing that carried no answer at all, which is a
+                  // different thing from one saying the act is unavailable.
+                  folder_act: input.folder_act === false
+                    ? undefined
+                    : input.folder_act || { available: true, reason: '' } });
   }
   if (path === '/apps') return json({ items: APP });
-  if (path === '/project') return json({ attached: [], scratch: [] });
+  if (path === '/project') return json({ attached, scratch: [] });
   if (path === '/project/resources') return json({ items: [] });
   if (path === '/bindings') return json({ bindings: [] });
   if (path === '/members') return json({ members: [], directory: [] });
@@ -233,7 +284,12 @@ function readRow(row) {
   const inner = flatten(row);
   const head = inner.find((n) => cls(n) === 'sw-tree-folder-head' || cls(n) === 'sw-tree-root-name');
   const meta = inner.find((n) => cls(n) === 'sw-tree-folder-meta');
-  const button = inner.find((n) => n.t === 'Button');
+  // Both directions, in the order the row draws them: the attach first, then the removal when the
+  // app carries something here. The removal is read separately rather than as "the second button",
+  // because a row can offer either one without the other.
+  const buttons = inner.filter((n) => n.t === 'Button');
+  const button = buttons[0];
+  const removal = buttons.find((n) => n.p.danger);
   const tooltip = inner.find((n) => n.t === 'Tooltip');
   // The folder this row acts on, taken off the act's own props rather than guessed from the name:
   // two partitions can hold a folder with the same name and only the path tells them apart.
@@ -245,6 +301,10 @@ function readRow(row) {
     disabled: Boolean(button && button.p.disabled),
     reason: tooltip ? String(tooltip.p.title || '') : '',
     press: button && !button.p.disabled ? button.p.onClick : null,
+    remove: removal ? words(removal) : '',
+    removeDanger: Boolean(removal && removal.p.danger),
+    removeDisabled: Boolean(removal && removal.p.disabled),
+    pressRemove: removal && !removal.p.disabled ? removal.p.onClick : null,
     path: acts ? String(acts.p.path || '') : null,
   };
 }
@@ -262,17 +322,33 @@ const rows = painted
 // are the real ones. Answering OK is a second step on purpose: what the modal SAYS is the claim
 // that has to hold before anybody agrees to it.
 let confirm = null;
-if (input.press !== undefined && input.press !== null) {
-  const target = rows.find((r) => (r.path || '') === input.press);
-  if (!target || !target.press) throw new Error(`no act to press on "${input.press}"`);
-  target.press();
+const wanted = input.press !== undefined && input.press !== null
+  ? { at: input.press, key: 'press' }
+  : input.pressRemove !== undefined && input.pressRemove !== null
+  ? { at: input.pressRemove, key: 'pressRemove' }
+  : null;
+if (wanted) {
+  const target = rows.find((r) => (r.path || '') === wanted.at);
+  if (!target || !target[wanted.key]) throw new Error(`no act to press on "${wanted.at}"`);
+  target[wanted.key]();
   await settle();
   const cfg = confirms[confirms.length - 1];
-  confirm = cfg ? { title: cfg.title, content: cfg.content, okText: cfg.okText } : null;
+  confirm = cfg
+    ? { title: cfg.title, content: cfg.content, okText: cfg.okText,
+        danger: Boolean(cfg.okButtonProps && cfg.okButtonProps.danger) }
+    : null;
   if (cfg && input.confirm) {
     await cfg.onOk();
     await settle();
   }
 }
 
-console.log(JSON.stringify({ rows, confirm, posted }));
+// The rows a SECOND paint draws. `rows` above is what was on screen before the press, and the
+// question a folder act leaves behind is whether the tree still describes the state before it.
+const after = input.confirm
+  ? (await paint())
+      .filter((n) => cls(n) === 'sw-tree-folder-row' || cls(n) === 'sw-tree-root-row')
+      .map(readRow)
+  : rows;
+
+console.log(JSON.stringify({ rows, after, confirm, posted }));
