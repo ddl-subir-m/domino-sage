@@ -100,6 +100,11 @@ not a theoretical cost — attachment-driven context bloat has already wedged Op
 So above a threshold of roughly ten files the block collapses to one line for the folder: the count,
 the shape the files share, and the served-path pattern. Below it, per-file lines as before.
 
+A folder holding one file keeps its file line, above the threshold as well as below it. Naming the
+file describes it exactly as well as summarising would, and better — a summary of one is the file
+with its name taken off. It is not an exception either: the group is the unit, and a group of one is
+the file. The same rule reaches the `@` menu ([ADR-0030](0030-a-mention-names-one-file-or-says-what-else-it-matched.md)).
+
 The block's whole reason for existing survives the collapse, which is why the collapse is safe. It is
 prescriptive because agents otherwise guess a flat `/data/<name>`, hit the SPA fallback instead of the
 CSV, and "fix" it by copying the file into `src/` — which leaks data into the app's git repo, since

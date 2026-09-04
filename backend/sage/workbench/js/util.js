@@ -23,6 +23,7 @@ window.SW = window.SW || {};
     artifact:         { icon: '🖼', label: 'artifact',       group: 'artifacts' },
     skill:            { icon: '📘', label: 'skill',          group: 'skills' },
     mcp:              { icon: '🧩', label: 'MCP',            group: 'mcp' },
+    folder:           { icon: '📁', label: 'folder',         group: 'files' },
   };
 
   // The Resource kinds that get a membership row of their own, in the UI id space. A Dataset file
@@ -222,6 +223,16 @@ window.SW = window.SW || {};
         // from the symlink's parent directory, and printing that as a Dataset name would name a
         // source the entry does not have.
         subtitle: entry && entry.dataset_id ? entry.dataset : path,
+        // The row this file collapses into once there are more attachments than a menu of eight
+        // can honestly show, or "" while the menu still shows files one by one (ADR-0030). The
+        // SERVER decides it, by the function the `AGENTS.md` block already groups with: the
+        // roll-up is a loop with a floor, and a second copy of it here is exactly how the block
+        // the agent re-reads every turn and this menu would come to disagree.
+        menuFolder: String((entry && entry.menu_folder) || ''),
+        // How many files that row stands for — the FOLDER's size, not the query's. The collapse is
+        // applied to the rows a query matched, so a count taken from those would read "3 files" on
+        // a row whose pick carries twelve.
+        menuFolderCount: Number((entry && entry.menu_folder_count) || 0),
       };
     },
 
@@ -239,6 +250,66 @@ window.SW = window.SW || {};
       return (entries || [])
         .filter((e) => !SW.util.isHiddenFromExplorer(e && e.path))
         .map((e) => SW.util.attachmentRow(e));
+    },
+
+    // Above the threshold, the folder is the row (ADR-0030). The menu shows eight rows, so after a
+    // 200-file attach it is a window onto a list that cannot be seen — and eight rows out of 200
+    // read as a complete list, which is the menu misrepresenting itself.
+    //
+    // Applied to the rows a query already MATCHED, not to the whole list, which is what makes a
+    // single file reachable by typing enough of its name: narrow to one file in a partition and
+    // its group holds one, so it draws its own row. A group of one drawing its file is the
+    // `AGENTS.md` block's rule as well, for the same reason — naming the file describes it exactly
+    // as well as summarising would, and better.
+    //
+    // Rows carrying no folder are untouched and keep their order, so this is a no-op everywhere
+    // the server did not collapse: below the threshold, and for every group that is not the app's
+    // Attachments.
+    collapseFolders(rows) {
+      const held = {};
+      (rows || []).forEach((r) => {
+        if (r && r.menuFolder) held[r.menuFolder] = (held[r.menuFolder] || 0) + 1;
+      });
+      const drawn = new Set();
+      const out = [];
+      (rows || []).forEach((row) => {
+        const folder = (row && row.menuFolder) || '';
+        if (!folder || held[folder] < 2) {
+          out.push(row);
+          return;
+        }
+        if (drawn.has(folder)) return;
+        drawn.add(folder);
+        // `held` decides WHETHER to collapse — a group of one still draws its file, whatever the
+        // folder's size — and the row then reports the folder's size, because that is what the
+        // pick carries.
+        out.push(SW.util.folderRow(folder, row.menuFolderCount || held[folder]));
+      });
+      return out;
+    },
+
+    // One folder, as a row. `path` is the folder, because that is what `_resolve_mentions` expands
+    // and what `mentionTokens` builds this row's tokens from — the same field a file row is
+    // resolved through, so the turn needs no second rule to read a pick back.
+    folderRow(folder, count) {
+      const path = String(folder || '');
+      return {
+        id: `folder:${path}`,
+        name: path.split('/').pop(),
+        kind: 'folder',
+        path,
+        count,
+        subtitle: path,
+      };
+    },
+
+    // Every row the app's Attachments can be offered as: its files, and the folders they collapse
+    // into. The list `mentionToken` computes uniqueness against and the list `collectTurnRefs`
+    // reads a token back off, because a token has to be unique among everything that could have
+    // been GIVEN one — two partitions both called `2026` name the same folder row otherwise.
+    attachmentPeers(entries) {
+      const files = SW.util.attachmentRows(entries);
+      return files.concat(SW.util.collapseFolders(files).filter((r) => r.kind === 'folder'));
     },
 
     // The shortest tail of `path` that names it and no other file in `peers` — "data.csv" while the
@@ -398,7 +469,7 @@ window.SW = window.SW || {};
     // The widening is contained, which is worth recording since this helper is shared on purpose:
     // the Build header's picker passes NO query (`modes/builder.js`), and the matcher returns true
     // on an empty one, so it reaches the composer's @ menu and nothing else.
-    workingSetFirst({ groups, catalogue, query, limit }) {
+    workingSetFirst({ groups, catalogue, query, limit, collapse }) {
       const lowered = String(query || '').trim().toLowerCase();
       const matches = (row) => {
         if (!lowered) return true;
@@ -415,7 +486,12 @@ window.SW = window.SW || {};
           out.push(row);
         });
       });
-      return limit ? out.slice(0, limit) : out;
+      // Between the matcher and the limit, which is the only place it can go: collapsing before
+      // the match would hide the file a person is typing towards, and after the limit it would
+      // fold eight arbitrary rows out of two hundred. Opt-in, because only the composer's @ menu
+      // draws a folder — the Build header's picker offers Bindings, which have no path at all.
+      const rows = collapse ? SW.util.collapseFolders(out) : out;
+      return limit ? rows.slice(0, limit) : rows;
     },
 
     // Which level of a Data Source a walk is standing on, given the levels it HAS and the ones

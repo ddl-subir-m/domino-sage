@@ -89,11 +89,34 @@ works, because the query reads the whole path. One rule across both surfaces, so
 reads every turn and the menu the person picks from cannot come to disagree about what a Dataset
 mention means.
 
+"One rule" is load-bearing enough to say how. The threshold is read once, in Python, and the grouping
+is `_by_folder` — a roll-up loop with a floor, written for the block. So the menu is handed the
+ANSWER rather than the rule: every attachment in `/api/project` carries the folder its row collapses
+into (`menu_folder`), or `""` while there are few enough files to show one by one. A second copy of
+the loop in JavaScript is precisely how the two surfaces would come to disagree, and a second
+spelling of the threshold is how they would disagree about when.
+
+The collapse is applied to what the query MATCHED, not to the whole list, and that is what makes a
+single file reachable: narrow to one file in a partition and its group holds one. A group of one
+draws its file — the block's own rule ([ADR-0029](0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)),
+here for the same reason it is there. Every matched file is therefore under exactly one row, which
+is what the rejection below rules out doubling.
+
 A folder mention carries real server work, recorded here rather than discovered later:
 `_resolve_mentions` honours exact manifest paths only, so a folder token must expand to its member
 paths **and** collapse their descriptors the way the `AGENTS.md` block does — one folder summary, not
 200 `detail` blocks. Without the collapse, the folder row re-introduces exactly the context bloat
-ADR-0029 removed, through the other door.
+ADR-0029 removed, through the other door. The expansion reads `_by_folder`'s own grouping rather than
+walking the paths under a prefix, because the groups sit at mixed depths: a Dataset with two loose
+files beside a partitioned subtree gives a shallow group and a deep one, and under a prefix the
+shallow row would carry both while its caption and its block line both said two. And a folder of one
+resolves to that file's own path, because a folder path is one the agent's read tool cannot use.
 
-Rejected: **folder rows and file rows together.** It doubles the rows in a menu that shows eight.
+The folder row is Build's. A folder mention is honoured against the app's manifest, which is a Build
+turn's channel; Chat resolves its tokens against the Conversation's own chips, where a folder is not
+one. Chat gains no folder act (ADR-0029), and this is the same line drawn in the menu — the row is
+offered nowhere it could not be carried.
+
+Rejected: **folder rows and file rows for the same files together.** It doubles the rows in a menu
+that shows eight.
 Rejected: **file rows only, as today.** The status quo, and it misrepresents itself.

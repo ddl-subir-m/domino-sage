@@ -360,7 +360,7 @@ def test_the_menu_and_the_turn_build_the_token_from_one_list():
     assert util.count("mentionWord(text) {") == 1
     # The menu inserts against the app's own Attachment list; the turn reads back against every
     # token a row could have been given, because that list moves under text already typed.
-    assert "const mentionPeers = SW.util.attachmentRows(appAttachments);" in composer
+    assert "const mentionPeers = SW.util.attachmentPeers(appAttachments);" in composer
     assert "SW.util.mentionToken(resource, mentionPeers)" in composer
     assert "const typed = SW.util.mentionTokensIn(text);" in store
     assert "SW.util.mentionTokens(row).some((token) => typed.has(token))" in store

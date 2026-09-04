@@ -119,7 +119,7 @@ def test_the_cap_of_eight_survives_the_new_group():
     # applied once, by the shared helper, after every group has been through it — so it still
     # counts them all.
     assert UI.count("limit: 8,") == 1
-    assert "return limit ? out.slice(0, limit) : out;" in UTIL
+    assert "return limit ? rows.slice(0, limit) : rows;" in UTIL
 
 
 def test_no_table_or_dataset_file_can_reach_the_new_group():

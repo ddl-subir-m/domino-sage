@@ -35,7 +35,7 @@ window.SW = window.SW || {};
   // (#148). Without it the menu would go on offering every file it ever offered EXCEPT the app's
   // own data — the one kind a Build prompt names most.
   function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents,
-                             appAttachments) {
+                             appAttachments, collapse) {
     const context = (attachments || []).map((att) => ({
       id: att.resourceId || att.id,
       name: att.resourceName,
@@ -66,11 +66,17 @@ window.SW = window.SW || {};
     // Parents only — the store filters to `MEMBERSHIP_PARENT_KINDS`, off a listing that has no
     // leaf in it to begin with. That is what keeps a warehouse table out of this menu, which must
     // never fetch a warehouse catalog (docs/workbench/chat.md).
+    // `collapse` is Build's. Above the threshold the app's Attachments come back as folder rows
+    // (ADR-0030), and a folder mention is honoured by `_resolve_mentions` against the app's own
+    // manifest — a Build turn's channel. Chat resolves its tokens against the Conversation's chips,
+    // where a folder is not a chip, so it is offered a folder nowhere it could not carry one.
+    // Chat gains no folder act (ADR-0029), and this is the same line drawn in the menu.
     return SW.util.workingSetFirst({
       groups: [context, produced, resourceGroups.pin || [], project, files, attached],
       catalogue: catalogueParents,
       query,
       limit: 8,
+      collapse,
     });
   }
 
@@ -172,11 +178,13 @@ window.SW = window.SW || {};
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
     // The list uniqueness is computed against, for the token this menu INSERTS and for the folder its
     // rows show (ADR-0030). One list for both, so the folder a person reads on a row and the token
-    // that lands in the box cannot disagree about which of two `data.csv` the click meant.
-    const mentionPeers = SW.util.attachmentRows(appAttachments);
+    // that lands in the box cannot disagree about which of two `data.csv` the click meant. The
+    // folder rows are in it as well as the files: a folder row is given a token too, and two
+    // partitions both called `2026` would otherwise both be offered as `@2026`.
+    const mentionPeers = SW.util.attachmentPeers(appAttachments);
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts,
-                          catalogueParents, appAttachments)
+                          catalogueParents, appAttachments, showMode)
       : [];
     const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));
     const buildModes = BUILD_MODES();
@@ -258,6 +266,10 @@ window.SW = window.SW || {};
       const pad = after === '' || /^\s/.test(after) ? '' : ' ';
       setText(text.slice(0, mention.start) + token + pad + after);
       setMention(null);
+      // A folder row is not a Resource and has no chip to become: it is offered only because every
+      // file under it is already attached to this app, which is the very thing a chip would say
+      // (ADR-0030). Adding one would post a `folder:` id no Resource answers to.
+      if (resource.kind === 'folder') return;
       // The @name is already in the box. Unreported, this sends a prompt mentioning a file that
       // was never attached.
       await SW.store.addToContext(resource, { quiet: true }).catch(sayFailed);
@@ -595,6 +607,17 @@ window.SW = window.SW || {};
                 // click does not carry would point at a file the click cannot reach.
                 const folder = SW.util.mentionSuffix(resource.path, mentionPeers)
                   .split('/').slice(0, -1).join('/');
+                // A folder row stands for files nobody can see, so it says how many (ADR-0030).
+                // That is the one thing worth knowing before picking it, and it is the difference
+                // between a row that reads as one file and a row that reads as the partition.
+                //
+                // It keeps the distinguishing folder beside the count, and for the reason this
+                // caption exists at all: two Datasets partitioned by year both offer a row called
+                // `2024`, which is the collision the row replaced arriving at the row itself. Same
+                // suffix the token is built from, so the words on the row and the word in the box
+                // still name one thing.
+                const caption = resource.kind !== 'folder' ? folder
+                  : `${resource.count} files${folder ? ` in ${folder}` : ''}`;
                 return h(
                   'button',
                   {
@@ -610,7 +633,7 @@ window.SW = window.SW || {};
                   // where it lives without spending a row's width on it.
                   h('span', { className: 'sw-mention-name', title: resource.path || resource.name },
                     resource.name),
-                  folder ? h('span', { className: 'sw-caption' }, folder) : null,
+                  caption ? h('span', { className: 'sw-caption' }, caption) : null,
                   attachedIds.has(resource.id)
                     ? h('span', { className: 'sw-incontext-tag' }, 'in context')
                     // The menu has ONE heading and it describes the first row only. A catalogue
@@ -622,7 +645,7 @@ window.SW = window.SW || {};
                       // The kind is what a row says when it has nothing more useful to say. A row
                       // that has just named its folder does, and two captions are one more than the
                       // slot holds — so the kind gives way, being the half that tells nothing apart.
-                      : folder
+                      : caption
                         ? null
                         : h('span', { className: 'sw-caption' }, SW.util.labelFor(resource.kind))
                 );

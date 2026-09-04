@@ -1068,7 +1068,11 @@ window.SW = window.SW || {};
     // few hundred rows times the depth of each path. Compiling a regex per question made that the
     // cost of typing.
     const typed = SW.util.mentionTokensIn(text);
-    [...Object.values(groups), SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {
+    // Through `attachmentPeers`, so the folder rows the @ menu draws above the threshold are read
+    // back too (ADR-0030). A folder token is a token no FILE row can answer — `2026` is not a tail
+    // of any file's path — so without the folders beside them a picked folder row would put a
+    // word in the box that the turn carries nothing for, which is the silence this function ends.
+    [...Object.values(groups), SW.util.attachmentPeers(state.appAttachments)].forEach((rows) => {
       (rows || []).forEach((row) => {
         // Every token this row could have been GIVEN, not the one it would be given now. Text
         // already sitting in the composer keeps its token while the Attachment list moves under it,

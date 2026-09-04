@@ -719,6 +719,77 @@ def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
 FOLDER_COLLAPSE_THRESHOLD = 10
 
 
+def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
+    """Attachments grouped by the folder that will stand for them, rolled up until there are
+    few enough groups to be worth calling a collapse.
+
+    Grouping by the immediate parent alone is not enough, and the shape that breaks it is a
+    normal one: a Dataset partitioned to the day — `raw/2024/01/01/part.csv` — gives one folder
+    per file, so a block of 365 folder lines still grows with the file count on every turn,
+    which is the whole cost ADR-0029 removes. So the deepest level is merged into its own parent
+    until the block is back under the threshold.
+
+    The floor is `public/data/<slug>`, one line per Dataset. Rolling past it would merge two
+    Datasets into a single line about `public/data`, and the served path is the one thing this
+    block exists to be exact about.
+
+    Module level rather than a method, because two surfaces group by it now: the `AGENTS.md` block
+    the agent re-reads every turn, and the `@` menu a person picks from (ADR-0030). One rule, so
+    the two cannot come to disagree about what a Dataset mention means.
+    """
+    floor = len(PurePosix("public/data").parts) + 1     # public/data/<slug>
+    folders: dict[str, list[dict]] = {}
+    for e in entries:
+        folders.setdefault(PurePosix(e["path"]).parent.as_posix(), []).append(e)
+    while len(folders) > FOLDER_COLLAPSE_THRESHOLD:
+        deepest = max(len(PurePosix(f).parts) for f in folders)
+        if deepest <= floor:
+            break
+        rolled: dict[str, list[dict]] = {}
+        for folder, held in folders.items():
+            up = PurePosix(folder)
+            key = up.parent.as_posix() if len(up.parts) == deepest else folder
+            rolled.setdefault(key, []).extend(held)
+        folders = rolled
+    return folders
+
+
+def _folder_members(groups: dict[str, list[dict]], folder: str) -> list[dict]:
+    """The attachments one `@folder` mention names — `[]` when it names no folder row.
+
+    Read out of `_by_folder`'s own grouping rather than by walking the paths under a prefix, so the
+    row, the `AGENTS.md` line and the turn all name one set. A prefix walk is not the same set: the
+    groups sit at mixed depths, so a Dataset with two loose files beside a partitioned subtree gives
+    a `public/data/ds` group of two AND a `public/data/ds/raw/2026` group of ten. Under a prefix the
+    shallow row would carry all twelve — the deeper row's files a second time — while its own
+    caption and its own block line both said two.
+
+    It needs no recursion for the same reason: where the roll-up made a group's key an ANCESTOR of
+    where its files sit, the group already holds them.
+    """
+    return groups.get(str(folder or "").rstrip("/"), [])
+
+
+def _menu_folders(attached: list[dict]) -> dict[str, tuple[str, int]]:
+    """Which folder each attachment's `@` menu row stands under, and how many files that row stands
+    for — `{}` while there are few enough files for the menu to show them one by one.
+
+    The menu is handed the ANSWER rather than the rule. `_by_folder`'s roll-up is a loop with a
+    floor, and a second copy of it in JavaScript is precisely how the block the agent reads and the
+    menu the person picks from would come to disagree — which is the drift ADR-0030 says one rule
+    across both surfaces exists to prevent. It also keeps `FOLDER_COLLAPSE_THRESHOLD` read in one
+    place and spelled in one language.
+
+    The COUNT travels with the folder for a reason the menu cannot supply for itself: it collapses
+    the rows a query matched, so a count taken from those would read "3 files" on a row whose pick
+    carries twelve. The row stands for the folder, so it says the folder's size.
+    """
+    if len(attached) <= FOLDER_COLLAPSE_THRESHOLD:
+        return {}
+    return {e["path"]: (folder, len(held))
+            for folder, held in _by_folder(attached).items() for e in held}
+
+
 def _folder_prefix(folder: str) -> str:
     """A Dataset folder as a path prefix its files start with — `""` for the root.
 
@@ -2502,6 +2573,10 @@ class Project:
 
     def status(self) -> dict:
         s = self.control.snapshot()
+        folders = _menu_folders(self.attached)
+        attached = [{**e, "menu_folder": folder, "menu_folder_count": count}
+                    for e in self.attached
+                    for folder, count in (folders.get(e["path"], ("", 0)),)]
         try:
             upstream = self.supervisor.upstream()
         except RuntimeError:
@@ -2512,7 +2587,13 @@ class Project:
             "untitled": self.record.is_untitled(),
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
-            "attached": list(self.attached),
+            # `menu_folder` is the row the `@` menu draws this file under and `menu_folder_count`
+            # is how many files that row stands for, or `""`/`0` while the menu still shows files
+            # one by one (ADR-0030). Computed onto the payload and never onto the record:
+            # `.sage/attachments.json` stays one entry per file in exactly the shape a single
+            # attach writes, because rehydrate, detach, leak detection and the commit backstop all
+            # read it and none of them learns a second entry shape (ADR-0029).
+            "attached": attached,
             "scratch": _list_scratch_files(self.record.path),
             "model": {
                 # `mode` is what routes right now — the pin, while a turn is running (see
@@ -3984,21 +4065,43 @@ class Orchestrator:
         if not mentions:
             return None
         known = {e["path"]: e for e in project.attached}
+        groups = _by_folder(project.attached)
+        out: list[dict] = []
         # Whether this turn learned a shape worth keeping. `_descriptor` fills the cache into the
         # entry and leaves the write to its caller (ADR-0029), so a turn that describes a file for
-        # the first time persists it once here rather than once per mention.
-        fresh = any(not known[m].get("descriptor") for m in mentions if m in known)
-        out: list[dict] = []
+        # the first time persists it once here rather than once per mention — and a folder mention
+        # describes every member, so an eight-file folder is eight shapes worked out once.
+        #
+        # Asked BEFORE the describing, never after: `_descriptor` writes the cache into the entry it
+        # was handed, so by the end of the loop every entry looks as though it always had one and
+        # the write would never happen at all.
+        fresh = False
         for m in mentions:
             entry = known.get(m)
-            if entry is None:
+            members = [] if entry is not None else _folder_members(groups, m)
+            # A folder of one is described exactly as well by naming the file, and better — the
+            # branch the `AGENTS.md` block already takes. It is also the only one that hands the
+            # agent a path its read tool can use.
+            if len(members) == 1:
+                entry, m, members = members[0], members[0]["path"], []
+            if entry is None and not members:
                 continue
-            try:
-                real = _safe_join(project.app_for_turn().path, m).resolve()
-            except (ValueError, OSError):
+            if members:
+                members = [e for e in members if self._on_disk(project, e["path"])]
+                if not members:
+                    # Every file under it is gone: the Dataset was unmounted, or a rehydrate left
+                    # the symlinks dangling. Dropped rather than promised, so the refusal names it
+                    # the way it names a single file whose path resolves to nothing — a folder path
+                    # the agent trusts resolves to the SPA fallback, which is the failure the
+                    # managed block spends a paragraph warning about.
+                    continue
+                fresh = fresh or any(not e.get("descriptor") for e in members)
+                out.append(self._folder_mention(project, m, members))
                 continue
-            if not real.is_file():
+            real = self._on_disk(project, m)
+            if real is None:
                 continue
+            fresh = fresh or not entry.get("descriptor")
             d = self._descriptor(project, entry)
             item = {"path": m, "name": PurePosix(m).name,
                     "summary": d["summary"], "detail": d["detail"]}
@@ -4008,6 +4111,42 @@ class Orchestrator:
         if fresh:
             project.workspace.write_attachments(project.attached)
         return out or None
+
+    @staticmethod
+    def _on_disk(project: Project, path: str) -> Path | None:
+        """The real file a workspace-relative attachment path reaches, or None.
+
+        The record says a file is attached; only this says it is still there. A Dataset can be
+        unmounted under a live app and a rehydrate can leave the symlinks dangling, and
+        `_descriptor` reads the shape cached in the manifest without touching disk — so nothing
+        else in a mention would notice.
+        """
+        try:
+            real = _safe_join(project.app_for_turn().path, path).resolve()
+        except (ValueError, OSError):
+            return None
+        return real if real.is_file() else None
+
+    def _folder_mention(self, project: Project, folder: str, members: list[dict]) -> dict:
+        """One `@folder` mention, said once (ADR-0030).
+
+        The expansion is the easy half. The COLLAPSE is the reason this exists: `send_prompt`
+        inlines a descriptor per item, so two hundred items is two hundred `detail` blocks — the
+        exact context bloat ADR-0029 took out of the `AGENTS.md` block, arriving through the other
+        door. Attachment-driven bloat has already wedged OpenCode mid-build once.
+
+        The summary is the block's own sentence, from the block's own helper: a folder of CSVs
+        sharing one schema is described BETTER once than two hundred times, so the collapse loses
+        nothing. No `detail`, and no `image_uri` either — images ride the prompt as data URIs, and
+        a folder of them would ride all of them.
+
+        The path IS the folder. The agent already has the served-path pattern for it out of the
+        managed block, and the alternative — naming every member — is the enumeration this
+        collapse exists to remove.
+        """
+        shape = self._shared_shape([self._descriptor(project, e) for e in members])
+        return {"path": folder, "name": PurePosix(folder).name or folder,
+                "summary": f"{len(members)} files — {shape}", "detail": ""}
 
     def _resource_mention_note(self, project: Project, resources: list[dict] | None) -> str:
         """The block a turn carries for the Resources the creator @mentioned (#31), or "" for none.
@@ -4085,7 +4224,15 @@ class Orchestrator:
         the dead end this sentence exists to remove. That drop keeps the prose and gets no row.
         """
         kept = {a["path"] for a in (resolved or [])}
-        missing = [m for m in (mentions or []) if m not in kept]
+
+        # A folder mention is kept when the turn carried something under it: `_resolve_mentions`
+        # answers a folder of many with the folder's own path and a folder of one with the file's
+        # (ADR-0030), and reporting the second as dropped would be this sentence telling on a
+        # mention that worked.
+        def used(m: str) -> bool:
+            return m in kept or any(p.startswith(m.rstrip("/") + "/") for p in kept)
+
+        missing = [m for m in (mentions or []) if not used(m)]
         bound = {b.key for b in parse_bindings(project.app_for_turn().read_bindings())}
         unbound = [r for r in (resources or []) if isinstance(r, dict)
                    and (str(r.get("kind") or ""), str(r.get("id") or "")) not in bound]
@@ -4106,7 +4253,17 @@ class Orchestrator:
         # has a file the person can point at, and telling them to attach a file they can see beats
         # telling them a file they can see isn't there.
         chat_files = [m for m in missing if m.startswith(_SCRATCH_PREFIX)]
-        others = [m for m in missing if m not in chat_files]
+        # What the app HOLDS and could still not use. `_resolve_mentions` drops a file whose path
+        # reaches nothing on disk and a folder whose every member does — an unmounted Dataset, or a
+        # rehydrate that left the symlinks dangling — and "not attached to this app" would then be
+        # false twice over: it IS attached, its row is in the panel, and attaching it again is not
+        # the way back. Named apart so the sentence describes the state the reader is actually in,
+        # and given no row, because no one button closes it.
+        held = {e["path"] for e in project.attached}
+        folders = _by_folder(project.attached)
+        gone = [m for m in missing
+                if m not in chat_files and (m in held or m.rstrip("/") in folders)]
+        others = [m for m in missing if m not in chat_files and m not in gone]
         lines: list[str] = []
         entries: list[dict] = []
         if chat_files:
@@ -4114,6 +4271,9 @@ class Orchestrator:
                          "Attach it to the app in the Data panel, then ask again.")
             entries += [{"kind": "file", "id": m, "name": PurePosix(m).name,
                          "app": where, "appId": whose} for m in chat_files]
+        if gone:
+            lines.append(f"Couldn't use {named(gone)} — this app holds it, but its files aren't in "
+                         "the workspace right now.")
         if others:
             lines.append(f"Couldn't use {named(others)} — not attached to this app. "
                          "Attach it in the Data panel, then ask again.")
@@ -10809,37 +10969,6 @@ class Orchestrator:
         return f"{', '.join(kinds[:-1])} and {kinds[-1]} files" if len(kinds) > 1 \
             else f"{kinds[0]} files"
 
-    @staticmethod
-    def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
-        """Attachments grouped by the folder that will stand for them, rolled up until there are
-        few enough groups to be worth calling a collapse.
-
-        Grouping by the immediate parent alone is not enough, and the shape that breaks it is a
-        normal one: a Dataset partitioned to the day — `raw/2024/01/01/part.csv` — gives one folder
-        per file, so a block of 365 folder lines still grows with the file count on every turn,
-        which is the whole cost ADR-0029 removes. So the deepest level is merged into its own parent
-        until the block is back under the threshold.
-
-        The floor is `public/data/<slug>`, one line per Dataset. Rolling past it would merge two
-        Datasets into a single line about `public/data`, and the served path is the one thing this
-        block exists to be exact about.
-        """
-        floor = len(PurePosix("public/data").parts) + 1     # public/data/<slug>
-        folders: dict[str, list[dict]] = {}
-        for e in entries:
-            folders.setdefault(PurePosix(e["path"]).parent.as_posix(), []).append(e)
-        while len(folders) > FOLDER_COLLAPSE_THRESHOLD:
-            deepest = max(len(PurePosix(f).parts) for f in folders)
-            if deepest <= floor:
-                break
-            rolled: dict[str, list[dict]] = {}
-            for folder, held in folders.items():
-                up = PurePosix(folder)
-                key = up.parent.as_posix() if len(up.parts) == deepest else folder
-                rolled.setdefault(key, []).extend(held)
-            folders = rolled
-        return folders
-
     def _attached_data_lines(self, project: Project) -> list[str]:
         """What the managed block says about the attached files: one line each, or one line per
         folder once there are enough of them to matter (ADR-0029).
@@ -10861,7 +10990,7 @@ class Orchestrator:
         """
         if len(project.attached) <= FOLDER_COLLAPSE_THRESHOLD:
             return [self._attached_file_line(project, e) for e in project.attached]
-        folders = self._by_folder(project.attached)
+        folders = _by_folder(project.attached)
         lines: list[str] = []
         for folder, entries in folders.items():
             if len(entries) == 1:

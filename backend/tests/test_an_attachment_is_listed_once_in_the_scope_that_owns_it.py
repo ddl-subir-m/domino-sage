@@ -181,7 +181,10 @@ def test_the_row_the_panel_draws_is_the_row_the_menu_offers_and_the_turn_resolve
     assert "attachmentRow(entry) {" in util
     assert "resource: SW.util.attachmentRow(a)," in panel
     assert "const attached = SW.util.attachmentRows(appAttachments);" in composer
-    assert "SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {" in store
+    assert "SW.util.attachmentPeers(state.appAttachments)].forEach((rows) => {" in store
+    # The plural is what the peers are built from, so the turn still walks the panel's own rows —
+    # plus the folders they collapse into above the threshold (ADR-0030).
+    assert "const files = SW.util.attachmentRows(entries);" in util
     # The path is the field the server keys on, so it cannot be dropped from the row on the way out.
     assert "id: `file:${path}`," in util
     # The plural is the singular plus the pick filter, and the two menus that pick share it — one

@@ -67,7 +67,7 @@ def test_the_two_lists_are_still_two_after_the_attachment_moved_scope():
     longer reaches the turn. `test_an_attachment_is_listed_once_in_the_scope_that_owns_it` asserts
     the path that mention carries, which is the half a source read cannot see."""
     refs = STORE[STORE.index("function collectTurnRefs(text) {"):STORE.index("function buildHistoryToMessages")]
-    assert "SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {" in refs
+    assert "SW.util.attachmentPeers(state.appAttachments)].forEach((rows) => {" in refs
 
 
 def test_an_unbound_resource_and_an_unattached_chat_file_are_the_two_rows():
