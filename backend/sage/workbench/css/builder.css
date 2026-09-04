@@ -431,6 +431,27 @@
 }
 .sw-app-picker-list { max-height: 320px; overflow-y: auto; }
 
+/* "New app", pinned above the list rather than beside the picker (#82 revisited): it is the one
+   other thing this control already knows how to do, so it lives where the list it changes does. */
+.sw-app-picker-newapp {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 6px;
+  padding: 7px var(--s2) 8px var(--s3);
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  font-family: inherit;
+  font-size: var(--fs-13);
+  font-weight: 500;
+  color: var(--purple-600);
+  cursor: pointer;
+  text-align: left;
+}
+.sw-app-picker-newapp:hover { background: var(--gray-200); }
+.sw-app-picker-divider { height: 1px; margin: var(--s1) var(--s3); background: var(--gray-200); }
+
 /* What the rest of this Conversation changed. Secondary to the app on screen, which is why it
    reads as a caption and not as a second name. */
 /* Gives way before the toolbar's buttons do, for the same reason the picker does. The tooltip
@@ -461,91 +482,28 @@
    what a TEAMMATE did, and the two have to stay tellable apart at a glance (#78). */
 .sw-build-state.is-behind { color: var(--info); font-weight: 600; }
 
-/* What the selected app ships — reserved by #87, filled by #92. A second row BENEATH the app
-   identity row, so the header reads name, then what that app ships.
-
-   Deliberately NOT the composer's chip styling. Those chips are Session context, which belongs to
-   the Conversation and does not follow the selected app (#84); this row is the app's. Purple
-   filled tags at the foot of the left column against grey-on-grey text in the header above the
-   preview — nobody should have to work out which of the two scopes a row is in. */
-.sw-app-scope {
-  flex: none;
-  display: flex;
-  align-items: baseline;
-  gap: var(--s2);
-  padding: var(--s1) var(--s4);
-  background: var(--gray-100);
-  border-bottom: 1px solid var(--gray-300);
-  overflow: hidden;
-}
-.sw-app-scope-label {
-  flex: none;
-  font-size: var(--fs-12);
-  font-weight: 600;
-  color: var(--dark-700);
-  white-space: nowrap;
-}
-/* Gives way before the label does: the label says whose row this is, which is the half that has
-   to survive a narrow preview. */
-.sw-app-scope-empty {
-  flex: 0 1 auto;
-  font-size: var(--fs-12);
-  color: var(--gray-500);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Two kinds, two records, two consumers (ADR-0010), so they are two groups rather than one run of
-   names under one heading. The margin lands on top of the row's own `gap`, so groups sit 16px
-   apart against 4px inside one — which is what says `Bindings` heads the names beside it and not
-   the ones after the next heading. */
-.sw-app-scope-kind {
-  flex: 0 1 auto;
+/* App dependencies modal — what the selected app ships, read on demand rather than in an
+   always-open row (#92 revisited). Reached from the header's own menu, so it keeps the app's
+   identity out of its own body: the Modal's title already names it. */
+.sw-appdeps-body { display: flex; flex-direction: column; gap: var(--s4); }
+.sw-appdeps-intro { font-size: var(--fs-13); color: var(--gray-600); line-height: 1.5; }
+.sw-appdeps-section { display: flex; flex-direction: column; gap: 2px; }
+.sw-appdeps-section .sw-group-label { margin-bottom: var(--s1); }
+.sw-appdeps-row {
   display: flex;
   align-items: baseline;
   gap: var(--s1);
-  min-width: 0;
-  overflow: hidden;
-}
-.sw-app-scope-kind + .sw-app-scope-kind { margin-left: var(--s2); }
-.sw-app-scope-kind-label {
-  flex: none;
-  font-size: var(--fs-12);
-  color: var(--gray-500);
-}
-/* The names are what gives way, in this order: the label says whose row this is, the kind label
-   says what the names ARE, and a truncated name is still readable in the group's own tooltip —
-   which carries the full list beside the pointer to where that kind is managed. */
-.sw-app-scope-names {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--dark-700);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: 3px 0;
 }
 /* Quieter than the name it qualifies, and only ever a word: the derived answer is advisory and
-   gates nothing (ADR-0010), so styling it as a warning would claim something the record does not.
-   Colour alone would carry it to nobody — the word is the label, the colour only its weight. */
-.sw-app-scope-unused { color: var(--gray-500); }
-/* The Scope, and the control that chooses it, which are one element (#142). It sits inside the run
-   of names because it qualifies the name before it, so it takes the run's own size and loses the
-   padding a link button brings — a control that changed the line height would push the names it
-   sits among off their baseline. */
-.sw-app-scope-door {
-  height: auto;
-  padding: 0 var(--s1);
-  font-size: var(--fs-12);
-}
-/* The door, pinned to the far end so it keeps its place while the names beside it truncate. `flex:
-   none` for the reason the label has it: what gives way is the run of names, never the two things
-   that say whose row this is and what can be done to it. */
-.sw-app-scope-add {
-  flex: none;
-  margin-left: auto;
-  padding-left: var(--s2);
-}
+   gates nothing (ADR-0010), so styling it as a warning would claim something the record does not. */
+.sw-appdeps-unused { color: var(--gray-500); font-size: var(--fs-12); }
+/* The Scope, and the control that chooses it, which are one element (#142). */
+.sw-appdeps-door { height: auto; padding: 0 var(--s1); font-size: var(--fs-12); }
+.sw-appdeps-pointer { font-size: var(--fs-12); color: var(--gray-500); }
+.sw-appdeps-foot { display: flex; justify-content: flex-end; }
 
 /* The canvas is the preview's whole height. Without `flex: 1` it falls back to the
    iframe's intrinsic 150px and the app shows through a letterbox. `position: relative`

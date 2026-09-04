@@ -274,6 +274,10 @@ window.SW = window.SW || {};
     // in `APP_SCOPED` below, for the reason `composerSeed` is not: switching app changes WHICH
     // builds are listed, never whether you had asked to see them.
     buildHistoryOpen: false,
+    // Whether the app dependencies modal is on screen. Same reasoning as `buildHistoryOpen`: not in
+    // `APP_SCOPED`, because switching app changes what the modal lists, never whether somebody
+    // opened it.
+    appDependenciesOpen: false,
     // The Data Source Binding whose Scope is being chosen, and the ladder it is standing on (#142).
     // `{ id, name, levels, database, schema, items, error }` — `items` is the names at the current
     // level, `null` while the read is out. Null when no Scope door is open.
@@ -3873,6 +3877,19 @@ window.SW = window.SW || {};
 
     closeBuildHistory() {
       state.buildHistoryOpen = false;
+      notify();
+    },
+
+    // The app dependencies modal. No read to gate on the way in — unlike `openBuildHistory`,
+    // `bindings` and `appAttachments` are already kept current per app (`loadBuild`), so there is
+    // nothing this needs to go and fetch.
+    openAppDependencies() {
+      state.appDependenciesOpen = true;
+      notify();
+    },
+
+    closeAppDependencies() {
+      state.appDependenciesOpen = false;
       notify();
     },
 
