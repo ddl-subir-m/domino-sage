@@ -243,6 +243,10 @@ def test_chat_prompt_routes_an_unmounted_dataset_to_the_data_library(tmp_path: P
     assert "autodoc" in prompt
     # Both halves of the identifier: the data library rejects a bare name and a bare id alike.
     assert 'get_dataset("dataset-autodoc-abc123")' in prompt
+    # `list_files()` hands back objects whose repr is bare `_File()`, so an agent told only that
+    # it "names its files" prints the list, learns nothing, and spends a turn guessing. The
+    # accessor is the answer to the question people actually ask of a Dataset.
+    assert "read `.name` on each" in prompt
     assert "not this Dataset" in prompt
     assert "Do not greet by asking what to build" in prompt
     assert f"examples/{tid}/" in prompt

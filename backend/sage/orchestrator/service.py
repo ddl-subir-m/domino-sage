@@ -1942,7 +1942,8 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
             "- {dataset} {name}{where}. Not mounted here, so read it with the {platformName} data "
             'library: `from domino_data.datasets import DatasetClient` then '
             '`DatasetClient().get_dataset("{unique}")`. '
-            '`.list_files()` names its files and `.download_file(<file>, "/tmp/<file>")` fetches '
+            '`.list_files()` returns file objects — read `.name` on each, since the list itself '
+            'prints as `[_File(), _File()]`. `.download_file(<name>, "/tmp/<name>")` fetches '
             "one to read with pandas. Do not search this git repo or any other folder for a "
             "project of the same name — that is not this {dataset}.",
             name=name, where=where, unique=unique,
