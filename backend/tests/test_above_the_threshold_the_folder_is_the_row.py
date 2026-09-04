@@ -35,6 +35,7 @@ from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "mention_folder_row_harness.mjs"
+WB = Path(__file__).resolve().parents[1] / "sage" / "workbench"
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node is not on PATH")
 
@@ -135,6 +136,20 @@ def test_below_the_threshold_no_attachment_carries_a_menu_folder(tmp_path: Path)
     status = orch.project().status()["attached"]
     assert len(status) == 5
     assert all(not e["menu_folder"] for e in status)
+
+
+def test_the_menu_shows_as_many_rows_as_the_collapse_lets_through():
+    """One number, and the composer's `limit` is the only place it is spelled twice.
+
+    At or below the threshold nothing collapses, so a menu that showed fewer rows than that would
+    read as a complete list while hiding some — the misrepresentation this section is about, in
+    miniature. Above it, `_by_folder` rolls up until there are at most that many folders, so the
+    collapsed list fits as well. Two spellings, one for each language, held together here because
+    moving the constant has to move both."""
+    composer = (WB / "js" / "components" / "composer.js").read_text()
+
+    assert f"limit: {svc.FOLDER_COLLAPSE_THRESHOLD}," in composer
+    assert composer.count("limit: ") == 1
 
 
 def test_the_threshold_is_read_and_not_copied(tmp_path: Path, monkeypatch):
@@ -267,6 +282,87 @@ def test_a_folder_mention_persists_the_shapes_it_had_to_work_out(tmp_path: Path)
     written = json.loads(record.read_text())
     described = [e for e in written if e["path"].startswith(P2024 + "/")]
     assert described and all(e.get("descriptor") for e in described)
+
+
+def _deep(tmp: Path, partitions: int) -> tuple[Orchestrator, str, Path]:
+    """A Dataset partitioned to the DAY, at a count that forces `_by_folder` to roll up.
+
+    Which is the whole shape this case needs: a folder row's path is not fixed the way a file's is,
+    so the level the rows sit at moves as the attachment count crosses the threshold.
+    """
+    provider = FakeAssetProvider(root=tmp / "mounts")
+    mount = Path(next(a.mount_path for a in provider.assets if a.name == "sales_2026"))
+    for day in range(partitions):
+        f = mount / "raw" / "2026" / f"{day:02d}" / "part.csv"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("a,b\n1,2\n")
+    orch = _orch(tmp, provider)
+    ws = orch.project(start_preview=False).workspace.path
+    return orch, _dataset_id(orch), ws
+
+
+def test_a_token_whose_folder_stopped_being_a_row_carries_the_row_above_it(tmp_path: Path):
+    """The token a folder row was GIVEN outlives the row. `_by_folder`'s roll-up level moves as the
+    attachment count crosses the threshold, so `@01` — offered while `raw/2026/01` was a row — names
+    no row at all once the roll-up moves up to `raw/2026`.
+
+    Carrying nothing is the silence ADR-0030 rules out, so it carries the row that now stands for
+    those files. Wider than what was asked for, and said so on the turn rather than discovered in
+    the answer."""
+    orch, ds, _ = _deep(tmp_path, partitions=12)
+    orch.attach_folder(ds, "raw")
+    stale = "public/data/sales_2026/raw/2026/01"
+
+    out = orch._resolve_mentions(orch.project(), [stale])
+
+    assert [i["path"] for i in out] == ["public/data/sales_2026/raw/2026"]
+    assert out[0]["summary"].startswith("12 files")
+    assert out[0]["asked"] == stale
+
+
+def test_the_widened_mention_says_it_widened(tmp_path: Path):
+    """The same rule the ambiguous token gets: it carries more than was asked for AND says so, so
+    the person can narrow it. A turn that quietly answered about twelve partitions when one was
+    named is the failure this whole area exists to end."""
+    orch, ds, _ = _deep(tmp_path, partitions=12)
+    orch.attach_folder(ds, "raw")
+    stale = "public/data/sales_2026/raw/2026/01"
+
+    out = orch._resolve_mentions(orch.project(), [stale])
+    said = svc._ambiguous_mentions(out, "chart the trend from @01")
+
+    assert "@01" in said
+    assert "public/data/sales_2026/raw/2026" in said
+
+
+def test_a_widened_mention_is_not_also_reported_as_dropped(tmp_path: Path):
+    """Two sentences about one mention, pulling opposite ways: one saying the turn carried more
+    than was asked, the other saying it carried nothing."""
+    orch, ds, _ = _deep(tmp_path, partitions=12)
+    orch.attach_folder(ds, "raw")
+    project = orch.project()
+    stale = "public/data/sales_2026/raw/2026/01"
+
+    resolved = orch._resolve_mentions(project, [stale])
+    line, rows = orch._unusable_mentions(project, resolved, [stale], None)
+
+    assert (line, rows) == ("", [])
+
+
+def test_the_widening_takes_the_row_that_absorbed_it_and_not_the_app(tmp_path: Path):
+    """The smallest widening there is. A question about one day answered with everything the app
+    holds would be a worse failure than the silence it replaces."""
+    orch, ds, _ = _deep(tmp_path, partitions=12)
+    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
+                      if a.name == "sales_2026"))
+    (mount / "elsewhere").mkdir(parents=True, exist_ok=True)
+    (mount / "elsewhere" / "other.csv").write_text("a,b\n7,7\n")
+    orch.attach_folder(ds, "")
+
+    out = orch._resolve_mentions(orch.project(), ["public/data/sales_2026/raw/2026/01"])
+
+    assert out[0]["path"] == "public/data/sales_2026/raw/2026"
+    assert out[0]["summary"].startswith("12 files")   # not the thirteenth, beside it
 
 
 def test_a_folder_mention_whose_files_are_gone_is_refused_like_a_file(tmp_path: Path):
@@ -449,6 +545,22 @@ def test_a_folder_row_inserts_a_token_and_the_turn_carries_the_folder(tmp_path: 
         "prompt": "chart the trend from @2024",
         "mentions": ["public/data/sales/raw/2024"],
     }]
+
+
+@needs_node
+def test_the_composer_still_sends_a_token_whose_folder_stopped_being_a_row(tmp_path: Path):
+    """The server half is worth nothing if the request never carries the token. `collectTurnRefs`
+    matches rows, and a folder row's path moves under a token already in the box — so the row
+    answers for the folders it absorbed, and the turn goes out naming the row that now holds
+    them."""
+    report = _run({"prompts": []})
+
+    assert report["sentStaleFolder"] == [{
+        "prompt": "chart the trend from @01",
+        "mentions": ["public/data/sales/raw/2026"],
+    }]
+    # And the row a person can still see and pick is the one that absorbed it.
+    assert [row["name"] for row in report["menuRolled"]] == ["2026"]
 
 
 @needs_node

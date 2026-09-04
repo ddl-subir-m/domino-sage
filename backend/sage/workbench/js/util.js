@@ -267,8 +267,22 @@ window.SW = window.SW || {};
     // Attachments.
     collapseFolders(rows) {
       const held = {};
+      // Every folder BETWEEN a row and its files. The roll-up level moves as the attachment count
+      // does, so a token given for `raw/2026/01` names no row once the roll-up moves up to
+      // `raw/2026` — and a matcher reading only today's path finds nothing, which is the silent
+      // carry ADR-0030 rules out. These are the folders this row absorbed, so the token it was
+      // given still reaches it and the turn says it widened.
+      const absorbed = {};
       (rows || []).forEach((r) => {
-        if (r && r.menuFolder) held[r.menuFolder] = (held[r.menuFolder] || 0) + 1;
+        if (!r || !r.menuFolder) return;
+        held[r.menuFolder] = (held[r.menuFolder] || 0) + 1;
+        const under = String(r.path || '').slice(r.menuFolder.length + 1).split('/');
+        let at = r.menuFolder;
+        if (!absorbed[r.menuFolder]) absorbed[r.menuFolder] = [];
+        under.slice(0, -1).forEach((segment) => {
+          at += `/${segment}`;
+          if (absorbed[r.menuFolder].indexOf(at) === -1) absorbed[r.menuFolder].push(at);
+        });
       });
       const drawn = new Set();
       const out = [];
@@ -283,7 +297,8 @@ window.SW = window.SW || {};
         // `held` decides WHETHER to collapse — a group of one still draws its file, whatever the
         // folder's size — and the row then reports the folder's size, because that is what the
         // pick carries.
-        out.push(SW.util.folderRow(folder, row.menuFolderCount || held[folder]));
+        out.push(SW.util.folderRow(folder, row.menuFolderCount || held[folder],
+                                   absorbed[folder]));
       });
       return out;
     },
@@ -291,7 +306,7 @@ window.SW = window.SW || {};
     // One folder, as a row. `path` is the folder, because that is what `_resolve_mentions` expands
     // and what `mentionTokens` builds this row's tokens from — the same field a file row is
     // resolved through, so the turn needs no second rule to read a pick back.
-    folderRow(folder, count) {
+    folderRow(folder, count, absorbed) {
       const path = String(folder || '');
       return {
         id: `folder:${path}`,
@@ -300,6 +315,9 @@ window.SW = window.SW || {};
         path,
         count,
         subtitle: path,
+        // Folders this row stands over, so a token given when one of THEM was the row still names
+        // it. Read by `mentionTokens` only; nothing draws them.
+        absorbed: absorbed || [],
       };
     },
 
@@ -379,11 +397,19 @@ window.SW = window.SW || {};
     mentionTokens(resource) {
       const path = String((resource && resource.path) || '');
       if (!path) return [SW.util.mentionToken(resource)];
-      const segments = path.split('/');
+      // A file's path is fixed, so its own tails are the whole set. A folder ROW's is not — the
+      // roll-up level moves as the attachment count crosses the threshold — so a folder row also
+      // answers for the folders it absorbed, and the turn reports that it carried the wider one
+      // (`_ambiguous_mentions`). Wider than what was asked for and said so, rather than silent.
+      const paths = [path].concat((resource && resource.absorbed) || []);
       const out = [];
-      for (let take = 1; take <= segments.length; take += 1) {
-        out.push(SW.util.mentionWord(segments.slice(segments.length - take).join('/')));
-      }
+      paths.forEach((each) => {
+        const segments = String(each).split('/');
+        for (let take = 1; take <= segments.length; take += 1) {
+          const token = SW.util.mentionWord(segments.slice(segments.length - take).join('/'));
+          if (out.indexOf(token) === -1) out.push(token);
+        }
+      });
       return out;
     },
 

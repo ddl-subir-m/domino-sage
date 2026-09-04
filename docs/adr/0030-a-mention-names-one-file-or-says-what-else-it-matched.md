@@ -33,6 +33,20 @@ Uniqueness is computed against the app's own Attachment list, and `mentionToken`
 picker that inserts and the turn that reads back — which is why the fix lands in one function rather
 than two that can drift.
 
+### The token outlives the row
+
+A file's path is fixed, so the tokens it could have been given are a fixed set. A folder row's path
+is not: the roll-up level moves as the attachment count crosses the threshold, so `@01`, inserted
+while `raw/2026/01` was a row, names no row at all once the roll-up moves up to `raw/2026`.
+
+The same answer the ambiguous token gets, for the same reason. The row answers for the folders it
+absorbed, the turn carries the row that now stands for those files, and it says that it widened,
+naming what it carried. Wider than what was asked for is a visible cost the person can narrow; a
+mention that quietly carries nothing is the outcome ruled out. The widening is the smallest one
+there is — the row that absorbed it, never the whole Dataset — and that falls out of the grouping
+rather than being chosen: a file belongs to exactly one group, so only the group actually holding
+the files under the named folder can qualify.
+
 ## A stale token resolves to everything it matches, and says so
 
 The uniqueness rule alone has a hole worth stating, because it is the failure this whole area was
@@ -100,7 +114,13 @@ The collapse is applied to what the query MATCHED, not to the whole list, and th
 single file reachable: narrow to one file in a partition and its group holds one. A group of one
 draws its file — the block's own rule ([ADR-0029](0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)),
 here for the same reason it is there. Every matched file is therefore under exactly one row, which
-is what the rejection below rules out doubling.
+is what the rejection below rules out doubling. The row's COUNT is the folder's rather than the
+match's, because the pick carries the folder: a count taken from the match reads "3 files" on a row
+that sends twelve.
+
+The menu's own cap is the threshold too. Below it nothing collapses, so a menu that showed fewer
+rows than that would read as a complete list while hiding some — this section's defect in miniature;
+above it the roll-up leaves at most that many folders, so the collapsed list fits as well.
 
 A folder mention carries real server work, recorded here rather than discovered later:
 `_resolve_mentions` honours exact manifest paths only, so a folder token must expand to its member

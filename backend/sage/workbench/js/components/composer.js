@@ -75,7 +75,13 @@ window.SW = window.SW || {};
       groups: [context, produced, resourceGroups.pin || [], project, files, attached],
       catalogue: catalogueParents,
       query,
-      limit: 8,
+      // The same number as `FOLDER_COLLAPSE_THRESHOLD` in `sage/orchestrator/service.py`, and the
+      // same number for the same reason: at or below it nothing collapses, so the menu has to be
+      // able to show the whole list or it goes back to reading as complete when it is not. Above
+      // it the collapse holds the app's Attachments to at most that many folder rows, so the
+      // collapsed list fits too. Held together by
+      // `test_the_menu_shows_as_many_rows_as_the_collapse_lets_through`.
+      limit: 10,
       collapse,
     });
   }

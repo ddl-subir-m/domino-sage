@@ -754,8 +754,8 @@ def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
     return folders
 
 
-def _folder_members(groups: dict[str, list[dict]], folder: str) -> list[dict]:
-    """The attachments one `@folder` mention names — `[]` when it names no folder row.
+def _folder_members(groups: dict[str, list[dict]], folder: str) -> tuple[str, list[dict]]:
+    """The folder row one `@folder` mention names, and what it stands for — `("", [])` for neither.
 
     Read out of `_by_folder`'s own grouping rather than by walking the paths under a prefix, so the
     row, the `AGENTS.md` line and the turn all name one set. A prefix walk is not the same set: the
@@ -766,8 +766,25 @@ def _folder_members(groups: dict[str, list[dict]], folder: str) -> list[dict]:
 
     It needs no recursion for the same reason: where the roll-up made a group's key an ANCESTOR of
     where its files sit, the group already holds them.
+
+    Then the ENCLOSING row, because a folder row's path is not fixed the way a file's is. The
+    roll-up level moves as the attachment count crosses the threshold, so `@01`, given while
+    `raw/2026/01` was a row, names no row at all once the roll-up moves up to `raw/2026`. Carrying
+    the row that now stands for those files is wider than what was asked for; carrying nothing is
+    the silence ADR-0030 rules out, and the widening is reported on the turn by
+    `_ambiguous_mentions`, which is the same answer that decision gives an ambiguous token.
+
+    At most one row can enclose it, so the widening is the smallest one there is: a question about
+    one day is answered with the month that absorbed it, never with the whole Dataset. That falls
+    out of the grouping rather than being chosen here — a file belongs to exactly one group, so only
+    the group that actually holds the files under the named folder can qualify.
     """
-    return groups.get(str(folder or "").rstrip("/"), [])
+    at = str(folder or "").rstrip("/")
+    if at in groups:
+        return at, groups[at]
+    return next(((k, held) for k, held in groups.items()
+                 if at.startswith(k + "/") and any(e["path"].startswith(at + "/") for e in held)),
+                ("", []))
 
 
 def _menu_folders(attached: list[dict]) -> dict[str, tuple[str, int]]:
@@ -2848,6 +2865,16 @@ def _ambiguous_mentions(resolved: list[dict] | None, prompt: str) -> str:
             if path not in named:
                 named.append(path)
     lines: list[str] = []
+    # The other way a mention carries more than was asked for, and the same answer: say so, name
+    # what it carried, so the person can narrow it. A folder token outlives the row it was given
+    # for — `_by_folder`'s roll-up level moves as the attachment count does — and the turn carries
+    # the row that now stands for those files rather than nothing.
+    for item in resolved or []:
+        asked = str(item.get("asked") or "")
+        named = next((t for t in _mention_tokens(asked) if t in typed), "") if asked else ""
+        if named:
+            lines.append(f"{named} is no longer a folder of its own, so the turn carried "
+                         f"`{item['path']}` instead — {item['summary']}.")
     for token, paths in by_token.items():
         if len(paths) < 2:
             continue
@@ -4078,7 +4105,8 @@ class Orchestrator:
         fresh = False
         for m in mentions:
             entry = known.get(m)
-            members = [] if entry is not None else _folder_members(groups, m)
+            asked = m
+            key, members = ("", []) if entry is not None else _folder_members(groups, m)
             # A folder of one is described exactly as well by naming the file, and better — the
             # branch the `AGENTS.md` block already takes. It is also the only one that hands the
             # agent a path its read tool can use.
@@ -4096,7 +4124,13 @@ class Orchestrator:
                     # managed block spends a paragraph warning about.
                     continue
                 fresh = fresh or any(not e.get("descriptor") for e in members)
-                out.append(self._folder_mention(project, m, members))
+                item = self._folder_mention(project, key, members)
+                # The row asked for is not the row that answered: the roll-up moved under a token
+                # already in the composer. Carried on the item so the sentence that reports the
+                # widening is read off this same answer, the way every other one is.
+                if key != asked.rstrip("/"):
+                    item["asked"] = asked
+                out.append(item)
                 continue
             real = self._on_disk(project, m)
             if real is None:
@@ -4223,7 +4257,11 @@ class Orchestrator:
         resolves to nothing cannot: there is no act to offer it, and a button that cannot complete is
         the dead end this sentence exists to remove. That drop keeps the prose and gets no row.
         """
-        kept = {a["path"] for a in (resolved or [])}
+        # `asked` is on a folder mention the roll-up widened (ADR-0030): the turn carried a row
+        # above the one named, so the path in the answer is not the path in the request. Read as
+        # used, or the turn would carry it AND report it as dropped in the same breath.
+        kept = {a["path"] for a in (resolved or [])} | {
+            str(a["asked"]) for a in (resolved or []) if a.get("asked")}
 
         # A folder mention is kept when the turn carried something under it: `_resolve_mentions`
         # answers a folder of many with the folder's own path and a folder of one with the file's

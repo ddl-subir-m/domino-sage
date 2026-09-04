@@ -114,11 +114,11 @@ def test_the_new_group_is_appended_last():
     assert "[...(groups || []), catalogue || []].forEach(" in UTIL
 
 
-def test_the_cap_of_eight_survives_the_new_group():
+def test_the_cap_survives_the_new_group():
     # A sixth source of rows is a sixth way to overflow the menu. The cap is asked for once and
     # applied once, by the shared helper, after every group has been through it — so it still
     # counts them all.
-    assert UI.count("limit: 8,") == 1
+    assert UI.count("limit: 10,") == 1
     assert "return limit ? rows.slice(0, limit) : rows;" in UTIL
 
 

@@ -44,6 +44,13 @@ const ATTACHED = [
   file('public/data/sales/raw/2026/only.csv', 'public/data/sales/raw/2026', 1),
 ];
 
+// A Dataset partitioned to the DAY, whose rows the roll-up has moved up a level: every file sits
+// two folders under the row that stands for it. The token `@01` was a row's own once, and is not
+// one now — the state a composer sits in after one more attach.
+const ROLLED = Array.from({ length: 12 }, (_, i) => file(
+  `public/data/sales/raw/2026/${String(i).padStart(2, '0')}/part.csv`,
+  'public/data/sales/raw/2026', 12));
+
 // A second Dataset partitioned by year, so two folder rows collide on their basename the way two
 // `data.csv` do. This is the whole defect ADR-0030 is about, arriving at the row that replaced
 // them: two rows reading `2024` that insert two different tokens.
@@ -254,6 +261,16 @@ for (const prompt of prompts || []) {
   await settle();
 }
 report.sent = sent.map((body) => ({ prompt: body.prompt, mentions: body.mentions }));
+
+// The token a row was GIVEN, after the roll-up moved the row above it. Carrying nothing here is
+// the silence ADR-0030 rules out; the turn carries the row that absorbed it, and says so.
+sent.length = 0;
+SW.store.set({ appAttachments: ROLLED, buildRunning: false });
+await SW.store.sendBuildPrompt('chart the trend from @01');
+await settle();
+report.sentStaleFolder = sent.map((body) => ({ prompt: body.prompt, mentions: body.mentions }));
+report.menuRolled = menuFor('2026');
+SW.store.set({ appAttachments: ATTACHED });
 
 // Chat, on the same app. Its menu is the one it always drew.
 mode = CHAT;
