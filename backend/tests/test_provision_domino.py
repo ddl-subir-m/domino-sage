@@ -73,6 +73,65 @@ def test_create_project_errors_without_matching_credential():
         raise AssertionError("expected RuntimeError when no git credential matches")
 
 
+def test_no_credential_error_lists_the_ones_you_do_have():
+    """#157: a user holding credentials for other hosts used to read "add one" as the only advice."""
+    def handler(request):
+        if request.url.path == "/api/users/v1/self":
+            return httpx.Response(200, json={"user": {"id": "user-1"}})
+        if request.url.path == "/api/users/beta/credentials/user-1":
+            return httpx.Response(200, json={"credentials": [
+                {"id": "c1", "domain": "gitlab.com", "protocol": "https", "name": "work GitLab"},
+                {"id": "c2", "domain": "github.com", "protocol": "ssh", "name": "my key"},
+            ]})
+        raise AssertionError("should not POST without a credential")
+
+    try:
+        _cp(handler).create_project("X", git_url="https://github.com/me/sage-x.git")
+    except RuntimeError as e:
+        msg = str(e)
+        assert "work GitLab (gitlab.com)" in msg
+        assert "my key (github.com) [SSH]" in msg  # an SSH credential for the right host is still not one
+        assert "Add an HTTPS credential for github.com" in msg
+    else:
+        raise AssertionError("expected RuntimeError when no git credential matches")
+
+
+def test_rejected_credential_is_named_with_the_ones_not_tried():
+    """#157: Domino says a credential is invalid without saying which. The picker knows."""
+    def handler(request):
+        if request.url.path == "/api/users/v1/self":
+            return httpx.Response(200, json={"user": {"id": "user-1"}})
+        if request.url.path == "/api/users/beta/credentials/user-1":
+            return httpx.Response(200, json={"credentials": [
+                {"id": "cred-a", "domain": "github.com", "protocol": "https", "name": "old PAT"},
+                {"id": "cred-b", "domain": "github.com", "protocol": "https", "name": "new PAT"},
+            ]})
+        return httpx.Response(400, text='{"message":"git credential is not valid"}')
+
+    try:
+        _cp(handler).create_project("X", git_url="https://github.com/me/sage-x.git")
+    except RuntimeError as e:
+        msg = str(e)
+        assert "git credential is not valid" in msg   # Domino's own words, kept
+        assert "old PAT (github.com)" in msg          # the one that went out
+        assert "new PAT (github.com)" in msg          # the one that did not
+        assert "not tried" in msg
+    else:
+        raise AssertionError("expected RuntimeError when Domino rejects the credential")
+
+
+def test_unrelated_create_failure_gets_no_credential_note():
+    """The note is keyed on Domino blaming a credential — a bad-visibility error must stay clean."""
+    resp = httpx.Response(400, text='{"message":"bad visibility"}')
+    try:
+        _cp(_creds_handler(resp, {})).create_project("X", git_url="https://github.com/me/sage-x.git")
+    except RuntimeError as e:
+        assert "bad visibility" in str(e)
+        assert "Git credential" not in str(e)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
 def test_create_project_surfaces_error_body():
     resp = httpx.Response(400, text='{"message":"bad visibility"}')
     cp = _cp(_creds_handler(resp, {}))

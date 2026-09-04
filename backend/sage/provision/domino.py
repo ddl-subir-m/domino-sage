@@ -188,6 +188,8 @@ class DominoControlPlane:
         self._provider = git_service_provider
         self._git_host = git_host
         self._cred_id: str | None = None  # resolved lazily, then cached
+        self._cred_tried: str | None = None   # label of the credential the picker chose, and
+        self._cred_others: list[str] = []     # the ones it passed over — both for #157's error
         self._me: UserRef | None = None       # whoami's answer, and the token it answered for —
         self._me_for: str | None = None       # see whoami(): the token CAN change under us
         self._transport = transport
@@ -230,6 +232,52 @@ class DominoControlPlane:
             r = c.delete(f"{self._host}{path}", headers=self._headers())
         return self._check(r, "DELETE", path)
 
+    @staticmethod
+    def _cred_label(c: dict[str, Any]) -> str:
+        """Name a credential the way its owner sees it in Account Settings, so an error can be acted
+        on. Carries no secret: the list holds no token, and the fingerprint is left out because it
+        identifies nothing to a person reading an error."""
+        name = str(c.get("name") or "").strip()
+        domain = str(c.get("domain") or "").strip()
+        proto = str(c.get("protocol") or "https").strip().lower()
+        label = f"{name} ({domain})" if name and domain else (name or domain or str(c.get("id") or "unnamed"))
+        return label if proto == "https" else f"{label} [{proto.upper()}]"
+
+    def _no_credential_text(self, creds: list[dict[str, Any]]) -> str:
+        """Why nothing matched. "You have none" and "you have some, none for this host" are two
+        different problems with two different fixes, and the one text used to cover both (#157) told
+        a user holding three credentials to go add one."""
+        if not creds:
+            return brand.text(
+                "no HTTPS Git credential for {host} in your {platformName} account — "
+                "add one under Account Settings > Git Credentials, then try again",
+                host=self._git_host,
+            )
+        return brand.text(
+            "no HTTPS Git credential for {host} in your {platformName} account. You have: {have}. "
+            "Add an HTTPS credential for {host} under Account Settings > Git Credentials, then "
+            "try again",
+            host=self._git_host, have=", ".join(self._cred_label(c) for c in creds),
+        )
+
+    def _credential_note(self, err: str) -> str:
+        """What to add to a rejection that blamed the Git credential: which credential we sent, and
+        which ones we did not (#157). Domino wires a credential per repository, so a user holds
+        several for one host; its own text says one is invalid without saying which."""
+        if not self._cred_tried or "credential" not in err.lower():
+            return ""
+        note = brand.text(
+            " — the Git credential {assistantName} sent for {host} was {tried}",
+            host=self._git_host, tried=self._cred_tried,
+        )
+        if self._cred_others:
+            return note + brand.text(
+                ", and your other HTTPS credentials for {host} ({others}) were not tried. Check "
+                "that the credential above still has access to the repository",
+                host=self._git_host, others=", ".join(self._cred_others),
+            )
+        return note + ". Check that it still has access to the repository"
+
     def _git_credential_id(self) -> str:
         """Id of the caller's Domino git credential for `git_host` (cached). Domino validates repo
         access at project-create time, so a git-based project pointing at a private repo needs it."""
@@ -237,21 +285,18 @@ class DominoControlPlane:
             uid = (self._get("/api/users/v1/self").get("user") or {}).get("id")
             if not uid:
                 raise RuntimeError("could not resolve the calling user from /api/users/v1/self")
-            creds = self._get(f"/api/users/beta/credentials/{uid}").get("credentials") or []
-            match = next(
-                (c for c in creds if isinstance(c, dict) and c.get("domain") == self._git_host
-                 and (c.get("protocol") or "https") == "https"),
-                None,
-            )
-            if not match or not match.get("id"):
-                raise RuntimeError(
-                    brand.text(
-                        "no HTTPS Git credential for {host} in your {platformName} account — "
-                        "add one under Account Settings > Git Credentials, then try again",
-                        host=self._git_host,
-                    )
-                )
-            self._cred_id = str(match["id"])
+            creds = [c for c in (self._get(f"/api/users/beta/credentials/{uid}").get("credentials") or [])
+                     if isinstance(c, dict)]
+            for_host = [c for c in creds if c.get("domain") == self._git_host
+                        and (c.get("protocol") or "https") == "https" and c.get("id")]
+            if not for_host:
+                raise RuntimeError(self._no_credential_text(creds))
+            # First wins, unchanged. WHICH credential should win when several match is #157's open
+            # question and needs a live fact we do not have yet; all that is settled here is that a
+            # failure says which one went out.
+            self._cred_id = str(for_host[0]["id"])
+            self._cred_tried = self._cred_label(for_host[0])
+            self._cred_others = [self._cred_label(c) for c in for_host[1:]]
         return self._cred_id
 
     def create_project(
@@ -269,7 +314,15 @@ class DominoControlPlane:
                 "gitCredentialId": self._git_credential_id(),
             },
         }
-        data = self._post(_PROJECTS_PATH, body)
+        try:
+            data = self._post(_PROJECTS_PATH, body)
+        except RuntimeError as e:
+            # Domino tests the credential here, not at pick time — so this is the only place that
+            # can name the one it rejected. type(e) keeps NotFound a NotFound.
+            note = self._credential_note(str(e))
+            if not note:
+                raise
+            raise type(e)(f"{e}{note}") from e
         proj = data.get("project") if isinstance(data, dict) else None
         pid = (proj or {}).get("id")
         if not pid:
