@@ -178,14 +178,18 @@ def unsigned_tool_messages(model: object, messages: object) -> int:
     The predicate is per MESSAGE, not per call, and that distinction is the finding. Signing is a
     property of the model turn: Gemini puts one signature on the first call of a parallel batch and
     accepts the batch back unchanged, so a later call in the same message having none is normal and
-    must not be reported. A tool-call message whose first call is bare means a turn was taken apart
-    somewhere between the response and here, which is a hard 400 (verified live, #155).
+    must not be reported. A tool-call message whose first call is bare is the rejected shape, and it
+    has two live causes: history written by a model that does not sign at all (the common one — the
+    shim re-resolves the model per request, so a phase that ran on sonnet leaves `toolu_*` calls in
+    a session OpenCode believes is Gemini's), or a signed batch taken apart across messages.
 
     Counted only for Gemini — the one model on the gateway that signs at all. Every other alias
-    sends no signature ever, so applying this anywhere else would fire on every ordinary turn.
+    sends no signature ever, so applying this anywhere else would fire on every ordinary turn. The
+    asymmetry is one-directional: sonnet and gpt-5.4 both accept Gemini's `extra_content` back
+    unchanged (verified live), so only the Gemini-bound direction needs watching.
 
-    Two live data points back the rule, so treat it as a warning heuristic rather than a proof:
-    `[signed, bare]` in one message is accepted; `[signed]` then `[bare]` across two is rejected.
+    Reproduced end to end on 2026-09-04 (#155): plan on sonnet, then an implement turn on Gemini in
+    the same session, which returns the user's verbatim `default_api:bash` 400.
     """
     bare_model = str(model).rsplit("/", 1)[-1].lower()
     if "gemini" not in bare_model or not isinstance(messages, list):

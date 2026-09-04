@@ -712,9 +712,10 @@ def _gemini_shim(gw):
 
 
 def test_a_split_model_turn_bound_for_gemini_is_warned_about(caplog):
-    """A tool-call message starting with an unsigned call means a model turn was taken apart, which
-    Gemini rejects with an opaque "position 2" (verified live 2026-09-04, #155). Warning here is
-    what connects the rejection to its cause.
+    """A tool-call message starting with an unsigned call is what Gemini rejects, with an opaque
+    "position N" (verified live 2026-09-04, #155). Warning here is what connects the rejection to
+    its cause. This is the rarer of the two causes; see the foreign-history test below for the one
+    that actually reached a user.
 
     Driven through `handle` on purpose: the summary reads module state and the RESOLVED model, so a
     unit test of the pure helpers cannot catch a mis-wired call site — an earlier build of this had
@@ -727,7 +728,27 @@ def test_a_split_model_turn_bound_for_gemini_is_warned_about(caplog):
              "messages": [{"role": "user", "content": "go"}, _batch("sig-a"), _batch(None)]},
             project="p"))
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
-    assert any("1 of 2 tool-call message(s)" in m and "taken apart" in m for m in warnings), warnings
+    assert any("1 of 2 tool-call message(s)" in m and "no thought_signature" in m
+               for m in warnings), warnings
+
+
+def test_history_from_a_model_that_does_not_sign_is_warned_about(caplog):
+    """The cause that reached a user, reproduced end to end on 2026-09-04 (#155).
+
+    The shim re-resolves the model per request, so an auto-plan turn runs on sonnet while OpenCode
+    keeps one session and believes it is all Gemini. The implement turn then replays sonnet's
+    `toolu_*` tool calls — unsigned, every one — to Gemini, which rejects the whole request with the
+    user's verbatim `default_api:bash` 400. Nothing was split; the history simply came from a model
+    that never signs.
+    """
+    gw = FakeGatewayClient()
+    with caplog.at_level("WARNING", logger="sage.shim"):
+        list(_gemini_shim(gw).handle(
+            {"model": "gemini-3.7-flash",
+             "messages": [{"role": "user", "content": "go"}, _batch(None), _batch(None)]},
+            project="p"))
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("2 of 2 tool-call message(s)" in m for m in warnings), warnings
 
 
 def test_a_healthy_gemini_parallel_batch_is_not_warned_about(caplog):
@@ -739,7 +760,7 @@ def test_a_healthy_gemini_parallel_batch_is_not_warned_about(caplog):
             {"model": "gemini-3.7-flash",
              "messages": [{"role": "user", "content": "go"}, _batch("sig-a", None, None)]},
             project="p"))
-    assert not [r for r in caplog.records if "taken apart" in r.getMessage()]
+    assert not [r for r in caplog.records if "no thought_signature" in r.getMessage()]
 
 
 def test_an_ordinary_model_is_never_warned_about(caplog):
@@ -749,7 +770,7 @@ def test_an_ordinary_model_is_never_warned_about(caplog):
     with caplog.at_level("WARNING", logger="sage.shim"):
         list(_shim(control, gw).handle(
             {"model": "cheap-vendor", "messages": [_batch(None), _batch(None)]}, project="p"))
-    assert not [r for r in caplog.records if "taken apart" in r.getMessage()]
+    assert not [r for r in caplog.records if "no thought_signature" in r.getMessage()]
 
 
 def test_the_outgoing_listing_only_appears_with_debug_stream_on(caplog, monkeypatch):

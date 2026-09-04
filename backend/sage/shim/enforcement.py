@@ -343,9 +343,10 @@ class EnforcementShim:
             gap = ka.unsigned_tool_messages(request["model"], request.get("messages"))
             if gap:
                 log.warning(
-                    "%d of %d tool-call message(s) bound for %s start with an unsigned call — a "
-                    "model turn was taken apart and %s will reject this (see #155). Turn on "
-                    "POST /api/diag/debug-stream to see the grouping.",
+                    "%d of %d tool-call message(s) bound for %s carry no thought_signature, so %s "
+                    "will reject this whole request (see #155). Usually this history was written by "
+                    "a model that does not sign — check the model policy lines above for a phase "
+                    "that resolved elsewhere. Turn on POST /api/diag/debug-stream for the grouping.",
                     gap, len(sig_entries), request["model"], request["model"],
                 )
 
