@@ -1317,11 +1317,20 @@ def list_resources() -> JSONResponse:
         "data_sources": orchestrator.list_data_sources,
     }
     body: dict = {"errors": {}}
+    # TEMPORARY (#160). The three kinds run serially here, so the only way to know whether
+    # parallelising this loop is worth it — or whether one kind owns the whole cost — is three
+    # numbers. Logged to the sage.* ring rather than a new route: /api/diag/log?q=perf: already
+    # reads it from a browser, and the deployed builder has no shell. Remove once #160 picks a fix.
+    whole = time.monotonic()
     for key, listing in kinds.items():
+        started = time.monotonic()
         try:
             body[key] = listing()
         except ResourceUnavailable as e:
             body[key], body["errors"][key] = [], str(e)
+        log.info("perf: /api/resources kind=%s %.2fs n=%d%s", key, time.monotonic() - started,
+                 len(body.get(key) or []), " ERRORED" if key in body["errors"] else "")
+    log.info("perf: /api/resources total %.2fs", time.monotonic() - whole)
     return JSONResponse(content=body)
 
 

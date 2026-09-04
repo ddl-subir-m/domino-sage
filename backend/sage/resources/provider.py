@@ -50,13 +50,19 @@ Two adapters, as with assets:
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from ..orchestrator import brand
 from ..router.models import reasoning_efforts_for as name_reasoning_efforts
+
+# TEMPORARY (#160). Under sage.* so the ring handler in orchestrator/app.py picks it up and
+# /api/diag/log?q=perf: can read it without a shell. Remove with the perf: lines below.
+_log = logging.getLogger("sage.resources")
 
 
 def _platform_api() -> str:
@@ -1104,17 +1110,30 @@ class DominoResourceProvider:
             ))
         out: list[ModelApi] = []
         seen: set[str] = set()
+        # TEMPORARY (#160). len(pairs) is the number that decides the whole ticket: this fan-out is
+        # capped at _MAX_FANOUT_PROJECTS + home, so a creator on 3 projects and one on 26 are two
+        # different bugs with two different fixes. Logged before the loop so it survives the home
+        # project raising. Remove once #160 picks a fix.
+        _log.info("perf: model_apis fan-out over %d project(s), cap %d",
+                  len(pairs), self._MAX_FANOUT_PROJECTS + 1)
+        fan = time.monotonic()
         for pid, pname in pairs:
+            started = time.monotonic()
             try:
                 rows = self._model_apis_in(pid, pname)
             except ResourceUnavailable:
                 if pid == home_id:
                     raise
                 continue
+            finally:
+                _log.info("perf: model_apis project=%s %.2fs", pname or pid,
+                          time.monotonic() - started)
             for m in rows:
                 if m.id not in seen:
                     seen.add(m.id)
                     out.append(m)
+        _log.info("perf: model_apis fan-out total %.2fs -> %d model(s)",
+                  time.monotonic() - fan, len(out))
         return out
 
     def get_model_api(self, model_api_id: str) -> ModelApi | None:
