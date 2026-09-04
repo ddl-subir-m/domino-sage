@@ -19,6 +19,11 @@
 //   unreadable — the listing READ itself faults, so the store writes a synthetic listing that names
 //                no kind and holds no groups, and a working-set change re-applies it.
 //   unbind     — the app that made a dead row stuck gives the Binding back.
+//   reload     — a same-scope `loadScopeData`, which an attach or a promote fires, lands over a
+//                rail that already carries its marks.
+//   renamed    — `/api/aliases` answers with no records, so every Alias comes back keyed on its
+//                bare name instead of its id.
+//   deadapp    — the app the stuck row points at is gone, so selecting it fails.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -39,8 +44,8 @@ const MEMBERS = [
   { id: 'dataset:d9', name: 'Retired rows', kind: 'dataset' },
   { id: 'data_source:s1', name: 'Warehouse', kind: 'datasource', pins: [PIN] },
   { id: 'data_source:s9', name: 'Old warehouse', kind: 'datasource', pins: [OLD_PIN] },
-  { id: 'llm_alias:m1', name: 'Risk scorer', kind: 'model_llm' },
-  { id: 'llm_alias:m9', name: 'Retired scorer', kind: 'model_llm' },
+  { id: 'llm_alias:m1', name: 'Risk scorer', kind: 'model_llm', alias: 'risk-scorer' },
+  { id: 'llm_alias:m9', name: 'Retired scorer', kind: 'model_llm', alias: 'retired-scorer' },
   // Absent from a listing that answers 200 with no error, and it must STILL not be marked: the
   // fan-out behind `list_model_apis` skips a member project that fails and stops at twenty-five,
   // so absence in this kind is not evidence of anything (ADR-0034).
@@ -56,9 +61,14 @@ const MEMBERS = [
 const ASSETS = { assets: [{ id: 'd1', name: 'Sales rows', project: 'retail' }] };
 const RESOURCES = {
   data_sources: [{ id: 's1', name: 'Warehouse', connector: 'snowflake' }],
+  // `renamed` is `join_aliases` with no metadata record to key on: `/api/aliases` answered 200 with
+  // nothing in it, so the accessible id becomes the row's id AND its name. Nothing raises, so the
+  // kind still reports success — which is what makes it dangerous.
   llm_aliases: act === 'errored'
     ? []
-    : [{ id: 'm1', name: 'risk-scorer', display_name: 'Risk scorer' }],
+    : act === 'renamed'
+      ? [{ id: 'risk-scorer', name: 'risk-scorer', display_name: 'risk-scorer' }]
+      : [{ id: 'm1', name: 'risk-scorer', display_name: 'Risk scorer' }],
   model_apis: [],
   // A leg that refused answers with an error string and no rows. The rail keeps its two membership
   // rows either way — membership is a different read — so this is the case the group head exists
@@ -92,6 +102,10 @@ function serve(url, init) {
   }
   if (path === '/project') return { attached: [], scratch: [] };
   if (path === '/apps') return { items: [APP] };
+  if (path.endsWith('/select')) {
+    if (act === 'deadapp') throw new Error('That app is gone.');
+    return { ok: true };
+  }
   if (path === '/bindings') return { bindings: [] };
   if (path === '/members') {
     return { members: [], directory: [], ownerId: '', self: '', connected: true };
@@ -121,6 +135,9 @@ function hookState(init) {
 // Where a navigation lands. The stuck row's act is a route, so this is what it has to be read off.
 const routes = [];
 
+// Every toast the creator would have seen, in order.
+const notices = [];
+
 // The confirm an unbind opens. Held so the harness can press Remove, which is where the act is.
 let confirmed = null;
 
@@ -136,7 +153,17 @@ const sandbox = {
       await new Promise(() => {});
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const body = serve(url, init);
+    let body;
+    try {
+      body = serve(url, init);
+    } catch (err) {
+      return {
+        ok: false, status: 404, statusText: 'Not Found',
+        headers: { get: () => 'application/json' },
+        json: async () => ({ error: err.message }),
+        text: async () => JSON.stringify({ error: err.message }),
+      };
+    }
     return {
       ok: true, status: 200, statusText: 'OK',
       headers: { get: () => 'application/json' },
@@ -167,7 +194,12 @@ const sandbox = {
     Modal: Object.assign(function Modal() {}, {
       confirm: (opts) => { confirmed = opts; }, info: () => {},
     }),
-    message: { info: () => {}, success: () => {}, error: () => {}, warning: () => {} },
+    message: {
+      info: (text) => { notices.push(`info: ${text}`); },
+      success: () => {},
+      error: (text) => { notices.push(`error: ${text}`); },
+      warning: (text) => { notices.push(`warning: ${text}`); },
+    },
   },
   icons: new Proxy({}, { get: (_, name) => String(name) }),
   EventSource: function () {},
@@ -268,6 +300,22 @@ if (act === 'unbind') {
   await settle();
 }
 
+// A same-scope reload, which an attach to the app or a promote of a scratch file fires. The listing
+// is deliberately kept across it, so the marks on screen must survive the membership write it makes
+// — a mark that blinks out for the length of a deferred read and comes back is the flicker #159
+// exists to remove, told here as a fact about liveness rather than about rows.
+let duringReload = null;
+if (act === 'reload') {
+  const stop = SW.store.subscribe(() => {
+    const seen = railRows(panel()).filter((r) => r.mark).length;
+    duringReload = duringReload === null ? seen : Math.min(duringReload, seen);
+  });
+  // Exposed as `reloadScopeData`, which is the handle the attach and promote paths reach it by.
+  await SW.store.reloadScopeData();
+  await settle();
+  if (typeof stop === 'function') stop();
+}
+
 const nodes = panel();
 const rows = railRows(nodes);
 
@@ -312,6 +360,8 @@ const report = {
   mentionLive: mentionRows('Sales'),
   // Every write that left the browser. Liveness is computed on read and must reach none of them.
   writes: requests.filter((r) => !r.startsWith('GET ')),
+  // The fewest marked rows any frame of a same-scope reload showed. A dip to zero is the blink.
+  duringReload,
 };
 
 // The stuck row: gone from Domino, still bound. Its removal must be the app's, and pressing it must
@@ -328,5 +378,6 @@ if (stuck) {
   }
 }
 report.routes = routes;
+report.notices = notices;
 
 console.log(JSON.stringify(report));

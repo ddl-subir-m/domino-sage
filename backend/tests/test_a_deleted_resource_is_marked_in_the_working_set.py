@@ -187,6 +187,58 @@ def test_a_missing_row_an_app_still_binds_points_at_the_apps_own_door():
     assert report["freeRemovals"] == ["Remove from quick-start"]
 
 
+def test_a_same_scope_reload_does_not_blink_the_marks_off():
+    """`loadScopeData` is not only the project switch.
+
+    An attach to the app, a part-finished detach and a promote all call it, and on those the listing
+    is deliberately kept — so the membership it writes has something to be stamped against. Without
+    that stamp every mark and every group note would vanish for the length of the deferred platform
+    read, measured at 2.5-3.3 s, and then come back. A rail that says a Resource is fine and then
+    changes its mind is worse than one that never checked.
+    """
+    report = _act("reload")
+    assert report["duringReload"] == 4, "no frame of the reload showed fewer marked rows"
+    assert _marks(report)["Retired rows"] == "not in Domino"
+
+
+def test_an_alias_is_matched_on_its_name_as_well_as_its_id():
+    """The language-model kind does not have a stable id space, and nothing raises when it shifts.
+
+    `join_aliases` keys a row on the metadata record's id when `/api/aliases` has one and on the
+    BARE NAME when it does not — and a gateway answering 200 with no records raises nothing, so the
+    kind still reports success while every id in it has changed shape. Matched on ids alone, one
+    empty answer would mark every language model in the project dead at once.
+    """
+    report = _act("renamed")
+    assert report["liveness"]["Risk scorer"] == "live"
+    assert _marks(report)["Risk scorer"] is None
+    # And the row that really is gone is still called gone: the widening must not save everything.
+    assert _marks(report)["Retired scorer"] == "not in Domino"
+
+
+def test_the_stuck_rows_door_says_where_it_took_you():
+    """It is labelled like a removal and styled like one, and pressing it moves you instead.
+
+    That is the right label — it is what the 409 names and what ADR-0011 makes the app's act — but a
+    destructive-looking control that silently teleports the creator into Build owes them the
+    sentence saying why they are there.
+    """
+    report = _act("listed")
+    assert report["routes"] == ["#/build/conv_1?app=app_a"]
+    assert "info: Take it out of Sales trends in the list of what this app uses." in report["notices"]
+
+
+def test_a_door_onto_an_app_that_is_gone_does_not_open():
+    """`selectApp` swallows its own failure: it warns and hands back the app already selected.
+
+    Routing anyway would put a dead id in `?app=`, and BuildMode's effect would ask for it again and
+    warn a second time over a page still showing the old app. One warning, and no move.
+    """
+    report = _act("deadapp")
+    assert report["routes"] == []
+    assert len([n for n in report["notices"] if n.startswith("warning:")]) == 1
+
+
 def test_liveness_is_computed_on_read_and_never_written_down():
     """The `usedBy` precedent, and for the same reason: a stored copy is wrong the moment anybody
     deletes anything.

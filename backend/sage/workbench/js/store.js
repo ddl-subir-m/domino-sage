@@ -561,9 +561,19 @@ window.SW = window.SW || {};
       const checkable = CHECKABLE_KINDS.indexOf(kind) !== -1
         && Array.isArray(group)
         && !(listing.errors || {})[SW.api.LISTING_ERROR_KEY[kind]];
-      const held = new Set((group || []).map((r) => r.id));
+      // An Alias is matched on its id OR its name, because that kind's id space is not stable.
+      // `join_aliases` keys a row on the record's id when `/api/aliases` has a record for it and on
+      // the BARE NAME when it does not — and a gateway answering 200 with no records raises nothing,
+      // so the kind still reads as checkable while every id in it has just changed shape. On ids
+      // alone that would mark every language model in the project dead at once, which is the false
+      // death this whole function is arranged to avoid. Both halves are carried on both sides: the
+      // membership row keeps `alias`, and the listing row sets it from the gateway's name.
+      const held = new Set(
+        (group || []).flatMap((r) => [r.id, r.alias]).filter(Boolean)
+      );
       next[kind] = (groups[kind] || []).map((row) => {
-        const liveness = !checkable ? 'unchecked' : (held.has(row.id) ? 'live' : 'missing');
+        const known = held.has(row.id) || (!!row.alias && held.has(row.alias));
+        const liveness = !checkable ? 'unchecked' : (known ? 'live' : 'missing');
         byParent[row.id] = liveness;
         return { ...row, liveness };
       });
@@ -643,6 +653,13 @@ window.SW = window.SW || {};
       state.resourceListing = null;
       state.catalogueParents = [];
     }
+    // The membership written above is unstamped, and on a SAME-scope reload the listing to stamp it
+    // against is still in hand — kept deliberately, three lines up. This load is not only the
+    // project switch: an attach, a part-finished detach and a promote all call it, and without this
+    // every `missing` mark and every group note would vanish for the length of the deferred read
+    // below — 2.5-3.3 s on a real deployment — and then come back. The same re-apply
+    // `refreshWorkingSet` ends on, for the same reason (#161).
+    if (state.resourceListing) applyListing(state.resourceListing);
     state.resourcesLoading = false;
     state.activity = activity;
     notify();
@@ -2762,17 +2779,20 @@ window.SW = window.SW || {};
     // selection lands on somebody else's Bindings.
     async openAppBindings(appId) {
       if (!appId) return;
-      // `selectApp` returns early when the app is already selected, and the route written below is
-      // then the one already in the bar — so a creator looking at that app would click and watch
-      // nothing move. The list they need is on screen; say where rather than leave the act looking
-      // broken.
-      const alreadyThere = (state.activeApp || {}).id === appId
-        && SW.router.get().mode === 'build';
-      await store.selectApp({ id: appId });
+      // `selectApp` swallows its own failure: it warns and hands back the app that was already
+      // selected. Routing anyway would put a dead app id in `?app=`, and BuildMode's effect would
+      // ask for it again and warn a second time over a page still showing the old app. So the
+      // navigation is gated on the select having actually landed — the warning is already on
+      // screen, and one is enough.
+      const selected = await store.selectApp({ id: appId });
+      if (!selected || selected.id !== appId) return false;
       SW.router.go(SW.appRoute({ id: appId }));
-      if (alreadyThere) {
-        antd.message.info(`Take it out of ${appScopeName()} in the list of what this app uses.`);
-      }
+      // Said on arrival, always. The row this came from is styled as a removal and labelled with a
+      // removal's words, because that is what the 409 names and what ADR-0011 makes the app's act —
+      // but pressing it moves the creator rather than removing anything, and a destructive-looking
+      // control that silently teleports you owes you the sentence saying why you are here.
+      antd.message.info(`Take it out of ${appScopeName()} in the list of what this app uses.`);
+      return true;
     },
 
     async removeFromProject(resource) {
