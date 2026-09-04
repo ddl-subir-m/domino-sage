@@ -551,10 +551,10 @@ def test_the_agents_block_is_rewritten_once_and_stops_naming_what_left(tmp_path:
 
 
 def test_a_dataset_that_lost_its_mount_can_still_have_its_folder_removed(tmp_path: Path):
-    """Bulk ATTACH is offered only where the size is knowable, because the cap has to be
-    pre-flighted and the confirmation has to show real numbers. Removal has no cap and no numbers
-    to find — every path and size it acts on is in the app's own manifest — so a Dataset that is
-    no longer mounted, or whose listing is now truncated, does not strand what it already gave."""
+    """Bulk ATTACH needs the Dataset: a mount to fetch the folder from, and a whole listing to
+    pre-flight the cap against. Removal needs none of it — every path and size it acts on is in the
+    app's own manifest — so a Dataset that is no longer mounted, or whose listing is now truncated,
+    does not strand what it already gave."""
     orch, ds, _ = _ready(tmp_path)
     orch._assets.assets = [
         a.__class__(id=a.id, name=a.name, tags=a.tags, project=a.project, mount_path=None)

@@ -2997,8 +2997,8 @@ window.SW = window.SW || {};
     //
     // It names a COUNT and no size. The attach half shows both because the cap is what its numbers
     // are for — it is the thing that decides whether the act can succeed — and no cap decides a
-    // removal. A size here would be decoration that can also be wrong, since a Dataset with no
-    // mount reports every file as 0 bytes and the removal is offered on one anyway.
+    // removal. A size here would be decoration, and this row is offered over files the app carries
+    // rather than over a listing, so it has no size of its own to quote anyway.
     //
     // The app is captured where the question is asked and checked again before the act, exactly as
     // the attach does it: a modal can sit open for as long as somebody leaves it there.

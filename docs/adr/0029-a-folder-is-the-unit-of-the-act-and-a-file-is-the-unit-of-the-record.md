@@ -121,16 +121,18 @@ exists and then hides most of them, which is worse than either honest option.
 ## Bulk is offered only where the size is knowable
 
 A Dataset this container has no mount for is readable — that is how a Dataset shared from another
-Project is attachable at all — but every file comes down through `_download_attachment`, serially,
-and the API listing **carries no sizes**, so those files report 0 (`provider.py:337`).
+Project is attachable at all — but every file comes down through `_download_attachment`, one at a
+time, and nothing reports how far along an unbounded serial download is.
 
-That breaks both halves of this ADR at once: the subtree cannot be measured, so the cap cannot be
-pre-flighted and the confirmation has no numbers to show. So the folder act is offered on mounted
-Datasets only. An unmounted folder row says why it is unavailable, and per-file attach stays there
-untouched.
+So the folder act is offered on mounted Datasets only. An unmounted folder row says why it is
+unavailable, and per-file attach stays there untouched.
 
-This closes cleanly rather than by exception: `walk_files` stats every file on a mount, so wherever
-the act is offered the count and the size are always real.
+**Corrected 2026-09-04 (#153).** This section also said the API listing "carries no sizes, so those
+files report 0", and gave that as a second, independent reason. It was true of the endpoint the
+`domino_data` SDK called and false of the platform: `datasetrw/snapshot/{id}/files/recursive`
+carries a byte size per file, and `list_files` now reads it, so an unmounted listing is measurable
+after all. **The decision above is unaffected** — the serial download is the reason that survives,
+and it was always sufficient on its own. Do not read the missing sizes back into this section.
 
 Rejected: **offer it there too, streamed, with progress.** That is a second feature — a progress
 channel that does not exist and an unbounded serial download — wearing the same button.

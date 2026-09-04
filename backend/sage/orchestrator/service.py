@@ -509,15 +509,13 @@ class AttachTooLarge(Exception):
 
 
 class FolderActUnavailable(Exception):
-    """The folder act cannot be offered for this Dataset, because a subtree cannot be measured.
+    """The folder act cannot be offered for this Dataset. Two causes, one refusal (ADR-0029):
 
-    Both causes break the same two halves of ADR-0029 at once — the cap cannot be pre-flighted and
-    the confirmation has no numbers to show — so both refuse rather than attach on a guess:
-
-      * a Dataset this container has no mount for is read through the Domino data library, whose
-        listing carries no sizes, so every file reports 0 (`provider.py`);
+      * a Dataset this container has no mount for has to be fetched a file at a time through
+        `_download_attachment`, with nothing to report an unbounded serial download through;
       * a truncated listing is a sorted prefix, so early folders are whole and late ones are cut
-        or absent with nothing downstream able to tell which.
+        or absent with nothing downstream able to tell which, so the cap cannot be pre-flighted
+        and the confirmation has no numbers to show.
 
     `reason` is composed here rather than at the two ends, so the sentence the row draws before the
     click and the sentence the refusal carries after it are the same sentence.
@@ -10020,9 +10018,13 @@ class Orchestrator:
                 "folders in it are whole. Attach the files you need one at a time."
             )
         if not asset.mount_path:
+            # Not "cannot measure it": since #153 the sizes are known here. What is still missing is
+            # a way to fetch a folder — every file comes down separately through
+            # `_download_attachment`, with nothing to report progress through (ADR-0029).
             return brand.text(
-                "This {dataset} isn't mounted in this workspace, so {assistantName} cannot measure "
-                "a folder in it before attaching it. Attach the files you need one at a time."
+                "This {dataset} isn't mounted in this workspace, so {assistantName} would have to "
+                "fetch a folder from it one file at a time, with no way to show progress. Attach "
+                "the files you need instead."
             )
         return ""
 
@@ -10065,9 +10067,9 @@ class Orchestrator:
                              prune_root: Path) -> int:
         """Fetch one file from a Dataset this container has no mount for. Returns its size.
 
-        The API listing carries no sizes, so the cap can only be enforced against real bytes: the
-        download lands beside its destination and is moved into place once it fits, and is deleted
-        when it does not. A partial or over-cap download never becomes an attachment — and never
+        The cap is enforced against the bytes that actually arrived, not the size the listing
+        quoted: the download lands beside its destination and is moved into place once it fits, and
+        is deleted when it does not. A partial or over-cap download never becomes an attachment — and never
         leaves the directories it needed behind either, so a refused attach is invisible in the
         tree the preview serves.
         """

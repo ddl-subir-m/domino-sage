@@ -83,89 +83,94 @@ def test_what_the_walk_would_have_skipped_anyway_does_not_read_as_truncation(tmp
 # --- the provider --------------------------------------------------------------------------
 
 
-class _Dataset:
-    def __init__(self, names):
-        self._names = names
-        self.asked_for = None
+def _api(monkeypatch, paths):
+    """Answer the two `/v4` GETs a listing makes: one snapshot, then a row per named file.
 
-    def list_files(self, page_size):
-        from types import SimpleNamespace
+    Rows are handed over UNSORTED where a test says so, because `files/recursive` does not promise
+    an order and the cap has to take the sorted prefix.
+    """
+    import httpx
 
-        self.asked_for = page_size
-        return [SimpleNamespace(name=n) for n in self._names][:page_size]
+    def get(url, **kw):
+        if "/files/recursive" not in url:
+            return httpx.Response(200, json=[{"id": "s1", "version": 0,
+                                              "lifecycleStatus": "Active"}])
+        return httpx.Response(200, json={"rows": [
+            {"name": {"isDirectory": False, "label": p.rsplit("/", 1)[-1], "fileName": p},
+             "size": {"sizeInBytes": 1}, "lastModified": 1} for p in paths]})
 
-
-class _Client:
-    def __init__(self, dataset):
-        self._dataset = dataset
-
-    def get_dataset(self, unique_name):
-        return self._dataset
-
-
-def _provider(names, dataset=None):
-    return DominoAssetProvider("http://domino", lambda: "t", mount_roots=[],
-                               dataset_client=_Client(dataset or _Dataset(names)))
+    monkeypatch.setattr(httpx, "get", get)
+    return DominoAssetProvider("http://domino", lambda: "t", mount_roots=[])
 
 
-def test_an_unmounted_listing_asks_the_data_library_for_one_more_than_it_will_show(monkeypatch):
-    """The flag has to be reachable, and the SDK's own default puts it out of reach.
+def test_an_unmounted_listing_that_overflows_the_cap_reports_the_sorted_prefix(monkeypatch):
+    """The whole tree arrives in one response, so the cut and the flag are both decided here.
 
-    `domino_data`'s `list_files()` takes `page_size=1000` and makes ONE request with no
-    continuation, so a listing left to that default can never exceed a 5,000 cap: `truncated` would
-    be dead code, and a 3,000-file Dataset would come back as 1,000 files claiming to be all of
-    them. One more than the cap is asked for, because a page that comes back full is the only
-    evidence there is more behind it.
+    `files/recursive` takes no `page_size` and returns no continuation token, so unlike the paged
+    SDK listing this replaced, the real count is in hand before anything is dropped — `truncated`
+    is read off it rather than inferred from a page that came back full.
     """
     monkeypatch.setattr(assets, "_MAX_FILES", 3)
-    dataset = _Dataset([f"raw/f{i}.csv" for i in range(7)])
-    listing = _provider(None, dataset).list_files(Asset(id="i1", name="ds"))
+    provider = _api(monkeypatch, ["late/f3.csv", "early/f1.csv", "late/f4.csv", "early/f2.csv",
+                                  "early/f0.csv"])
+    listing = provider.list_files(Asset(id="i1", name="ds"))
 
-    assert dataset.asked_for == 4
-    assert [f.path for f in listing.files] == ["raw/f0.csv", "raw/f1.csv", "raw/f2.csv"]
+    assert [f.path for f in listing.files] == ["early/f0.csv", "early/f1.csv", "early/f2.csv"]
     assert listing.truncated is True
 
 
-def test_an_unmounted_listing_that_the_library_did_not_fill_is_complete(monkeypatch):
-    """Fewer names than were asked for is the end of the list, so it is whole."""
+def test_an_unmounted_listing_that_exactly_fills_the_cap_is_not_truncated(monkeypatch):
+    """The same boundary the walk has: full is not the same as cut."""
     monkeypatch.setattr(assets, "_MAX_FILES", 3)
-    dataset = _Dataset(["raw/f0.csv", "raw/f1.csv", "raw/f2.csv"])
-    listing = _provider(None, dataset).list_files(Asset(id="i1", name="ds"))
+    listing = _api(monkeypatch, ["a.csv", "b.csv", "c.csv"]).list_files(Asset(id="i1", name="ds"))
 
-    assert dataset.asked_for == 4
     assert len(listing.files) == 3
     assert listing.truncated is False
 
 
 def test_an_unmounted_listing_that_fits_is_not_truncated(monkeypatch):
     monkeypatch.setattr(assets, "_MAX_FILES", 3)
-    listing = _provider(["raw/f0.csv", "", "raw/f1.csv"]).list_files(Asset(id="i1", name="ds"))
+    listing = _api(monkeypatch, ["raw/f0.csv", "raw/f1.csv"]).list_files(Asset(id="i1", name="ds"))
 
     assert [f.path for f in listing.files] == ["raw/f0.csv", "raw/f1.csv"]
     assert listing.truncated is False
 
 
-def test_a_blank_name_in_the_extra_page_does_not_hide_the_cut(monkeypatch):
-    """The evidence is the page coming back FULL, so it is counted before our own filter runs.
+def test_a_directory_row_does_not_count_toward_the_cut(monkeypatch):
+    """Directories arrive as rows too, and counting them would report a cut that never happened.
 
-    The `if n` filter exists because the library is expected to hand back an empty name now and
-    then. Measured after it, one blank in the last page drops the count back to the cap and a
-    Dataset with more files than Sage can list reports itself complete — the silence this whole
-    change is here to end, reintroduced one name from the boundary.
+    Three files and two folders under a cap of 3 is a complete listing. Counted before the folders
+    are dropped, it claims to have lost a tail that does not exist, and ADR-0029 then refuses a
+    folder act over a Dataset it could have described in full.
     """
     monkeypatch.setattr(assets, "_MAX_FILES", 3)
-    listing = _provider(["raw/f0.csv", "raw/f1.csv", "", "raw/f2.csv"]).list_files(
+    import httpx
+
+    def get(url, **kw):
+        if "/files/recursive" not in url:
+            return httpx.Response(200, json=[{"id": "s1", "version": 0,
+                                              "lifecycleStatus": "Active"}])
+        rows = []
+        for p, is_dir in [("early", True), ("early/f0.csv", False), ("early/f1.csv", False),
+                          ("late", True), ("late/f2.csv", False)]:
+            rows.append({"name": {"isDirectory": is_dir, "label": p.rsplit("/", 1)[-1],
+                                  "fileName": p},
+                         "size": {"sizeInBytes": None if is_dir else 1}, "lastModified": 1})
+        return httpx.Response(200, json={"rows": rows})
+
+    monkeypatch.setattr(httpx, "get", get)
+    listing = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[]).list_files(
         Asset(id="i1", name="ds"))
 
-    assert [f.path for f in listing.files] == ["raw/f0.csv", "raw/f1.csv", "raw/f2.csv"]
-    assert listing.truncated is True
+    assert [f.path for f in listing.files] == ["early/f0.csv", "early/f1.csv", "late/f2.csv"]
+    assert listing.truncated is False
 
 
 def test_a_mounted_dataset_reports_the_walks_own_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(assets, "_MAX_FILES", 2)
     asset = Asset(id="i1", name="ds", mount_path=str(_mount(tmp_path, 5)))
 
-    assert _provider(["should-not-be-used"]).list_files(asset).truncated is True
+    assert _api(monkeypatch, ["should-not-be-used"]).list_files(asset).truncated is True
     assert FakeAssetProvider().list_files(asset).truncated is True
 
 

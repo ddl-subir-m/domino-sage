@@ -109,9 +109,10 @@ window.SW = window.SW || {};
 
   // The numbers a folder row carries, and the act they are there for.
   //
-  // The size is drawn only when there is one to draw. A Dataset this container has no mount for is
-  // listed through the Domino data library, whose listing carries no sizes at all, so every file in
-  // it reports 0 — and "0 B" beside 43 files is a measurement, not a missing one.
+  // The size is drawn only when there is one to draw, because "0 B" beside 43 files is a wrong
+  // measurement, not a missing one. That used to be the normal case for a Dataset this container
+  // has no mount for; since #153 those rows carry real sizes too, so only a folder of genuinely
+  // empty files takes this branch.
   //
   // The act is a link rather than a menu, for the reason `LeafRow` beside it is: this is the one
   // row in the tree that acts on more than one file, and hiding it behind a second click would

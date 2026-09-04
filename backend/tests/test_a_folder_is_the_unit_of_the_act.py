@@ -356,8 +356,9 @@ def test_one_constant_governs_the_collapse(tmp_path: Path, monkeypatch):
 
 
 def test_an_unmounted_dataset_refuses_the_folder_act_with_a_reason(tmp_path: Path):
-    """Every file would come down through `_download_attachment`, serially, and the API listing
-    carries no sizes — so the subtree cannot be measured and the cap cannot be pre-flighted."""
+    """Every file would come down through `_download_attachment`, one at a time, with nothing to
+    report an unbounded serial download through. (The sizes ARE known here since #153; that was the
+    second reason ADR-0029 gave, and this one is the reason that survived it.)"""
     orch = _orch(tmp_path, _Unmounted())
     orch.project(start_preview=False)
 

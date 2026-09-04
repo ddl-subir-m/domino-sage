@@ -1,6 +1,5 @@
 """Asset provider — tags, snapshots (Step 6), and reading a Dataset with no mount."""
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -55,12 +54,10 @@ def test_dataset_unique_name_carries_both_halves():
 
 
 class _FakeDataset:
-    def __init__(self, names):
-        self._names = names
-        self.downloaded = []
+    """The `domino_data` handle, which is now only what `download_file` reads a file through."""
 
-    def list_files(self, page_size):
-        return [SimpleNamespace(name=n) for n in self._names][:page_size]
+    def __init__(self):
+        self.downloaded = []
 
     def download_file(self, rel, local):
         self.downloaded.append((rel, local))
@@ -77,48 +74,193 @@ class _FakeDatasetClient:
         return self._dataset
 
 
-def _provider(client):
+def _provider(client=None):
     # mount_roots deliberately empty: this is the case the rail used to call unreadable.
     return DominoAssetProvider("http://domino", lambda: "t", mount_roots=[], dataset_client=client)
 
 
-def test_unmounted_dataset_lists_its_files_through_the_data_library():
-    client = _FakeDatasetClient(_FakeDataset(["raw/train.csv", "notes.md"]))
-    files = _provider(client).list_files(Asset(id="i1", name="shared_ds")).files
-    assert [f.path for f in files] == ["raw/train.csv", "notes.md"]
-    # The API listing carries no sizes; 0 means "not known from here", not "empty".
-    assert [f.size for f in files] == [0, 0]
-    # Both halves of the identifier, or Domino rejects the lookup.
-    assert client.asked == ["dataset-shared_ds-i1"]
+# --- the datasetrw file listing (#153) ----------------------------------------------------------
+#
+# Every shape below was probed against a live deployment on 2026-09-04, and three of them are not
+# what the swagger schema reads like at a glance: `name` and `size` are objects rather than a
+# string and a number, directories arrive as rows, and `fileName` — not `label` — is the path.
 
 
-def test_a_mounted_dataset_still_reads_from_disk(tmp_path):
-    # The mount stays a fast path: no data-library call when the files are already here.
+def _snapshot(sid, version, status="Active"):
+    """A `DatasetRwSnapshotDto`. `storageSize` is deliberately wrong-looking: the live one is stale
+    (469 for a snapshot whose two files total 1409 bytes), so nothing may read a total off it."""
+    return {"id": sid, "datasetId": "i1", "version": version, "lifecycleStatus": status,
+            "storageSize": 469, "isPartialSize": False, "isReadWrite": True}
+
+
+def _row(file_name, size_in_bytes, is_directory=False):
+    """A `DatasetRwFileDetailsRowDto` as the deployment really sends it."""
+    return {"name": {"isDirectory": is_directory, "label": file_name.rsplit("/", 1)[-1],
+                     "sortableName": file_name, "fileName": file_name},
+            "size": {"label": "?", "sizeInBytes": size_in_bytes},
+            "lastModified": 1722552360177}
+
+
+class _FakeApi:
+    """The two `/v4` GETs a listing makes, answered from canned rows.
+
+    Routed on the URL rather than on call order, so a test can assert WHICH endpoint was asked and
+    with what — the `/v4` prefix and the empty `path` are both requirements, not incidentals.
+    """
+
+    def __init__(self, snapshots=(), rows=(), status=200):
+        self.snapshots, self.rows, self.status = list(snapshots), list(rows), status
+        self.asked: list[tuple[str, dict]] = []
+
+    def get(self, url, **kw):
+        import httpx
+
+        self.asked.append((url, dict(kw.get("params") or {})))
+        if self.status >= 400:
+            return httpx.Response(self.status, text="denied")
+        if "/files/recursive" in url:
+            return httpx.Response(200, json={"directorySize": "1.3 K", "rows": self.rows})
+        return httpx.Response(200, json=self.snapshots)
+
+
+def _install(monkeypatch, api):
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", api.get)
+    return api
+
+
+def test_an_unmounted_dataset_reports_the_real_byte_size_of_every_file(monkeypatch):
+    """The bug: these rows all read 0 bytes, because the endpoint the SDK called carries no sizes."""
+    api = _install(monkeypatch, _FakeApi(
+        snapshots=[_snapshot("s1", 0)],
+        rows=[_row("all_series.json", 940), _row("forecasts.csv", 469)],
+    ))
+    files = _provider().list_files(Asset(id="i1", name="shared_ds")).files
+
+    assert [(f.path, f.size) for f in files] == [("all_series.json", 940), ("forecasts.csv", 469)]
+    # Asked under /v4 (where /api answers 404), and with an EMPTY path (where `/` answers 400).
+    assert api.asked == [
+        ("http://domino/v4/datasetrw/snapshots/i1", {}),
+        ("http://domino/v4/datasetrw/snapshot/s1/files/recursive", {"path": ""}),
+    ]
+
+
+def test_a_nested_file_keeps_the_path_a_mount_would_have_given_it(monkeypatch):
+    """`fileName`, not `label`: the basename would collapse siblings across folders together.
+
+    The two paths have to agree, because the Workbench re-nests one tree from whichever produced
+    it. `docs/a.docx` and `notes/a.docx` both read as `a.docx` off `label`.
+    """
+    _install(monkeypatch, _FakeApi(
+        snapshots=[_snapshot("s1", 3)],
+        rows=[_row("docs/model_docs.docx", 109014), _row("notes/model_docs.docx", 12)],
+    ))
+    files = _provider().list_files(Asset(id="i1", name="autodoc")).files
+
+    assert [f.path for f in files] == ["docs/model_docs.docx", "notes/model_docs.docx"]
+
+
+def test_the_two_paths_describe_the_same_tree_the_same_way(tmp_path, monkeypatch):
+    """Whether a Dataset is mounted here is an accident of which Project this workspace belongs to,
+    and it must not change what its tree looks like. The Workbench re-nests folders out of these
+    paths and the app manifest keys on them, so a Dataset that gains or loses a mount between two
+    listings has to produce the same rows both times.
+    """
+    tree = {"README.md": 12, "raw/train.csv": 400, "raw/2024/part-0.csv": 7}
+    for rel, size in tree.items():
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x" * size)
+
+    mounted = _provider().list_files(Asset(id="i1", name="ds", mount_path=str(tmp_path)))
+    _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s1", 0)],
+                                   rows=[_row(rel, size) for rel, size in tree.items()]))
+    unmounted = _provider().list_files(Asset(id="i1", name="ds"))
+
+    assert [(f.path, f.size) for f in unmounted.files] == [(f.path, f.size) for f in mounted.files]
+
+
+def test_a_directory_row_is_not_reported_as_an_empty_file(monkeypatch):
+    """Directories come back as rows of their own, carrying a null size.
+
+    Kept, a folder reads as a 0-byte file — the exact symptom this change exists to end, and worse
+    than before, because now it is a thing that is not a file at all.
+    """
+    _install(monkeypatch, _FakeApi(
+        snapshots=[_snapshot("s1", 0)],
+        rows=[_row("autodoc_mrm/autodoc_output", None, is_directory=True),
+              _row("autodoc_mrm/autodoc_output/report.docx", 8)],
+    ))
+    files = _provider().list_files(Asset(id="i1", name="autodoc")).files
+
+    assert [(f.path, f.size) for f in files] == [("autodoc_mrm/autodoc_output/report.docx", 8)]
+
+
+def test_the_listing_describes_the_highest_active_snapshot(monkeypatch):
+    """`tag_snapshots` cannot answer this: it is empty for an untagged Dataset, which is the norm.
+
+    A Pending snapshot has a higher version and no files to show yet, so version alone is not the
+    rule — the highest ACTIVE one is.
+    """
+    api = _install(monkeypatch, _FakeApi(
+        snapshots=[_snapshot("s0", 0), _snapshot("s2", 2), _snapshot("s1", 1),
+                   _snapshot("s3", 3, status="Pending"), _snapshot("sx", 9, status="Deleted")],
+        rows=[_row("f.csv", 1)],
+    ))
+    _provider().list_files(Asset(id="i1", name="shared_ds"))
+
+    assert api.asked[1][0].endswith("/datasetrw/snapshot/s2/files/recursive")
+
+
+def test_a_dataset_with_nothing_committed_yet_lists_nothing_and_asks_no_further(monkeypatch):
+    """No Active snapshot is an empty Dataset, not a failure: there is nothing to have listed."""
+    api = _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s0", 0, status="Pending")]))
+    listing = _provider().list_files(Asset(id="i1", name="fresh_ds"))
+
+    assert listing.files == [] and listing.truncated is False
+    assert len(api.asked) == 1
+
+
+def test_a_mounted_dataset_still_reads_from_disk(tmp_path, monkeypatch):
+    # The mount stays a fast path: no API call at all when the files are already here.
     (tmp_path / "on_disk.csv").write_text("a,b\n")
-    client = _FakeDatasetClient(_FakeDataset(["should-not-be-used"]))
-    files = _provider(client).list_files(
+    api = _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s1", 0)], rows=[_row("nope", 1)]))
+    files = _provider().list_files(
         Asset(id="i1", name="local_ds", mount_path=str(tmp_path))).files
+
     assert [f.path for f in files] == ["on_disk.csv"]
-    assert client.asked == []
+    assert api.asked == []
 
 
-def test_listing_failure_is_reported_not_swallowed():
-    class _Boom:
-        def list_files(self, page_size):
-            raise RuntimeError("proxy said no")
+def test_listing_failure_is_reported_not_swallowed(monkeypatch):
+    import httpx
 
+    monkeypatch.setattr(httpx, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("proxy said no")))
     with pytest.raises(ResourceUnavailable, match="did not answer"):
-        _provider(_FakeDatasetClient(_Boom())).list_files(Asset(id="i1", name="shared_ds"))
+        _provider().list_files(Asset(id="i1", name="shared_ds"))
+
+
+def test_a_refused_listing_reports_the_status_rather_than_an_empty_dataset(monkeypatch):
+    """403 on a Dataset shared read-only has to read as refused, never as "it has no files"."""
+    _install(monkeypatch, _FakeApi(status=403))
+
+    with pytest.raises(ResourceUnavailable, match="answered 403 for the files"):
+        _provider().list_files(Asset(id="i1", name="shared_ds"))
 
 
 def test_download_file_writes_the_bytes_and_reports_the_size(tmp_path):
-    ds = _FakeDataset(["raw/train.csv"])
+    ds = _FakeDataset()
     dest = tmp_path / "out" / "train.csv"
-    size = _provider(_FakeDatasetClient(ds)).download_file(
-        Asset(id="i1", name="shared_ds"), "raw/train.csv", dest
-    )
+    provider = _provider(_FakeDatasetClient(ds))
+    size = provider.download_file(Asset(id="i1", name="shared_ds"), "raw/train.csv", dest)
+
     assert size == 7 and dest.read_bytes() == b"x" * 7
     assert ds.downloaded == [("raw/train.csv", str(dest))]
+    # Reading one file stays on the SDK, and it needs both halves of the identifier or Domino
+    # rejects the lookup.
+    assert provider._dataset_client.asked == ["dataset-shared_ds-i1"]
 
 
 def test_project_name_is_read_from_the_field_that_carries_it(monkeypatch):
@@ -159,13 +301,15 @@ def _oem_pack(tmp_path, monkeypatch):
     monkeypatch.setenv("SAGE_BRAND_FILE", str(pack))
 
 
-def test_a_listing_failure_renames_the_platform_and_the_noun_but_not_the_users_name(_oem_pack):
-    class _Boom:
-        def list_files(self, page_size):
-            raise RuntimeError("proxy said no")
+def test_a_listing_failure_renames_the_platform_and_the_noun_but_not_the_users_name(
+        _oem_pack, monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proxy said no")))
 
     with pytest.raises(ResourceUnavailable) as e:
-        _provider(_FakeDatasetClient(_Boom())).list_files(Asset(id="i1", name="domino_shared"))
+        _provider().list_files(Asset(id="i1", name="domino_shared"))
 
     # The platform renamed, the noun renamed, and the name the person gave their Dataset left
     # exactly as they typed it — including the word it happens to contain.
@@ -174,9 +318,6 @@ def test_a_listing_failure_renames_the_platform_and_the_noun_but_not_the_users_n
 
 def test_a_download_failure_leaves_the_path_the_creator_asked_for_alone(_oem_pack, tmp_path):
     class _Boom:
-        def list_files(self, page_size):
-            return []
-
         def download_file(self, rel, local):
             raise OSError("gone")
 
