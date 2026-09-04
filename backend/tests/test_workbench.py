@@ -261,7 +261,10 @@ def test_a_build_turn_carries_what_its_mentions_name():
     only one of them can produce is a mention that silently carries nothing."""
     store = _js("store.js")
     assert "mentions: refs.mentions, resources: refs.resources," in store
-    assert "SW.util.mentionedIn(text, SW.util.mentionToken(row))" in store
+    # Every token the row could have been GIVEN, because the Attachment list moves under text
+    # already typed — see ADR-0030 and
+    # `test_a_mention_names_one_file_or_says_what_else_it_matched`.
+    assert "SW.util.mentionTokens(row).some((token) => typed.has(token))" in store
     # A Resource rides as its Binding identity, never as its name: an id is unique only within a kind.
     assert "kind: row.bindingKey[0], id: row.bindingKey[1]" in store
 

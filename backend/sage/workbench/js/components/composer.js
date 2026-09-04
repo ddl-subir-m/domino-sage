@@ -85,10 +85,6 @@ window.SW = window.SW || {};
     return { start: at, query: token };
   }
 
-  // Prefer the file's basename so "@data.csv" matches the path OpenCode reads. Shared with the turn
-  // that reads these tokens back out of the prompt, so the two cannot drift apart.
-  const mentionToken = (resource) => SW.util.mentionToken(resource);
-
   // The gap between what the prompt names and what the selected Built App holds, said BEFORE the
   // send (#136). The dead end it removes is a whole turn long: the mention is dropped, the answer
   // is prose directions to a panel, and the prompt has to be retyped. The same rows and the same
@@ -174,6 +170,10 @@ window.SW = window.SW || {};
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
+    // The list uniqueness is computed against, for the token this menu INSERTS and for the folder its
+    // rows show (ADR-0030). One list for both, so the folder a person reads on a row and the token
+    // that lands in the box cannot disagree about which of two `data.csv` the click meant.
+    const mentionPeers = SW.util.attachmentRows(appAttachments);
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts,
                           catalogueParents, appAttachments)
@@ -250,7 +250,10 @@ window.SW = window.SW || {};
 
     const pickMention = async (resource) => {
       if (!mention) return;
-      const token = mentionToken(resource);
+      // Prefer the file's basename so "@data.csv" matches the path OpenCode reads, and fall back to
+      // the shortest distinguishing suffix when the app holds two files of that name (ADR-0030).
+      // Derived by the util the TURN reads these tokens back with, so the two cannot drift apart.
+      const token = SW.util.mentionToken(resource, mentionPeers);
       const after = text.slice(mention.start).replace(/^@\S*/, '');
       const pad = after === '' || /^\s/.test(after) ? '' : ' ';
       setText(text.slice(0, mention.start) + token + pad + after);
@@ -581,8 +584,18 @@ window.SW = window.SW || {};
                       ? `Not in ${scope.name} yet`
                       : `In ${scope.name}`
               ),
-              suggestions.map((resource, index) =>
-                h(
+              suggestions.map((resource, index) => {
+                // The folder that tells this row from the other one wearing its name (ADR-0030).
+                // Two colliding files drew two identical rows — same icon, same label, same caption
+                // — that inserted the same text, which is the half of the defect a unique token
+                // cannot reach: the right file could not be SEEN, let alone picked.
+                //
+                // Off the same peer list the token is built from, so the caption reads `2026`
+                // exactly when the box will read `@2026/data.csv`. A row showing a folder its own
+                // click does not carry would point at a file the click cannot reach.
+                const folder = SW.util.mentionSuffix(resource.path, mentionPeers)
+                  .split('/').slice(0, -1).join('/');
+                return h(
                   'button',
                   {
                     key: resource.id,
@@ -592,7 +605,12 @@ window.SW = window.SW || {};
                     onClick: () => pickMention(resource),
                   },
                   h('span', { className: 'sw-res-icon' }, SW.util.iconFor(resource.kind)),
-                  h('span', { className: 'sw-mention-name' }, resource.name),
+                  // The whole path in `title`, the way `LeafRow` already does it in the Dataset
+                  // tree: the folder beside it says WHICH of the two this is, and the title says
+                  // where it lives without spending a row's width on it.
+                  h('span', { className: 'sw-mention-name', title: resource.path || resource.name },
+                    resource.name),
+                  folder ? h('span', { className: 'sw-caption' }, folder) : null,
                   attachedIds.has(resource.id)
                     ? h('span', { className: 'sw-incontext-tag' }, 'in context')
                     // The menu has ONE heading and it describes the first row only. A catalogue
@@ -601,9 +619,14 @@ window.SW = window.SW || {};
                     // itself, the way `in context` already does for the same reason.
                     : catalogueIds.has(resource.id)
                       ? h('span', { className: 'sw-caption' }, `not in ${scope.name}`)
-                      : h('span', { className: 'sw-caption' }, SW.util.labelFor(resource.kind))
-                )
-              )
+                      // The kind is what a row says when it has nothing more useful to say. A row
+                      // that has just named its folder does, and two captions are one more than the
+                      // slot holds — so the kind gives way, being the half that tells nothing apart.
+                      : folder
+                        ? null
+                        : h('span', { className: 'sw-caption' }, SW.util.labelFor(resource.kind))
+                );
+              })
             ),
           h(Input.TextArea, {
             value: text,

@@ -246,6 +246,7 @@ _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
+    "mentions-ambiguous",
     "app_change", "build-stalled", "gateway-call", "gateway-alias-unbound",
 })
 
@@ -1771,6 +1772,14 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
     if not t:
         return False
     names = {name.lower(), Path(path).name.lower(), Path(name).name.lower()}
+    # Every whole-segment tail of the path, because the @ menu inserts a QUALIFIED token —
+    # `@2026/data.csv` — the moment two attached files share a basename (ADR-0030). Chat draws the
+    # same composer as Build (`modes/chat.js`), so without these a person picks a row here and the
+    # token they were given names nothing on this side: no descriptor attached, and Chat has no
+    # "couldn't use that" line to say so. The silent carry the ADR rules out, in the other half of
+    # the product. Tails rather than the one token the menu would build TODAY, for the reason
+    # `mentionTokens` gives: typed text keeps its token while the Attachment list moves under it.
+    names.update(tok.lstrip("@").lower() for tok in _mention_tokens(path))
     names.update(n.replace(" ", "_") for n in list(names))
     stems = {n.rsplit(".", 1)[0] for n in names if "." in n}
     return t in names or t in stems
@@ -2671,6 +2680,102 @@ _DROPPED_MENTION_NOTE = (
     "data in place of what is missing. Say which mention you could not use. If the rest of the "
     "request stands on its own, build that part and nothing more; if it does not, stop there and "
     "say so.")
+
+# What the agent is told when one @name matched several attached files (ADR-0030). Short, because
+# unlike the note above this describes something that WORKED: every file the name matched is on this
+# turn, with its own descriptor, so the agent is not missing anything and has nothing to repair. The
+# only thing it cannot know is that the person may have meant one of them.
+_AMBIGUOUS_MENTION_NOTE = (
+    "One @name in their request above matched more than one attached file. This is what they were "
+    "told about it:\n\n"
+    "{said}\n\n"
+    "Every file it matched is attached to this turn, so nothing is missing. But they may have meant "
+    "one of them: if which one changes what you would build, ask before building.")
+
+
+_AT_TOKEN = re.compile(r"(^|\s)@([^\s]+?)(?=[\s,;:!?)\]}'\"]|\.(?!\w)|$)")
+
+
+def _mention_tokens_in(text: str) -> set[str]:
+    """Every "@token" standing in `text` as its own word. `mentionTokensIn` in
+    `workbench/js/util.js` is the same rule, and it has to be: what the composer INSERTED and what
+    the turn reads back have to be read off the prompt the same way.
+
+    The trailing "." is the whole subtlety. A "." ends a sentence far more often than it begins a
+    suffix, so "@data.csv." is a mention of `data.csv` — but reading EVERY "." that way makes
+    "@report.csv" a mention of `report` as well, and an app holding both rides a turn with a file
+    nobody named. So "." closes a token only when no word character follows it."""
+    return {"@" + m.group(2) for m in _AT_TOKEN.finditer(text or "")}
+
+
+def _mentioned_in(text: str, token: str) -> bool:
+    """Whether "@token" stands in `text` as its own word — so a longer name does not match a shorter
+    one's prefix, and a bare basename does not match INSIDE the qualified token `@2026/data.csv`
+    that ADR-0030 now inserts for the same file."""
+    if not token:
+        return False
+    return _mention_word(token) in _mention_tokens_in(text)
+
+
+def _mention_word(text: str) -> str:
+    """"@" plus one path or name, spelled the way the composer spells a token. `mentionWord` in
+    `workbench/js/util.js` is the same two rules: whitespace collapsed to "_" so the token is ONE
+    word in the box, and a leading "@" dropped so a file called "@notes" is not "@@notes".
+
+    Spelled here rather than assumed, because the file `data.csv` and the file `my data.csv` reach
+    this function looking alike and stand in the prompt as `@data.csv` and `@my_data.csv`. Testing
+    the raw name would find the first and never the second."""
+    return "@" + re.sub(r"\s+", "_", text or "").lstrip("@")
+
+
+def _mention_tokens(path: str) -> list[str]:
+    """Every token that could name `path`, longest tail first. `mentionTokens` in
+    `workbench/js/util.js` is the same set, and it has to be: what the client MATCHED on is what
+    this reports about."""
+    segments = str(path or "").split("/")
+    return [_mention_word("/".join(segments[len(segments) - take:]))
+            for take in range(len(segments), 0, -1)]
+
+
+def _ambiguous_mentions(resolved: list[dict] | None, prompt: str) -> str:
+    """The sentence for an @name this turn resolved to more than one attached file, or "" for none.
+
+    ADR-0030 makes the token the menu inserts unique going forward, and text already sitting in the
+    composer keeps the token it was GIVEN. `@data.csv` was unique when it was typed; attaching a
+    sibling partition later makes it name two files. `collectTurnRefs` carries all of them rather
+    than dropping the mention, because a mention that quietly carries nothing produces an answer
+    about the wrong thing, or about nothing, with no error anywhere. This is the other half of that
+    decision: it carries all of them AND says so, naming each, so the person can narrow it if they
+    meant one. Silence is the one outcome ruled out.
+
+    Read off `_resolve_mentions`' own answer, the way `_unusable_mentions` is, so what is reported
+    can never drift from what the turn actually used — and grouped by the TOKEN that stands in the
+    prompt rather than by the basename, because that is what `collectTurnRefs` matched on. Grouping
+    by basename would miss an ambiguous qualified token (`@a/data.csv` naming two files two folders
+    down) and would report two deliberate mentions of `@2025/data.csv` and `@2026/data.csv` as
+    ambiguous — they resolve to two files sharing one basename, and there is nothing ambiguous
+    about them.
+    """
+    typed = _mention_tokens_in(prompt)
+    by_token: dict[str, list[str]] = {}
+    for item in resolved or []:
+        path = str(item.get("path") or "")
+        for token in _mention_tokens(path):
+            if token not in typed:
+                continue
+            named = by_token.setdefault(token, [])
+            if path not in named:
+                named.append(path)
+    lines: list[str] = []
+    for token, paths in by_token.items():
+        if len(paths) < 2:
+            continue
+        # The count first, because that is the surprise, and then every path — a sentence that said
+        # "matched several" without naming them leaves the reader unable to tell which one is the
+        # extra. The remedy is the menu, which can now reach either one (ADR-0030).
+        lines.append(f"{token} names {len(paths)} attached files, so this turn carries all of them: "
+                     f"{', '.join(paths)}. Pick one from the @ menu to name just it.")
+    return " ".join(lines)
 
 
 class Orchestrator:
@@ -6304,6 +6409,12 @@ class Orchestrator:
         # `_DROPPED_MENTION_NOTE` spends its length taking away.
         unusable, unusable_rows = self._unusable_mentions(project, mention_files, mentions, resources)
         unusable_note = _DROPPED_MENTION_NOTE.format(said=unusable) if unusable else ""
+        # The opposite gap, read off the same answer: not a mention that carried nothing, but one
+        # that carried more than the person asked for (ADR-0030). Spent the same two ways — the
+        # bubble below and a note to the agent — for the same reason, so neither is told something
+        # the other has not heard.
+        ambiguous = _ambiguous_mentions(mention_files, prompt)
+        ambiguous_note = _AMBIGUOUS_MENTION_NOTE.format(said=ambiguous) if ambiguous else ""
         # What was said in the Chat half of this Conversation (#53). Rides the prompt text beside
         # `resource_note`, and for the same reason: the gate/answer/plan forks below wrap `current`
         # in their own preamble, so a block that has to sit at the END of what the agent reads
@@ -6572,6 +6683,16 @@ class Orchestrator:
             if unusable:
                 yield persist({"type": "mentions-unresolved", "message": unusable,
                                "entries": unusable_rows})
+            # Its own event, and not a second sentence on the one above, because the two are not the
+            # same news. A drop is a failure and draws red; this describes a turn that WORKED —
+            # every file the name matched is attached, nothing is missing — and the person is being
+            # told they may have meant one of them. Said in the red the refusal wears, it would read
+            # as a turn that had gone wrong, which is the opposite of what happened.
+            #
+            # It carries no rows: an ambiguous mention has no fix button, because the act that
+            # closes it is retyping the mention the menu can now reach (ADR-0030).
+            if ambiguous:
+                yield persist({"type": "mentions-ambiguous", "message": ambiguous})
 
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never
@@ -6815,18 +6936,19 @@ class Orchestrator:
             send_ts = time.monotonic()
             client.send_prompt(sid,
                                "\n\n".join(p for p in (current, chat_note, resource_note,
-                                                       unusable_note) if p),
+                                                       unusable_note, ambiguous_note) if p),
                                agent=agent, attachments=mention_files)
-            # All four ride the first (user) turn only, not the nudge/fix follow-ups: those carry
+            # All five ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
             # Resource. The Chat background goes with them — a nudge is Sage talking to itself
             # about the code it just failed to write, and the conversation behind it hasn't moved.
-            # The dropped-mention note goes with them for the same reason: it answers what the
-            # person typed, and a nudge mentions nothing.
+            # Both mention notes go with them for the same reason: they answer what the person
+            # typed, and a nudge mentions nothing.
             mention_files = None
             resource_note = ""
             chat_note = ""
             unusable_note = ""
+            ambiguous_note = ""
             appeared = False
             start = time.monotonic()
             # When OpenCode last produced anything, and so what the quiet deadline below is measured

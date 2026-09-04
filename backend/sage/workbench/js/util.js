@@ -241,24 +241,128 @@ window.SW = window.SW || {};
         .map((e) => SW.util.attachmentRow(e));
     },
 
+    // The shortest tail of `path` that names it and no other file in `peers` — "data.csv" while the
+    // basename stands alone, "2026/data.csv" once a sibling partition holds one too (ADR-0030).
+    // Whole-segment tails only, so what comes back is a path a person can read and type.
+    //
+    // Uniqueness is a question about a list, so it is asked only of a member of that list: a path
+    // `peers` does not hold keeps its basename. That is deliberately narrow. An Upload and the
+    // Attachment it crossed into (#147) say the same word ON PURPOSE, and computing this against
+    // every row a menu can offer would rename one of them for a collision that is not this one.
+    mentionSuffix(path, peers) {
+      const full = String(path || '');
+      const segments = full.split('/');
+      const base = segments[segments.length - 1];
+      const known = (peers || []).map((row) => String((row && row.path) || '')).filter(Boolean);
+      if (!full || known.indexOf(full) === -1) return base;
+      const rivals = known.filter((other) => other !== full);
+      // Up to and INCLUDING the whole path, which is a candidate like any other: a root-level file
+      // colliding with a nested one has no distinguishing tail at all, and the loop has to reach
+      // that answer rather than be short of it by one and fall out with the basename unchecked.
+      for (let take = 1; take <= segments.length; take += 1) {
+        const suffix = segments.slice(segments.length - take).join('/');
+        // A tail distinguishes only if no rival ENDS with it on a segment boundary: "data.csv" is
+        // shared by "raw/2025/data.csv", and "6/data.csv" is not a tail anything has.
+        if (!rivals.some((r) => r === suffix || r.endsWith('/' + suffix))) return suffix;
+      }
+      return full;
+    },
+
     // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path
     // OpenCode reads. Lives here rather than in the composer because the menu that INSERTS a token
     // and the turn that reads it back off the prompt have to derive it the same way — a token only
     // one of them can produce is a mention that silently carries nothing (see store.collectTurnRefs).
-    mentionToken(resource) {
-      const fromPath = String((resource && resource.path) || '').split('/').pop();
+    //
+    // `peers` is the app's own Attachment list, and the token falls back to the shortest
+    // distinguishing suffix when the basename is not unique in it (ADR-0030). This costs no rule
+    // anybody has to learn, because the menu INSERTS the token: a person types "@", narrows, picks.
+    // Called with no peers it is the basename it has always been.
+    //
+    // This is the WRITING half only. Reading a token back off a prompt is `mentionTokens` below,
+    // which does not take peers at all — text already typed keeps the token it was given while the
+    // peer list moves under it, so what a row would be called today is the wrong question there.
+    mentionToken(resource, peers) {
+      const path = String((resource && resource.path) || '');
+      const fromPath = path ? SW.util.mentionSuffix(path, peers) : '';
       const fromName = String((resource && resource.name) || '').split('/').pop();
-      const token = (fromPath || fromName || 'resource').replace(/\s+/g, '_').replace(/^@+/, '');
-      return '@' + token;
+      return SW.util.mentionWord(fromPath || fromName || 'resource');
+    },
+
+    // "@" plus one path or name, spelled the way a token has to be spelled: whitespace collapsed to
+    // "_" so the token is ONE word in the box, and a leading "@" dropped so a file called "@notes"
+    // is not "@@notes". Its own function because every producer and every reader of a token has to
+    // spell it identically — `_ambiguous_mentions` in `orchestrator/service.py` is the server's copy.
+    mentionWord(text) {
+      return '@' + String(text || '').replace(/\s+/g, '_').replace(/^@+/, '');
+    },
+
+    // Every token that could stand in the box for this row: the one the menu inserts today, and
+    // every one it could have inserted before. Text already typed keeps the token it was GIVEN
+    // while the peer list moves under it — a sibling is attached, a sibling is DETACHED, the
+    // selected Built App changes mid-turn (#77). Matching only today's answer is how
+    // `@2026/data.csv` comes to name nothing the day its twin is removed and `mentionToken`
+    // collapses back to `@data.csv`: the same silent carry ADR-0030 rules out, running backwards.
+    //
+    // Whole-segment tails, because that is the whole set `mentionToken` can ever produce. A token
+    // that names several rows names ALL of them, and the turn says so (`_ambiguous_mentions`).
+    mentionTokens(resource) {
+      const path = String((resource && resource.path) || '');
+      if (!path) return [SW.util.mentionToken(resource)];
+      const segments = path.split('/');
+      const out = [];
+      for (let take = 1; take <= segments.length; take += 1) {
+        out.push(SW.util.mentionWord(segments.slice(segments.length - take).join('/')));
+      }
+      return out;
+    },
+
+    // Every "@token" standing in the text as its own word. ONE pass over the prompt, and the set
+    // every reader of a token asks its question of — `collectTurnRefs` tests a few hundred candidate
+    // tokens per keystroke, and a regex compiled per candidate is that cost multiplied by the depth
+    // of every path.
+    //
+    // The trailing "." is the whole subtlety. A "." ends a sentence far more often than it begins a
+    // suffix, so "@data.csv." has to be a mention of `data.csv` — but reading EVERY "." that way
+    // makes "@report.csv" a mention of `report` as well, and an app holding both `report` and
+    // `report.csv` then rides a turn with a file nobody named. So "." closes a token only when no
+    // word character follows it.
+    mentionTokensIn(text) {
+      const found = new Set();
+      const pattern = /(^|\s)@([^\s]+?)(?=[\s,;:!?)\]}'"]|\.(?!\w)|$)/g;
+      let match = pattern.exec(String(text || ''));
+      while (match) {
+        found.add('@' + match[2]);
+        match = pattern.exec(String(text || ''));
+      }
+      return found;
     },
 
     // Whether "@<token>" still stands in the text as its own word. Punctuation may follow it —
     // people write "@data.csv, please" — but a longer name must not match a shorter one's prefix.
+    // Defined by the extractor above rather than beside it, because a second regex for the same
+    // rule is how the one that INSERTS and the one that reads back come to disagree.
     mentionedIn(text, token) {
       const bare = String(token || '').replace(/^@+/, '');
       if (!bare) return false;
-      const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(^|\\s)@${escaped}(?=[\\s,.;:!?)\\]}'"]|$)`).test(String(text || ''));
+      return SW.util.mentionTokensIn(text).has(SW.util.mentionWord(bare));
+    },
+
+    // The part of a path a person is actually searching for. Two prefixes sit on paths all through
+    // this menu and in nobody's head: `public/data/<slug>/`, where an Attachment is mounted
+    // (`_attach_dest`), and `.sage/scratch/`, where a Chat upload lives. Searching them matches
+    // EVERY row that carries one — on "data", on "public", on "sage" — and the menu shows eight, so
+    // the row being hunted for is pushed off the list by the one thing it has in common with the
+    // rest. Applied in `workingSetFirst` rather than stamped on a row, so it reaches every group
+    // that has a path: the app's Attachments, the Project's Uploads, and the Conversation's chips,
+    // which carry the mount path too.
+    searchablePath(path) {
+      const p = String(path || '').replace(/^\.\//, '');
+      if (p.startsWith('.sage/scratch/')) return p.slice('.sage/scratch/'.length);
+      const parts = p.split('/');
+      if (parts.length > 3 && parts[0] === 'public' && parts[1] === 'data') {
+        return parts.slice(3).join('/');
+      }
+      return p;
     },
 
     // The Chat explorer is the project's pickable working set, not the repo.
@@ -283,16 +387,24 @@ window.SW = window.SW || {};
     // which is the one thing a person carries from one surface to the other.
     //
     // One row per id, the first occurrence winning, so a Resource two groups both hold is offered by
-    // the nearer one. `query` matches the name or the file's basename, because the basename is what
-    // `mentionToken` builds a token from — asking the same question of the same string keeps what a
-    // person typed and what the menu keeps from drifting apart.
+    // the nearer one. `query` matches the name or the file's whole relative path, because the path
+    // is what `mentionToken` builds a token from once a basename collides (ADR-0030) — asking the
+    // same question of the same string keeps what a person typed and what the menu keeps from
+    // drifting apart. On the basename alone, "2026" and "raw/2026" reached nothing for
+    // `raw/2026/data.csv`, which left the one file a person could see two rows of as the one file
+    // they could not narrow to. Through `searchablePath`, because the mount prefixes these paths
+    // share are the one part of them nobody is searching for.
+    //
+    // The widening is contained, which is worth recording since this helper is shared on purpose:
+    // the Build header's picker passes NO query (`modes/builder.js`), and the matcher returns true
+    // on an empty one, so it reaches the composer's @ menu and nothing else.
     workingSetFirst({ groups, catalogue, query, limit }) {
       const lowered = String(query || '').trim().toLowerCase();
       const matches = (row) => {
         if (!lowered) return true;
         const name = String(row.name || '').toLowerCase();
-        const base = String(row.path || '').split('/').pop().toLowerCase();
-        return name.includes(lowered) || base.includes(lowered);
+        const path = SW.util.searchablePath(row.path).toLowerCase();
+        return name.includes(lowered) || path.includes(lowered);
       };
       const seen = new Set();
       const out = [];

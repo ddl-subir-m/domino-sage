@@ -1063,9 +1063,20 @@ window.SW = window.SW || {};
     // longer lists (#148), so without this line they would be offered by the @ menu and resolved
     // by no turn. Derived on the read rather than held in state: `appAttachments` is already the
     // record, and a second copy would need invalidating at every door that attaches or detaches.
+    // Read off the text ONCE. This runs on every composer keystroke (`unusableMentions`), and it
+    // asks its question of every candidate token of every row — which after a folder attach is a
+    // few hundred rows times the depth of each path. Compiling a regex per question made that the
+    // cost of typing.
+    const typed = SW.util.mentionTokensIn(text);
     [...Object.values(groups), SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {
       (rows || []).forEach((row) => {
-        if (!SW.util.mentionedIn(text, SW.util.mentionToken(row))) return;
+        // Every token this row could have been GIVEN, not the one it would be given now. Text
+        // already sitting in the composer keeps its token while the Attachment list moves under it,
+        // in both directions: an attach makes `@data.csv` answer `@2026/data.csv`, and a detach
+        // collapses it back. Reading only today's answer is how a mention comes to carry NOTHING —
+        // no refusal, no warning — which is the one outcome ADR-0030 rules out. A token that names
+        // several rows names all of them, and `_ambiguous_mentions` says so on the turn.
+        if (!SW.util.mentionTokens(row).some((token) => typed.has(token))) return;
         // A bindingKey IS the Binding identity, so the rows that carry one are exactly the rows the
         // server can honor as Resources. No second list of kinds to keep in step with that one.
         if (row.bindingKey && row.bindingKey.length === 2) {
@@ -1245,6 +1256,11 @@ window.SW = window.SW || {};
           entries: ev.entries || [],
           live: !!ev.live,
         });
+      } else if (ev.type === 'mentions-ambiguous' && ev.message) {
+        // A plain line, not the refusal's red one: this turn used everything the name matched, so
+        // nothing failed and nothing is missing. What is worth knowing is that the name reached
+        // more files than the person probably meant, and the sentence says which (ADR-0030).
+        ensureAssistant().blocks.push({ type: 'status', value: ev.message });
       } else if (ev.type === 'reset-offer' && ev.message) {
         // `live` is set only on the frame that arrived over SSE this session (see applyBuildEvent),
         // and a reload replaces buildHistory with plain server rows that never carry it. So a
