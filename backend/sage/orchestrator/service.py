@@ -9906,7 +9906,10 @@ class Orchestrator:
         return {
             # `problems` outranks `unreachable`, because one listing failing does not unlearn what
             # another one answered. `error` still carries what could not be checked, so a caller is
-            # never told that a partial answer was the whole one.
+            # never told that a partial answer was the whole one — with the one exception ADR-0034
+            # chose deliberately: a Model APIs listing the fan-out cut short reports "ok" and no
+            # error, because its uncheckability is a standing state on a creator past the cap rather
+            # than news, and a sentence they read at every session open is noise (#163).
             "state": "problems" if problems else "unreachable" if errors else "ok",
             "error": " ".join(errors) or None,
             # `message` is the two halves joined and reads exactly as it always did — the Rail

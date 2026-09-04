@@ -310,7 +310,9 @@ def stub_domino_api(pages: list[object] | dict[str, list[object]], *,
             if self.path.startswith("/api/users/v1/self"):
                 payload = user
             elif self.path.startswith("/api/projects/beta/projects"):
-                payload = projects
+                # A callable is answered per path, which is how a test drives the pager: page one
+                # answers and page two 503s. A plain object answers every offset, as it always did.
+                payload = projects(self.path) if callable(projects) else projects
             else:
                 listings.append(self.path)
                 payload = listing_payload(self.path)
@@ -371,9 +373,12 @@ def test_a_project_with_more_model_apis_than_one_page_is_listed_whole():
 _ME = {"user": {"id": "u-me", "userName": "subir"}}
 
 
-def _projects(*records: dict) -> dict:
+def _projects(*records: dict, total: int | None = None) -> dict:
+    # `total` defaults to "this is the whole list", so the pager stops after one page. A test that
+    # wants a second page claims more than it hands over.
     return {"projects": list(records),
-            "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": len(records)}}}
+            "metadata": {"pagination": {"offset": 0, "limit": 100,
+                                        "totalCount": len(records) if total is None else total}}}
 
 
 def _asked_about(listings: list[str]) -> list[str]:
@@ -467,6 +472,92 @@ def test_a_domino_that_will_not_say_who_is_calling_still_lists_the_builders_own_
 
     assert [m.name for m in out.models] == ["churn"]
     assert len(listings) == 1
+    # Still a degrade rather than an error, and now it admits to being one (#163). Membership was
+    # never enumerated, so a Model API in another project is missing from this listing without
+    # having been deleted — and absence here must not be read as deletion.
+    assert not out.complete
+
+
+def test_a_domino_that_names_no_caller_id_is_the_same_degrade_as_one_that_refuses():
+    # The quieter half of the path above: `/self` answers 200 with no id in it. Same consequence —
+    # the fan-out is the home project alone — so it must report the same incompleteness.
+    with stub_domino_api([_model_apis("churn")], user={"user": {"userName": "subir"}}) as (api_host, _):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+    assert [m.name for m in out.models] == ["churn"]
+    assert not out.complete
+
+
+def test_a_membership_list_cut_short_by_a_failed_page_is_not_reported_whole():
+    """The pager breaks out of pagination on a page that fails, which leaves `mine` holding the
+    pages that did answer (#163). A creator on 150 projects whose second page 503s gets membership
+    covering the first hundred, and every Binding past that page used to read as deleted.
+
+    The cap is not what bites here — two projects against a cap of 25 — so this isolates the pager.
+    """
+    def projects(path):
+        # Page one answers and claims a second page exists; page two 404s, which the provider reads
+        # as a refusal and the pager as "stop here".
+        return _projects({"id": "proj-2", "name": "Sage", "ownerId": "u-me"}, total=2) \
+            if "offset=0" in path else None
+
+    pages = {"proj-1": [_model_apis("churn")], "proj-2": [_model_apis("priority")]}
+    with stub_domino_api(pages, user=_ME, projects=projects) as (api_host, _):
+        p = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        p._PAGE = 1
+        out = p.list_model_apis("proj-1")
+
+    # The projects it did enumerate are still fanned out over and still listed.
+    assert {m.name for m in out.models} == {"churn", "priority"}
+    assert not out.complete
+
+
+def test_a_membership_list_that_outruns_the_pager_is_not_reported_whole():
+    """`_MAX_PAGES` is a backstop against a pager that will not terminate, and reaching it means the
+    membership read never finished — a member project could be on the page after the last one read.
+
+    Nothing here is a member, so the fan-out is the home project alone and the only thing under test
+    is what running out of pages does to `complete`. An empty `mine` is the case most likely to be
+    got wrong: it looks exactly like a creator who genuinely works alone in one project.
+    """
+    def projects(path):
+        # No `totalCount` and never an empty page, so the loop can only stop by running out of turns.
+        offset = int(parse_qs(urlparse(path).query)["offset"][0])
+        return {"projects": [{"id": f"visible-{offset}", "name": f"P{offset}", "ownerId": "u-else",
+                              "collaborators": [{"id": "u-other", "role": "Owner"}]}]}
+
+    with stub_domino_api({"proj-1": [_model_apis("churn")]}, user=_ME,
+                         projects=projects) as (api_host, listings):
+        p = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        p._PAGE, p._MAX_PAGES = 1, 2
+        out = p.list_model_apis("proj-1")
+
+    assert [m.name for m in out.models] == ["churn"]
+    assert _asked_about(listings) == ["proj-1"]
+    assert not out.complete
+
+
+def test_a_membership_page_in_a_shape_we_cannot_read_is_not_the_end_of_the_list():
+    """An empty page is Domino saying "no more"; a page this code cannot parse is not. Collapsing
+    the two would make the flag lie in the one case it exists for — a renamed key or a new envelope
+    yields no members at all, and marking THAT whole reports every out-of-home Binding as deleted.
+
+    The nastiest shape is the plausible one: a 200 with a well-formed body under a different key.
+    """
+    with stub_domino_api({"proj-1": [_model_apis("churn")]}, user=_ME,
+                         projects={"items": [{"id": "proj-2", "name": "Sage", "ownerId": "u-me"}]},
+                         ) as (api_host, listings):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+
+    # Degrades to the home project, as an unreadable membership always has.
+    assert [m.name for m in out.models] == ["churn"]
+    assert _asked_about(listings) == ["proj-1"]
+    assert not out.complete
 
 
 def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():

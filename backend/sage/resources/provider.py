@@ -188,9 +188,17 @@ class ModelApiListing:
 
     A partial answer here is a *listing that arrived*, which is why the flag has to travel with the
     rows rather than being a raised failure (ADR-0028 covers a provider that cannot read; ADR-0029
-    covers one that read partially, and this is the second). Two things cut the fan-out short and
-    neither is visible in the rows: a non-home project whose listing failed is skipped, and
-    membership past `_MAX_FANOUT_PROJECTS` is dropped.
+    covers one that read partially, and this is the second). Nothing in the rows shows the cut: a
+    non-home project whose listing failed is skipped, and `_member_projects` can come back short in
+    five ways of its own.
+
+    Two known shortfalls are NOT carried here, both recorded rather than built (#163). `_model_apis_in`
+    exhausting `_MAX_PAGES` would truncate one project's rows, but that is 5,000 Model APIs in a
+    single project — the same volume argument that left `list_data_sources` alone. And the fan-out is
+    scoped to projects the creator is a MEMBER of, so a model reached through the paste door is
+    absent from a listing that is complete over its own scope; that one is a real false-death and
+    wants the single-record read (`get_model_api`) rather than a flag, which is a change to how this
+    kind is preflighted at all.
 
     `complete` is what lets a caller refuse to read absence as deletion. Without it, a Binding to a
     Model API in a skipped project looks deleted, and the remedy on offer is Remove — a false death
@@ -1038,7 +1046,7 @@ class DominoResourceProvider:
 
     def _member_projects(self, home_project_id: str) -> tuple[list[tuple[str, str]], bool]:
         """(id, name) for every project worth asking about Model APIs, the builder's own first, and
-        whether the cap left any of them out.
+        whether this is all of them.
 
         Membership, not visibility. Domino's listing is "projects visible to user", and on a demo
         deployment that can mean every public project on it — fanning out over those would be a slow
@@ -1050,28 +1058,37 @@ class DominoResourceProvider:
         before #42, and a rail listing one project beats a rail listing an error. Off-Domino there is
         no home project: an empty home collapses to the membership list, or to nothing.
 
-        Those degrades still report complete, and that is a known gap rather than a claim: a member
-        list cut short by a refused `/self` or a broken pager is short in the same way the cap makes
-        it short, and #163 scoped the flag to the cap and the per-project skip. Anyone widening it
-        wants both of these too.
-
         Capped at `_MAX_FANOUT_PROJECTS` beyond the home project, sorted by name so the cap falls in
         the same place twice running. A member of more projects than that reaches the rest through
-        the paste door, which is why that door exists — and the second return value says the cap
-        bit, so a caller is not left inferring completeness from a row count it cannot check (#163).
+        the paste door, which is why that door exists.
+
+        The second return value is False wherever this list might be short, and there are five ways
+        it can be (#163): the cap cut the tail, `/api/users/v1/self` refused so membership was never
+        enumerated at all, a page of the pager failed, `_MAX_PAGES` ran out on a pager Domino never
+        terminated, or a page came back in a shape this code cannot read. Only a page that is
+        genuinely empty, or an offset past the reported total, is Domino saying "that is all of
+        them". Every other exit produces a member list that looks whole and is not, and
+        the caller cannot tell from a row count — a creator who really is a member of one project
+        and a creator whose membership read died on page one return the same thing. That flag is the
+        only difference between them, and `stale_bindings` needs it to avoid calling a live Model API
+        deleted.
         """
         home = (home_project_id, "") if home_project_id else None
         try:
             me = str(((self._domino_get("/api/users/v1/self") or {}).get("user") or {}).get("id") or "")
         except ResourceUnavailable:
             if home:
-                return [home], True
+                return [home], False
             raise
         if not me:
-            return ([home] if home else []), True
+            return ([home] if home else []), False
 
         mine: list[tuple[str, str]] = []
         offset = 0
+        # Set at the one exit that means Domino said "that is all of them" — an empty page, or an
+        # offset past the reported total. Every other way out of this loop leaves it False: a page
+        # that failed, and `_MAX_PAGES` running out on a pager that never terminated.
+        reached_end = False
         for _ in range(self._MAX_PAGES):
             try:
                 payload = self._domino_get(
@@ -1080,7 +1097,12 @@ class DominoResourceProvider:
             except ResourceUnavailable:
                 break
             rows = payload.get("projects") if isinstance(payload, dict) else None
-            rows = rows if isinstance(rows, list) else []
+            if not isinstance(rows, list):
+                # A page this code could not read, which is NOT a page saying "no more". Stopping
+                # here is what it always did; what must not happen is calling it the end. Domino
+                # renaming this key would otherwise produce an empty membership marked whole, and
+                # every out-of-home Binding would be reported gone with Remove as the remedy.
+                break
             for rec in rows:
                 if not isinstance(rec, dict):
                     continue
@@ -1092,15 +1114,21 @@ class DominoResourceProvider:
             total = ((meta or {}).get("pagination") or {}).get("totalCount")
             offset += self._PAGE
             if not rows or (total is not None and offset >= total):
+                reached_end = True
                 break
         extras = sorted(mine, key=lambda p: p[1])[: self._MAX_FANOUT_PROJECTS]
-        whole = len(extras) == len(mine)
-        return ([home, *extras] if home else extras), whole
+        return ([home, *extras] if home else extras), reached_end and len(extras) == len(mine)
 
     def _model_apis_in(self, project_id: str, project_name: str) -> list[ModelApi]:
         """The Model APIs of one project — the whole of what this call used to be."""
         out: list[ModelApi] = []
         offset = 0
+        # This pager has the same `_MAX_PAGES` backstop as `_member_projects` and, unlike that one,
+        # does NOT report exhausting it (#163). Deliberate rather than missed: the membership pager
+        # runs against a tenant's whole project list, which really does get long, while this one
+        # would need 5,000 Model APIs in a single project — the volume argument that left
+        # `list_data_sources` alone. Recorded so the asymmetry reads as a decision; if it ever
+        # bites, this returns a completeness bit and `list_model_apis` ands it in.
         for _ in range(self._MAX_PAGES):
             payload = self._domino_get(
                 "/api/modelServing/v1/modelApis",
@@ -1130,10 +1158,11 @@ class DominoResourceProvider:
         that would otherwise have answered. Off-Domino there is no home project: membership is the
         whole list, and finding none is unlistable rather than empty.
 
-        A skip and the fan-out cap both leave the answer short, so it carries `complete` rather than
-        being bare rows (#163). The skip is still a skip: this returns what it found. The change is
-        only that a caller can now tell a short listing from a whole one, which is the difference
-        between "that Resource is gone" and "we did not manage to look everywhere".
+        A skip here, and any of the four ways `_member_projects` can come back short, leave the
+        answer partial — so it carries `complete` rather than being bare rows (#163). The skip is
+        still a skip: this returns what it found. The change is only that a caller can now tell a
+        short listing from a whole one, which is the difference between "that Resource is gone" and
+        "we did not manage to look everywhere".
         """
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
