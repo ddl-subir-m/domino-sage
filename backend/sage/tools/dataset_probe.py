@@ -60,15 +60,51 @@ _ARTIFACT_ROOTS = ("/mnt/artifacts", "/mnt/imported/artifacts")
 _DATASETS_PATH = "/api/datasetrw/v2/datasets"
 _ROLE_PATH = "/v4/datasetrw/dataset/{id}/role"
 
+# The listing pages, and its default page is TEN. One unpaged call answered 10 of 196 Datasets on
+# the dogfood deployment, and 10 rows read exactly like "this user can hardly see anything" -- the
+# false negative this probe exists to avoid. Same two numbers as `assets/provider.py`, which pages
+# the same endpoint for the product, so the two agree on how much is enough.
+_PAGE = 100
+_MAX_PAGES = 100
 
-def _get(client: httpx.Client, host: str, path: str) -> tuple[int, object]:
+
+def _get(client: httpx.Client, host: str, path: str,
+         params: dict | None = None) -> tuple[int, object]:
     """Status alongside body on purpose. A 403 here is a RESULT -- it is what "the
     collaborator cannot see this Dataset" looks like -- so it must not raise."""
-    r = client.get(f"{host}{path}")
+    r = client.get(f"{host}{path}", params=params)
     try:
         return r.status_code, r.json()
     except ValueError:
         return r.status_code, r.text[:400]
+
+
+def _dataset_records(body: object) -> list[dict] | None:
+    """The outer records of one listing page, or None when the shape is not one we know.
+
+    `datasetrw/v2` answers `{"datasets": [{"dataset": {...}}], "metadata": {...}}` -- a dict, and
+    doubly nested. This probe used to ask `isinstance(body, list)`, so the real answer failed the
+    test: it printed "A non-200 IS the finding" over a 200 and returned before reading one role.
+    A tool whose whole job is one design answer cannot afford to fail in the shape of that answer.
+
+    The unwrap is `assets/provider.py`'s, so the probe and the product agree on what a record is.
+    A bare list is still accepted -- if the endpoint ever answers one, that is not a reason to
+    refuse to read it.
+
+    Presence of the key, not truthiness of its value. `datasets or data or []` is what the product
+    writes, and there it is harmless because an empty list and a missing key both end the loop.
+    Here they must not be one answer: "" is a legible finding, and the emptiest listing of all --
+    a Results Consumer who can see NOTHING -- is the single answer D-Q5 most wants. Read with
+    `or` it would come back None and be announced as a probe bug nobody should record.
+    """
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for key in ("datasets", "data"):
+            rows = body.get(key)
+            if isinstance(rows, list):
+                return rows
+    return None
 
 
 def _probe_permissions(host: str, headers: dict[str, str]) -> None:
@@ -77,20 +113,44 @@ def _probe_permissions(host: str, headers: dict[str, str]) -> None:
     print("=" * 72)
 
     with httpx.Client(headers=headers, timeout=30) as client:
-        status, body = _get(client, host, _DATASETS_PATH)
-        print(f"\nGET {_DATASETS_PATH} -> {status}")
-        if status != 200 or not isinstance(body, list):
-            print(json.dumps(body, indent=2)[:1200])
-            print("\n  A non-200 IS the finding. Record it verbatim.")
-            return
+        records: list[dict] = []
+        offset = 0
+        for _ in range(_MAX_PAGES):
+            status, body = _get(client, host, _DATASETS_PATH,
+                                {"offset": offset, "limit": _PAGE})
+            print(f"\nGET {_DATASETS_PATH}?offset={offset}&limit={_PAGE} -> {status}")
+            if status != 200:
+                print(json.dumps(body, indent=2)[:1200] if not isinstance(body, str) else body)
+                print("\n  A non-200 IS the finding. Record it verbatim.")
+                return
+            page = _dataset_records(body)
+            if page is None:
+                # Split from the branch above on purpose. A 200 nobody can parse is a bug in THIS
+                # file; a 403 is the research answer. Reporting the first as the second is how a
+                # working permission gets written down as a broken one.
+                print(json.dumps(body, indent=2)[:1200])
+                print("\n  200, but not a shape this probe knows. That makes it a PROBE bug, not")
+                print("  a finding about permissions -- do not record it as one. Fix the unwrap")
+                print("  in `_dataset_records` against the body above and run it again.")
+                return
+            records.extend(page)
+            if len(page) < _PAGE:
+                break
+            offset += _PAGE
+        else:
+            print(f"\n  Stopped after {_MAX_PAGES} pages ({len(records)} records) -- the listing")
+            print("  did not terminate. Everything below is a PARTIAL answer; say so when you")
+            print("  record it.")
 
         project = os.environ.get("DOMINO_PROJECT_ID", "")
-        print(f"  {len(body)} dataset(s) visible"
+        print(f"\n  {len(records)} dataset(s) visible"
               + (f"; DOMINO_PROJECT_ID={project}" if project else "; DOMINO_PROJECT_ID unset"))
+        print(f"  one role lookup follows per Dataset, so expect {len(records)} more calls")
 
-        for ds in body:
+        for item in records:
             # Field names are not pinned by the research, so print the whole record for the
             # first one and key fields after. The probe must not filter on the answer.
+            ds = item.get("dataset") or item
             did = ds.get("id") or ds.get("datasetId") or ""
             name = ds.get("name", "?")
             owner = ds.get("projectId") or ds.get("projectName") or "?"
@@ -100,9 +160,9 @@ def _probe_permissions(host: str, headers: dict[str, str]) -> None:
                 rstatus, role = _get(client, host, _ROLE_PATH.format(id=did))
                 print(f"    role -> {rstatus}: {json.dumps(role)[:300]}")
 
-        if body:
+        if records:
             print("\n  Full first record (field names are not pinned by the research):")
-            print("  " + json.dumps(body[0], indent=2)[:900].replace("\n", "\n  "))
+            print("  " + json.dumps(records[0], indent=2)[:900].replace("\n", "\n  "))
 
 
 def _probe_mounts() -> None:
