@@ -11,6 +11,7 @@ from dataclasses import replace as _replace
 from sage.gateway.client import FakeGatewayClient
 from sage.router.model_control import ModelControl
 from sage.router.models import Mode, ModelCatalog, Phase, supports_vision
+import sage.shim.keepalive as ka
 from sage.shim.enforcement import IMAGE_OMITTED, EnforcementShim
 
 CATALOG = ModelCatalog(
@@ -685,3 +686,94 @@ def test_a_clean_turn_still_routes_on_the_write_flip():
     assert sent["model"] == "cheap-vendor"
     assert labels.route_reason is None
     assert all(m.get("role") != "system" for m in sent["messages"])
+
+
+# ---- the outgoing tool-call signature summary (#155) --------------------------------------------
+
+def _gemini_catalog():
+    return _replace(CATALOG, plan="gemini-3.7-flash", implement="gemini-3.7-flash",
+                    ask="gemini-3.7-flash")
+
+
+def _batch(*sigs):
+    calls = []
+    for n, sig in enumerate(sigs):
+        c = {"id": f"c{n}", "type": "function",
+             "function": {"name": "read", "arguments": '{"path":"a"}'}}
+        if sig is not None:
+            c["extra_content"] = {"google": {"thought_signature": sig}}
+        calls.append(c)
+    return {"role": "assistant", "content": "", "tool_calls": calls}
+
+
+def _gemini_shim(gw):
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    return EnforcementShim(control, _gemini_catalog(), gw)
+
+
+def test_a_split_model_turn_bound_for_gemini_is_warned_about(caplog):
+    """A tool-call message starting with an unsigned call means a model turn was taken apart, which
+    Gemini rejects with an opaque "position 2" (verified live 2026-09-04, #155). Warning here is
+    what connects the rejection to its cause.
+
+    Driven through `handle` on purpose: the summary reads module state and the RESOLVED model, so a
+    unit test of the pure helpers cannot catch a mis-wired call site — an earlier build of this had
+    a NameError here that every pure-function test passed straight over.
+    """
+    gw = FakeGatewayClient()
+    with caplog.at_level("WARNING", logger="sage.shim"):
+        list(_gemini_shim(gw).handle(
+            {"model": "gemini-3.7-flash",
+             "messages": [{"role": "user", "content": "go"}, _batch("sig-a"), _batch(None)]},
+            project="p"))
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("1 of 2 tool-call message(s)" in m and "taken apart" in m for m in warnings), warnings
+
+
+def test_a_healthy_gemini_parallel_batch_is_not_warned_about(caplog):
+    """The live-verified healthy shape: one message, first call signed, the rest bare. This must stay
+    silent — it is what every ordinary Gemini turn looks like."""
+    gw = FakeGatewayClient()
+    with caplog.at_level("WARNING", logger="sage.shim"):
+        list(_gemini_shim(gw).handle(
+            {"model": "gemini-3.7-flash",
+             "messages": [{"role": "user", "content": "go"}, _batch("sig-a", None, None)]},
+            project="p"))
+    assert not [r for r in caplog.records if "taken apart" in r.getMessage()]
+
+
+def test_an_ordinary_model_is_never_warned_about(caplog):
+    # gpt-5.4 and sonnet never sign. Warning here would fire on every normal turn.
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    with caplog.at_level("WARNING", logger="sage.shim"):
+        list(_shim(control, gw).handle(
+            {"model": "cheap-vendor", "messages": [_batch(None), _batch(None)]}, project="p"))
+    assert not [r for r in caplog.records if "taken apart" in r.getMessage()]
+
+
+def test_the_outgoing_listing_only_appears_with_debug_stream_on(caplog, monkeypatch):
+    gw = FakeGatewayClient()
+    shim = _gemini_shim(gw)
+    req = {"model": "gemini-3.7-flash", "messages": [_batch("sig-a", None)]}
+
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(shim.handle(dict(req), project="p"))
+    assert not [r for r in caplog.records if "outgoing tool calls" in r.getMessage()]
+
+    caplog.clear()
+    monkeypatch.setattr(ka, "_debug_stream", True)
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(shim.handle(dict(req), project="p"))
+    listed = [r.getMessage() for r in caplog.records if "outgoing tool calls" in r.getMessage()]
+    assert listed and "msg0[c0/read sig=5, c1/read sig=NONE]" in listed[0], listed
+
+
+def test_the_signature_summary_never_takes_the_turn_down_on_a_malformed_body():
+    # The messages are whatever the client sent. Raising here would turn a bad request into a crash.
+    gw = FakeGatewayClient()
+    shim = _gemini_shim(gw)
+    for messages in ([{"role": "assistant", "tool_calls": [None, "x"]}],
+                     [{"role": "assistant", "tool_calls": [{"extra_content": "nope"}]}],
+                     "not-a-list"):
+        list(shim.handle({"model": "gemini-3.7-flash", "messages": messages}, project="p"))

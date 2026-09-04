@@ -125,6 +125,81 @@ def upstream_error(chunk: bytes) -> str | None:
     return None
 
 
+# How many assistant tool-call messages the debug listing shows before it stops.
+DEBUG_REQUEST_MAX_CALLS = 20
+
+
+def tool_call_signatures(messages: object) -> list[str]:
+    """One entry per assistant message that holds tool calls, listing each call's signature state.
+
+    Grouped BY MESSAGE, not flattened per call, because the grouping is the whole diagnosis.
+    Verified live against the dogfood gateway on 2026-09-04 (#155): Gemini signs a parallel batch
+    ONCE, on the first call, and accepts it back that way — `[sig=408, sig=NONE]` in one message is
+    healthy. Split the same batch across two assistant messages and it is rejected. So a flat list
+    of calls cannot tell the healthy shape from the broken one; only the grouping can.
+
+    Deliberately NOT a raw body dump. The request carries the whole conversation, so dumping it
+    would bury /api/diag's 400-line ring in prompt text and leak far more than the question needs.
+
+    This is the only place the outgoing side is visible at all — SAGE_DEBUG_STREAM shows the
+    gateway's responses, and OpenCode's own request is otherwise unobservable from here, which is
+    exactly why #155 stayed ambiguous for so long.
+    """
+    if not isinstance(messages, list):
+        return []
+    out: list[str] = []
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        calls = [c for c in (m.get("tool_calls") or []) if isinstance(c, dict)]
+        if not calls:
+            continue
+        parts = []
+        for call in calls:
+            fn = call.get("function")
+            name = (fn.get("name") if isinstance(fn, dict) else None) or "?"
+            sig = _signature(call)
+            parts.append("{}/{} sig={}".format(
+                call.get("id") or "?", name, len(sig) if sig else "NONE"))
+        out.append(f"msg{i}[{', '.join(parts)}]")
+    return out
+
+
+def _signature(call: dict) -> str | None:
+    extra = call.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    sig = google.get("thought_signature") if isinstance(google, dict) else None
+    return sig if isinstance(sig, str) and sig else None
+
+
+def unsigned_tool_messages(model: object, messages: object) -> int:
+    """Assistant tool-call messages whose FIRST call carries no signature — the shape Gemini rejects.
+
+    The predicate is per MESSAGE, not per call, and that distinction is the finding. Signing is a
+    property of the model turn: Gemini puts one signature on the first call of a parallel batch and
+    accepts the batch back unchanged, so a later call in the same message having none is normal and
+    must not be reported. A tool-call message whose first call is bare means a turn was taken apart
+    somewhere between the response and here, which is a hard 400 (verified live, #155).
+
+    Counted only for Gemini — the one model on the gateway that signs at all. Every other alias
+    sends no signature ever, so applying this anywhere else would fire on every ordinary turn.
+
+    Two live data points back the rule, so treat it as a warning heuristic rather than a proof:
+    `[signed, bare]` in one message is accepted; `[signed]` then `[bare]` across two is rejected.
+    """
+    bare_model = str(model).rsplit("/", 1)[-1].lower()
+    if "gemini" not in bare_model or not isinstance(messages, list):
+        return 0
+    gap = 0
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        calls = [c for c in (m.get("tool_calls") or []) if isinstance(c, dict)]
+        if calls and not _signature(calls[0]):
+            gap += 1
+    return gap
+
+
 def error_sse(message: str) -> Iterator[bytes]:
     """End an already-committed stream (200 headers sent) READABLY: emit `message` as an assistant
     content delta, a stop finish, then [DONE]. OpenCode renders it as text and closes the turn cleanly

@@ -21,6 +21,7 @@ from ..router.model_control import ModelControl
 from ..router.models import (Mode, ModelCatalog, is_bedrock, reasoning_efforts_for,
                             supports_vision)
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
+from . import keepalive as ka
 from .chat_paths import strip_denied_writes
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
@@ -322,6 +323,31 @@ class EnforcementShim:
                 decision.model if signals.phase is not signals.base_phase else "no",
                 signals.reason, " | ".join(signals.samples),
             )
+
+        # What the tool calls in this request look like on the way OUT, grouped by message. The full
+        # listing is behind the debug flag; a Gemini tool-call message whose FIRST call is unsigned
+        # is warned about unconditionally, because that is a hard 400 (verified live, #155) and it
+        # otherwise surfaces as an opaque "position 2" rejection with nothing pointing at the cause.
+        # An unsigned LATER call in the same message is normal — Gemini signs a batch once — so the
+        # per-message predicate is what keeps this warning off every healthy parallel turn.
+        sig_entries = ka.tool_call_signatures(request.get("messages"))
+        if sig_entries:
+            if ka.debug_stream_enabled():
+                shown = sig_entries[:ka.DEBUG_REQUEST_MAX_CALLS]
+                log.info(
+                    "outgoing tool calls, by message (%d%s): %s",
+                    len(sig_entries),
+                    f", first {len(shown)} shown" if len(shown) < len(sig_entries) else "",
+                    " | ".join(shown),
+                )
+            gap = ka.unsigned_tool_messages(request["model"], request.get("messages"))
+            if gap:
+                log.warning(
+                    "%d of %d tool-call message(s) bound for %s start with an unsigned call — a "
+                    "model turn was taken apart and %s will reject this (see #155). Turn on "
+                    "POST /api/diag/debug-stream to see the grouping.",
+                    gap, len(sig_entries), request["model"], request["model"],
+                )
 
         # Cost-attribution tags (sent as X-LLM-Tag-sage-*, queryable in the gateway usage dashboard).
         labels = CostLabels(

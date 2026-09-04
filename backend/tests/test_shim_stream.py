@@ -209,3 +209,57 @@ def test_shim_app_surfaces_a_late_error_frame_too(monkeypatch):
     assert resp.status_code == 200
     assert "missing a thought_signature" in resp.text
     assert "data: [DONE]" in resp.text
+
+
+# ---- what the tool calls look like on the way OUT (#155) ----------------------------------------
+
+def _batch(*sigs):
+    """One assistant message holding len(sigs) tool calls; a None entry means that call is unsigned."""
+    calls = []
+    for n, sig in enumerate(sigs):
+        c = {"id": f"c{n}", "type": "function",
+             "function": {"name": "read", "arguments": '{"path":"a"}'}}
+        if sig is not None:
+            c["extra_content"] = {"google": {"thought_signature": sig}}
+        calls.append(c)
+    return {"role": "assistant", "content": "", "tool_calls": calls}
+
+
+def test_the_listing_groups_calls_by_message():
+    """Grouping IS the diagnosis: verified live 2026-09-04, Gemini signs a parallel batch once and
+    accepts it back that way, so a flat per-call list cannot tell the healthy shape from the broken
+    one (#155)."""
+    entries = ka.tool_call_signatures([{"role": "user", "content": "go"}, _batch("abcd", None)])
+    assert entries == ["msg1[c0/read sig=4, c1/read sig=NONE]"]
+
+
+def test_tool_call_signatures_survives_junk():
+    # The request is whatever the client sent; a summariser that raises would take the turn with it.
+    assert ka.tool_call_signatures(None) == []
+    assert ka.tool_call_signatures("nope") == []
+    assert ka.tool_call_signatures([None, 7, {"role": "assistant", "tool_calls": [None, "x"]}]) == []
+    assert ka.tool_call_signatures(
+        [{"role": "assistant", "tool_calls": [{"extra_content": "not-a-dict"}]}]
+    ) == ["msg0[?/? sig=NONE]"]
+
+
+def test_an_unsigned_later_call_in_the_same_batch_is_not_a_gap():
+    """The false positive this rule was written to kill. Live, `[sig=408, sig=NONE]` in ONE message
+    round-tripped fine — an earlier build of this warning fired on it and claimed the request would
+    be rejected, which was wrong."""
+    healthy = [_batch("abcd", None, None)]
+    assert ka.unsigned_tool_messages("gemini-3.7-flash", healthy) == 0
+
+
+def test_a_tool_call_message_starting_unsigned_is_a_gap():
+    # The rejected shape: the same two calls split across messages, so the second starts bare.
+    split = [_batch("abcd"), _batch(None)]
+    assert ka.unsigned_tool_messages("gemini-3.7-flash", split) == 1
+    assert ka.unsigned_tool_messages("domino/gemini-3.7-flash", split) == 1   # provider-prefixed
+
+
+def test_the_gap_is_only_counted_for_a_model_that_signs_at_all():
+    split = [_batch("abcd"), _batch(None)]
+    for model in ("sonnet", "gpt-5.4", "bedrock-qwen3-coder"):
+        assert ka.unsigned_tool_messages(model, split) == 0
+    assert ka.unsigned_tool_messages("gemini-3.7-flash", None) == 0
