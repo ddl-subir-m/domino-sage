@@ -93,31 +93,6 @@ ARG SAGE_REV=main
 ARG SAGE_CACHE_BUST=2026-09-02-table-cells-fill
 ENV SAGE_CACHE_BUST=${SAGE_CACHE_BUST}
 
-# Canary for the ARG-vs-ENV question below, testable with the repo still PUBLIC and no real token.
-# SAGE_GIT_TOKEN cannot stand in for this: the clone branches on it being non-empty, and GitHub
-# rejects an invalid credential outright rather than falling back to anonymous ("Invalid username or
-# token"), so a junk value fails the build and leaves nothing to inspect — verified 2026-09-03.
-#
-# The ECHO line is what makes the answer conclusive. Every earlier run of this test was ambiguous
-# because an absent canary and a never-set canary look identical; the echo is the same value
-# arriving by the promoted path, so it says whether the box value reached the build at all.
-# Safe to echo — the value is junk by definition. Never do this with SAGE_GIT_TOKEN.
-#
-# Set SAGE_CANARY to a junk value in the Environment's variables box, bump SAGE_CACHE_BUST, rebuild,
-# then from a VS Code workspace terminal on this Environment (a Sage Builder has no terminal, and
-# its chat box is not one — #150):
-#
-#     env | grep -E 'SAGE_CACHE_BUST|SAGE_CANARY'
-#
-#   SAGE_CACHE_BUST = the new value   -> the rebuild took effect; without this the rest means nothing
-#   SAGE_CANARY_ECHO = the junk value -> the box value did reach the build
-#   SAGE_CANARY      = absent         -> an unpromoted ARG does NOT reach runtime. That is the proof.
-#
-# If SAGE_CANARY is present instead, the box is injected at runtime: a token there is readable by
-# every Sage user through the chat box, so it must be deleted from the box after each build.
-# Delete both lines once the three have been seen together.
-ARG SAGE_CANARY=
-ENV SAGE_CANARY_ECHO=${SAGE_CANARY}
 # ############################################################################################
 # THE TOKEN HERE MUST BE SHORT-LIVED. Expiry is the control, not this Dockerfile. See #151.
 #
@@ -135,16 +110,14 @@ ENV SAGE_CANARY_ECHO=${SAGE_CANARY}
 #
 # The two mitigations below are real but PARTIAL. Both cover the RUNTIME half only; neither touches
 # image metadata, and neither is a reason to use a long-lived token:
-#   - ARG and never ENV keeps the value out of the running container's `env`. This matters because
-#     sage-chat and sage-implement run with `bash: allow` (opencode.json), so a Builder user needs
-#     no terminal to read the environment — they just ask the agent to. UNVERIFIED on this Domino,
-#     and the token is its own test: on the FIRST build with a token actually set, run
-#     `env | grep SAGE_GIT_TOKEN` from a VS Code workspace terminal on this Environment (a Sage
-#     Builder has no terminal, and its chat box is not one — #150). Absent means an unpromoted ARG
-#     really does die with the build. Present means delete the variable from the box straight after
-#     every build, because a runtime `env` is readable by EVERY Sage user, a wider audience than
-#     `docker history`. Running this while no token is set proves nothing: an unset variable and a
-#     correctly-dropped one are both simply absent.
+#   - ARG and never ENV keeps the value out of the running container's `env`. VERIFIED on this
+#     Domino 2026-09-03: with SAGE_CANARY (ARG only) and SAGE_CANARY_ECHO (ARG promoted to ENV) both
+#     fed from the same variables-box entry, a rebuilt workspace showed the ECHO carrying the value
+#     and SAGE_CANARY absent, with SAGE_CACHE_BUST confirming the rebuild had taken. So Domino passes
+#     its Environment Variables as build args, and an ARG that is never promoted dies with the build.
+#     This is the mitigation that matters most: sage-chat and sage-implement run with `bash: allow`
+#     (opencode.json), so a Builder user needs no terminal to read the environment — they just ask
+#     the agent to. That audience is every Sage user, far wider than the `docker history` one below.
 #   - The header form keeps the value off the filesystem. `git clone https://<token>@…` writes that
 #     whole URL into /opt/sage/.git/config, which is a plain file the agent can cat; `git -c` placed
 #     BEFORE the subcommand applies to this process only and is not copied into the new repo, so the

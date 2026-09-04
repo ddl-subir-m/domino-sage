@@ -57,30 +57,17 @@ commits. A published Workbench App must **not** treat that checkout as an app �
    **runtime** half only — the container's `env` and its filesystem. Neither touches image metadata.
    See #151 for the full reasoning and the durable fix (build in CI, have Domino pull the image).
 
-   **Unverified:** whether Domino passes its Environment Variables as build args only, i.e.
-   whether an `ARG` that is never promoted to `ENV` stays out of a workspace's `env`. Settle it
-   **before** going private, with no real token: set `SAGE_CANARY` to a junk value in the variables
-   box, bump `SAGE_CACHE_BUST`, rebuild, and from a VS Code workspace terminal on this Environment
-   (a Sage Builder has no terminal, and its chat box is not one, #150):
+   **Verified 2026-09-03:** Domino passes its Environment Variables as build args, and an `ARG`
+   that is never promoted to `ENV` dies with the build. Tested by feeding one variables-box entry
+   to both `SAGE_CANARY` (`ARG` only) and `SAGE_CANARY_ECHO` (`ARG`+`ENV`): a rebuilt workspace
+   showed the echo carrying the value and `SAGE_CANARY` absent, with `SAGE_CACHE_BUST` confirming
+   the rebuild had taken. The canary lines were removed afterwards.
 
-   ```bash
-   env | grep -E 'SAGE_CACHE_BUST|SAGE_CANARY'
-   ```
-
-   | Line | Means |
-   | --- | --- |
-   | `SAGE_CACHE_BUST` = the new value | the rebuild took effect; without this the rest means nothing |
-   | `SAGE_CANARY_ECHO` = the junk value | the box value did reach the build |
-   | `SAGE_CANARY` absent | an unpromoted `ARG` does not reach runtime — **the proof** |
-
-   `SAGE_CANARY` present instead means the box is injected at runtime, so `SAGE_GIT_TOKEN` must be
-   deleted from the box after every build — a runtime `env` is readable by every Sage user through
-   the chat box, a wider audience than `docker history`. Delete both canary lines once the three
-   have been seen together.
-
-   `SAGE_GIT_TOKEN` cannot stand in for the canary: the clone branches on it being non-empty and
-   GitHub rejects an invalid credential outright rather than falling back to anonymous, so a junk
-   value fails the build and leaves nothing to inspect.
+   So `SAGE_GIT_TOKEN` is **not** readable from a workspace's `env`, which is the exposure that
+   mattered most — `sage-chat` and `sage-implement` run with `bash: allow`, so every Sage user could
+   otherwise have read it by asking the agent. The remaining exposure is `docker history`, which
+   needs the ability to pull the image: admins and CI, not ordinary users. Short expiry still
+   applies, and is now the only control the token depends on.
 
    To confirm a rebuild actually took effect, `SAGE_CACHE_BUST` is promoted to `ENV` and shows in
    `env`. Bump its value per rebuild, or every image reports the same string.
