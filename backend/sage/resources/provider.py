@@ -181,6 +181,27 @@ class ModelApi:
     project_name: str = ""
 
 
+@dataclass(frozen=True)
+class ModelApiListing:
+    """The Model APIs a caller can compose with, and whether the fan-out that found them reached
+    every project it meant to.
+
+    A partial answer here is a *listing that arrived*, which is why the flag has to travel with the
+    rows rather than being a raised failure (ADR-0028 covers a provider that cannot read; ADR-0029
+    covers one that read partially, and this is the second). Two things cut the fan-out short and
+    neither is visible in the rows: a non-home project whose listing failed is skipped, and
+    membership past `_MAX_FANOUT_PROJECTS` is dropped.
+
+    `complete` is what lets a caller refuse to read absence as deletion. Without it, a Binding to a
+    Model API in a skipped project looks deleted, and the remedy on offer is Remove — a false death
+    with a destructive fix (#163). One bool and no reason: neither consumer renders a reason, and
+    ADR-0034 already settled that this kind says nothing about why it could not be checked.
+    """
+
+    models: list[ModelApi]
+    complete: bool = True
+
+
 # Connector types the rail offers, keyed on Domino's own `dataSourceType`. An ALLOWLIST rather than
 # a denylist so an unfamiliar future connector hides instead of rendering as a broken row: Domino's
 # enum already carries 33 values and grows without asking us, and the live deployment returned two
@@ -587,8 +608,9 @@ class ResourceProvider(Protocol):
     # orchestrator owns which project this builder is bound to, and the provider stays a client. The
     # argument is the builder's HOME project since #42, not the only one asked about: the listing
     # spans every project the caller belongs to, and home is the one that sorts first and whose
-    # failure is fatal.
-    def list_model_apis(self, project_id: str | None) -> list[ModelApi]: ...
+    # failure is fatal. Returns a listing rather than the rows, because the fan-out can come back
+    # partial without failing — see `ModelApiListing`, and ADR-0029 for the precedent.
+    def list_model_apis(self, project_id: str | None) -> ModelApiListing: ...
 
     # By id, and no project at all: reach is per model, not per project (#42). None means this caller
     # cannot read the record — which is not the same as cannot call the model, so a caller holding a
@@ -938,7 +960,10 @@ class DominoResourceProvider:
     _MAX_PAGES = 50  # backstop against a non-terminating pager, as the asset provider has
     # Projects the Model API listing fans out over, beyond the builder's own (#42). One HTTP call
     # each, so this is a latency budget: 25 keeps the rail inside a couple of seconds on a slow
-    # deployment. The paste door covers anyone who works in more projects than this.
+    # deployment. The paste door covers anyone who works in more projects than this. Raising it is
+    # not the answer to #163 either: `_member_projects` pages the whole membership, so the tail is
+    # unbounded and dropping the cap trades a correctness bug for the latency one #160 fixed. What
+    # #163 changed is that the listing now SAYS it was cut, which is `ModelApiListing.complete`.
     _MAX_FANOUT_PROJECTS = 25
     # How many of those calls are in the air at once (#160), which is a different budget: every
     # request fetches its own short-lived bearer from the Domino token sidecar first, so this is
@@ -1011,8 +1036,9 @@ class DominoResourceProvider:
             for c in record.get("collaborators") or []
         )
 
-    def _member_projects(self, home_project_id: str) -> list[tuple[str, str]]:
-        """(id, name) for every project worth asking about Model APIs, the builder's own first.
+    def _member_projects(self, home_project_id: str) -> tuple[list[tuple[str, str]], bool]:
+        """(id, name) for every project worth asking about Model APIs, the builder's own first, and
+        whether the cap left any of them out.
 
         Membership, not visibility. Domino's listing is "projects visible to user", and on a demo
         deployment that can mean every public project on it — fanning out over those would be a slow
@@ -1024,19 +1050,25 @@ class DominoResourceProvider:
         before #42, and a rail listing one project beats a rail listing an error. Off-Domino there is
         no home project: an empty home collapses to the membership list, or to nothing.
 
+        Those degrades still report complete, and that is a known gap rather than a claim: a member
+        list cut short by a refused `/self` or a broken pager is short in the same way the cap makes
+        it short, and #163 scoped the flag to the cap and the per-project skip. Anyone widening it
+        wants both of these too.
+
         Capped at `_MAX_FANOUT_PROJECTS` beyond the home project, sorted by name so the cap falls in
         the same place twice running. A member of more projects than that reaches the rest through
-        the paste door, which is why that door exists.
+        the paste door, which is why that door exists — and the second return value says the cap
+        bit, so a caller is not left inferring completeness from a row count it cannot check (#163).
         """
         home = (home_project_id, "") if home_project_id else None
         try:
             me = str(((self._domino_get("/api/users/v1/self") or {}).get("user") or {}).get("id") or "")
         except ResourceUnavailable:
             if home:
-                return [home]
+                return [home], True
             raise
         if not me:
-            return [home] if home else []
+            return ([home] if home else []), True
 
         mine: list[tuple[str, str]] = []
         offset = 0
@@ -1062,7 +1094,8 @@ class DominoResourceProvider:
             if not rows or (total is not None and offset >= total):
                 break
         extras = sorted(mine, key=lambda p: p[1])[: self._MAX_FANOUT_PROJECTS]
-        return [home, *extras] if home else extras
+        whole = len(extras) == len(mine)
+        return ([home, *extras] if home else extras), whole
 
     def _model_apis_in(self, project_id: str, project_name: str) -> list[ModelApi]:
         """The Model APIs of one project — the whole of what this call used to be."""
@@ -1082,7 +1115,7 @@ class DominoResourceProvider:
                 break
         return out
 
-    def list_model_apis(self, project_id: str | None) -> list[ModelApi]:
+    def list_model_apis(self, project_id: str | None) -> ModelApiListing:
         """Model APIs this caller can compose with, across the projects they belong to (#42).
 
         Asked once per project rather than once, because the scope cannot be dropped: unscoped,
@@ -1096,6 +1129,11 @@ class DominoResourceProvider:
         project's failure is skipped — one odd grant somewhere on the tenant must not empty a rail
         that would otherwise have answered. Off-Domino there is no home project: membership is the
         whole list, and finding none is unlistable rather than empty.
+
+        A skip and the fan-out cap both leave the answer short, so it carries `complete` rather than
+        being bare rows (#163). The skip is still a skip: this returns what it found. The change is
+        only that a caller can now tell a short listing from a whole one, which is the difference
+        between "that Resource is gone" and "we did not manage to look everywhere".
         """
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
@@ -1103,7 +1141,8 @@ class DominoResourceProvider:
                 "in, and it is not running in one, so it cannot tell whether this project has any."
             ))
         home_id = project_id or ""
-        pairs = [(pid, pname) for pid, pname in self._member_projects(home_id) if pid]
+        members, complete = self._member_projects(home_id)
+        pairs = [(pid, pname) for pid, pname in members if pid]
         if not pairs:
             raise ResourceUnavailable(brand.text(
                 "{assistantName} lists {modelApiPlural} from the projects you belong to, and it "
@@ -1134,12 +1173,15 @@ class DominoResourceProvider:
                 except ResourceUnavailable:
                     if pid == home_id:
                         raise
+                    # Recorded, not just survived. This `continue` is what made the whole answer
+                    # unusable as evidence of absence, one layer above (#163).
+                    complete = False
                     continue
                 for m in rows:
                     if m.id not in seen:
                         seen.add(m.id)
                         out.append(m)
-        return out
+        return ModelApiListing(out, complete=complete)
 
     def get_model_api(self, model_api_id: str) -> ModelApi | None:
         """One Model API by id, or None when this caller cannot read it (#42).
@@ -1769,10 +1811,13 @@ class FakeResourceProvider:
     def list_hosted_endpoints(self) -> list[HostedEndpoint]:
         return list(self.hosted_endpoints)
 
-    def list_model_apis(self, project_id: str | None) -> list[ModelApi]:
+    def list_model_apis(self, project_id: str | None) -> ModelApiListing:
         """The project is ignored, not validated: this fake stands in for a Domino that answers, and
-        a local run has no project ids for a test to be right or wrong about."""
-        return list(self.model_apis)
+        a local run has no project ids for a test to be right or wrong about.
+
+        Complete, because there is no fan-out here to come back short. A test that wants a partial
+        listing subclasses and says so, the way `test_preflight.py` does."""
+        return ModelApiListing(list(self.model_apis))
 
     def get_model_api(self, model_api_id: str) -> ModelApi | None:
         """Answers from the same list the fan-out would have found it in. A fake that answered for

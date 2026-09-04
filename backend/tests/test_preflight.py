@@ -417,6 +417,38 @@ def test_a_model_api_that_is_no_longer_deployed_is_reported_at_session_open(tmp_
     assert "deployed in this project" in result["bindings"][0]["message"]
 
 
+def test_a_model_api_missing_from_a_partial_listing_is_not_reported_gone(tmp_path):
+    """The regression that matters in #163. `list_model_apis` fans out over the creator's member
+    projects, skips any non-home one that fails and caps the fan-out at 25 — so a Binding to a
+    Model API in a project that was skipped or capped is absent from a listing that arrived.
+
+    Read as deletion, that puts a Problem in the drawer telling the creator to remove a Binding
+    that works: a false death whose recommended remedy is destructive. `stale_bindings` only ever
+    outputs gone-ness, so an incomplete listing is worth exactly as much to it as none at all.
+    """
+    class Partial(FakeResourceProvider):
+        def list_model_apis(self, project_id):
+            # The rows it did find, minus the bound one — the shape a skipped project produces.
+            listing = super().list_model_apis(project_id)
+            return replace(listing, models=[m for m in listing.models if m.id != "f-churn"],
+                           complete=False)
+
+    orch = _bound(tmp_path, model_api=True, resources=Partial(list(ALIASES)))
+    result = orch.preflight_bindings()
+    # No Problem, and no sentence either: ADR-0034 keeps "we could not check" a state rather than
+    # making it a line the creator has to read on every session open.
+    assert result == {"state": "ok", "error": None, "bindings": []}
+
+    # And the check is not switched off — the same Binding against a listing that reached every
+    # project is still reported gone, which is what makes the guard a distinction and not a mute.
+    class Whole(Partial):
+        def list_model_apis(self, project_id):
+            return replace(super().list_model_apis(project_id), complete=True)
+
+    orch._resources = Whole(list(ALIASES))
+    assert [b["kind"] for b in orch.preflight_bindings()["bindings"]] == [KIND_MODEL_API]
+
+
 def test_bindings_of_every_kind_that_are_all_fine_report_nothing(tmp_path):
     orch = _bound(tmp_path, model_api=True, data_source=True)
     assert orch.preflight_bindings() == {"state": "ok", "error": None, "bindings": []}

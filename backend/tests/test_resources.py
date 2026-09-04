@@ -25,6 +25,7 @@ from sage.resources.provider import (
     FakeResourceProvider,
     LlmAlias,
     ModelApi,
+    ModelApiListing,
     ResourceUnavailable,
     accessible_ids,
     cascade_levels,
@@ -344,7 +345,7 @@ def test_the_provider_scopes_the_listing_to_the_project_it_was_asked_about():
         out = DominoResourceProvider(
             "http://gw/v1", lambda: "gwtok", api_host=api_host, api_token_provider=lambda: "apitok"
         ).list_model_apis("proj-1")
-    assert [m.name for m in out] == ["churn-risk", "demand-forecast", "never-deployed"]
+    assert [m.name for m in out.models] == ["churn-risk", "demand-forecast", "never-deployed"]
     assert seen[0].startswith("/api/modelServing/v1/modelApis?")
     assert "projectId=proj-1" in seen[0]
 
@@ -358,7 +359,7 @@ def test_a_project_with_more_model_apis_than_one_page_is_listed_whole():
     with stub_domino_api([page(["a"], 2), page(["b"], 2), page([], 2)]) as (api_host, seen):
         p = DominoResourceProvider("http://gw/v1", lambda: "t", api_host=api_host)
         p._PAGE = 1
-        assert [m.name for m in p.list_model_apis("proj-1")] == ["a", "b"]
+        assert [m.name for m in p.list_model_apis("proj-1").models] == ["a", "b"]
     assert "offset=1" in seen[1]
 
 
@@ -403,7 +404,7 @@ def test_the_listing_spans_the_projects_this_caller_belongs_to_and_names_each_ro
     # Home first, and blank — the rail is already in that project's context. Still ordered although
     # the calls now overlap (#160): the answers are read back in membership order, not in whichever
     # order Domino happened to return them, so the rail does not reshuffle between two opens.
-    assert [(m.name, m.project_name) for m in out] == [("churn", ""), ("priority", "Sage")]
+    assert [(m.name, m.project_name) for m in out.models] == [("churn", ""), ("priority", "Sage")]
     assert sorted(_asked_about(listings)) == ["proj-1", "proj-2"]
 
 
@@ -418,7 +419,7 @@ def test_off_domino_the_listing_fans_out_over_membership_with_no_home_project():
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis(None)
 
-    assert {m.name for m in out} == {"churn", "priority"}
+    assert {m.name for m in out.models} == {"churn", "priority"}
     assert any("projectId=proj-1" in path for path in listings)
     assert any("projectId=proj-2" in path for path in listings)
 
@@ -436,7 +437,7 @@ def test_a_project_the_caller_only_has_visibility_on_is_never_asked_about():
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis("proj-1")
 
-    assert [m.name for m in out] == ["churn"]
+    assert [m.name for m in out.models] == ["churn"]
     assert len(listings) == 1 and "projectId=proj-1" in listings[0]
 
 
@@ -452,7 +453,7 @@ def test_one_model_bound_into_two_projects_is_offered_once():
         ).list_model_apis("proj-1")
 
     # First writer wins, so the row keeps the home project's blank label rather than gaining one.
-    assert [(m.id, m.project_name) for m in out] == [("churn", "")]
+    assert [(m.id, m.project_name) for m in out.models] == [("churn", "")]
 
 
 def test_a_domino_that_will_not_say_who_is_calling_still_lists_the_builders_own_project():
@@ -464,7 +465,7 @@ def test_a_domino_that_will_not_say_who_is_calling_still_lists_the_builders_own_
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis("proj-1")
 
-    assert [m.name for m in out] == ["churn"]
+    assert [m.name for m in out.models] == ["churn"]
     assert len(listings) == 1
 
 
@@ -487,8 +488,13 @@ def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
 
     with stub_domino_api([_model_apis("churn")], user=_ME, projects=projects) as (api_host, _):
         p = Provider("http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
-        assert [m.name for m in p.list_model_apis("proj-1")] == ["churn"]
+        out = p.list_model_apis("proj-1")
+        assert [m.name for m in out.models] == ["churn"]
         assert sorted(calls) == ["proj-1", "proj-2"]
+        # The skip is survivable and is not silent (#163). It used to be both: a 200 carrying rows
+        # the fan-out knew were partial, which preflight then read as proof that everything absent
+        # from them had been deleted.
+        assert not out.complete
 
         class HomeBroken(Provider):
             def _model_apis_in(self, project_id, project_name):
@@ -498,6 +504,41 @@ def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
         with pytest.raises(ResourceUnavailable):
             broken.list_model_apis("proj-1")
+
+
+def test_a_listing_that_reached_every_project_says_so_and_a_capped_one_says_it_did_not():
+    """`_MAX_FANOUT_PROJECTS` cuts the tail of the member list, so a creator on more projects than
+    that has some whose Model APIs are absent from a listing that reports plain success (#163).
+
+    The cap itself stays: `_member_projects` pages through the whole membership, so removing it
+    makes the fan-out unbounded and re-opens #160. What changes is that the listing now says it was
+    cut, which is the one bit preflight needs to stop reading absence as deletion.
+    """
+    projects = _projects(
+        {"id": "proj-1", "name": "test-ds", "ownerId": "u-me"},
+        {"id": "proj-2", "name": "Sage", "ownerId": "u-me"},
+        {"id": "proj-3", "name": "Underwriting", "ownerId": "u-me"},
+    )
+    pages = {"proj-1": [_model_apis("churn")], "proj-2": [_model_apis("priority")],
+             "proj-3": [_model_apis("risk")]}
+    with stub_domino_api(pages, user=_ME, projects=projects) as (api_host, listings):
+        p = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        whole = p.list_model_apis("proj-1")
+        assert {m.name for m in whole.models} == {"churn", "priority", "risk"}
+        assert whole.complete
+
+        # Set on the instance the way `_PAGE` is above: three projects and a cap of one states the
+        # property without standing up twenty-six of them.
+        p._MAX_FANOUT_PROJECTS = 1
+        listings.clear()
+        capped = p.list_model_apis("proj-1")
+
+    # A partial listing still returns its rows — the rail goes on showing what was found. The cap
+    # sorts by name, so "Sage" survives and "Underwriting" is never asked about.
+    assert {m.name for m in capped.models} == {"churn", "priority"}
+    assert not capped.complete
+    assert sorted(_asked_about(listings)) == ["proj-1", "proj-2"]
 
 
 def test_the_fan_out_asks_every_project_at_once_rather_than_one_after_another():
@@ -512,7 +553,7 @@ def test_the_fan_out_asks_every_project_at_once_rather_than_one_after_another():
 
     class Provider(DominoResourceProvider):
         def _member_projects(self, home_project_id):
-            return [("proj-1", ""), ("proj-2", "Sage"), ("proj-3", "Underwriting")]
+            return [("proj-1", ""), ("proj-2", "Sage"), ("proj-3", "Underwriting")], True
 
         def _model_apis_in(self, project_id, project_name):
             at_once.wait()
@@ -523,7 +564,7 @@ def test_the_fan_out_asks_every_project_at_once_rather_than_one_after_another():
                    api_token_provider=lambda: "t").list_model_apis("proj-1")
 
     # Membership order, not completion order — see the ordering note in the fan-out test above.
-    assert [m.id for m in out] == ["proj-1", "proj-2", "proj-3"]
+    assert [m.id for m in out.models] == ["proj-1", "proj-2", "proj-3"]
 
 
 def test_one_model_is_readable_by_id_whatever_project_it_lives_in():
@@ -808,10 +849,10 @@ def test_the_orchestrator_hands_its_own_project_down_as_the_home_of_the_listing(
     class Recording(FakeResourceProvider):
         def list_model_apis(self, project_id):
             asked.append(project_id)
-            return [
+            return ModelApiListing([
                 ModelApi("m1", "churn-risk", "Scores cancellation risk.", "Running"),
                 ModelApi("m2", "churn-risk", None, "Running", project_name="Underwriting"),
-            ]
+            ])
 
     orch = _orch(tmp_path, Recording())
     orch._domino_project_id = "proj-1"

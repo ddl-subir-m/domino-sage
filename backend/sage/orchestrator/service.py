@@ -9162,6 +9162,10 @@ class Orchestrator:
         `project` is empty for a Model API deployed here, and names the project otherwise. The rail
         renders it as a row's second line, so it has to be blank rather than "this project" — a label
         repeated on every row would say nothing while hiding the rows where it says something.
+
+        A partial listing shows its rows and says nothing about being partial (#163). The rail's
+        question is "what could I compose?", and the rows it found are a true answer to that; the
+        completeness flag exists for the one caller that reads absence as a fact, which is preflight.
         """
         return [
             {
@@ -9171,7 +9175,7 @@ class Orchestrator:
                 "status": m.status,
                 "project": m.project_name,
             }
-            for m in self._resources.list_model_apis(self._domino_project_id)
+            for m in self._resources.list_model_apis(self._domino_project_id).models
         ]
 
     def list_data_sources(self) -> list[dict]:
@@ -9924,10 +9928,22 @@ class Orchestrator:
         same single request it made before this. A listing that fails maps to None rather than being
         omitted, which is the same answer to `stale_bindings` and a different one to the caller: the
         `error` it produces is how "we could not check" stays distinguishable from "nothing is wrong".
+
+        An INCOMPLETE Model APIs listing maps to None too, and to no error (#163). No new concept
+        either way: None already means "nothing was learned", which is exactly what a listing the
+        fan-out cut short is worth to a function that only ever outputs gone-ness. It costs nothing,
+        because a truncated listing was never authoritative for absence. And it stays silent because
+        ADR-0034 settled that this kind's uncheckability is a state and not a sentence — the one
+        failure that earns a line is the dependency itself refusing, which still raises and still
+        does.
         """
+        def model_apis() -> list | None:
+            listing = self._resources.list_model_apis(self._domino_project_id)
+            return listing.models if listing.complete else None
+
         fetchers = (
             (KIND_LLM_ALIAS, self._resources.list_llm_aliases),
-            (KIND_MODEL_API, lambda: self._resources.list_model_apis(self._domino_project_id)),
+            (KIND_MODEL_API, model_apis),
             (KIND_DATA_SOURCE, self._resources.list_data_sources),
         )
         listings: dict[str, list | None] = {}
