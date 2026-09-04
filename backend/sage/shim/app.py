@@ -105,10 +105,28 @@ async def chat_completions(
     )
 
     def stream() -> Iterator[bytes]:
+        # A provider error relayed as a 200 + one `data: {"error": …}` frame raises nothing, so
+        # without this it goes out raw and the client dies on an unparseable event with no payload.
+        # Every chunk, not just the first: the frame arrives whenever the provider gets round to
+        # failing, which for a thinking model is after the stream has already committed.
+        stopped = False
+
+        def relay(chunk: bytes):
+            nonlocal stopped
+            upstream_msg = ka.upstream_error(chunk)
+            if upstream_msg:
+                log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
+                stopped = True
+                yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
+                return
+            yield chunk
+
         if first is ka.DONE:
             return
         if first is not ka.EMPTY:
-            yield first  # the first real chunk the eager pull already consumed
+            yield from relay(first)  # the first real chunk the eager pull already consumed
+            if stopped:
+                return
         while True:
             item = ka.get(q, ka.KEEPALIVE_INTERVAL_S)
             if item is ka.EMPTY:
@@ -127,6 +145,8 @@ async def chat_completions(
                     "This is usually an upstream idle or duration limit — please retry."
                 )
                 return
-            yield item
+            yield from relay(item)
+            if stopped:
+                return
 
     return StreamingResponse(stream(), media_type="text/event-stream")

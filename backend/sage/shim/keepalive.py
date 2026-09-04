@@ -94,8 +94,19 @@ def upstream_error(chunk: bytes) -> str | None:
     openai-compatible-chat stream event" with no payload, which is unactionable. Recognising the shape
     here is what turns it into a message a person can read (see error_sse).
 
-    Observed live: a Bedrock ValidationException relayed this way. Returns None for an ordinary chunk.
+    Callers must run this on EVERY chunk, not only the eagerly-pulled first one. The frame arrives
+    whenever the provider gets round to failing, and a model that thinks for longer than
+    FIRST_BYTE_BUDGET_S has already committed the stream by then (see the callers in
+    orchestrator/app.py and shim/app.py).
+
+    Observed live: a Bedrock ValidationException, a Gemini missing-thought_signature 400, and a bare
+    gateway `'list' object has no attribute 'get'`. Returns None for an ordinary chunk.
     """
+    # Fast reject before any parsing: an error frame always carries the literal `"error"` key, and
+    # this now runs against every chunk of every stream — without it each content delta would pay a
+    # json.loads on the hot path.
+    if b'"error"' not in chunk:
+        return None
     for line in chunk.split(b"\n"):
         payload = line.strip()
         if not payload.startswith(b"data:"):

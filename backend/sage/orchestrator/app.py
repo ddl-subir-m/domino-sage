@@ -2564,19 +2564,32 @@ async def chat_completions(request: Request):
                 flagged = True
                 project.tool_call_responses += 1
 
-        if first is ka.DONE:
-            return
-        if first is not ka.EMPTY:
-            # A provider error relayed as a 200 + one `data: {"error": …}` frame. Nothing raised, so
-            # without this it forwards as-is and OpenCode dies on an unparseable event with no payload.
-            upstream_msg = ka.upstream_error(first)
+        # A provider error relayed as a 200 + one `data: {"error": …}` frame. Nothing raised, so
+        # without this it forwards as-is and OpenCode dies on an unparseable event with no payload.
+        # Checked on EVERY chunk: it used to be checked only on the eagerly-pulled `first`, so the
+        # frame was recognised only when the provider failed inside FIRST_BYTE_BUDGET_S. A model that
+        # thought for longer committed the stream first, and its error frame then went out raw —
+        # which is every "Invalid sage-gateway/openai-compatible-chat stream event" in the wild.
+        stopped = False
+
+        def relay(chunk: bytes):
+            nonlocal stopped
+            upstream_msg = ka.upstream_error(chunk)
             if upstream_msg:
                 log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
                 project.last_gateway_error = {"message": upstream_msg}
+                stopped = True
                 yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
                 return
-            sniff(first)
-            yield first  # the first real chunk the eager pull already consumed
+            sniff(chunk)
+            yield chunk
+
+        if first is ka.DONE:
+            return
+        if first is not ka.EMPTY:
+            yield from relay(first)  # the first real chunk the eager pull already consumed
+            if stopped:
+                return
         while True:
             item = ka.get(q, ka.KEEPALIVE_INTERVAL_S)
             if item is ka.EMPTY:
@@ -2596,8 +2609,9 @@ async def chat_completions(request: Request):
                     "This is usually an upstream idle or duration limit — please retry."
                 )
                 return
-            sniff(item)
-            yield item
+            yield from relay(item)
+            if stopped:
+                return
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

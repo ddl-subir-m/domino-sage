@@ -139,3 +139,73 @@ def test_upstream_error_ignores_ordinary_chunks():
     assert ka.upstream_error(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n') is None
     assert ka.upstream_error(b"data: [DONE]\n\n") is None
     assert ka.upstream_error(b": keepalive\n\n") is None
+
+
+def test_upstream_error_still_reads_a_frame_whose_content_mentions_the_word_error():
+    """The fast reject added for the per-chunk check keys on the literal `"error"`, which a model's
+    own prose can contain too. Rejecting cheaply must not start rejecting real frames — nor must a
+    content delta that merely says "error" get mistaken for one."""
+    assert ka.upstream_error(b'data: {"choices":[{"delta":{"content":"an \\"error\\" here"}}]}\n\n') is None
+    assert ka.upstream_error(b'data: {"error": {"message": "real"}}\n\n') == "real"
+
+
+# ---- the frame that arrives AFTER the first-byte budget ------------------------------------------
+
+def test_an_error_frame_that_arrives_after_the_budget_is_still_readable(monkeypatch):
+    """The Gemini/GCP failure, read out of /api/diag on 2026-09-04.
+
+    `upstream_error` was applied only to the eagerly-pulled `first` chunk, so the gateway's error
+    frame was recognised only when the provider failed inside FIRST_BYTE_BUDGET_S. Live, the log
+    correlated perfectly: every turn that logged "first byte 8.0s, pending; keepalive engaged" died
+    as "Invalid sage-gateway/openai-compatible-chat stream event", and every turn whose first byte
+    beat the budget got a readable message from the same gateway defect. The frame below is verbatim
+    from that capture — a gateway-side Python AttributeError relayed as a 200.
+
+    The 0.2s sleep is what makes this the real case: it pushes the frame past the (patched) budget,
+    so `first is EMPTY`, the stream commits, and the frame arrives inside the loop.
+    """
+    err = b'data: {"error": {"message": "\'list\' object has no attribute \'get\'", "type": "server_error"}}\n\n'
+
+    def gen():
+        time.sleep(0.2)   # the model thinks for longer than the first-byte budget
+        yield err
+
+    _fast(monkeypatch)
+    client, proj = _control_client(monkeypatch, gen)
+    resp = _post(client)
+
+    assert resp.status_code == 200
+    assert "'list' object has no attribute 'get'" in resp.text   # the gateway's reason reaches the user
+    assert "data: [DONE]" in resp.text                           # ...and the turn closes cleanly
+    assert '"type": "server_error"' not in resp.text             # the unparseable frame is NOT forwarded
+    assert proj.last_gateway_error is not None                   # telemetry recorded it
+
+
+def test_a_good_chunk_before_a_late_error_frame_is_kept(monkeypatch):
+    # The check now runs mid-stream, so it must end the stream without eating what already streamed.
+    def gen():
+        yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+        yield b'data: {"error": {"message": "provider gave up"}}\n\n'
+        yield b'data: {"choices":[{"delta":{"content":"never"}}]}\n\n'
+
+    client, _ = _control_client(monkeypatch, gen)
+    resp = _post(client)
+
+    assert '"content":"partial"' in resp.text    # what arrived before the failure is preserved
+    assert "provider gave up" in resp.text       # the reason is rendered
+    assert "never" not in resp.text              # and nothing after the error frame is forwarded
+
+
+def test_shim_app_surfaces_a_late_error_frame_too(monkeypatch):
+    # The standalone shim checked for an error frame nowhere at all, first chunk included.
+    def gen():
+        time.sleep(0.2)
+        yield b'data: {"error": {"message": "Function call is missing a thought_signature"}}\n\n'
+
+    _fast(monkeypatch)
+    client = _shim_client(monkeypatch, gen)
+    resp = _post(client)
+
+    assert resp.status_code == 200
+    assert "missing a thought_signature" in resp.text
+    assert "data: [DONE]" in resp.text
