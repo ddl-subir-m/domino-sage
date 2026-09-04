@@ -87,6 +87,26 @@ def test_an_assignment_survives_a_restart(tmp_path):
     assert _runs(_orch(tmp_path), Mode.AUTO, Phase.IMPLEMENT) == "opus"
 
 
+def test_assigning_a_signing_slot_takes_the_whole_session_with_it(tmp_path):
+    """ADR-0032: a signing model cannot share a harness session with one that does not sign, so one
+    assignment pins every mode and every phase. This is Auto's phase switch being spent on purpose,
+    not a routing bug."""
+    orch = _orch(tmp_path)
+    orch.set_catalog(implement="gemini-3.7-flash")
+    assert _runs(orch, Mode.AUTO, Phase.PLAN) == "gemini-3.7-flash"
+    assert _runs(orch, Mode.ASK) == "gemini-3.7-flash"
+
+
+def test_the_status_names_the_slot_that_pinned_the_session(tmp_path):
+    """The picker restates the router's precedence in JS and cannot see the pin, so the slot name is
+    sent rather than left to be recomputed — otherwise the panel shows a model the turn will not
+    run on (ADR-0032)."""
+    orch = _orch(tmp_path)
+    assert orch.project().status()["model"]["signing_slot"] is None
+    orch.set_catalog(implement="gemini-3.7-flash")
+    assert orch.project().status()["model"]["signing_slot"] == "implement"
+
+
 # ---- clearing (the path that did not exist) --------------------------------------------------------
 
 

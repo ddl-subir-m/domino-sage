@@ -117,7 +117,7 @@ from ..resources.publish_guard import (
     publish_problems,
 )
 from ..router.model_control import ModelControl
-from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase
+from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, signing_slot
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager, ensure_ignore_line
@@ -2646,6 +2646,12 @@ class Project:
                     "implement": self.shim.catalog.implement,
                     "ask": self.shim.catalog.ask,
                 },
+                # The picker draws the model each mode will run on by restating the router's
+                # precedence in JS. It cannot see the signing pin, which outranks all of it, so a
+                # session with a signing model in any slot would show the slot's own model and run
+                # something else (ADR-0032). Sent as the slot name, not a model, because that is
+                # what the picker already keys its rows by.
+                "signing_slot": signing_slot(self.shim.catalog),
             },
             "cost": {"url": self.cost_url, "project": self.cost_project},
             "manage": self.manage_url,

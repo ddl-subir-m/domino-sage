@@ -32,6 +32,8 @@ from sage.resources.provider import (
     LlmAlias,
     ResourceUnavailable,
 )
+from dataclasses import replace as _replace
+
 from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -192,6 +194,31 @@ def test_a_pick_in_the_composer_is_the_model_that_gets_checked():
 def test_auto_ignores_a_pick_exactly_as_the_router_does():
     assert turn_slots(LIVE, Mode.AUTO, "picked-model") == [("plan", "plan-model", False),
                                                            ("implement", "implement-model", False)]
+
+
+def test_a_signing_slot_is_the_only_slot_a_turn_can_reach():
+    """ADR-0032: the pin outranks every other line of precedence, so it decides what to preflight.
+    Checking the phase's own slot would do BOTH kinds of damage — miss a dead signing alias, and
+    refuse a turn because a slot it will never reach is dead."""
+    catalog = _replace(LIVE, implement="gemini-3.7-flash")
+    for mode in (Mode.AUTO, Mode.ASK, Mode.PLAN, Mode.IMPLEMENT):
+        assert turn_slots(catalog, mode) == [("implement", "gemini-3.7-flash", False)], mode
+
+
+def test_a_pick_still_shadows_a_signing_slot_the_way_the_router_says():
+    """Precedence is veto > in-session act > pin, so a pick in the composer beats the pin — and the
+    preflight has to check the picked model, not the pinned one."""
+    catalog = _replace(LIVE, implement="gemini-3.7-flash")
+    assert turn_slots(catalog, Mode.IMPLEMENT, "picked-model") == [
+        ("implement", "picked-model", True)]
+    # Auto and Ask never honour a pick, so the pin still stands there.
+    assert turn_slots(catalog, Mode.AUTO, "picked-model") == [
+        ("implement", "gemini-3.7-flash", False)]
+
+
+def test_no_signing_slot_leaves_the_preflight_exactly_as_it_was():
+    assert turn_slots(LIVE, Mode.AUTO) == [("plan", "plan-model", False),
+                                           ("implement", "implement-model", False)]
 
 
 def test_a_slot_is_handed_on_exactly_as_it_was_configured():

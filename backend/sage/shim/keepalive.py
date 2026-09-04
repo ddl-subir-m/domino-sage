@@ -190,6 +190,13 @@ def unsigned_tool_messages(model: object, messages: object) -> int:
 
     Reproduced end to end on 2026-09-04 (#155): plan on sonnet, then an implement turn on Gemini in
     the same session, which returns the user's verbatim `default_api:bash` 400.
+
+    DELIBERATELY BROADER than the gateway's own rule. Probed live on 2026-09-04: the same unsigned
+    history is accepted (HTTP 200) when the LAST message is a user turn, and rejected (400) when the
+    model has to continue from a tool result. So the first request of a turn would slip through and
+    every request after it in that turn would fail. Reading the last role would buy one Gemini reply
+    and then break the turn anyway, mid-flight, with the model changing under the agent. Refusing
+    the whole session is the conservative direction and the stable one (ADR-0032).
     """
     bare_model = str(model).rsplit("/", 1)[-1].lower()
     if "gemini" not in bare_model or not isinstance(messages, list):
