@@ -337,8 +337,15 @@ def test_chat_honours_the_qualified_token_the_menu_gave_it():
     assert _at_token_hits("raw/2026/data.csv", "data.csv", P2026)
     # The plain basename still hits, which is how a stale token goes on resolving.
     assert _at_token_hits("data.csv", "data.csv", P2026)
+    # A folder token outlives the row the same way, including in Chat: `@2026` was a row, the
+    # files are now chips, and without the parent tails the token names nothing here either.
+    assert _at_token_hits("2026", "data.csv", P2026)
     # And a qualified token still names ONE partition, not its sibling.
     assert not _at_token_hits("2026/data.csv", "data.csv", P2025)
+    assert not _at_token_hits("2026", "data.csv", P2025)
+    # The floor: `@data` is not a token of every file under `public/data/`.
+    assert not _at_token_hits("data", "summary.csv", SUMMARY)
+    assert not _at_token_hits("public", "data.csv", P2026)
 
 
 # ---- one derivation ------------------------------------------------------------------------------

@@ -764,7 +764,7 @@ def _folder_members(groups: dict[str, list[dict]], folder: str) -> tuple[str, li
     shallow row would carry all twelve — the deeper row's files a second time — while its own
     caption and its own block line both said two.
 
-    It needs no recursion for the same reason: where the roll-up made a group's key an ANCESTOR of
+    It needs no recursion for the enclosing case: where the roll-up made a group's key an ANCESTOR of
     where its files sit, the group already holds them.
 
     Then the ENCLOSING row, because a folder row's path is not fixed the way a file's is. The
@@ -778,13 +778,28 @@ def _folder_members(groups: dict[str, list[dict]], folder: str) -> tuple[str, li
     one day is answered with the month that absorbed it, never with the whole Dataset. That falls
     out of the grouping rather than being chosen here — a file belongs to exactly one group, so only
     the group that actually holds the files under the named folder can qualify.
+
+    Then the other direction: the named folder split into rows below it. `@2026` was the month;
+    files leave until the days are few enough to be rows of their own, and carrying nothing is
+    the same silence. Groups whose key sits under `at`, not every path under a prefix — a sibling
+    group beside this subtree must not ride along. And not above the Dataset slug, which is the
+    grouping's floor: inventing a row there would carry every year in the Dataset for a path
+    nobody was offered.
     """
     at = str(folder or "").rstrip("/")
     if at in groups:
         return at, groups[at]
-    return next(((k, held) for k, held in groups.items()
-                 if at.startswith(k + "/") and any(e["path"].startswith(at + "/") for e in held)),
-                ("", []))
+    enclosing = next(((k, held) for k, held in groups.items()
+                      if at.startswith(k + "/") and any(e["path"].startswith(at + "/") for e in held)),
+                     None)
+    if enclosing:
+        return enclosing
+    floor = len(PurePosix("public/data").parts) + 1
+    if len(PurePosix(at).parts) > floor:
+        held = [e for k, members in groups.items() if k.startswith(at + "/") for e in members]
+        if held:
+            return at, held
+    return "", []
 
 
 def _menu_folders(attached: list[dict]) -> dict[str, tuple[str, int]]:
@@ -2829,10 +2844,33 @@ def _mention_word(text: str) -> str:
 def _mention_tokens(path: str) -> list[str]:
     """Every token that could name `path`, longest tail first. `mentionTokens` in
     `workbench/js/util.js` is the same set, and it has to be: what the client MATCHED on is what
-    this reports about."""
-    segments = str(path or "").split("/")
-    return [_mention_word("/".join(segments[len(segments) - take:]))
-            for take in range(len(segments), 0, -1)]
+    this reports about.
+
+    A file under `public/data/` also answers for the folders above it, because a folder row's
+    token outlives the row (ADR-0030): `@2024` was a row, files leave, the menu shows them one
+    by one, and without the parent tails `_ambiguous_mentions` would watch the turn carry five
+    files and say nothing. Stop at `public/data/<slug>` inclusive — `_by_folder`'s floor — so
+    `@data` does not become a token of every Attachment. Chat's `_at_token_hits` reads this too,
+    and the floor is what keeps `@data` from lighting up every chip that happens to live there.
+    """
+    raw = str(path or "")
+    paths = [raw] if raw else [""]
+    parts = [p for p in raw.split("/") if p]
+    if parts[:2] == ["public", "data"]:
+        for n in range(len(parts) - 1, 2, -1):
+            folder = "/".join(parts[:n])
+            if folder not in paths:
+                paths.append(folder)
+    out: list[str] = []
+    seen: set[str] = set()
+    for each in paths:
+        segments = each.split("/")
+        for take in range(len(segments), 0, -1):
+            token = _mention_word("/".join(segments[len(segments) - take:]))
+            if token not in seen:
+                seen.add(token)
+                out.append(token)
+    return out
 
 
 def _ambiguous_mentions(resolved: list[dict] | None, prompt: str) -> str:
@@ -4299,8 +4337,11 @@ class Orchestrator:
         # and given no row, because no one button closes it.
         held = {e["path"] for e in project.attached}
         folders = _by_folder(project.attached)
+        # `_folder_members`, not `in folders`: a token whose row split into rows below it is no
+        # longer a group key, but the files under it are still attached. Calling that "not
+        # attached" would offer to attach them again — the wrong door, and a lie about the panel.
         gone = [m for m in missing
-                if m not in chat_files and (m in held or m.rstrip("/") in folders)]
+                if m not in chat_files and (m in held or bool(_folder_members(folders, m)[1]))]
         others = [m for m in missing if m not in chat_files and m not in gone]
         lines: list[str] = []
         entries: list[dict] = []

@@ -276,8 +276,19 @@ SW.store.set({ appAttachments: ATTACHED });
 mode = CHAT;
 report.menuChat = menuFor('2024/part');
 
-// The app below the threshold, where the server sends no folder and nothing collapses.
 mode = BUILD;
+
+// A folder token after the count dropped below the threshold. The folder rows are gone, and
+// without the parent tails a file cannot answer `@2024` — the token names nothing, which is
+// the silence ADR-0030 rules out, running downwards.
+const BELOW = PART('2024', 5).map((a) => ({ ...a, menu_folder: '', menu_folder_count: 0 }));
+sent.length = 0;
+SW.store.set({ appAttachments: BELOW, buildRunning: false });
+await SW.store.sendBuildPrompt('chart the trend from @2024');
+await settle();
+report.sentStaleBelow = sent.map((body) => ({ prompt: body.prompt, mentions: body.mentions }));
+
+// The app below the threshold, where the server sends no folder and nothing collapses.
 SW.store.set({ appAttachments: SMALL });
 report.menuSmallApp = menuFor('.csv');
 

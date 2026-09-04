@@ -388,6 +388,28 @@ def test_a_folder_mention_whose_files_are_gone_is_refused_like_a_file(tmp_path: 
     assert rows == []
 
 
+def test_a_split_apart_folder_whose_files_are_gone_is_held_not_missing(tmp_path: Path):
+    """The month is no longer a group key, so `in folders` cannot see it. The files under it are
+    still attached; calling that 'not attached' would offer the wrong door for a Dataset that
+    went away — attach them again, when they are already in the panel."""
+    orch, ds, _ = _deep(tmp_path, partitions=12)
+    orch.attach_folder(ds, "raw")
+    for day in range(8, 12):
+        orch.detach_folder(ds, f"raw/2026/{day:02d}")
+    project = orch.project()
+    month = "public/data/sales_2026/raw/2026"
+    shutil.rmtree(next(a.mount_path for a in orch._assets.list_datasets("Sage")
+                       if a.name == "sales_2026"))
+
+    resolved = orch._resolve_mentions(project, [month])
+    line, rows = orch._unusable_mentions(project, resolved, [month], None)
+
+    assert resolved is None
+    assert "this app holds it, but its files aren't in the workspace" in line
+    assert "not attached" not in line
+    assert rows == []
+
+
 def test_a_folder_mention_carries_the_files_that_are_still_there(tmp_path: Path):
     """Half a partition gone is not the whole mention gone. The count is what the turn could
     actually read, so the sentence the agent gets and the files behind it agree."""
@@ -454,14 +476,60 @@ def test_a_folder_mention_names_the_set_its_row_and_its_block_line_name(tmp_path
     assert sizes[root] == 4
 
 
+def test_a_token_whose_folder_split_apart_still_carries_what_it_covered(tmp_path: Path):
+    """The roll-up moves down as well as up. `@2026` was the month while twelve days forced a
+    roll-up; four days leave and the remaining eight are rows of their own. The token still names
+    those days rather than nothing — silence is the outcome ADR-0030 rules out, in both directions.
+
+    Read out of the grouping's descendants, not by walking every path under a prefix: a Dataset
+    with loose files beside this partition has a shallow group at the Dataset root, and a prefix
+    walk from `raw/2026` must not pick those up.
+    """
+    orch, ds, _ = _deep(tmp_path, partitions=12)
+    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
+                      if a.name == "sales_2026"))
+    (mount / "elsewhere").mkdir(parents=True, exist_ok=True)
+    (mount / "elsewhere" / "other.csv").write_text("a,b\n7,7\n")
+    orch.attach_folder(ds, "")
+    for day in range(8, 12):
+        orch.detach_folder(ds, f"raw/2026/{day:02d}")
+
+    out = orch._resolve_mentions(orch.project(), ["public/data/sales_2026/raw/2026"])
+
+    assert out and len(out) == 1
+    assert out[0]["path"] == "public/data/sales_2026/raw/2026"
+    assert out[0]["summary"].startswith("8 files")
+    assert "elsewhere" not in out[0]["path"] and "other.csv" not in out[0]["summary"]
+
+
+def test_a_folder_token_that_now_names_files_says_what_it_matched(tmp_path: Path):
+    """The client half of the roll-down: `@2024` was a row, the count dropped, `collectTurnRefs`
+    sends the files. Carrying them is not silence; not saying the name matched several still is.
+    The same sentence an ambiguous `@data.csv` gets, because it is the same fact."""
+    orch, ds, _ = _ready(tmp_path, per_year=8)
+    orch.attach_folder(ds, "raw/2024")
+    project = orch.project()
+    paths = [e["path"] for e in project.attached]
+
+    out = orch._resolve_mentions(project, paths)
+    said = svc._ambiguous_mentions(out, "chart the trend from @2024")
+
+    assert len(paths) == 8
+    assert all(not e["menu_folder"] for e in project.status()["attached"])
+    assert f"@2024 names {len(paths)} attached files" in said
+    assert all(p in said for p in paths)
+
+
 def test_a_path_that_is_no_folder_row_carries_nothing(tmp_path: Path):
     """Widening the lookup to folders must not widen it to every prefix. `public/data` is above the
     grouping's floor and names no row anybody was offered, and a caller-supplied one would otherwise
-    resolve to every attachment in the app at once."""
+    resolve to every attachment in the app at once. The Dataset slug is the floor itself: when it
+    is not a group, descendant lookup must not treat it as one and carry every year under it."""
     orch, ds, _ = _ready(tmp_path)
     orch.attach_folder(ds, "raw")
 
     assert orch._resolve_mentions(orch.project(), ["public/data"]) is None
+    assert orch._resolve_mentions(orch.project(), ["public/data/sales_2026"]) is None
     assert orch._resolve_mentions(orch.project(), ["public/data/sales_2026/raw/202"]) is None
 
 
@@ -571,3 +639,16 @@ def test_chat_keeps_its_file_rows(tmp_path: Path):
     report = _run({"prompts": []})
 
     assert all(row["name"].endswith(".csv") for row in report["menuChat"])
+
+
+@needs_node
+def test_a_folder_token_still_carries_its_files_once_the_folder_is_no_longer_a_row(tmp_path: Path):
+    """The same silence as a folder that rolled UP, running the other way. `@2024` was a row;
+    files leave until there are few enough to show one by one; the token still names those files
+    rather than carrying nothing."""
+    report = _run({"prompts": []})
+
+    assert report["sentStaleBelow"] == [{
+        "prompt": "chart the trend from @2024",
+        "mentions": [f"public/data/sales/raw/2024/part-{i}.csv" for i in range(5)],
+    }]

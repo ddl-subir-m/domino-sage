@@ -6,13 +6,13 @@ extends: ADR-0029 (a folder is the unit of the act — which turns the collision
 
 # A mention names one file, or says what else it matched
 
-An `@` token is a basename. `mentionToken` takes `path.split('/').pop()`
-(`backend/sage/workbench/js/util.js:248`), and `collectTurnRefs` tests every row against that token
-and pushes each distinct path it matches (`backend/sage/workbench/js/store.js:1031`).
+An `@` token used to be a basename. `mentionToken` took `path.split('/').pop()`
+(`backend/sage/workbench/js/util.js:373`), and `collectTurnRefs` tested every row against that token
+and pushed each distinct path it matched (`backend/sage/workbench/js/store.js:1057`).
 
-So with `raw/2025/data.csv` and `raw/2026/data.csv` both attached, `@data.csv` matches **both rows**,
-and the server honours **both** — `_resolve_mentions` looks up exact manifest paths and finds each
-one (`backend/sage/orchestrator/service.py:3590`). Two descriptors are inlined. One file was asked
+So with `raw/2025/data.csv` and `raw/2026/data.csv` both attached, `@data.csv` matched **both rows**,
+and the server honoured **both** — `_resolve_mentions` looks up exact manifest paths and finds each
+one (`backend/sage/orchestrator/service.py:4098`). Two descriptors were inlined. One file was asked
 for.
 
 This was always possible and always rare, because attaching two files with one basename took two
@@ -26,8 +26,8 @@ When a basename is not unique among the app's Attachments, `mentionToken` falls 
 distinguishing path suffix — `@2026/data.csv`.
 
 This costs no rule anybody has to learn, because the menu *inserts* the token; a person types `@`,
-narrows, and picks. And it is safe in the matcher today: `mentionedIn` escapes the token and anchors
-both ends (`util.js:257`), so a `/` and a `.` inside one match literally.
+narrows, and picks. And it is safe in the matcher today: `mentionedIn` reads the token as its own
+word off `mentionTokensIn` (`util.js:453`), so a `/` and a `.` inside one match literally.
 
 Uniqueness is computed against the app's own Attachment list, and `mentionToken` is used by both the
 picker that inserts and the turn that reads back — which is why the fix lands in one function rather
@@ -47,13 +47,22 @@ there is — the row that absorbed it, never the whole Dataset — and that fall
 rather than being chosen: a file belongs to exactly one group, so only the group actually holding
 the files under the named folder can qualify.
 
+And the other direction, because the roll-up moves down as well as up. `@2026` was the month; files
+leave until the days are few enough to be rows of their own, or until there are few enough files to
+show one by one. Carrying nothing is the same silence. The files (and the rows below) answer for
+the folders above them, down to `public/data/<slug>` and not past it — `_by_folder`'s floor, so
+`@data` does not become a token of every Attachment. Groups whose key sits under the named folder,
+not every path under a prefix: a sibling group beside this subtree must not ride along. When the
+named folder is no longer a row, the turn still carries what it covered, and says the name matched
+several — the same sentence an ambiguous `@data.csv` gets.
+
 ## A stale token resolves to everything it matches, and says so
 
 The uniqueness rule alone has a hole worth stating, because it is the failure this whole area was
 built to prevent. Text already sitting in the composer keeps the token it was given. If `@data.csv`
 was unique when it was typed and a later attach makes it ambiguous, `mentionToken` now computes
 `@2026/data.csv` for both rows, neither matches what is in the box, and **the mention silently
-carries nothing** — exactly what the comment at `util.js:246` exists to warn against.
+carries nothing** — exactly what the comment at `util.js:360` exists to warn against.
 
 So: unique tokens going forward, and an ambiguous token that no longer resolves carries **all** its
 matches and reports that it did. The turn says the name matched three files and names them.
@@ -70,13 +79,13 @@ menu, which is the next section.
 
 Two findings, and neither half works without the other.
 
-The query never looks at the folder. `workingSetFirst`'s matcher tests `row.name` and
-`path.split('/').pop()` — basename only (`util.js:291`). Typing `2026`, or `raw/2026`, matches nothing
+The query never looked at the folder. `workingSetFirst`'s matcher tested `row.name` and
+`path.split('/').pop()` — basename only (`util.js:510`). Typing `2026`, or `raw/2026`, matched nothing
 for `raw/2026/data.csv`.
 
-The row never shows the folder either. It renders the name and a kind caption
-(`backend/sage/workbench/js/components/composer.js:595`). Two colliding files draw two identical rows
-— same icon, same label, same caption — that insert the same text.
+The row never showed the folder either. It rendered the name and a kind caption
+(`backend/sage/workbench/js/components/composer.js:606`). Two colliding files drew two identical rows
+— same icon, same label, same caption — that inserted the same text.
 
 So both change. The query matches on the full relative path, and the row shows the distinguishing
 parent folder in the caption slot it already has, with the full path in `title` the way `LeafRow`
@@ -93,15 +102,15 @@ treats the cause, which is that the right file could not be seen or reached.
 
 ## Above the threshold, the folder is the row
 
-The menu shows eight rows, deduplicated by id rather than by token (`workingSetFirst`, `limit: 8`).
-After a 200-file attach it is a window onto a list that cannot be seen, and eight rows out of 200
-reads as a complete list.
+The `@` menu used to show eight rows, deduplicated by id rather than by token (`workingSetFirst`).
+After a 200-file attach it was a window onto a list that cannot be seen, and eight rows out of 200
+read as a complete list.
 
-So the menu follows ADR-0029's threshold, by the same rule and for the same reason: above roughly ten
-files the folder is the row, and a single file is reached by typing enough of its name — which now
-works, because the query reads the whole path. One rule across both surfaces, so the block the agent
-reads every turn and the menu the person picks from cannot come to disagree about what a Dataset
-mention means.
+So the menu follows ADR-0029's threshold, by the same rule and for the same reason: above
+`FOLDER_COLLAPSE_THRESHOLD` the folder is the row, and a single file is reached by typing enough of
+its name — which now works, because the query reads the whole path. One rule across both surfaces,
+so the block the agent reads every turn and the menu the person picks from cannot come to disagree
+about what a Dataset mention means.
 
 "One rule" is load-bearing enough to say how. The threshold is read once, in Python, and the grouping
 is `_by_folder` — a roll-up loop with a floor, written for the block. So the menu is handed the
@@ -118,9 +127,10 @@ is what the rejection below rules out doubling. The row's COUNT is the folder's 
 match's, because the pick carries the folder: a count taken from the match reads "3 files" on a row
 that sends twelve.
 
-The menu's own cap is the threshold too. Below it nothing collapses, so a menu that showed fewer
-rows than that would read as a complete list while hiding some — this section's defect in miniature;
-above it the roll-up leaves at most that many folders, so the collapsed list fits as well.
+The menu's own cap is the threshold too (`composer.js` `limit`, held to the constant by test). Below
+it nothing collapses, so a menu that showed fewer rows than that would read as a complete list while
+hiding some — this section's defect in miniature; above it the roll-up leaves at most that many
+folders, so the collapsed list fits as well.
 
 A folder mention carries real server work, recorded here rather than discovered later:
 `_resolve_mentions` honours exact manifest paths only, so a folder token must expand to its member
@@ -138,5 +148,5 @@ one. Chat gains no folder act (ADR-0029), and this is the same line drawn in the
 offered nowhere it could not be carried.
 
 Rejected: **folder rows and file rows for the same files together.** It doubles the rows in a menu
-that shows eight.
+this short.
 Rejected: **file rows only, as today.** The status quo, and it misrepresents itself.

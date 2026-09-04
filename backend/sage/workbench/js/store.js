@@ -1069,9 +1069,11 @@ window.SW = window.SW || {};
     // cost of typing.
     const typed = SW.util.mentionTokensIn(text);
     // Through `attachmentPeers`, so the folder rows the @ menu draws above the threshold are read
-    // back too (ADR-0030). A folder token is a token no FILE row can answer — `2026` is not a tail
-    // of any file's path — so without the folders beside them a picked folder row would put a
-    // word in the box that the turn carries nothing for, which is the silence this function ends.
+    // back too (ADR-0030). A folder token is not a tail of any file's own path, so without the
+    // folders beside them a picked folder row would put a word in the box that the turn carries
+    // nothing for — which is the silence this function ends. Files still answer a FOLDER token
+    // that outlived its row (`mentionTokens` adds the parent tails), so a `@2024` kept in the
+    // box after the count dropped below the threshold still names those files.
     [...Object.values(groups), SW.util.attachmentPeers(state.appAttachments)].forEach((rows) => {
       (rows || []).forEach((row) => {
         // Every token this row could have been GIVEN, not the one it would be given now. Text
@@ -1101,7 +1103,18 @@ window.SW = window.SW || {};
         if (path && !mentions.includes(path)) mentions.push(path);
       });
     });
-    return { mentions, resources };
+    // A folder row and the files it stands for both answer the same token once files grow parent
+    // tails. Sending both would inline the files AND the folder summary — the bloat ADR-0029
+    // took out of the block, back through this door. Keep the parent; drop what sits under it.
+    // Sibling folders (a month that split into days) are not under one another, so they all stay
+    // and the turn says the name matched several (`_ambiguous_mentions`).
+    const nested = new Set();
+    mentions.forEach((p) => {
+      mentions.forEach((other) => {
+        if (p !== other && p.startsWith(`${other}/`)) nested.add(p);
+      });
+    });
+    return { mentions: mentions.filter((p) => !nested.has(p)), resources };
   }
 
   function buildHistoryToMessages(history) {

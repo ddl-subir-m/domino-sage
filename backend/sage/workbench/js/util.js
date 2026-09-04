@@ -401,7 +401,19 @@ window.SW = window.SW || {};
       // roll-up level moves as the attachment count crosses the threshold — so a folder row also
       // answers for the folders it absorbed, and the turn reports that it carried the wider one
       // (`_ambiguous_mentions`). Wider than what was asked for and said so, rather than silent.
+      //
+      // And the folders ABOVE this row, because the roll-up moves down as well as up: `@2024`
+      // was a row, files leave, the menu shows files one by one, and without the parent tails
+      // a file cannot answer `@2024`. Stop at `public/data/<slug>` inclusive — `_by_folder`'s
+      // floor — so `@data` does not become a token of every Attachment.
       const paths = [path].concat((resource && resource.absorbed) || []);
+      const parts = path.split('/').filter(Boolean);
+      if (parts[0] === 'public' && parts[1] === 'data') {
+        for (let n = parts.length - 1; n >= 3; n -= 1) {
+          const folder = parts.slice(0, n).join('/');
+          if (paths.indexOf(folder) === -1) paths.push(folder);
+        }
+      }
       const out = [];
       paths.forEach((each) => {
         const segments = String(each).split('/');
