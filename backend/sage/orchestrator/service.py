@@ -967,8 +967,16 @@ def _dataset_unique_name(item: dict, name: str) -> str:
 
     Both halves are needed: the Domino data library rejects a bare name and a bare id alike. A chip
     with no id is worth an honest sentence, not a call that cannot succeed.
+
+    `resourceId` is where the Domino id lives, because `add_context` mints the stored row an `id`
+    of its own. Reading `id` first built `dataset-<name>-ctx_...`, and Domino answered, correctly,
+    "Cannot find Dataset entry." `id` stays as the fallback for a catalogue row, which is what the
+    file branch below hands in. A `ctx_` id is refused rather than dressed up as a handle: the
+    honest sentence in `_chat_context_line` is unreachable until something can return "".
     """
-    ds_id = _bare_kind_id(str(item.get("id") or ""), "dataset")
+    ds_id = _bare_kind_id(str(item.get("resourceId") or item.get("id") or ""), "dataset")
+    if ds_id.startswith("ctx_"):
+        return ""
     return f"dataset-{name}-{ds_id}" if (name and ds_id) else ""
 
 
