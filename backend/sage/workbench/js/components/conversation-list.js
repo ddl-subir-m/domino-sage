@@ -242,6 +242,15 @@ window.SW = window.SW || {};
         // It sits above the unfold button because that is the order the expanded head reads in,
         // and because starting a Conversation is the reason you were reaching for the Rail more
         // often than reading the list is.
+        //
+        // It OPENS the Rail, where the expanded head's button closes it. Not an inconsistency —
+        // the same rule read from the other side. Closing there is the Rail getting out of the
+        // way once it has answered you; there is nothing to get out of the way of here, and the
+        // pending row is the only thing on screen that says the press worked. Left closed, the
+        // press changed the store and nothing else: from an empty Conversation, which is what you
+        // are on the moment after starting one, the centre pane was already the landing and stayed
+        // it. That is the fourth time this button has looked dead, and the first with the answer
+        // drawn but hidden.
         h(
           Tooltip,
           { title: 'New conversation', placement: 'right' },
@@ -250,7 +259,10 @@ window.SW = window.SW || {};
             {
               className: 'sw-icon-btn is-dark-text',
               'aria-label': 'New conversation',
-              onClick: () => startConversation(mode),
+              onClick: () => {
+                startConversation(mode);
+                SW.store.expandRail();
+              },
             },
             h(PlusOutlined, null)
           )
@@ -314,8 +326,8 @@ window.SW = window.SW || {};
             block: true,
             // See `startConversation` above for why this both clears and navigates. The Rail
             // closes after it, because starting a Conversation is picking one — the same reason
-            // it closes when you click a row (#150). The collapsed head's icon needs no such
-            // line: it is already closed.
+            // it closes when you click a row (#150). The collapsed head's icon has the opposite
+            // line for the same rule — see it there.
             onClick: () => {
               startConversation(mode);
               SW.store.collapseRail();

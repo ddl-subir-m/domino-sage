@@ -2480,6 +2480,17 @@ window.SW = window.SW || {};
       notify();
     },
 
+    // The mirror of it, and it does not write the preference for the same reason: the Rail opening
+    // because a press had nowhere else to show its answer is not somebody choosing to keep the
+    // list open. `newConversation` is the one caller — the pending row it sets is the only thing
+    // on screen that says the press worked, and from the collapsed head that row is behind the
+    // panel you just clicked, so the press looked dead.
+    expandRail() {
+      state.railHidden = false;
+      state.railAppFilter = null;
+      notify();
+    },
+
     // Called when a script turn has opensPanel. Sage asking you to pick a kind
     // of thing is a browse task, so it opens the catalogue scoped to that kind
     // rather than filtering a panel that may not contain the answer yet.

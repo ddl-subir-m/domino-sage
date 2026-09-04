@@ -318,13 +318,14 @@ def test_the_pick_writes_the_filter_and_no_effect_watches_the_selected_app():
     # claim. Comments stripped, so the claim is about the code rather than how a sentence beside it
     # reads.
     #
-    # The five, and why each drops it. A filter is a question about the list, and it goes wherever
-    # the list it asks about stops being the one on screen: leaving the Project, and both ways the
-    # Rail closes (#150). Two were added once the Rail began starting hidden. The Rail OPENING,
-    # because Build's header can set the filter while nothing is showing, so the same filter nobody
-    # can see they applied arrives by that door instead. And starting a Conversation, because a new
-    # one has touched no app, so a standing filter hides the row for the Conversation somebody just
-    # pressed for — and the Rail then says nothing has changed that app yet.
+    # The six, and why each drops it. A filter is a question about the list, and it goes wherever
+    # the list it asks about stops being the one on screen: leaving the Project, and every way the
+    # Rail opens or closes (#150). Three were added once the Rail began starting hidden. The Rail
+    # OPENING, either by hand or to show a press its own answer, because Build's header can set the
+    # filter while nothing is showing, so the same filter nobody can see they applied arrives by
+    # those doors instead. And starting a Conversation, because a new one has touched no app, so a
+    # standing filter hides the row for the Conversation somebody just pressed for — and the Rail
+    # then says nothing has changed that app yet.
     store = (_WORKBENCH / "js" / "store.js").read_text()
     assert [
         ln.split("//")[0].strip() for ln in store.splitlines() if "railAppFilter" in ln
@@ -333,6 +334,7 @@ def test_the_pick_writes_the_filter_and_no_effect_watches_the_selected_app():
         "state.railAppFilter = null;",   # setScope
         "state.railAppFilter = null;",   # toggleRail, either way
         "state.railAppFilter = null;",   # collapseRail
+        "state.railAppFilter = null;",   # expandRail
         "state.railAppFilter = null;",   # newConversation
     ]
 
