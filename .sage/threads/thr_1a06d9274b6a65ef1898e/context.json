@@ -1,0 +1,13 @@
+{
+  "items": [
+    {
+      "id": "ctx_1a06d9278acc51e920295",
+      "addedBy": "user",
+      "addedAt": "2026-09-04T17:58:30Z",
+      "kind": "file",
+      "name": "support_tickets.csv",
+      "path": ".sage/scratch/support_tickets.csv",
+      "resourceId": "file:.sage/scratch/support_tickets.csv"
+    }
+  ]
+}

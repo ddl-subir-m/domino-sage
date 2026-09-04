@@ -49,3 +49,6 @@ workspaces/
 spikes/domino-probes/public-api.json
 spikes/domino-probes/swagger.json
 spikes/domino-probes/dogfood-swagger.json
+.sage/scratch/
+.sage/chat-work/
+.sage/threads/*/.*.tmp
