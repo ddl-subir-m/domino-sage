@@ -50,6 +50,13 @@ window.SW = window.SW || {};
     },
   ];
 
+  // Which kind a group's add door pre-filters the catalog to. One helper for both doors, so the
+  // two cannot disagree. A group with two kinds has no honest filter: `api.catalog` takes a single
+  // kind and the catalog's own sidebar is flat, so there is no "Datasets + Data Sources" to ask
+  // for. `undefined` opens on Everything, which reaches both — where `subgroups[0].kind` silently
+  // meant Datasets and hid Data Sources behind a filter the caller never chose (#164).
+  const addKind = (group) => (group.subgroups.length === 1 ? group.subgroups[0].kind : undefined);
+
   const EMPTY_HINT = {
     data: 'No data here yet.',
     model_llm: 'No language models here yet.',
@@ -812,13 +819,38 @@ window.SW = window.SW || {};
             { key: group.key },
             h(
               'div',
-              {
-                className: 'sw-res-group-label',
-                onClick: () => setCollapsed({ ...collapsed, [group.key]: !isCollapsed }),
-                role: 'button',
-              },
-              h(isCollapsed ? RightOutlined : DownOutlined, { style: { fontSize: 9, color: '#8F8FA3' } }),
-              h('span', { className: 'sw-group-label' }, `${group.label} (${resourcesLoading ? '…' : count})`)
+              { className: 'sw-res-group-label' },
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'sw-res-group-toggle',
+                  'aria-expanded': !isCollapsed,
+                  onClick: () => setCollapsed({ ...collapsed, [group.key]: !isCollapsed }),
+                },
+                h(isCollapsed ? RightOutlined : DownOutlined, { style: { fontSize: 9, color: '#8F8FA3' } }),
+                h('span', { className: 'sw-group-label' }, `${group.label} (${resourcesLoading ? '…' : count})`)
+              ),
+              // The way in does not depend on the group being empty. This door used to live only in
+              // the empty branch, so adding the first thing to a group took the door away with it,
+              // and a caller wanting a second one had to know about the head button (#164). It is
+              // drawn always, not on hover like `.sw-res-more`: a way in that appears only under the
+              // pointer is the same missing affordance in a quieter form.
+              !group.placeholder &&
+                h(
+                  Tooltip,
+                  { title: SW.brand.text(`Add ${group.label.toLowerCase()} from {platformName}`), placement: 'left' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'sw-res-group-add',
+                      'aria-label': SW.brand.text(`Add ${group.label.toLowerCase()} from {platformName}`),
+                      onClick: () => SW.store.openCatalog(addKind(group)),
+                    },
+                    h(PlusOutlined, { style: { fontSize: 11 } })
+                  )
+                )
             ),
             // A kind that would not list says so here, above its rows, because the fact is the
             // KIND's rather than any row's — stamping it on twelve rows says it twelve times. It
@@ -853,7 +885,7 @@ window.SW = window.SW || {};
                           type: 'link',
                           size: 'small',
                           style: { padding: 0, height: 'auto', fontSize: 12 },
-                          onClick: () => SW.store.openCatalog(group.subgroups[0].kind),
+                          onClick: () => SW.store.openCatalog(addKind(group)),
                         },
                         SW.brand.text('Add from {platformName}')
                       )
