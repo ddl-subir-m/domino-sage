@@ -50,19 +50,14 @@ Two adapters, as with assets:
 """
 from __future__ import annotations
 
-import logging
+import concurrent.futures
 import re
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from ..orchestrator import brand
 from ..router.models import reasoning_efforts_for as name_reasoning_efforts
-
-# TEMPORARY (#160). Under sage.* so the ring handler in orchestrator/app.py picks it up and
-# /api/diag/log?q=perf: can read it without a shell. Remove with the perf: lines below.
-_log = logging.getLogger("sage.resources")
 
 
 def _platform_api() -> str:
@@ -945,6 +940,12 @@ class DominoResourceProvider:
     # each, so this is a latency budget: 25 keeps the rail inside a couple of seconds on a slow
     # deployment. The paste door covers anyone who works in more projects than this.
     _MAX_FANOUT_PROJECTS = 25
+    # How many of those calls are in the air at once (#160), which is a different budget: every
+    # request fetches its own short-lived bearer from the Domino token sidecar first, so this is
+    # also the number of simultaneous callers that sidecar sees. 8 keeps the measured win — 16
+    # projects at ~100 ms each land in two waves, ~0.2 s against 1.6 s serial — and the wave that
+    # 26-at-once would have saved is a tenth of a second the creator cannot perceive.
+    _FANOUT_AT_ONCE = 8
 
     def __init__(
         self,
@@ -1110,30 +1111,34 @@ class DominoResourceProvider:
             ))
         out: list[ModelApi] = []
         seen: set[str] = set()
-        # TEMPORARY (#160). len(pairs) is the number that decides the whole ticket: this fan-out is
-        # capped at _MAX_FANOUT_PROJECTS + home, so a creator on 3 projects and one on 26 are two
-        # different bugs with two different fixes. Logged before the loop so it survives the home
-        # project raising. Remove once #160 picks a fix.
-        _log.info("perf: model_apis fan-out over %d project(s), cap %d",
-                  len(pairs), self._MAX_FANOUT_PROJECTS + 1)
-        fan = time.monotonic()
-        for pid, pname in pairs:
-            started = time.monotonic()
-            try:
-                rows = self._model_apis_in(pid, pname)
-            except ResourceUnavailable:
-                if pid == home_id:
-                    raise
-                continue
-            finally:
-                _log.info("perf: model_apis project=%s %.2fs", pname or pid,
-                          time.monotonic() - started)
-            for m in rows:
-                if m.id not in seen:
-                    seen.add(m.id)
-                    out.append(m)
-        _log.info("perf: model_apis fan-out total %.2fs -> %d model(s)",
-                  time.monotonic() - fan, len(out))
+        # Together, not one after another (#160). Measured on a real deployment: 16 projects at
+        # ~70-130 ms each, which added up to 1.1-2.1 s of the Resource Browser's wait. No call
+        # depends on another's answer, so the wait is now the slowest wave rather than the sum.
+        #
+        # The answers are read back in membership order rather than completion order, which keeps
+        # two things the serial loop gave for free: the rail lists the same way twice running, and
+        # the home project is still the first writer of a model bound into two projects, so that
+        # row keeps its blank label.
+        #
+        # A home failure is now held until the other calls finish, since the pool joins on the way
+        # out. That wait is what a successful listing costs, which is less than the serial listing
+        # this replaced — cheaper than leaking threads out of the path that reports breakage.
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(pairs), self._FANOUT_AT_ONCE),
+            thread_name_prefix="sage-model-apis",
+        ) as pool:
+            answers = [(pid, pool.submit(self._model_apis_in, pid, pname)) for pid, pname in pairs]
+            for pid, answer in answers:
+                try:
+                    rows = answer.result()
+                except ResourceUnavailable:
+                    if pid == home_id:
+                        raise
+                    continue
+                for m in rows:
+                    if m.id not in seen:
+                        seen.add(m.id)
+                        out.append(m)
         return out
 
     def get_model_api(self, model_api_id: str) -> ModelApi | None:

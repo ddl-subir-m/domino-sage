@@ -11,6 +11,7 @@ Run:  uv run python -m sage.orchestrator.app
 from __future__ import annotations
 
 import collections
+import concurrent.futures
 import contextlib
 import logging
 import os
@@ -1333,20 +1334,22 @@ def list_resources() -> JSONResponse:
         "data_sources": orchestrator.list_data_sources,
     }
     body: dict = {"errors": {}}
-    # TEMPORARY (#160). The three kinds run serially here, so the only way to know whether
-    # parallelising this loop is worth it — or whether one kind owns the whole cost — is three
-    # numbers. Logged to the sage.* ring rather than a new route: /api/diag/log?q=perf: already
-    # reads it from a browser, and the deployed builder has no shell. Remove once #160 picks a fix.
-    whole = time.monotonic()
-    for key, listing in kinds.items():
-        started = time.monotonic()
+    # All three at once, not one after another (#160). Measured on a real deployment: 0.5-0.8s of
+    # LLM Aliases plus 1.4-2.5s of Model APIs plus 0.3s of Data Sources, and the three summed to
+    # the whole of the response's 2.5-3.3s. Two Domino services, no call depending on another's
+    # answer, so the wait is now the slowest kind rather than the sum.
+    #
+    # Each kind still catches its own failure, off its own result: the reason stays per kind and
+    # the response stays 200, exactly as when the loop was serial.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(kinds), thread_name_prefix="sage-resources",
+    ) as pool:
+        answers = {key: pool.submit(listing) for key, listing in kinds.items()}
+    for key, answer in answers.items():
         try:
-            body[key] = listing()
+            body[key] = answer.result()
         except ResourceUnavailable as e:
             body[key], body["errors"][key] = [], str(e)
-        log.info("perf: /api/resources kind=%s %.2fs n=%d%s", key, time.monotonic() - started,
-                 len(body.get(key) or []), " ERRORED" if key in body["errors"] else "")
-    log.info("perf: /api/resources total %.2fs", time.monotonic() - whole)
     return JSONResponse(content=body)
 
 

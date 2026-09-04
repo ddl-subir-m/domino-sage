@@ -12,6 +12,7 @@ import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -269,15 +270,22 @@ def test_model_apis_are_unlistable_rather_than_empty_when_there_is_no_domino_api
 
 
 @contextmanager
-def stub_domino_api(pages: list[object], *, user: object = None, projects: object = None):
-    """A Domino API that answers the Model API listing, handing out `pages` in order and recording
-    every path it was asked for (query string included).
+def stub_domino_api(pages: list[object] | dict[str, list[object]], *,
+                    user: object = None, projects: object = None):
+    """A Domino API that answers the Model API listing from `pages` and records every path it was
+    asked for (query string included).
 
-    `pages` are for the LISTING only, and are consumed in listing order however many other calls the
-    provider makes around them. The project fan-out (#42) asks two more questions first — who is
-    calling, and which projects do they belong to — and those are answered from `user` and
-    `projects`. Both default to a 404, which is a Domino that will not say: the fan-out then collapses
-    to the builder's own project, which is the shape every test written before #42 assumes.
+    `pages` are for the LISTING only. As a LIST they are consumed in listing order, however many
+    other calls the provider makes around them — the shape a test that only ever asks about one
+    project wants. As a DICT they are keyed on project id and consumed per project, which is what
+    the fan-out needs since #160 made it parallel: the projects no longer arrive in a fixed order,
+    so a list would hand one project's payload to another and the test would pass or fail on the
+    scheduler.
+
+    The project fan-out (#42) asks two more questions first — who is calling, and which projects do
+    they belong to — and those are answered from `user` and `projects`. Both default to a 404, which
+    is a Domino that will not say: the fan-out then collapses to the builder's own project, which is
+    the shape every test written before #42 assumes.
 
     Answering by path rather than by call order for exactly that reason. Order made the stub read as
     a script of the provider's internals, so adding one call to the provider rewrote every test that
@@ -285,6 +293,15 @@ def stub_domino_api(pages: list[object], *, user: object = None, projects: objec
     """
     seen: list[str] = []
     listings: list[str] = []
+    served: dict[str, int] = {}
+
+    def listing_payload(path: str) -> object:
+        if not isinstance(pages, dict):
+            return pages[min(len(listings) - 1, len(pages) - 1)] if pages else None
+        pid = parse_qs(urlparse(path).query).get("projectId", [""])[0]
+        rows = pages.get(pid) or []
+        served[pid] = served.get(pid, 0) + 1
+        return rows[min(served[pid] - 1, len(rows) - 1)] if rows else None
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -295,7 +312,7 @@ def stub_domino_api(pages: list[object], *, user: object = None, projects: objec
                 payload = projects
             else:
                 listings.append(self.path)
-                payload = pages[min(len(listings) - 1, len(pages) - 1)] if pages else None
+                payload = listing_payload(self.path)
             if payload is None:
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
@@ -358,6 +375,12 @@ def _projects(*records: dict) -> dict:
             "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": len(records)}}}
 
 
+def _asked_about(listings: list[str]) -> list[str]:
+    # Which projects the fan-out asked about. The order it asked in stopped being a fact about the
+    # code when the calls started overlapping (#160), so tests read the set and not the sequence.
+    return [parse_qs(urlparse(p).query).get("projectId", [""])[0] for p in listings]
+
+
 def _model_apis(*names: str) -> dict:
     # `totalCount` so the pager stops after one page. The stub repeats its last response forever, so
     # a payload without it would spin to `_MAX_PAGES` and hide what the test is measuring.
@@ -371,15 +394,17 @@ def test_the_listing_spans_the_projects_this_caller_belongs_to_and_names_each_ro
         {"id": "proj-2", "name": "Sage", "ownerId": "u-else",
          "collaborators": [{"id": "u-me", "role": "Contributor"}]},
     )
-    with stub_domino_api([_model_apis("churn"), _model_apis("priority")],
+    with stub_domino_api({"proj-1": [_model_apis("churn")], "proj-2": [_model_apis("priority")]},
                          user=_ME, projects=projects) as (api_host, listings):
         out = DominoResourceProvider(
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis("proj-1")
 
-    # Home first, and blank — the rail is already in that project's context.
+    # Home first, and blank — the rail is already in that project's context. Still ordered although
+    # the calls now overlap (#160): the answers are read back in membership order, not in whichever
+    # order Domino happened to return them, so the rail does not reshuffle between two opens.
     assert [(m.name, m.project_name) for m in out] == [("churn", ""), ("priority", "Sage")]
-    assert "projectId=proj-1" in listings[0] and "projectId=proj-2" in listings[1]
+    assert sorted(_asked_about(listings)) == ["proj-1", "proj-2"]
 
 
 def test_off_domino_the_listing_fans_out_over_membership_with_no_home_project():
@@ -463,7 +488,7 @@ def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
     with stub_domino_api([_model_apis("churn")], user=_ME, projects=projects) as (api_host, _):
         p = Provider("http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
         assert [m.name for m in p.list_model_apis("proj-1")] == ["churn"]
-        assert calls == ["proj-1", "proj-2"]
+        assert sorted(calls) == ["proj-1", "proj-2"]
 
         class HomeBroken(Provider):
             def _model_apis_in(self, project_id, project_name):
@@ -473,6 +498,32 @@ def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
         with pytest.raises(ResourceUnavailable):
             broken.list_model_apis("proj-1")
+
+
+def test_the_fan_out_asks_every_project_at_once_rather_than_one_after_another():
+    """Measured on a real deployment: 16 projects, ~70-130 ms each, 1.1-2.1 s of the rail's wait
+    spent adding them up (#160). The calls do not depend on each other, so they overlap.
+
+    A barrier rather than a stopwatch, so the test states the property instead of a threshold: each
+    project's call waits for all three to arrive. Serial code cannot get past the first one, and
+    fails here in the time it takes the barrier to break rather than flaking on a slow machine.
+    """
+    at_once = threading.Barrier(3, timeout=5)
+
+    class Provider(DominoResourceProvider):
+        def _member_projects(self, home_project_id):
+            return [("proj-1", ""), ("proj-2", "Sage"), ("proj-3", "Underwriting")]
+
+        def _model_apis_in(self, project_id, project_name):
+            at_once.wait()
+            return [ModelApi(project_id, f"model-in-{project_id}", None, "Running",
+                             project_name=project_name)]
+
+    out = Provider("http://gw/v1", lambda: "t", api_host="http://api",
+                   api_token_provider=lambda: "t").list_model_apis("proj-1")
+
+    # Membership order, not completion order — see the ordering note in the fan-out test above.
+    assert [m.id for m in out] == ["proj-1", "proj-2", "proj-3"]
 
 
 def test_one_model_is_readable_by_id_whatever_project_it_lives_in():
@@ -820,6 +871,39 @@ def test_the_route_carries_both_kinds_and_one_failing_service_does_not_blank_the
     assert "model_apis" not in bad["errors"]
     assert [d["name"] for d in bad["data_sources"]][:1] == ["Snowflake-Data-Warehouse"]
     assert "data_sources" not in bad["errors"]
+
+
+def test_the_route_asks_the_three_kinds_at_once_rather_than_one_after_another(tmp_path: Path, monkeypatch):
+    """Measured on a real deployment: 0.5-0.8 s of LLM Aliases, 1.4-2.5 s of Model APIs and 0.3 s
+    of Data Sources, adding up to the whole of the rail's 2.5-3.3 s wait (#160). Two Domino
+    services, three independent calls — they overlap.
+
+    Same barrier as the fan-out test: each kind's call waits for all three to arrive, so serial code
+    cannot get past the first one. See that test for why this is not a stopwatch.
+    """
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
+
+    at_once = threading.Barrier(3, timeout=5)
+
+    class Slow(FakeResourceProvider):
+        def list_llm_aliases(self):
+            at_once.wait()
+            return super().list_llm_aliases()
+
+        def list_model_apis(self, project_id):
+            at_once.wait()
+            return super().list_model_apis(project_id)
+
+        def list_data_sources(self):
+            at_once.wait()
+            return super().list_data_sources()
+
+    monkeypatch.setattr(appmod, "orchestrator", _orch(tmp_path, Slow()))
+    body = TestClient(appmod.control_app).get("/api/resources").json()
+    assert body["errors"] == {}
+    assert body["llm_aliases"] and body["model_apis"] and body["data_sources"]
 
 
 # ---- the cascade (#11) ---------------------------------------------------------------------------
