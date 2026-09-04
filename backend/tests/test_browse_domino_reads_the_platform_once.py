@@ -114,7 +114,7 @@ def test_the_window_after_a_project_switch_is_a_spinner_not_an_empty_platform():
 
 
 def test_adding_a_resource_does_not_blank_the_catalogue_it_was_added_from():
-    """Add reloads the scope, and the scope load is where the listing is dropped.
+    """Add refreshes the working set, and the scope load is where the listing is dropped.
 
     Dropped unconditionally, the rows under the click are replaced by the spinner for the length of
     a round trip — the flicker this whole change exists to remove, arriving through a different
@@ -124,8 +124,27 @@ def test_adding_a_resource_does_not_blank_the_catalogue_it_was_added_from():
     out = _act("add")
     assert out["afterAct"]["everBlanked"] is False
     assert "Risk history" in out["afterAct"]["rows"]
-    # And the row that was already a member is still reported as one afterwards.
-    assert out["afterAct"]["inProject"] == ["Sales rows"]
+    # Both members afterwards: the one that already was, and the one just added.
+    assert out["afterAct"]["inProject"] == ["Sales rows", "Risk history"]
+
+
+def test_adding_a_resource_reads_the_project_rather_than_the_platform():
+    """An Add cannot change what Domino holds, so it has no reason to ask (#162).
+
+    The pair it used to ask through `loadScopeData` is the 5.1 s read, and it answers a question
+    the click did not put. Membership is a local file, and the listing the row was clicked in is
+    already in the store — re-applied against the new membership rather than re-read, which is what
+    moves the row out of the @ menu's catalogue half with no round trip.
+    """
+    out = _act("add")
+    asked = out["afterAct"]["requests"] + out["lateRequests"]
+    assert not [u for u in asked if u.endswith("/api/resources") or u.endswith("/api/assets")], asked
+    # The membership file, and `/project` for the app's manifest and the Uploads. Nothing else.
+    assert [u.rsplit("/api/", 1)[-1] for u in asked] == [
+        "project/resources",
+        "project/resources",
+        "project",
+    ]
 
 
 def test_the_newest_listing_read_wins():

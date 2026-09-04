@@ -120,9 +120,9 @@ window.SW = window.SW || {};
     resourceListing: null,
     // Which project the listing above was read under. The listing itself describes the platform
     // rather than the project, but the membership it is read against does not, so a scope change
-    // is the one thing that has to drop it. Held here rather than compared against the scope on
-    // every load: `loadScopeData` also runs after an Add, and dropping the listing there would
-    // blank the open catalogue for the length of a round trip.
+    // is the one thing that has to drop it. Held here rather than dropped on every load, because
+    // a reload of the SAME scope would then blank an open catalogue for the length of a round
+    // trip.
     resourceListingScope: null,
     gatewayAliases: [],
     resourcesLoading: true,
@@ -365,6 +365,19 @@ window.SW = window.SW || {};
   // last would put a row somebody just deleted back in the rail. A generation counter for the same
   // reason the two below have one: the newest read is the one that gets to write.
   let listingRead = 0;
+  // Which read of what the PROJECT holds is the current one — its membership and its `/project`
+  // record together, which is the pair every refresh below takes. Same shape as the listing counter
+  // above and needed for the same reason since #162: a working-set refresh no longer bumps
+  // `scopeLoad`, so a scope load is no longer cancelled by a mutation landing under it and the two
+  // can now write the same fields in either order.
+  //
+  // CLAIMED AT ENTRY by both writers, which is the whole of what makes it order them. The scope
+  // load issues its `/project` read in a second phase, behind the membership read — ticketing it
+  // there would put it AFTER a refresh that started later, and the scope load would then throw
+  // away the very Add that fired the refresh. So the ticket is taken where the function starts,
+  // and both of its phases stand or fall on it: applying half of one read and half of another is
+  // how the Uploads group ends up empty with nothing on the way to refill it.
+  let projectRead = 0;
   // Which open is the current one. `selectApp` guards with `selecting`, which makes a second
   // asker bail — right there, because you are already going where it asked. Wrong here: clicking
   // A after B must land on A, not be ignored. So this is a generation counter like `scopeLoad`,
@@ -539,22 +552,35 @@ window.SW = window.SW || {};
   async function loadScopeData() {
     const scope = state.scope;
     const gen = ++scopeLoad;
+    const projectGen = ++projectRead;
 
     const [resources, activity] = await Promise.all([
       SW.api.resources(scope.id),
       SW.api.activity(scope.id),
     ]);
     if (gen !== scopeLoad) return;
-    applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
-    // Cleared here, with the members it is the complement of, and not left standing until the
-    // deferred listing below refills it. The two are read together: a resource that IS a member of
-    // the scope just picked but was not a member of the last one would otherwise sit in the @ menu
-    // captioned `not in {project}` — the opposite of true — until the listing landed.
-    state.catalogueParents = [];
-    // Only when the project actually changed. `loadScopeData` also runs after an Add and after a
-    // Remove, and a listing dropped there would replace the open catalogue with a spinner for the
-    // length of a round trip — the flicker the rows-from-the-store change exists to remove.
-    if (state.resourceListingScope !== scope.id) state.resourceListing = null;
+    // Unless a working-set refresh has read the Project since this load started. Its answer is
+    // newer than this one by exactly the Add or the Remove that fired it, and writing this
+    // membership over it would put back the row the viewer has just taken out.
+    if (projectGen === projectRead) {
+      applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
+    }
+    // Both halves of the last project's answer, dropped together and on the SCOPE changing rather
+    // than on which membership read turned out to be newest. `catalogueParents` is the complement
+    // of the members: a resource that IS a member of the scope just picked but was not a member of
+    // the last one would otherwise sit in the @ menu captioned `not in {project}` — the opposite of
+    // true — until the deferred listing landed. A refresh that superseded the write above cleared
+    // neither, so tying the clear to that write would leave the catalogue describing the project
+    // the viewer has just left.
+    //
+    // Only when the project actually changed. A scope change invalidates the membership the
+    // listing is read against, not the platform's rows, so a reload of the same scope keeps what
+    // it holds rather than replacing an open catalogue with a spinner for the length of a round
+    // trip — the flicker the rows-from-the-store change exists to remove (#159).
+    if (state.resourceListingScope !== scope.id) {
+      state.resourceListing = null;
+      state.catalogueParents = [];
+    }
     state.resourcesLoading = false;
     state.activity = activity;
     notify();
@@ -566,28 +592,11 @@ window.SW = window.SW || {};
       SW.api.resourceListing(),
     ]).then(([project, listing]) => {
       if (gen !== scopeLoad) return;
-      // Off the same read, because this is the other moment the app's manifest changes: adding a
-      // scratch file to a Dataset attaches it, and the panel refreshes through here rather than
-      // through `loadBuild`. Without this the Build header would go on saying the app ships
-      // nothing until the next app switch (#92).
-      applyAppScope(appTicket, { appAttachments: project.attached || [] });
-      // The Project's Uploads, and ONLY those. An Attachment is a record the selected app keeps,
-      // so it is listed under that app and nowhere else — one row per scope, which is the rule
-      // ADR-0011 already held for every other kind (#148). Both lists fed this group before, so
-      // after a crossing (#147) one file was drawn three times in Build: an Upload under the
-      // Project, an Attachment under the Project, and the same Attachment under the app.
-      //
-      // The `public/data/…` row was load-bearing rather than decorative — `collectTurnRefs` walks
-      // these groups to turn "@data.csv" into a path the turn can carry — and that read is off
-      // `appAttachments` now, which is where the record lives.
-      const files = (project.scratch || []).map((e) => ({
-        id: `file:${e.path}`,
-        name: e.name || (e.path || '').split('/').pop(),
-        kind: 'file',
-        path: e.path,
-        source: 'scratch',
-      }));
-      applyResourceGroups({ ...state.resourceGroups, file: files });
+      // On the ticket this load took at entry, the same one its membership stood on. A refresh
+      // that has written since holds the newer answer here too, by exactly the Upload that fired
+      // it. The listing below is a separate read on a separate ticket, so dropping this half of
+      // the answer does not drop that one.
+      if (projectGen === projectRead) applyProjectRead(appTicket, project);
       // Unless a later read has already landed — the files above are this load's own and are
       // written either way, but the platform's answer is only the newest one's to write.
       if (listingGen === listingRead) applyListing(listing);
@@ -597,6 +606,75 @@ window.SW = window.SW || {};
     const read = await SW.api.members();
     if (gen !== scopeLoad) return;
     applyMembers(read);
+    notify();
+  }
+
+  // Everything a read of `/project` writes. Both refreshes take that read, and two copies of this
+  // mapping would be two answers about what an Upload row carries.
+  function applyProjectRead(appTicket, project) {
+    // Off the same read, because this is the other moment the app's manifest changes: adding a
+    // scratch file to a Dataset attaches it, and the panel refreshes through here rather than
+    // through `loadBuild`. Without this the Build header would go on saying the app ships
+    // nothing until the next app switch (#92).
+    applyAppScope(appTicket, { appAttachments: project.attached || [] });
+    // The Project's Uploads, and ONLY those. An Attachment is a record the selected app keeps,
+    // so it is listed under that app and nowhere else — one row per scope, which is the rule
+    // ADR-0011 already held for every other kind (#148). Both lists fed this group before, so
+    // after a crossing (#147) one file was drawn three times in Build: an Upload under the
+    // Project, an Attachment under the Project, and the same Attachment under the app.
+    //
+    // The `public/data/…` row was load-bearing rather than decorative — `collectTurnRefs` walks
+    // these groups to turn "@data.csv" into a path the turn can carry — and that read is off
+    // `appAttachments` now, which is where the record lives.
+    const files = (project.scratch || []).map((e) => ({
+      id: `file:${e.path}`,
+      name: e.name || (e.path || '').split('/').pop(),
+      kind: 'file',
+      path: e.path,
+      source: 'scratch',
+    }));
+    applyResourceGroups({ ...state.resourceGroups, file: files });
+  }
+
+  // Everything a working-set change can move, and nothing it cannot (#162). `loadScopeData` ends
+  // every call with a platform listing read that measures 5.1 s on a real deployment (#160), and
+  // putting a Resource into the Project — or taking one out — cannot change what Domino holds.
+  // Membership is a local file that answers in 145 ms, so the mutation callers take this instead
+  // and the listing read stays with the scope changes that are the only thing it answers.
+  //
+  // The listing already in hand is re-APPLIED rather than re-read, because membership is the other
+  // half of what `applyListing` computes: `catalogueParents` is the platform's rows MINUS the
+  // working set, so a row that just joined has to leave the @ menu's catalogue half, and one that
+  // just left has to reappear there. Both without a fetch to say so. That is also why the listing
+  // is not DROPPED here the way a scope change drops it — nothing is on the way to refill it, so
+  // the catalogue would blank for good rather than for one round trip.
+  //
+  // `members` is not re-read either: who is in the Project is not something an Add can change.
+  async function refreshWorkingSet() {
+    const scope = state.scope;
+    // Read rather than bumped, unlike the scope load: this is not a new scope, so a scope load
+    // already in flight still has the newest word and must not be cancelled by an Add landing
+    // under it. Same guard `reloadMembers` takes, for the same reason — it writes the same fields.
+    const gen = scopeLoad;
+    const appTicket = appScopeTicket();
+    const projectGen = ++projectRead;
+    const [resources, activity, project] = await Promise.all([
+      SW.api.resources(scope.id),
+      SW.api.activity(scope.id),
+      SW.api.project().catch(() => ({ attached: [] })),
+    ]);
+    // Both reads are taken together and both are written together, so one ticket covers both.
+    // Applying half of this read and half of a newer one is how the Uploads group ends up empty:
+    // the membership write replaces the whole group map, and `applyProjectRead` is what puts the
+    // `file` group back into it.
+    if (gen !== scopeLoad || projectGen !== projectRead) return;
+    applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
+    applyProjectRead(appTicket, project);
+    state.activity = activity;
+    state.resourcesLoading = false;
+    // In the window between a project switch and its deferred listing landing there is nothing to
+    // re-apply. That load will apply its own answer against the membership written just above.
+    if (state.resourceListing) applyListing(state.resourceListing);
     notify();
   }
 
@@ -1991,7 +2069,7 @@ window.SW = window.SW || {};
       await SW.api.addToProject(state.scope.id, resourceId);
     }
     if ((turn.installs || []).length || (turn.attaches || []).length) {
-      await loadScopeData();
+      await refreshWorkingSet();
     }
 
     state.typing = null;
@@ -2603,7 +2681,7 @@ window.SW = window.SW || {};
     // went through this.
     async addToProject(resource, options = {}) {
       const result = await SW.api.addToProject(state.scope.id, resource);
-      await loadScopeData();
+      await refreshWorkingSet();
       if (!options.silent && result.added) {
         antd.message.success(`${resource.name} is now in ${state.scope.name}`);
       }
@@ -2663,7 +2741,7 @@ window.SW = window.SW || {};
             state.attachments = (state.attachments || []).filter(
               (a) => a.resourceId !== resource.id && a.parentId !== resource.id
             );
-            await loadScopeData();
+            await refreshWorkingSet();
             antd.message.info(`${resource.name} is out of ${scopeName}`);
             resolve(true);
           },
@@ -2704,7 +2782,7 @@ window.SW = window.SW || {};
             state.attachments = (state.attachments || []).filter(
               (a) => a.resourceId !== resource.id && a.parentId !== resource.id
             );
-            await loadScopeData();
+            await refreshWorkingSet();
             antd.message.info(`${resource.name} is deleted.`);
             resolve(true);
           },
@@ -2799,7 +2877,7 @@ window.SW = window.SW || {};
       // the index IS the working set and a row is whatever the door that drew it chose to carry.
       // Only when it was absent: a Resource already in the rail changed nothing about membership,
       // and re-reading the whole scope for it is a handful of calls for no news.
-      if (!state.resourceIndex[resource.id]) await loadScopeData();
+      if (!state.resourceIndex[resource.id]) await refreshWorkingSet();
       return true;
     },
 
@@ -3472,7 +3550,7 @@ window.SW = window.SW || {};
       // Pointing at something from the catalogue brings it into the project on
       // the way in, so the panel has to hear about its new member.
       if (attachment.joinedProject) {
-        await loadScopeData();
+        await refreshWorkingSet();
         if (!options.silent) {
           antd.message.success(`${attachment.resourceName} added to ${state.scope.name}`);
         }
@@ -4751,7 +4829,7 @@ window.SW = window.SW || {};
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || 'Upload failed');
-      await loadScopeData();
+      await refreshWorkingSet();
       const resource = {
         id: `file:${body.path}`,
         name: name,
@@ -4773,7 +4851,7 @@ window.SW = window.SW || {};
 
     async unpinLeaf(parent, pin) {
       await SW.api.unpinFromProject(parent.id, pin);
-      await loadScopeData();
+      await refreshWorkingSet();
       return true;
     },
 
@@ -4901,6 +4979,9 @@ window.SW = window.SW || {};
 
     // Shared refresh helpers ---------------------------------------------
 
+    // No caller in the Workbench: a scope load is reached through `setScope` or through boot.
+    // `js/working_set_refresh_harness.mjs` reaches `loadScopeData` through it, to put one in
+    // flight against a mutation — so a dead-export sweep takes two tests with it.
     reloadScopeData: loadScopeData,
     reloadThreads: loadThreadList,
     reloadAttachments: refreshAttachments,

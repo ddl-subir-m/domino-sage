@@ -61,9 +61,14 @@ needs_node = pytest.mark.skipif(
 # id, which makes a late answer describe an app that is no longer on screen. Its own tests live in
 # `test_build_shows_the_apps_build_history.py`; what belongs here is that the gate covers it and
 # that its two writers go through the gate like the rest.
+#
+# `applyProjectRead` is where `loadScopeData` writes the manifest from, since #162 split the narrow
+# working-set refresh out of the scope load and both take the same `/project` read. Naming the one
+# writer rather than its two callers is the point of having pulled it out — and a caller that
+# started writing the fields by hand instead fails the no-direct-assignment test below.
 APP_SCOPED = ("activeApp", "bindings", "appAttachments", "appRemoval", "appHistory")
 WRITERS = (
-    "async function loadScopeData(",
+    "function applyProjectRead(",
     "async function loadAppList(",
     "async function refreshAppScope(",
     "async function refreshBindings(",

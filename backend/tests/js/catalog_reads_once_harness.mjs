@@ -44,8 +44,10 @@ const FRESH_RESOURCES = {
   model_apis: [],
 };
 
-// The project's own membership, so `loadScopeData` — which an Add runs — has something to apply.
-const MEMBERSHIP = { items: [{ id: 'dataset:d1', kind: 'dataset', name: 'Sales rows' }] };
+// The project's own membership, so the refresh an Add runs has something to apply. Mutable, and
+// grown by the Add below the way the server grows it, so the row that was just added can be checked
+// for reporting itself as a member afterwards.
+let membership = [{ id: 'dataset:d1', kind: 'dataset', name: 'Sales rows' }];
 
 // A listing read that is already out of date by the time it answers: it still carries a Dataset
 // somebody has since deleted. Served slowly, so a newer read overtakes it.
@@ -53,7 +55,7 @@ const STALE_ASSETS = { assets: [{ id: 'd9', name: 'Deleted set', project: 'retai
 
 const requests = [];
 let assetReads = 0;
-function answer(url) {
+function answer(url, init) {
   if (url.endsWith('/api/assets')) {
     assetReads += 1;
     if (act === 'stale') return assetReads === 1 ? STALE_ASSETS : FRESH_ASSETS;
@@ -62,7 +64,14 @@ function answer(url) {
   // `/api/resources` is the platform listing; `/api/project/resources` is this project's
   // membership. Two different reads whose paths end in the same word.
   if (url.endsWith('/api/resources')) return FRESH_RESOURCES;
-  if (url.endsWith('/api/project/resources')) return MEMBERSHIP;
+  if (url.endsWith('/api/project/resources')) {
+    if ((init && init.method) === 'POST') {
+      const row = JSON.parse(init.body);
+      if (!membership.some((m) => m.id === row.id)) membership = [...membership, row];
+      return { added: true };
+    }
+    return { items: membership };
+  }
   if (url.endsWith('/api/project')) return { scratch: [], attached: [] };
   if (url.endsWith('/api/members')) {
     return { members: [], directory: [], ownerId: '', self: '', connected: true };
@@ -98,10 +107,10 @@ const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
   RegExp, encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout, setInterval,
   clearInterval, URLSearchParams, TextEncoder, TextDecoder, URL, Blob, ArrayBuffer, Uint8Array,
-  fetch: (url) => {
+  fetch: (url, init) => {
     requests.push(url);
     if (refuses(url)) return Promise.reject(new Error('Domino did not answer'));
-    const body = answer(url);
+    const body = answer(url, init);
     const wait = delayFor(url);
     const res = {
       ok: true,
