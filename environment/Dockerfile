@@ -92,6 +92,32 @@ ARG SAGE_REV=main
 # (e.g. new commits on main), bump SAGE_CACHE_BUST instead; it busts this layer without touching the ref.
 ARG SAGE_CACHE_BUST=2026-09-02-table-cells-fill
 ENV SAGE_CACHE_BUST=${SAGE_CACHE_BUST}
+
+# Canary for the ARG-vs-ENV question below, testable with the repo still PUBLIC and no real token.
+# SAGE_GIT_TOKEN cannot stand in for this: the clone branches on it being non-empty, and GitHub
+# rejects an invalid credential outright rather than falling back to anonymous ("Invalid username or
+# token"), so a junk value fails the build and leaves nothing to inspect — verified 2026-09-03.
+#
+# The ECHO line is what makes the answer conclusive. Every earlier run of this test was ambiguous
+# because an absent canary and a never-set canary look identical; the echo is the same value
+# arriving by the promoted path, so it says whether the box value reached the build at all.
+# Safe to echo — the value is junk by definition. Never do this with SAGE_GIT_TOKEN.
+#
+# Set SAGE_CANARY to a junk value in the Environment's variables box, bump SAGE_CACHE_BUST, rebuild,
+# then from a VS Code workspace terminal on this Environment (a Sage Builder has no terminal, and
+# its chat box is not one — #150):
+#
+#     env | grep -E 'SAGE_CACHE_BUST|SAGE_CANARY'
+#
+#   SAGE_CACHE_BUST = the new value   -> the rebuild took effect; without this the rest means nothing
+#   SAGE_CANARY_ECHO = the junk value -> the box value did reach the build
+#   SAGE_CANARY      = absent         -> an unpromoted ARG does NOT reach runtime. That is the proof.
+#
+# If SAGE_CANARY is present instead, the box is injected at runtime: a token there is readable by
+# every Sage user through the chat box, so it must be deleted from the box after each build.
+# Delete both lines once the three have been seen together.
+ARG SAGE_CANARY=
+ENV SAGE_CANARY_ECHO=${SAGE_CANARY}
 # ############################################################################################
 # THE TOKEN HERE MUST BE SHORT-LIVED. Expiry is the control, not this Dockerfile. See #151.
 #

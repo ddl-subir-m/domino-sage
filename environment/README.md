@@ -58,18 +58,29 @@ commits. A published Workbench App must **not** treat that checkout as an app �
    See #151 for the full reasoning and the durable fix (build in CI, have Domino pull the image).
 
    **Unverified:** whether Domino passes its Environment Variables as build args only, i.e.
-   whether an `ARG` that is never promoted to `ENV` stays out of a workspace's `env`. The token is
-   its own test — on the **first build with a token actually set**, from a VS Code workspace
-   terminal on this Environment (a Sage Builder has no terminal, and its chat box is not one, #150):
+   whether an `ARG` that is never promoted to `ENV` stays out of a workspace's `env`. Settle it
+   **before** going private, with no real token: set `SAGE_CANARY` to a junk value in the variables
+   box, bump `SAGE_CACHE_BUST`, rebuild, and from a VS Code workspace terminal on this Environment
+   (a Sage Builder has no terminal, and its chat box is not one, #150):
 
    ```bash
-   env | grep SAGE_GIT_TOKEN
+   env | grep -E 'SAGE_CACHE_BUST|SAGE_CANARY'
    ```
 
-   Absent means an unpromoted `ARG` dies with the build. Present means delete the variable from the
-   box straight after every build — a runtime `env` is readable by every Sage user through the chat
-   box, a wider audience than `docker history`. Running this while no token is set proves nothing:
-   an unset variable and a correctly-dropped one are both simply absent.
+   | Line | Means |
+   | --- | --- |
+   | `SAGE_CACHE_BUST` = the new value | the rebuild took effect; without this the rest means nothing |
+   | `SAGE_CANARY_ECHO` = the junk value | the box value did reach the build |
+   | `SAGE_CANARY` absent | an unpromoted `ARG` does not reach runtime — **the proof** |
+
+   `SAGE_CANARY` present instead means the box is injected at runtime, so `SAGE_GIT_TOKEN` must be
+   deleted from the box after every build — a runtime `env` is readable by every Sage user through
+   the chat box, a wider audience than `docker history`. Delete both canary lines once the three
+   have been seen together.
+
+   `SAGE_GIT_TOKEN` cannot stand in for the canary: the clone branches on it being non-empty and
+   GitHub rejects an invalid credential outright rather than falling back to anonymous, so a junk
+   value fails the build and leaves nothing to inspect.
 
    To confirm a rebuild actually took effect, `SAGE_CACHE_BUST` is promoted to `ENV` and shows in
    `env`. Bump its value per rebuild, or every image reports the same string.
