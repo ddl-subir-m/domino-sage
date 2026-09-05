@@ -32,6 +32,17 @@ as a **mark on the row**, never as a list of its own.
 | Binding, Attachment | `In <App name>`, a section above the working set | The App dependencies modal, off Build's header — which already held this app's Add and its Scope door |
 | The plan | A pinned card above everything, Build only | A `Plans` group in the list, the live one accented |
 | Resources / Activity | Two dock tabs | One panel. Activity has no surface; the bell still reports |
+| Panel search | A `Filter this project…` box over the list, with a `Nothing matches here.` zero-state | Removed, not replaced |
+| Session context empty state | `Nothing here yet. Add one below, or type @.` under `In context` | Removed with the section. A tick on a row is the only sign context exists, so nothing is said before the first chip does |
+| Attachment provenance | `You added this` / `{assistant} added this`, a subtitle under an attachment row | Removed. The App dependencies row carries a name, a kind icon and its acts, and no subtitle |
+
+The last three rows are removals this rewrite made without stating a reason, found in review and
+**accepted on 2026-09-05** rather than restored. They are recorded here because the table above is
+what a later reader checks against: an omission that is not written down reads as a defect, and the
+next person to notice the missing search box would otherwise put it back. Accepting them is a
+judgement about cost, not a claim that the panel is better without them — the filter in particular
+went while the list it filtered was getting longer, and if the working set grows past what one
+column can be scanned in, that is the decision to revisit first.
 
 ## Why the app's list moved rather than staying
 
