@@ -133,18 +133,45 @@ window.SW = window.SW || {};
     // prevent (ADR-0034).
     const missing = SW.util.isMissing(resource);
     const used = resource.usedBy || [];
+    // The conversations holding a chip on it, the other half of what the removal refuses on (#169).
+    const held = resource.heldBy || [];
     // A missing Resource that an app still binds cannot leave the Project: `remove_project_resource`
     // answers 409, naming that app. The refusal stays — the Binding belongs to the app and removal
     // lives with the list that owns the scope (ADR-0011) — so the row points at the act that would
     // work instead of the one that is certain to be refused. One item per app, because each one has
-    // to be visited.
-    const stuck = missing && used.length > 0;
+    // to be visited. A live conversation's chip refuses it just the same (#168), and a Resource
+    // only a conversation holds used to compute `stuck === false` — so the row handed over the one
+    // door certain to close. Both holders count, and each one keeps its own door.
+    const stuck = missing && (used.length > 0 || held.length > 0);
+    // The chip on the conversation on screen already has its door above — "Stop using here" — so
+    // listing it again would point the reader at the page they are already reading.
+    const openable = inChat && inContext
+      ? held.filter((c) => c.threadId !== ((SW.store.get().thread || {}).id || ''))
+      : held;
+    const holders = used.map((u) => u.name).concat(held.map((c) => c.title));
+    const oneHolder = used.length ? 'the app' : 'the conversation';
     const missingTitle = missing
       ? `${SW.util.missingTitle()}${stuck
-        ? ` ${used.map((u) => u.name).join(', ')} still ${used.length > 1 ? 'use' : 'uses'} it,`
-          + ` so it cannot leave this project until it leaves ${used.length > 1 ? 'them' : 'the app'}.`
+        ? ` ${holders.join(', ')} still ${holders.length > 1 ? 'use' : 'uses'} it,`
+          + ` so it cannot leave this project until it leaves`
+          + ` ${holders.length > 1 ? 'them' : oneHolder}.`
         : ''}`
       : null;
+    // The doors the Project scope offers this row. A stuck row's holders each keep their own, and
+    // there may be none left to draw: a chip on the conversation on screen is answered by the item
+    // above, and a divider over nothing is the one shape this list must not take.
+    const projectDoors = stuck
+      ? [
+          ...used.map((u) => ({
+            key: `unbind-app:${u.appId}`,
+            label: `Remove from ${u.name}`,
+            danger: true,
+          })),
+          // Not styled as a removal, because it is not one: the chip comes off in the conversation,
+          // where the reader can see the turns that put it there.
+          ...openable.map((c) => ({ key: `open-chat:${c.threadId}`, label: `Open ${c.title}` })),
+        ]
+      : [{ key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true }];
     const items = contextItem
       ? [{ key: 'remove-from-conversation', label: 'Stop using here' }]
       : [
@@ -170,17 +197,8 @@ window.SW = window.SW || {};
               ? [{ key: 'to-app', label: `Add to ${app.name}` }]
               : [noWritableDataset]
             : []),
-          ...(resource.membershipParent
-            ? [
-                { type: 'divider' },
-                ...(stuck
-                  ? used.map((u) => ({
-                      key: `unbind-app:${u.appId}`,
-                      label: `Remove from ${u.name}`,
-                      danger: true,
-                    }))
-                  : [{ key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true }]),
-              ]
+          ...(resource.membershipParent && projectDoors.length
+            ? [{ type: 'divider' }, ...projectDoors]
             : []),
           // The Project-scope door onto the scratch bytes themselves (ADR-0023) — shown regardless
           // of mode, like the rest of this list, since it is a Project row rather than a Chat one.
@@ -199,6 +217,13 @@ window.SW = window.SW || {};
       if (key === 'remove') return SW.store.removeFromProject(resource);
       if (key.startsWith('unbind-app:')) {
         return SW.store.openAppBindings(key.slice('unbind-app:'.length));
+      }
+      // The route only, as the Plan page's own "From conversation" link does: the chip's door is
+      // "Stop using here" on the row once the conversation is open, and it draws itself there.
+      if (key.startsWith('open-chat:')) {
+        return SW.router.go(
+          SW.conversationRoute({ id: key.slice('open-chat:'.length) }, SW.router.get().mode)
+        );
       }
       if (key === 'to-app') return SW.store.addScratchToDataset(resource, '');
       if (key === 'delete-scratch') return SW.store.deleteScratchFile(resource);

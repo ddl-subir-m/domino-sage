@@ -187,6 +187,38 @@ def test_a_missing_row_an_app_still_binds_points_at_the_apps_own_door():
     assert report["freeRemovals"] == ["Remove from quick-start"]
 
 
+def test_a_missing_row_only_a_conversation_holds_points_at_that_conversation():
+    """The narrow case #169 closes. Missing, no app binds it, and a live conversation's chip does.
+
+    `stuck` read `usedBy` alone, so this row computed `stuck === false` and handed over "Remove from
+    quick-start" — the one act #168 made certain to be refused. The 409 names the conversation, so
+    nobody was stranded, but the row had walked them into it. The door is the conversation, where
+    the chip can come off in front of the turns that put it there.
+    """
+    report = _act("listed")
+    assert report["chatDoors"] == ["Open Positions review"]
+    assert report["chatRemovals"] == [], "no removal offered, and none styled as one"
+    assert report["chatRoutes"] == ["#/build/conv_9"]
+
+
+def test_a_missing_row_both_holders_keep_offers_both_doors():
+    """Two holders, two refusals, and the row has to name both.
+
+    Unbinding the app and stopping there would walk the creator straight into the second refusal —
+    the reason the removal asks both questions before either one answers.
+    """
+    assert _act("listed")["pairDoors"] == ["Remove from Sales trends", "Open Positions review"]
+
+
+def test_a_resource_domino_still_holds_keeps_the_ordinary_removal():
+    """#169 adds no pre-warn where the Resource is not missing.
+
+    A live Resource an app binds has always just answered 409, and a live one a conversation holds
+    now does too. Widening the pre-warn to them is a different question from this one.
+    """
+    assert _act("listed")["liveDoors"] == ["Remove from quick-start"]
+
+
 def test_a_same_scope_reload_does_not_blink_the_marks_off():
     """`loadScopeData` is not only the project switch.
 
@@ -197,7 +229,7 @@ def test_a_same_scope_reload_does_not_blink_the_marks_off():
     changes its mind is worse than one that never checked.
     """
     report = _act("reload")
-    assert report["duringReload"] == 4, "no frame of the reload showed fewer marked rows"
+    assert report["duringReload"] == 6, "no frame of the reload showed fewer marked rows"
     assert _marks(report)["Retired rows"] == "not in Domino"
 
 

@@ -260,6 +260,9 @@ function rowFromMember(item) {
     // apps' own manifests, so the Resource Browser subtitle and the drawer both read one answer —
     // the same one a removal refusal reads.
     usedBy: item.usedBy || [],
+    // The sibling: every live conversation holding a chip on it, by id and title (#169). The other
+    // half of what the removal refuses on, so the row can offer a door that opens instead.
+    heldBy: item.heldBy || [],
     membershipParent: true,
     writable: item.writable,
     levels: item.levels,
