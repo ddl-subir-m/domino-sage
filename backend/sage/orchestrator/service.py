@@ -3680,11 +3680,12 @@ class Orchestrator:
         # Off the request path on purpose: the rail is the first thing that draws, and it must not
         # wait on a network round trip to do it. The badge appears on the poll after the check.
         self._remote_check_due(project)
-        # Newest document wins the app it names, which is the one its plan pin already trusts.
-        plans = {str(d.get("appId") or ""): d["id"]
-                 for d in reversed(project.record.list_plan_docs())}
+        # The newest document that is still a candidate wins the app it names, read through the
+        # same filter the plan pin is answered from everywhere else (#171).
+        app_ids = self._wm.app_ids()
+        plans = self._plan_pins(project, app_ids)
         return [self._app_row(app_id, project.workspace.app_id, plans, self._building_app_id())
-                for app_id in self._wm.app_ids()]
+                for app_id in app_ids]
 
     # ---- what the remote has that we don't (#78) ----
     #
@@ -3768,6 +3769,24 @@ class Orchestrator:
         pinned = self._project.turn_app if self._project is not None else None
         return pinned.app_id if pinned is not None else ""
 
+    def _plan_pins(self, project: Project, app_ids: list[str]) -> dict[str, str]:
+        """The plan document each of `app_ids` is pinned to: its newest candidate, from one read.
+
+        Through `_plan_docs_naming_app` rather than past it (#171). The pin is what the plan panel
+        opens and what "build this again" asks about, so a document that filter drops — superseded,
+        or archived (#167) — is not a candidate to be it either, and reading the raw list here
+        pinned one the Plans group a few pixels away was hiding. An app whose only documents are
+        archived or superseded pins nothing, which is the answer an app that never had a plan
+        gives, and the rail already draws that.
+        """
+        docs = project.record.list_plan_docs()
+        pins = {}
+        for app_id in app_ids:
+            mine = self._plan_docs_naming_app(docs, app_id)
+            if mine:
+                pins[app_id] = mine[0]["id"]
+        return pins
+
     def _app_row(self, app_id: str, selected: str, plans: dict[str, str], building: str = "") -> dict:
         """One rail row. `plans` is read once by the caller rather than per app: the documents are
         the Project's, so asking for them inside the loop would re-read all of them per app."""
@@ -3812,9 +3831,8 @@ class Orchestrator:
     def _one_app(self, app_id: str) -> dict:
         """The rail row for one app, for the two callers that just changed it."""
         project = self.project(start_preview=False, seed_app=False)
-        plans = {str(d.get("appId") or ""): d["id"]
-                 for d in reversed(project.record.list_plan_docs())}
-        return self._app_row(app_id, project.workspace.app_id, plans, self._building_app_id())
+        return self._app_row(app_id, project.workspace.app_id,
+                             self._plan_pins(project, [app_id]), self._building_app_id())
 
     def create_app(self) -> dict:
         """Start a Built App from the Build rail: minted, seeded and selected, with no Thread and
