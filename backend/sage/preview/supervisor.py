@@ -30,6 +30,32 @@ _LOCAL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
 _DEFAULT_PORT = 5173
 
 
+def preview_port() -> int:
+    """The port Vite is asked to start on. `SAGE_PREVIEW_PORT` overrides it.
+
+    One machine can hold two Sage instances — a worktree under QA beside the checkout it is being
+    compared against — and `_clear_stale_port` reaps whatever is LISTENING on this port before
+    every spawn. Sharing the port aims that reaping at the OTHER instance's dev server, so the two
+    take turns killing each other, silently: neither preview stays up, and the symptom is a preview
+    that hangs rather than an error that names the cause. Measured on 2026-09-05, where it cost a
+    UI comparison two false regressions before the collision was spotted in the log.
+
+    Vite still auto-increments from here when the port is taken (`strictPort` is false), and the
+    supervisor discovers the real port from Vite's own output either way. So this moves the
+    starting point and changes nothing else about how the port is settled.
+    """
+    raw = os.environ.get("SAGE_PREVIEW_PORT", "").strip()
+    if not raw:
+        return _DEFAULT_PORT
+    try:
+        return int(raw)
+    except ValueError:
+        # Falling back rather than raising: a typo here must not be the reason a build session
+        # cannot open a preview, and the warning says which value was ignored.
+        log.warning("preview: SAGE_PREVIEW_PORT=%r is not a number; using %d", raw, _DEFAULT_PORT)
+        return _DEFAULT_PORT
+
+
 def parse_vite_url(line: str) -> str | None:
     """Pure helper: extract the base URL from a Vite 'Local:' line, else None."""
     m = _LOCAL_RE.search(line)
@@ -79,11 +105,15 @@ class ViteSupervisor:
     def _spawn(self) -> None:
         self._ready.clear()
         self._upstream = None
-        self._clear_stale_port(_DEFAULT_PORT)
+        port = preview_port()
+        self._clear_stale_port(port)
         # start_new_session -> own process group so we can kill Vite + any children (esbuild).
         # SAGE_BASE_PREFIX tells vite.config.ts the Domino proxy prefix to bake into `base`/HMR.
         self._proc = subprocess.Popen(
-            ["npm", "run", "dev"],
+            # `--port` after `--` so npm forwards it to Vite. Passed on the command line rather
+            # than set in `vite.config.ts` because a workspace seeded from an older template never
+            # re-seeds (#40) — the flag reaches those too, a config change would not.
+            ["npm", "run", "dev", "--", "--port", str(port)],
             cwd=self._workspace,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
