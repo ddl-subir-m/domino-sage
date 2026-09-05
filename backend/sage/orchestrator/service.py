@@ -7132,9 +7132,17 @@ class Orchestrator:
                 fate = ("It had also edited files, which a planning turn is not allowed to do, so "
                         "those edits were undone.")
             elif kept:
-                fate = "What it had already written to your app is kept, so you can see how far it got."
+                fate = ("What this turn had already written to your app is kept, so you can see how "
+                        "far it got.")
             else:
-                fate = "It hadn't written anything to your app yet."
+                # Scoped to THIS turn, out loud. `agent_wrote()` only ever knew about this turn, and
+                # the old sentence — "It hadn't written anything to your app yet" — said it about
+                # the app. Someone who had just watched eight files land in earlier turns read that
+                # as the app being emptied, which is the one thing the offer exists to promise
+                # against (nothing is discarded). So it names the turn, and then says what is still
+                # there, rather than leaving the reader to work out which of the two it meant.
+                fate = ("This turn hadn't written anything yet, so your app is exactly as it was "
+                        "before you asked.")
             # A phase is not a turn, and gets no card. _run_step retries a failed phase in a fresh
             # session, so a build that stalls at phase 3 and finishes on the retry would otherwise
             # carry "the build stopped responding, so Sage stopped it" permanently in the middle of

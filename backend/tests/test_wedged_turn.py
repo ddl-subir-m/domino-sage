@@ -356,7 +356,12 @@ def test_a_turn_that_wrote_nothing_does_not_claim_it_kept_anything(tmp_path: Pat
     offer = _of(list(orch.build_stream("add a chart")), "build-stalled")[0]
 
     assert offer["kept"] is False
-    assert "hadn't written anything" in offer["message"]
+    assert "This turn hadn't written anything" in offer["message"]
+    # Reported from a real session: the same fact used to be worded about the APP ("It hadn't
+    # written anything to your app yet"), and the person reading it had watched eight files land in
+    # earlier turns. Turn-scoped fact, app-scoped sentence — so it read as the app being emptied,
+    # which is the opposite of what a stalled turn does. The wording names both halves now.
+    assert "your app is exactly as it was" in offer["message"]
 
 
 class SilentStepsOpenCode(FakeOpenCode):
