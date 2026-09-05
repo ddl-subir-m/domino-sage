@@ -84,10 +84,35 @@ def test_a_tool_call_with_unparsed_arguments_yields_no_label():
     assert _tool_detail("write", {"state": {"input": {"filePath": "src/App.tsx"}}}) == "src/App.tsx"
 
 
-def test_a_build_cut_off_by_a_broken_call_does_not_report_success(tmp_path: Path):
-    """Seven files in, the eighth call arrives unparsed and the session goes. Say it."""
-    orch, _oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"},
-                                      broken_write=True)])
+def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
+    """The fault is in one response, not in the request, so send the request again.
+
+    This is the retry the give-up message used to ask the person to type. It is worth doing for
+    them: the second attempt is what actually built the app in the live run of 2026-09-05.
+    """
+    orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
+                                Turn(text="Added the dashboard.", writes={"src/App.tsx": "app\n"})])
+
+    events = list(orch.build_stream("build me a dashboard"))
+
+    assert _of(events, "done")[0]["ok"] is True
+    assert not _of(events, "error")
+    # The retry is visible. A build that silently takes twice as long is its own kind of wrong.
+    assert any("arrived broken" in e.get("reason", "") for e in _of(events, "iterate"))
+    # In a NEW session: the broken call is in the old one's history and OpenCode replays history
+    # into every later request, so re-sending there risks a turn that cannot start at all.
+    assert len(oc.sessions) == 2
+    assert oc.prompts[1]["session"] != oc.prompts[0]["session"]
+    # And it is the same request, not a nudge. The blocks that ride the first send only — the
+    # user's attachments and the Resource/Chat notes — are cleared after it, and a fresh session
+    # heard none of them, so the retry has to carry them again.
+    assert oc.prompts[1]["text"] == oc.prompts[0]["text"]
+
+
+def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
+    """Seven files in, the eighth call arrives unparsed — and so does the retry's. Say it."""
+    orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
+                                Turn(broken_write=True)])
 
     events = list(orch.build_stream("build me a dashboard"))
 
@@ -97,13 +122,16 @@ def test_a_build_cut_off_by_a_broken_call_does_not_report_success(tmp_path: Path
     # And it names what happened in words the person can act on, rather than leaving the failure
     # to be inferred from an app that did not change.
     message = _of(events, "error")[0]["message"]
-    assert "broken write call" in message
+    assert "broken write call twice" in message
     assert "Try the same request again." in message
+    # Exactly one retry. A model that breaks every time must not spend the whole build proving it.
+    assert len(oc.sessions) == 2
 
 
 def test_the_file_written_before_the_break_is_still_there(tmp_path: Path):
     """The turn failed; the work it finished did not. The message promises this, so pin it."""
-    orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True)])
+    orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
+                                Turn(broken_write=True)])
 
     events = list(orch.build_stream("build me a dashboard"))
 

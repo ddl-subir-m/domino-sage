@@ -7417,6 +7417,15 @@ class Orchestrator:
             "preview is blank. Fix the code so it renders without throwing. Do not just guard the "
             "symptom — find and fix the root cause.\n\nError: {message}\n\nStack:\n{stack}"
         )
+        # One automatic retry for a tool call whose arguments never parsed (_unparsed_tool_input).
+        # The fault is transient — the same request usually goes through on the next attempt, which
+        # is what the person was being asked to do by hand. Bounded to one so a model that emits
+        # broken JSON systematically still ends, rather than spending a build on the same break.
+        broken_retries = 0
+        # The five blocks that ride the FIRST send only; each is cleared right after it, so a nudge
+        # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
+        # it re-sends the same turn into a session that heard none of this — so it puts them back.
+        first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note)
         while True:
             if project.stop_requested:
                 yield handle_stop()
@@ -7735,19 +7744,46 @@ class Orchestrator:
                 yield persist({"type": "done", "ok": False, "decision": "gateway error"})
                 return
 
+            if broken_call is not None and broken_retries < 1:
+                # Send the same turn again rather than handing the person a build that stopped.
+                # OpenCode drops the session when a tool call's arguments do not parse, so whatever
+                # the model was part-way through writing never landed — but the fault is in one
+                # response, not in the request, and a re-send lands it. Retrying by hand is what
+                # the give-up below used to ask for, and it works; this is that, without the ask.
+                #
+                # A FRESH session, not the one that broke. The broken call is in that session's
+                # history, and OpenCode replays history into every later request (keepalive's
+                # `unsigned_tool_messages` reads exactly those replayed tool calls), so re-sending
+                # into it risks a turn that cannot get off the ground at all. Nothing is lost by
+                # starting clean: the app is on disk, the plan is in .sage/, and the agent reads
+                # both. Same directory as `_ensure_session` uses — the Built App, not the
+                # workspace root (ADR-0008).
+                broken_retries += 1
+                log.warning("turn: a %s call arrived unparsed — re-sending the turn in a new session",
+                            broken_call)
+                sid = client.create_session(directory=str(project.app_for_turn().path))
+                project.active_session_id = sid
+                if owns_turn:
+                    project.session_id = sid
+                    project.record.write_session_id(sid, project.build_conversation,
+                                                    project.app_for_turn().app_id)
+                mention_files, resource_note, chat_note, unusable_note, ambiguous_note = first_send_extras
+                yield {"type": "iterate",
+                       "reason": f"the model's {broken_call} call arrived broken — starting it again"}
+                continue
+
             if broken_call is not None:
-                # A give-up, exactly as the gateway case above is: OpenCode drops the session when
-                # a tool call's arguments do not parse, so whatever the model was part-way through
-                # writing never landed. It has to be said out loud, because the shape it leaves
-                # behind is quiet — the files written before the break are usually orphans nothing
-                # imports yet, so the typecheck goes green and the person is handed a finished-
-                # looking build of an app that never changed.
+                # The retry above broke the same way, so this is a give-up, exactly as the gateway
+                # case is. It has to be said out loud, because the shape it leaves behind is quiet —
+                # the files written before the break are usually orphans nothing imports yet, so the
+                # typecheck goes green and the person is handed a finished-looking build of an app
+                # that never changed.
                 if owns_turn:
                     self._turn_gave_up = True
                 restore_mode()
-                message = (f"The model sent a broken {broken_call} call, so this build stopped "
-                           "part-way through. Anything already written to your app is still "
-                           "there. Try the same request again.")
+                message = (f"The model sent a broken {broken_call} call twice, so this build "
+                           "stopped part-way through. Anything already written to your app is "
+                           "still there. Try the same request again.")
                 if owns_turn and is_approval:
                     message += brand.text(
                         '\n\nThe plan you approved is still here — say "try again" and '
