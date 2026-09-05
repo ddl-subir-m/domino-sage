@@ -4,8 +4,7 @@ window.SW = window.SW || {};
   const { createElement: h, useState, useEffect, useRef, Fragment } = React;
   const { Button, Tooltip, Input, Dropdown, Modal, Checkbox, Alert } = antd;
   const {
-    ReloadOutlined, ExportOutlined, SearchOutlined, MoreOutlined, PlusOutlined, DownOutlined,
-    LoadingOutlined, HistoryOutlined,
+    ExportOutlined, SearchOutlined, MoreOutlined, PlusOutlined, DownOutlined, LoadingOutlined,
   } = icons;
 
   // One rail, both modes (#82). It used to swap its contents — Threads in Chat, Built Apps here —
@@ -343,6 +342,10 @@ window.SW = window.SW || {};
   // The list behind the header's app name. A searchable dropdown of the rail's rows rather than a
   // bare select, for one reason: #77's `Building…` and #78's `Changes to pull` are worth seeing
   // across the whole list without a click, and a one-line selector silently destroys both.
+  //
+  // "New app" lives at the top of this panel rather than as its own button beside the picker: it is
+  // the one other thing this control already knows how to do — put a different app on screen — and
+  // a person reaching for "which app" is the person a blank one belongs in front of.
   function AppPicker({ apps, activeApp }) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
@@ -376,6 +379,20 @@ window.SW = window.SW || {};
           h(
             'div',
             { className: 'sw-app-picker-panel' },
+            h(
+              'button',
+              {
+                className: 'sw-app-picker-newapp',
+                type: 'button',
+                onClick: () => {
+                  setOpen(false);
+                  SW.store.createApp();
+                },
+              },
+              h(PlusOutlined, null),
+              'New app'
+            ),
+            h('div', { className: 'sw-app-picker-divider' }),
             // Also while a search is live: deleting down to one app would otherwise hide the box
             // that holds the filter, leaving the last app filtered out and unreachable.
             (apps.length > 1 || needle) &&
@@ -438,24 +455,12 @@ window.SW = window.SW || {};
   // The Build header. It names the app the preview is showing, and it is where the app is chosen
   // now that the rail lists Conversations in both modes.
   function AppBar({ resumed }) {
-    const { apps, activeApp, touched, previewStatus, buildRunning } = SW.store.get();
-
-    const newApp = h(
-      Button,
-      {
-        size: 'small',
-        // The one clear action of a Project with nothing in it, and an ordinary control once there
-        // is something to build on — by then the composer is what the screen is for.
-        type: apps.length ? 'default' : 'primary',
-        icon: h(PlusOutlined, null),
-        onClick: () => SW.store.createApp(),
-      },
-      'New app'
-    );
+    const { apps, activeApp, touched, previewStatus } = SW.store.get();
 
     // Where the app name would be, rather than inside the control that lists apps: somebody with
     // no apps has no reason to open an app picker, so guidance hidden in one is not reachable by
-    // the person it is written for.
+    // the person it is written for. Apps.length > 0 reaches New app through the picker instead
+    // (see `AppPicker`), which is why this button only exists here.
     if (!apps.length) {
       return h(
         Fragment,
@@ -466,73 +471,18 @@ window.SW = window.SW || {};
           SW.brand.text('No {builtAppPlural} yet. Start one with New app, or approve a plan '
             + 'in {chat}.')
         ),
-        newApp
+        h(
+          Button,
+          {
+            size: 'small',
+            type: 'primary',
+            icon: h(PlusOutlined, null),
+            onClick: () => SW.store.createApp(),
+          },
+          'New app'
+        )
       );
     }
-
-    // Rename and Delete land here on Reset's precedent (#38): text-labelled items in an overflow,
-    // Delete danger-styled and last below a divider. Not a per-row `…` inside the picker, which
-    // would be a menu inside a menu — and beside the app the header names there is no ambiguity
-    // about which app they act on, which is what the per-row `…` was solving.
-    //
-    // Publish and Open app join them on the same shape (#89), above Rename because both are about
-    // the App outside in Domino while the two below are about the app in here — its name, and
-    // whether it stays. Delete keeps the three things Reset's shape is made of: danger, last, and
-    // below the divider.
-    const appMenu = activeApp && {
-      items: [
-        // ONE control, not a Rebuild/Update pair (#86): describing a change in the composer is
-        // what rebuilds an app, so a second control under a second word would be a second way to
-        // do one thing. The first publish and every one after are the same act on the same object
-        // — what differs is what the creator already has out there, which the confirm says and
-        // the control does not have to.
-        //
-        // Refused mid-build, and it says why rather than going quiet. Publishing commits and
-        // pushes the working tree, and a turn writing files into it has not finished writing them:
-        // this would commit half an edit and merge on top of it. The server refuses it too, with
-        // the same sentence and for the same reason — this is the half that says so before the
-        // click, which is the shape the composer's Reset already has.
-        //
-        // Two signals, because one build is visible two ways and neither sees the other. `building`
-        // is the row's, so it survives a reload and catches a turn another tab started in THIS app.
-        // `buildRunning` is this tab's, and it is the one that catches the hazard the row cannot
-        // name: the commit is the PROJECT's, so a turn streaming into another app is equally in the
-        // way, and that app's row is not the one being read here.
-        {
-          key: 'publish',
-          label: activeApp.building || buildRunning
-            ? 'Publish — wait for this build to finish' : 'Publish',
-          disabled: !!(activeApp.building || buildRunning),
-        },
-        // A second door, never the first one wearing another word: the control in the toolbar
-        // opens the LOCAL preview and this opens the deployed App. Two items, two labels, two
-        // destinations — one button that changed where it went would be unreadable in exactly
-        // the moment the difference matters.
-        //
-        // Unpublished, it stays and says why. Vanishing would leave the creator to work out on
-        // their own that there is nothing to open yet, which is the dead end Reset's disabled
-        // label avoids in the composer.
-        {
-          key: 'open',
-          label: activeApp.published ? 'Open app' : 'Open app — publish it first',
-          disabled: !activeApp.published,
-        },
-        { key: 'rename', label: 'Rename' },
-        { type: 'divider' },
-        { key: 'delete', label: 'Delete', danger: true },
-      ],
-      onClick: ({ key, domEvent }) => {
-        domEvent.stopPropagation();
-        if (key === 'publish') publishApp(activeApp);
-        // A new tab, so the Build you published from is still behind it — Gallery's cards open
-        // the same way for the same reason. The URL arrives host-relative and the browser resolves
-        // it against this page's origin, which is the host Domino serves the App's page from.
-        // Opened as given: nothing here builds it, which is why nothing here knows its grammar.
-        if (key === 'open' && activeApp.url) window.open(activeApp.url, '_blank', 'noopener');
-        if (key === 'rename') renameApp(activeApp);
-        if (key === 'delete') deleteApp(activeApp);
-      },
-    };
 
     // What else this Conversation changed. One Conversation can drive several apps (ADR-0008) and
     // the preview holds one, so the count is the header's answer to "where did the rest of my work
@@ -578,19 +528,6 @@ window.SW = window.SW || {};
       Fragment,
       null,
       h(AppPicker, { apps, activeApp }),
-      activeApp &&
-        h(
-          Dropdown,
-          { menu: appMenu, trigger: ['click'], placement: 'bottomRight' },
-          h(
-            Tooltip,
-            { title: `Actions for ${activeApp.name}` },
-            h('button', {
-              className: 'sw-icon-btn is-dark-text',
-              'aria-label': `Actions for ${activeApp.name}`,
-            }, h(MoreOutlined, null))
-          )
-        ),
       // Qualifies the name rather than the toolbar, so it stays beside the name (#77).
       resumed && h('span', { className: 'sw-caption' }, '· built earlier'),
       // A build the person walked away from goes on running (#77). The app list already says so
@@ -612,7 +549,6 @@ window.SW = window.SW || {};
       // turn can be writing files WHILE the preview restarts to show them, so this is said beside
       // the two above rather than instead of either.
       activeApp && previewWord && h('span', { className: 'sw-build-state' }, previewWord),
-      newApp,
       others.length > 0 &&
         h(
           Tooltip,
@@ -900,165 +836,293 @@ window.SW = window.SW || {};
         },
         h(
           Button,
-          { size: 'small', type: 'link', className: 'sw-app-scope-door' },
+          { size: 'small', type: 'link', className: 'sw-appdeps-door' },
           scope || SW.util.NO_SCOPE_YET
         )
       )
     );
   }
 
-  // What the selected app ships (#92), in the row #87 reserved for it.
+  // What the selected app depends on, and now the whole of the app's scope: the Bindings someone
+  // picked and the files someone attached, both written per app and re-read by `loadBuild` when the
+  // app switches.
   //
-  // The reason the layout could not wait is the problem #85 was filed about. The composer's chips
-  // are Session context, which belongs to the Conversation and must not follow the selected app
-  // (#84, `CONTEXT.md:176-177`). Flush against an app-scoped pane with nothing between them, a
-  // Conversation-scoped row reads as the app's — somebody saw `market-data-eod` under a news app
-  // and took it for something that app uses. Two rows, two scopes, and this one says whose it is.
+  // This is the one surface for that scope. It began as an always-on row under the header (#92),
+  // moved behind a menu item because the resources panel showed "In {app}" beside it, and has now
+  // absorbed that section outright. The panel is the Project's list; putting an app's list in it
+  // made a project-scoped surface do double duty, and the app's own doors — Add, Scope, and now
+  // Remove — are what ADR-0021 says belong on the app's own surface. ADR-0011's rule is unchanged
+  // and better served: an object is still removed from the list that owns its scope, and this is
+  // now that list. What ADR-0011 called "a second copy of the guard" was only a risk while there
+  // were two lists; there is one.
   //
-  // `ships`, not `uses`. What is read here is the DECLARED record — the Bindings someone picked
-  // and the files someone attached, both written per app, both re-read by `loadBuild` when the
-  // control above changes app. Whether the app's code actually calls a Binding is the DERIVED
-  // answer, and it rides in beside the record as `used` (#93): a written answer off the disk, not
-  // a scan this row could ever run. `_scan_app_sources` walks the whole app tree, and this redraws
-  // on every app switch.
-  //
-  // It marks the exception and nothing else. ADR-0010 keeps the derived answer advisory and off
-  // every gate — a Binding made two minutes ago, before the agent wrote its first query, is used
-  // by nothing and still publishes — so the mark is a word beside a name, never a warning and
-  // never a control. `used === false` is the scan having looked; `undefined`/`null` is no turn
-  // having left an answer for this app, which draws no mark rather than calling everything unused.
-  //
-  // Two names rather than one umbrella (#85 Q3): `.sage/bindings.json` is read at run time by the
-  // published app's own server to decide what a query may touch, `.sage/attachments.json` at
-  // deploy time to rebuild `public/data/`. Different consumers, different moments.
-  function AppScopeRow() {
-    const { activeApp, bindings, appAttachments } = SW.store.get();
-    // A row headed by no app is a row about nothing, and a Project with none is the one screen
-    // whose only job is `New app`.
+  // `used === false` is the last build turn having looked and found nothing calling it; `undefined`/
+  // `null` is no turn having left an answer for this app. Only the first draws a mark (#93) — this
+  // is advisory (ADR-0010) and never a gate, so the mark is a word beside a name, not a warning.
+  function AppDependenciesModal() {
+    const { activeApp, bindings, appAttachments, appDependenciesOpen, appRemoval } = SW.store.get();
+    const close = () => SW.store.closeAppDependencies();
     if (!activeApp) return null;
 
-    const bound = (bindings || []).map((b) => b.display_name || b.name || b.id);
-    // Which of them the last build turn found nothing calling. Positional, against `bound`, so the
-    // mark cannot drift onto the name beside it.
-    const unused = (bindings || []).map((b) => b.used === false);
-    // The Scope door, for the one kind that has a part to choose (#142). Positional for the same
-    // reason the marks are, and null for every other kind: an Alias has no part to name, and a
-    // Dataset is reached whole.
-    const doors = (bindings || []).map((b) => (SW.util.recordsScope(b.kind) && activeApp
-      ? h(ScopeDoor, { key: SW.util.bindingId(b), binding: b, app: activeApp })
-      : null));
-    // The strip truncates, so the tooltip carries what a Data Source's name alone cannot say. Its
-    // words rather than the door's, because a hover is read and not clicked.
-    const boundFull = (bindings || []).map((b, i) => (SW.util.recordsScope(b.kind)
-      ? `${bound[i]} — ${SW.util.scopeText(b) || SW.util.NO_SCOPE_YET}`
-      : bound[i]));
-    // Two Datasets can each hold a `margins.csv`, and the row has room for the leaf name only. So
-    // the strip shows the name and the tooltip carries the path that tells the two apart — without
-    // it the row would print the same word twice and offer nothing that says why.
-    const paths = (appAttachments || []).map((a) => a.path || a.file || '');
-    const files = paths.map((p) => p.split('/').pop());
+    const bound = bindings || [];
+    const files = appAttachments || [];
+    const empty = bound.length === 0 && files.length === 0;
 
-    // Where each kind is REMOVED, said rather than left to be discovered: a row that reports a
-    // Binding and says nothing about where it is dealt with is the same dead end the empty state
-    // below avoids. Still a pointer and not a second Remove — unbind and detach each report the app
-    // source that still uses what just went, and a second copy of either here would be a second
-    // guard to keep in step with the first. Only ADDITION moved onto this surface (ADR-0021), and it
-    // moved because it had no home at all; removal keeps the one ADR-0011 gave it.
-    //
-    // It names the destination in the words the reader will actually see on the way to it and names
-    // the action, because the destination can now act (#96). It used to say "listed in", a read-only
-    // word, and the Attachments one pointed at a group that did not exist.
-    //
-    // Those words are the dock TAB's (`components/shell.js`), not the panel's section head, which
-    // reads "In this project" since #140 — the list holds Assets as well as Resources, so a head
-    // reading "Project resources" claimed something half of it does not meet. The tab is what gets
-    // clicked, so the tab is what the pointer names.
-    const pointer = `in Project resources, under ${activeApp.name} — remove it there`;
+    // Every label names the scope it acts on, which is ADR-0011's rule and the only thing telling
+    // this Remove apart from the Project's. `Delete from {dataset}` is the door onto Sage's own
+    // bytes and never onto a Dataset file somebody already had (ADR-0023).
+    const menuFor = (record, attachment) => ({
+      items: [
+        { key: 'remove', label: `Remove from ${activeApp.name}`, danger: true },
+        ...(attachment && SW.util.isSageUpload(attachment)
+          ? [{ key: 'delete', label: `Delete from ${attachment.dataset}`, danger: true }]
+          : []),
+      ],
+      onClick: ({ key }) => {
+        if (key === 'delete') return SW.store.deleteAttachmentFromApp(attachment);
+        return attachment
+          ? SW.store.removeAttachmentFromApp(attachment)
+          : SW.store.removeBindingFromApp(record);
+      },
+    });
 
-    // One span per name, so one of them can carry a mark the others do not. The separator sits
-    // INSIDE the span that follows it rather than between spans: `sw-app-scope-names` truncates the
-    // run with an ellipsis, and a comma of its own would be the thing left dangling at the cut.
-    const nameNodes = (names, marks, doors) =>
-      names.map((name, i) =>
+    // Both labels, always, over an app that records anything — including the one with nothing under
+    // it. That rule was the panel section's (ADR-0011, ADR-0025) and it comes here with the list:
+    // this is where somebody arrived intending to act, and "Files it carries — none" answers the
+    // question they came with. `held` is what the APP records, which is the only thing that can
+    // make a group empty here.
+    const group = (label, held, rows) =>
+      h(
+        'div',
+        { key: label, className: 'sw-appdeps-section' },
         h(
-          'span',
-          { key: `${name}-${i}`, className: 'sw-app-scope-name' },
-          i > 0 ? ', ' : '',
-          name,
-          // Immediately after the name it qualifies, because it says what THAT record reads and
-          // the run can hold several.
-          (doors || [])[i],
-          (marks || [])[i] && h('span', { className: 'sw-app-scope-unused' }, ' (not used)')
-        )
+          'div',
+          { className: 'sw-group-label sw-app-group' },
+          SW.brand.text(held ? label : `${label} — none`)
+        ),
+        rows
       );
 
-    const kindRow = (label, names, where, full, marks, doors) =>
+    // The kind, as the icon the panel's rows wear rather than as the record's own word. This list
+    // groups by the app's relationship to a thing and never by type (ADR-0025), so the kind cannot
+    // be a heading — but a row saying only a name leaves "is that a Data Source or an Alias"
+    // unanswered on the one surface where it decides what the Scope door beside it even means.
+    const KIND_ICON = {
+      data_source: 'datasource', llm_alias: 'model_llm', model_api: 'model_predictive',
+    };
+
+    const row = (key, name, { kind, mark, door, menu }) =>
       h(
-        Tooltip,
-        {
-          key: label,
-          // The marks go in the tooltip too, because the strip truncates and the tooltip is where a
-          // narrow preview's reader finds out which name the mark was on. The clause after them is
-          // what two words beside a name cannot say: what looked, when, and that nothing is blocked
-          // by the answer (ADR-0010). It sits BEFORE the pointer, which stays last in both kinds'
-          // tooltips because it is the only half the reader can act on.
-          title:
-            `${(full || names).map((n, i) => ((marks || [])[i] ? `${n} (not used)` : n)).join(', ')}`
-            + ((marks || []).some(Boolean)
-              ? ' · “not used” is what the last build saw, and it publishes either way'
-              : '')
-            + ` · ${where}`,
-        },
+        'div',
+        { key, className: 'sw-appdeps-row' },
+        h('span', { className: 'sw-appdeps-icon' }, SW.util.iconFor(KIND_ICON[kind] || kind)),
+        h('span', { className: 'sw-appdeps-name' }, name),
+        door,
+        // Two words beside a name cannot say what looked, when, or that nothing is blocked by the
+        // answer — and a creator who reads "not used" as "this will not publish" has been told the
+        // opposite of ADR-0010. The header's strip carried this sentence in the tooltip over the
+        // whole kind; here it belongs to the one row it qualifies. It explains and never acts: the
+        // mark is a word, and the acts on this row are in the menu beside it.
+        mark &&
+          h(
+            Tooltip,
+            { title: '“not used” is what the last build saw, and it publishes either way.' },
+            h('span', { className: 'sw-appdeps-unused' }, ' (not used)')
+          ),
         h(
-          'span',
-          { className: 'sw-app-scope-kind' },
-          h('span', { className: 'sw-app-scope-kind-label' }, label),
-          h('span', { className: 'sw-app-scope-names' }, nameNodes(names, marks, doors))
+          Dropdown,
+          { menu, trigger: ['click'], placement: 'bottomRight' },
+          h(
+            'button',
+            { className: 'sw-res-more', 'aria-label': `Actions for ${name}` },
+            h(MoreOutlined, null)
+          )
         )
       );
 
     return h(
-      'div',
-      { className: 'sw-app-scope' },
-      h('span', { className: 'sw-app-scope-label' }, `${activeApp.name} ships`),
-      // Always here, including for a brand-new app with neither: hiding the row would make the
-      // header jump the moment the first Binding lands, and would teach a first-time creator
-      // nothing at the one moment they have not seen either word yet.
-      // One sentence, written once in `SW.util` and said by the panel's section too — the two
-      // surfaces answer the same question and had drifted into two answers to it (ADR-0011).
-      bound.length === 0 && files.length === 0
-        ? h(
-            'span',
-            { className: 'sw-app-scope-empty' },
-            SW.util.appScopeEmpty('nothing yet.')
-          )
-        // A kind with nothing in it is not the same state, so it is not named. `Files it carries —`
-        // over an empty list says the app ships a kind of thing it does not. The panel does name
-        // it, because a destination someone arrived at intending to act is not a glance.
-        //
-        // The same two labels the panel draws, and the same words on purpose: the header and the
-        // panel answer one question, and ADR-0011 already paid for two surfaces disagreeing about
-        // it once. Named by what the app needs and carries rather than by the record (ADR-0025).
-        : [
-            bound.length > 0
-              && kindRow(SW.brand.text('Needs to run'), bound, pointer, boundFull, unused, doors),
-            // No marks for the files. Whether the source uses an ATTACHMENT is `_data_usage`'s
-            // question, which detach and delete ask live because they refuse on the answer — a
-            // different scanner for a different job, and #85 named it in place of this one.
-            files.length > 0 && kindRow(SW.brand.text('Files it carries'), files, pointer, paths),
-          ],
-      // At the far end of the row that names what the app holds, because it is what puts things
-      // there. The header stops being the read-only glance #92 shipped: that argument held while
-      // this was a summary and stops holding the moment it is the door (ADR-0021).
-      h('span', { className: 'sw-app-scope-add' }, h(AddToApp, { app: activeApp }))
+      Modal,
+      {
+        open: !!appDependenciesOpen,
+        onCancel: close,
+        title: `App dependencies · ${activeApp.name}`,
+        width: 480,
+        footer: h(Button, { onClick: close }, 'Done'),
+      },
+      h(
+        'div',
+        { className: 'sw-appdeps-body' },
+        // What the last removal reported, after the act. Here rather than in a toast because it is
+        // only worth having if it can be acted on, and five seconds is not long enough to read a
+        // file list and decide (ADR-0011). It followed the removal door out of the panel.
+        appRemoval &&
+          h(
+            'div',
+            { className: 'sw-appdeps-notice' },
+            h('span', { className: 'sw-appdeps-notice-text' }, appRemoval.text),
+            // Writes the prompt into the composer and stops. Firing the turn from here could be
+            // refused by the turn lock, and would put work past a plan gate nobody read.
+            appRemoval.prompt &&
+              h(
+                Button,
+                {
+                  type: 'link',
+                  size: 'small',
+                  style: { padding: 0, height: 'auto' },
+                  onClick: () => {
+                    SW.store.seedComposer(appRemoval.prompt);
+                    close();
+                  },
+                },
+                `Ask ${SW.brand.assistant()} to clean this up`
+              ),
+            h(
+              Button,
+              {
+                type: 'link',
+                size: 'small',
+                style: { padding: 0, height: 'auto' },
+                onClick: () => SW.store.dismissAppRemoval(),
+              },
+              'Dismiss'
+            )
+          ),
+        // One sentence, written once in `SW.util`, so this and anything else describing an empty
+        // app never drift into two answers about the same thing (ADR-0011).
+        empty
+          ? h('div', { className: 'sw-appdeps-intro' }, SW.util.appScopeEmpty('Nothing yet.'))
+          : h(
+              Fragment,
+              null,
+              // Named by what the app cannot do without them, never by the record's own word
+              // (ADR-0025). Through `SW.brand.text` because that is a marked position: neither
+              // label carries a token today, and routing them anyway is what puts them where the
+              // lint can read them.
+              group(
+                'Needs to run',
+                bound.length,
+                bound.map((b) => row(
+                  SW.util.bindingId(b),
+                  b.display_name || b.name || b.id,
+                  {
+                    kind: b.kind,
+                    mark: b.used === false,
+                    // The Scope door, for the one kind that has a part to choose (#142): an Alias
+                    // has no part to name and a Dataset is read whole, so every other kind draws
+                    // none.
+                    door: SW.util.recordsScope(b.kind)
+                      ? h(ScopeDoor, { binding: b, app: activeApp })
+                      : null,
+                    menu: menuFor(b, null),
+                  }
+                ))
+              ),
+              group(
+                'Files it carries',
+                files.length,
+                // No "not used" marks here: whether the source uses an ATTACHMENT is
+                // `_data_usage`'s question, asked live by detach and delete, not this list's.
+                // Through the same derivation the @ menu offers and the turn resolves
+                // (`SW.util.attachmentRow`, #148) rather than a second split of the path here.
+                // This list is now the ONLY place an Attachment is drawn, so it is also the one
+                // that has to name it the way every other reader of that record does.
+                files.map((a) => row(
+                  a.path,
+                  SW.util.attachmentRow(a).name,
+                  { kind: 'file', menu: menuFor(null, a) }
+                ))
+              )
+            ),
+        h('div', { className: 'sw-appdeps-foot' }, h(AddToApp, { app: activeApp }))
+      )
     );
   }
 
+  // Exposed for the same reason `SW.ResourcePanel` is: it is now a surface with a list, a set of
+  // doors and an empty state of its own, and a reader that has to mount the whole of Build to see
+  // it is a reader nothing will check it with.
+  SW.AppDependenciesModal = AppDependenciesModal;
+
   function PreviewPane({ resumed }) {
-    const { previewSrc, previewStatus, activeApp, costUrl } = SW.store.get();
+    const { previewSrc, previewStatus, activeApp, costUrl, buildRunning } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
     const stalled = previewStatus === 'stalled';
+
+    // Every app action in one place, grouped by what it's about rather than left spread across a
+    // kebab and three loose toolbar buttons (Rename and Delete on Reset's precedent, #38: text-
+    // labelled items in an overflow, Delete danger-styled and last below a divider).
+    //
+    // "App" is the app outside in Domino plus the two facts about the app in here — its name, and
+    // whether it stays. "Manage" is the read-only glances and the dependencies door. Reload preview
+    // joins App rather than staying its own icon button: it acts on this same preview.
+    //
+    // Refused mid-build rather than silent about it: publishing commits and pushes the working
+    // tree, and a turn still writing files into it has not finished writing them. `building` is the
+    // row's own fact and survives a reload; `buildRunning` is this tab's, and catches a turn another
+    // app in this Project is streaming into — the commit is the Project's, so that is equally in
+    // the way.
+    const appMenu = activeApp && {
+      items: [
+        {
+          type: 'group',
+          label: 'App',
+          children: [
+            {
+              key: 'publish',
+              label: activeApp.building || buildRunning
+                ? 'Publish — wait for this build to finish' : 'Publish',
+              disabled: !!(activeApp.building || buildRunning),
+            },
+            // Opens the deployed App. `Open preview in a new tab`, beside the menu trigger, opens
+            // the LOCAL preview instead — two destinations, kept as two controls rather than one
+            // that changes where it goes.
+            {
+              key: 'open',
+              label: activeApp.published ? 'Open app' : 'Open app — publish it first',
+              disabled: !activeApp.published,
+            },
+            { key: 'reload', label: 'Reload preview' },
+            { key: 'rename', label: 'Rename' },
+            { type: 'divider' },
+            { key: 'delete', label: 'Delete', danger: true },
+          ],
+        },
+        { type: 'divider' },
+        {
+          type: 'group',
+          label: 'Manage',
+          children: [
+            { key: 'dependencies', label: 'App dependencies' },
+            // A link, not a click handler, so the same open-in-new-tab affordances (middle click,
+            // right click) work here that a plain anchor gives for free. Hidden with no URL, which
+            // is a run pointed at no Domino gateway — there is no dashboard with this project's
+            // spend in it to open.
+            costUrl && {
+              key: 'cost',
+              label: h(
+                'a',
+                { href: costUrl, target: '_blank', rel: 'noreferrer' },
+                'Cost & activity'
+              ),
+            },
+            { key: 'history', label: 'Build history' },
+          ].filter(Boolean),
+        },
+      ],
+      onClick: ({ key, domEvent }) => {
+        domEvent.stopPropagation();
+        if (key === 'publish') publishApp(activeApp);
+        // A new tab, so the Build you published from is still behind it — Gallery's cards open the
+        // same way for the same reason. Opened as given: nothing here builds the URL.
+        if (key === 'open' && activeApp.url) window.open(activeApp.url, '_blank', 'noopener');
+        if (key === 'reload') SW.store.refreshPreview();
+        if (key === 'rename') renameApp(activeApp);
+        if (key === 'delete') deleteApp(activeApp);
+        if (key === 'dependencies') SW.store.openAppDependencies();
+        if (key === 'history') SW.store.openBuildHistory();
+      },
+    };
 
     useEffect(() => {
       if (previewStatus !== 'starting') return undefined;
@@ -1086,65 +1150,9 @@ window.SW = window.SW || {};
         // WHICH one is on screen is. Naming it and choosing it are now the same control (#82).
         h(AppBar, { resumed }),
         h('span', { className: 'sw-topnav-spacer' }),
-        // Beside Build history because the two answer the same question from opposite ends: what
-        // this project's building has done, and what it has cost. Sage does not meter spend — the
-        // gateway prices it — so this leaves for the gateway's own dashboard, deep-linked to this
-        // project's `sage-project` tag so it lands filtered instead of on everybody's traffic.
-        //
-        // A link rather than a button: the two controls to its right act on the preview in place,
-        // and this one leaves the Workbench. Hidden with no URL, which is a run pointed at no
-        // Domino gateway — there is no dashboard with this project's spend in it to open.
-        costUrl &&
-          h(
-            Tooltip,
-            { title: "This project's spend on the LLM Gateway. Opens in a new tab." },
-            h(
-              Button,
-              {
-                size: 'small',
-                type: 'link',
-                href: costUrl,
-                target: '_blank',
-                rel: 'noreferrer',
-              },
-              'Cost & activity'
-            )
-          ),
-        // Where #86's proposal put a History TAB, and doing the same job without the cost that
-        // refused the Plan tab: what it opens overlays the preview instead of replacing it, so the
-        // builds stay readable against the app they built (#88).
-        //
-        // Labelled rather than icon-only. The two controls to its right are about the preview and
-        // are recognisable from their icons; "the app's build log" is not a thing an icon says, and
-        // an icon-only control here would be a tooltip standing in for a name.
-        //
-        // Hidden with no app rather than disabled: a Project with nothing built has no builds to
-        // list, and the header already says so in words beside `New app`.
-        activeApp &&
-          h(
-            Button,
-            {
-              size: 'small',
-              icon: h(HistoryOutlined, null),
-              'aria-label': 'Build history',
-              onClick: () => SW.store.openBuildHistory(),
-            },
-            'Build history'
-          ),
-        h(
-          Tooltip,
-          { title: 'Reload preview' },
-          h(Button, {
-            size: 'small',
-            icon: h(ReloadOutlined, null),
-            'aria-label': 'Reload preview',
-            onClick: () => SW.store.refreshPreview(),
-          })
-        ),
-        // It opens the LOCAL preview; `Open app`, in the header's `…`, opens the deployed App.
+        // It opens the LOCAL preview; `Open app`, in the menu beside it, opens the deployed App.
         // Two controls, two labels, two destinations — never one button that changes where it
-        // goes. Unqualified, this one turned actively misleading the moment the second door
-        // landed beside it (#89), which is why it was named before that happened.
+        // goes, which is also why this one stays its own icon rather than folding into the menu.
         h(
           Tooltip,
           { title: 'Open preview in a new tab' },
@@ -1154,10 +1162,25 @@ window.SW = window.SW || {};
             'aria-label': 'Open preview in a new tab',
             onClick: () => window.open('./preview/', '_blank'),
           })
-        )
+        ),
+        // Everything else this app can do, in one right-aligned menu (see `appMenu` above) rather
+        // than spread across a kebab and a run of loose buttons.
+        activeApp &&
+          h(
+            Dropdown,
+            { menu: appMenu, trigger: ['click'], placement: 'bottomRight' },
+            h(
+              Tooltip,
+              { title: `Actions for ${activeApp.name}` },
+              h(Button, {
+                size: 'small',
+                icon: h(MoreOutlined, null),
+                'aria-label': `Actions for ${activeApp.name}`,
+              })
+            )
+          )
       ),
-      // Beneath the row that names the app, because it is about the app that row names.
-      h(AppScopeRow, null),
+      h(AppDependenciesModal, null),
       h(
         'div',
         { className: 'sw-builder-canvas is-live' },

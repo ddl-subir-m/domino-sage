@@ -27,6 +27,11 @@
   --error-bg:   #FBEAED;
   --info-bg:    #E6F1FA;
 
+  /* The secondary button's fill. Its own token rather than --purple-200 (#D9D2FA): that one is a
+     border and chip colour, and this is a control's ground — near neighbours on the ramp, but a
+     button that drifted with a chip's border would be a rename away from wrong. */
+  --btn-secondary-bg: #D1CBF6;
+
   /* Warning is the only bg so far with a border dark enough to need naming. */
   --warning-border: #EFE6A8;
   /* Warning as ink rather than fill. --warning is too light to read on. */

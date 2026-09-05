@@ -373,7 +373,10 @@ def test_the_receipt_names_the_second_act():
     assert "Rate curve viewer now uses Risk warehouse" in said
     assert "Choose a Scope beside its name" in said
     # And the way back out is still named, because that is what the act ADDS to (ADR-0021).
-    assert "Remove it in Project resources" in said
+    # The receipt names the surface that can reverse the bind, in the words the reader will see on
+    # the way to it (ADR-0011). That surface is the App dependencies modal since ADR-0035; it said
+    # "Project resources, under {app}" while the panel held a section per app.
+    assert "Remove it under App dependencies" in said
     assert "Choose a Scope" not in " ".join(alias["said"])
 
 

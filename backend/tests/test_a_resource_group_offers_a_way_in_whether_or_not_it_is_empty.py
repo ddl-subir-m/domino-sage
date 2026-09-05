@@ -45,24 +45,39 @@ def _heads() -> dict:
 
 
 def test_a_group_with_rows_in_it_still_offers_a_way_in():
-    """The bug. `Language models (1)` had no door: the link was in the empty branch."""
+    """The bug. `Language models (1)` had no door: the link was in the empty branch.
+
+    The empty group is no longer part of this claim, because there is no empty group — a group
+    with nothing in it is not drawn (ADR-0035). What that costs is the "and the empty one keeps
+    its door" half; what it buys is that the surviving claim is asked of every group on screen,
+    which is the case #164 was actually reported from."""
     heads = _heads()
     assert heads["Language models (1)"]["hasAdd"]
     assert heads["Data (2)"]["hasAdd"]
-    # The empty group keeps its door too, so this is a door added rather than one moved.
-    assert heads["Predictive models (0)"]["hasAdd"]
-    assert _act("drawn")["emptyLinks"] == ["Add from Domino"]
+    assert heads["Predictive models (1)"]["hasAdd"]
+    # And the branch's own link went with the branch, so the door is not drawn twice.
+    assert _act("drawn")["emptyLinks"] == []
 
 
 def test_a_group_with_no_catalog_behind_it_offers_nothing():
-    """Agents, Skills and MCPs are placeholders until OpenCode config wires them.
+    """Agents, Skills and MCPs are placeholders until OpenCode config wires them, and Files come
+    from Upload rather than from the catalog at all.
 
     A door onto a catalog that cannot answer is worse than no door: it is a dead end with a
-    label on it, and the empty-state link already declines to draw one for the same reason.
+    label on it.
+
+    Asked of a group that HOLDS something, which it could not be before: an empty placeholder group
+    is now simply absent (ADR-0035), and "no door" would pass on a group that was not drawn. The
+    fixture gives Agents a row so the group exists and the missing door is the placeholder rule.
     """
     heads = _heads()
-    for group in ("Agents (0)", "Skills (0)", "MCPs (0)"):
-        assert not heads[group]["hasAdd"], group
+    assert "Agents (1)" in heads, "the placeholder group was not drawn, so nothing was tested"
+    assert not heads["Agents (1)"]["hasAdd"]
+    # Files is the other kind of doorless group, and a new one: `openCatalog('file')` has nothing
+    # to open, because a file arrives by Upload.
+    assert not heads["Files (1)"]["hasAdd"]
+    # And a group nobody has put anything in is not on screen to be asked.
+    assert "Skills (0)" not in heads and "MCPs (0)" not in heads
 
 
 def test_the_door_is_a_real_button_that_says_what_it_does():
@@ -83,8 +98,8 @@ def test_pressing_the_door_opens_the_catalog_on_that_kind():
     """The point of a per-group door: it arrives pre-filtered, where the head's dropdown cannot."""
     filled = _act("press-filled")
     assert filled["catalogOpen"] and filled["catalogKind"] == "model_llm"
-    empty = _act("press-empty")
-    assert empty["catalogOpen"] and empty["catalogKind"] == "model_predictive"
+    predictive = _act("press-predictive")
+    assert predictive["catalogOpen"] and predictive["catalogKind"] == "model_predictive"
 
 
 def test_a_group_holding_two_kinds_opens_on_that_group():
@@ -100,7 +115,7 @@ def test_a_group_holding_two_kinds_opens_on_that_group():
 
 def test_pressing_the_door_does_not_collapse_the_group():
     """The door would otherwise shut behind you: the head's click used to be the collapse."""
-    for act in ("press-filled", "press-empty", "press-data"):
+    for act in ("press-filled", "press-predictive", "press-data"):
         assert _act(act)["collapseUnchanged"], act
 
 

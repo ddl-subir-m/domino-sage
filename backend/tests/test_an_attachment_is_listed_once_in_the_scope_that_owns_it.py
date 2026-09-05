@@ -17,8 +17,14 @@ That is why the claim below is about the path a turn carries and not about a row
 `test_a_mention_of_an_attachment_still_reaches_the_turn_as_a_path` is the only thing that fails.
 
 THE READ. `attachment_scope_harness.mjs` moves into a Project whose `/project` answers with both
-lists, then reads three surfaces off that one arrival: the panel's sections, the composer's @ menu,
-and the body of a real Build turn. One fixture, three readers — which is the shape of the bug.
+lists, then reads four surfaces off that one arrival: the panel's groups, the app's own list, the
+composer's @ menu, and the body of a real Build turn. One fixture, four readers — which is the shape
+of the bug.
+
+WHERE THE APP'S LIST IS. It was a section in the panel; it is the App dependencies modal since #151
+([ADR-0035](../../docs/adr/0035-the-panel-is-the-projects-one-list.md)). That move is what makes
+"one row per scope" visible rather than merely true — the two scopes are two surfaces now, and a
+row in the wrong one has nowhere to hide.
 """
 
 from __future__ import annotations
@@ -65,9 +71,17 @@ def _run(prompt: str = PROMPT) -> dict:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def _section(report: dict, title: str) -> dict:
+def _group(report: dict, title: str) -> dict:
+    """One group of the Project's list, by the label over it."""
     found = [s for s in report["panel"] if s["title"] == title]
     assert len(found) == 1, f"{title} appears {len(found)} times: {report['panel']}"
+    return found[0]
+
+
+def _app_group(report: dict, title: str) -> dict:
+    """One group of the app's own list, on the surface that owns that scope."""
+    found = [s for s in report["appPanel"] if s["title"] == title]
+    assert len(found) == 1, f"{title} appears {len(found)} times: {report['appPanel']}"
     return found[0]
 
 
@@ -92,21 +106,23 @@ def test_the_app_s_own_list_is_the_one_place_the_attachment_appears():
     Attachment — two scopes, two different files, and no third row."""
     report = _run()
 
-    assert _section(report, f"In {APP}")["rows"] == ["margins.csv", "AGENTS.md"]
-    assert _section(report, "Files")["rows"] == ["notes.csv", "margins.csv"]
+    assert _app_group(report, "Files it carries")["rows"] == ["margins.csv", "AGENTS.md"]
+    assert _group(report, "Files")["rows"] == ["notes.csv", "margins.csv"]
+    # And the app's list is not in the panel at all — the two scopes are two surfaces (ADR-0035).
+    assert [g["title"] for g in report["panel"]] == ["Data", "Files"]
 
 
 @needs_node
-def test_both_section_heads_count_what_their_own_list_holds():
+def test_each_head_counts_what_its_own_list_holds():
     """The counts are the summary a person reads before opening anything, so a row moving scope has
     to move the number with it. The Files count was 4 for two Uploads."""
     report = _run()
 
-    assert _section(report, "Files")["count"] == "2"
-    assert _section(report, f"In {APP}")["count"] == "2"
-    # The Project's own head counts Resources and never counted files — one Dataset here, and the
-    # asserted number is what says the Attachment did not land in this list on its way out.
-    assert _section(report, "In this project")["count"] == "1"
+    assert _group(report, "Files")["count"] == "2"
+    assert _app_group(report, "Files it carries")["rows"] == ["margins.csv", "AGENTS.md"]
+    # The Data group holds the one Dataset and nothing else — which is what says the Attachment did
+    # not land in the Project's list on its way out.
+    assert _group(report, "Data")["count"] == "1"
 
 
 # ---- and the row is still reachable --------------------------------------------------------
@@ -150,7 +166,7 @@ def test_an_attachment_hidden_from_the_explorer_is_still_hidden_from_the_menu():
     report = _run()
 
     assert HIDDEN in report["appAttachments"]
-    assert "AGENTS.md" in _section(report, f"In {APP}")["rows"]
+    assert "AGENTS.md" in _app_group(report, "Files it carries")["rows"]
     # And nowhere a person picks: not in the menu, not on the wire.
     assert report["menuAgents"] == []
     assert HIDDEN not in report["sent"][0]["mentions"]
@@ -175,11 +191,14 @@ def test_the_row_the_panel_draws_is_the_row_the_menu_offers_and_the_turn_resolve
     the menu comes to offer something the turn cannot resolve. `SW.util.attachmentRow` is the one."""
     util = (WB / "js" / "util.js").read_text()
     store = (WB / "js" / "store.js").read_text()
-    panel = (WB / "js" / "components" / "resource-panel.js").read_text()
+    # The app's own list, which is where the Attachment row is drawn since ADR-0035. It derived the
+    # basename itself while it was a summary beside the panel's copy; now that it is the only copy,
+    # it has to be the same derivation as the menu's and the turn's.
+    builder = (WB / "js" / "modes" / "builder.js").read_text()
     composer = (WB / "js" / "components" / "composer.js").read_text()
 
     assert "attachmentRow(entry) {" in util
-    assert "resource: SW.util.attachmentRow(a)," in panel
+    assert "SW.util.attachmentRow(a).name," in builder
     assert "const attached = SW.util.attachmentRows(appAttachments);" in composer
     assert "SW.util.attachmentPeers(state.appAttachments)].forEach((rows) => {" in store
     # The plural is what the peers are built from, so the turn still walks the panel's own rows —

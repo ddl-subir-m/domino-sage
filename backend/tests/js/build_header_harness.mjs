@@ -764,15 +764,64 @@ function panelContents(tree) {
     // The overflow menu hangs inside the row it acts on and carries no class of its own, so it is
     // recognised by having items at all. Which row holds which removal is the whole question.
     if (row && n.items) { row.items = n.items; row.onMenu = n.onMenu; }
-    if (cls === 'sw-panel-section-title') {
-      section = (n.texts || []).join('');
-      row = null;
+    // The panel has one heading and its list is divided by group labels — `Data (2)`,
+    // `Plans (1)` — where it used to carry `sw-panel-section-title` heads for three different
+    // scopes (#151). The label is the section now; the count in it is dropped, because a section
+    // name that changed with its own length would be no name at all.
+    if (cls === 'sw-group-label') {
+      const said = (n.texts || []).join('');
+      const head = /^(.*) \((?:\d+|…)\)$/.exec(said);
+      // A sub-head (Datasets, Data Sources) carries no count and belongs to the group above it.
+      if (head) { section = head[1]; row = null; }
       continue;
     }
     if (cls && !cls.startsWith('sw-res-')) { row = null; continue; }
     if (row && n.text) row.texts.push(n.text);
   }
   return out;
+}
+
+// The app's own surface (#151). `In {app}` left the panel — a Project-scoped list holding one
+// app's records was the double duty the panel is being freed of — and landed in the App
+// dependencies modal, which is where the app's Add and Scope doors already were (ADR-0021). Same
+// shape as `panelContents` so the two lists can be read against each other, and the two scopes are
+// still two lists rather than one.
+function appDepContents(tree) {
+  const out = [];
+  let section = null;
+  let row = null;
+  for (const n of flatten(tree)) {
+    const cls = String(n.className || '');
+    if (cls.includes('sw-app-group')) { section = (n.texts || []).join(''); row = null; continue; }
+    if (cls === 'sw-appdeps-row') {
+      row = { section, texts: [], id: n.key || null };
+      out.push(row);
+      continue;
+    }
+    // The overflow hangs inside the row it acts on and carries no class of its own, so it is
+    // recognised by having items at all. Which row holds which removal is the whole question.
+    if (row && n.items) { row.items = n.items; row.onMenu = n.onMenu; }
+    if (cls === 'sw-appdeps-foot') { row = null; continue; }
+    if (row && n.text) row.texts.push(n.text);
+  }
+  return out;
+}
+
+// The app's own list as ONE surface: what it is titled, and every word it says.
+//
+// The title is read because it is where the app's NAME is: `In {app}` was a section head in the
+// panel and a row above the preview before that, and it is a Modal title now (`624ff9b`,
+// ADR-0035). A Modal title is a prop rather than an element with a class, so a `parts` walk cannot
+// see it — and "this list names the app it belongs to" is the claim it carries. The removal routes
+// behind this list carry no app id, so that claim is load-bearing.
+function appDeps() {
+  if (!(SW.store.get().activeApp)) return null;
+  const inside = flatten(SW.AppDependenciesModal());
+  const head = inside.find((n) => typeof n.title === 'string' && n.title);
+  return {
+    title: head ? head.title : null,
+    said: inside.filter((n) => n.className && n.texts).flatMap((n) => n.texts),
+  };
 }
 
 // What the build history drawer IS, and what it says. Its overlay props are read off the element
@@ -873,7 +922,13 @@ function headerPicker(thread) {
   const nodes = flatten(SW.BuildMode({
     conversationId: thread, appId: (SW.store.get().activeApp || {}).id || null,
   }));
-  const at = nodes.findIndex((n) => n.className === 'sw-app-scope-add');
+  // The door moved off the header row and into the App dependencies modal (`624ff9b`, and the
+  // list followed it there in ADR-0035). Both anchors are accepted: the modal's foot is where it
+  // is, and `sw-app-scope-add` is where it was, so this reads either shape rather than asserting
+  // which one is on screen — that is the surrounding tests' question, not the reader's.
+  const at = nodes.findIndex(
+    (n) => n.className === 'sw-appdeps-foot' || n.className === 'sw-app-scope-add'
+  );
   if (at === -1) return null;
   const after = nodes.slice(at);
   const menu = after.find((n) => n.items);
@@ -905,10 +960,13 @@ function headerScopeDoors(thread) {
   const out = [];
   let name = null;
   nodes.forEach((n, i) => {
-    if (n.className === 'sw-app-scope-name' && (n.texts || []).length) {
+    // Same move as the add door above: the Scope door rides its Binding's row, and that row is in
+    // the modal now. Both spellings are read, for the same reason.
+    if ((n.className === 'sw-appdeps-name' || n.className === 'sw-app-scope-name')
+        && (n.texts || []).length) {
       name = (n.texts || []).filter((t) => t !== ', ').join('');
     }
-    if (n.className !== 'sw-app-scope-door') return;
+    if (n.className !== 'sw-appdeps-door' && n.className !== 'sw-app-scope-door') return;
     // The Dropdown and the Tooltip wrap the control, so both are walked BEFORE it — the nearest one
     // above this node is the one this door is inside.
     const above = nodes.slice(0, i).reverse();
@@ -1040,6 +1098,7 @@ for (const step of steps) {
     report.push({
       step: `build ${step.build}`,
       app: (SW.store.get().activeApp || {}).id || null,
+      appDeps: appDeps(),
       renderCalls,
       railMode: rail ? rail.mode || null : null,
       appRails: nodes.filter((n) => n.el === 'AppRail').length,
@@ -1072,19 +1131,26 @@ for (const step of steps) {
     const tree = SW.ResourcePanel();
     const rows = panelContents(tree);
     const nodes = flatten(tree);
+    // Both surfaces off one arrival, because "one row per scope" is a claim about the pair: the
+    // Project's list here, the app's own list in the modal beside it (#151).
+    const appTree = SW.AppDependenciesModal();
+    const appNodes = flatten(appTree);
     report.push({
       step: `panel ${step.select || selected}`,
       app: (SW.store.get().activeApp || {}).name || null,
       rows,
+      appRows: appDepContents(appTree),
       renderCalls: calls.slice(),
-      // Section heads in the order they are drawn, taken off the heads themselves rather than off
-      // the rows under them — a section whose list is empty still has a head, and that is the one
-      // the question is about.
+      // The panel's one heading. It names the Project's list and the group labels under it name
+      // the kinds; neither names an app any more.
       sections: nodes
-        .filter((n) => n.className === 'sw-panel-section-title')
+        .filter((n) => n.className === 'sw-panel-title')
         .map((n) => (n.texts || []).join('')),
-      parts: nodes.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
+      parts: nodes.concat(appNodes)
+        .filter((n) => n.className && n.texts)
+        .map((n) => ({ className: n.className, texts: n.texts })),
       words: words(nodes),
+      appWords: words(appNodes),
     });
     continue;
   }
@@ -1324,8 +1390,10 @@ for (const step of steps) {
     said.length = 0;
     calls.length = 0;
     binds.length = 0;
+    // Every row the panel draws is a Project row now — the app's own list is the App dependencies
+    // modal (#151) — so the name alone identifies it.
     const rows = panelContents(SW.ResourcePanel());
-    const row = rows.find((r) => r.section === 'In this project' && r.texts.includes(step.useIn));
+    const row = rows.find((r) => r.texts.includes(step.useIn));
     if (!row) {
       throw new Error(
         `no Project row ${step.useIn} — found ${JSON.stringify(rows.map((r) => r.texts))}`
@@ -1358,14 +1426,11 @@ for (const step of steps) {
     said.length = 0;
     modals.length = 0;
     calls.length = 0;
-    const rows = panelContents(SW.ResourcePanel());
-    const inSection = rows.filter(
-      (r) => r.section && r.section !== 'In this project' && r.section !== 'In context'
-    );
+    const inSection = appDepContents(SW.AppDependenciesModal());
     const row = inSection.find((r) => r.texts.includes(step.removeFrom));
     if (!row) {
       throw new Error(
-        `no row ${step.removeFrom} in the app's section — found ${JSON.stringify(inSection.map((r) => r.texts))}`
+        `no row ${step.removeFrom} on the app's surface — found ${JSON.stringify(inSection.map((r) => r.texts))}`
       );
     }
     const item = (row.items || []).find(
@@ -1388,7 +1453,9 @@ for (const step of steps) {
 
     let cleanupCalls = null;
     let seeded = null;
-    let after = flatten(SW.ResourcePanel());
+    // The notice followed the removal onto the app's surface: it reports what an act on THIS list
+    // did, and a report on a list that no longer holds the act would be pointing at nothing.
+    let after = flatten(SW.AppDependenciesModal());
     const control = (re) => after.find((n) => n.onClick && (n.texts || []).some((t) => re.test(t)));
     if (step.cleanup) {
       const offer = control(/clean/i);
@@ -1397,13 +1464,13 @@ for (const step of steps) {
       offer.onClick();
       cleanupCalls = calls.slice();
       seeded = SW.store.get().composerSeed || null;
-      after = flatten(SW.ResourcePanel());
+      after = flatten(SW.AppDependenciesModal());
     }
     if (step.dismiss) {
       const off = control(/^Dismiss$/);
       if (!off) throw new Error('the notice could not be dismissed');
       off.onClick();
-      after = flatten(SW.ResourcePanel());
+      after = flatten(SW.AppDependenciesModal());
     }
 
     report.push({
@@ -1424,7 +1491,9 @@ for (const step of steps) {
       // Both lists after the act, plus everything the section said. The chips are the assertion
       // that the two scopes move on their own.
       rows: panelContents(SW.ResourcePanel()).map((r) => ({ section: r.section, texts: r.texts })),
+      appRows: appDepContents(SW.AppDependenciesModal()).map((r) => ({ section: r.section, texts: r.texts })),
       parts: after.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
+      appDeps: appDeps(),
       words: words(after),
       chipsBefore,
       chips: SW.store.get().attachments.map((a) => a.id),
@@ -1537,12 +1606,21 @@ for (const step of steps) {
     expanded = !!step.expand;
     historyFails = !!step.readFails;
     calls.length = 0;
-    const control = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }))
-      .find((n) => n.onClick && n.label === 'Build history');
-    if (!control && !step.closed) {
+    // Build history is an item in the header's own `…` menu now (`624ff9b`), where it used to be a
+    // control with an aria-label of its own. Both are accepted: what these tests are about is the
+    // drawer behind the door, not which shape the door takes.
+    const drawn = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+    const control = drawn.find((n) => n.onClick && n.label === 'Build history');
+    const menu = control
+      ? null
+      : drawn.find((n) => n.onMenu && (n.items || []).some((i) => i.key === 'history'));
+    if (!control && !menu && !step.closed) {
       throw new Error('nothing in the Build header opens the build history');
     }
-    if (control && !step.closed) control.onClick();
+    if (!step.closed) {
+      if (control) control.onClick();
+      else menu.onMenu({ key: 'history', domEvent: { stopPropagation() {} } });
+    }
 
     let tree = await paint();
     // What the drawer said before whatever the step does next. Null unless the step moves the
@@ -1594,10 +1672,16 @@ for (const step of steps) {
       SW.store.closeBuildHistory();
       await paint();
       calls.length = 0;
-      const again = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }))
-        .find((n) => n.onClick && n.label === 'Build history');
-      if (!again) throw new Error('nothing in the Build header re-opens the build history');
-      again.onClick();
+      const redrawn = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+      const again = redrawn.find((n) => n.onClick && n.label === 'Build history');
+      const againMenu = again
+        ? null
+        : redrawn.find((n) => n.onMenu && (n.items || []).some((i) => i.key === 'history'));
+      if (!again && !againMenu) {
+        throw new Error('nothing in the Build header re-opens the build history');
+      }
+      if (again) again.onClick();
+      else againMenu.onMenu({ key: 'history', domEvent: { stopPropagation() {} } });
       tree = await paint();
     }
 
@@ -1605,7 +1689,17 @@ for (const step of steps) {
     report.push({
       step: `history ${step.select || selected}`,
       app: (SW.store.get().activeApp || {}).id || null,
-      control: control ? { label: control.label, texts: control.texts || [] } : null,
+      // The door, in whichever shape the header draws it: a control with an aria-label and words of
+      // its own, or the menu item it became in `624ff9b`. Reported as one shape so the claim stays
+      // "the header says Build history" rather than "the header holds this element".
+      control: control
+        ? { label: control.label, texts: control.texts || [] }
+        : (menu
+          ? (() => {
+              const item = menu.items.find((i) => i.key === 'history');
+              return { label: item.label, texts: [item.label] };
+            })()
+          : null),
       calls: calls.slice(),
       drawer: readDrawer(tree),
       mid,
@@ -1656,6 +1750,7 @@ for (const step of steps) {
       rail: railOf('build'),
       bindings: (s.bindings || []).map((b) => b.display_name || b.name),
       attachments: (s.appAttachments || []).map((a) => a.file),
+      appDeps: appDeps(),
       parts: nodes
         .filter((n) => n.className && n.texts)
         .map((n) => ({ className: n.className, texts: n.texts })),
@@ -1838,6 +1933,7 @@ for (const step of steps) {
       // out loud — so a stale one is readable as a wrong pairing rather than inferred from a list.
       notice: s.appRemoval ? s.appRemoval.text : null,
       noticeBefore,
+      appDeps: appDeps(),
       parts: nodes
         .filter((n) => n.className && n.texts)
         .map((n) => ({ className: n.className, texts: n.texts })),

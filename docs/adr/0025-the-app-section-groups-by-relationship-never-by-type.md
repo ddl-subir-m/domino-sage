@@ -13,6 +13,13 @@ Language models, Predictive models, Agents, Skills, MCPs. Until now the upper li
 **Decision**: the app's section is headed **"Needs to run"** and **"Files it carries"**, and it is
 grouped by the app's *relationship* to a thing — never by the thing's kind.
 
+> **The section moved in [ADR-0035](0035-the-panel-is-the-projects-one-list.md)**, from the resource
+> panel to the App dependencies modal. Both labels come across intact, `— none` included. One thing
+> is added there and is worth reading against "why not by kind" below: the rows carry the kind as an
+> **icon**. The argument here is against type as an *axis* — a heading, a second list answering the
+> same question the rail already answers — and it holds. It was never an argument for a row that
+> cannot say what it is, and off the rail there is no rail below to say it for them.
+
 **Why not by kind**: the rail below already answers *what kind is it*. Repeating that axis one
 section up would make two lists that look the same and answer the same question, and it scales
 backwards — an app holding four things would get four type headings over one row each, where the

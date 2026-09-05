@@ -247,9 +247,11 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-for (const f of ['util.js', 'api.js', 'store.js', 'router.js',
+// `modes/builder.js` joins the list because the app's own list moved into it (#151): what the app
+// reads of a Data Source is said there now, where the Scope door that chooses it already was.
+for (const f of ['util.js', 'api.js', 'store.js', 'router.js', 'prefs.js',
                  'components/platform-error.js', 'components/resource-tree.js',
-                 'components/resource-panel.js']) {
+                 'components/resource-panel.js', 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
@@ -281,6 +283,10 @@ function walk(node, out = [], depth = 0) {
     label: props['aria-label'] || '',
   };
   if (props.resource && props.resource.id) entry.resourceId = props.resource.id;
+  // The React key, which a stub can see because it is an ordinary prop here. The app's own rows
+  // are keyed by the record they draw — a Binding's `bindingId`, an Attachment's path — which is
+  // how a claim about one of them names it (#151).
+  if (props.key !== undefined) entry.key = String(props.key);
   if (typeof props.onClick === 'function') entry.onClick = props.onClick;
   if (props.menu && props.menu.items) {
     entry.items = props.menu.items.map((i) => ({
@@ -359,12 +365,37 @@ function rowsOf(nodes) {
     }
     if (row && n.items) { row.items = n.items; continue; }
     if (row && n.tip) { row.tips.push(n.tip); continue; }
-    if (cls === 'sw-panel-section-title') {
-      section = (n.texts || []).join('');
-      row = null;
+    // The panel's list is divided by group labels — `Data (3)` — where it used to carry section
+    // heads for two different scopes (#151). The count is dropped: a section name that changed with
+    // its own length would be no name at all.
+    if (cls === 'sw-group-label') {
+      const head = /^(.*) \((?:\d+|…)\)$/.exec((n.texts || []).join(''));
+      if (head) { section = head[1]; row = null; }
       continue;
     }
     if (cls && !cls.startsWith('sw-res-')) { row = null; continue; }
+    if (row && n.text) row.texts.push(n.text);
+  }
+  return out;
+}
+
+// The app's own rows, off the App dependencies modal. Same shape as `rowsOf` above — id, texts,
+// items, tips — because every question this file asks of one list it also asks of the other.
+function appRowsOf(nodes) {
+  const out = [];
+  let section = null;
+  let row = null;
+  for (const n of nodes) {
+    const cls = String(n.className || '');
+    if (cls.includes('sw-app-group')) { section = (n.texts || []).join(''); row = null; continue; }
+    if (cls === 'sw-appdeps-row') {
+      row = { section, className: cls, id: n.key || null, texts: [], items: [], tips: [] };
+      out.push(row);
+      continue;
+    }
+    if (row && n.items) { row.items = n.items; continue; }
+    if (row && n.tip) { row.tips.push(n.tip); continue; }
+    if (cls === 'sw-appdeps-foot') { row = null; continue; }
     if (row && n.text) row.texts.push(n.text);
   }
   return out;
@@ -460,6 +491,10 @@ for (const step of steps) {
     steps: nodes.filter((n) => n.className === 'sw-tree-step').flatMap((n) => n.texts || []),
     leaves: nodes.filter((n) => n.className === 'sw-tree-leaf-name').flatMap((n) => n.texts || []),
     rows: rowsOf(nodes),
+    // The app's own list, on the surface that owns it (#151). Same shape as the rows above, so the
+    // two scopes can still be read against each other: which one carries the sign and which
+    // carries the removal is half of what #129 asks.
+    appRows: appRowsOf(walk(callComponent(SW.AppDependenciesModal, {}))),
     posted,
     bindings: bound,
     said: said.slice(),

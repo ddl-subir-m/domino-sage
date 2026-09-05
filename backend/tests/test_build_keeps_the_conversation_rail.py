@@ -352,13 +352,24 @@ def test_rename_and_delete_are_text_items_in_the_overflow_beside_the_app_name():
     assert len(menus) == 1, step["menus"]
     items = menus[0]["items"]
     # Publish and Open app joined them above Rename (#89) on the same shape, which is the point:
-    # the menu grew and none of it turned into an icon.
-    assert [i["key"] for i in items if not i["divider"]] == ["publish", "open", "rename", "delete"]
-    assert all(i["label"] for i in items if not i["divider"]), items
-    # Danger, last, and below a divider — the three things Reset's shape is made of.
-    assert items[-1]["key"] == "delete"
-    assert items[-1]["danger"] is True
-    assert items[-2]["divider"] is True
+    # the menu grew and none of it turned into an icon. `624ff9b` grouped it — App above, Manage
+    # below — and the read-only glances that used to sit in the header came in as items rather than
+    # as controls of their own, which is the same shape again one level down.
+    assert [i["key"] for i in items if not i["divider"] and i["key"]] == [
+        "publish", "open", "reload", "rename", "delete", "dependencies", "history",
+    ]
+    assert all(i["label"] for i in items if not i["divider"] and not i["group"]), items
+    # Danger, last in its group, and below a divider — the three things Reset's shape is made of.
+    # "Last in its group" rather than last outright: `624ff9b` split the menu into App and Manage,
+    # and what Reset's precedent is about is the destructive item sitting at the bottom of the
+    # things that ACT, fenced off by a divider. Manage below it is read-only glances.
+    at = [i["key"] for i in items].index("delete")
+    assert items[at]["danger"] is True
+    assert items[at - 1]["divider"] is True
+    # Nothing that acts follows it: the rest of the menu is the next group and its children.
+    assert items[at + 1]["divider"] is True
+    assert items[at + 2]["group"] is True
+    assert not any(i["danger"] for i in items[at + 1:])
 
 
 @needs_node

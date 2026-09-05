@@ -92,6 +92,11 @@ one, once, and leave the file as the single source of truth afterwards.
 a correctness bug, not a missing nicety. `_record` and `add_thread_context` are the two places that
 join today, and a third door must pass through one of them.
 
+**The panel is this list and nothing else, since
+[ADR-0035](0035-the-panel-is-the-projects-one-list.md).** Orientation being the job is what settled
+it: two other scopes were stacked in the same column, and a surface whose job is to orient cannot
+also be the place three scopes are told apart by their headings.
+
 **`usedBy` stays a subtitle.** Orientation being the primary job settles that the list must be true;
 it does not follow that it needs a bigger surface. A count plus the drawer answers the per-Resource
 question people ask. A Resource × Built App matrix answers a question nobody has asked yet, and is

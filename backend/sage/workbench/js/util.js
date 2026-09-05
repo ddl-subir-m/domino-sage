@@ -66,6 +66,12 @@ window.SW = window.SW || {};
     // tag has to say the same thing in both. It was written out twice and drifted apart once.
     SOVEREIGN_TITLE: 'Runs inside your environment.',
 
+    // What the panel row's context mark means. It names the Conversation and the chips, because
+    // the mark is a reflection of them and not a second store of the same fact (#137, ADR-0015) —
+    // a reader who wants it gone has to be sent to where it can go. The panel offers no verb for
+    // that: "Stop using here" is on the row's own menu and in the drawer behind it.
+    IN_CONTEXT_TITLE: 'In this conversation — it is one of the chips above the composer.',
+
     // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —
     // the rail, the @ menu and the bind picker — so the words are written once, the way
     // `SOVEREIGN_TITLE` is: a person carries what they read from one menu to the other (ADR-0021).

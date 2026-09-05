@@ -65,20 +65,27 @@ def _texts(step: dict, prefix: str) -> list[str]:
 
 
 def _said(step: dict) -> str:
-    return " ".join(_texts(step, "sw-app-scope"))
+    """Everything the app's own list says, title included.
+
+    That list was a strip under the app identity row when this was written (#92). `624ff9b` moved
+    it behind the header's own `…` and ADR-0035 gave it the panel's `In {app}` section too, so it
+    is now the App dependencies modal and the whole of the app's scope. The title is read with the
+    words because that is where the app's NAME went."""
+    deps = step["appDeps"] or {"title": "", "said": []}
+    return " ".join([deps["title"] or ""] + deps["said"])
 
 
 def _app_scope_source() -> str:
-    """The body of `AppScopeRow`, so a claim about what the row does not do is about the row."""
+    """The body of `AppDependenciesModal`, so a claim about what the list does is about the list."""
     src = (_WORKBENCH / "js" / "modes" / "builder.js").read_text()
-    start = src.index("function AppScopeRow(")
+    start = src.index("function AppDependenciesModal(")
     i = src.index("{", src.index(")", start))
     depth = 0
     for end in range(i, len(src)):
         depth += {"{": 1, "}": -1}.get(src[end], 0)
         if depth == 0:
             return src[i : end + 1]
-    raise AssertionError("AppScopeRow is not closed")
+    raise AssertionError("AppDependenciesModal is not closed")
 
 
 # ---- what the row lists ----------------------------------------------------------------------
@@ -109,17 +116,23 @@ def test_switching_the_headers_app_control_reloads_the_row():
 
 
 @needs_node
-def test_a_kind_with_nothing_in_it_is_not_the_same_as_an_app_with_nothing():
-    """`app_c` has Bindings and no files, `app_d` files and no Bindings. Naming a kind that is
-    empty says the app ships something it does not; the empty state is for neither."""
+def test_a_kind_with_nothing_in_it_is_named_and_says_so():
+    """`app_c` has Bindings and no files, `app_d` files and no Bindings.
+
+    THIS CLAIM INVERTED, and the reversal is the point. #92 refused to name an empty kind because
+    the row was a GLANCE: naming one says the app ships something it does not. ADR-0011 wanted the
+    opposite of the surface somebody arrives at intending to act, where "Files it carries — none"
+    answers *is my file in this app?* directly. The two surfaces merged in `624ff9b`, and ADR-0035
+    kept the destination's rule, because that is what this list now is."""
     c, d = _run([{"build": "thr_many", "select": "app_c"}, {"build": "thr_many", "select": "app_d"}])
-    assert "Needs to run" in _said(c) and "Files it carries" not in _said(c)
-    assert "Files it carries" in _said(d) and "Needs to run" not in _said(d)
-    assert "nothing yet" not in _said(c) + _said(d)
+    assert "Needs to run" in _said(c) and "Files it carries — none" in _said(c)
+    assert "Files it carries" in _said(d) and "Needs to run — none" in _said(d)
+    # The empty-app sentence is still for neither: one empty kind is not an empty app.
+    assert "Nothing yet" not in _said(c) + _said(d)
 
 
 @needs_node
-def test_an_app_with_neither_still_shows_the_row_and_says_what_would_land_in_it():
+def test_an_app_with_neither_still_shows_the_list_and_says_what_would_land_in_it():
     """Hiding it would make the header jump the moment the first Binding lands, and would teach
     a first-time creator nothing. What/why/what-to-do, in one sentence.
 
@@ -128,10 +141,10 @@ def test_an_app_with_neither_still_shows_the_row_and_says_what_would_land_in_it(
     composer's own upload does NOT: it writes a scratch file and a Conversation chip, so a
     sentence naming it would leave a first-timer doing as they were told and seeing no change."""
     step = _build(select="app_b")
-    assert "sw-app-scope" in step["classes"]
+    assert step["appDeps"] is not None
     said = _said(step)
-    assert "P&L report" in said  # whose row it is
-    assert "nothing yet" in said  # why it is empty
+    assert "P&L report" in said  # whose list it is
+    assert "Nothing yet" in said  # why it is empty
     assert "Chat" in said and "Open Builder" in said  # what actually fills it
 
 
@@ -139,26 +152,35 @@ def test_an_app_with_neither_still_shows_the_row_and_says_what_would_land_in_it(
 
 
 @needs_node
-def test_each_line_points_at_where_that_kind_is_managed():
-    """Read-only is only half an answer: a row that reports a Binding and says nothing about
-    where it is dealt with is the dead end the empty state was written to avoid."""
+def test_every_row_carries_the_act_rather_than_a_pointer_to_it():
+    """Read-only was only half an answer: a strip that reported a Binding and said nothing about
+    where it is dealt with is the dead end the empty state was written to avoid. It answered with a
+    POINTER — each kind's tooltip named `Project resources` — because the acts lived elsewhere.
+
+    They live here now (ADR-0035), so the row carries them instead. A pointer is a promise the
+    destination can act; the shortest way to keep that promise is to be the destination."""
     step = _build(select="app_a")
-    # The KIND row's tooltip, which is the one that lists a whole group — a Scope door's tooltip
-    # also names the Data Source it sits beside (#142), and it points at itself rather than at a
-    # list, because a Scope is changed where it was chosen.
-    binds = [t for t in step["titles"] if "Claude Sonnet 4" in t and "Market data EOD" in t]
-    files = [t for t in step["titles"] if "margins.csv" in t]
-    assert binds and all("Project resources" in t for t in binds)
-    assert files and all("Project resources" in t for t in files)
+    menus = [m for m in step["menus"] if any(i["key"] == "remove" for i in m["items"])]
+    # One per record the app holds: three Bindings and two files in this fixture.
+    assert len(menus) == 5, menus
+    assert all(any(i["label"].startswith("Remove from ") for i in m["items"]) for m in menus)
+    # And nothing on screen still sends the reader somewhere else for it.
+    assert not [t for t in step["titles"] if "Project resources" in t]
 
 
-def test_nothing_in_the_row_performs_a_removal():
-    """One act, one guard. Unbind and detach both report the app source that still uses what
-    just went (`service.unbind`, `service.detach_file`), and a second copy of either here would
-    be a second guard to keep in step with the first."""
+def test_the_removal_lives_here_and_exactly_once():
+    """THIS CLAIM INVERTED. #92 kept the strip read-only on the argument that unbind and detach
+    each report the app source that still uses what just went, so a second copy of either would be
+    a second guard to keep in step with the first. That argument held while this was a summary
+    BESIDE the panel's `In {app}` section. `624ff9b` removed the section and ADR-0035 moved the
+    list itself here, so this is no longer a second copy — it is the only one, which is what
+    ADR-0011 asks for. The `one act, one guard` rule is unchanged and now satisfied by there being
+    one list rather than by this one declining to act."""
     body = _app_scope_source()
-    assert "onClick" not in body
-    assert re.findall(r"SW\.store\.(\w+)", body) == ["get"]
+    called = set(re.findall(r"SW\.store\.(\w+)", body))
+    assert {"removeBindingFromApp", "removeAttachmentFromApp"} <= called
+    # And it still reads the record rather than scanning for it.
+    assert "get" in called
 
 
 def test_the_row_does_not_read_the_conversations_context():
@@ -209,23 +231,31 @@ def test_an_app_no_build_turn_has_scanned_carries_no_mark():
 @needs_node
 def test_the_tooltip_says_what_the_mark_means_and_that_it_blocks_nothing():
     """Two words beside a name cannot say what looked or when, and a creator who reads "not used"
-    as "this will not publish" has been told the opposite of ADR-0010. The strip also truncates, so
-    the tooltip is where a narrow preview's reader finds which name the mark was on."""
-    title = next(t for t in _build(select="app_a")["titles"]
-                 if "Market data EOD" in t and "Claude Sonnet 4" in t)
-    assert "Market data EOD — not scoped yet (not used)" in title
+    as "this will not publish" has been told the opposite of ADR-0010.
+
+    The sentence used to hang off the KIND, because the strip compressed a whole kind onto one line
+    and truncated it — so the tooltip was also where a narrow reader found which name the mark was
+    on. Neither is true of a list with a row per record: the mark sits on the row it qualifies, so
+    the tooltip has only the one job left."""
+    title = next(t for t in _build(select="app_a")["titles"] if "not used" in t)
     assert "last build" in title
     assert "publishes either way" in title
-    # The pointer stays last in both kinds' tooltips — it is the only half the reader can act on.
-    assert title.endswith("remove it there")
+    # No pointer any more: the act is on this row's own menu, which is the half the reader can act
+    # on and no longer somewhere else.
+    assert "Project resources" not in title
 
 
 def test_the_mark_is_a_word_and_never_a_control():
     """The label is advisory and gates nothing — no publish, no bind, no unbind (ADR-0010). A
-    control here would be a fourth thing acting on the answer, and `test_nothing_in_the_row_performs
-    _a_removal` above says why the row holds none at all."""
+    control here would be a fourth thing acting on the answer.
+
+    Asked of the MARK rather than of the whole list, which is the narrowing ADR-0035 forces: the
+    list does hold controls now, because the acts moved here. What must not become one is the
+    answer they are drawn beside."""
     body = _app_scope_source()
-    assert "Button" not in body and "danger" not in body
+    mark = body[body.index("mark &&"):body.index("sw-appdeps-unused") + 200]
+    assert "Button" not in mark and "danger" not in mark
+    assert "onClick" not in mark
     # `used === false`, never a truthy test: `undefined` is the unscanned app, and `!b.used` would
     # fold it in with the scanned ones and mark every Binding of an app built before the scan.
     assert re.search(r"\.used\s*===\s*false", body)

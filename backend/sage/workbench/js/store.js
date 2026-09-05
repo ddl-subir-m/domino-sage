@@ -203,8 +203,14 @@ window.SW = window.SW || {};
     activeApp: null,
     activePlanId: null,
     activePlan: null,
-    // plan.md, for the rail's pin. Not the plan document above.
+    // plan.md, for the app the preview is showing. Not the plan document above. The panel reads
+    // its `planId` to mark which row in `plans` the selected app is being built from right now.
     projectPlan: null,
+    // Every plan document in the Project, newest first — `GET /api/plans`, which had no caller
+    // until the panel grew a Plans group. The documents are the Project's and each one names the
+    // app it belongs to (`appId`), which is what lets a project-scoped list hold an app-scoped
+    // artifact honestly: the row says whose it is.
+    plans: [],
 
     // Apps this conversation changed, newest first. Drives the change dots on
     // the app selector and the tags in the rail.
@@ -300,6 +306,10 @@ window.SW = window.SW || {};
     // in `APP_SCOPED` below, for the reason `composerSeed` is not: switching app changes WHICH
     // builds are listed, never whether you had asked to see them.
     buildHistoryOpen: false,
+    // Whether the app dependencies modal is on screen. Same reasoning as `buildHistoryOpen`: not in
+    // `APP_SCOPED`, because switching app changes what the modal lists, never whether somebody
+    // opened it.
+    appDependenciesOpen: false,
     // The Data Source Binding whose Scope is being chosen, and the ladder it is standing on (#142).
     // `{ id, name, levels, database, schema, items, error }` — `items` is the names at the current
     // level, `null` while the read is out. Null when no Scope door is open.
@@ -684,6 +694,15 @@ window.SW = window.SW || {};
     state.resourcesLoading = false;
     state.activity = activity;
     notify();
+
+    // The Plans group, for both modes. `loadBuild` refreshes these too, and only Build calls it —
+    // so without this line the panel's Plans group was empty in Chat, where a plan is drafted.
+    // Deferred and unawaited for the same reason as the listing below: the panel paints on the
+    // read above, and two more routes are not a reason to hold it.
+    refreshProjectPlan().then(
+      () => { if (gen === scopeLoad) notify(); },
+      () => {},
+    );
 
     const appTicket = appScopeTicket();
     const listingGen = ++listingRead;
@@ -2145,9 +2164,29 @@ window.SW = window.SW || {};
   // `projectPlan`, not `activePlan`: this is plan.md's `{title, markdown, status, steps}`, and
   // `activePlan` is the plan document `loadPlan` fetches. They used to share a key and only got
   // away with it because nothing ever set `thread.planId`, so `loadPlan` never ran.
+  // Both reads, always together. The panel draws ONE list of plans and marks the row the selected
+  // app is being built from, and the two facts come from two routes — `/project/plan` knows which
+  // document plan.md belongs to, `/plans` knows what documents there are. Refreshed apart, a
+  // freshly drafted plan would be marked live before its row existed, or keep the mark after
+  // another app's build took it. Every caller of this already fires at the moments that move
+  // either one, so folding the second read in here is what keeps them in step.
+  //
+  // The listing is caught rather than awaited into the failure: a Project whose plan documents
+  // cannot be read still has a pin, and a panel that renders no Plans group is a better answer
+  // than a panel that renders nothing.
   async function refreshProjectPlan() {
-    const plan = await SW.api.projectPlan();
+    // Both plan reads are the Project's, so a Project switch while they are out makes both answers
+    // somebody else's. Every other deferred read here is guarded on `scopeLoad`; these two were
+    // not, and only got away with it while `loadBuild` was the sole caller — the panel's Plans
+    // group is now refreshed from `loadScopeData`, which is exactly the read a switch supersedes.
+    const gen = scopeLoad;
+    const [plan, plans] = await Promise.all([
+      SW.api.projectPlan(),
+      SW.api.plans().catch(() => []),
+    ]);
+    if (gen !== scopeLoad) return;
     state.projectPlan = plan && plan.markdown ? plan : null;
+    state.plans = plans || [];
   }
 
   async function probePreview() {
@@ -2578,6 +2617,11 @@ window.SW = window.SW || {};
       state.scope = project;
       state.activePlanId = null;
       state.activePlan = null;
+      // Same rule as the apps below: the documents belong to the Project being left, and the
+      // panel's Plans group would otherwise list another Project's plans under this one's name
+      // until the deferred read landed.
+      state.plans = [];
+      state.projectPlan = null;
       // The apps belong to the Project being left, and a stale list is worse than none: the rail
       // would offer rows that select an app this Builder is not attached to.
       state.apps = [];
@@ -2663,33 +2707,32 @@ window.SW = window.SW || {};
 
     // Dock ---------------------------------------------------------------
 
-    // The four writers. A person's hand is on the control in each of these, so each records the
-    // answer — a panel you opened is open again on the next load, and a panel you closed stays
-    // closed. `focusPanel` below is the deliberate exception.
-    toggleDock(tab = 'resources') {
-      state.dockTab = state.dockTab === tab ? null : tab;
+    // The writers. A person's hand is on the control in each of these, so each records the answer —
+    // a panel you opened is open again on the next load, and a panel you closed stays closed.
+    // `focusPanel` below is the deliberate exception.
+    //
+    // `dockTab` holds `'resources'` or `null` and there is no second value to pick since ADR-0032:
+    // one panel, so the tab bar it belonged to is gone. The key and its two doors survive because
+    // the STATE they carry — open or closed, remembered per viewer (#150) — is unchanged, and
+    // because `'activity'` is already written into records that exist (see `prefs.js`).
+    openDock() {
+      state.dockTab = 'resources';
+      SW.prefs.set('dockTab', 'resources');
+      notify();
+    },
+
+    // The one act three doors mean: the panel's own Hide button, the collapsed dock's Show button,
+    // and ⌘/. It used to be `toggleDock(tab)`, which toggled ONE tab and so only closed when handed
+    // the tab already open — every door passed the constant `resources`, so with the panel open on
+    // Activity a control captioned "Hide the side panel" switched tab instead, and the shortcut the
+    // help drawer advertises as a toggle took two presses to close (#150). With one panel the
+    // distinction has nothing left to be about, and the writer says what the doors say.
+    toggleDockOpen() {
+      state.dockTab = state.dockTab ? null : 'resources';
+      // A filter is a question about a list nobody is looking at once the panel shuts.
       if (!state.dockTab) state.panelFilter = null;
       SW.prefs.set('dockTab', state.dockTab);
       notify();
-    },
-
-    openDock(tab = 'resources') {
-      state.dockTab = tab;
-      SW.prefs.set('dockTab', tab);
-      notify();
-    },
-
-    // Open or closed, whichever tab the panel is holding. A different act from `toggleDock`, which
-    // toggles ONE tab and is what the collapsed rail's per-tab buttons mean.
-    //
-    // Both doors labelled for this act passed a constant `resources` to `toggleDock` instead, and
-    // `toggleDock` only closes when its argument is the tab already open. So with the panel open on
-    // Activity, a control captioned "Hide the side panel" switched tab, and the shortcut the help
-    // drawer advertises as a toggle took two presses to close. #150 fixed the dock's own fold button
-    // for exactly this and left its two siblings behind — which is the case for the intent living
-    // here once rather than being spelled out at each of the three doors.
-    toggleDockOpen() {
-      store.toggleDock(state.dockTab || 'resources');
     },
 
     toggleRail() {
@@ -2834,7 +2877,13 @@ window.SW = window.SW || {};
       // removal's words, because that is what the 409 names and what ADR-0011 makes the app's act —
       // but pressing it moves the creator rather than removing anything, and a destructive-looking
       // control that silently teleports you owes you the sentence saying why you are here.
+      // Opened, not merely named. The list of what an app uses is the App dependencies modal now
+      // (ADR-0035), which is behind a header menu item — so a pointer that only said the words
+      // would land the reader on a preview with no list in sight. ADR-0011's rule is that a
+      // pointer is a promise the destination can act; this is that promise kept.
+      state.appDependenciesOpen = true;
       antd.message.info(`Take it out of ${appScopeName()} in the list of what this app uses.`);
+      notify();
       return true;
     },
 
@@ -3003,14 +3052,12 @@ window.SW = window.SW || {};
       // both bind through this act, and a sentence written at one of them is a sentence the other
       // does not say.
       //
-      // "Project resources" and not the working set's own prose label, which is "In this project":
-      // this is a POINTER, and ADR-0011 fixed the shape a pointer takes — it names the destination
-      // in the words the reader will actually see on the way to it. Those words are the dock tab's
-      // (`components/shell.js`), which is the thing that gets clicked; the panel's section head
-      // stopped matching the tab in #140, because the list holds Assets as well as Resources. The
-      // Build header's two pointers already say it in these words (`modes/builder.js`), and a
-      // receipt that named the list differently would send people looking for a label that is not
-      // on the screen.
+      // "App dependencies" and not the panel: this is a POINTER, and ADR-0011 fixed the shape a
+      // pointer takes — it names the destination in the words the reader will actually see on the
+      // way to it. Those words are the header menu item's (`modes/builder.js`), which is the thing
+      // that gets clicked. It said "Project resources, under {app}" while the panel held a section
+      // per app; the panel is the Project's one list now (#151) and the app's own records — with
+      // the removal that acts on them — are behind that menu item.
       // A Data Source arrives with no Scope, which is a named unfinished state and not an error
       // (#142) — so the receipt names the second act rather than leaving it to be found. No other
       // kind has a part to choose, so no other kind is told to choose one.
@@ -3018,7 +3065,7 @@ window.SW = window.SW || {};
         ? ' Choose a Scope beside its name to say which part of it the app reads.'
         : '';
       antd.message.success(
-        `${where} now uses ${name}.${scopeHint} Remove it in Project resources, under ${where}.`
+        `${where} now uses ${name}.${scopeHint} Remove it under App dependencies.`
       );
       // Binding records use, and membership is the record of use (ADR-0018), so the server has
       // just put this Resource in the project. The rail is built from a read this act does not
@@ -4429,6 +4476,19 @@ window.SW = window.SW || {};
 
     closeBuildHistory() {
       state.buildHistoryOpen = false;
+      notify();
+    },
+
+    // The app dependencies modal. No read to gate on the way in — unlike `openBuildHistory`,
+    // `bindings` and `appAttachments` are already kept current per app (`loadBuild`), so there is
+    // nothing this needs to go and fetch.
+    openAppDependencies() {
+      state.appDependenciesOpen = true;
+      notify();
+    },
+
+    closeAppDependencies() {
+      state.appDependenciesOpen = false;
       notify();
     },
 

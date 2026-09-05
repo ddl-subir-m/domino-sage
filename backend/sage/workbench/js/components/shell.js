@@ -5,7 +5,7 @@ window.SW = window.SW || {};
   const { Tooltip, Dropdown, Space } = antd;
   const {
     SearchOutlined, QuestionCircleOutlined, DatabaseOutlined,
-    HistoryOutlined, DoubleRightOutlined, DoubleLeftOutlined, DownOutlined, WarningOutlined,
+    DownOutlined, WarningOutlined,
   } = icons;
 
   // Project-scoped work. Everything here is read through the scope chip that
@@ -25,13 +25,6 @@ window.SW = window.SW || {};
   // evaluated, which is before GET /api/brand has answered.
   const GLOBAL_NAV = [
     { id: 'gallery', label: '{gallery}', hint: 'Find what your organization already built', path: '#/gallery' },
-  ];
-
-  // The panel is the project's working set, so it is named after the project
-  // rather than after the abstract category of thing it contains.
-  const DOCK_TABS = [
-    { id: 'resources', label: '{project} resources', icon: DatabaseOutlined },
-    { id: 'activity', label: 'Activity', icon: HistoryOutlined },
   ];
 
   // Switching mode should move you sideways, not send you back to the start.
@@ -286,7 +279,7 @@ window.SW = window.SW || {};
   function SubNav({ mode }) {
     const [pickerOpen, setPickerOpen] = useState(false);
     const state = SW.store.get();
-    const { scopePickerOpen, dockTab } = state;
+    const { scopePickerOpen } = state;
 
     useEffect(() => {
       if (scopePickerOpen) {
@@ -314,23 +307,18 @@ window.SW = window.SW || {};
       ),
       h('span', { className: 'sw-topnav-spacer' }),
       h(SW.CollaboratorStack, { onOpen: () => SW.store.set({ peopleOpen: true }) }),
-      h('span', { className: 'sw-subnav-divider' }),
-      h(
-        Tooltip,
-        { title: dockTab ? 'Hide the side panel' : `Show resources · ${SW.util.shortcut('⌘/')}` },
-        h(
-          'button',
-          {
-            className: 'sw-icon-btn is-dark-text',
-            'aria-label': 'Toggle side panel',
-            onClick: () => SW.store.toggleDockOpen(),
-          },
-          h(dockTab ? DoubleRightOutlined : DoubleLeftOutlined, null)
-        )
-      )
+      // No panel toggle here. There were two of them within about sixty pixels of each other —
+      // this one and the panel's own Hide button — in different containers, drawn with the same
+      // chevron, doing the same thing. The one that survives is the one that sits ON the thing it
+      // acts on. Re-opening a hidden panel is the collapsed dock's own button, a few pixels below
+      // where this was, plus ⌘/, which the help drawer already advertises.
     );
   }
 
+  // One panel, so no tab bar. The dock is the frame; `SW.ResourcePanel` draws its own heading, its
+  // Add button and the one control that hides it. `dockTab` is still the state key and still holds
+  // `'resources'` or `null`, because it is a remembered preference already written into people's
+  // records (#150) — what is gone is the second value it could hold.
   function Dock() {
     const { dockTab } = SW.store.get();
 
@@ -338,19 +326,17 @@ window.SW = window.SW || {};
       return h(
         'aside',
         { className: 'sw-dock is-collapsed' },
-        DOCK_TABS.map((tab) =>
+        h(
+          Tooltip,
+          { title: `Show resources · ${SW.util.shortcut('⌘/')}`, placement: 'left' },
           h(
-            Tooltip,
-            { key: tab.id, title: SW.brand.text(tab.label), placement: 'left' },
-            h(
-              'button',
-              {
-                className: 'sw-dock-rail-btn',
-                'aria-label': SW.brand.text(tab.label),
-                onClick: () => SW.store.toggleDock(tab.id),
-              },
-              h(tab.icon, null)
-            )
+            'button',
+            {
+              className: 'sw-dock-rail-btn',
+              'aria-label': 'Show resources',
+              onClick: () => SW.store.openDock(),
+            },
+            h(DatabaseOutlined, null)
           )
         )
       );
@@ -359,52 +345,7 @@ window.SW = window.SW || {};
     return h(
       'aside',
       { className: 'sw-dock is-expanded' },
-      h(
-        'div',
-        { className: 'sw-dock-tabs' },
-        DOCK_TABS.map((tab) =>
-          h(
-            'button',
-            {
-              key: tab.id,
-              className: `sw-dock-tab${dockTab === tab.id ? ' is-active' : ''}`,
-              // Through the store's writers rather than a raw `set`, so which tab you were last
-              // reading survives a reload the same way opening the dock at all does (#150).
-              onClick: () => SW.store.openDock(tab.id),
-            },
-            SW.brand.text(tab.label)
-          )
-        ),
-        h('span', { className: 'sw-topnav-spacer' }),
-        h(
-          Tooltip,
-          { title: 'Hide panel' },
-          h(
-            'button',
-            {
-              className: 'sw-icon-btn is-dark-text',
-              'aria-label': 'Hide panel',
-              // `toggleDockOpen` closes whichever tab is open, nulls `panelFilter` for us, and
-              // records the close. A raw `set` here meant the dock persisted when you closed it
-              // with ⌘/ and forgot when you closed it with its own button (#150). Through the same
-              // writer as the other two doors that mean this, so the three cannot drift again.
-              onClick: () => SW.store.toggleDockOpen(),
-            },
-            h(DoubleRightOutlined, null)
-          )
-        )
-      ),
-      h(
-        'div',
-        { className: 'sw-dock-body' },
-        dockTab === 'resources'
-          ? h(SW.ResourcePanel, null)
-          : h(
-              'div',
-              { className: 'sw-dock-activity sw-scroll' },
-              h(SW.ActivityFeed, null)
-            )
-      )
+      h(SW.ResourcePanel, null)
     );
   }
 

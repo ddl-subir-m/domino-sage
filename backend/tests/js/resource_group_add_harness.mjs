@@ -21,15 +21,26 @@ import vm from 'node:vm';
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
-// A working set with the two states side by side in one draw: Data and Language models hold rows,
-// Predictive models holds none. A door that depended on emptiness would then be present on exactly
-// the wrong half, which is what the bug looked like.
+// A working set holding every shape of group this asks about, in one draw.
+//
+// `model_predictive` held NO rows when this was written, because the bug was a door that appeared
+// only on an empty group and the two states had to sit side by side. A group with nothing in it is
+// no longer drawn at all (ADR-0035), so "the empty group keeps its door too" is not a claim about
+// anything any more — and the claim that mattered, a group with ROWS still offering the door, is
+// asked of three groups here instead of one.
+//
+// `agent` holds a row for the opposite reason: Agents is a `placeholder` group, and the rule that
+// it gets no door was previously only ever exercised on an empty group, which is now indis-
+// tinguishable from a group that is absent. With a row it is drawn, and the absence of the door is
+// the placeholder rule rather than the group being gone.
 const GROUPS = {
   dataset: [{ id: 'dataset:d1', name: 'Sales rows', kind: 'dataset' }],
   datasource: [{ id: 'data_source:s1', name: 'Warehouse', kind: 'datasource' }],
   model_llm: [{ id: 'llm_alias:m1', name: 'Risk scorer', kind: 'model_llm', alias: 'risk-scorer' }],
-  model_predictive: [],
-  file: [],
+  model_predictive: [{ id: 'model_api:p1', name: 'Churn risk', kind: 'model_predictive' }],
+  agent: [{ id: 'agent:a1', name: 'Desk agent', kind: 'agent' }],
+  file: [{ id: 'file:.sage/scratch/notes.csv', name: 'notes.csv', kind: 'file',
+           path: '.sage/scratch/notes.csv', source: 'scratch' }],
 };
 
 // Real hooks, by call order, per mount. `collapsed` is the one that matters: pressing `+` must
@@ -141,14 +152,16 @@ const report = {};
 if (act === 'drawn') {
   const nodes = panel();
   report.heads = groupHeads(nodes);
-  // The empty group's link is still there. This fix adds a door; it does not take one away.
+  // The empty branch's own link, which went with the branch (ADR-0035). Reported rather than
+  // dropped: this fix moved the door to the head, and a second copy reappearing below would be the
+  // two doors #164 spent a commit collapsing into one.
   report.emptyLinks = nodes
     .filter((n) => n.t === 'Button' && (n.p || {}).type === 'link')
     .map(text)
     .filter((t) => t.includes('Add from'));
 } else {
   // Which group gets pressed. `press-filled` is the bug's own case: a group with rows in it.
-  const which = { 'press-filled': 'Language models', 'press-empty': 'Predictive models', 'press-data': 'Data' }[act];
+  const which = { 'press-filled': 'Language models', 'press-predictive': 'Predictive models', 'press-data': 'Data' }[act];
   const head = panel().filter((n) => (n.p || {}).className === 'sw-res-group-label')
     .map((n) => ({ n, drawn: flatten(n) }))
     .find(({ drawn }) => drawn.some((d) => (d.p || {}).className === 'sw-group-label' && text(d).startsWith(which)));

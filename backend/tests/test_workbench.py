@@ -83,8 +83,18 @@ def test_workbench_is_the_default_ui():
 
     panel = client.get("/js/components/resource-panel.js")
     assert panel.status_code == 200
-    assert b"In context" in panel.content
-    assert b"In this project" in panel.content
+    # One heading, and it is the panel's title rather than a section head inside it. The dock's tab
+    # and the section head under it were one list named twice; both are gone. `In context` went
+    # with the other head: context is the chips over the composer plus a mark on the row (#151).
+    assert b"'Project resources'" in panel.content
+    assert b"In context" not in panel.content
+    assert b"sw-panel-title" in panel.content
+    # Title and act on two rows: a heading that also held a count, a door and a chevron read as a
+    # toolbar, and it was what forced the Add label to disappear on a narrow rail.
+    assert b"sw-panel-actions" in panel.content
+    assert b"sw-panel-count" not in panel.content
+    # The Project's list is not a search surface — the catalogue behind Add is (#151).
+    assert b"Filter this project" not in panel.content
     assert b"addToContext" in panel.content
     assert b"MCPs" in panel.content
     assert b"Agents" in panel.content

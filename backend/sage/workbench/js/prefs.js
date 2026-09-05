@@ -55,7 +55,13 @@ window.SW = window.SW || {};
     // recognise, so an unlisted `null` would read back as the fallback and a dock the person
     // closed would re-open on the next load. That is the bug this ticket closes, and leaving
     // `null` out is how it would come back through the preference that fixed it.
-    dockTab: { fallback: null, values: ['resources', 'activity', null] },
+    //
+    // `activity` is still listed, and the panel no longer has that tab. It is a value already
+    // written into people's records, and dropping it from the list would make it unrecognised —
+    // which is the same bug from the other side: somebody whose last session ended on Activity
+    // would land on the fallback, a closed panel, rather than the open one they left. `migrate`
+    // below reads it back as `resources`, which is the only panel there is now.
+    dockTab: { fallback: null, values: ['resources', 'activity', null], migrate: { activity: 'resources' } },
 
     // The first chip's one-time note (#137). A chip is Session context — this Conversation's
     // only — and the note that teaches it can be dismissed for good. True is the viewer's own
@@ -106,7 +112,12 @@ window.SW = window.SW || {};
       // is the honest answer for a session that does not know who is looking.
       if (!who) return spec.fallback;
       const stored = (asRecord(readAll()[who]) || {})[name];
-      return spec.values.includes(stored) ? stored : spec.fallback;
+      if (!spec.values.includes(stored)) return spec.fallback;
+      // A value the UI has since retired, read back as the one that replaced it. The record on
+      // disk is left alone: rewriting it here would make a read a write, and `get` is called on
+      // every render.
+      const moved = spec.migrate && Object.prototype.hasOwnProperty.call(spec.migrate, stored);
+      return moved ? spec.migrate[stored] : stored;
     },
 
     // True once the answer is on file. False is worth telling the reader about: they made a

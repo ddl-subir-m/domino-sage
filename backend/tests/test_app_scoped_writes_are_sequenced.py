@@ -192,13 +192,16 @@ def test_the_stale_read_is_dropped_rather_than_repaired_by_a_later_one():
 
 
 @needs_node
-def test_the_header_row_names_the_new_app_over_the_new_apps_records():
-    """#92's row heads its lists with the app name outright, so the losing write is not an
-    ambiguous stale list — it is a named wrong pairing, printed in words."""
+def test_the_apps_own_list_names_the_new_app_over_the_new_apps_records():
+    """#92's list is headed by the app name outright, so the losing write is not an ambiguous stale
+    list — it is a named wrong pairing, printed in words.
+
+    The list moved off the header and into the App dependencies modal (`624ff9b`, ADR-0035), which
+    is titled with the app for exactly this reason: the removal routes behind it carry no app id,
+    so which app it names is load-bearing rather than decorative."""
     step = _read_then_switch()
-    said = " ".join(
-        t for p in step["parts"] if p["className"].startswith("sw-app-scope") for t in p["texts"]
-    )
+    deps = step["appDeps"] or {"title": "", "said": []}
+    said = " ".join([deps["title"] or ""] + deps["said"])
     assert "Desk dashboard" in said
     assert "Market data EOD" in said
     assert "margins.csv" in said

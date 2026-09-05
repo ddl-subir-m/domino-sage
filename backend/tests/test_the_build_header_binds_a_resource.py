@@ -255,14 +255,19 @@ def test_binding_a_row_the_project_has_not_joined_posts_it_the_same_way():
 def test_the_act_says_what_it_did_and_how_to_reverse_it():
     """The receipt ADR-0021 asks for in place of the confirm it refused: separation carries the
     weight, so the sentence comes AFTER and names the scope and the way back. Naming the app twice
-    is the point — the scope is what tells this act from `Use in this chat`, and the way out lives
-    on a different surface from the way in (ADR-0011)."""
+    is the point — the scope is what tells this act from `Use in this chat`, and the way out is
+    named in the words the reader will see on the way to it (ADR-0011).
+
+    The way out and the way in are now the same surface. That was the change #151 made and it is
+    not a retreat from ADR-0011: the rule is that an object is removed from the list that owns its
+    scope, and the app's own list left the Project's panel for the app's own modal, taking its
+    removal with it."""
     step = _run([{
         "addIn": True, "thread": "thr_many", "select": "app_c", "pick": "llm_alias:al_1",
     }])[-1]
     said = " ".join(step["said"])
     assert "Rate curve viewer now uses Claude Sonnet 4" in said
-    assert "Remove it in Project resources, under Rate curve viewer" in said
+    assert "Remove it under App dependencies" in said
 
 
 # ---- the ordering is shared, not copied ------------------------------------

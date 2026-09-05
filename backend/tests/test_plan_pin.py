@@ -6,6 +6,8 @@ behind Sage — there is `.sage/plan.md` and its archive — so this is what the
 """
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -170,12 +172,20 @@ def test_renaming_the_app_does_not_rename_its_plan(tmp_path: Path):
     assert orch.read_plan_pin()["title"] == "A desk exposure dashboard."
 
 
-def test_the_pin_names_the_plan_and_not_the_app(tmp_path: Path):
-    """The label carries the noun. Without it the line below reads as this app's name gone stale,
-    which is exactly what it looks like once the app has been renamed away from its plan."""
+def test_the_row_names_the_plan_and_not_the_app(tmp_path: Path):
+    """Something has to carry the noun, or the title below reads as this app's name gone stale —
+    which is exactly what it looks like once the app has been renamed away from its plan.
+
+    The pinned card carried it in a label reading "Working from a plan". The plan is a row in the
+    Project's list now (#151, ADR-0035), so the noun is the group heading over it — and the row's
+    own subtitle names the app besides, which the pin never did. Read off the source, because what
+    is asserted is that the words exist at all."""
     panel = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
              / "components" / "resource-panel.js").read_text()
-    assert "'Working from a plan'" in panel
+    assert "'Plans'" in panel
+    # And the row says whose plan it is, which is what lets a Project-scoped list hold an
+    # app-scoped artifact honestly.
+    assert "appName(plan.appId)" in panel
 
 
 # ---- the step count ------------------------------------------------------------------------------
@@ -221,11 +231,17 @@ def test_the_panel_reads_the_plan_from_state_not_a_resource_group():
     panel = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
              / "components" / "resource-panel.js").read_text()
     assert "resourceGroups.plan" not in panel
-    # `projectPlan`, not `activePlan`: the pin shows plan.md, and `activePlan` is the plan document.
-    # They shared one key until plan documents were real, at which point loading a document would
-    # have blanked the pin.
+    # `projectPlan`, not `activePlan`: the first shows plan.md and the second is a plan DOCUMENT
+    # the viewer has open. They shared one key until plan documents were real, at which point
+    # loading a document would have blanked the pin. `activePlanId` is neither — it is the
+    # Conversation's plan, which is what Chat marks where Build marks plan.md's — so the check is
+    # on the whole word.
     assert "projectPlan" in panel
-    assert "activePlan" not in panel
+    assert re.search(r"\bactivePlan\b", panel) is None
+    # The list itself is its own state, off `GET /api/plans`, and not a `resourceGroups` entry:
+    # `collectTurnRefs` walks every group to resolve an @mention, so a plan filed in one would
+    # quietly become a thing a turn could carry.
+    assert "plans" in panel
 
 
 def test_the_pin_calls_a_real_endpoint():

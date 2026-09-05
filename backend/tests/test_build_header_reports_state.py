@@ -188,53 +188,69 @@ def test_the_open_control_is_not_left_unqualified():
     assert "Open preview" not in step["labels"]
 
 
-# ---- the reserved row -------------------------------------------------------------------------
+# ---- the app's own resources, and where the header keeps them --------------------------------
+#
+# #87 reserved a ROW beneath the app identity row and #92 filled it. `624ff9b` moved that list
+# behind the header's own `…` — into the App dependencies modal — and ADR-0035 gave the modal the
+# panel's `In {app}` section as well, so it is the whole of the app's scope rather than a summary
+# of it. The reservation is kept as a DOOR rather than a strip of pixels: what #87 was protecting
+# is that the app's resources have somewhere of their own to live that is not the composer's
+# chips, and that they are reachable from the app the header names.
 
 
 @needs_node
 def test_the_header_leaves_a_place_for_the_selected_apps_own_resources():
     """#85 decides what goes in it. This only guarantees it has somewhere to land, so answering
     #85 does not mean reopening the header."""
-    assert "sw-app-scope" in _build(select="app_a")["classes"]
+    step = _build(select="app_a")
+    assert step["appDeps"] is not None
+    # And the header names the way in, so the place is reachable rather than merely allocated.
+    items = [i["key"] for m in step["menus"] for i in m["items"]]
+    assert "dependencies" in items
 
 
 @needs_node
 def test_that_place_is_app_scoped_and_names_the_app_it_belongs_to():
-    """Which is the whole difference from the composer's chips. A row that did not say whose
+    """Which is the whole difference from the composer's chips. A place that did not say whose
     resources these are would be the ambiguity #85 was filed about, moved up a pane."""
     a, c = _run([{"build": "thr_many", "select": "app_a"}, {"build": "thr_many", "select": "app_c"}])
-    assert any("Desk dashboard" in t for t in _texts(a, "sw-app-scope"))
-    assert any("Rate curve viewer" in t for t in _texts(c, "sw-app-scope"))
-    assert not any("Desk dashboard" in t for t in _texts(c, "sw-app-scope"))
+    assert "Desk dashboard" in a["appDeps"]["title"]
+    assert "Rate curve viewer" in c["appDeps"]["title"]
+    assert "Desk dashboard" not in c["appDeps"]["title"]
 
 
 @needs_node
 def test_that_place_belongs_to_an_app_so_there_is_none_without_one():
-    """A row headed by no app is a row about nothing, and a Project with no Built Apps is the one
+    """A list headed by no app is a list about nothing, and a Project with no Built Apps is the one
     screen whose only job is `New app`."""
-    assert "sw-app-scope" not in _build("thr_none", noapps=True)["classes"]
+    step = _build("thr_none", noapps=True)
+    assert step["appDeps"] is None
+    assert "dependencies" not in [i["key"] for m in step["menus"] for i in m["items"]]
 
 
 @needs_node
 def test_that_place_is_not_the_composers_session_context_row():
-    """Two rows, two scopes. Session context is the Conversation's and must not follow the
-    selected app (#84); this row is the app's. The header does not borrow the composer's row, and
+    """Two surfaces, two scopes. Session context is the Conversation's and must not follow the
+    selected app (#84); this list is the app's. The header does not borrow the composer's row, and
     it does not borrow its styling either."""
     source = (_WORKBENCH / "js" / "modes" / "builder.js").read_text()
     assert "sw-composer-chips" not in source
     assert "sw-chip" not in source
     css = (_WORKBENCH / "css" / "builder.css").read_text()
-    assert ".sw-app-scope" in css
+    assert ".sw-appdeps-body" in css
 
 
 @needs_node
-def test_that_place_sits_between_the_app_identity_row_and_the_preview():
-    """Beneath the identity row, because it is about the app that row names; above the canvas,
-    because it is part of the header rather than something floating over the app. `classes` is the
-    tree in document order, so this is the layout rather than a reading of the source."""
-    classes = _build(select="app_a")["classes"]
-    assert classes.index("sw-builder-toolbar") < classes.index("sw-app-scope")
-    assert classes.index("sw-app-scope") < classes.index("sw-builder-canvas is-live")
+def test_that_place_is_reached_from_the_app_the_header_names_and_never_covers_it():
+    """#87 put the row beneath the identity row and above the canvas, so it read as being about the
+    app that row named rather than as something floating over the app. A modal cannot be placed in
+    document order, so the same intent is asked of the door: it hangs off the identity row's own
+    menu, and the canvas is still in the tree behind it."""
+    step = _build(select="app_a")
+    classes = step["classes"]
+    assert classes.index("sw-builder-toolbar") < classes.index("sw-appdeps-body")
+    # The preview is not displaced to reach the list — the header's `…` is the only thing that moved.
+    assert "sw-builder-canvas is-live" in classes
 
 
 # ---- what this ticket must not do -------------------------------------------------------------
