@@ -50,6 +50,11 @@ window.SW = window.SW || {};
     return SW.router.go(SW.conversationRoute(thread, mode));
   };
 
+  // On SW because the delete inside it is the one act here that destroys something (ADR-0036), and
+  // a test that cannot reach the handler can only assert the copy — never that pressing Delete
+  // reports a save that did not land. The row below still calls it directly.
+  SW.conversationMenu = conversationMenu;
+
   function conversationMenu(thread) {
     return {
       items: [
@@ -86,17 +91,31 @@ window.SW = window.SW || {};
           });
         }
         if (key === 'delete') {
+          // Three clauses, because the act now has three consequences and the person is about to
+          // authorise all of them (ADR-0036). The last one is the uncomfortable one and it stays
+          // in the dialog rather than behind a "learn more": somebody deleting because of what
+          // they pasted is exactly the reader a popover would hide it from.
           Modal.confirm({
             title: 'Delete this conversation?',
-            content: 'The apps it changed stay exactly as they are.',
+            content: 'Its messages are removed for good. The apps it changed stay exactly as they '
+              + "are, and earlier copies stay in the project's git history.",
             okText: 'Delete',
             okButtonProps: { danger: true },
             onOk: async () => {
-              await SW.api.deleteThread(thread.id);
+              const out = await SW.api.deleteThread(thread.id);
               if (SW.store.get().thread && SW.store.get().thread.id === thread.id) {
                 SW.store.clearConversation();
               }
               SW.store.reloadThreads();
+              // The files are gone here whatever git said. A push that did not land leaves them on
+              // the remote, so a second Sage Builder still lists this Conversation and a restart
+              // may bring it back — say so rather than let the empty row imply it finished.
+              if (out && out.saved && out.saved.ok === false) {
+                antd.message.error(
+                  `Deleted here, but the project couldn't be saved — ${out.saved.detail}. `
+                  + 'This conversation may come back when the workspace restarts.'
+                );
+              }
             },
           });
         }

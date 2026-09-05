@@ -434,6 +434,7 @@ def test_the_glossary_holds_both_kinds():
         "Attach folder",
         "Build this again",
         "Collaborator",
+        "Delete",
         "Liveness",
         "Preflight",
         "Problem",

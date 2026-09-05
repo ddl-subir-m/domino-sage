@@ -448,6 +448,16 @@ harness object that holds Recall), history (that is the transcript), memory
 
 ### Handling rules
 
+**Delete**:
+Taking a top-level thing out of the Project for good: a [[Conversation]], or a [[Built App]]. It
+names no scope, because there is nowhere else the thing could still be — which is what tells it
+apart from [[Remove]]. Deleting a Conversation takes its transcript with it and leaves the apps
+it changed alone; earlier copies stay in the project's git history, which no act here reaches.
+See [ADR-0036](docs/adr/0036-a-deleted-conversation-takes-its-transcript-with-it.md).
+_Kind_: word
+_Avoid_: Archive, Hide, Clear (each one promises the thing is still somewhere), Remove (that word
+names a scope and this act has none)
+
 **Remove**:
 Taking something out of a durable list that holds it: a Built App, or the Project — which holds
 both Resources and people. Every label names which — "Remove from <app>", "Remove from <project>",

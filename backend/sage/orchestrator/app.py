@@ -2167,11 +2167,13 @@ def patch_thread(thread_id: str, body: dict) -> JSONResponse:
 
 @control_app.delete("/api/threads/{thread_id}")
 def delete_thread(thread_id: str) -> JSONResponse:
+    # Carries the save's answer, not a bare ok: the files are gone here whatever git said, and a
+    # push that did not land leaves the Conversation on the remote for the next start to find
+    # (ADR-0036). Only the person can judge that, so only the person can be told.
     try:
-        orchestrator.delete_thread(thread_id)
+        return JSONResponse(orchestrator.delete_thread(thread_id))
     except KeyError:
         return JSONResponse({"error": "unknown thread"}, status_code=404)
-    return JSONResponse({"ok": True})
 
 
 @control_app.post("/api/threads/{thread_id}/handoff/plan")

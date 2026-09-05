@@ -3646,6 +3646,9 @@ class Orchestrator:
         # opening the thing it repairs, and `list_project_resources` promises it never writes to the
         # membership file (#140).
         self._backfill_membership_from_bindings(record)
+        # Same rule, same place: the deletes that predate ADR-0036 are tombstones with every file
+        # still beside them, and finishing them belongs to opening the Project that holds them.
+        self._sweep_deleted_conversations(self._project)
         return self._project
 
     def _chat_project(self) -> Project:
@@ -4815,16 +4818,102 @@ class Orchestrator:
             raise KeyError(thread_id)
         return row
 
-    def delete_thread(self, thread_id: str) -> None:
+    def delete_thread(self, thread_id: str) -> dict:
+        """Delete a Conversation: the talk goes, the tombstone stays, git hears about it (ADR-0036).
+
+        The save is part of the act rather than left to the next turn. Without it the tombstone
+        waits on disk for a turn that may never come, and a container killed in that window brings
+        the whole conversation back on restart — which is the bug this exists to close.
+
+        The save goes through `_flush_chat_save`, not straight to `_save_to_git`, because it has to
+        hold the turn lock. The save walks the tree and commits it, and a build turn writing files
+        at that moment would have its half-written tree committed — the window that comment is
+        about. Delete is a button anyone can press mid-build, so it takes the same lock, and losing
+        that race defers the commit to the idle timer rather than running it unguarded.
+
+        Its answer is handed back rather than swallowed. It never raises; a push that did not land
+        leaves the files gone here and present on the remote, and the person is the only one who
+        can judge what to do about that. A deferred save answers None — nothing failed, so nothing
+        is reported."""
         project = self._chat_project()
         store = ThreadStore(project.record.path)
         # Read the chips before the Thread goes: afterwards there is nothing left to say what it
         # fetched, and the files would sit in scratch for the life of the project.
         paths = [str(i.get("path") or "") for i in store.read_context(thread_id).get("items") or []]
-        if not store.delete(thread_id):
+        spoken_for = self._artifacts_are_spoken_for(store, thread_id)
+        if not store.delete(thread_id, purge_artifacts=not spoken_for):
             raise KeyError(thread_id)
         for path in paths:
             self._release_chat_file(project, path)
+        self._chat_dirty = True
+        self._chat_dirty_thread = None  # the Thread it named is gone; nothing is pending on one
+        return {"ok": True, "saved": self._flush_chat_save("delete a conversation")}
+
+    def _artifacts_are_spoken_for(self, store: ThreadStore, thread_id: str) -> bool:
+        """Whether a live Built App's own handoff digest names this Thread's Artifacts by path.
+
+        Asked again on every sweep rather than answered once, which is why `purge` keeps
+        `handoff.json` for as long as the Artifacts: the same guard `list_threads` applies, and it
+        can change. An entry naming an app that has since been deleted names nothing, so those
+        files stop being a document's and become orphans the next sweep can finish."""
+        live = set(self._wm.app_ids())
+        return any(r.get("status") == "bound" and str(r.get("appId") or "") in live
+                   for r in store.read_handoffs(thread_id))
+
+    def sweep_deleted_conversations(self) -> int:
+        """Finish the deletes that predate ADR-0036 — see `_sweep_deleted_conversations`."""
+        return self._sweep_deleted_conversations(self._chat_project())
+
+    def _sweep_deleted_conversations(self, project: Project) -> int:
+        """Finish the deletes that predate ADR-0036, once, as this Project is opened.
+
+        Every Conversation the old delete tombstoned still has its full transcript beside the
+        record — on this volume and on the remote — and those are the ones somebody had a reason to
+        want gone. Bounded: one pass over the tombstones this Project holds, and idempotent, so
+        every attach after the first costs a directory scan.
+
+        On the attach rather than on a boot thread, for the reason the membership backfill beside
+        it gives: a migration belongs to opening the thing it repairs. `project()` is a get-or-
+        attach with no lock over it, so a second caller racing the first builds a whole second
+        Project — and the loser's Vite supervisor is left running with nothing holding it.
+
+        Not in the rail's scan either: that scan is a read path two Sage Builders run at once
+        (ADR-0008), and a write inside it is the shape of bug ADR-0008 removed.
+
+        It does not push. Two Builders starting together would both sweep and both commit, which
+        is a merge at boot over work either one can redo, and unlike the delete itself there is
+        nobody watching to be told it failed. The removal is local and the next save carries it —
+        any turn, or `save before stop` on the way out.
+
+        Guarded like the backfill beside it, and for a sharper reason: `self._project` is already
+        assigned by the time this runs, so an exception here would 500 whichever request happened
+        to trigger the attach and then be cached away — every later call returns the Project, the
+        migration never runs again in this process, and nothing says why. A bad directory name
+        under `.sage/threads/` (`safe_id` raises) or a full volume is enough."""
+        store = ThreadStore(project.record.path)
+        swept = 0
+        try:
+            tombstoned = store.tombstoned_ids()
+        except Exception:
+            log.exception("sweep: could not read the tombstones")
+            return 0
+        for thread_id in tombstoned:
+            try:
+                # The chips before the files: `context.json` is the only record of what this
+                # Conversation fetched, and the purge takes it. Without this the copies sit in
+                # scratch for the life of the Project, counting against the fetch cap.
+                paths = [str(i.get("path") or "")
+                         for i in store.read_context(thread_id).get("items") or []]
+                spoken_for = self._artifacts_are_spoken_for(store, thread_id)
+                if not store.purge(thread_id, purge_artifacts=not spoken_for):
+                    continue
+                swept += 1
+                for path in paths:
+                    self._release_chat_file(project, path)
+            except Exception:
+                # One bad Thread is not the Project. The next attach tries it again.
+                log.exception("sweep: could not finish deleting %s", thread_id)
+        return swept
 
     def list_threads(self) -> list[dict]:
         """Every Thread, each carrying the Built App it bound last.

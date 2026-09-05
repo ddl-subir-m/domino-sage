@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -362,16 +363,80 @@ class ThreadStore:
             if any(isinstance(t, dict) and t.get("appId") == app_id for t in tags):
                 self._edit_meta(d.name, edit)
 
-    def delete(self, thread_id: str) -> bool:
-        """A tombstone, not a removal. The old delete dropped the index row and left
-        `threads/<id>/` on disk with its history, so a scan that trusted the directory alone would
-        put the Thread back in the rail. Marking the record keeps that history exactly where it
-        was and still answers False the second time."""
-        def edit(row: dict) -> None:
-            row["deleted"] = True
-            row["updatedAt"] = _now()
+    def delete(self, thread_id: str, *, purge_artifacts: bool = True) -> bool:
+        """A delete takes the talk with it and leaves a tombstone (ADR-0036).
 
-        return self._edit_meta(thread_id, edit) is not None
+        The record shrinks to what a plan page has to read. The title goes with the rest, because
+        it is the first 60 characters of the person's own first message and that is transcript
+        too. The directory stays: the tombstone lives in it, and a scan that trusted the directory
+        alone would put the Thread back in the rail. Still False the second time.
+
+        `purge_artifacts` is the caller's call, not this store's. A Built App's committed handoff
+        digest names `examples/<threadId>/…` by path (ADR-0006), and nothing here can see which
+        apps are still live — pass False and the files a live document points at are left alone."""
+        self._adopt_legacy_index()
+        with _META_LOCK:
+            if not _is_live(self._read_meta(thread_id)):
+                return False
+            self._write_json(self.meta_path(thread_id),
+                             {"id": thread_id, "deleted": True, "updatedAt": _now()})
+        self.purge(thread_id, purge_artifacts=purge_artifacts)
+        return True
+
+    def purge(self, thread_id: str, *, purge_artifacts: bool) -> bool:
+        """Remove what a tombstoned Thread left behind. True only if there was something to remove.
+
+        Its own method because `delete` is not the only caller: every Thread deleted before
+        ADR-0036 is a tombstone with all of its files still beside it, and one sweep at Builder
+        start finishes those by the same rule. Idempotent, so that sweep is free on every start
+        after the first."""
+        # `handoff.json` survives exactly when the Artifacts do. It is the record of WHY they are
+        # still here and the only evidence a later sweep can re-read: take it away with the files
+        # it explains, and the next sweep finds a tombstone naming no app, decides nothing points
+        # at those Artifacts, and removes the ones a live Built App's committed digest names. It
+        # keeps none of the conversation either — ids, timestamps and a status, no talk.
+        #
+        # Kept rather than answered once and recorded, so the answer stays a live one: when that
+        # Built App is itself deleted the next sweep reads the same file, finds the app gone, and
+        # finishes the job. A verdict frozen onto the tombstone would strand those files for good.
+        keep = {"meta.json"} if purge_artifacts else {"meta.json", "handoff.json"}
+        removed = False
+        d = self.thread_dir(thread_id)
+        if d.is_dir():
+            for p in d.iterdir():
+                if p.name in keep:
+                    continue
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+                removed = True
+        examples = self.examples_dir(thread_id)
+        if purge_artifacts and examples.exists():
+            shutil.rmtree(examples, ignore_errors=True)
+            removed = True
+        return removed
+
+    def tombstoned_ids(self) -> list[str]:
+        """Every id this store holds a tombstone for — the sweep's input (ADR-0036).
+
+        Adopts the legacy index first, like every other read here. It is the sweep's first call
+        into this store, and a Project still on `threads.json` has no `meta.json` to find: without
+        this the sweep would answer "nothing to do", and the adoption on the next rail scan would
+        then mint tombstones for exactly the directories the old delete orphaned."""
+        self._adopt_legacy_index()
+        ids = []
+        for d in self._thread_dirs():
+            try:
+                row = self._read_meta(d.name)
+            except ValueError:
+                # A directory name no `new_id` ever minted. Nothing this store wrote, so nothing
+                # it may delete — and skipping it rather than raising keeps one piece of junk in
+                # `.sage/threads/` from stopping the sweep over every real tombstone beside it.
+                continue
+            if (row or {}).get("deleted"):
+                ids.append(d.name)
+        return ids
 
     def read_artifacts(self, thread_id: str) -> list[dict]:
         p = self.thread_dir(thread_id) / "artifacts.json"
