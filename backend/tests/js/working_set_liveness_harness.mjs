@@ -40,7 +40,11 @@ const OLD_PIN = { database: 'analytics', schema: 'public', table: 'legacy_orders
 // the platform still has beside one it does not — so every claim below is read off a rail that has
 // a live row to be wrong about as well as a dead one.
 const MEMBERS = [
-  { id: 'dataset:d1', name: 'Sales rows', kind: 'dataset' },
+  // Still on Domino AND held by a live conversation. It keeps the ordinary Project removal:
+  // #169 adds no pre-warn for a Resource that is not missing, and a live Resource an app binds
+  // has always just answered 409 (#133).
+  { id: 'dataset:d1', name: 'Sales rows', kind: 'dataset',
+    heldBy: [{ threadId: 'conv_9', title: 'Positions review' }] },
   { id: 'dataset:d9', name: 'Retired rows', kind: 'dataset' },
   { id: 'data_source:s1', name: 'Warehouse', kind: 'datasource', pins: [PIN] },
   { id: 'data_source:s9', name: 'Old warehouse', kind: 'datasource', pins: [OLD_PIN] },
@@ -54,6 +58,16 @@ const MEMBERS = [
   // `usedBy` is the server's own computed field, in the shape `list_project_resources` writes it.
   { id: 'dataset:bound', name: 'Bound rows', kind: 'dataset',
     usedBy: [{ appId: APP.id, name: APP.name, scope: '' }] },
+  // Gone from Domino and held only by a live conversation's chip, which refuses the removal too
+  // (#168). `heldBy` is the sibling field, in the shape `list_project_resources` writes it (#169).
+  // Before it existed this row computed `stuck === false` and offered the Project removal — the one
+  // act certain to be refused.
+  { id: 'dataset:chat', name: 'Chat rows', kind: 'dataset',
+    heldBy: [{ threadId: 'conv_9', title: 'Positions review' }] },
+  // Held by both, so both doors, and neither of them the refused one.
+  { id: 'dataset:pair', name: 'Shared rows', kind: 'dataset',
+    usedBy: [{ appId: APP.id, name: APP.name, scope: '' }],
+    heldBy: [{ threadId: 'conv_9', title: 'Positions review' }] },
 ];
 
 // What Domino answers with. `d1`, `s1` and `m1` are here; nothing else in the working set is, and
@@ -208,9 +222,11 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
+// `conversation-list.js` is loaded for `SW.conversationRoute` alone: the chip-only row's door is a
+// route onto the conversation, and that grammar is written once, there.
 for (const file of ['util.js', 'prefs.js', 'router.js', 'store.js', 'api.js',
                     'components/resource-tree.js', 'components/resource-panel.js',
-                    'components/composer.js']) {
+                    'components/conversation-list.js', 'components/composer.js']) {
   vm.runInContext(fs.readFileSync(ROOT + file, 'utf8'), sandbox, { filename: file });
 }
 const SW = sandbox.SW;
@@ -265,7 +281,11 @@ function removalFor(nodes, name) {
   if (!row) return null;
   const menu = flatten(row).find((n) => n.t === 'Dropdown' && (n.p.menu || {}).items);
   const items = (menu.p.menu.items || []).filter((i) => i.danger).map((i) => i.label);
-  return { items, onClick: menu.p.menu.onClick, keys: (menu.p.menu.items || []).map((i) => i.key) };
+  // Every labelled item, danger or not: a conversation's door is not a removal and is not styled
+  // as one, so `items` alone cannot say whether the row was left with anything to press.
+  const labels = (menu.p.menu.items || []).filter((i) => i.label).map((i) => i.label);
+  return { items, labels, onClick: menu.p.menu.onClick,
+           keys: (menu.p.menu.items || []).map((i) => i.key) };
 }
 
 // The listing read faulting outright, which is a different fact from a leg refusing: a refused leg
@@ -377,7 +397,26 @@ if (stuck) {
     await settle();
   }
 }
-report.routes = routes;
+report.routes = routes.slice();
+
+// The chip-only row and the row both holders keep (#169). Gone from Domino and held by a live
+// conversation, so the Project removal would answer 409 just as an app's Binding makes it. The
+// door is the conversation itself, which is where the chip can be taken off.
+const chat = removalFor(nodes, 'Chat rows');
+const pair = removalFor(nodes, 'Shared rows');
+report.chatDoors = chat && chat.labels;
+report.chatRemovals = chat && chat.items;
+report.pairDoors = pair && pair.labels;
+report.liveDoors = (removalFor(nodes, 'Sales rows') || {}).labels;
+const before = routes.length;
+if (chat) {
+  const key = chat.keys.find((k) => String(k || '').startsWith('open-chat:'));
+  if (key) {
+    await chat.onClick({ key });
+    await settle();
+  }
+}
+report.chatRoutes = routes.slice(before);
 report.notices = notices;
 
 console.log(JSON.stringify(report));

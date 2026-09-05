@@ -28,6 +28,7 @@ import pytest
 from sage.orchestrator.service import Orchestrator, ResourceStillBound
 from sage.resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, Binding
 from sage.router.models import ModelCatalog
+from sage.workspace.threads import ThreadStore
 
 
 def _catalog() -> ModelCatalog:
@@ -232,6 +233,178 @@ def test_an_empty_project_asks_the_apps_nothing(tmp_path: Path):
     assert calls["n"] == 0
 
 
+# --- and the conversations that hold a chip on it (#169) ---------------------------------------
+#
+# #168 gave `remove_project_resource` a second reason to refuse: a live Chat conversation holding a
+# context chip. The listing above knew nothing about it, so the last sentence of its own docstring —
+# it is the scan the refusal reads, so the drawer names exactly what the refusal would — stopped
+# being true the moment #168 landed. `heldBy` is that sentence made true again, and it is the same
+# shape of answer computed the same way: hoisted once per call, looked up per row.
+#
+# The deleted-conversation case is written first deliberately. `ThreadStore.delete` writes a
+# tombstone and leaves the Thread's tree exactly where it stood, so a listing that walked
+# `.sage/threads/` rather than `store.list()` would read a conversation nobody can open back into
+# every row and mark it stuck for the life of the project.
+
+
+def _named_thread(orch: Orchestrator, title: str) -> str:
+    tid = orch.create_thread()["id"]
+    orch.patch_thread(tid, {"title": title})
+    return tid
+
+
+def _talk_about_the_source(orch: Orchestrator, thread_id: str) -> str:
+    """Put a table chip under ds-1 on the Thread — the shape the #168 bug was found in.
+
+    The chip's own `resourceId` is the leaf's; only `parentId` names the membership row.
+    """
+    chip = orch.add_thread_context(thread_id, {
+        "kind": "data_source", "name": "DIM_ACCOUNT",
+        "resourceId": "table:ds-1:DWH.MARTS.DIM_ACCOUNT",
+        "parentId": "data_source:ds-1",
+        "database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT",
+    })
+    return chip["id"]
+
+
+def test_a_chip_on_a_deleted_conversation_reaches_no_row(tmp_path: Path):
+    """A deleted conversation holds nothing back, and the row has to agree with the removal.
+
+    The tombstoned Thread's `context.json` is still on disk. If it reached `heldBy`, the row would
+    offer a door onto a conversation nobody can open while withholding the removal that in fact
+    goes through — the listing lying in the opposite direction from the one this issue fixes.
+    """
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    tid = _named_thread(orch, "Positions review")
+    _talk_about_the_source(orch, tid)
+    orch.delete_thread(tid)
+
+    assert _row(orch, "data_source:ds-1")["heldBy"] == []
+    assert orch.remove_project_resource("data_source:ds-1") is True
+
+
+def test_a_live_conversation_holding_a_chip_reaches_the_row_by_id_and_title(tmp_path: Path):
+    """The title is what the menu says; the id is where its door goes. One answer, not two."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    tid = _named_thread(orch, "Positions review")
+    _talk_about_the_source(orch, tid)
+
+    assert _row(orch, "data_source:ds-1")["heldBy"] == [
+        {"threadId": tid, "title": "Positions review"},
+    ]
+
+
+def test_a_resource_no_conversation_holds_says_so_with_an_empty_list(tmp_path: Path):
+    """Always present, like `usedBy`: the panel's `stuck` reads a length, not a missing key."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+    orch.add_project_resource({
+        "id": "llm_alias:f-sonnet", "kind": "model_llm", "name": "Claude Sonnet 4.6",
+    })
+
+    assert _row(orch, "llm_alias:f-sonnet")["heldBy"] == []
+
+
+def test_the_listing_names_exactly_the_conversations_the_removal_refusal_names(tmp_path: Path):
+    """The contract the docstring states, now for both holders.
+
+    A creator who has read the row is never told something new by the refusal — and the two answers
+    stay one because they are computed by one function over one alias set. Newest conversation
+    first, which is `store.list()`'s own order and the order the rail lists them in.
+    """
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+    _talk_about_the_source(orch, _named_thread(orch, "Desk handover"))
+
+    drawer = [c["title"] for c in _row(orch, "data_source:ds-1")["heldBy"]]
+    with pytest.raises(ResourceStillBound) as refused:
+        orch.remove_project_resource("data_source:ds-1")
+
+    assert drawer == refused.value.conversations == ["Desk handover", "Positions review"]
+
+
+def test_a_conversation_counts_once_however_many_chips_it_holds(tmp_path: Path):
+    """The Data Source and three of its tables are still one conversation to go and open."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    tid = _named_thread(orch, "Positions review")
+    _talk_about_the_source(orch, tid)
+    orch.add_thread_context(tid, {
+        "kind": "data_source", "name": "BigQuery_Demo", "resourceId": "data_source:ds-1",
+    })
+
+    assert [c["title"] for c in _row(orch, "data_source:ds-1")["heldBy"]] == ["Positions review"]
+
+
+def test_closing_the_chip_empties_the_row_and_the_removal_then_goes_through(tmp_path: Path):
+    """Computed on read, so the row tracks the Thread's own context with nothing to invalidate."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    tid = _named_thread(orch, "Positions review")
+    chip = _talk_about_the_source(orch, tid)
+    assert len(_row(orch, "data_source:ds-1")["heldBy"]) == 1
+
+    orch.remove_thread_context(tid, chip)
+
+    assert _row(orch, "data_source:ds-1")["heldBy"] == []
+    assert orch.remove_project_resource("data_source:ds-1") is True
+
+
+def test_the_threads_are_walked_once_for_the_whole_listing(tmp_path: Path):
+    """The panel polls this. A walk per row would read every Thread's `context.json` once per
+    Resource, which is the cost `_app_bindings` was hoisted to avoid — and there are far more
+    Threads in a Project than Built Apps."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    orch.add_project_resource({
+        "id": "llm_alias:f-sonnet", "kind": "model_llm", "name": "Claude Sonnet 4.6",
+    })
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+
+    calls = {"n": 0}
+    original = ThreadStore.list
+    try:
+        ThreadStore.list = lambda self: (calls.__setitem__("n", calls["n"] + 1) or original(self))
+        rows = orch.list_project_resources()
+    finally:
+        ThreadStore.list = original
+
+    assert len(rows) == 2
+    assert calls["n"] == 1
+
+
+def test_an_empty_project_asks_the_threads_nothing(tmp_path: Path):
+    """The same bargain the manifests get: no rows, no question, and a hard refresh paints first."""
+    orch = _orch(tmp_path)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+    calls = {"n": 0}
+    original = ThreadStore.list
+    try:
+        ThreadStore.list = lambda self: (calls.__setitem__("n", calls["n"] + 1) or original(self))
+        assert orch.list_project_resources() == []
+    finally:
+        ThreadStore.list = original
+    assert calls["n"] == 0
+
+
+def test_the_conversation_holders_are_never_written_into_the_membership_file(tmp_path: Path):
+    """Membership records what was picked (ADR-0010). A stored copy would be wrong the moment
+    anybody dropped a chip in a conversation nobody here was looking at."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+    assert _row(orch, "data_source:ds-1")["heldBy"]
+
+    on_disk = json.loads(
+        orch.project(start_preview=False).record.project_resources_path.read_text())
+
+    assert all("heldBy" not in row for row in on_disk)
+
+
 # --- the two surfaces that read it, pinned at the source ---------------------------------------
 
 WB = Path(__file__).resolve().parents[1] / "sage" / "workbench"
@@ -245,6 +418,7 @@ def test_the_enrichment_survives_the_trip_from_the_row_to_the_rail():
     """`rowFromMember` is the only door membership takes into the store, and a field it does not
     name is dropped on the floor. That is how `joinedProject` was lost once already."""
     assert "usedBy: item.usedBy || []," in API
+    assert "heldBy: item.heldBy || []," in API
 
 
 def test_the_enrichment_survives_the_domino_overlay():
@@ -253,6 +427,22 @@ def test_the_enrichment_survives_the_domino_overlay():
     overlay = API.split("function overlayListing")[1].split("SW.api = {")[0]
     assert "return { ...row, ...live, pins: row.pins, membershipParent: true };" in overlay
     assert "usedBy" not in overlay
+    assert "heldBy" not in overlay
+
+
+def test_the_open_door_skips_the_conversation_already_on_screen():
+    """A chip on the open conversation already has its door: "Stop using here", drawn above (#169).
+
+    Naming it a second time as "Open …" would point the reader at the page they are reading. The
+    row is not left without an act — that item is the act — so `stuck` still withholds the removal.
+
+    Which leaves the Project section with nothing in it, and a divider over nothing is a menu that
+    looks broken. So the section is drawn off what it would contain rather than off membership.
+    """
+    panel = PANEL.split("const stuck = missing")[1].split("const items")[0]
+    assert "const openable = inChat && inContext" in panel
+    assert "held.filter((c) => c.threadId !== ((SW.store.get().thread || {}).id || ''))" in panel
+    assert "...(resource.membershipParent && projectDoors.length" in PANEL
 
 
 def test_the_subtitle_is_drawn_from_the_data_rather_than_from_a_kind_list():

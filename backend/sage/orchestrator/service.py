@@ -9155,18 +9155,42 @@ class Orchestrator:
         the name it goes by, and the Scope that Binding recorded (#133). One look answers where a
         Resource is used, and the rail's `Used by N apps` subtitle finally has data behind it.
 
-        Computed on read, never written to the membership file. The answer lives in the apps' own
-        manifests (ADR-0010) and a copy here would go stale the moment any app bound or unbound —
-        including one nobody was looking at. It is the scan `remove_project_resource` refuses on, so
-        the drawer names exactly the apps the refusal would.
+        And `heldBy` beside it: each live Chat conversation with a context chip on it, by id and
+        title (#169). That is the second reason `remove_project_resource` refuses (#168), and it
+        arrived after this listing — leaving a Resource that Domino no longer holds and only a
+        conversation holds offering a removal that was certain to answer 409. Both fields together
+        are what let the row point at a door that opens: the app's Bindings, or the conversation.
+
+        Computed on read, never written to the membership file. Both answers live somewhere else —
+        the apps' own manifests (ADR-0010), the Threads' own `context.json` — and a copy here would
+        go stale the moment any app bound or unbound, or any conversation dropped a chip, including
+        one nobody was looking at. Together they are the scan `remove_project_resource` refuses on,
+        so the drawer names exactly the apps and conversations the refusal would.
+
+        The cost, because the panel polls this (#169). Measured over a project holding 50 Built
+        Apps and 20 membership rows, each Thread carrying a chip, median of 25 warm calls:
+
+            10 live Threads   1.1 ms      50 Threads   3.4 ms      200 Threads   12.6 ms
+
+        against 0.5 ms for the `_app_bindings()` half alone, which is what this listing already
+        cost and the only baseline worth comparing to. The walk is one `store.list()` plus one
+        `read_context()` per live Thread, hoisted once per call exactly as the manifest read is, so
+        it grows with the Threads and not with the Threads times the rows. Roughly 60 us per live
+        Thread: at 200 it is 25x the old listing, and that is the number to weigh if the pre-warn
+        ever has to be dropped and the 409 left as the only teacher.
         """
         rows = self.project(start_preview=False).record.read_project_resources()
         scanned = self._app_bindings() if rows else []
+        # `store.list()` reads live Threads only, so a deleted conversation's chips — which stay on
+        # disk under its tombstone — hold nothing back here, matching the removal guard's own rule.
+        chips = list(self._live_thread_context(self._chat_project())) if rows else []
         return [
-            {**row, "usedBy": [
-                {"appId": ws.app_id, "name": _app_display_name(ws), "scope": b.scope}
-                for ws, b in self._apps_that_bind(str(row.get("id") or ""), scanned)
-            ]}
+            {**row,
+             "usedBy": [
+                 {"appId": ws.app_id, "name": _app_display_name(ws), "scope": b.scope}
+                 for ws, b in self._apps_that_bind(str(row.get("id") or ""), scanned)
+             ],
+             "heldBy": self._threads_that_hold(str(row.get("id") or ""), chips)}
             for row in rows
         ]
 
@@ -9311,7 +9335,8 @@ class Orchestrator:
             refs = [f"{app} — {ref}" if many else ref
                     for (workspace, binding), app in zip(bound, apps)
                     for ref in self._resource_usage(workspace, binding)]
-            raise ResourceStillBound(self._refused_resource_name(rid, bound), apps, refs, held)
+            raise ResourceStillBound(self._refused_resource_name(rid, bound), apps, refs,
+                                     [h["title"] for h in held])
         found = {"ok": False}
 
         def change(items: list[dict]) -> list[dict]:
@@ -9341,12 +9366,22 @@ class Orchestrator:
         row = next((r for r in self.list_project_resources() if r.get("id") in aliases), None)
         return str((row or {}).get("name") or "") or rid
 
-    def _threads_that_hold(self, resource_id: str) -> list[str]:
-        """The title of every live Chat conversation with a context chip on this Resource.
+    def _threads_that_hold(
+        self,
+        resource_id: str,
+        scanned: list[tuple[dict, dict]] | None = None,
+    ) -> list[dict]:
+        """Every live Chat conversation with a context chip on this Resource, newest activity first.
 
-        Titles, because this list is read by the person who tried the removal and a Thread id is not
-        something they can go and look at. A conversation counts once however many chips it holds:
-        the Data Source and three of its tables are still one conversation to go and open.
+        Id and title both. The title is what the refusal and the row menu put on screen, because a
+        Thread id is not something the person who tried the removal can go and look at; the id is
+        what the menu's door routes to, so naming the conversation and opening it are one answer
+        rather than two. A conversation counts once however many chips it holds: the Data Source and
+        three of its tables are still one conversation to go and open.
+
+        `scanned` lets a caller with many ids to answer pay the Thread walk once — the same bargain
+        `_apps_that_bind` offers over `_app_bindings`, and the listing takes both. Left out, it
+        walks the Threads itself: a removal is one deliberate act and can afford it.
 
         `parentId` as well as `resourceId` — the two fields are the same claim. A chip on the
         Resource itself names it in `resourceId`; a table or Dataset-file chip's own id is the
@@ -9362,10 +9397,11 @@ class Orchestrator:
             return []
         aliases = self._resource_aliases(rid)
         held: dict[str, str] = {}
-        for thread, item in self._live_thread_context(self._chat_project()):
+        pairs = self._live_thread_context(self._chat_project()) if scanned is None else scanned
+        for thread, item in pairs:
             if aliases & {str(item.get("resourceId") or ""), str(item.get("parentId") or "")}:
                 held.setdefault(str(thread.get("id") or ""), str(thread.get("title") or "Untitled"))
-        return list(held.values())
+        return [{"threadId": tid, "title": title} for tid, title in held.items()]
 
     def _app_bindings(self) -> list[tuple[Workspace, list[Binding]]]:
         """Every Built App's recorded Bindings, oldest app first, one manifest read per app.
