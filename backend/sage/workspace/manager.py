@@ -33,6 +33,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import TEMPLATE, HelperNames, helpers_for
 from . import plan_doc
 from .threads import CHAT_WORK, new_id, safe_id
@@ -60,6 +61,30 @@ def ensure_ignore_line(path: Path, line: str) -> None:
 _IGNORE = shutil.ignore_patterns("node_modules", "dist", ".git", ".DS_Store", "__pycache__")
 # Top-level template entries skipped when seeding (linked or repo-owned, not template content).
 _SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store", "__pycache__"}
+# Template entries whose text is put through the brand pack on the way in, rather than copied byte
+# for byte (ADR-0014).
+#
+# `AGENTS.md` is the build agent's standing instructions, and it names the nouns as pack tokens —
+# "Say **{dataSource}**" — because the word on the screen belongs to whoever deployed Sage. Copied
+# raw, the model reads the token as the word: measured live 2026-09-05, a plan turn against a
+# Snowflake Data Source wrote the literal `{dataSource}` into the plan six times, in front of the
+# person who asked for it. The line UNDER that one ("Recognise **Data Source**…") spells the default
+# out unbranded, which is what the file has always assumed the line above resolves to.
+#
+# Chat never had this: its AGENTS.md is inlined into `opencode.json` and voiced by
+# `brand.apply_agent_voice`. This is the copy nothing else on the way to OpenCode would resolve.
+_VOICED_SEED = {"AGENTS.md"}
+
+
+def _seed_file(src: Path, dest: Path) -> None:
+    """Copy one template FILE into a workspace, branding the ones that carry pack tokens.
+
+    `copy2` for everything else, deliberately: it keeps the +x bit Domino needs to run `app.sh`.
+    """
+    if src.name in _VOICED_SEED:
+        dest.write_text(apply_voice(src.read_text()))
+        return
+    shutil.copy2(src, dest)
 # Reset (#36) keeps what the user set up and replaces what a build produced. Top-level entries that
 # are not the app: Sage's own record, the project's real git history, and the warm dependency link.
 _RESET_KEEP = {".git", ".sage", "node_modules"}
@@ -1270,7 +1295,7 @@ class WorkspaceManager:
                 # dirs_exist_ok: `public/` is still standing because it holds the attachments.
                 shutil.copytree(item, dest, ignore=_IGNORE, dirs_exist_ok=True)
             else:
-                shutil.copy2(item, dest)
+                _seed_file(item, dest)
         self.link_warm_deps()
 
     def ensure(self, project_id: str, seed_app: bool = True) -> Workspace:
@@ -1299,7 +1324,7 @@ class WorkspaceManager:
                     if item.is_dir():
                         shutil.copytree(item, dest, ignore=_IGNORE)
                     else:
-                        shutil.copy2(item, dest)
+                        _seed_file(item, dest)
             self.link_warm_deps()
         return Workspace(project_id, app, self.selected_app_id())
 
