@@ -93,6 +93,18 @@ def test_a_superseded_plan_says_that_instead():
 
 
 @needs_node
+def test_an_archived_plan_points_at_the_control_beside_it_rather_than_at_another_plan():
+    """#167. Every other disabled reason sends you somewhere else, because the plan you want is
+    somewhere else. This one does not: the plan you want is the one on screen, and the way to get
+    it back is the Unarchive button a few pixels away."""
+    page = _page(build_again={"offered": True, "eligible": False, "reason": "archived"})
+
+    assert page["disabled"] is True
+    assert "archived" in page["tooltip"]
+    assert "Unarchive" in page["tooltip"]
+
+
+@needs_node
 def test_a_plan_with_no_conversation_on_record_says_there_is_nowhere_to_run_it():
     """A build is a turn and a turn lives in a Conversation. A document written before #54 recorded
     none, and running its rebuild in whichever Conversation happens to be open would file the turn

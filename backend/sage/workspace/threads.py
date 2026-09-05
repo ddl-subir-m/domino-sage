@@ -142,6 +142,26 @@ class ThreadStore:
         row = self._read_meta(thread_id)
         return row if _is_live(row) else None
 
+    def is_deleted(self, thread_id: str) -> bool:
+        """Whether this id names a Thread somebody deleted, as against one this store never held.
+
+        `get` collapses the two into `None`, which is the right answer to "may I read this" and the
+        wrong one to "what became of it" (#167). A plan document records the Conversation it was
+        written in and outlives it, so the plan page has to tell "the conversation was deleted"
+        from "there never was one" — they are different sentences with different advice.
+
+        The tombstone is the only positive evidence, and nothing else may be read as one. A build
+        driven from outside the rail — the CLI, a test — passes a conversation id this store has no
+        record of at all, and calling that a delete would disable the plan's own controls on every
+        such document.
+        """
+        self._adopt_legacy_index()
+        try:
+            row = self._read_meta(thread_id)
+        except ValueError:   # an id that could not name a directory names no Thread either
+            return False
+        return bool((row or {}).get("deleted"))
+
     def create(self, title: str = "") -> dict:
         now = _now()
         row = {

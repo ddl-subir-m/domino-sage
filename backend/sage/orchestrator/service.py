@@ -530,6 +530,19 @@ class FolderActUnavailable(Exception):
         super().__init__(reason)
 
 
+class PlanArchiveRefused(Exception):
+    """A plan document cannot be put away right now (#167).
+
+    `reason` is a WORD, not a sentence — the same vocabulary `_build_again_state` hands the plan
+    page to write copy from. One list of reason words for both refusals, so the page never ends up
+    with two names for the one state that causes them (ADR-0024).
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 class AttachSourceMissing(Exception):
     """The listing named a file the mount does not hold, part way through a folder attach.
 
@@ -3382,7 +3395,46 @@ class Orchestrator:
         # question `patch_plan_doc` below asks about which document owns a live plan.md, and two
         # copies of it would drift (ADR-0024). The list of documents is deliberately not given it:
         # the panel lists plans, it does not offer to build them.
-        return {**doc, "buildAgain": self._build_again_state(project, doc)}
+        #
+        # `originLive` joins it as a sibling for the same reason: three controls on the page are
+        # built off `originThreadId`, and after a conversation delete all three went on pointing at
+        # a Thread that answers 404 (#167). Deliberately NOT by blanking the id in the response,
+        # which is what `list_threads` does with a `boundAppId` naming a deleted app — blanking it
+        # would make "the conversation was deleted" indistinguishable from "there never was one",
+        # and those need different sentences. Deliberately not a client-side cross-check against
+        # the rail's thread list either: `SW.PlanPage` is a standalone route and can open with no
+        # thread list loaded, so the check would silently pass on a cold load.
+        return {**doc, "originLive": self._origin_live(project, doc),
+                "buildAgain": self._build_again_state(project, doc)}
+
+    @staticmethod
+    def _origin_live(project: Project, doc: dict) -> bool:
+        """Whether the Conversation this plan records still answers (#167).
+
+        False for a document that records none at all, which is the honest answer to "is the origin
+        live" — the page tells that case apart by reading `originThreadId` beside this.
+        """
+        origin = str(doc.get("originThreadId") or "")
+        return bool(origin) and not ThreadStore(project.record.path).is_deleted(origin)
+
+    def _is_the_live_plan(self, doc: dict) -> bool:
+        """Whether `.sage/plan.md` was written from this document right now — the plan somebody is
+        being asked to approve.
+
+        One reader, two callers, because it is one question (ADR-0024): eligibility for "Build this
+        again" refuses it because approving IS the build, and the archive guard refuses it because
+        hiding the document behind an open Approve card would leave that card pointing at a plan
+        the panel no longer lists.
+
+        Read off the app (`live_plan_doc_id`) rather than guessed from the document list, because
+        "the newest document for this app" is a different question with a different answer — see
+        `Workspace.write_plan`.
+        """
+        app_id = str(doc.get("appId") or "")
+        if not app_id:
+            return False
+        app = self._wm.app_workspace(self._project_id, app_id)
+        return app.live_plan_doc_id() == str(doc.get("id") or "")
 
     def _build_again_state(self, project: Project, doc: dict) -> dict:
         """Whether this plan document may be built again, and why not when it may not (ADR-0024).
@@ -3401,21 +3453,61 @@ class Orchestrator:
         app = self._wm.app_workspace(self._project_id, app_id)
         if not app.exists() or not app.has_built():
             return {"offered": False, "eligible": False, "reason": "never built"}
-        if app.live_plan_doc_id() == str(doc.get("id") or ""):
+        if self._is_the_live_plan(doc):
             # This plan is the one awaiting approval right now. Approving it IS the build.
             return {"offered": False, "eligible": False, "reason": "awaiting approval"}
         if str(doc.get("status") or "") == "superseded":
             return {"offered": True, "eligible": False, "reason": "superseded"}
-        if not str(doc.get("originThreadId") or ""):
+        if not self._origin_live(project, doc):
             # A build is a turn and a turn lives in a Conversation. A document written before #54
             # recorded no origin, and running its rebuild in whichever Conversation happens to be
             # open would file the turn under work it has nothing to do with — the same failure the
             # "Build this" button next to it was fixed for.
-            return {"offered": True, "eligible": False, "reason": "no conversation"}
+            #
+            # Two reason words down this one branch rather than a second branch beside it (#167). A
+            # document whose Conversation was deleted and one that never had a Conversation both
+            # stop offering the rebuild, and each says why in its own words: "there never was a
+            # conversation" means *ask for this in a conversation*, "the conversation was deleted"
+            # means *that door is closed, start a new one*.
+            return {"offered": True, "eligible": False,
+                    "reason": "no conversation" if not str(doc.get("originThreadId") or "")
+                    else "conversation deleted"}
+        if doc.get("archived"):
+            # Its own word (#167). The filter in `_plan_docs_naming_app` already stops this document
+            # answering, so without a word here it falls through to `moved on` below — which sends
+            # somebody to a later plan that does not exist, when what actually happened is that they
+            # put this one away and the way out is the Unarchive button a few pixels off.
+            #
+            # LAST of the reasons a person could act on, deliberately. This one's copy promises that
+            # unarchiving gets the action back, so every reason that would still refuse it afterwards
+            # has to be asked first — a plan that is archived AND superseded, or archived and short a
+            # conversation, says the thing unarchiving cannot fix.
+            return {"offered": True, "eligible": False, "reason": "archived"}
         mine = self._plan_docs_naming_app(project.record.list_plan_docs(), app_id)
         if not mine or mine[0]["id"] != doc["id"]:
             return {"offered": True, "eligible": False, "reason": "moved on"}
         return {"offered": True, "eligible": True, "reason": ""}
+
+    def archive_plan_doc(self, plan_id: str, archived: bool) -> dict | None:
+        """Put a plan document away, or take it back out (#167).
+
+        A flag, not a status, and not a delete — the reasons for both are on `create_plan_doc`,
+        where the field is born. Nothing is destroyed here: the comments, the approvals and every
+        version are exactly where they were, which is what makes taking it back out honest.
+
+        One refusal, and only on the way in: the document `.sage/plan.md` was written from right
+        now. That plan is the one an Approve card is asking about, and hiding it would leave the
+        card pointing at a document the panel no longer lists. Asked of `_is_the_live_plan`, the
+        same read "Build this again" refuses on, so the two can never disagree about which plan is
+        live (ADR-0024).
+        """
+        project = self.project(start_preview=False, seed_app=False)
+        doc = project.record.read_plan_doc(plan_id)
+        if doc is None:
+            return None
+        if archived and self._is_the_live_plan(doc):
+            raise PlanArchiveRefused("awaiting approval")
+        return project.record.patch_plan_doc_meta(plan_id, archived=bool(archived))
 
     def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
         return self._plan_docs_record().read_plan_doc_markdown(plan_id)
@@ -3905,9 +3997,16 @@ class Orchestrator:
         The half of `_app_plan_docs` below that is a real answer rather than a fallback, lifted out
         so eligibility for "Build this again" can ask it about an app that is not the selected one
         (ADR-0024) — the Plan page opens any plan in the Project, including another app's.
+
+        An archived document drops out here, exactly where a superseded one does (#167), so it
+        stops being a candidate for this app's plan pin and stops answering "build this again" in
+        one place rather than two. It stays visible to `_thread_plan_id`, so the Conversation that
+        produced it still shows its plan card — archive is reversible, and a reversible act needs a
+        way back to the thing it hid.
         """
         return [d for d in docs if str(d.get("appId") or "") == app_id
-                and str(d.get("status") or "") != "superseded"]
+                and str(d.get("status") or "") != "superseded"
+                and not d.get("archived")]
 
     @classmethod
     def _app_plan_docs(cls, project: Project) -> list[dict]:

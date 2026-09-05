@@ -75,7 +75,8 @@ from .describe import human_bytes
 from .service import (
     AttachSourceMissing, AttachTooLarge, AttachWouldClobber, DataReferenced, DetachStopped,
     FolderActUnavailable,
-    Orchestrator, ResetBusy, ResourceNotBound, ResourceStillBound, TurnBusy, UploadUnavailable,
+    Orchestrator, PlanArchiveRefused, ResetBusy, ResourceNotBound, ResourceStillBound, TurnBusy,
+    UploadUnavailable,
 )
 
 _feedback = FeedbackRunner()
@@ -2392,6 +2393,25 @@ def patch_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
     """Edit the plan. Sections are rendered back to markdown and kept as a new version, so the file
     stays the source of truth and the draft a reviewer commented on is still there."""
     doc = orchestrator.patch_plan_doc(plan_id, body or {})
+    if doc is None:
+        return JSONResponse({"error": "unknown plan"}, status_code=404)
+    return JSONResponse(content=doc)
+
+
+@control_app.post("/api/plans/{plan_id}/archive")
+def archive_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
+    """Put a plan away, or take it back out (#167). Beside the patch rather than part of it: this
+    one can be refused, and a PATCH that silently declined one of its fields would be a worse
+    answer than a route with somewhere to say why."""
+    try:
+        doc = orchestrator.archive_plan_doc(plan_id, bool((body or {}).get("archived", True)))
+    except PlanArchiveRefused as e:
+        # The word the plan page already writes copy from, beside the sentence for anything that
+        # shows the error raw. The page reads `reason`; the word and the sentence are composed one
+        # place apart on purpose, because only the page knows which of its two buttons is asking.
+        return JSONResponse(status_code=409, content={"error": brand_text(
+            "This plan is the one this {builtApp} is being built from right now, so it cannot be "
+            "put away. Approve it or cancel the build first."), "reason": e.reason})
     if doc is None:
         return JSONResponse({"error": "unknown plan"}, status_code=404)
     return JSONResponse(content=doc)

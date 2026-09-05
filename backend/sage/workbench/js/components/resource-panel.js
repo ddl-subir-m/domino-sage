@@ -422,6 +422,10 @@ window.SW = window.SW || {};
       apps, bindings, attachments, resourcesLoading,
     } = SW.store.get();
     const [collapsed, setCollapsed] = useState({});
+    // Whether the Plans group is showing what has been put away (#167). Panel state rather than
+    // stored state, like `collapsed` beside it: an archive is a lasting judgement about a document,
+    // and "let me see the ones I hid" is a glance, not a preference to carry between sessions.
+    const [showArchived, setShowArchived] = useState(false);
     const fileRef = useRef(null);
 
     // Opened by clicking a row and by nothing else. The refusal card used to ask for one from
@@ -476,11 +480,23 @@ window.SW = window.SW || {};
     };
 
     // Newest first, which is the order the server lists them in.
+    //
+    // An archived plan is held back rather than dropped (#167). Hiding it with nothing saying so
+    // fails the empty-state rule: somebody who put a plan away and wants it back has no answer to
+    // "where did it go". So the head counts them and offers the way in, and the count is read off
+    // the whole list rather than the drawn one.
     const planDocs = plans || [];
-    const planRows = planDocs.map((plan) => {
+    const archivedCount = planDocs.filter((plan) => plan.archived).length;
+    const shownPlans = showArchived ? planDocs : planDocs.filter((plan) => !plan.archived);
+    const planRows = shownPlans.map((plan) => {
       const status = SW.util.PLAN_STATUS[plan.status];
       const owner = appName(plan.appId);
-      const live = livePlanId && String(plan.id) === livePlanId;
+      // Archived wins. The filter that drops an archived document from an app's plan pin
+      // deliberately does not reach `_thread_plan_id`, so an archived plan can still be a
+      // Conversation's `planId` and therefore `activePlanId` — archived and live at once. A
+      // hidden-but-highlighted row is the worst of both, and the Conversation's own plan card is
+      // the surface that goes on showing it.
+      const live = !plan.archived && livePlanId && String(plan.id) === livePlanId;
       return {
         id: plan.id,
         name: plan.title || 'Untitled plan',
@@ -490,6 +506,9 @@ window.SW = window.SW || {};
         // plan drafted in Chat has no app yet — the reference is stamped on at the handoff — and
         // saying so is the answer somebody looking for their draft came for.
         subtitle: [
+          // First, because it outranks the review state while the row is only on screen at all
+          // because somebody asked to see what was put away.
+          plan.archived ? 'Archived' : '',
           live && inBuild && projectPlan && projectPlan.status === 'built'
             ? 'Built'
             : (status ? status.label : ''),
@@ -575,7 +594,9 @@ window.SW = window.SW || {};
     // `role="button"` div is invalid markup, and its click would bubble and collapse the group it
     // had just opened a catalog for (#164). The caret is a real button, the `+` is another, and the
     // row keeps neither cursor nor hover of its own.
-    const groupLabel = (key, label, count, group) => {
+    // `extra` is the slot the `+` would have taken, for a group that has no add door but does have
+    // something else to offer there — the Plans group's archived toggle is the only one so far.
+    const groupLabel = (key, label, count, group, extra) => {
       const isCollapsed = collapsed[key];
       return h(
         'div',
@@ -610,7 +631,8 @@ window.SW = window.SW || {};
               },
               h(PlusOutlined, { style: { fontSize: 11 } })
             )
-          )
+          ),
+        extra || null
       );
     };
 
@@ -697,11 +719,37 @@ window.SW = window.SW || {};
         resourcesLoading &&
           h('div', { className: 'sw-panel-note' }, 'Loading this project…'),
 
-        planRows.length > 0 &&
+        // Drawn off the whole list, not the drawn rows: a Project whose only plans are archived
+        // still needs the head, because the head is where the way back to them is (#167).
+        planDocs.length > 0 &&
           h(
             Fragment,
             null,
-            groupLabel('plans', 'Plans', planRows.length),
+            groupLabel(
+              'plans',
+              'Plans',
+              planRows.length,
+              null,
+              archivedCount > 0 &&
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'sw-res-group-archived',
+                    'aria-pressed': showArchived,
+                    // The count is on the label rather than in a tooltip: it is the answer to
+                    // "where did my plan go", and a number you have to hover to read is no answer.
+                    onClick: () => {
+                      setShowArchived(!showArchived);
+                      // The rows sit under the group's own caret, so revealing them into a folded
+                      // group would report a press with nothing on screen to show for it. Only on
+                      // the way in: folding on the way out would take the live plans with it.
+                      if (!showArchived) setCollapsed({ ...collapsed, plans: false });
+                    },
+                  },
+                  `${showArchived ? 'Hide' : 'Show'} archived (${archivedCount})`
+                )
+            ),
             !collapsed.plans && planRows.map(planRowFor)
           ),
 

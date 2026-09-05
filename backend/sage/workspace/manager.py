@@ -254,6 +254,14 @@ class ProjectRecord:
             # yet, and the reference is stamped on when the handoff confirms. A plan the BUILD gate
             # writes already stands in an app, and names it here.
             "createdAt": now, "updatedAt": now, "originThreadId": origin_thread_id, "appId": app_id,
+            # Put away, not thrown away (#167). A flag beside the status rather than a value inside
+            # it: status is single-valued, so archiving an approved plan AS a status would spend
+            # the review outcome to tidy a list, and hand back a document that had forgotten three
+            # people signed off on it. Real deletion is not the alternative either — ids are
+            # allocated as `len(dirs) + 1` above, so removing a middle document would hand its id
+            # to the next one, and `live_plan_doc_id()` plus the `.sage/plans/NNN.md` archive would
+            # then name the wrong plan. That needs a monotonic id first.
+            "archived": False,
             "reviewers": [], "approvals": [], "comments": [],
         })
         return self.read_plan_doc(plan_id)
@@ -269,7 +277,11 @@ class ProjectRecord:
         versions = self._plan_doc_versions(plan_id)
         markdown = versions[-1].read_text() if versions else ""
         parsed = plan_doc.parse_sections(markdown)
-        return {**meta, "summary": parsed["summary"], "sections": parsed["sections"],
+        # `archived` is answered rather than passed through. Every document written before #167 has
+        # no such key, and a reader that left it absent would hand the panel's filter and the plan
+        # page's own button an `undefined` to decide on — two surfaces guessing at the same fact.
+        return {**meta, "archived": bool(meta.get("archived")),
+                "summary": parsed["summary"], "sections": parsed["sections"],
                 "markdown": markdown}
 
     def list_plan_docs(self) -> list[dict]:

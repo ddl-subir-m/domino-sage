@@ -397,11 +397,21 @@ window.SW = window.SW || {};
       superseded:
         'Another conversation replaced this plan before it was built again. ' +
         'Open the {builtApp} and work from its current plan.',
+      // The one reason whose remedy is on this page rather than somewhere else, so it points at
+      // the control beside it instead of at another plan (#167).
+      archived:
+        'This plan is archived, so it is no longer the current plan for this {builtApp}. ' +
+        'Unarchive it to build from it again.',
       // The same shape the "Build this" button beside it refuses in, and for the same reason: a
       // build is a turn, and a turn needs a conversation to belong to.
       'no conversation':
         'This plan has no conversation on record, so there is nowhere to run the build. ' +
         'Open the {builtApp} and ask for the change there.',
+      // The same absence arrived at a different way (#167), and it earns its own sentence: a
+      // conversation that was deleted is a door somebody closed, not one that was never there.
+      'conversation deleted':
+        'The conversation this plan came from was deleted, so there is nowhere to run the ' +
+        'build. Open the {builtApp} and ask for the change there.',
     }[buildAgain.reason];
 
     return h(
@@ -498,7 +508,13 @@ window.SW = window.SW || {};
               // Build's sheet: the same Thread is a Chat conversation and a Build conversation,
               // and a plan the gate wrote came from the Build half, whose turns Chat does not
               // show. On its own page there is no mode to read, so it still opens in Chat.
-              plan.originThreadId &&
+              //
+              // `originLive` beside the id, because a conversation delete leaves the plan document
+              // standing (ADR-0007) and this rendered on a non-empty id alone — a way back that
+              // routes to a Thread answering 404 (#167). Server-computed: this page is a
+              // standalone route and can open with no thread list loaded, so a cross-check against
+              // the rail's own list would silently pass on a cold load.
+              plan.originThreadId && plan.originLive &&
                 h(
                   Fragment,
                   null,
@@ -577,10 +593,18 @@ window.SW = window.SW || {};
                 : h(
                     Tooltip,
                     {
-                      title: plan.originThreadId
-                        ? null
-                        : 'This plan has no conversation on record, so there is nothing to hand ' +
-                          'off from. Ask for it in a conversation to build it.',
+                      // Two ways to have no conversation to hand off from, and they need different
+                      // sentences (#167). "There never was one" means ask for this in a
+                      // conversation; "it was deleted" means that door is closed, start a new one.
+                      // Which is why the server keeps the origin id and answers `originLive`
+                      // separately instead of blanking the id, which would collapse the two.
+                      title: !plan.originThreadId
+                        ? 'This plan has no conversation on record, so there is nothing to hand ' +
+                          'off from. Ask for it in a conversation to build it.'
+                        : !plan.originLive
+                        ? 'The conversation this plan came from was deleted, so there is nothing ' +
+                          'to hand off from. Start a new conversation and ask for it there.'
+                        : null,
                     },
                     // A disabled button fires no mouse events, so the tooltip needs something
                     // around it that does.
@@ -592,7 +616,7 @@ window.SW = window.SW || {};
                         {
                           type: 'primary',
                           icon: h(ArrowRightOutlined, null),
-                          disabled: !plan.originThreadId,
+                          disabled: !plan.originThreadId || !plan.originLive,
                           onClick: () => SW.store.draftHandoffPlan(plan.originThreadId),
                         },
                         'Build this'
@@ -635,7 +659,49 @@ window.SW = window.SW || {};
                     `This will clear ${approved.length} existing ` +
                       `${approved.length === 1 ? 'approval' : 'approvals'}`
                   )
-              )
+              ),
+            // Putting the plan away, and the way back out — one control wearing two words (#167).
+            // Until now a plan document had no removal of any kind on it: the panel row is drawn
+            // `noMenu: true` and the only other removal in the app is app-scoped and machine-driven,
+            // so an unwanted plan was permanent.
+            //
+            // Here rather than on that row, deliberately. The row is menu-less because opening the
+            // plan is the whole of what it does, and archiving is a judgement call about a document
+            // that may carry other people's comments and approvals — a path that shows you the
+            // document first is the right amount of friction. Tidying five stale plans is five page
+            // opens; if that lands badly a row menu is a small follow-up.
+            //
+            // Nothing is destroyed, so there is no confirmation to click through: `archived` is a
+            // flag beside the status rather than a value inside it, and an approved plan that is
+            // put away and taken back out still reads Approved.
+            //
+            // Wherever the document is drawn, unlike "Build this again" above it, which is the full
+            // page's alone. That action spends a build and clears a review, so it earns the walk to
+            // the page. This one is metadata, and the way back to an archived plan is the plan card
+            // in the Conversation that produced it — which opens the SHEET in Chat, not the page.
+            // Withholding it here would make Unarchive unreachable from the one surface that still
+            // shows an archived plan.
+            h(
+              Button,
+              {
+                onClick: async () => {
+                  try {
+                    await SW.api.archivePlan(plan.id, !plan.archived);
+                  } catch (err) {
+                    // The server's own sentence: the one refusal is the plan a build is waiting on
+                    // right now, and it says which act would clear the way.
+                    antd.message.error(err.message);
+                    return;
+                  }
+                  antd.message.success(plan.archived ? 'Plan unarchived' : 'Plan archived');
+                  load();
+                  // The panel's Plans group lists these and reads them once per load rather than
+                  // polling, so the row has to be told the document moved.
+                  SW.store.reloadProjectPlan();
+                },
+              },
+              plan.archived ? 'Unarchive' : 'Archive'
+            )
           )
         ),
 

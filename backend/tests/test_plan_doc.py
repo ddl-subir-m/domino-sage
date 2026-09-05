@@ -8,6 +8,7 @@ did not survive the build it fed would be no more durable than plan.md.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sage.orchestrator.plan_steps import parse_steps
@@ -185,6 +186,40 @@ def test_a_workspace_with_no_documents_lists_none(tmp_path: Path):
     assert _record(tmp_path).list_plan_docs() == []
 
 
+def test_archiving_a_plan_and_taking_it_back_out_leaves_its_review_alone(tmp_path: Path):
+    """Archive is a flag, not a status (#167). A plan carries other people's comments and
+    approvals, so archiving an approved one AS a status would spend the review outcome to tidy a
+    list, and hand back a document that had forgotten anybody signed off on it."""
+    record = _record(tmp_path)
+    doc = record.create_plan_doc(PLAN, title="A dashboard")
+    record.patch_plan_doc_meta(doc["id"], status="approved", approvals=[{"user": "u-a"}])
+    assert doc["archived"] is False
+
+    away = record.patch_plan_doc_meta(doc["id"], archived=True)
+    assert away["archived"] is True
+    assert away["status"] == "approved"
+    # Not a new draft either: the version reviewers commented on is still the newest one.
+    assert away["version"] == 1
+
+    back = record.patch_plan_doc_meta(doc["id"], archived=False)
+    assert back["archived"] is False
+    assert back["status"] == "approved"
+    assert [a["user"] for a in back["approvals"]] == ["u-a"]
+
+
+def test_a_document_written_before_the_flag_reads_as_not_archived(tmp_path: Path):
+    """Every plan document on disk today has no `archived` key at all. A reader that left it absent
+    would hand the panel's filter an `undefined` to decide on."""
+    record = _record(tmp_path)
+    doc = record.create_plan_doc(PLAN, title="A dashboard")
+    meta_path = tmp_path / ".sage" / "plan-docs" / doc["id"] / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    del meta["archived"]
+    meta_path.write_text(json.dumps(meta))
+
+    assert record.read_plan_doc(doc["id"])["archived"] is False
+
+
 # ---- the routes ------------------------------------------------------------------------------
 
 
@@ -235,6 +270,23 @@ def test_a_plan_that_does_not_exist_is_a_404_not_an_empty_page(tmp_path: Path, m
     assert client.get("/api/plans/404/markdown").status_code == 404
     assert client.patch("/api/plans/404", json={"sections": {}}).status_code == 404
     assert client.post("/api/plans/404/review", json={"action": "comment"}).status_code == 404
+    assert client.post("/api/plans/404/archive", json={"archived": True}).status_code == 404
+
+
+def test_the_plan_page_can_put_a_plan_away_and_take_it_back_out(tmp_path: Path, monkeypatch):
+    """The route behind the page's own control (#167). A plan drafted in Chat names no app, so
+    nothing is being built from it and there is nothing here to refuse."""
+    client, orch = _routed(tmp_path, monkeypatch)
+    orch.project(start_preview=False).record.create_plan_doc(PLAN, title="A dashboard")
+
+    away = client.post("/api/plans/001/archive", json={"archived": True})
+    assert away.status_code == 200
+    assert away.json()["archived"] is True
+    assert client.get("/api/plans/001").json()["archived"] is True
+
+    back = client.post("/api/plans/001/archive", json={"archived": False})
+    assert back.status_code == 200
+    assert back.json()["archived"] is False
 
 
 def test_editing_a_section_rewrites_the_file_and_keeps_the_draft_before_it(tmp_path: Path, monkeypatch):

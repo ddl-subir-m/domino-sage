@@ -32,9 +32,11 @@ _PLAN = {
 _OPEN_APP = "app_open"
 
 
-def _page(*, origin: str = "", app: str = "") -> dict:
+def _page(*, origin: str = "", app: str = "", origin_live: bool | None = None,
+          archived: bool = False) -> dict:
     """The plan on its own page, which is the only place `#/plan/<id>` mounts it."""
-    return _mounted(origin=origin, app=app, variant="page", mode="plan")
+    return _mounted(origin=origin, app=app, variant="page", mode="plan",
+                    origin_live=origin_live, archived=archived)
 
 
 def _sheet_in_build(*, origin: str = "", app: str = "", thread: str = "") -> dict:
@@ -51,13 +53,19 @@ def _sheet_in_chat(*, origin: str = "", app: str = "", thread: str = "") -> dict
                     thread={"id": thread} if thread else None)
 
 
-def _mounted(*, origin: str, app: str, variant: str, mode: str, thread=None) -> dict:
+def _mounted(*, origin: str, app: str, variant: str, mode: str, thread=None,
+             origin_live: bool | None = None, archived: bool = False) -> dict:
     """Drives the real component and returns what it drew and where each offer points.
 
     `variant` and `mode` travel together because the app pairs them: the page is only ever mounted
     on `#/plan/<id>`, and the sheet only from inside Chat or Build. Passing a pair the app cannot
-    produce is how a test comes out green about behaviour nobody can reach."""
-    plan = {**_PLAN, "originThreadId": origin, "appId": app}
+    produce is how a test comes out green about behaviour nobody can reach.
+
+    `originLive` is the server's answer to "does that Conversation still exist" (#167), and it
+    follows the origin unless a test says otherwise — which is exactly what the server sends for a
+    plan nobody has deleted anything from."""
+    plan = {**_PLAN, "originThreadId": origin, "appId": app, "archived": archived,
+            "originLive": bool(origin) if origin_live is None else origin_live}
     payload = {"plan": plan, "mode": mode, "variant": variant, "thread": thread}
     out = subprocess.run(["node", str(_HARNESS)], input=json.dumps(payload),
                          check=False, capture_output=True, text=True, timeout=60)
@@ -151,6 +159,88 @@ def test_build_offers_the_raw_file_behind_the_document():
     assert sheet["views"] == ["Preview", "Markdown"]
     assert sheet["raw"]["path"] == ".sage/plans/001/v1.md"
     assert "# A desk exposure dashboard." in sheet["raw"]["text"]
+
+
+# ---- the conversation that is no longer there (#167) -------------------------------------------
+#
+# The document outlives the Conversation on purpose (ADR-0007), so all three controls below stay on
+# a plan whose origin was deleted. What has to change is what they say and where they lead.
+
+
+@needs_node
+def test_a_plan_whose_conversation_was_deleted_offers_no_way_back_to_it():
+    """Criterion 1. The link rendered on a non-empty id alone, so it went on routing to a Thread
+    that answers 404 — a way back to nowhere reads as the app being broken."""
+    page = _page(origin="thr_1", app="app_a", origin_live=False)
+
+    assert "conversation" not in page["offers"]
+    assert "#/chat/thr_1" not in page["routed"]
+    # The way into the app is untouched: neither end of a plan's back-link implies the other.
+    assert page["routed"] == ["#/build?app=app_a"]
+
+
+@needs_node
+def test_a_plan_whose_conversation_was_deleted_says_so_on_the_button_it_disables():
+    """Criterion 1's other half. "Build this" was disabled only by an empty origin, so it was drawn
+    live on a dead one and the press raised on the server."""
+    page = _page(origin="thr_1", origin_live=False)
+
+    assert page["buildDisabled"] is True
+    assert any("was deleted" in t for t in page["tooltips"])
+
+
+@needs_node
+def test_a_plan_that_never_had_a_conversation_still_says_that_instead():
+    """Criterion 2. Two states, two sentences: "there never was a conversation" means ask for this
+    in one, and "the conversation was deleted" means that door is closed, start a new one. Widening
+    the first must not swallow it."""
+    page = _page()
+
+    assert page["buildDisabled"] is True
+    assert any("no conversation on record" in t for t in page["tooltips"])
+    assert not any("deleted" in t for t in page["tooltips"])
+
+
+# ---- putting the plan away -------------------------------------------------------------------
+#
+# The act lives here rather than on the panel row: the row is `noMenu: true` on purpose, and
+# archiving is a judgement call about a document with approvals on it, so a path that shows you the
+# document first is the right amount of friction.
+
+
+@needs_node
+def test_a_plan_can_be_put_away_from_its_own_page():
+    """Criterion 6's other end. Before this there was no removal of any kind on a plan document —
+    app-scoped `clear_plan_docs` aside — so an unwanted plan was permanent."""
+    page = _page(origin="thr_1", app="app_a")
+
+    assert page["archiveLabel"] == "Archive"
+    assert page["archived"] == ["archive 001 archived=true"]
+
+
+@needs_node
+def test_an_archived_plan_offers_the_way_back_out_and_not_the_way_in_again():
+    """One control, two words. Archive is reversible, and the document itself is where the person
+    who wants it back arrives — through the plan card in the Conversation that produced it."""
+    page = _page(origin="thr_1", app="app_a", archived=True)
+
+    assert page["archiveLabel"] == "Unarchive"
+    assert page["archived"] == ["archive 001 archived=false"]
+
+
+@needs_node
+def test_the_sheet_offers_it_too_because_that_is_where_an_archived_plan_is_reached():
+    """Criterion 7 depends on this. The way back to an archived plan is the plan card in the
+    Conversation that produced it, and "Open plan" there sets `planViewerId` rather than routing —
+    so in Chat that card lands on the SHEET. Withholding the control here would leave Unarchive
+    unreachable from the one surface that still shows an archived plan.
+
+    Unlike "Build this again", which stays the full page's alone: that action spends a build and
+    clears a review, and this one is metadata."""
+    sheet = _sheet_in_chat(origin="thr_1", app="app_a", thread="thr_open")
+
+    assert sheet["archiveLabel"] == "Archive"
+    assert sheet["archived"] == ["archive 001 archived=true"]
 
 
 @needs_node

@@ -22,8 +22,9 @@ from pathlib import Path
 import pytest
 
 from sage.feedback.runner import FeedbackReport
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, PlanArchiveRefused
 from sage.router.models import ModelCatalog
+from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
 
@@ -367,6 +368,168 @@ def test_a_superseded_plan_says_which_of_the_two_reasons_it_is(tmp_path: Path):
     assert state["offered"] is True
     assert state["eligible"] is False
     assert state["reason"] == "superseded"
+
+
+# --- a Conversation somebody deleted -----------------------------------------------------------
+#
+# The plan document survives the Conversation that produced it, and that is correct: ADR-0007 makes
+# its lifetime the Project's, and a plan carries review state a conversation delete has no business
+# destroying. What it must not do is go on claiming an origin that answers 404 (#167). Three
+# controls were built off `originThreadId` alone and all three led somewhere dead.
+
+
+def _in_a_real_conversation(tmp_path: Path, extra: list[Turn] | None = None):
+    """The built-once Project again, with a Conversation the rail actually holds.
+
+    `CONVERSATION` above is a bare id with no Thread record behind it — what a build driven from
+    outside the rail looks like, and what every other test in this file wants. A delete needs
+    something to tombstone, so this one mints its conversation through `ThreadStore`.
+    """
+    orch, _oc = _build(tmp_path, [
+        PLAN,
+        Turn(writes={"src/App.tsx": "// the table\n"}),
+        *(extra or []),
+    ])
+    thread = ThreadStore(orch.project(start_preview=False).record.path).create("Desk exposure")
+    list(orch.build_stream("build me a consumption dashboard", conversation=thread["id"]))
+    list(orch.approve_stream(conversation=thread["id"]))
+    return orch, thread["id"]
+
+
+def test_a_plan_whose_conversation_was_deleted_says_the_origin_is_gone(tmp_path: Path):
+    """Criterion 1. The id is deliberately still on the document: blanking it in the response —
+    which is what `list_threads` does with a `boundAppId` naming a deleted app — would make "the
+    conversation was deleted" indistinguishable from "there never was one"."""
+    orch, thread_id = _in_a_real_conversation(tmp_path)
+    plan_id = _only_plan_id(orch)
+    assert orch.read_plan_doc(plan_id)["originLive"] is True
+
+    orch.delete_thread(thread_id)
+
+    doc = orch.read_plan_doc(plan_id)
+    assert doc["originThreadId"] == thread_id
+    assert doc["originLive"] is False
+
+
+def test_a_plan_whose_conversation_was_deleted_cannot_be_built_again(tmp_path: Path):
+    """Criterion 1's other half. It was reported eligible before this: the dead-origin check asked
+    only whether the id was empty, so a tombstoned Thread passed it and the page then opened a
+    conversation that lost on its first await."""
+    orch, thread_id = _in_a_real_conversation(tmp_path)
+    plan_id = _only_plan_id(orch)
+    assert orch.read_plan_doc(plan_id)["buildAgain"]["eligible"] is True
+
+    orch.delete_thread(thread_id)
+
+    state = orch.read_plan_doc(plan_id)["buildAgain"]
+    assert state["offered"] is True
+    assert state["eligible"] is False
+    # Distinct from `no conversation`, because the two need different sentences: one says ask for
+    # this in a conversation, the other says that door is closed, start a new one.
+    assert state["reason"] == "conversation deleted"
+
+
+def test_a_plan_that_never_recorded_a_conversation_still_says_what_it_always_said(tmp_path: Path):
+    """Criterion 2. Two words down one branch, so widening it must not cost the older case its own
+    word — a document written before #54 recorded no origin at all."""
+    orch, _oc = _built_once(tmp_path)
+    plan_id = _only_plan_id(orch)
+    orch.project(start_preview=False).record.patch_plan_doc_meta(plan_id, originThreadId="")
+
+    doc = orch.read_plan_doc(plan_id)
+
+    assert doc["originLive"] is False
+    assert doc["buildAgain"]["reason"] == "no conversation"
+
+
+def test_a_conversation_the_rail_never_held_is_not_read_as_a_deleted_one(tmp_path: Path):
+    """The tombstone is the only evidence of a delete, and nothing else may be read as one. A build
+    driven from outside the rail passes a conversation id the Thread store has no record of, and
+    calling that absence a delete would disable the action on every such plan."""
+    orch, _oc = _built_once(tmp_path)
+
+    assert orch.read_plan_doc(_only_plan_id(orch))["originLive"] is True
+
+
+# --- putting a plan away -----------------------------------------------------------------------
+#
+# `archived` is filtered exactly where `superseded` is — `_plan_docs_naming_app` — so it drops out
+# of `_app_plan_docs` and out of eligibility in one place rather than two (#167).
+
+
+def test_an_archived_plan_stops_answering_build_this_again(tmp_path: Path):
+    """Criterion 4. The archived document is no longer a candidate for its app, so the action it
+    was offering is refused rather than left pointing at a plan nobody can see."""
+    orch, _oc = _built_once(tmp_path)
+    plan_id = _only_plan_id(orch)
+    assert orch.read_plan_doc(plan_id)["buildAgain"]["eligible"] is True
+
+    orch.archive_plan_doc(plan_id, True)
+
+    state = orch.read_plan_doc(plan_id)["buildAgain"]
+    assert state["eligible"] is False
+    # Its own word rather than `moved on`, which the filter alone would have left it saying — and
+    # which would send somebody to a later plan that does not exist. The remedy for this one is the
+    # Unarchive control on the same page.
+    assert state["reason"] == "archived"
+
+
+def test_an_archived_plan_says_the_thing_unarchiving_cannot_fix_first(tmp_path: Path):
+    """`archived` is the last reason a person could act on, because its copy promises that
+    unarchiving gets the action back. A plan that is archived AND short a conversation would take
+    that promise and then refuse anyway — so the reason that survives unarchiving wins."""
+    orch, thread_id = _in_a_real_conversation(tmp_path)
+    plan_id = _only_plan_id(orch)
+    orch.archive_plan_doc(plan_id, True)
+    assert orch.read_plan_doc(plan_id)["buildAgain"]["reason"] == "archived"
+
+    orch.delete_thread(thread_id)
+
+    assert orch.read_plan_doc(plan_id)["buildAgain"]["reason"] == "conversation deleted"
+
+
+def test_archiving_the_plan_that_names_an_app_lets_the_pin_fall_back(tmp_path: Path):
+    """Criterion 4's other half. With no document naming the app any more, `_app_plan_docs` gives
+    the answer it gives a Project that never bound one: the unbound draft."""
+    orch, _oc = _built_once(tmp_path)
+    plan_id = _only_plan_id(orch)
+    project = orch.project(start_preview=False)
+    draft = project.record.create_plan_doc("1. Something else\n", title="A draft")
+
+    orch.archive_plan_doc(plan_id, True)
+
+    docs = Orchestrator._app_plan_docs(orch.project(start_preview=False))
+    assert [d["id"] for d in docs] == [draft["id"]]
+
+
+def test_the_plan_awaiting_approval_right_now_cannot_be_put_away(tmp_path: Path):
+    """Criterion 5. Hiding the document an Approve card is asking about would leave that card
+    pointing at a plan the panel no longer lists — so the one refusal is on the way in, and it
+    reuses the word "Build this again" already has for this state."""
+    orch, _oc = _build(tmp_path, [PLAN])
+    list(orch.build_stream("build me a consumption dashboard", conversation=CONVERSATION))
+    plan_id = _only_plan_id(orch)
+
+    with pytest.raises(PlanArchiveRefused) as refused:
+        orch.archive_plan_doc(plan_id, True)
+
+    assert refused.value.reason == "awaiting approval"
+    assert orch.read_plan_doc(plan_id)["archived"] is False
+
+
+def test_the_conversation_that_produced_an_archived_plan_still_shows_its_card(tmp_path: Path):
+    """Criterion 7, and the reason the filter is where it is rather than in `list_plan_docs`.
+    Archive is reversible, and a reversible act needs a way back to the thing it hid — the plan
+    card in the Conversation is that way."""
+    from sage.orchestrator.service import _thread_plan_id
+
+    orch, _oc = _built_once(tmp_path)
+    plan_id = _only_plan_id(orch)
+
+    orch.archive_plan_doc(plan_id, True)
+
+    record = orch.project(start_preview=False).record
+    assert _thread_plan_id(record, CONVERSATION) == plan_id
 
 
 # --- phased builds ---------------------------------------------------------------------------

@@ -16,6 +16,12 @@ const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 // behind the sheet, which the routes have to carry rather than drop.
 const { plan, mode, variant = 'page', thread = null } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
+// What the archive control asked the server for, in the shape the route takes it (#167). Stubbed
+// rather than served over the fetch below, because the claim is the call: putting a plan away is a
+// write with a refusal behind it, and a page that sent `archived` the wrong way round would look
+// identical in a rendered tree.
+const archived = [];
+
 const json = (body) => ({
   ok: true, status: 200,
   headers: { get: () => 'application/json' },
@@ -100,6 +106,9 @@ const SW = sandbox.SW;
 // The rail's route grammar is real (conversation-list.js above); only the hash it would be written
 // into is stubbed, so what a click asks for is readable.
 SW.router = { go: (path) => routed.push(path), get: () => ({ mode, a: null, b: null, query: {} }) };
+SW.api.archivePlan = async (id, next) => { archived.push(`archive ${id} archived=${!!next}`); };
+// The archive control reloads the panel's list on the way out, and the panel is not mounted here.
+SW.store.reloadProjectPlan = () => Promise.resolve();
 
 function* walk(node) {
   if (!node || typeof node !== 'object') return;
@@ -147,7 +156,11 @@ const tree = await mount(props);
 const conversation = labelled(tree, 'From this conversation');
 const builder = labelled(tree, 'Open in Builder');
 const build = labelled(tree, 'Build this');
-[conversation, builder, build].forEach((b) => b && b.p.onClick && b.p.onClick());
+// One control, two words, and which word it wears is the whole of what it says about the document.
+const archive = labelled(tree, 'Archive');
+const unarchive = labelled(tree, 'Unarchive');
+[conversation, builder, build, archive, unarchive].forEach((b) => b && b.p.onClick && b.p.onClick());
+await settle();
 
 // The raw file behind the document, reached the way a person reaches it: press the toggle, then
 // read what the next render draws. Only Build's sheet offers the toggle at all, so `raw` staying
@@ -166,9 +179,13 @@ if (views) {
 
 console.log(JSON.stringify({
   offers: [conversation && 'conversation', builder && 'builder', build && 'build'].filter(Boolean),
+  // Reported beside `offers` rather than inside it: `offers` is the list of ways BACK out of this
+  // plan, and putting one away is not one of them.
+  archiveLabel: (archive && 'Archive') || (unarchive && 'Unarchive') || null,
   routed,
   buildDisabled: Boolean(build && build.p.disabled),
   tooltips: tooltips(tree),
   views: views ? views.p.options : null,
   raw,
+  archived,
 }));
