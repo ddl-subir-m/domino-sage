@@ -5492,6 +5492,14 @@ class Orchestrator:
         existing_before = set(self._wm.app_ids())
         # The app: the one the sheet named, or a directory named for a newly minted id.
         project = self._open_app(chat, handoff_row, chosen)
+        # A plan somebody put away is taken back out, not refused (#170). Confirming is an
+        # unambiguous act of wanting this plan, and writing `plan.md` from a document the Plans
+        # group hides is the disagreement `archive_plan_doc`'s refusal exists to prevent, reached
+        # from the other side. Asked before the write, so the two never disagree even for the
+        # length of this call.
+        archived_id = str(handoff_row.get("planId") or "")
+        if archived_id and (project.record.read_plan_doc(archived_id) or {}).get("archived"):
+            project.record.patch_plan_doc_meta(archived_id, archived=False)
         # The builder's own copies, which only have somewhere to live now. `plan.md` is the one-shot
         # handoff the implement turn consumes and archives; the plan card is what Build opens on.
         # An existing app may already hold a plan awaiting approval, which the sheet warns about
