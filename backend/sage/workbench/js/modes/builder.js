@@ -1224,7 +1224,7 @@ window.SW = window.SW || {};
 
   SW.BuildMode = function BuildMode({ conversationId, appId }) {
     const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning, turnWedged,
-            projectPlan } = SW.store.get();
+            projectPlan, runningTurn } = SW.store.get();
     const scroller = useRef(null);
 
     // The only thing keeping app state fresh, and it moved here with the rail it used to live in
@@ -1321,15 +1321,94 @@ window.SW = window.SW || {};
     // rather than in place of it. Under the split view there is no transcript to sit under, and
     // this is the screen Build has always drawn.
     const noAppTurns = buildMessages.length === 0 && !buildTyping;
+    // Two facts, and they are independent (#172). "Is there an app" is the rail row's `built`; "is
+    // a plan waiting" is the pin's status. Both were read off the pin alone, which made them
+    // mutually exclusive by construction — `status: built` means plan.md has been ARCHIVED, so the
+    // pair (app built, plan live) had no branch and fell to the plan note, under a greeting
+    // offering to write the app that was rendering in the preview.
+    //
+    // `built` is a latch: it is set by a build that finished and cleared only by Reset app, so an
+    // app whose latest phased build died at step 4 still reads true. That is the right fact for the
+    // note below — it is about what the PREVIEW is serving, and it is serving that app.
+    const appBuilt = !!(activeApp && activeApp.built);
     // A new conversation clears the transcript while the preview keeps serving the app the rail
     // has selected. That is the truth, but unlabelled it reads as this conversation's work, so say
     // whose app it is. (The preview following the app a build is running in is #77.)
-    const resumed = noAppTurns && !!projectPlan && projectPlan.status === 'built';
-    // The sibling case #77 missed: a plan can sit live-and-unapproved (the rail's pin already
-    // shows it) with nothing built yet. A new conversation clears the transcript there too, and
-    // without a note it reads the same as a plan that was never written — the rail disagrees, but
-    // only the rail is looking.
+    const resumed = noAppTurns && appBuilt;
+    // The sibling case #77 missed: a plan can sit live (the rail's pin already shows it) with a
+    // build still owed on it. A new conversation clears the transcript there too, and without a
+    // note it reads the same as a plan that was never written — the rail disagrees, but only the
+    // rail is looking.
     const pendingPlan = noAppTurns && !!projectPlan && projectPlan.status !== 'built';
+    // And WHY it is still live, which is three different pieces of news off one number the server
+    // reads from the workspace: 0 is a plan no build has consumed, 1 is a build that did not
+    // finish, and N > 1 is a phased build that stopped at step N with the steps before it on disk.
+    // No total beside it — the pin's `steps` counts numbered lines under the Plan heading and this
+    // is the phased parser's step, so the pair could read "step 4 of 3".
+    const owedStep = (pendingPlan && projectPlan.retryStep) || 0;
+    // WHERE it stopped is a claim only a build that is not running can make: a phased build writes
+    // the resume point BEFORE each phase runs, so mid-build the number names the phase EXECUTING.
+    //
+    // Read off the turn rather than off `buildRunning` alone, which is any turn holding the
+    // Project's lock — Chat's included. Falling back on one of those would be worse than vague: the
+    // sentence below presents a plan whose build died as one nobody has built from, and drops
+    // "try again", the only words that resume a build instead of proposing a second plan for a
+    // request already approved. A Chat question is enough to trigger it, which is not rare.
+    //
+    // A wedge counts, and is not covered by `buildRunning`: the server reports `running` as "locked
+    // AND not wedged", so a build whose session went quiet mid-phase reads as idle to every tab but
+    // the one streaming it. The lock is still held there, the step still names the phase that was
+    // executing, and the "try again" this would offer would queue behind the wedge rather than run.
+    //
+    // A nameless turn counts as a build too: `runningTurn` is null for the gap between two queued
+    // turns, and that must not read as "nothing is building". It is also null while a publish or a
+    // reset holds the raw lock, which costs this sentence its step for as long as one runs —
+    // accepted, because the client cannot tell those apart (the store's own `runningTurnElsewhere`
+    // gives up on the same question) and the other way round announces a stop mid-build.
+    //
+    // A turn carrying no app matches whatever is on screen, the same way the Stop bar reads one.
+    // `buildTyping` would not do at all: it is only this tab's stream, so a second tab, or a new
+    // conversation opened beside a build in flight, has an empty transcript and reads as idle.
+    const buildInFlight = (buildRunning || turnWedged)
+      && (!runningTurn
+          || (runningTurn.kind === 'build'
+              && (!runningTurn.app || !activeApp || runningTurn.app === activeApp.id)));
+    const stoppedAt = buildInFlight ? 0 : owedStep;
+    // The step is where it stopped, never "it wrote nothing": the resume point is written before
+    // the phase runs, so step 1 owed can mean step 1 started and failed halfway with its files on
+    // disk. And no promise about where the retry resumes — an unphased build has no seam and runs
+    // the plan whole however far the last attempt got.
+    const planNote = stoppedAt > 1
+      ? `A build started from this plan and stopped at step ${stoppedAt}; the steps before it are `
+        + 'already in the app. Say “try again” to run it again, or describe a change to replace it.'
+      : stoppedAt === 1
+        ? 'A build started from this plan and did not finish. Say “try again” to run it again, or '
+          + 'describe a change to replace it.'
+        // Without the shared stem when the note above has just said it. The two notes drawing
+        // together is the state this whole screen was rewritten for, so "a new conversation clears
+        // the transcript, not the X" twice running is now the ordinary reading rather than a rare
+        // one, and it reads as a stutter.
+        : (resumed ? '' : 'A new conversation clears the transcript, not the plan. ')
+          + 'Open it in the rail to review it, or describe a change to replace it.';
+    // Whether there is app code in the preview at all, which is NOT `built`: `mark_built` runs only
+    // on a build that finished every phase, so a FIRST phased build that died at step 4 left three
+    // phases on disk (they are deliberately not reverted) under a row that still says false. A
+    // resume point past step 1 is the server saying those earlier steps exist. The note above stays
+    // on `built` — "an app you already built" must not be said of a build that never finished — but
+    // the greeting must not offer to write an app whose files are already being served.
+    //
+    // Off `owedStep` rather than `stoppedAt`: a turn running somewhere else does not un-write the
+    // phases the last attempt left on disk, and reading the silenced number here would put the
+    // "write this app" offer back on screen for exactly the app this is about.
+    //
+    // Step 1 is deliberately NOT in: it is the only number that says nothing about files. A build
+    // that owes step 1 may have written half of it before dying, or may have failed at the gateway
+    // before touching anything, and nothing the client can read tells the two apart. So this holds
+    // the offer to write, which is honest either way — approving that plan IS what writes the app,
+    // and the note under it names the shorter route ("try again") for the case where a build has
+    // already started. Claiming "keep building this app" here would be a guess about a workspace
+    // that may hold nothing at all.
+    const appHasCode = appBuilt || owedStep > 1;
 
     return h(
       'div',
@@ -1352,11 +1431,20 @@ window.SW = window.SW || {};
                 h(
                   'div',
                   { className: 'sw-build-greeting' },
-                  h('div', { className: 'sw-empty-title' }, 'Build the app from a plan'),
+                  // An app that exists cannot be written, so the offer to write it is not the
+                  // greeting for it. Gated on the app rather than on the plan, because this line
+                  // was wrong on EVERY row where something is built and not only on the pair below.
+                  h(
+                    'div',
+                    { className: 'sw-empty-title' },
+                    appHasCode ? 'Keep building this app' : 'Build the app from a plan'
+                  ),
                   h(
                     'div',
                     { className: 'sw-empty-detail' },
-                    'Approve a plan to write this app, or describe a change.'
+                    appHasCode
+                      ? 'Describe a change, or approve a plan to build it again.'
+                      : 'Approve a plan to write this app, or describe a change.'
                   ),
                   resumed &&
                     h(
@@ -1382,11 +1470,7 @@ window.SW = window.SW || {};
                         { className: 'sw-empty-title' },
                         'There is already a plan waiting'
                       ),
-                      h(
-                        'div',
-                        { className: 'sw-empty-detail' },
-                        'A new conversation clears the transcript, not the plan. Open it in the rail to review it, or describe a change to replace it.'
-                      )
+                      h('div', { className: 'sw-empty-detail' }, planNote)
                     )
                 ),
               buildTyping && h(SW.TypingIndicator, { label: buildTyping })

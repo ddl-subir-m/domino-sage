@@ -3286,6 +3286,15 @@ class Orchestrator:
             "markdown": markdown,
             "status": (doc_status or "awaiting") if live else "built",
             "steps": _count_plan_steps(markdown),
+            # Why a live plan is still live, which `status` cannot say: 0 is a plan no build has
+            # consumed, 1 is a build that gave up before writing anything, and N > 1 is a phased
+            # build that stopped at step N with the steps before it on disk (#172). The three want
+            # different sentences from the empty state, and they look identical without this.
+            #
+            # NOT paired with a total. `steps` above counts numbered lines under the Plan heading
+            # and the resume point is the phased parser's step, which counts briefs — "step 4 of 3"
+            # is a reading the pair could produce, so the step travels alone.
+            "retryStep": project.workspace.read_plan_retry_step(),
             "planId": docs[0]["id"] if docs else "",
         }
 
