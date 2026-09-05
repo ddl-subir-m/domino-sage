@@ -23,7 +23,7 @@ import pytest
 
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator, PlanArchiveRefused
-from sage.router.models import ModelCatalog
+from sage.router.models import Mode, ModelCatalog
 from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -396,6 +396,21 @@ def _in_a_real_conversation(tmp_path: Path, extra: list[Turn] | None = None):
     return orch, thread["id"]
 
 
+def _proposed_in_a_real_conversation(tmp_path: Path):
+    """A plan sitting live and unapproved, in a Conversation the rail actually holds.
+
+    The state a build that gave up leaves behind: `_approve_stream` keeps `plan.md` alive on
+    purpose so "try again" can resume from it, and nothing else ever clears it. Reached here by
+    stopping before the approve, because the two are the same state on disk — a plan waiting for
+    its first approval and a plan whose build died look identical, which is what
+    `read_plan_retry_step` exists to tell apart.
+    """
+    orch, _oc = _build(tmp_path, [PLAN])
+    thread = ThreadStore(orch.project(start_preview=False).record.path).create("Desk exposure")
+    list(orch.build_stream("build me a consumption dashboard", conversation=thread["id"]))
+    return orch, thread["id"]
+
+
 def test_a_plan_whose_conversation_was_deleted_says_the_origin_is_gone(tmp_path: Path):
     """Criterion 1. The id is deliberately still on the document: blanking it in the response —
     which is what `list_threads` does with a `boundAppId` naming a deleted app — would make "the
@@ -515,6 +530,84 @@ def test_the_plan_awaiting_approval_right_now_cannot_be_put_away(tmp_path: Path)
 
     assert refused.value.reason == "awaiting approval"
     assert orch.read_plan_doc(plan_id)["archived"] is False
+
+
+def test_the_refusal_stands_while_the_conversation_holding_the_card_is_there(tmp_path: Path):
+    """The half of that refusal that survives #167. The Approve card is what the copy sends people
+    to, so while the Conversation drawing it still answers, the refusal has somewhere to send
+    them — and a plan hidden out from under an open card would leave it pointing at a document the
+    panel no longer lists."""
+    orch, _thread_id = _proposed_in_a_real_conversation(tmp_path)
+    plan_id = _only_plan_id(orch)
+    assert orch.read_plan_doc(plan_id)["originLive"] is True
+
+    with pytest.raises(PlanArchiveRefused) as refused:
+        orch.archive_plan_doc(plan_id, True)
+
+    assert refused.value.reason == "awaiting approval"
+
+
+def test_a_plan_left_live_by_a_deleted_conversation_can_still_be_put_away(tmp_path: Path):
+    """The refusal named two acts — approve it, or cancel it — and both live on the plan card in
+    the Conversation that proposed it. Delete that Conversation and the card goes with it, so the
+    refusal named two doors that no longer existed and the document could never be put away.
+
+    A build that gives up leaves its plan live on purpose, to resume from, so this is not a rare
+    corner: it is every plan whose build died and whose Conversation was later tidied up.
+    """
+    orch, thread_id = _proposed_in_a_real_conversation(tmp_path)
+    plan_id = _only_plan_id(orch)
+
+    orch.delete_thread(thread_id)
+    orch.archive_plan_doc(plan_id, True)
+
+    assert orch.read_plan_doc(plan_id)["archived"] is True
+
+
+def test_putting_that_plan_away_retires_the_copy_it_left_behind(tmp_path: Path):
+    """With nothing left to answer the refusal, putting the document away IS the cancel. The stray
+    `plan.md` has to go in the same act, or the app goes on naming a document the panel has just
+    hidden — and the next turn reads a plan nobody can open as live intent (ADR-0007)."""
+    orch, thread_id = _proposed_in_a_real_conversation(tmp_path)
+    plan_id = _only_plan_id(orch)
+    workspace = orch.project(start_preview=False).workspace
+    assert workspace.live_plan_doc_id() == plan_id
+
+    orch.delete_thread(thread_id)
+    orch.archive_plan_doc(plan_id, True)
+
+    assert workspace.read_plan() is None
+    assert workspace.live_plan_doc_id() == ""
+
+
+def test_that_plan_is_retired_as_cancelled_not_as_the_one_the_app_was_built_from(tmp_path: Path):
+    """Nothing here knows a build ever consumed it — the plan is live precisely because none did —
+    so the rail's pin must not go on to describe the app as built from a plan somebody just put
+    away."""
+    orch, thread_id = _proposed_in_a_real_conversation(tmp_path)
+    plan_id = _only_plan_id(orch)
+
+    orch.delete_thread(thread_id)
+    orch.archive_plan_doc(plan_id, True)
+
+    assert orch.project(start_preview=False).workspace.read_archived_plan() is None
+
+
+def test_a_plan_stuck_live_names_the_deleted_conversation_not_the_approve_card(tmp_path: Path):
+    """Both refuse, so the order of the two checks only decides which sentence the person reads.
+    "Awaiting approval" sends them to an Approve card in a Conversation that is gone; "the
+    conversation was deleted" tells them the truth — that door is closed, start a new one."""
+    orch, thread_id = _in_a_real_conversation(tmp_path, [Turn(text="1. Sort it by date")])
+    # Plan mode, because the automatic gate only fires before the first build — this app has had
+    # one, and an ordinary BUILD turn here would write code instead of proposing a plan.
+    orch.project(start_preview=False).control.set_mode(Mode.PLAN)
+    list(orch.build_stream("sort it by date", conversation=thread_id))
+    stuck = orch.list_plan_docs()[0]["id"]
+    assert orch.read_plan_doc(stuck)["buildAgain"]["reason"] == "awaiting approval"
+
+    orch.delete_thread(thread_id)
+
+    assert orch.read_plan_doc(stuck)["buildAgain"]["reason"] == "conversation deleted"
 
 
 def test_the_conversation_that_produced_an_archived_plan_still_shows_its_card(tmp_path: Path):

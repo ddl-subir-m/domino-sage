@@ -2414,9 +2414,16 @@ def archive_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
         # The word the plan page already writes copy from, beside the sentence for anything that
         # shows the error raw. The page reads `reason`; the word and the sentence are composed one
         # place apart on purpose, because only the page knows which of its two buttons is asking.
+        #
+        # "Waiting to be built from", not "being built right now" (#167): the guard reads which
+        # plan is live, never whether a turn is running, and a plan sits live from the moment the
+        # gate writes it. Both acts it names are on the plan card in the Conversation that proposed
+        # it — the only place a Cancel exists — so the sentence says where to go rather than what
+        # to do. The refusal cannot reach a creator whose Conversation is gone: the archive retires
+        # that plan itself instead of naming a card nobody can open.
         return JSONResponse(status_code=409, content={"error": brand_text(
-            "This plan is the one this {builtApp} is being built from right now, so it cannot be "
-            "put away. Approve it or cancel the build first."), "reason": e.reason})
+            "This plan is the one this {builtApp} is waiting to be built from, so it cannot be put "
+            "away. Approve it or cancel it in the conversation it came from."), "reason": e.reason})
     if doc is None:
         return JSONResponse({"error": "unknown plan"}, status_code=404)
     return JSONResponse(content=doc)

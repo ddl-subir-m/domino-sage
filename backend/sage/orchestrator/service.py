@@ -3460,9 +3460,6 @@ class Orchestrator:
         app = self._wm.app_workspace(self._project_id, app_id)
         if not app.exists() or not app.has_built():
             return {"offered": False, "eligible": False, "reason": "never built"}
-        if self._is_the_live_plan(doc):
-            # This plan is the one awaiting approval right now. Approving it IS the build.
-            return {"offered": False, "eligible": False, "reason": "awaiting approval"}
         if str(doc.get("status") or "") == "superseded":
             return {"offered": True, "eligible": False, "reason": "superseded"}
         if not self._origin_live(project, doc):
@@ -3479,6 +3476,15 @@ class Orchestrator:
             return {"offered": True, "eligible": False,
                     "reason": "no conversation" if not str(doc.get("originThreadId") or "")
                     else "conversation deleted"}
+        if self._is_the_live_plan(doc):
+            # This plan is the one awaiting approval right now. Approving it IS the build.
+            #
+            # Asked BELOW the Conversation, not above it (#167). Both refuse, so the order only
+            # decides which sentence the person reads — and this one's remedy is the Approve card,
+            # which lives in the Conversation the check above has just found gone. Asked first it
+            # sent somebody to a card that no longer exists; asked here, a plan left live by a
+            # build that gave up says the true thing instead: that door is closed, start a new one.
+            return {"offered": False, "eligible": False, "reason": "awaiting approval"}
         if doc.get("archived"):
             # Its own word (#167). The filter in `_plan_docs_naming_app` already stops this document
             # answering, so without a word here it falls through to `moved on` below — which sends
@@ -3503,17 +3509,34 @@ class Orchestrator:
         version are exactly where they were, which is what makes taking it back out honest.
 
         One refusal, and only on the way in: the document `.sage/plan.md` was written from right
-        now. That plan is the one an Approve card is asking about, and hiding it would leave the
-        card pointing at a document the panel no longer lists. Asked of `_is_the_live_plan`, the
-        same read "Build this again" refuses on, so the two can never disagree about which plan is
-        live (ADR-0024).
+        now AND the Conversation that proposed it still answers. That plan is the one an Approve
+        card is asking about, and hiding it would leave the card pointing at a document the panel
+        no longer lists. Asked of `_is_the_live_plan`, the same read "Build this again" refuses on,
+        so the two can never disagree about which plan is live (ADR-0024).
+
+        The Conversation half is what keeps the refusal answerable. Its copy names two acts —
+        approve it, or cancel it — and BOTH of them live on the plan card in that transcript: there
+        is no Cancel anywhere else, and `delete_thread` does not touch the app's live plan. So a
+        plan left live by a build that gave up (`_approve_stream` keeps it on purpose, to resume
+        from) and whose Conversation was then deleted used to refuse forever, naming two doors that
+        no longer existed. With nothing left to answer the refusal, putting the document away IS
+        the cancel: the stray `plan.md` is retired in the same act, so the app stops pointing at a
+        document the panel has just hidden.
+
+        Retired as cancelled, not as built. Nothing here knows a build ever consumed it — the plan
+        is live precisely because none did — and `read_archived_plan` must not go on to describe
+        the app as built from a plan somebody just put away.
         """
         project = self.project(start_preview=False, seed_app=False)
         doc = project.record.read_plan_doc(plan_id)
         if doc is None:
             return None
         if archived and self._is_the_live_plan(doc):
-            raise PlanArchiveRefused("awaiting approval")
+            if self._origin_live(project, doc):
+                raise PlanArchiveRefused("awaiting approval")
+            # `_is_the_live_plan` is False for a document naming no app, so there is one here.
+            self._wm.app_workspace(
+                self._project_id, str(doc.get("appId") or "")).archive_plan(cancelled=True)
         return project.record.patch_plan_doc_meta(plan_id, archived=bool(archived))
 
     def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
