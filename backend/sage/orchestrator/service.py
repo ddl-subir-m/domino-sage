@@ -54,13 +54,16 @@ from ..resources.bindings import (
     Mention,
     mention_note,
     parse_bindings,
+    scope_label,
 )
 from ..resources.bound_schema import (
     LEGACY_SOURCE,
     SAMPLES_PATH,
     SCHEMA_PATH,
     BoundSource,
+    Inside,
     SharedSample,
+    parse_inside,
     parse_samples,
     parse_schema,
     recorded_scope,
@@ -248,6 +251,7 @@ _PERSISTED_EVENTS = frozenset({
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
     "mentions-ambiguous",
     "app_change", "build-stalled", "gateway-call", "gateway-alias-unbound",
+    "data-source-unasked",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -1869,12 +1873,6 @@ _CHAT_SHOWN_TOOLS = frozenset()
 _CHAT_AT = re.compile(r"@([^\s@]+)")
 
 
-def _scope_label(scope: dict) -> str:
-    return ".".join(
-        str(p) for p in (scope.get("database"), scope.get("schema"), scope.get("table")) if p
-    )
-
-
 def _at_token_hits(token: str, name: str, path: str) -> bool:
     """True when an @token from the user message names this context file."""
     t = token.lower().lstrip("@")
@@ -1984,7 +1982,7 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
         # "no Data Source registered under that name", which reads like the person attached the
         # wrong thing. Saying "cannot query" is worse to read and far better to act on.
         if scope and scope.get("table") and source_name:
-            dotted = _scope_label(scope)
+            dotted = scope_label(scope)
             cols = item.get("columns") if isinstance(item.get("columns"), list) else []
             col_txt = ", ".join(
                 " ".join(
@@ -2006,6 +2004,22 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
                 name=name, dotted=dotted, extra=extra, quoted=repr(name),
             )
         extra = f" at {path}" if path else ""
+        if source_name:
+            # A bare Data Source: no table pinned, but the store IS named, so it is reachable. This
+            # used to fall through to the sentence below and claim the workspace could not query it
+            # at all. Live, a creator asked for a dashboard over a Snowflake source with no table
+            # picked, and the build shipped invented rows behind a note saying the connection needed
+            # table names — which nothing had asked them for. Not knowing WHICH table is a question;
+            # it is not the store being shut.
+            return brand.text(
+                "- {dataSource} {name}{extra}. No {scope} is set on it, so which tables it holds is "
+                "not recorded here. Reach it with "
+                "`from domino_data.data_sources import DataSourceClient` then "
+                "`DataSourceClient().get_datasource({quoted})`, and list its tables before you "
+                "answer — do not guess a table name. Do not search files, env, or /opt/sage for "
+                "credentials. Do not invent rows. If the query errors, tell the person.",
+                name=name, extra=extra, quoted=repr(source_name),
+            )
         return brand.text(
             "- {dataSource} {name}{extra}. This workspace cannot query it live. Do not invent rows. "
             "Say that you cannot open it.",
@@ -4773,15 +4787,21 @@ class Orchestrator:
         scope = row.get("scope") if isinstance(row.get("scope"), dict) else None
         # "table" belongs here as much as "data_source": the panel pins a table, and the client
         # flattens that to "data_source" before posting — but a stored row may carry either.
-        if str(row.get("kind") or "") in ("data_source", "datasource", "table") and scope and scope.get("table"):
+        if str(row.get("kind") or "") in ("data_source", "datasource", "table"):
             source = self._context_source(row)
             if source is not None:
-                # The chip's `name` is the table. Stamp the SOURCE's own Domino name, because that
-                # is what `get_datasource()` takes and nothing else in the row answers it.
+                # The chip's `name` is the table when one is pinned. Stamp the SOURCE's own Domino
+                # name, because that is what `get_datasource()` takes and nothing else in the row
+                # answers it. Stamped for a bare Data Source too, and that is the fix: without it
+                # the turn could not name the store, so it told the agent the store was unreachable
+                # — which sent a build off to invent the rows it could not read.
                 row["sourceName"] = source.name
-                cols = self._columns_for_context(source, scope)
-                if cols:
-                    row["columns"] = cols
+                # Columns still need a table. A Scope above one has none to read, and asking for
+                # them is what the Scope picker is for.
+                if scope and scope.get("table"):
+                    cols = self._columns_for_context(source, scope)
+                    if cols:
+                        row["columns"] = cols
         joined = self._join_project_on_mention(row)
         stored = store.add_context(
             thread_id, {k: v for k, v in row.items() if k not in _MEMBERSHIP_ONLY_FIELDS})
@@ -7860,6 +7880,15 @@ class Orchestrator:
                 # six phases would put six identical cards in the transcript (#56).
                 if wrote_code and owns_turn:
                     yield persist(_app_change_event(project.app_for_turn()))
+                # A turn cannot end green and silent on an app that asks its store nothing. Live, a
+                # creator bound a Snowflake Data Source, and the build shipped a dashboard whose
+                # every number the model had written itself — typecheck clean, no query to fail, so
+                # nothing anywhere disagreed. Only on a turn that SUCCEEDED: a turn that already
+                # failed has its own sentence, and a second one below it reads as part of the fault.
+                if report.ok and owns_turn:
+                    notice = self._unasked_notice(project.app_for_turn())
+                    if notice:
+                        yield persist({"type": "data-source-unasked", "message": notice})
                 yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
                 if report.ok and owns_turn:
                     # A clean code-writing build succeeded (a no-edit plan/answer turn returned earlier),
@@ -9564,15 +9593,39 @@ class Orchestrator:
         listing (#10).
         """
         columns: list[Column] = []
-        if binding.schema:      # columns live under a schema; a Scope that stopped above one has none
-            try:
+        inside: Inside | None = None
+        try:
+            if binding.schema:  # columns live under a schema; a Scope above one has none to read
                 columns = self._resources.list_columns(
                     source, binding.database or "", binding.schema, binding.table or "")
-            except ResourceUnavailable as e:
-                log.info("bound schema: %s did not answer for columns — %s", source.name, e)
-            except Exception:
-                log.exception("bound schema: could not read columns for %s", source.name)
-        self._write_schema_entries(self.project(), {binding.id: (binding, columns)})
+            else:
+                inside = self._read_inside(source, binding)
+        except ResourceUnavailable as e:
+            log.info("bound schema: %s did not answer — %s", source.name, e)
+        except Exception:
+            log.exception("bound schema: could not read inside %s", source.name)
+        self._write_schema_entries(self.project(), {binding.id: (binding, columns, inside)})
+
+    def _read_inside(self, source: DataSource, binding: Binding) -> Inside | None:
+        """The names ONE level below a Scope that stopped above a schema.
+
+        One call, never the cascade. Snowflake's `tables` statement needs a database and a schema
+        both, so "every table in this store" is a round trip per schema at seconds each — on a bind
+        the creator is waiting on. What one call buys is the thing the agent actually lacked: a list
+        it can ask a question about, instead of a silence it fills with invented rows.
+
+        `None` for a connector Sage has no dialect for. That is the same answer `cascade_levels`
+        gives the picker, and it keeps this from claiming a store holds nothing when the truth is
+        that Sage cannot look.
+        """
+        levels = cascade_levels(source)
+        if not levels:
+            return None
+        # Where the Scope stopped decides what is below it. A store with no database level answers
+        # for schemas with an empty database, which is the shape its cascade already uses.
+        if not binding.database and "database" in levels:
+            return Inside("database", self._resources.list_databases(source))
+        return Inside("schema", self._resources.list_schemas(source, binding.database or ""))
 
     def _write_schema_entries(self, project: Project, fresh: dict[str, tuple[Binding, list[Column]]],
                               ) -> None:
@@ -9592,10 +9645,13 @@ class Orchestrator:
         # what the agent is told and that render reads this file. So a freshly-read source may not be
         # in the manifest yet — appended here, where `_record` is about to append it, or the entry is
         # dropped and the next render asks the store a second time for what was just read.
-        recorded += [b for b, _ in fresh.values() if all(b.id != r.id for r in recorded)]
+        recorded += [b for b, _, _ in fresh.values() if all(b.id != r.id for r in recorded)]
         raw = self._read_json(project.workspace.path / SCHEMA_PATH)
         on_file = parse_schema(raw)
-        entries: list[tuple[Binding, list[Column]]] = []
+        # Carried forward for the same reason the columns are: a source nobody re-read this time was
+        # read when it was bound, and dropping what it holds would ask the store for it again.
+        on_file_inside = parse_inside(raw)
+        entries: list[tuple[Binding, list[Column], Inside | None]] = []
         for b in recorded:
             if b.id in fresh:
                 entries.append(fresh[b.id])
@@ -9603,7 +9659,7 @@ class Orchestrator:
             # A pre-#33 file named one source and no id, and the Binding it described was the first
             # one recorded — so its columns belong to whichever Binding is first here.
             legacy = on_file.get(LEGACY_SOURCE) if b is recorded[0] else None
-            entries.append((b, on_file.get(b.id, legacy or [])))
+            entries.append((b, on_file.get(b.id, legacy or []), on_file_inside.get(b.id)))
         self._write_generated(project.workspace.path / SCHEMA_PATH, render_schema(entries))
 
     # ---- Sample rows, only ever because someone asked (#16) ----
@@ -11105,6 +11161,53 @@ class Orchestrator:
         return [{**e, "used": None if used is None
                  else f"{e.get('kind')}:{e.get('id')}" in used} for e in entries]
 
+    def _unasked_notice(self, workspace: Workspace) -> str:
+        """One sentence for the person, or "" when every bound Data Source is queried.
+
+        Composed here rather than in the browser for the reason `gateway-alias-unbound`'s is: the
+        remedy names an act, and which act it is depends on what Sage knows and the page does not.
+
+        It says what is true of the APP, not what the turn did — a turn that touched nothing still
+        leaves an app whose screens answer from nowhere, and the person reading the transcript is
+        the one who can decide whether that is what they wanted.
+        """
+        unasked = self._data_sources_never_asked(workspace)
+        if not unasked:
+            return ""
+        if len(unasked) == 1:
+            return brand.text(
+                "This {builtApp} is recorded as reading the {dataSource} {named}, but no query "
+                "names it, so nothing on screen comes from it. Ask {assistantName} to query it, or "
+                "remove it from this app's {resourcePlural}.",
+                named=unasked[0].display_name,
+            )
+        labels = [b.display_name for b in unasked]
+        return brand.text(
+            "This {builtApp} is recorded as reading the {dataSourcePlural} {named}, but no query "
+            "names them, so nothing on screen comes from them. Ask {assistantName} to query them, "
+            "or remove them from this app's {resourcePlural}.",
+            named=", ".join(labels[:-1]) + f" and {labels[-1]}",
+        )
+
+    def _data_sources_never_asked(self, workspace: Workspace) -> list[Binding]:
+        """Data Source Bindings this app writes no query against, in Binding order.
+
+        The whole check, and it is one local JSON read. `_resource_usage` answers the same question
+        as a by-product, but it runs in the turn's `finally` — strictly after `done` has been
+        yielded — so its answer does not exist yet where the ending is composed. It does not need to:
+        for a Data Source with no queries it returns early, before `_scan_app_sources` walks a single
+        file, because a store with no query recorded against it cannot be reached by any code.
+
+        Local, pure, no network — `publish_check`'s discipline, and what makes this affordable
+        inside the stream.
+
+        This REPORTS. It is not the advisory scan and it must never become a gate: ADR-0010 keeps
+        the declaration authoritative for publish, bind and unbind, and an app whose agent has not
+        written the query yet is an app mid-build, not an app in error.
+        """
+        return [b for b in parse_bindings(workspace.read_bindings())
+                if b.kind == KIND_DATA_SOURCE and not self._query_names_for(workspace, b.id)]
+
     def _query_names_for(self, workspace: Workspace, resource_id: str) -> list[str]:
         """Names of the queries in `.sage/queries.json` recorded against one Data Source.
 
@@ -11408,7 +11511,14 @@ class Orchestrator:
         """
         raw = self._read_json(project.workspace.path / SCHEMA_PATH)
         legacy = LEGACY_SOURCE in parse_schema(raw)
-        missing = [b for b in bindings if recorded_scope(raw, b.id) != b.scope]
+        # A Scope that stopped above a schema compares equal to its own record every turn — both are
+        # "" — so the Scope test alone can never rescue an app bound before there was anything to
+        # record below it. Presence of the `inside` entry is what says the store was asked, which is
+        # why an answer of NO names is still written: asked-and-empty must not be asked again.
+        on_file_inside = parse_inside(raw)
+        missing = [b for b in bindings
+                   if recorded_scope(raw, b.id) != b.scope
+                   or (not b.schema and b.id not in on_file_inside)]
         # The first Binding of a pre-#33 file already has its columns; moving them onto its id is
         # what `_write_schema_entries` does, and it costs nothing.
         if legacy and bindings and missing and missing[0] is bindings[0]:
@@ -11421,17 +11531,24 @@ class Orchestrator:
                 self._read_columns_into(fresh, b)
             except (LookupError, ResourceUnavailable) as e:
                 log.info("bound schema: could not read %s — %s", b.name, e)
-                fresh[b.id] = (b, [])
+                fresh[b.id] = (b, [], None)
         self._write_schema_entries(project, fresh)
 
     def _read_columns_into(self, fresh: dict, binding: Binding) -> None:
-        """One source's columns, straight into the map `_write_schema_entries` takes."""
+        """One source's columns, or what is one level below it, into `_write_schema_entries`'s map.
+
+        Never both: a Scope that reached a schema has columns, and one that stopped above it has the
+        names the creator has still to pick from.
+        """
         source = self._data_source(binding.id)
         columns: list[Column] = []
+        inside: Inside | None = None
         if binding.schema:
             columns = self._resources.list_columns(
                 source, binding.database or "", binding.schema, binding.table or "")
-        fresh[binding.id] = (binding, columns)
+        else:
+            inside = self._read_inside(source, binding)
+        fresh[binding.id] = (binding, columns, inside)
 
     _DATA_BEGIN = "<!-- sage:app-data:begin -->"
     _DATA_END = "<!-- sage:app-data:end -->"
@@ -11460,15 +11577,21 @@ class Orchestrator:
             self._reconcile_bound_schema(project, bindings)
         template = self._wm.template
         module = serve_module(template)
-        columns = parse_schema(self._read_json(schema_file))
+        recorded_schema = self._read_json(schema_file)
+        columns = parse_schema(recorded_schema)
+        inside = parse_inside(recorded_schema)
         block = data_agents_block(
-            [BoundSource(b, columns.get(b.id, []), stranded_levels(template, b)) for b in bindings],
+            [BoundSource(b, columns.get(b.id, []), stranded_levels(template, b), inside.get(b.id))
+             for b in bindings],
             catalog_problems(template, project.workspace.path),
             getattr(module, "_DEFAULT_MAX_ROWS", 5000),
             samples=self._shared_samples(project),
             names=project.workspace.helpers,
             # Only asked when nothing is bound, which is the only case it changes.
             reaching=not bindings and self._reaches_for_a_store(project, module),
+            # The mirror of `reaching`: bound, and asked nothing. Read off the same catalog the
+            # person's own sentence is, so the two cannot say different things about one app.
+            unasked=[b.display_name for b in self._data_sources_never_asked(project.workspace)],
         )
         self._splice_agents(project, self._DATA_BEGIN, self._DATA_END, block)
 

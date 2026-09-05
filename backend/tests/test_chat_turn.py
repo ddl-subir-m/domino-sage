@@ -400,6 +400,33 @@ def test_chat_prompt_names_a_scoped_table_and_its_columns(tmp_path: Path):
     assert "get_datasource('DIM_ACCOUNT')" not in prompt
 
 
+def test_a_data_source_with_no_table_picked_is_reachable_not_shut(tmp_path: Path):
+    """The reported bug, on the Chat side. A creator @mentioned a Snowflake Data Source and picked
+    no table. The turn told the agent "this workspace cannot query it live" — false, since the store
+    is named and reachable; only WHICH table was unknown. Downstream, a build shipped a dashboard on
+    invented rows behind a note asking for table names nothing had asked the person for.
+
+    Not knowing which table is a question to ask. It is not the store being shut."""
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    # What the composer posts for a bare Data Source chip: no scope, no parent, just the Resource.
+    row = orch.add_thread_context(tid, {
+        "kind": "data_source",
+        "name": "Snowflake-Data-Warehouse",
+        "resourceId": "data_source:ds-dwh",
+    })
+    assert row["sourceName"] == "Snowflake-Data-Warehouse"
+    assert "columns" not in row          # a Scope above a table has none to read
+
+    list(orch.chat_stream(tid, "what is in the anthropic api usage data"))
+    prompt = oc.prompts[0]["text"]
+
+    assert "cannot query it live" not in prompt
+    assert "get_datasource('Snowflake-Data-Warehouse')" in prompt
+    assert "list its tables before you answer" in prompt
+    assert "Do not invent rows" in prompt
+
+
 def test_chat_will_not_hand_out_a_query_recipe_it_cannot_name_the_source_for(tmp_path: Path):
     # A chip that lost its parent leaves only the table name, and guessing with it sends the agent
     # at a lookup that fails as "no Data Source registered under that name" — which reads like the

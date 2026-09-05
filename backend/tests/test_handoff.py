@@ -280,6 +280,43 @@ def test_digest_is_one_paragraph_with_names_not_bytes():
     assert "\n\n" not in text
 
 
+def test_the_digest_says_what_a_data_source_is_and_which_part_is_in_play():
+    """The reported bug's second link. A Thread carrying `Snowflake-Data-Warehouse` reached the
+    planner as that bare string, so the plan's own first step was to "confirm the fields available"
+    — work a planner cannot do and the build never came back to. It wrote the dashboard anyway.
+
+    Whether a Scope was chosen travels too, because that is what decides whether the plan can name
+    a table at all."""
+    text = handoff.draft_digest(
+        title="Anthropic usage",
+        asked=["dashboard for the anthropic api data"],
+        context=[{"kind": "data_source", "name": "Snowflake-Data-Warehouse",
+                  "sourceName": "Snowflake-Data-Warehouse"}],
+        artifacts=[],
+    )
+    assert "Snowflake-Data-Warehouse (Data Source, no Scope chosen)" in text
+    assert "\n\n" not in text          # still one paragraph
+
+
+def test_a_pinned_table_names_the_store_it_came_out_of():
+    """A table chip is named for the TABLE, so the store has to be said as well — otherwise two
+    tables of the same name out of two Data Sources read identically in the digest."""
+    text = handoff.draft_digest(
+        title="", asked=[], artifacts=[],
+        context=[{"kind": "data_source", "name": "DIM_ACCOUNT",
+                  "sourceName": "Snowflake-Data-Warehouse",
+                  "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"}}],
+    )
+    assert "DIM_ACCOUNT (Data Source Snowflake-Data-Warehouse, DWH.MARTS.DIM_ACCOUNT)" in text
+
+
+def test_a_file_in_context_is_still_just_its_name():
+    """The kind is only worth saying where the name does not already carry it. A filename does."""
+    text = handoff.draft_digest(
+        title="", asked=[], artifacts=[], context=[{"kind": "file", "name": "notes.csv"}])
+    assert "In context: notes.csv." in text
+
+
 def _plan_prompt(digest: str = "Thread background.") -> str:
     return handoff.plan_prompt("thr_1", digest, voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
 

@@ -14,9 +14,16 @@ import re
 from pathlib import Path
 
 from ..gateway.client import CostLabels, GatewayClient
-from ..resources.bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
+from ..resources.bindings import (
+    KIND_DATA_SOURCE,
+    KIND_LLM_ALIAS,
+    KIND_MODEL_API,
+    Binding,
+    scope_label,
+)
 from ..router.models import ModelCatalog
 from ..workspace.threads import handoff_unresolved
+from . import brand
 from .scope import _extract, _model_for
 
 log = logging.getLogger(__name__)
@@ -251,6 +258,36 @@ def wants_an_app(
 _BINDABLE = {KIND_DATA_SOURCE, KIND_MODEL_API, KIND_LLM_ALIAS}
 
 
+def _context_name(item: dict) -> str:
+    """One Session-context row as the planner should read it: what it is, not just what it is called.
+
+    A bare name is enough for a file, whose kind the name itself carries. It is not enough for a
+    Data Source. Live, a Thread carrying `Snowflake-Data-Warehouse` reached the planner as that
+    string and nothing else, so the plan's own first step was to go and "confirm the fields
+    available" — work the planner had no way to do and the build never came back to. It then wrote
+    a dashboard over data nobody had read.
+
+    Which part of the store is in play travels too, because "no Scope chosen" is the fact that
+    decides whether the plan can name a table at all.
+    """
+    name = str(item.get("name") or "").strip()
+    if not name:
+        return ""
+    if str(item.get("kind") or "") not in ("data_source", "datasource", "table"):
+        return name
+    source = str(item.get("sourceName") or "").strip()
+    dotted = scope_label(item.get("scope"))
+    noun = brand.text("{dataSource}")
+    if source and source != name:
+        # A pinned table: the row is named for the table, so the store has to be said as well.
+        inner = f"{noun} {source}, {dotted}" if dotted else f"{noun} {source}"
+    elif dotted:
+        inner = f"{noun}, {dotted}"
+    else:
+        inner = brand.text("{dataSource}, no {scope} chosen")
+    return f"{name} ({inner})"
+
+
 def draft_digest(*, title: str, asked: list[str], context: list[dict],
                  artifacts: list[dict]) -> str:
     """One-paragraph background for sage-plan. Not the transcript."""
@@ -259,10 +296,10 @@ def draft_digest(*, title: str, asked: list[str], context: list[dict],
         bits.append(f'Thread "{title.strip()}".')
     if asked:
         bits.append("Asked: " + "; ".join(a.strip() for a in asked if a.strip()) + ".")
-    names = [str(i.get("name") or "").strip() for i in context]
-    names = [n for n in names if n]
-    if names:
-        bits.append("In context: " + ", ".join(names) + ".")
+    named = [_context_name(i) for i in context]
+    named = [n for n in named if n]
+    if named:
+        bits.append("In context: " + ", ".join(named) + ".")
     arts = []
     for a in artifacts:
         label = (a.get("title") or a.get("name") or "").strip()
@@ -494,7 +531,7 @@ def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
         parts.append("")
     if include_resources:
         parts.append("What the app needs:")
-        names = [i.get("name") for i in context if i.get("name")]
+        names = [n for n in (_context_name(i) for i in context) if n]
         if names:
             parts.extend(f"- {n}" for n in names)
         else:

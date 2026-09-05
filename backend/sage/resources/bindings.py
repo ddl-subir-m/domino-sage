@@ -115,6 +115,22 @@ class Mention:
     tables: tuple[str, ...] = ()
 
 
+def scope_label(scope: dict | None) -> str:
+    """The dotted Scope out of the loose dict a browser row carries, or "" when it names none.
+
+    `Binding.scope` does the same join over a recorded Binding. This is the same rule against the
+    other shape — the `{database, schema, table}` dict a Session-context row and a bind payload both
+    carry — and it lives here so the two cannot drift apart. Two callers that could not import each
+    other were the reason it was worth moving: `service` renders a Chat context line with it, and
+    `handoff` puts it in the digest a planner reads.
+    """
+    if not isinstance(scope, dict):
+        return ""
+    return ".".join(
+        str(p) for p in (scope.get("database"), scope.get("schema"), scope.get("table")) if p
+    )
+
+
 def parse_bindings(raw: object) -> list[Binding]:
     """Bindings from a manifest body, in file order.
 

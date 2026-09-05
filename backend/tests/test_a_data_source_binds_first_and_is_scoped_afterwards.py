@@ -38,8 +38,8 @@ import sage.orchestrator.app as appmod
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator, ResourceNotBound
 from sage.resources.bindings import KIND_DATA_SOURCE
-from sage.resources.bound_schema import SCHEMA_PATH, parse_schema
-from sage.resources.provider import FakeResourceProvider
+from sage.resources.bound_schema import SCHEMA_PATH, parse_inside, parse_schema
+from sage.resources.provider import FakeResourceProvider, ResourceUnavailable
 from sage.router.models import ModelCatalog
 
 
@@ -95,13 +95,90 @@ def test_a_data_source_binds_with_no_scope_at_all(tmp_path: Path):
     assert row["display_name"] == "Snowflake-Data-Warehouse"
 
 
-def test_a_scopeless_bind_asks_the_store_for_nothing(tmp_path: Path):
+def test_a_scopeless_bind_asks_the_store_for_no_columns(tmp_path: Path):
     """Columns live under a schema, and this Binding names none — so the agent is told the columns
-    are unknown rather than handed a guess, and the creator waits for no query on the way in. That
-    is the whole of what makes the first act the cheap one."""
+    are unknown rather than handed a guess, and the creator waits for no column read on the way in.
+
+    It is no longer "asks for nothing": the bind reads the one level below the Scope, because a
+    Binding that recorded literally nothing is what let a build ship a dashboard on invented rows.
+    One call, and `_inside` below is what it buys."""
     orch = _orch(tmp_path)
     orch.bind_data_source("ds-dwh")
     assert _columns(orch).get("ds-dwh") == []
+
+
+# ---- what a Scope above a schema records instead of columns ---------------------------------
+
+
+def _inside(orch: Orchestrator) -> dict:
+    """The recorded level-below names, per Binding id, straight off disk."""
+    path = orch.project(start_preview=False).workspace.path / SCHEMA_PATH
+    if not path.exists():
+        return {}
+    return {k: (v.level, v.names) for k, v in parse_inside(json.loads(path.read_text())).items()}
+
+
+def test_a_scopeless_bind_records_the_databases_it_could_have_chosen(tmp_path: Path):
+    """The fix for the reported bug. A creator picked a Snowflake Data Source and no table, and the
+    agent — handed no table name and no way to ask for one — built a dashboard on rows it invented.
+
+    One call, not the cascade: Snowflake's `tables` statement takes a database AND a schema, so
+    walking to table names is a round trip per schema while the creator waits on the bind."""
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh")
+    assert _inside(orch)["ds-dwh"] == ("database", ["DWH", "SANDBOX"])
+
+
+def test_a_database_level_scope_records_the_schemas_under_it(tmp_path: Path):
+    """One level below the Scope, wherever the Scope stopped — so the second question is as
+    answerable as the first, and the creator is never asked to type a name."""
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh")
+    orch.scope_data_source("ds-dwh", "DWH")
+    assert _inside(orch)["ds-dwh"] == ("schema", ["MARTS", "REPORTING", "STAGING"])
+
+
+def test_a_scope_that_reaches_a_schema_records_columns_and_nothing_below(tmp_path: Path):
+    """The two answers are the same question at different depths and are never both recorded.
+    A Scope deep enough for columns has no unanswered level left to name."""
+    orch = _orch(tmp_path)
+    orch.bind_data_source("ds-dwh")
+    orch.scope_data_source("ds-dwh", "DWH", "MARTS")
+    assert _columns(orch)["ds-dwh"] != []
+    assert "ds-dwh" not in _inside(orch)
+
+
+def test_a_store_that_will_not_say_what_is_inside_it_still_binds(tmp_path: Path):
+    """A store that will not answer is not a failed bind — the Binding is the creator's decision and
+    it stands. What they lose is the names, and the agent is told that in as many words.
+
+    Recorded ABSENT rather than as an empty list, which is the distinction the next turn reads:
+    nothing there, versus we could not look."""
+    orch = _orch(tmp_path)
+
+    def _refuse(_source):
+        raise ResourceUnavailable("Snowflake-Data-Warehouse did not answer")
+
+    orch._resources.list_databases = _refuse
+    row = _source(orch.bind_data_source("ds-dwh"))
+
+    assert row["id"] == "ds-dwh"
+    assert "ds-dwh" not in _inside(orch)
+
+
+def test_a_store_that_answers_with_nothing_is_not_asked_again(tmp_path: Path):
+    """An empty answer is still an answer, so it is written. Were absence the only record of both,
+    a store that genuinely holds nothing would be re-read at the end of every single turn."""
+    orch = _orch(tmp_path)
+    orch._resources.list_databases = lambda _source: []
+    orch.bind_data_source("ds-dwh")
+
+    assert _inside(orch)["ds-dwh"] == ("database", [])
+
+    asked = []
+    orch._resources.list_databases = lambda _source: asked.append(1) or []
+    orch._write_app_data(orch.project(start_preview=False))
+    assert asked == []
 
 
 # ---- the second act: the Scope, against a Binding that already exists ---------------------------

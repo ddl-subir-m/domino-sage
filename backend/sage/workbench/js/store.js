@@ -1516,6 +1516,15 @@ window.SW = window.SW || {};
         // this sentence is the whole point of the event and is written server-side, already
         // addressed to the creator.
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'data-source-unasked' && ev.message) {
+        // A plain line, not the refusal's red one: the build worked, and what it produced may be
+        // exactly what was wanted. What it cannot be is silent — this turn ended green over an app
+        // whose numbers came from the model rather than the store the person picked.
+        //
+        // No `ok` key at all, deliberately, as `mentions-ambiguous` does below. `ok: false` would
+        // read as a failed turn, and an `{ type: 'error' }` frame would be one: `endedBadly` keys
+        // on the frame type alone and would go and fetch a gateway listing over a clean build.
+        ensureAssistant().blocks.push({ type: 'status', value: ev.message });
       } else if (ev.type === 'mentions-unresolved' && ev.message) {
         // Sits above the turn it belongs to rather than beside the composer: what the build could not
         // use is part of the record of that build, and a toast would be gone by the time the app it

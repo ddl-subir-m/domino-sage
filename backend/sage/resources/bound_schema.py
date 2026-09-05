@@ -45,6 +45,29 @@ TABLE_NAME_LIMIT = 60
 
 
 @dataclass(frozen=True)
+class Inside:
+    """The names one level below a Scope that stopped above a schema.
+
+    A Data Source bound with no Scope at all, or bound only as far as a database, has no columns to
+    record — `list_columns` needs a schema to read under. What it does have is the list of names the
+    creator still has to choose from, and that is what the agent needs in order to ask a question
+    instead of inventing an answer. Live, a top-level bind asked the store nothing whatsoever, and
+    the agent shipped a dashboard on rows it made up.
+
+    One level, never the cascade. Snowflake's `tables` statement takes a database AND a schema
+    (`provider.SQL_DIALECTS`), so there is no "every table in this store" to ask for — walking down
+    to table names is one round trip per schema, at seconds each, on a foreground bind.
+
+    `level` names the cascade level the names came from, because the sentence the agent reads has to
+    say what it is looking at. Absent entirely — rather than present with an empty `names` — when the
+    store would not answer, which is what tells "there is nothing there" from "we could not look".
+    """
+
+    level: str
+    names: list[str]
+
+
+@dataclass(frozen=True)
 class BoundSource:
     """One Data Source this app reads, as the agent is told about it (#33).
 
@@ -52,14 +75,18 @@ class BoundSource:
     each — and `serve.py` was built for that: it loads every Binding and each query names the one it
     reads. `stranded` is per source because whether a Scope travels as configuration is decided by
     the connector, so two sources in one app can need differently-written SQL.
+
+    `columns` and `inside` answer the same question at two depths and are never both populated: a
+    Scope that reached a schema has columns, one that stopped above it has the names below it.
     """
 
     binding: Binding
     columns: list[Column]
     stranded: list[tuple[str, str]] | None = None
+    inside: Inside | None = None
 
 
-def render_schema(sources: list[tuple[Binding, list[Column]]]) -> str:
+def render_schema(sources: list[tuple[Binding, list[Column], Inside | None]]) -> str:
     """`.sage/schema.json` — what each bound Data Source holds, in Binding order.
 
     No timestamp, deliberately. This file is committed to the creator's own app repo, and a "read at"
@@ -67,9 +94,15 @@ def render_schema(sources: list[tuple[Binding, list[Column]]]) -> str:
 
     Keyed by Binding id rather than by source name: an id is what a query's `binding` field carries,
     and it is what survives a Data Source being renamed in Domino.
+
+    `inside` is written only when there is one, and it is a sibling of `tables` rather than a shape
+    inside it. A table with no columns has no representation here — `_by_table` derives every table
+    name from a `Column` — and giving one to a database name would put two different levels of the
+    cascade under the same key for the reader to tell apart.
     """
-    body = {"sources": [
-        {
+    body = []
+    for binding, columns, inside in sources:
+        entry = {
             "id": binding.id,
             "source": binding.name,
             "scope": binding.scope,
@@ -77,9 +110,10 @@ def render_schema(sources: list[tuple[Binding, list[Column]]]) -> str:
             "tables": [{"name": name, "columns": [{"name": c.name, "type": c.type} for c in cols]}
                        for name, cols in _by_table(columns).items()],
         }
-        for binding, columns in sources
-    ]}
-    return json.dumps(body, indent=2) + "\n"
+        if inside is not None:
+            entry["inside"] = {"level": inside.level, "names": list(inside.names)}
+        body.append(entry)
+    return json.dumps({"sources": body}, indent=2) + "\n"
 
 
 def _by_table(columns: list[Column]) -> dict[str, list[Column]]:
@@ -111,6 +145,30 @@ def parse_schema(raw: object) -> dict[str, list[Column]]:
     for entry in raw.get("sources") or []:
         if isinstance(entry, dict) and str(entry.get("id") or ""):
             out[str(entry["id"])] = _columns_of(entry)
+    return out
+
+
+def parse_inside(raw: object) -> dict[str, Inside]:
+    """What was recorded one level below each Binding's Scope, per Binding id.
+
+    Presence is the whole point, so this is also how the caller knows the store has been asked. A
+    Binding with an entry here was read; one without has not been, and only the second is worth a
+    round trip. That distinction is why an empty `names` list is still recorded and still returned:
+    a store that answered "nothing" must not be asked again on every turn.
+
+    Anything unreadable is no answer at all, exactly as `parse_schema` treats a broken file.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Inside] = {}
+    for entry in raw.get("sources") or []:
+        if not isinstance(entry, dict) or not str(entry.get("id") or ""):
+            continue
+        inside = entry.get("inside")
+        if not isinstance(inside, dict):
+            continue
+        names = [str(n) for n in inside.get("names") or [] if str(n)]
+        out[str(entry["id"])] = Inside(str(inside.get("level") or ""), names)
     return out
 
 
@@ -189,7 +247,7 @@ def parse_samples(raw: object) -> list[SharedSample]:
 
 def agents_block(sources: list[BoundSource], problems: list[str] | None,
                  max_rows: int, *, samples=(), names: HelperNames = TEMPLATE,
-                 reaching: bool = False) -> str:
+                 reaching: bool = False, unasked: list[str] = ()) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
     Empty when no Data Source is bound. Describing the machinery for a store that is not there would
@@ -222,7 +280,7 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
     if len(sources) == 1:
         one = sources[0]
         lines += [_scope_sentence(one.binding), ""]
-        lines += _tables_section(one.columns)
+        lines += _tables_section(one)
     else:
         lines += [
             brand.text("This app reads {count} {dataSourcePlural}. Every query names the one it "
@@ -235,13 +293,14 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
                 f"### {source.binding.display_name} — `\"binding\": \"{source.binding.id}\"`", "",
                 _scope_sentence(source.binding), "",
             ]
-            lines += _tables_section(source.columns)
+            lines += _tables_section(source)
             lines += [_scope_rule(source.binding, source.stranded,
                                   source.columns[0].table if source.columns else "usage"), ""]
     # The example names one of this app's own tables. A generic `usage` reads as a placeholder the
     # agent has to translate, and the translation is exactly the step this block exists to remove.
     lines += _how_to_ask(sources, max_rows, names)
     lines += _samples_section(samples)
+    lines += _unasked_section(unasked)
     lines += _problems_section(problems)
     return "\n".join(lines)
 
@@ -292,11 +351,64 @@ def _scope_sentence(binding: Binding) -> str:
     return f"This app reads {where}{named} **{binding.display_name}**."
 
 
-def _tables_section(columns: list[Column]) -> list[str]:
+def _unscoped_section(inside: Inside | None) -> list[str]:
+    """What a Binding with no Scope can be told, which is never "here are your columns".
+
+    A different state from a Scope that reached a schema and found no columns, and it has to read
+    differently or the agent cannot act on either. That one lost the column names; this one has not
+    chosen the part of the store to read yet, and the act that would choose it belongs to a person.
+
+    So the section names what is one level down and then asks. It does NOT hand over a way to look
+    further: the agent has no route to the store from here, and inviting it to find one is how a
+    build ends up with a screen full of rows nobody read (#15's original failure, again).
+    """
+    lines = [brand.text("**No {scope} is chosen yet, so no query this app writes can run.**"), ""]
+    if inside is None:
+        lines += [
+            brand.text(
+                "{assistantName} could not read what is inside it, so not even the names one level "
+                "down are known here."),
+            "",
+        ]
+    elif not inside.names:
+        lines += [
+            brand.text("It answered with nothing inside it, so there is nothing to choose from "
+                       "yet. Say that to the user rather than working around it."),
+            "",
+        ]
+    else:
+        listed = inside.names[:TABLE_NAME_LIMIT]
+        more = len(inside.names) - len(listed)
+        plural = f"{inside.level}s" if inside.level else "names"
+        lines += [
+            f"It holds {len(inside.names)} {plural}:",
+            "",
+            ", ".join(f"`{n}`" for n in listed) + (f", and {more} more" if more else ""),
+            "",
+        ]
+    lines += [
+        brand.text("- **You cannot query it until a {scope} is set, and you cannot set one** — the "
+                   "person can, on this {builtApp}'s own surface."),
+        brand.text("- **Ask which one holds the data they mean.** Name what you need and stop "
+                   "there; one question answered is worth more than a screen built on a guess."),
+        ("- **Do not invent rows, and do not build a screen around data you have not read.** "
+         "Numbers you wrote yourself look exactly like numbers from the store, which is what makes "
+         "them worse than an empty screen."),
+        ("- Build the rest from what this app already holds — a file under `public/data/`, an "
+         "Attachment, or values the user gave you — or leave that screen out rather than shipping "
+         "one that cannot load."),
+        "",
+    ]
+    return lines
+
+
+def _tables_section(source: BoundSource) -> list[str]:
     """The tables and their columns, in full or by name, or a line saying they are not known."""
     tables: dict[str, list[Column]] = {}
-    for column in columns:
+    for column in source.columns:
         tables.setdefault(column.table, []).append(column)
+    if not tables and not source.binding.schema:
+        return _unscoped_section(source.inside)
     if not tables:
         return [
             brand.text(
@@ -306,6 +418,7 @@ def _tables_section(columns: list[Column]) -> list[str]:
                 "first person who opens the app."),
             "",
         ]
+    columns = source.columns
     if len(columns) <= INLINE_COLUMN_LIMIT:
         out = ["These are its tables and columns — use these names exactly:", ""]
         for name, cols in tables.items():
@@ -495,6 +608,42 @@ def _and_list(names: list[str]) -> str:
 
 def _and_list_of(parts: list[str]) -> str:
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+
+
+def _unasked_section(unasked) -> list[str]:
+    """The Data Sources this app is bound to and asks nothing of.
+
+    The mirror of `reaching`, which is the same disagreement the other way round — code that queries
+    with nothing bound. This one is a store the person deliberately picked, sitting beside screens
+    that answer from somewhere else. Live, that somewhere else was the model: a Snowflake Data Source
+    was bound, no query was ever written, and the build finished clean over invented rows.
+
+    Told rather than enforced. The agent may be one turn from writing the query, and a rule that
+    refused the turn would refuse correct work in the middle of a build (ADR-0010). What it must not
+    do is leave numbers on screen that look read.
+    """
+    named = [n for n in unasked or [] if n]
+    if not named:
+        return []
+    joined = named[0] if len(named) == 1 else ", ".join(named[:-1]) + f" and {named[-1]}"
+    return [
+        brand.text("### This app asks nothing of its {dataSourcePlural}"),
+        "",
+        brand.text(
+            "**{named} is bound, and no query in `{path}` names it.** So every number this app "
+            "shows today came from somewhere other than the store the person chose.",
+            named=joined, path=".sage/queries.json"),
+        "",
+        ("- **If a screen shows values you wrote yourself, that is the bug.** Invented rows look "
+         "exactly like read ones, which is what makes them worse than an empty screen."),
+        brand.text(
+            "- **Write the query, or say the app cannot answer from that {dataSource} yet.** Both "
+            "are honest. Leaving placeholder data where real data belongs is not."),
+        brand.text(
+            "- If you cannot write it because no {scope} is set, say which part of the store you "
+            "need. The person sets it; you cannot, from here."),
+        "",
+    ]
 
 
 def _problems_section(problems: list[str] | None) -> list[str]:

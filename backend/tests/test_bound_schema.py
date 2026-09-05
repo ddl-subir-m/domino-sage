@@ -24,6 +24,7 @@ from sage.resources.bound_schema import (
     SAMPLES_PATH,
     SCHEMA_PATH,
     BoundSource,
+    Inside,
     SharedSample,
     agents_block,
     parse_samples,
@@ -50,14 +51,19 @@ POSTGRES = Binding(KIND_DATA_SOURCE, "ds-pg", "reporting", "reporting",
 
 
 def block_for(binding=SNOWFLAKE, columns=None, stranded=(), problems=(), max_rows=5000,
-              samples=()) -> str:
+              samples=(), inside=None) -> str:
     # `stranded` and `problems` pass through as None when that is what they are: None means "Sage
     # could not check", which renders differently from an empty list, so the helper must not flatten
-    # the two into each other.
+    # the two into each other. `inside` is the same shape of distinction one level down.
     source = BoundSource(binding, list(columns or []),
-                         None if stranded is None else list(stranded))
+                         None if stranded is None else list(stranded), inside)
     return agents_block([source], None if problems is None else list(problems),
                         max_rows, samples=samples)
+
+
+# A Scope that stopped above a schema. `SNOWFLAKE` reaches one, so it cannot stand in for this.
+UNSCOPED = Binding(KIND_DATA_SOURCE, "ds-dwh", "warehouse", "warehouse",
+                   None, None, None, "SnowflakeConfig")
 
 
 # ---- reading the columns, through the fake provider ----------------------------------------------
@@ -126,14 +132,14 @@ def test_the_columns_statement_asks_one_question_for_a_whole_schema():
 def test_the_recorded_schema_round_trips():
     columns = [Column("orders", "id", "int"), Column("orders", "total", "decimal"),
                Column("customers", "id", "int")]
-    written = render_schema([(SNOWFLAKE, columns)])
+    written = render_schema([(SNOWFLAKE, columns, None)])
     assert parse_schema(json.loads(written)) == {SNOWFLAKE.id: columns}
 
 
 def test_the_record_carries_no_timestamp():
     # It is committed to the creator's own app repo, so a "read at" field would make every re-bind a
     # diff in a file whose content had not changed.
-    body = json.loads(render_schema([(SNOWFLAKE, [Column("orders", "id", "int")])]))
+    body = json.loads(render_schema([(SNOWFLAKE, [Column("orders", "id", "int")], None)]))
     assert set(body) == {"sources"}
     assert set(body["sources"][0]) == {"id", "source", "scope", "connector_type", "tables"}
 
@@ -848,3 +854,58 @@ def test_a_source_bound_while_its_store_was_down_is_asked_again_but_only_once(tm
     orch.bind_data_source("ds-dwh", "DWH", "REPORTING")
     assert [t["name"] for t in _entry(orch, "ds-dwh")["tables"]] == ["V_ARR_WATERFALL",
                                                                     "V_CUSTOMER_HEALTH"]
+
+
+# ---- a Scope that stopped above a schema (the invented-dashboard bug) ---------------------------
+
+
+def test_an_unscoped_binding_names_what_is_one_level_down_and_asks():
+    """The reported failure. A creator bound a Snowflake Data Source and picked no table; the agent
+    was handed an empty column list, told to "ask the user", and shipped a dashboard on rows it made
+    up. Naming the databases is what turns "I know nothing" into a question worth asking."""
+    block = block_for(UNSCOPED, inside=Inside("database", ["ANALYTICS", "RAW", "PROD"]))
+
+    assert "No Scope is chosen yet" in block
+    assert "It holds 3 databases:" in block
+    assert "`ANALYTICS`, `RAW`, `PROD`" in block
+    assert "Do not invent rows" in block
+    # The columns sentence is for a Scope that REACHED a schema and lost the read. Saying both would
+    # tell the agent its columns went missing when in fact it has not chosen a table yet.
+    assert "could not read what the tables" not in block
+
+
+def test_a_long_list_of_names_is_cut_at_the_same_ceiling_as_the_tables():
+    """AGENTS.md is re-read every turn, so an eight-hundred-schema warehouse must not be paid for on
+    each one. The count stays truthful above the cut — that is what makes the list safe to trim."""
+    block = block_for(UNSCOPED, inside=Inside("schema", [f"S{i}" for i in range(200)]))
+
+    assert "It holds 200 schemas:" in block
+    assert "and 140 more" in block
+    assert "`S59`" in block and "`S60`" not in block
+
+
+def test_a_store_sage_could_not_look_inside_says_so_rather_than_going_quiet():
+    """`None` and `[]` are different answers and the agent acts differently on each. Silence here is
+    what the agent read as permission to invent, so absence gets a sentence of its own."""
+    block = block_for(UNSCOPED, inside=None)
+
+    assert "could not read what is inside it" in block
+    assert "Do not invent rows" in block
+
+
+def test_a_store_that_holds_nothing_is_not_described_as_unreadable():
+    """The other half. A store that answered "nothing" was reached, and telling the creator Sage
+    could not look would send them to fix a connection that works."""
+    block = block_for(UNSCOPED, inside=Inside("database", []))
+
+    assert "answered with nothing inside it" in block
+    assert "could not read what is inside it" not in block
+
+
+def test_a_scope_that_reached_a_schema_still_says_its_columns_are_missing():
+    """The sentence this one replaced is still right where it was written for: a Scope deep enough
+    for columns, whose read failed. The two states must not collapse into one another."""
+    block = block_for(SNOWFLAKE, columns=[])
+
+    assert "could not read what the tables" in block
+    assert "No Scope is chosen yet" not in block
