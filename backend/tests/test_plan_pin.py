@@ -126,6 +126,44 @@ def test_a_live_plan_outranks_the_archive(tmp_path: Path):
     assert pin["status"] == "awaiting"
 
 
+# ---- what a live plan still owes -----------------------------------------------------------------
+
+
+def test_a_plan_nobody_has_built_from_owes_nothing(tmp_path: Path):
+    """The ordinary live plan: written, waiting for approval, no build has touched it. 0 is what
+    `read_plan_retry_step` means by "owes none", and the empty state reads it as "waiting"."""
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False).workspace.write_plan(PLAN)
+
+    assert orch.read_plan_pin()["retryStep"] == 0
+
+
+def test_the_pin_says_which_step_a_stopped_build_left_the_plan_owing(tmp_path: Path):
+    """A plan waiting for its first approval and a plan whose build died look identical on disk, and
+    only this tells them apart (#172). The step is carried through so the empty state can say WHY
+    the plan is still there — "nobody built it" and "a build stopped at step 4" are different news.
+
+    Deliberately not paired with a total: `steps` counts numbered lines under the Plan heading and
+    the phased parser counts briefs, so "step 4 of 3" is a reading this could produce."""
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace
+    ws.write_plan(PLAN)
+    ws.set_plan_retry_step(4)
+
+    assert orch.read_plan_pin()["retryStep"] == 4
+
+
+def test_a_consumed_plan_owes_nothing(tmp_path: Path):
+    """Archiving is what a build that FINISHED does, and it clears the resume point on the way."""
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace
+    ws.write_plan(PLAN)
+    ws.set_plan_retry_step(2)
+    ws.archive_plan()
+
+    assert orch.read_plan_pin()["retryStep"] == 0
+
+
 # ---- the name the pin says -----------------------------------------------------------------------
 
 
