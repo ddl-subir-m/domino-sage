@@ -596,14 +596,21 @@ class ResourceStillBound(Exception):
     creator has to know before the files mean anything.
     """
 
-    def __init__(self, name: str, apps: list[str], refs: list[str] | None = None) -> None:
+    def __init__(self, name: str, apps: list[str], refs: list[str] | None = None,
+                 conversations: list[str] | None = None) -> None:
         self.name = name
         self.apps = list(apps)
         self.refs = list(refs or [])
+        # Carries `conversations` for the third holder a Resource can have: a Chat Thread with a
+        # context chip on it (#168). A chip has no app source behind it and so no `refs` to offer,
+        # which is precisely why it needs naming — a holder with no files to point at would
+        # otherwise be the one holder the refusal stayed silent about.
+        self.conversations = list(conversations or [])
+        holders = self.apps + self.conversations
         # Plural verb for a plural subject: the panel puts this sentence in front of the reader as
         # it stands, so the agreement has to be right here rather than in the markup.
-        needs = "still needs" if len(self.apps) == 1 else "still need"
-        super().__init__(f"{', '.join(self.apps)} {needs} {name}")
+        needs = "still needs" if len(holders) == 1 else "still need"
+        super().__init__(f"{', '.join(holders)} {needs} {name}")
 
 
 class ResourceNotBound(Exception):
@@ -4891,11 +4898,9 @@ class Orchestrator:
         """
         if not path.startswith(_CHAT_DATA_PREFIX):
             return False
-        store = ThreadStore(project.record.path)
-        for thread in store.list():
-            for item in store.read_context(thread["id"]).get("items") or []:
-                if str(item.get("path") or "") == path:
-                    return False
+        for _, item in self._live_thread_context(project):
+            if str(item.get("path") or "") == path:
+                return False
         try:
             dest = _safe_join(project.record.path, path)
         except ValueError:
@@ -4912,6 +4917,21 @@ class Orchestrator:
         _prune_empty_dirs(
             dest.parent, _safe_join(project.record.path, _CHAT_DATA_PREFIX.rstrip("/")))
         return True
+
+    @staticmethod
+    def _live_thread_context(project: Project):
+        """Every context item on every LIVE Thread in this project, as (Thread record, item) pairs.
+
+        Through `store.list()` rather than a walk of `.sage/threads/`, and that is the whole reason
+        this is a method rather than two loops written twice. `ThreadStore.delete` writes a
+        tombstone and leaves the Thread's tree exactly where it stood, so a directory scan reads a
+        deleted conversation's chips back and lets a conversation nobody can open speak for itself
+        forever — holding a fetched file in scratch, or holding a Resource in the working set (#168).
+        """
+        store = ThreadStore(project.record.path)
+        for thread in store.list():
+            for item in store.read_context(thread["id"]).get("items") or []:
+                yield thread, item
 
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                     already_asked: bool = False):
@@ -9128,13 +9148,24 @@ class Orchestrator:
         Refuses when ANY Built App in this Project still records a Binding for it — membership is
         not a back door to unbind. A Resource is picked once for the Project; a Binding names
         exactly one app (ADR-0008).
+
+        Refuses for a live Chat conversation holding a context chip on it too (#168). Without that
+        second question the chip outlives the membership: it stays on the Thread naming a Resource
+        the Project no longer holds, and every turn after carries it to the model as though it were
+        still a member. It refuses rather than closing the chip for you — the chip is evidence about
+        turns that already happened, and rewriting a conversation to tidy the rail is the quiet
+        history-rewrite Sage declines everywhere else. Both ways out are real acts the creator can
+        take: close the chip, or delete the conversation.
         """
         rid = str(resource_id or "").strip()
         if not rid:
             return False
         bound = self._apps_that_bind(rid)
-        if bound:
-            _, first = bound[0]
+        held = self._threads_that_hold(rid)
+        if bound or held:
+            # Both questions asked before either refuses, so two holders produce one refusal naming
+            # both. Reporting the app and going quiet about the conversation would send the creator
+            # off to unbind, and straight back into a second refusal they were never warned about.
             apps = [_app_display_name(ws) for ws, _ in bound]
             # Each file is named with its app once more than one app binds. Every Built App is
             # seeded from the same template, so `src/App.tsx` in two of them is two files and two
@@ -9144,7 +9175,7 @@ class Orchestrator:
             refs = [f"{app} — {ref}" if many else ref
                     for (workspace, binding), app in zip(bound, apps)
                     for ref in self._resource_usage(workspace, binding)]
-            raise ResourceStillBound(first.display_name or first.name or rid, apps, refs)
+            raise ResourceStillBound(self._refused_resource_name(rid, bound), apps, refs, held)
         found = {"ok": False}
 
         def change(items: list[dict]) -> list[dict]:
@@ -9154,6 +9185,51 @@ class Orchestrator:
 
         self.project(start_preview=False).record.update_project_resources(change)
         return found["ok"]
+
+    def _refused_resource_name(self, rid: str, bound: list[tuple[Workspace, Binding]]) -> str:
+        """What to call the Resource in a refusal.
+
+        The Binding's own label when a Built App holds it, because that is the name the app knows it
+        by and the name its source will be searched for. The working-set row's otherwise: a chip
+        carries the leaf it named — a table, a file — and the sentence is about the parent.
+
+        The row is found by alias for the same reason the holders are. A project carrying both
+        spellings of a Data Source is removing one of them, and matching the id exactly would find
+        no row and put `data_source:ds-1` in a sentence meant to say `BigQuery_Demo`. The twin row
+        is the same Resource, so its name is the right one either way.
+        """
+        if bound:
+            _, first = bound[0]
+            return first.display_name or first.name or rid
+        aliases = self._resource_aliases(rid)
+        row = next((r for r in self.list_project_resources() if r.get("id") in aliases), None)
+        return str((row or {}).get("name") or "") or rid
+
+    def _threads_that_hold(self, resource_id: str) -> list[str]:
+        """The title of every live Chat conversation with a context chip on this Resource.
+
+        Titles, because this list is read by the person who tried the removal and a Thread id is not
+        something they can go and look at. A conversation counts once however many chips it holds:
+        the Data Source and three of its tables are still one conversation to go and open.
+
+        `parentId` as well as `resourceId` — the two fields are the same claim. A chip on the
+        Resource itself names it in `resourceId`; a table or Dataset-file chip's own id is the
+        leaf's (`table:ds-1:DWH.MARTS.DIM_ACCOUNT`) and only `parentId` names the membership row the
+        removal is about. That leaf case is the one the bug was found in.
+
+        Through the same alias set `_apps_that_bind` joins on, because a chip is written with the
+        spelling the rail had when it was dropped, and the removal arrives with the spelling the rail
+        has now.
+        """
+        rid = str(resource_id or "").strip()
+        if not rid:
+            return []
+        aliases = self._resource_aliases(rid)
+        held: dict[str, str] = {}
+        for thread, item in self._live_thread_context(self._chat_project()):
+            if aliases & {str(item.get("resourceId") or ""), str(item.get("parentId") or "")}:
+                held.setdefault(str(thread.get("id") or ""), str(thread.get("title") or "Untitled"))
+        return list(held.values())
 
     def _app_bindings(self) -> list[tuple[Workspace, list[Binding]]]:
         """Every Built App's recorded Bindings, oldest app first, one manifest read per app.
@@ -9167,6 +9243,28 @@ class Orchestrator:
             workspace = self._wm.app_workspace(self._project_id, app_id)
             out.append((workspace, parse_bindings(workspace.read_bindings())))
         return out
+
+    @staticmethod
+    def _resource_aliases(rid: str) -> set[str]:
+        """Every id one membership row can be written under, so a guard joins them all.
+
+        A Binding records the bare id where a membership row records `kind:id`, and an older project
+        keys a Data Source under `datasource:` where today's writes it under `data_source:` — the
+        backfill deliberately leaves both rows in place rather than choosing (`_MEMBERSHIP_BACKFILLED`).
+        So the same Resource reaches a guard under any of three spellings, and a guard that compares
+        the one it was handed lets a holder through under the two it was not. Shared rather than
+        written twice: `_threads_that_hold` has to join exactly the set `_apps_that_bind` joins, and
+        the pair drifting apart is a removal that one guard refuses and the other allows.
+        """
+        aliases = {rid}
+        if ":" in rid:
+            kind, _, rest = rid.partition(":")
+            aliases.add(rest)
+            if kind == "datasource":
+                aliases.add(f"{KIND_DATA_SOURCE}:{rest}")
+            elif kind == KIND_DATA_SOURCE:
+                aliases.add(f"datasource:{rest}")
+        return aliases
 
     def _apps_that_bind(
         self,
@@ -9186,14 +9284,7 @@ class Orchestrator:
         rid = str(resource_id or "").strip()
         if not rid:
             return []
-        aliases = {rid}
-        if ":" in rid:
-            kind, _, rest = rid.partition(":")
-            aliases.add(rest)
-            if kind == "datasource":
-                aliases.add(f"data_source:{rest}")
-            elif kind == "data_source":
-                aliases.add(f"datasource:{rest}")
+        aliases = self._resource_aliases(rid)
         out: list[tuple[Workspace, Binding]] = []
         for workspace, bindings in (self._app_bindings() if scanned is None else scanned):
             for b in bindings:

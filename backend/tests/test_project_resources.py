@@ -429,3 +429,208 @@ def test_adding_a_resource_again_fills_in_what_the_first_write_left_out(tmp_path
     assert row["reasoning_efforts"] == ["low", "high"]
     # Present already, so left alone — filling gaps is not a rename.
     assert row["name"] == "Sonnet"
+
+
+# ---- A conversation's chips hold a Resource too (#168) -----------------------------------------
+#
+# The guard above asks every Built App and stops there, so a Data Source a live conversation is
+# holding a table chip on could be removed out from under it: the chip stays on the Thread naming a
+# Resource the Project no longer holds, and every turn after that carries it to the model as though
+# it were still a member. The scan is the mirror of `_release_chat_file`, which has always walked
+# live Threads before releasing fetched bytes for exactly the reciprocal reason.
+#
+# It refuses rather than cascading. Stripping the chip would rewrite a conversation whose turns
+# already happened, which is the sort of quiet history-rewrite Sage avoids everywhere else, and the
+# two ways out — close the chip, delete the conversation — are both real acts the creator can take.
+
+
+def _talk_about_the_source(orch: Orchestrator, thread_id: str) -> str:
+    """Put a table chip from ds-1 on this Thread, and answer with the chip's id.
+
+    A table chip rather than the Data Source itself, because that is the shape the bug was found in:
+    the chip's own `resourceId` is a leaf's, and only its `parentId` names the membership row that
+    the removal is about.
+    """
+    chip = orch.add_thread_context(thread_id, {
+        "kind": "data_source", "name": "DIM_ACCOUNT",
+        "resourceId": "table:ds-1:DWH.MARTS.DIM_ACCOUNT",
+        "parentId": "data_source:ds-1",
+        "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
+    })
+    return chip["id"]
+
+
+def _named_thread(orch: Orchestrator, title: str) -> str:
+    tid = orch.create_thread()["id"]
+    orch.patch_thread(tid, {"title": title})
+    return tid
+
+
+def test_a_deleted_conversation_holds_no_resource_back(tmp_path: Path):
+    """`ThreadStore.delete` writes a tombstone and leaves `threads/<id>/` where it stands, so the
+    deleted conversation's `context.json` is still on disk with its chips in it. A scan over the
+    directories would read them back and let a conversation nobody can open refuse this removal for
+    the life of the project — a fresh instance of exactly the bug the guard exists to fix."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    tid = _named_thread(orch, "Positions review")
+    _talk_about_the_source(orch, tid)
+    orch.delete_thread(tid)
+
+    assert orch.remove_project_resource("data_source:ds-1") is True
+    assert orch.list_project_resources() == []
+
+
+def test_a_live_conversation_holding_a_chip_refuses_the_removal(tmp_path: Path):
+    """The conversation is named, not merely counted. A Project holds many Threads and the one
+    holding it is rarely the one on screen, so "a conversation still needs this" without a title is
+    a refusal the creator cannot act on."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+
+    with pytest.raises(ResourceStillBound) as refused:
+        orch.remove_project_resource("data_source:ds-1")
+
+    assert refused.value.conversations == ["Positions review"]
+    assert refused.value.apps == []
+    assert "Positions review still needs BigQuery_Demo" in str(refused.value)
+    assert [r["id"] for r in orch.list_project_resources()] == ["data_source:ds-1"]
+
+
+def test_a_conversation_holding_the_parent_itself_refuses_it_too(tmp_path: Path):
+    """A chip on the Data Source itself names the membership row in `resourceId` rather than in
+    `parentId`. Both fields are the same claim on the same Resource."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    tid = _named_thread(orch, "Warehouse tour")
+    orch.add_thread_context(tid, {
+        "kind": "data_source", "name": "BigQuery_Demo", "resourceId": "data_source:ds-1",
+    })
+
+    with pytest.raises(ResourceStillBound) as refused:
+        orch.remove_project_resource("data_source:ds-1")
+
+    assert refused.value.conversations == ["Warehouse tour"]
+
+
+def test_closing_the_chip_lets_the_resource_leave(tmp_path: Path):
+    """The refusal is a door rather than a wall: closing the chip is one of the two acts that
+    releases it, and the retry after it has to go through."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    tid = _named_thread(orch, "Positions review")
+    chip = _talk_about_the_source(orch, tid)
+
+    orch.remove_thread_context(tid, chip)
+
+    assert orch.remove_project_resource("data_source:ds-1") is True
+    assert orch.list_project_resources() == []
+
+
+def test_the_refusal_names_every_conversation_holding_it(tmp_path: Path):
+    """Naming one of two is a half-answer here for the same reason it is with apps: the creator
+    closes the chip the refusal named, tries again, and is refused a second time by a conversation
+    the first refusal knew about and did not say."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+    _talk_about_the_source(orch, _named_thread(orch, "Desk exposure"))
+
+    with pytest.raises(ResourceStillBound) as refused:
+        orch.remove_project_resource("data_source:ds-1")
+
+    assert sorted(refused.value.conversations) == ["Desk exposure", "Positions review"]
+
+
+def test_a_refused_removal_takes_no_chip_with_it(tmp_path: Path):
+    """It refuses; it does not tidy. The chip is evidence about turns that already happened, and
+    the person removing a Resource from the working set is not speaking for a conversation they may
+    not even have open."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    mine = _named_thread(orch, "Positions review")
+    theirs = _named_thread(orch, "Desk exposure")
+    _talk_about_the_source(orch, mine)
+    _talk_about_the_source(orch, theirs)
+
+    with pytest.raises(ResourceStillBound):
+        orch.remove_project_resource("data_source:ds-1")
+
+    for tid in (mine, theirs):
+        held = [i.get("parentId") for i in orch.thread_context(tid)["items"]]
+        assert held == ["data_source:ds-1"]
+
+
+def test_a_resource_an_app_binds_and_a_conversation_holds_refuses_once_naming_both(tmp_path: Path):
+    """Two holders, one refusal. Reporting the app and going quiet about the conversation would
+    send the creator to unbind the app and straight back into a second refusal."""
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    first = _selected(orch).app_id
+    _new_app(orch, "Churn model")
+    _bind_data_source(orch, "ds-1", "BigQuery_Demo")
+    orch.select_app(first)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+
+    with pytest.raises(ResourceStillBound) as refused:
+        orch.remove_project_resource("data_source:ds-1")
+
+    assert refused.value.apps == ["Churn model"]
+    assert refused.value.conversations == ["Positions review"]
+    assert "Churn model" in str(refused.value)
+    assert "Positions review" in str(refused.value)
+
+
+def test_the_route_answers_409_naming_the_conversations_that_still_hold_it(tmp_path: Path,
+                                                                          monkeypatch):
+    """The panel reads `conversations` off the body the same way it reads `apps`, so a chip-only
+    refusal arrives with something to act on rather than as a bare sentence."""
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
+
+    orch = _orch(tmp_path)
+    _add_source(orch)
+    _new_app(orch, "Churn model")
+    _bind_data_source(orch, "ds-1", "BigQuery_Demo")
+    _use_the_source(_selected(orch).path)
+    _talk_about_the_source(orch, _named_thread(orch, "Positions review"))
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+
+    answer = TestClient(appmod.control_app).request(
+        "DELETE", "/api/project/resources", params={"id": "data_source:ds-1"})
+
+    assert answer.status_code == 409
+    assert answer.json()["apps"] == ["Churn model"]
+    assert answer.json()["conversations"] == ["Positions review"]
+    assert answer.json()["refs"] == [".sage/queries.json", "src/Ads.tsx"]
+
+
+def test_a_chip_that_spells_the_data_source_the_old_way_still_holds_it(tmp_path: Path):
+    """An older project keys a Data Source under `datasource:` and the backfill writes the row again
+    under `data_source:`, so the chip and the membership row it names can be spelled two ways. Every
+    other id comparison in this file joins the two — `_apps_that_bind` and the backfill itself — and
+    a scan that did not would let the removal through on the one spelling nobody typed."""
+    orch = _orch(tmp_path)
+    _add_source(orch)                                   # keyed `data_source:ds-1`
+    tid = _named_thread(orch, "Positions review")
+    orch.add_thread_context(tid, {
+        "kind": "data_source", "name": "DIM_ACCOUNT",
+        "resourceId": "table:ds-1:DWH.MARTS.DIM_ACCOUNT",
+        "parentId": "datasource:ds-1",
+        "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
+    })
+
+    with pytest.raises(ResourceStillBound) as refused:
+        orch.remove_project_resource("data_source:ds-1")
+
+    assert refused.value.conversations == ["Positions review"]
+
+    # And the other way round, which is the removal of the stale twin row the backfill left behind.
+    # The Resource is named rather than keyed: a sentence reading "Positions review still needs
+    # datasource:ds-1" would put an internal id in front of someone who only ever saw a name.
+    with pytest.raises(ResourceStillBound) as twin:
+        orch.remove_project_resource("datasource:ds-1")
+
+    assert "still needs BigQuery_Demo" in str(twin.value)

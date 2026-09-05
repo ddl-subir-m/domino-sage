@@ -67,6 +67,9 @@ def test_workbench_is_the_default_ui():
     # the refusal has to carry is asserted against the route, in test_project_resources.
     assert b"err.payload && err.payload.apps" in store.content
     assert b"err.payload && err.payload.refs" in store.content
+    # A live conversation holding a context chip refuses it too, and that holder has no app source
+    # behind it — so the titles are the only thing the reader can act on (#168).
+    assert b"err.payload && err.payload.conversations" in store.content
     assert b"gatewayAliases" in store.content
     assert b"resourcesLoading" in store.content
     assert b"resourceListing" in store.content
