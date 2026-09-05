@@ -6975,15 +6975,20 @@ class Orchestrator:
                        "no other code blocks.\n\n" + current)
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
-        # Tell the UI whether a plan card still waiting for approval survives this turn. It doesn't
-        # once we're about to overwrite plan.md (a gated turn) or change the app under it; it does
-        # across an answer-only turn, which touches neither — asking a question shouldn't cost the
-        # user the plan they were reading.
-        if not answer_only and not is_approval:
+        # Tell the UI a plan card still waiting for approval did not survive this turn, because the
+        # app changed under it. It does survive an answer-only turn, which changes nothing — asking
+        # a question shouldn't cost the user the plan they were reading.
+        #
+        # And it survives a GATED turn, which used to be marked stale here on the theory that the
+        # turn was about to overwrite plan.md. It isn't yet: `write_plan` runs only once there is a
+        # plan, so a gated turn that produced none — an empty plan, or a request naming no app
+        # (#150) — left plan.md holding a plan the server would still build, with its Approve button
+        # gone from the screen. Nothing is lost by not saying it: `plan-proposed` already supersedes
+        # the previous card when a plan does arrive, and a gated turn is read-only, so it cannot be
+        # the thing that changed the app. `arch` needs no mention of its own — it implies `gate`.
+        if not answer_only and not is_approval and not gate:
             yield {"type": "plan-stale",
-                   "note": "Superseded by the architecture below." if arch
-                           else "Superseded by a newer plan below." if gate
-                           else "No longer current — the app changed after this plan."}
+                   "note": "No longer current — the app changed after this plan."}
 
         # `user_text` is what the person actually typed, when that differs from the prompt we send the
         # agent (a typed approval is expanded into the full approve prompt) — the transcript should

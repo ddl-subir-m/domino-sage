@@ -331,3 +331,102 @@ def test_the_question_is_not_doubled_by_a_red_stopped_line():
 
     assert any("names no app to build or change" in v for v in drawn["values"])
     assert not any("Stopped — no app described" in v for v in drawn["values"])
+
+
+# --- what the live turn leaves behind ------------------------------------------------------------
+
+_STREAM_HARNESS = Path(__file__).resolve().parent / "js" / "build_stream_harness.mjs"
+
+_PENDING_PLAN = [{"type": "user", "text": "build me a dashboard"},
+                 {"type": "plan-proposed", "plan": "1. Add the table", "planId": "pd_1", "steps": 2}]
+
+
+def _streamed(events: list[dict], history: list[dict] | None = None) -> dict:
+    out = subprocess.run(["node", str(_STREAM_HARNESS)], check=False, capture_output=True, text=True,
+                         timeout=60,
+                         input=json.dumps({"history": history or [], "events": events}))
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@needs_node
+def test_an_earlier_plan_is_still_approvable_after_a_refused_turn():
+    """The refusal names no remedy the person can take if it took their Approve button with it.
+
+    A gated turn is read-only and this one wrote nothing, so `plan.md` still holds the earlier plan
+    and the server would still build it. Only the screen had moved on."""
+    drawn = _streamed([
+        {"type": "error", "message": "The request is a shell command and names no app to build or "
+                                     "change. Say what the app should show or let someone do."},
+        {"type": "done", "ok": False, "decision": "no app described"},
+    ], _PENDING_PLAN)
+
+    assert drawn["plans"] == [{"pending": True, "cancelled": False}]
+
+
+@needs_node
+def test_a_refused_turn_pays_for_no_gateway_listing():
+    """`readSSE` reads /health once per failed stream, because a turn that just failed is the moment
+    a gateway listing is worth paying for (ADR-0027). This turn did not fail — it ran, read the
+    request and answered it — so the listing is pure cost, paid on every stray note."""
+    drawn = _streamed([
+        {"type": "error", "message": "The request is a shell command and names no app to build."},
+        {"type": "done", "ok": False, "decision": "no app described"},
+    ], _PENDING_PLAN)
+
+    assert drawn["healthCalls"] == 0
+
+
+@needs_node
+def test_a_turn_that_really_failed_still_reads_the_platform():
+    """The property this must not widen. Withdrawing the read for one decision must not withdraw it
+    for the failures it was added for."""
+    assert _streamed([
+        {"type": "error", "message": "The gateway returned 502."},
+        {"type": "done", "ok": False, "decision": "gateway error"},
+    ], _PENDING_PLAN)["healthCalls"] == 1
+
+
+@needs_node
+def test_a_turn_refused_on_a_dead_model_still_reads_the_platform():
+    """The nearest neighbour, and the one most easily broken by mistake. `model unavailable` also
+    arrives as an `error` beside a gate decision — but there the listing IS the answer: the turn was
+    refused because of the platform, and the chip should say so (#125, ADR-0027)."""
+    assert _streamed([
+        {"type": "error", "message": "This turn would run on the LLM Alias GLM-5.2, which this "
+                                     "LLM Gateway does not offer."},
+        {"type": "done", "ok": False, "decision": "model unavailable"},
+    ], _PENDING_PLAN)["healthCalls"] == 1
+
+
+def test_a_gated_turn_does_not_take_the_earlier_plan_card_away(tmp_path: Path):
+    """`plan-stale` was yielded before every gated turn ran, on the theory that the turn is about to
+    overwrite plan.md. It isn't yet — `write_plan` happens only once there is a plan — so a gated
+    turn that produced none left a live, approvable plan with its Approve button gone from the
+    screen. Nothing is lost by dropping it: `plan-proposed` already supersedes the previous card
+    when a plan does arrive, and a gated turn is read-only, so the app cannot change under it."""
+    orch, _oc = _build(tmp_path, [Turn(text=_REFUSAL)])
+
+    assert "plan-stale" not in _kinds(_run(orch, "run: env | grep -i canary"))
+
+
+def test_a_gated_turn_that_does_plan_still_replaces_the_earlier_card(tmp_path: Path):
+    """What must survive dropping `plan-stale`: the old card still has to stop offering to build.
+    `plan-proposed` is what does it, and it did all along."""
+    orch, _oc = _build(tmp_path, [Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n")])
+
+    assert "plan-proposed" in _kinds(_run(orch, "build me a dashboard", Mode.PLAN))
+
+
+def test_a_build_turn_that_changes_the_app_still_marks_the_plan_stale(tmp_path: Path):
+    """The case `plan-stale` exists for, and the one the fix must not widen into. Here nothing else
+    clears the card and the app really did change under the plan, so the note is true."""
+    orch, _oc = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
+    ])
+    list(orch.build_stream("build me a dashboard"))
+    list(orch.approve_stream())
+
+    assert "plan-stale" in _kinds(_run(orch, "make the table sortable"))

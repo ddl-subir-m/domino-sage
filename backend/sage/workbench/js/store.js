@@ -1165,6 +1165,11 @@ window.SW = window.SW || {};
             // rejection inside this catch, where it was previously invisible.
             const ev = JSON.parse(line.slice(6));
             if (endedBadly(ev)) failed = true;
+            // Withdrawn again by a `done` that says nothing about the platform. `endedBadly` reads
+            // the decision, but the `error` frame carrying the sentence arrives BEFORE the `done`
+            // and is a failure by frame type alone, so this has to take the flag back rather than
+            // stop it being set.
+            else if (ev.type === 'done' && NO_PLATFORM_FAULT[ev.decision]) failed = false;
             try { await onEvent(ev); } catch (err) { /* keep-alive or partial */ }
           }
         }
@@ -1222,6 +1227,14 @@ window.SW = window.SW || {};
   // and a `const` cannot be read before the line that makes it.
   const ASKED_FOR = { stopped: true, cancelled: true, 'context changed': true,
                       'plan moved on': true, ...GATE_DECISIONS };
+
+  // Endings after which a gateway listing could not be the answer, so `readSSE` must not pay for
+  // one. Deliberately not every ASKED_FOR decision: `model unavailable` also arrives as an `error`
+  // beside a gate decision, and there the listing IS the answer — that turn was refused BECAUSE of
+  // the platform, and the chip is how the person finds out (#125, ADR-0027). Here the planner read
+  // the request, found no app in it and said so; nothing was asked of the platform at all, and
+  // every stray note or shell command would otherwise buy a listing for a turn that worked (#150).
+  const NO_PLATFORM_FAULT = { 'no app described': true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
