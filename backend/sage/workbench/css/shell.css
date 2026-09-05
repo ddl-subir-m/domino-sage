@@ -388,166 +388,96 @@ a.sw-topnav-link {
 }
 .sw-dock-rail-btn:hover { background: var(--gray-200); color: var(--dark-700); }
 
-.sw-dock-tabs {
-  height: 40px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--s4);
-  padding: 0 var(--s2) 0 var(--s4);
-  border-bottom: 1px solid var(--gray-300);
-}
-.sw-dock-tab {
-  height: 100%;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: none;
-  background: none;
-  padding: 0;
-  font-family: inherit;
-  font-size: var(--fs-13);
-  font-weight: 500;
-  color: var(--gray-600);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-}
-.sw-dock-tab:hover { color: var(--dark-700); }
-.sw-dock-tab.is-active {
-  color: var(--purple-600);
-  font-weight: 600;
-  border-bottom-color: var(--purple-500);
-}
-.sw-dock-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--purple-100);
-  color: var(--purple-600);
-  font-size: var(--fs-11);
-  font-weight: 600;
-}
-.sw-dock-rail-btn .sw-dock-count {
-  position: absolute;
-  top: 0;
-  right: -2px;
-}
-
-.sw-dock-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.sw-dock-activity { flex: 1; min-height: 0; padding: var(--s3) var(--s4); }
-
 /* Resource panel --------------------------------------------------------- */
 
 .sw-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
-/* The plan is pinned above the list rather than filed inside it, because it is
-   the one artifact the whole project is aimed at. */
-.sw-plan-pin {
+/* The panel's one heading. A title, not a group label: the all-caps 11px treatment below belongs
+   to the groups INSIDE the list, and wearing it up here made the panel read as another group
+   rather than as the thing they are all in. This row is also the dock's chrome — it replaced a tab
+   bar of one tab — so it carries the Add door and the control that hides the panel. */
+.sw-panel-head {
   flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  text-align: left;
-  border: none;
-  border-bottom: 1px solid var(--gray-300);
-  background: var(--purple-100);
-  box-shadow: inset 3px 0 0 var(--purple-500);
-  padding: var(--s3);
-  cursor: pointer;
-  font-family: inherit;
-}
-.sw-plan-pin:hover { background: var(--purple-100); }
-.sw-plan-pin.is-empty {
-  background: var(--gray-100);
-  box-shadow: inset 3px 0 0 var(--gray-300);
-  cursor: default;
-  display: block;
-}
-.sw-plan-pin-head { display: flex; align-items: center; gap: 5px; color: var(--purple-700); }
-.sw-plan-pin-label {
-  flex: 1;
-  font-size: var(--fs-11);
-  font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--purple-700);
-}
-.sw-plan-pin.is-empty .sw-plan-pin-label { color: var(--gray-600); display: block; margin-bottom: 4px; }
-.sw-plan-pin-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: var(--fs-11);
-  font-weight: 600;
-  color: var(--purple-600);
-}
-.sw-plan-pin-name {
-  font-size: var(--fs-13);
-  font-weight: 600;
-  color: var(--purple-700);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sw-plan-pin-sub { font-size: var(--fs-11); color: var(--gray-600); }
-.sw-plan-pin-empty { font-size: var(--fs-12); color: var(--gray-600); line-height: 1.5; }
-
-.sw-panel-section-head {
-  flex: none;
+  height: 40px;
   display: flex;
   align-items: center;
   gap: var(--s2);
-  padding: var(--s3) var(--s3) var(--s2);
+  padding: 0 var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--gray-300);
 }
-.sw-panel-section-title {
+.sw-panel-title {
   flex: none;
+  margin: 0;
   white-space: nowrap;
-  font-size: var(--fs-11);
-  font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
+  font-size: var(--fs-14);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--dark-700);
+}
+.sw-panel-count {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--gray-200);
   color: var(--gray-600);
-}
-.sw-panel-section-count {
-  flex: 1;
   font-size: var(--fs-11);
-  color: var(--gray-500);
+  font-weight: 600;
 }
+.sw-panel-add { flex: none; }
 
-.sw-panel-search { padding: 0 var(--s3) var(--s2); border-bottom: 1px solid var(--gray-300); }
+/* A line about the list rather than a row in it: still loading, or a kind whose listing failed.
+   The error keeps the group heading above it, so "could not list" is attached to the name of the
+   thing that could not be listed. */
+.sw-panel-note {
+  padding: var(--s2) var(--s3);
+  font-size: var(--fs-12);
+  color: var(--gray-600);
+  line-height: 1.5;
+}
+.sw-panel-note.is-error { color: var(--warning-text); background: var(--warning-bg); }
 
-/* Collapsible drawers — resources open, files closed. */
-.sw-panel-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--s5); }
-.sw-drawer { border-bottom: 1px solid var(--gray-200); }
-.sw-drawer-head {
+/* Nothing in the project. Small, because this is a 280-320px rail and not a page — but it keeps
+   the shape of the full-size empty state: a mark, a line, a sentence, one way out. The button is
+   secondary; the filled one is already in the heading two rows up, and two primaries on one
+   surface is no hierarchy at all. */
+.sw-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s2);
+  padding: var(--s6) var(--s4);
+}
+.sw-panel-empty-icon {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  border: none;
-  background: var(--gray-100);
-  padding: var(--s2) var(--s3);
-  cursor: pointer;
-  font-family: inherit;
-  text-align: left;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--purple-100);
+  color: var(--purple-500);
+  font-size: var(--fs-18);
 }
-.sw-drawer-head:hover { background: var(--gray-200); }
-.sw-drawer-title {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-11);
-  font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
+.sw-panel-empty-title {
+  margin: var(--s1) 0 0;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--dark-700);
+}
+.sw-panel-empty-text {
+  margin: 0 0 var(--s1);
+  font-size: var(--fs-12);
   color: var(--gray-600);
+  line-height: 1.5;
 }
-.sw-drawer-count { font-size: var(--fs-11); color: var(--gray-500); }
-.sw-drawer-body { padding-bottom: var(--s2); }
+
+.sw-panel-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--s5); }
 .sw-panel-hint {
   display: flex;
   align-items: center;
@@ -594,6 +524,13 @@ a.sw-topnav-link {
   background: var(--purple-100);
   box-shadow: inset 2px 0 0 var(--purple-500);
 }
+/* The plan the app in the preview is being built from right now. Purple where a Binding's mark is
+   green, because these say different things: green is "this app cannot run without it", purple is
+   "this is the document the build is reading". The row is otherwise an ordinary row in an ordinary
+   group, which is the whole point of folding the pinned card into the list. */
+.sw-res-row.is-live { box-shadow: inset 2px 0 0 var(--purple-500); }
+.sw-res-row.is-live .sw-res-name { font-weight: 600; color: var(--purple-700); }
+.sw-res-row.is-live .sw-res-sub { color: var(--purple-600); }
 .sw-res-open {
   flex: 1;
   min-width: 0;
@@ -640,6 +577,46 @@ a.sw-topnav-link {
 }
 .sw-res-expand.is-spacer { cursor: default; }
 .sw-res-expand:hover { color: var(--dark-700); }
+
+/* One slot for the context state, so a row does not resize when something enters or leaves the
+   conversation. The tick is a mark and stays lit; the plus is an act and only appears under the
+   pointer, the way the overflow beside it does. */
+.sw-res-ctx {
+  flex: none;
+  width: 20px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  padding: 0;
+  color: var(--purple-500);
+}
+.sw-res-ctx.is-spacer { color: transparent; }
+.sw-res-ctx-add { color: var(--gray-500); cursor: pointer; opacity: 0; }
+.sw-res-row:hover .sw-res-ctx-add, .sw-res-ctx-add:focus-visible { opacity: 1; }
+.sw-res-ctx-add:hover { background: var(--gray-200); color: var(--purple-600); }
+
+/* The one act a row can carry on its face, rather than behind the overflow. Lit, not hover-only:
+   it is there to say the row opens into something, which is a thing to know before you point at
+   it. */
+.sw-res-action {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--purple-600);
+  cursor: pointer;
+}
+.sw-res-action:hover { background: var(--purple-100); }
 .sw-tree {
   padding: 0 12px 8px 28px;
   display: flex;
@@ -718,15 +695,6 @@ a.sw-topnav-link {
   white-space: nowrap;
 }
 
-.sw-group-empty {
-  padding: var(--s1) var(--s3) var(--s3) 28px;
-  font-size: var(--fs-12);
-  color: var(--gray-600);
-  line-height: 1.5;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
 
 /* Shared with the composer's @-mention list, the plan view, and the builder's
    decision list — all of which own a piece of conversation state. */

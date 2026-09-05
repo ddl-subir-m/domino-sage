@@ -764,12 +764,44 @@ function panelContents(tree) {
     // The overflow menu hangs inside the row it acts on and carries no class of its own, so it is
     // recognised by having items at all. Which row holds which removal is the whole question.
     if (row && n.items) { row.items = n.items; row.onMenu = n.onMenu; }
-    if (cls === 'sw-panel-section-title') {
-      section = (n.texts || []).join('');
-      row = null;
+    // The panel has one heading and its list is divided by group labels — `Data (2)`,
+    // `Plans (1)` — where it used to carry `sw-panel-section-title` heads for three different
+    // scopes (#151). The label is the section now; the count in it is dropped, because a section
+    // name that changed with its own length would be no name at all.
+    if (cls === 'sw-group-label') {
+      const said = (n.texts || []).join('');
+      const head = /^(.*) \((?:\d+|…)\)$/.exec(said);
+      // A sub-head (Datasets, Data Sources) carries no count and belongs to the group above it.
+      if (head) { section = head[1]; row = null; }
       continue;
     }
     if (cls && !cls.startsWith('sw-res-')) { row = null; continue; }
+    if (row && n.text) row.texts.push(n.text);
+  }
+  return out;
+}
+
+// The app's own surface (#151). `In {app}` left the panel — a Project-scoped list holding one
+// app's records was the double duty the panel is being freed of — and landed in the App
+// dependencies modal, which is where the app's Add and Scope doors already were (ADR-0021). Same
+// shape as `panelContents` so the two lists can be read against each other, and the two scopes are
+// still two lists rather than one.
+function appDepContents(tree) {
+  const out = [];
+  let section = null;
+  let row = null;
+  for (const n of flatten(tree)) {
+    const cls = String(n.className || '');
+    if (cls.includes('sw-app-group')) { section = (n.texts || []).join(''); row = null; continue; }
+    if (cls === 'sw-appdeps-row') {
+      row = { section, texts: [], id: n.key || null };
+      out.push(row);
+      continue;
+    }
+    // The overflow hangs inside the row it acts on and carries no class of its own, so it is
+    // recognised by having items at all. Which row holds which removal is the whole question.
+    if (row && n.items) { row.items = n.items; row.onMenu = n.onMenu; }
+    if (cls === 'sw-appdeps-foot') { row = null; continue; }
     if (row && n.text) row.texts.push(n.text);
   }
   return out;
@@ -1072,19 +1104,26 @@ for (const step of steps) {
     const tree = SW.ResourcePanel();
     const rows = panelContents(tree);
     const nodes = flatten(tree);
+    // Both surfaces off one arrival, because "one row per scope" is a claim about the pair: the
+    // Project's list here, the app's own list in the modal beside it (#151).
+    const appTree = SW.AppDependenciesModal();
+    const appNodes = flatten(appTree);
     report.push({
       step: `panel ${step.select || selected}`,
       app: (SW.store.get().activeApp || {}).name || null,
       rows,
+      appRows: appDepContents(appTree),
       renderCalls: calls.slice(),
-      // Section heads in the order they are drawn, taken off the heads themselves rather than off
-      // the rows under them — a section whose list is empty still has a head, and that is the one
-      // the question is about.
+      // The panel's one heading. It names the Project's list and the group labels under it name
+      // the kinds; neither names an app any more.
       sections: nodes
-        .filter((n) => n.className === 'sw-panel-section-title')
+        .filter((n) => n.className === 'sw-panel-title')
         .map((n) => (n.texts || []).join('')),
-      parts: nodes.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
+      parts: nodes.concat(appNodes)
+        .filter((n) => n.className && n.texts)
+        .map((n) => ({ className: n.className, texts: n.texts })),
       words: words(nodes),
+      appWords: words(appNodes),
     });
     continue;
   }
@@ -1324,8 +1363,10 @@ for (const step of steps) {
     said.length = 0;
     calls.length = 0;
     binds.length = 0;
+    // Every row the panel draws is a Project row now — the app's own list is the App dependencies
+    // modal (#151) — so the name alone identifies it.
     const rows = panelContents(SW.ResourcePanel());
-    const row = rows.find((r) => r.section === 'In this project' && r.texts.includes(step.useIn));
+    const row = rows.find((r) => r.texts.includes(step.useIn));
     if (!row) {
       throw new Error(
         `no Project row ${step.useIn} — found ${JSON.stringify(rows.map((r) => r.texts))}`
@@ -1358,14 +1399,11 @@ for (const step of steps) {
     said.length = 0;
     modals.length = 0;
     calls.length = 0;
-    const rows = panelContents(SW.ResourcePanel());
-    const inSection = rows.filter(
-      (r) => r.section && r.section !== 'In this project' && r.section !== 'In context'
-    );
+    const inSection = appDepContents(SW.AppDependenciesModal());
     const row = inSection.find((r) => r.texts.includes(step.removeFrom));
     if (!row) {
       throw new Error(
-        `no row ${step.removeFrom} in the app's section — found ${JSON.stringify(inSection.map((r) => r.texts))}`
+        `no row ${step.removeFrom} on the app's surface — found ${JSON.stringify(inSection.map((r) => r.texts))}`
       );
     }
     const item = (row.items || []).find(
@@ -1388,7 +1426,9 @@ for (const step of steps) {
 
     let cleanupCalls = null;
     let seeded = null;
-    let after = flatten(SW.ResourcePanel());
+    // The notice followed the removal onto the app's surface: it reports what an act on THIS list
+    // did, and a report on a list that no longer holds the act would be pointing at nothing.
+    let after = flatten(SW.AppDependenciesModal());
     const control = (re) => after.find((n) => n.onClick && (n.texts || []).some((t) => re.test(t)));
     if (step.cleanup) {
       const offer = control(/clean/i);
@@ -1397,13 +1437,13 @@ for (const step of steps) {
       offer.onClick();
       cleanupCalls = calls.slice();
       seeded = SW.store.get().composerSeed || null;
-      after = flatten(SW.ResourcePanel());
+      after = flatten(SW.AppDependenciesModal());
     }
     if (step.dismiss) {
       const off = control(/^Dismiss$/);
       if (!off) throw new Error('the notice could not be dismissed');
       off.onClick();
-      after = flatten(SW.ResourcePanel());
+      after = flatten(SW.AppDependenciesModal());
     }
 
     report.push({
@@ -1424,6 +1464,7 @@ for (const step of steps) {
       // Both lists after the act, plus everything the section said. The chips are the assertion
       // that the two scopes move on their own.
       rows: panelContents(SW.ResourcePanel()).map((r) => ({ section: r.section, texts: r.texts })),
+      appRows: appDepContents(SW.AppDependenciesModal()).map((r) => ({ section: r.section, texts: r.texts })),
       parts: after.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
       words: words(after),
       chipsBefore,

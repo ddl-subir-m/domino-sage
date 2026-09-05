@@ -47,7 +47,7 @@ window.SW = window.SW || {};
     { id: 'new_thread', group: 'Actions', label: 'New conversation', run: newConversation },
     { id: 'switch', group: 'Actions', label: 'Switch project', run: () => SW.store.set({ scopePickerOpen: true }) },
     { id: 'invite', group: 'Actions', label: 'Invite people', run: () => SW.store.set({ inviteOpen: true }) },
-    { id: 'resources', group: 'Actions', label: 'Open resources', run: () => SW.store.openDock('resources') },
+    { id: 'resources', group: 'Actions', label: 'Open resources', run: () => SW.store.openDock() },
   ];
 
   SW.CommandPalette = function CommandPalette() {

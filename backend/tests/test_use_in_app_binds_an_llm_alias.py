@@ -55,10 +55,11 @@ needs_node = pytest.mark.skipif(
 )
 
 
-def _row(rows: list[dict], name: str, section: str) -> dict:
-    """The one row under `section` whose name is `name`."""
-    found = [r for r in rows if r["section"] == section and name in r["texts"]]
-    assert len(found) == 1, f"{name} appears {len(found)} times under {section}: {rows}"
+def _row(rows: list[dict], name: str) -> dict:
+    """The one row whose name is `name`. No section to name: the panel is the Project's one list
+    and the app's own is the App dependencies modal, so each list is passed in whole (#151)."""
+    found = [r for r in rows if name in r["texts"]]
+    assert len(found) == 1, f"{name} appears {len(found)} times: {rows}"
     return found[0]
 
 
@@ -84,7 +85,7 @@ def test_a_row_the_app_does_not_use_says_so():
     and an unbound one read nothing at all, so a person who added an Alias to the Project saw it sit
     in the rail looking exactly as ready as one the app could actually call."""
     step = _run([{"panel": "thr_many", "select": "app_c"}])[-1]
-    loose = _row(step["rows"], "Claude Sonnet 4", "In this project")
+    loose = _row(step["rows"], "Claude Sonnet 4")
     assert "Not used by Rate curve viewer" in loose["texts"]
 
 
@@ -92,14 +93,15 @@ def test_a_row_the_app_does_not_use_says_so():
 def test_a_row_the_app_already_uses_offers_no_second_way_to_add_it():
     """"One act, one place" (ADR-0011), which #127 kept by excluding a required row from the panel's
     door and ADR-0021 keeps by there being no panel door at all. Still asked of this row, because the
-    claim is about what a person reads here: the section two inches down already says the app holds
-    this Binding, and a second way to add it would be an act with no effect beside a row saying so."""
+    claim is about what a person reads here: the row's own subtitle already says the app holds this
+    Binding, and a second way to add it would be an act with no effect beside a row saying so."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    bound = _row(step["rows"], "Claude Sonnet 4", "In this project")
+    bound = _row(step["rows"], "Claude Sonnet 4")
     assert "Required by Desk dashboard" in bound["texts"]
     assert not any(i["label"] == "Use in Desk dashboard" for i in bound["items"])
-    # And the act that DOES belong to a held Binding is still the app section's, untouched.
-    in_app = _row(step["rows"], "Claude Sonnet 4", "In Desk dashboard")
+    # And the act that DOES belong to a held Binding is still the app's own list's, untouched —
+    # it moved surface with that list and did not change.
+    in_app = _row(step["appRows"], "Claude Sonnet 4")
     assert any(i["label"] == "Remove from Desk dashboard" for i in in_app["items"])
     assert not any(i["label"] == "Use in Desk dashboard" for i in in_app["items"])
 
@@ -110,7 +112,7 @@ def test_chat_offers_the_conversation_act_and_nothing_app_scoped():
     none, so both the act and the marker would be naming an app that is not on screen. What Chat
     keeps is the act it has always had, which the handoff turns into a Binding."""
     step = _run([{"panel": "thr_many", "select": "app_c", "mode": "chat"}])[-1]
-    row = _row(step["rows"], "Claude Sonnet 4", "In this project")
+    row = _row(step["rows"], "Claude Sonnet 4")
     assert not any("Not used by" in t for t in row["texts"])
     assert not any(i["label"] == "Use in Rate curve viewer" for i in row["items"])
     assert any(i["label"] == "Use in this chat" for i in row["items"])

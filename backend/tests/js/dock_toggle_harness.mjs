@@ -78,7 +78,11 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['util.js', 'prefs.js', 'theme.js', 'router.js', 'store.js', 'components/shell.js']) {
+// `components/resource-panel.js` joins the list because the Hide button moved into it: the dock
+// drew a tab bar with the control on it, and there is one panel now, so the panel draws its own.
+for (const f of ['util.js', 'prefs.js', 'theme.js', 'router.js', 'store.js',
+                 'components/resource-tree.js', 'components/resource-panel.js',
+                 'components/shell.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
@@ -94,12 +98,25 @@ sandbox.ReactDOM.createRoot = () => ({ render: (el) => rendered.push(el) });
 vm.runInContext(fs.readFileSync(ROOT + 'app.js', 'utf8'), sandbox, { filename: 'app.js' });
 rendered[0].t(rendered[0].p);
 
-// SubNav and Dock are private to the shell's module, so both are reached the way the Workbench
-// reaches them: through SW.Shell, whose children they are.
+// Dock is private to the shell's module, so it is reached the way the Workbench reaches it:
+// through SW.Shell, whose child it is. `deep` then calls the function components inside it, which
+// is what puts the panel's own controls — the Hide button among them — on the walk.
 function part(name) {
   const shell = SW.Shell({ mode: 'chat', route: { mode: 'chat' }, children: null });
   const node = walk(shell).find(({ node: n }) => typeof n.t === 'function' && n.t.name === name);
   return node ? node.node.t(node.node.p) : null;
+}
+
+// The tree with every function component in it CALLED, so a control the Dock delegates to its
+// panel is reachable from the Dock. antd's stubs are strings and are stepped over by the `typeof`
+// check; `Input` has no stub here at all.
+function deep(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 40) return node;
+  if (Array.isArray(node)) return node.map((child) => deep(child, depth));
+  if (typeof node.t === 'function') {
+    return { ...node, c: [deep(node.t(Object.assign({}, node.p, { children: node.c })), depth + 1)] };
+  }
+  return { ...node, c: (node.c || []).map((child) => deep(child, depth)) };
 }
 
 function walk(tree) {
@@ -128,10 +145,13 @@ function press(door) {
   if (door === 'shortcut') {
     listeners.keydown({ metaKey: true, key: '/', target: { tagName: 'BODY' }, preventDefault() {} });
   } else {
-    // The fold button is only drawn while the panel is open, so a closed start has none to press.
-    const hit = door === 'subnav'
-      ? byLabel(part('SubNav'), 'Toggle side panel')
-      : byLabel(part('Dock'), 'Hide panel');
+    // `fold` is the panel's own Hide button, drawn only while the panel is open; `rail` is the
+    // collapsed dock's, drawn only while it is shut. Two controls, two states, and each one absent
+    // from the other's — which is the shape the sub bar's third copy is gone from (#151).
+    const hit = byLabel(
+      deep(part('Dock')),
+      door === 'fold' ? 'Hide the side panel' : 'Show resources'
+    );
     if (!hit) return { absent: true };
     // The caption is half the claim: this bug was a control that said one thing and did another.
     caption = hit.parent && hit.parent.t === 'Tooltip' ? hit.parent.p.title : null;
@@ -152,7 +172,7 @@ function press(door) {
 }
 
 console.log(JSON.stringify({
-  subnav: press('subnav'),
   fold: press('fold'),
+  rail: press('rail'),
   shortcut: press('shortcut'),
 }));

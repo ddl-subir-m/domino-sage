@@ -83,8 +83,15 @@ def test_workbench_is_the_default_ui():
 
     panel = client.get("/js/components/resource-panel.js")
     assert panel.status_code == 200
-    assert b"In context" in panel.content
-    assert b"In this project" in panel.content
+    # One heading, and it is the panel's title rather than a section head inside it. The dock's
+    # tab said `{project} resources` and the head under it said `In this project` — one list, named
+    # twice, and only one of the two names claims no type (CONTEXT.md). `In context` went with the
+    # other head: context is the chips over the composer plus a mark on the row (#151).
+    assert b"'In this project'" in panel.content
+    assert b"In context" not in panel.content
+    assert b"sw-panel-title" in panel.content
+    # The Project's list is not a search surface — the catalogue behind Add is (#151).
+    assert b"Filter this project" not in panel.content
     assert b"addToContext" in panel.content
     assert b"MCPs" in panel.content
     assert b"Agents" in panel.content

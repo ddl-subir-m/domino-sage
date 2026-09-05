@@ -2,13 +2,21 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useRef, Fragment } = React;
-  const { Input, Tooltip, Button, Tag, Dropdown } = antd;
+  const { Tooltip, Button, Tag, Dropdown } = antd;
   const {
-    SearchOutlined, DownOutlined, RightOutlined, PlusOutlined, MoreOutlined,
-    FolderOutlined, FileTextOutlined, ArrowRightOutlined, CloseOutlined,
+    DownOutlined, RightOutlined, PlusOutlined, MoreOutlined, DoubleRightOutlined,
+    ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined,
   } = icons;
 
-  // What the caller can pick now. Agents / Skills / MCPs stay visible until OpenCode config wires them.
+  // What the caller can pick now. Agents / Skills / MCPs are still listed because OpenCode config
+  // will wire them; they draw nothing until it does, which is the point of the rule below.
+  //
+  // A group is drawn only when it HOLDS something, or when its listing failed. Empty headings were
+  // the panel's loudest noise: six subheadings over nothing, in a 320px rail whose whole job is to
+  // show what the Project has. The error half of that rule is not a nicety — `GET /api/resources`
+  // carries its reason per kind on purpose ("each group in the rail renders its own list or its own
+  // reason"), and a group hidden for being empty when it is really unknown would turn "the gateway
+  // is not answering" into "you have no models".
   const GROUPS = [
     {
       key: 'data',
@@ -30,124 +38,21 @@ window.SW = window.SW || {};
       label: 'Predictive models',
       subgroups: [{ kind: 'model_predictive' }],
     },
-    {
-      key: 'agents',
-      label: 'Agents',
-      placeholder: true,
-      subgroups: [{ kind: 'agent' }],
-    },
-    {
-      key: 'skills',
-      label: 'Skills',
-      placeholder: true,
-      subgroups: [{ kind: 'skill' }],
-    },
-    {
-      key: 'mcp',
-      label: 'MCPs',
-      placeholder: true,
-      subgroups: [{ kind: 'mcp' }],
-    },
+    { key: 'agents', label: 'Agents', subgroups: [{ kind: 'agent' }] },
+    { key: 'skills', label: 'Skills', subgroups: [{ kind: 'skill' }] },
+    { key: 'mcp', label: 'MCPs', subgroups: [{ kind: 'mcp' }] },
+    // The Project's own Uploads. It was a collapsible drawer pinned to the bottom of the panel —
+    // its own pattern, its own chevron, its own empty sentence — for a list that behaves like every
+    // other group. Folded in here: one pattern, and it disappears when there are no files, which
+    // the drawer never did.
+    { key: 'file', label: 'Files', subgroups: [{ kind: 'file' }] },
   ];
-
-  const EMPTY_HINT = {
-    data: 'No data here yet.',
-    model_llm: 'No language models here yet.',
-    model_predictive: 'No predictive models here yet.',
-    agents: 'No agents here yet.',
-    skills: 'No skills here yet.',
-    mcp: 'No MCPs here yet.',
-  };
 
   const ERROR_KEYS = {
     data: ['datasets', 'data_sources'],
     model_llm: ['llm_aliases'],
     model_predictive: ['model_apis'],
   };
-
-  // The plan the app is being built from: `.sage/plan.md` while it waits for approval, and the
-  // plan the last build consumed once it has been. Opens the plan document behind it. A workspace
-  // whose plan predates plan documents has no id to open, and there the raw markdown is still the
-  // whole plan, so it opens in a modal instead of sending the user to a page that cannot load.
-  function PlanCard({ plan }) {
-    const [open, setOpen] = useState(false);
-
-    if (!plan) {
-      return h(
-        'div',
-        { className: 'sw-plan-pin is-empty' },
-        h('span', { className: 'sw-plan-pin-label' }, 'Plan'),
-        h(
-          'span',
-          { className: 'sw-plan-pin-empty' },
-          'No plan yet.'
-        )
-      );
-    }
-
-    const built = plan.status === 'built';
-    const steps = plan.steps === 1 ? '1 step' : `${plan.steps || 0} steps`;
-    // Live doesn't mean "waiting for approval" anymore — the plan doc's own status (draft/
-    // in_review/approved) rides along while plan.md is still live, ahead of any build.
-    const PENDING_LABEL = { draft: 'Draft', in_review: 'In review', approved: 'Approved' };
-    const pendingLabel = PENDING_LABEL[plan.status] || 'Waiting for approval';
-
-    return h(
-      Fragment,
-      null,
-      h(
-        'button',
-        {
-          className: `sw-plan-pin${built ? ' is-blessed' : ''}`,
-          onClick: () => (plan.planId ? SW.store.openPlanArtifact(plan.planId) : setOpen(true)),
-        },
-        h(
-          'span',
-          { className: 'sw-plan-pin-head' },
-          h(FileTextOutlined, { style: { fontSize: 11 } }),
-          // "a plan", not a bare "Working from": the line below is the PLAN's title, and an app
-          // is named from its plan at the handoff, so the two read alike until somebody renames
-          // the app. Without the noun the old name reads as this app's, gone stale. Chat's own
-          // plan bar already says these words (`chat.js`), so it is the term the Workbench uses.
-          h('span', { className: 'sw-plan-pin-label' }, built ? 'Working from a plan' : 'Plan'),
-          h('span', { className: 'sw-plan-pin-open' }, 'Open', h(ArrowRightOutlined, { style: { fontSize: 9 } }))
-        ),
-        // The name is one line and a plan title is a sentence, so it truncates. The tooltip is the
-        // only way to read the rest without opening it.
-        h('span', { className: 'sw-plan-pin-name', title: plan.title }, plan.title),
-        h(
-          'span',
-          { className: 'sw-plan-pin-sub' },
-          built ? `Built · ${steps}` : `${pendingLabel} · ${steps}`
-        )
-      ),
-      open &&
-        h(
-          antd.Modal,
-          {
-            open: true,
-            // Not `plan.title` — that is the plan's own first line, which the body below already
-            // renders. The transcript's plan card labels itself the same way for the same reason.
-            title: built ? 'The plan this app was built from' : `Plan, ${pendingLabel.toLowerCase()}`,
-            footer: null,
-            width: 640,
-            onCancel: () => setOpen(false),
-          },
-          h('div', { className: 'sw-plan-md' }, SW.util.markdown(plan.markdown || ''))
-        )
-    );
-  }
-
-  function resourceFromAttachment(att) {
-    return {
-      id: att.resourceId || att.id,
-      name: att.resourceName,
-      kind: att.resourceKind || 'file',
-      path: att.path,
-      bindingKey: att.bindingKey,
-      subtitle: att.addedBy === 'sage' ? `${SW.brand.assistant()} added this` : 'You added this',
-    };
-  }
 
   SW.ResourceRow = function ResourceRow({
     resource,
@@ -159,13 +64,24 @@ window.SW = window.SW || {};
     // that act is on the Built App's own surface now (ADR-0021). Set by the Project list only; see
     // the call site.
     saysAppUse,
-    // The Built App this row is a record of, and the record itself: `{ app, binding }` or
-    // `{ app, attachment }`. Only the "In this app" rows carry it, because only they are the list
-    // that owns that scope — a Project row's removal is the Project's (ADR-0011).
-    appScope,
     onOpen,
     contextItem,
-    attached,
+    // Whether this Resource is in the Conversation's context. Drawn as a mark, never as the act:
+    // the chips over the composer are where context is shown and taken back (#137), and this row
+    // only says whether the thing you are looking at is one of them.
+    inContext,
+    // Chat only. The cheap half of the pair the mark leaves open — one click to put a row into the
+    // Conversation, which is a Session-context door and so one the panel is allowed to own
+    // (ADR-0021's table). Build has no verb for it (#147), so Build passes none.
+    onAddToContext,
+    // A single always-visible act, for a row whose whole point is to be opened into something else.
+    // `{ icon, title, onClick }`. Plans carry one; nothing else does yet.
+    action,
+    // Suppress the overflow entirely, rather than drawing the disabled one below. For a row that
+    // was never going to have a menu — a plan is not a Resource and holds none of the three scopes
+    // this menu acts on — where "no actions here, check the other modes" would be a wrong answer
+    // rather than a dead end.
+    noMenu,
     expandable,
     expanded,
     onToggleExpand,
@@ -196,8 +112,8 @@ window.SW = window.SW || {};
       : [
           ...(inChat
             ? [{
-                key: attached ? 'remove-resource-from-conversation' : 'mention',
-                label: attached ? 'Stop using here' : 'Use in this chat',
+                key: inContext ? 'remove-resource-from-conversation' : 'mention',
+                label: inContext ? 'Stop using here' : 'Use in this chat',
               }]
             : []),
           ...(isScratch
@@ -215,23 +131,6 @@ window.SW = window.SW || {};
               : writableDatasets.length
               ? [{ key: 'to-app', label: `Add to ${app.name}` }]
               : [noWritableDataset]
-            : []),
-          // The third of the three scopes, beside the two this menu already named. Every label says
-          // which list it acts on, because that is the only thing telling the three apart.
-          ...(appScope
-            ? [
-                { type: 'divider' },
-                { key: 'remove-from-app', label: `Remove from ${appScope.app.name}`, danger: true },
-                // Sage's own bytes, not a Dataset file someone else already had — the door that
-                // destroys them belongs beside the one that only drops the app's symlink (ADR-0023).
-                ...(appScope.attachment && SW.util.isSageUpload(appScope.attachment)
-                  ? [{
-                      key: 'delete-from-dataset',
-                      label: `Delete from ${appScope.attachment.dataset}`,
-                      danger: true,
-                    }]
-                  : []),
-              ]
             : []),
           ...(resource.membershipParent
             ? [
@@ -253,12 +152,6 @@ window.SW = window.SW || {};
       if (key === 'remove-resource-from-conversation') {
         return SW.store.removeResourceFromConversation(resource.id);
       }
-      if (key === 'remove-from-app') {
-        return appScope.binding
-          ? SW.store.removeBindingFromApp(appScope.binding)
-          : SW.store.removeAttachmentFromApp(appScope.attachment);
-      }
-      if (key === 'delete-from-dataset') return SW.store.deleteAttachmentFromApp(appScope.attachment);
       if (key === 'remove') return SW.store.removeFromProject(resource);
       if (key === 'to-app') return SW.store.addScratchToDataset(resource, '');
       if (key === 'delete-scratch') return SW.store.deleteScratchFile(resource);
@@ -293,6 +186,7 @@ window.SW = window.SW || {};
           (required ? ' is-required' : '') +
           (highlighted ? ' is-highlighted' : '') +
           (contextItem ? ' is-context' : '') +
+          (resource.live ? ' is-live' : '') +
           (menuOpen ? ' is-menu-open' : ''),
       },
       h(
@@ -351,7 +245,63 @@ window.SW = window.SW || {};
             h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
           )
       ),
-      contextItem
+
+      // One slot, two states, so nothing on the row moves as context changes. The mark is a mark
+      // and not a button: taking something back out is what the chip's own × does, and what the
+      // drawer behind this row offers in words. Only the ADD is a click, and only where the verb
+      // has a Conversation on screen to name.
+      inContext
+        ? h(
+            Tooltip,
+            { title: SW.util.IN_CONTEXT_TITLE },
+            h(
+              'span',
+              { className: 'sw-res-ctx', 'aria-label': `${resource.name} is in this conversation` },
+              h(CheckCircleFilled, { style: { fontSize: 12 } })
+            )
+          )
+        : onAddToContext
+        ? h(
+            Tooltip,
+            { title: 'Use in this chat' },
+            h(
+              'button',
+              {
+                className: 'sw-res-ctx sw-res-ctx-add',
+                'aria-label': `Use ${resource.name} in this chat`,
+                onClick: (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onAddToContext(resource);
+                },
+              },
+              h(PlusOutlined, { style: { fontSize: 11 } })
+            )
+          )
+        : h('span', { className: 'sw-res-ctx is-spacer' }),
+
+      action &&
+        h(
+          Tooltip,
+          { title: action.title },
+          h(
+            'button',
+            {
+              className: 'sw-res-action',
+              'aria-label': action.title,
+              onClick: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                action.onClick();
+              },
+            },
+            h(action.icon, { style: { fontSize: 11 } })
+          )
+        ),
+
+      noMenu
+        ? null
+        : contextItem
         ? h(
             'button',
             {
@@ -406,12 +356,10 @@ window.SW = window.SW || {};
 
   SW.ResourcePanel = function ResourcePanel() {
     const {
-      resourceGroups, resourceErrors, activeApp, panelFilter, projectPlan, bindings, attachments,
-      appAttachments, appRemoval, resourcesLoading,
+      resourceGroups, resourceErrors, activeApp, panelFilter, projectPlan, activePlanId, plans,
+      apps, bindings, attachments, resourcesLoading,
     } = SW.store.get();
-    const [query, setQuery] = useState('');
     const [collapsed, setCollapsed] = useState({});
-    const [filesOpen, setFilesOpen] = useState(false);
     const fileRef = useRef(null);
 
     // Opened by clicking a row and by nothing else. The refusal card used to ask for one from
@@ -422,46 +370,23 @@ window.SW = window.SW || {};
     const [expandedId, setExpandedId] = useState(null);
 
     // What the selected app is bound to, keyed the way a Project row is (#99) — see
-    // `SW.util.bindingId`. The "In this app" rows below take the same key, and they have to: the
-    // two sections describe one list from two sides, so a Resource marked required up here and a
-    // row down there are the same record or the panel is contradicting itself.
+    // `SW.util.bindingId`. This is now the ONLY place the panel says what an app needs: the second
+    // list that said it from the other side is the App dependencies modal, which is the app's own
+    // surface and therefore where its removals belong (ADR-0021, extending ADR-0011).
     const requiredIds = new Set((bindings || []).map((b) => SW.util.bindingId(b)));
     const attachedIds = new Set((attachments || []).map((a) => a.resourceId));
     const filterGroup = panelFilter && SW.util.RESOURCE_META[panelFilter]
       ? SW.util.RESOURCE_META[panelFilter].group
       : null;
 
-    const matches = (r) => r.name.toLowerCase().includes(query.trim().toLowerCase());
-    const visible = (kind) => (resourceGroups[kind] || []).filter(matches);
-    const files = (resourceGroups.file || []).filter(matches);
+    const rows = (kind) => resourceGroups[kind] || [];
 
-    const inBuild = SW.router.get().mode === 'build';
     const inChat = SW.router.get().mode === 'chat';
-    const needle = query.trim().toLowerCase();
-    const kindForBinding = (kind) =>
-      kind === 'data_source' ? 'datasource'
-        : kind === 'llm_alias' ? 'model_llm'
-        : kind === 'model_api' ? 'model_predictive'
-        : kind;
-    // Both of the app's lists, read out of the store rather than fetched: `refreshAppScope` assigns
-    // them together with the app, so anything drawn here is already the selected app's (#95).
-    const inApp = (bindings || []).filter((b) =>
-      !needle || (b.display_name || b.name || '').toLowerCase().includes(needle)
-    );
-    const fileName = (a) => String(a.file || a.path || '').split('/').pop();
-    const inAppFiles = (appAttachments || []).filter((a) =>
-      !needle || fileName(a).toLowerCase().includes(needle)
-    );
+    const inBuild = SW.router.get().mode === 'build';
 
-    const openResource = (resource) =>
-      resource.kind === 'plan'
-        ? SW.store.openPlanArtifact(resource.id)
-        : SW.store.previewResource(resource.id);
+    const openResource = (resource) => SW.store.previewResource(resource.id);
 
-    const addFromPanel = (resource) => {
-      if (attachedIds.has(resource.id)) return openResource(resource);
-      return SW.store.addToContext(resource, { quiet: true });
-    };
+    const addToContext = (resource) => SW.store.addToContext(resource, { quiet: true });
 
     const addMenu = {
       items: [
@@ -474,80 +399,48 @@ window.SW = window.SW || {};
       },
     };
 
-    const total = GROUPS.reduce(
-      (acc, g) => acc + g.subgroups.reduce((n, s) => n + visible(s.kind).length, 0),
-      0
+    // Which plan the surface in front of you is working from. One rule, two answers, because the
+    // two modes stand in different things: Build stands in an app, so it is the document plan.md
+    // was copied from (`projectPlan.planId`); Chat stands in a Conversation, so it is that
+    // Conversation's plan — the one its own plan bar offers to open. Neither is "the project's
+    // plan", because there is no such thing: a plan belongs to an app (ADR-0008), which is why the
+    // rows below name theirs.
+    const livePlanId = String(
+      (inBuild ? (projectPlan && projectPlan.planId) : activePlanId) || ''
     );
-
-    // Both group labels, always, even over an empty kind. The Build header omits one for the
-    // opposite reason: it is a glance, and naming a kind with nothing in it says the app ships
-    // something it does not. This is where someone arrived intending to act, so
-    // "Files it carries — none" answers the question they came with (ADR-0011).
-    //
-    // `held` is what the APP records, not what the filter left: a search matching nothing does not
-    // make the app's list empty, and a label saying it did would be the wrong answer to a question
-    // about the app.
-    const appGroup = (label, held, rows) =>
-      h(
-        Fragment,
-        { key: label },
-        h(
-          'div',
-          { className: 'sw-res-subgroup' },
-          h('span', { className: 'sw-group-label sw-app-group' }, held ? label : `${label} — none`)
-        ),
-        rows
-      );
-
-    // Which part of the Resource the app reads, for the one kind that records a part: the levels
-    // chosen, dotted, exactly as `Binding.scope` joins them for the agent. Empty for every other
-    // kind — there the kind is still the most this row can say.
-    //
-    // It earns the slot because it is the only thing on screen that CHANGES when a Scope moves, and
-    // the Scope moves without the Binding moving: the sign says `Required by {app}` before and
-    // after. A row that names the kind tells you the app reads a Data Source, which its own icon
-    // already said.
-    const bindingRow = (b) => {
-      const scope = SW.util.scopeText(b);
-      // A Data Source with no Scope is NAMED rather than described by its kind (#142). Binding and
-      // scoping are two acts, so this is the ordinary state between them and the word for it has to
-      // be a state rather than an error — the Binding stands, and what is not chosen yet is which
-      // part of the source the app reads. The door that chooses it is on the Build header, which is
-      // the surface that owns the Scope (ADR-0021); this list says where things are dealt with and
-      // is not where they are dealt with.
-      const unscoped = SW.util.recordsScope(b.kind) && !scope;
-      return h(SW.ResourceRow, {
-        key: SW.util.bindingId(b),
-        resource: {
-          id: SW.util.bindingId(b),
-          name: b.display_name || b.name,
-          kind: kindForBinding(b.kind),
-          subtitle: scope || (unscoped ? SW.util.NO_SCOPE_YET : (b.kind || '').replace(/_/g, ' ')),
-          // Only the Scope is worth a tooltip: the kind words are short enough to never truncate,
-          // and a tooltip repeating a label in full is noise on every row that does not need one.
-          subtitleFull: scope || undefined,
-        },
-        // These rows ARE the app's list — the literal is them describing themselves, and it keeps
-        // the marker the Project rows get. No `app`, though: with one, the subtitle would read
-        // "Required by this app" under a head already naming the app, so the row would repeat its
-        // own section instead of naming its kind (#99).
-        required: true,
-        appScope: activeApp ? { app: activeApp, binding: b } : null,
-        onOpen: () => {},
-      });
+    const appName = (id) => {
+      const found = (apps || []).find((a) => a.id === id);
+      return found ? found.name : '';
     };
 
-    // This list is the ONE place an Attachment appears (#148, ADR-0011), and since it is also the
-    // only place, the row it draws is the row the @ menu offers and the turn resolves — one
-    // derivation, in `SW.util.attachmentRow`, rather than three that agree until one is edited.
-    const fileRow = (a) =>
-      h(SW.ResourceRow, {
-        key: a.path,
-        resource: SW.util.attachmentRow(a),
-        required: true,
-        appScope: activeApp ? { app: activeApp, attachment: a } : null,
-        onOpen: () => {},
-      });
+    // Newest first, which is the order the server lists them in.
+    const planDocs = plans || [];
+    const planRows = planDocs.map((plan) => {
+      const status = SW.util.PLAN_STATUS[plan.status];
+      const owner = appName(plan.appId);
+      const live = livePlanId && String(plan.id) === livePlanId;
+      return {
+        id: plan.id,
+        name: plan.title || 'Untitled plan',
+        kind: 'plan',
+        live,
+        // Which app, because a plan is app-specific and this list is the Project's (ADR-0008). A
+        // plan drafted in Chat has no app yet — the reference is stamped on at the handoff — and
+        // saying so is the answer somebody looking for their draft came for.
+        subtitle: [
+          live && inBuild && projectPlan && projectPlan.status === 'built'
+            ? 'Built'
+            : (status ? status.label : ''),
+          owner || (plan.appId ? '' : 'Not built yet'),
+        ].filter(Boolean).join(' · '),
+      };
+    });
+
+    const groupRows = (group) =>
+      group.subgroups.map((sub) => ({ sub, rows: rows(sub.kind) }));
+
+    const total = planDocs.length
+      + GROUPS.reduce((acc, g) => acc + g.subgroups.reduce((n, s) => n + rows(s.kind).length, 0), 0);
 
     const rowFor = (resource) => {
       const expandable = resource.membershipParent
@@ -569,6 +462,7 @@ window.SW = window.SW || {};
             subtitle: activeApp ? `Chat-only — not in ${activeApp.name}` : 'Chat-only — not in any app yet',
           }
         : resource;
+      const inContext = attachedIds.has(resource.id);
       return h(
         Fragment,
         { key: resource.id },
@@ -577,10 +471,11 @@ window.SW = window.SW || {};
           required: requiredIds.has(resource.id),
           app: activeApp,
           saysAppUse,
-          attached: attachedIds.has(resource.id),
+          inContext,
+          onAddToContext: inChat && !inContext ? addToContext : null,
           highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
             && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
-          onOpen: inChat ? addFromPanel : openResource,
+          onOpen: openResource,
           expandable,
           expanded,
           onToggleExpand: () => setExpandedId(expanded ? null : resource.id),
@@ -589,7 +484,38 @@ window.SW = window.SW || {};
           // No app is passed down any more (#142). The tree used to be handed one so it could hang
           // `Use in {app}` beside the crumb; that act is on the Built App's own surface now
           // (ADR-0021), and what is left here is looking at what the Resource contains.
-          h(SW.ResourceTree, { resource, query: needle, variant: 'rail' })
+          h(SW.ResourceTree, { resource, query: '', variant: 'rail' })
+      );
+    };
+
+    const planRowFor = (row) =>
+      h(SW.ResourceRow, {
+        key: row.id,
+        resource: row,
+        // Opening the plan is the whole of what this row does, so it is the row's own click AND an
+        // icon that says so. A plan has an editor behind it rather than a details drawer, and
+        // nothing else in this list opens into one — the icon is what makes that legible before
+        // the click rather than after it.
+        onOpen: () => SW.store.openPlanArtifact(row.id),
+        action: {
+          icon: ArrowRightOutlined,
+          title: 'Open the plan',
+          onClick: () => SW.store.openPlanArtifact(row.id),
+        },
+        noMenu: true,
+      });
+
+    const groupLabel = (key, label, count) => {
+      const isCollapsed = collapsed[key];
+      return h(
+        'div',
+        {
+          className: 'sw-res-group-label',
+          onClick: () => setCollapsed({ ...collapsed, [key]: !isCollapsed }),
+          role: 'button',
+        },
+        h(isCollapsed ? RightOutlined : DownOutlined, { style: { fontSize: 9, color: '#8F8FA3' } }),
+        h('span', { className: 'sw-group-label' }, `${label} (${count})`)
       );
     };
 
@@ -597,136 +523,62 @@ window.SW = window.SW || {};
       'div',
       { className: 'sw-panel' },
 
-      inBuild &&
-        h(PlanCard, { plan: projectPlan }),
-
-      inChat &&
-        h(
-          'div',
-          { className: 'sw-panel-section-head' },
-          h('span', { className: 'sw-panel-section-title' }, 'In context'),
-          h('span', { className: 'sw-panel-section-count' }, (attachments || []).length)
-        ),
-      inChat &&
-        h(
-          'div',
-          { className: 'sw-in-context' },
-          (attachments || []).length === 0
-            ? h(
-                'div',
-                { className: 'sw-caption' },
-                'Nothing here yet. Add one below, or type @.'
-              )
-            : attachments.map((att) =>
-                h(SW.ResourceRow, {
-                  key: att.id,
-                  resource: resourceFromAttachment(att),
-                  contextItem: att,
-                  onOpen: openResource,
-                })
-              )
-        ),
-
-      // Headed by the app rather than by "this app": a Project holds many, and ADR-0008 makes which
-      // one a question every surface has to answer. This one has to twice over — it is where #92's
-      // header pointers land, and a pointer is a promise that the destination can act.
-      inBuild &&
-        h(
-          'div',
-          { className: 'sw-panel-section-head' },
-          h(
-            'span',
-            { className: 'sw-panel-section-title' },
-            `In ${activeApp ? activeApp.name : 'this app'}`
-          ),
-          h('span', { className: 'sw-panel-section-count' }, inApp.length + inAppFiles.length)
-        ),
-      inBuild &&
-        h(
-          'div',
-          { className: 'sw-in-app' },
-          // What the last removal reported, after the act. Here rather than in a toast because it
-          // is only worth having if it can be acted on, and five seconds is not long enough to read
-          // a file list and decide (ADR-0011).
-          appRemoval &&
-            h(
-              'div',
-              { className: 'sw-panel-hint sw-app-notice' },
-              h('span', { className: 'sw-app-notice-text' }, appRemoval.text),
-              // Writes the prompt into the composer and stops. Firing the turn from here could be
-              // refused by the turn lock, and would put work past a plan gate nobody read.
-              appRemoval.prompt &&
-                h(
-                  Button,
-                  {
-                    type: 'link',
-                    size: 'small',
-                    style: { padding: 0, height: 'auto' },
-                    onClick: () => SW.store.seedComposer(appRemoval.prompt),
-                  },
-                  `Ask ${SW.brand.assistant()} to clean this up`
-                ),
-              h(
-                Button,
-                {
-                  type: 'link',
-                  size: 'small',
-                  style: { padding: 0, height: 'auto' },
-                  onClick: () => SW.store.dismissAppRemoval(),
-                },
-                'Dismiss'
-              )
-            ),
-          (bindings || []).length === 0 && (appAttachments || []).length === 0
-            ? h('div', { className: 'sw-caption' }, SW.util.appScopeEmpty('Nothing yet.'))
-            : [
-                // Named by what the app cannot do without them, never by the record's own word
-                // (ADR-0025). Through `SW.brand.text` because that is a marked position: neither
-                // label carries a token today, and routing them anyway is what puts them where the
-                // lint can read them, so the next edit to either one cannot smuggle a name past it.
-                appGroup(
-                  SW.brand.text('Needs to run'), (bindings || []).length, inApp.map(bindingRow)
-                ),
-                appGroup(
-                  SW.brand.text('Files it carries'),
-                  (appAttachments || []).length,
-                  inAppFiles.map(fileRow)
-                ),
-              ]
-        ),
-
+      // The panel names itself, once, in the shell's own heading voice rather than the all-caps
+      // group label the section heads used to wear — a rail with three shouting subheadings and no
+      // title reads as three lists rather than one panel. The dock drew a tab bar here; there is
+      // one panel now, so a tab that can only be the tab you are on is a control with nothing to
+      // choose. Hiding the panel is the one act that belonged to that bar, and it stays: it is the
+      // panel's own control, and the sub bar's near-identical twin two rows up is gone.
+      //
+      // The words are the working set's own prose label, promoted from a section head to the title
+      // — the two used to be a tab reading "{project} resources" over a head reading "In this
+      // project", which is one list named twice. Which of the two survives is settled by
+      // `CONTEXT.md`: the list holds Assets as well as Resources, and Plans since this change, so
+      // "resources" is a claim about the contents that most of them do not meet and is on the
+      // glossary's _Avoid_ list for exactly that reason.
       h(
         'div',
-        { className: 'sw-panel-section-head' },
-        // The head names the Project, not the type of thing underneath it. The working set holds
-        // Assets as well as Resources, so a head reading "Project resources" was a claim about the
-        // contents that half of them do not meet — and the prose label is the one the overlay is
-        // free to change (ADR-0014). The dock tab beside it keeps the identifier's own name, which
-        // is what the removal pointers send people to.
-        h('span', { className: 'sw-panel-section-title' }, 'In this project'),
-        h('span', { className: 'sw-panel-section-count' }, resourcesLoading ? '…' : total),
+        { className: 'sw-panel-head' },
+        h('h2', { className: 'sw-panel-title' }, 'In this project'),
+        h(
+          'span',
+          { className: 'sw-panel-count sw-num' },
+          resourcesLoading ? '…' : total
+        ),
+        h('span', { className: 'sw-topnav-spacer' }),
         h(
           Dropdown,
           { menu: addMenu, trigger: ['click'], placement: 'bottomRight' },
           h(
             Button,
-            { size: 'small', type: 'primary', icon: h(PlusOutlined, { style: { fontSize: 10 } }) },
-            'Add resources'
+            {
+              size: 'small',
+              type: 'primary',
+              className: 'sw-panel-add',
+              icon: h(PlusOutlined, { style: { fontSize: 10 } }),
+            },
+            // Hidden below 1180px, where the dock is 280px and the row would overflow. The icon and
+            // its tooltip carry it there; the empty state's copy of this button never sheds its
+            // label, because that one is the only thing on screen.
+            h('span', { className: 'sw-panel-add-label' }, 'Add resources')
+          )
+        ),
+        h(
+          Tooltip,
+          { title: `Hide the side panel · ${SW.util.shortcut('⌘/')}` },
+          h(
+            'button',
+            {
+              className: 'sw-icon-btn is-dark-text',
+              'aria-label': 'Hide the side panel',
+              // `toggleDockOpen` records the close and nulls `panelFilter` for us. A raw `set` here
+              // meant the dock persisted when you closed it with ⌘/ and forgot when you closed it
+              // with its own button (#150).
+              onClick: () => SW.store.toggleDockOpen(),
+            },
+            h(DoubleRightOutlined, null)
           )
         )
-      ),
-
-      h(
-        'div',
-        { className: 'sw-panel-search' },
-        h(Input, {
-          prefix: h(SearchOutlined, { style: { color: '#8F8FA3' } }),
-          placeholder: 'Filter this project…',
-          value: query,
-          allowClear: true,
-          size: 'small',
-          onChange: (e) => setQuery(e.target.value),
-        })
       ),
 
       panelFilter &&
@@ -750,92 +602,80 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-panel-body sw-scroll' },
 
+        resourcesLoading &&
+          h('div', { className: 'sw-panel-note' }, 'Loading this project…'),
+
+        planRows.length > 0 &&
+          h(
+            Fragment,
+            null,
+            groupLabel('plans', 'Plans', planRows.length),
+            !collapsed.plans && planRows.map(planRowFor)
+          ),
+
         GROUPS.map((group) => {
-          const items = group.subgroups.map((sub) => ({ sub, rows: visible(sub.kind) }));
+          const items = groupRows(group);
           const count = items.reduce((acc, i) => acc + i.rows.length, 0);
-          const isCollapsed = collapsed[group.key];
           const listingError = (ERROR_KEYS[group.key] || [])
             .map((k) => (resourceErrors || {})[k])
             .find(Boolean);
+          // Empty and known is nothing to draw. Empty and UNKNOWN still is — see the note on
+          // GROUPS above.
+          if (count === 0 && !listingError) return null;
+          const isCollapsed = collapsed[group.key];
+          const named = items.filter((i) => i.rows.length).length > 1;
 
           return h(
             Fragment,
             { key: group.key },
-            h(
-              'div',
-              {
-                className: 'sw-res-group-label',
-                onClick: () => setCollapsed({ ...collapsed, [group.key]: !isCollapsed }),
-                role: 'button',
-              },
-              h(isCollapsed ? RightOutlined : DownOutlined, { style: { fontSize: 9, color: '#8F8FA3' } }),
-              h('span', { className: 'sw-group-label' }, `${group.label} (${resourcesLoading ? '…' : count})`)
-            ),
+            groupLabel(group.key, group.label, count),
+            !isCollapsed && listingError &&
+              h('div', { className: 'sw-panel-note is-error' }, listingError),
             !isCollapsed &&
-              (count === 0
-                ? h(
-                    'div',
-                    { className: 'sw-group-empty' },
-                    query.trim()
-                      ? 'Nothing matches here.'
-                      : resourcesLoading
-                        ? 'Loading this project…'
-                        : (listingError || EMPTY_HINT[group.key]),
-                    !query.trim() && !resourcesLoading && !group.placeholder && !listingError &&
-                      h(
-                        Button,
-                        {
-                          type: 'link',
-                          size: 'small',
-                          style: { padding: 0, height: 'auto', fontSize: 12 },
-                          onClick: () => SW.store.openCatalog(group.subgroups[0].kind),
-                        },
-                        SW.brand.text('Add from {platformName}')
-                      )
-                  )
-                : items.map(({ sub, rows }) =>
-                    rows.length
-                      ? h(
-                          Fragment,
-                          { key: sub.kind },
-                          sub.label &&
-                            items.filter((i) => i.rows.length).length > 1 &&
-                            h(
-                              'div',
-                              { className: 'sw-res-subgroup' },
-                              h('span', { className: 'sw-group-label' }, SW.brand.text(sub.label))
-                            ),
-                          rows.map(rowFor)
-                        )
-                      : null
-                  ))
+              items.map(({ sub, rows: subRows }) =>
+                subRows.length
+                  ? h(
+                      Fragment,
+                      { key: sub.kind },
+                      sub.label && named &&
+                        h(
+                          'div',
+                          { className: 'sw-res-subgroup' },
+                          h('span', { className: 'sw-group-label' }, SW.brand.text(sub.label))
+                        ),
+                      subRows.map(rowFor)
+                    )
+                  : null
+              )
           );
         }),
 
-        h(
-          'section',
-          { className: `sw-drawer${filesOpen ? ' is-open' : ''}` },
+        // Nothing at all, and nothing on its way. Not shown over a listing failure: a Project whose
+        // Data Sources could not be listed has not been shown to be empty, and offering Add as the
+        // way out of a gateway outage sends somebody to a catalogue that will fail the same way.
+        total === 0 && !resourcesLoading && !Object.keys(resourceErrors || {}).length &&
           h(
-            'button',
-            {
-              className: 'sw-drawer-head',
-              onClick: () => setFilesOpen(!filesOpen),
-              'aria-expanded': filesOpen,
-            },
-            h(filesOpen ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
-            h(FolderOutlined, { style: { fontSize: 12, color: '#8F8FA3' } }),
-            h('span', { className: 'sw-drawer-title' }, 'Files'),
-            h('span', { className: 'sw-drawer-count' }, files.length)
-          ),
-          filesOpen &&
+            'div',
+            { className: 'sw-panel-empty' },
+            h('span', { className: 'sw-panel-empty-icon' }, h(InboxOutlined, null)),
+            h('p', { className: 'sw-panel-empty-title' }, 'Nothing here yet'),
             h(
-              'div',
-              { className: 'sw-drawer-body' },
-              files.length
-                ? files.map(rowFor)
-                : h('div', { className: 'sw-group-empty' }, 'No files in this project yet.')
+              'p',
+              { className: 'sw-panel-empty-text' },
+              SW.brand.text(
+                'Bring in the {dataSourcePlural}, models and files this project builds with.'
+              )
+            ),
+            h(
+              Dropdown,
+              { menu: addMenu, trigger: ['click'], placement: 'bottom' },
+              h(
+                Button,
+                { size: 'small', icon: h(PlusOutlined, { style: { fontSize: 10 } }) },
+                'Add resources'
+              )
             )
-        ),
+          ),
 
         h('input', {
           ref: fileRef,

@@ -65,6 +65,12 @@ window.SW = window.SW || {};
     // tag has to say the same thing in both. It was written out twice and drifted apart once.
     SOVEREIGN_TITLE: 'Runs inside your environment.',
 
+    // What the panel row's context mark means. It names the Conversation and the chips, because
+    // the mark is a reflection of them and not a second store of the same fact (#137, ADR-0015) —
+    // a reader who wants it gone has to be sent to where it can go. The panel offers no verb for
+    // that: "Stop using here" is on the row's own menu and in the drawer behind it.
+    IN_CONTEXT_TITLE: 'In this conversation — it is one of the chips above the composer.',
+
     // Every composer offers the same @ affordance, so the half of the placeholder that advertises
     // it is written once. Only the lead changes with what the composer is for.
     composerPlaceholder(lead) {

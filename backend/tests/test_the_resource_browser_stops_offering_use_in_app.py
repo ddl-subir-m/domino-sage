@@ -56,9 +56,11 @@ def _run(steps: list[dict]) -> list[dict]:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def _row(rows: list[dict], name: str, section: str) -> dict:
-    found = [r for r in rows if r["section"] == section and name in r["texts"]]
-    assert len(found) == 1, f"{name} appears {len(found)} times under {section}: {rows}"
+def _row(rows: list[dict], name: str) -> dict:
+    """The one row whose name is `name`. No section to name: the panel is the Project's one list
+    and the app's own is the App dependencies modal, so each list is passed in whole (#151)."""
+    found = [r for r in rows if name in r["texts"]]
+    assert len(found) == 1, f"{name} appears {len(found)} times: {rows}"
     return found[0]
 
 
@@ -131,8 +133,7 @@ def test_the_row_offers_no_menu_in_build_since_the_conversations_act_moved_to_ch
     mode-gated `Use in this chat` to the surface with a Conversation to put it in
     (`test_use_in_this_chat_is_a_chat_only_act.py`). In Build the menu is empty now, and that is
     correct rather than a second door lost: #147 did not reopen anything this ticket closed."""
-    row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"],
-               "Claude Sonnet 4", "In this project")
+    row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"], "Claude Sonnet 4")
     assert _keys(row) == []
     assert [i["label"] for i in row["items"]] == []
     # The sign stays on the row the door left, which is the point of the #129 split: it is the only
@@ -145,20 +146,19 @@ def test_a_resource_this_conversations_uses_offers_no_way_back_out_in_build():
     """The other half of the pair ADR-0015 named. `Stop using here` shared `Use in this chat`'s menu
     slot and its mode gate came with it (#147): both are acts on the Conversation, and Build has none
     to act on. The Chat-mode half of this pair is `test_use_in_this_chat_is_a_chat_only_act.py`."""
-    row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"],
-               "Market data EOD", "In this project")
+    row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"], "Market data EOD")
     assert _keys(row) == []
     assert [i["label"] for i in row["items"]] == []
 
 
 @needs_node
-def test_the_apps_own_section_keeps_the_removal_that_belongs_to_it():
-    """ADR-0011's half of the rule, which this ticket extends and must not disturb. The "In {app}"
-    section is the list that owns the app scope, so the REMOVE is its and always was; what leaves is
-    the ADD, which never had a home on any of these three lists."""
-    row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"],
-               "Qwen 2.5", f"In {APP}")
-    assert "remove-from-app" in _keys(row)
+def test_the_apps_own_list_keeps_the_removal_that_belongs_to_it():
+    """ADR-0011's half of the rule, which this ticket extends and must not disturb. The app's own
+    list owns the app scope, so the REMOVE is its and always was; what leaves is the ADD, which
+    never had a home on any of these three lists. That list is the App dependencies modal now
+    (#151) — the surface ADR-0021 already gave the app's Add and Scope doors."""
+    row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["appRows"], "Qwen 2.5")
+    assert "remove" in _keys(row)
     assert f"Remove from {APP}" in [i["label"] for i in row["items"]]
     assert not any(i["label"].startswith(f"Use in {APP}") for i in row["items"])
 
@@ -172,7 +172,7 @@ def test_chat_is_unchanged_because_it_never_had_the_act():
     assert not any(i["key"] == "use-in-app"
                    for r in step["rows"] for i in r.get("items") or [])
     assert not any("Not used by" in t for r in step["rows"] for t in r["texts"])
-    row = _row(step["rows"], "Claude Sonnet 4", "In this project")
+    row = _row(step["rows"], "Claude Sonnet 4")
     assert any(i["label"] == "Use in this chat" for i in row["items"])
 
 

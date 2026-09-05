@@ -23,6 +23,8 @@ _JS = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
 TREE = (_JS / "components" / "resource-tree.js").read_text()
 DRAWER = (_JS / "components" / "resource-drawer.js").read_text()
 PANEL = (_JS / "components" / "resource-panel.js").read_text()
+# The app's own list, and so the app's own removal, lives on the app's surface (ADR-0032).
+BUILDER = (_JS / "modes" / "builder.js").read_text()
 
 SURFACES = {"resource-tree.js": TREE, "resource-drawer.js": DRAWER, "resource-panel.js": PANEL}
 
@@ -75,8 +77,9 @@ def test_the_row_menu_names_stopping_without_borrowing_the_removal_verb():
     assert "Stop using here" in PANEL
     assert "Remove from this conversation" not in PANEL
     # The two that really do remove keep their verb; this rename must not eat them (ADR-0011).
+    # The Project's is here; the app's is on the app's own surface, where its list went (ADR-0032).
     assert "`Remove from ${SW.store.get().scope.name}`" in PANEL
-    assert "`Remove from ${appScope.app.name}`" in PANEL
+    assert "`Remove from ${activeApp.name}`" in BUILDER
 
 
 def test_the_chip_announces_the_act_the_menu_offers():
@@ -96,7 +99,7 @@ def test_the_rename_moved_no_wiring():
     """Copy only. The menu keys are what the click handler dispatches on, so a key renamed along
     with its label would leave a control that reads correctly and does nothing."""
     assert "key: 'remove-from-conversation'" in PANEL
-    assert "key: attached ? 'remove-resource-from-conversation' : 'mention'," in PANEL
+    assert "key: inContext ? 'remove-resource-from-conversation' : 'mention'," in PANEL
 
 
 def test_pin_says_that_it_does_not_send_anything():
@@ -143,8 +146,15 @@ def test_a_join_the_drawer_cannot_make_says_so():
 
 def test_the_drawer_stays_open_so_the_join_can_be_seen_landing():
     """The alert says this is not in the project. Closing on click would take that sentence off
-    screen at the moment it stopped being true, and the only evidence left would be a toast."""
-    assert """onClick: inProject
+    screen at the moment it stopped being true, and the only evidence left would be a toast.
+
+    The button is a toggle since #151 — the panel row only MARKS context now, so the way back out
+    has to be reachable here rather than shown as a disabled `In this chat` — and `stopUsing` joins
+    the two branches that stay open, for its own version of the same reason: `Where this is used`
+    two inches up is the answer that just changed."""
+    assert """onClick: attached
+                  ? stopUsing
+                  : inProject
                   ? mention
                   : useHere,""" in DRAWER
     # `mention` is the branch that closes, and only a resource already in the project takes it.

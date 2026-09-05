@@ -70,10 +70,11 @@ def _sources() -> dict[str, str]:
     }
 
 
-def _row(rows: list[dict], name: str, section: str) -> dict:
-    """The one row under `section` whose first word is `name`."""
-    found = [r for r in rows if r["section"] == section and name in r["texts"]]
-    assert len(found) == 1, f"{name} appears {len(found)} times under {section}: {rows}"
+def _row(rows: list[dict], name: str) -> dict:
+    """The one row whose first word is `name`. No section to name: the panel is the Project's one
+    list and the app's own is the App dependencies modal, so each is passed in whole (#151)."""
+    found = [r for r in rows if name in r["texts"]]
+    assert len(found) == 1, f"{name} appears {len(found)} times: {rows}"
     return found[0]
 
 
@@ -122,7 +123,7 @@ def test_a_project_row_the_app_is_bound_to_reads_required_by_that_app():
     """The subtitle, off Bindings. Joined on `${kind}:${id}` — the Binding's own `id` is `ds_1` and
     the row's is `data_source:ds_1`, so a join on the bare id renders nothing at all."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    bound = _row(step["rows"], "Market data EOD", "In this project")
+    bound = _row(step["rows"], "Market data EOD")
     assert "Required by Desk dashboard" in bound["texts"]
     assert "is-required" in bound["className"]
 
@@ -132,7 +133,7 @@ def test_a_project_row_no_app_is_bound_to_says_nothing_of_the_kind():
     """`data_source:ds_9` is in the Project and bound by nobody. Without this the subtitle could be
     a constant and every test above would still pass."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    loose = _row(step["rows"], "Risk warehouse", "In this project")
+    loose = _row(step["rows"], "Risk warehouse")
     assert not any("Required by" in t for t in loose["texts"])
     assert "is-required" not in loose["className"]
 
@@ -148,20 +149,17 @@ def test_the_subtitle_follows_the_selected_app():
 
 @needs_node
 def test_nothing_reads_as_required_twice():
-    """The In-this-app rows pass `required: true` as a literal — they ARE the app's list. Once the
-    Project rows' subtitle is real, that literal must not also draw "Required by this app" under a
-    head that already names the app (#96 gave the section that head)."""
+    """The claim survives the two lists being on two surfaces (#151), and is easier to state there:
+    the app's own list says what the app needs by BEING that list, under a title naming the app, so
+    it must not also print "Required by {app}" against every row. Only the Project's rows carry the
+    sentence, because only they sit in a list that is about something else."""
     step = _run([{"panel": "thr_many", "select": "app_a"}])[-1]
-    # `app_a` is bound to three Resources, so both sections draw all three — the subtitle belongs to
-    # exactly one of each pair, and it is the one whose head does not already say it.
     names = ("Market data EOD", "Claude Sonnet 4", "Churn risk")
     for name in names:
-        in_app = _row(step["rows"], name, "In Desk dashboard")
+        in_app = _row(step["appRows"], name)
         assert not any("Required by" in t for t in in_app["texts"])
-        # The In-this-app row still carries the marker; it just stops repeating its own section.
-        assert "is-required" in in_app["className"]
-        assert "Required by Desk dashboard" in _row(step["rows"], name, "In this project")["texts"]
-    said = [t for r in step["rows"] for t in r["texts"] if "Required by" in t]
+        assert "Required by Desk dashboard" in _row(step["rows"], name)["texts"]
+    said = [t for r in step["rows"] + step["appRows"] for t in r["texts"] if "Required by" in t]
     assert said == ["Required by Desk dashboard"] * len(names)
 
 

@@ -76,17 +76,20 @@ def _at(**step) -> dict:
     return _run(_HARNESS, [step])[-1]
 
 
-def _row(step: dict, section: str, rid: str = "data_source:ds_1") -> dict:
-    """The one row for `rid` under `section`. The same Resource appears under two of them — the
-    Project's list and the app's — and which one carries which act is half of what this asks."""
-    found = [r for r in step["rows"] if r["section"] == section and r["id"] == rid]
-    assert len(found) == 1, f"{rid} appears {len(found)} times under {section}: {step['rows']}"
+def _app_row(step: dict, rid: str = "data_source:ds_1") -> dict:
+    """The app's own row for `rid`, on the surface that owns the app scope — the App dependencies
+    modal (#151). The same Resource stands in two lists, the Project's and the app's, and which one
+    carries which act is half of what this asks."""
+    found = [r for r in step["appRows"] if r["id"] == rid]
+    assert len(found) == 1, f"{rid} appears {len(found)} times in the app's list: {step['appRows']}"
     return found[0]
 
 
 def _source_row(step: dict) -> dict:
     """The Project's own row for the Data Source — the one the cascade hangs under."""
-    return _row(step, "In this project")
+    found = [r for r in step["rows"] if r["id"] == "data_source:ds_1"]
+    assert len(found) == 1, f"the panel drew {len(found)} rows for it: {step['rows']}"
+    return found[0]
 
 
 # ---- the cascade, which now only looks ----------------------------------------------------------
@@ -214,16 +217,25 @@ def test_chat_shows_neither_the_sign_nor_the_alias_door():
 def test_the_app_list_names_the_part_of_the_source_it_reads():
     """Dotted, the way `Binding.scope` joins the levels for the agent, so the row and the AGENTS.md
     data block name the same thing the same way."""
-    row = _row(_at(walk=[], bound=SCOPED), f"In {APP}")
+    row = _app_row(_at(walk=[], bound=SCOPED))
     assert "DWH.MARTS.FCT_USAGE_DAILY" in row["texts"]
 
 
 @needs_node
-def test_a_scope_is_readable_in_full_where_the_row_cuts_it_off():
-    """`.sw-res-sub` ellipsises, and a Scope is the one subtitle here whose TAIL identifies it —
-    `DWH.MARTS` and `DWH.MARTS_ARCHIVE` truncate to the same pixels in a narrow rail. Asserted off
-    the tooltip PROP rather than the row's words, because a hover is not what the row says."""
-    assert _row(_at(walk=[], bound=SCOPED), f"In {APP}")["tips"] == ["DWH.MARTS.FCT_USAGE_DAILY"]
+def test_a_scope_is_readable_in_full_without_a_hover():
+    """A Scope is the one thing on this row whose TAIL identifies it — `DWH.MARTS` and
+    `DWH.MARTS_ARCHIVE` truncate to the same pixels — so it used to need a tooltip to rescue it
+    from a 320px rail that ellipsised the subtitle. The list is a 480px modal now (#151) and the
+    Scope is the door's own label, so it is readable where it stands. Asserted as the row's WORDS,
+    which is the stronger version of the same claim: what a hover recovers, nothing on screen
+    said."""
+    row = _app_row(_at(walk=[], bound=SCOPED))
+    assert "DWH.MARTS.FCT_USAGE_DAILY" in row["texts"]
+    # The door still explains itself on hover — that it can be chosen again — which is a different
+    # thing from repeating a truncated label.
+    assert row["tips"] == [
+        "Desk dashboard reads DWH.MARTS.FCT_USAGE_DAILY in Market data EOD. Choose again to move it."
+    ]
 
 
 @needs_node
@@ -234,21 +246,30 @@ def test_a_binding_with_no_scope_reads_as_an_unfinished_state_and_not_an_error()
 
     Not an error, and drawn as none: the Binding stands, the app depends on the Data Source, and
     what is unanswered is which part of it the app reads."""
-    row = _row(_at(walk=[], bound=UNSCOPED), f"In {APP}")
+    row = _app_row(_at(walk=[], bound=UNSCOPED))
     assert "not scoped yet" in row["texts"]
     assert "data source" not in row["texts"]
-    # And no tooltip, because there is nothing a hover could add that the row is not already saying.
-    assert row["tips"] == []
+    # The hover says what choosing one would do, which is the way out of the unfinished state.
+    assert row["tips"] == [
+        "Choose which database, schema or table Desk dashboard reads in Market data EOD. "
+        "You can change it later."
+    ]
 
 
 @needs_node
-def test_a_kind_that_records_no_scope_is_left_exactly_as_it_was():
-    """Only one kind records which part of it the app reads. An Alias has no part to name, so its
-    row keeps the word it had — this render must not reach a kind it has nothing to say about."""
+def test_a_kind_that_records_no_scope_draws_no_door_and_still_says_what_it_is():
+    """Only one kind records which part of it the app reads. An Alias has no part to name, so it
+    gets no door and no Scope — this render must not reach a kind it has nothing to say about.
+
+    What it keeps is its kind, which used to be the record's own word printed as a subtitle
+    (`llm alias`) and is the icon every other list wears it as. ADR-0025 keeps type off the
+    headings here; it does not make the type unsayable on the row, and this is the one surface
+    where knowing which kind a row is decides what a missing door means."""
     alias = [{"kind": "llm_alias", "id": "al_1", "name": "sonnet",
               "display_name": "Claude Sonnet 4"}]
-    row = _row(_at(walk=[], bound=alias), f"In {APP}", "llm_alias:al_1")
-    assert "llm alias" in row["texts"]
+    row = _app_row(_at(walk=[], bound=alias), "llm_alias:al_1")
+    assert row["texts"] == ["🧠", "Claude Sonnet 4"]
+    assert "llm alias" not in row["texts"]
     assert row["tips"] == []
 
 
@@ -257,14 +278,15 @@ def test_a_kind_that_records_no_scope_is_left_exactly_as_it_was():
 
 @needs_node
 def test_remove_from_the_app_still_reaches_a_data_source():
-    """Verified rather than rebuilt. The `In {app}` section owns the removal for every kind it lists
-    (ADR-0011), and only ADDITION moved onto the app's own surface (ADR-0021) — so the removal has
-    to be exactly where it was, including for the kind whose addition moved twice."""
+    """Verified rather than rebuilt. The app's own list owns the removal for every kind it lists
+    (ADR-0011); addition moved onto the app's own surface first (ADR-0021) and the list followed it
+    there (#151), so the removal has to be exactly where the list is, including for the kind whose
+    addition moved twice."""
     step = _at(walk=[], bound=SCOPED)
-    in_app = _row(step, f"In {APP}")
-    assert any(i["key"] == "remove-from-app" and i["label"] == f"Remove from {APP}"
+    in_app = _app_row(step)
+    assert any(i["key"] == "remove" and i["label"] == f"Remove from {APP}"
                for i in in_app["items"])
-    # And the removal stayed the app section's: the Project row offers the Project's, not the app's.
+    # And the removal stayed the app list's: the Project row offers the Project's, not the app's.
     # `mention` no longer rides along here: #147 mode-gated `Use in this chat` to Chat, and this
     # harness stands in Build (the "mode is Build unless a step says otherwise" default).
     assert [i["key"] for i in _source_row(step)["items"] if i["key"]] == ["remove"]
@@ -279,8 +301,7 @@ def test_the_sign_reaches_data_source_rows_in_the_rail_the_other_tests_draw():
     shares. Its Data Source rows carry a `bindingKey`, the way `SW.api.resources()` has always sent
     one, so a row the selected app does not bind says so there too."""
     step = _run(_PANEL, [{"panel": "thr_many", "select": "app_a"}])[-1]
-    loose = [r for r in step["rows"]
-             if r["section"] == "In this project" and "Risk warehouse" in r["texts"]]
+    loose = [r for r in step["rows"] if "Risk warehouse" in r["texts"]]
     assert len(loose) == 1
     assert "Not used by Desk dashboard" in loose[0]["texts"]
     assert not any(i["label"] == DOOR for i in loose[0]["items"])

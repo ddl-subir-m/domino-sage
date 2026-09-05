@@ -76,11 +76,9 @@ def _texts(step: dict, marker: str) -> list[str]:
 
 
 def _app_rows(step: dict) -> list[dict]:
-    return [
-        r
-        for r in step["rows"]
-        if r["section"] and r["section"] not in ("In this project", "In context")
-    ]
+    """The app's own list, which is the App dependencies modal now (#151). It used to be a section
+    inside the panel; the panel is the Project's list and holds no app's records."""
+    return step["appRows"]
 
 
 def _row(step: dict, name: str) -> dict:
@@ -104,13 +102,29 @@ def _removal_item(row: dict) -> dict:
 
 
 @needs_node
-def test_the_section_is_headed_by_the_app_it_is_about():
+def test_the_list_is_headed_by_the_app_it_is_about():
     """ADR-0008 makes "this app" a question every surface has to answer, and a Project holds many.
-    A head reading "In this app" over a list that follows the app control answers it nowhere."""
-    assert _panel("app_a")["sections"][0] == "In Desk dashboard"
-    assert _panel("app_c")["sections"][0] == "In Rate curve viewer"
-    # An app that records nothing yet is the one that most needs telling whose section this is.
-    assert _panel("app_b")["sections"][0] == "In P&L report"
+    A head reading "In this app" over a list that follows the app control answers it nowhere.
+
+    The head is the modal's title now (#151). The list moved onto the app's own surface, and a
+    modal opened from that app's menu still has to say which app, for the same reason: the
+    selection can move while it sits open, and the routes behind these removals carry no app id."""
+    assert "App dependencies · Desk dashboard" in _panel("app_a")["appWords"]
+    assert "App dependencies · Rate curve viewer" in _panel("app_c")["appWords"]
+    # An app that records nothing yet is the one that most needs telling whose list this is.
+    assert "App dependencies · P&L report" in _panel("app_b")["appWords"]
+
+
+@needs_node
+def test_the_panel_is_headed_by_the_project_and_names_no_app():
+    """The other half of the move, and the reason for it. The panel held two lists at two scopes
+    under two heads; a reader had to work out which of them a row belonged to before its menu made
+    sense. It has one heading, it names no app, and the app's own records are not in it."""
+    step = _panel("app_a")
+    assert step["sections"] == ["In this project"]
+    assert not [r for r in step["rows"] if r["section"] and "Desk dashboard" in r["section"]]
+    # And the file the app carries is not among the Project's rows — it is one row, in one scope.
+    assert not [r for r in step["rows"] if "margins.csv" in r["texts"]]
 
 
 @needs_node
@@ -128,11 +142,14 @@ def test_both_kinds_are_listed_under_their_own_name():
 
 
 @needs_node
-def test_the_panel_names_an_empty_kind_where_the_header_omits_it():
+def test_the_list_names_an_empty_kind_where_the_header_omits_it():
     """#92's rule — a kind with nothing in it is not named — is right for a glance and wrong for a
     destination. This is where someone arrived intending to act, so a group reading "Files it
     carries — none" answers the question they came with. The label keeps the word *file* for
-    exactly that reason, where the Binding's drops the word *binding* (ADR-0025)."""
+    exactly that reason, where the Binding's drops the word *binding* (ADR-0025).
+
+    The rule came across with the list (#151): the modal IS the destination now, so it is the
+    surface that owes the answer."""
     c = _panel("app_c")  # Bindings, no files
     assert _texts(c, "sw-app-group") == ["Needs to run", "Files it carries — none"]
     d = _panel("app_d")  # files, no Bindings
@@ -146,7 +163,7 @@ def test_an_app_with_neither_takes_the_headers_own_sentence():
     handoff rather than an upload: the composer's upload writes a scratch file and a Conversation
     chip, so a first-timer doing as they were told would see this section unchanged."""
     step = _panel("app_b")
-    caption = " ".join(_texts(step, "sw-caption"))
+    caption = " ".join(_texts(step, "sw-appdeps-intro"))
     assert caption.endswith(TAIL)
     assert "sw-app-group" not in " ".join(p["className"] for p in step["parts"])
     header = _run([{"build": "thr_many", "select": "app_b"}])[-1]
@@ -157,23 +174,28 @@ def test_an_app_with_neither_takes_the_headers_own_sentence():
 
 @needs_node
 def test_the_apps_rows_carry_ids_the_project_answers_in():
-    """The check #96 asked for before these rows are relied on for anything beyond display: they
-    BUILD an id rather than being handed one, and "Use in this chat" POSTs it.
-
-    A Binding holds a bare Domino id beside its kind, and `${kind}:${id}` is the prefixed id a
-    Project Resource carries — so the two ARE the same string, and the chip is sound. An Attachment
-    takes `file:{path}`, the shape `loadScopeData` writes for a Project file row off the same
-    manifest. Removal itself does not depend on any of this: it reads the record off `appScope`."""
+    """The check #96 asked for, now load-bearing for a different thing. With the app's list off the
+    panel, the ONLY sign in the Project's list that this app needs a row is the mark on the row
+    itself — and the mark is drawn by matching `SW.util.bindingId(b)` against the Project row's own
+    id. A Binding holds a bare Domino id beside its kind, and `${kind}:${id}` is the prefixed id a
+    Project Resource carries, so the two ARE the same string. Drift there and the panel silently
+    stops saying what the app uses, which is the whole of what it says about the app now."""
     step = _panel("app_a")
     ids = {r["id"] for r in _app_rows(step)}
-    project_ids = {r["id"] for r in step["rows"] if r["section"] == "In this project"}
+    project = {r["id"]: r for r in step["rows"] if r["id"]}
     assert {"data_source:ds_1", "llm_alias:al_1"} <= ids
-    assert {"data_source:ds_1", "llm_alias:al_1"} <= project_ids
-    assert "file:public/data/desks/margins.csv" in ids
+    assert {"data_source:ds_1", "llm_alias:al_1"} <= set(project)
+    # And the mark actually lands: matched, not merely matchable.
+    for rid in ("data_source:ds_1", "llm_alias:al_1"):
+        assert "is-required" in project[rid]["className"], rid
+    # A Resource this app does not bind carries no mark, or the mark says nothing.
+    unbound = [r for r in step["rows"] if r["id"] and r["id"] not in ids]
+    assert unbound, "the fixture has no unbound Project row to tell the mark apart with"
+    assert all("is-required" not in r["className"] for r in unbound)
 
 
 @needs_node
-def test_the_section_costs_no_network_call_on_render():
+def test_the_list_costs_no_network_call_on_render():
     """It draws two written records the store already holds, both assigned together by
     `refreshAppScope`. ADR-0010 keeps anything that renders per app switch off the live scan."""
     for select in ("app_a", "app_b", "app_c", "app_d"):
@@ -290,7 +312,7 @@ def test_the_binding_removal_reports_the_app_source_that_still_uses_it():
     reported after. The notice is in the section, not a toast: five seconds is not long enough to
     read a file list and decide."""
     step = _remove("Market data EOD", confirm=True)
-    notice = " ".join(_texts(step, "sw-app-notice-text"))
+    notice = " ".join(_texts(step, "sw-appdeps-notice-text"))
     assert "Market data EOD is out of Desk dashboard." in notice
     assert "src/queries.py" in notice and "public/panel.js" in notice
     assert step["said"] == []
@@ -301,7 +323,7 @@ def test_a_removal_nothing_refers_to_says_so_rather_than_nothing():
     """`al_1` is bound and used by no file. Without this branch the notice could be the file list
     and a creator who removed something clean would get no acknowledgement at all."""
     step = _remove("Claude Sonnet 4", confirm=True)
-    notice = " ".join(_texts(step, "sw-app-notice-text"))
+    notice = " ".join(_texts(step, "sw-appdeps-notice-text"))
     assert "Claude Sonnet 4 is out of Desk dashboard." in notice
     assert "Nothing in the app's code refers to it." in notice
 
@@ -311,7 +333,7 @@ def test_the_attachment_report_names_the_dataset_the_file_stays_in():
     """`detach_file` takes the symlink, the manifest entry, the AGENTS.md block and any raw copy the
     agent leaked into the app tree. It keeps the Dataset bytes — which is the half worth saying."""
     step = _remove("margins.csv")
-    notice = " ".join(_texts(step, "sw-app-notice-text"))
+    notice = " ".join(_texts(step, "sw-appdeps-notice-text"))
     assert "margins.csv is out of Desk dashboard." in notice
     assert "desks" in notice
     assert "src/data/margins.csv" in notice  # the leaked copy that went with it
@@ -329,7 +351,7 @@ def test_an_attachment_with_no_dataset_does_not_invent_a_source():
     sentence keyed on it would print `rehydrated` — a directory — as the Dataset the bytes are safe
     in, which is the invention the ADR forbids."""
     step = _remove("legacy.csv")
-    notice = " ".join(_texts(step, "sw-app-notice-text"))
+    notice = " ".join(_texts(step, "sw-appdeps-notice-text"))
     assert "legacy.csv is out of Desk dashboard." in notice
     assert "no Dataset" in notice
     assert "rehydrated" not in notice
@@ -341,7 +363,7 @@ def test_an_attachment_with_no_dataset_does_not_invent_a_source():
 @needs_node
 def test_the_notice_can_be_dismissed():
     step = _remove("Market data EOD", confirm=True, dismiss=True)
-    assert _texts(step, "sw-app-notice") == []
+    assert _texts(step, "sw-appdeps-notice") == []
 
 
 @needs_node
@@ -358,8 +380,8 @@ def test_the_cleanup_action_fills_the_composer_and_sends_nothing():
 def test_a_removal_nothing_refers_to_offers_no_cleanup():
     """The offer is only worth having when there is something to act on."""
     step = _remove("Claude Sonnet 4", confirm=True)
-    assert _texts(step, "sw-app-notice-text")  # the notice is there
-    assert not [t for t in _texts(step, "sw-app-notice") if "clean" in t.lower()]
+    assert _texts(step, "sw-appdeps-notice-text")  # the notice is there
+    assert not [t for t in _texts(step, "sw-appdeps-notice") if "clean" in t.lower()]
 
 
 # ---- the two scopes that move on their own -----------------------------------------------------
@@ -385,8 +407,12 @@ def test_no_menu_item_says_a_bare_remove_or_a_code_word():
     """The glossary's Remove rule: the scope is the only thing that tells the three lists apart,
     and `detach`/`unbind` name the app-scoped pair in code, never on screen."""
     step = _panel("app_a")
-    labels = [i["label"] for r in step["rows"] for i in r.get("items", [])]
-    assert labels, "the panel drew no menus at all"
+    labels = [
+        i["label"]
+        for r in step["rows"] + step["appRows"]
+        for i in r.get("items", [])
+    ]
+    assert labels, "neither surface drew a menu at all"
     assert "Remove" not in labels
     assert not [label for label in labels if "nbind" in label or "etach" in label]
 
@@ -410,16 +436,17 @@ def test_the_empty_sentence_is_written_once():
 
 
 @needs_node
-def test_both_header_pointers_name_the_head_the_reader_will_see_and_the_action():
-    """They said "listed in", a read-only word, and the Attachments one pointed at a group that did
-    not exist. Now that the destination can act, both take one shape — and both name the app,
-    because that is the head the reader will find when they get there."""
-    step = _run([{"build": "thr_many", "select": "app_a"}])[-1]
-    pointers = [t for t in step["titles"] if "Project resources" in t]
-    assert len(pointers) == 2
-    for pointer in pointers:
-        assert pointer.endswith("in Project resources, under Desk dashboard — remove it there")
-        assert "listed in" not in pointer
+def test_the_bind_receipt_names_the_surface_that_can_reverse_it():
+    """A pointer names its destination in the words the reader will see on the way to it
+    (ADR-0011). It said "Project resources, under {app}" while the panel held a section per app;
+    the panel is the Project's one list now and the app's records — with the removal that acts on
+    them — are behind the header's "App dependencies" item, so that is what the receipt says."""
+    step = _run([{
+        "addIn": True, "thread": "thr_many", "select": "app_c", "pick": "llm_alias:al_1",
+    }])[-1]
+    said = " ".join(step["said"])
+    assert "Remove it under App dependencies." in said
+    assert "Project resources" not in said
 
 
 def test_the_composer_takes_the_seed_without_sending_it():

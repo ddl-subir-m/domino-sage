@@ -83,6 +83,10 @@
 }
 @media (max-width: 1180px) {
   :root { --builder-chat-w: 288px; --rail-w: 208px; --dock-expanded: 280px; }
+  /* The panel heading carries a title, a count, Add and Hide. At 280px the four do not fit with
+     Add spelled out, so it sheds its label and keeps its icon — the tooltip says the rest. The
+     empty state's copy of the same button never does: it is the only thing on that screen. */
+  .sw-panel-add-label { display: none; }
 }
 
 /* antd's <App> renders a wrapper div between #root and the shell, so it has

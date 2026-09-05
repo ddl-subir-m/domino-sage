@@ -175,9 +175,9 @@ Three bags, never one (the prototype's P0 bug was using `planId || threadId` as 
 
 | Bag | File | Lifetime | UI |
 |-----|------|----------|----|
-| Session context | `.sage/threads/<id>/context.json` | This Thread | Chips on the composer; "IN CONTEXT" in the resource panel |
+| Session context | `.sage/threads/<id>/context.json` | This Thread | Chips on the composer, and a tick on the row in the resource panel |
 | Working set | `.sage/project-resources.json` | This project | The working-set rail. What the list means, and why it never reaches a prompt, is the **Working set** entry in `CONTEXT.md` and [ADR-0020](../adr/0020-the-working-set-is-orientation-never-context.md) — not repeated here. Mechanics: parents plus optional **pins** (Dataset files, Data Source tables), and pins are not prompt context either. Putting a **parent** in Session context joins it here in the same click, and the answer carries `joinedProject: true` so the rail refreshes. Leaves (a `dsfile:` file, a `table:` table) join nothing — they are reached by expanding a parent that is already a member. |
-| Bindings | `.sage/bindings.json` | The Built App | "IN THIS APP" in Build after handoff |
+| Bindings | `.sage/bindings.json` | The Built App | The App dependencies modal, off Build's header; and a mark on the Project row the panel draws |
 
 Chat-local files live in gitignored `.sage/scratch/`. They persist on this workspace volume. **Add to a Dataset** copies them onto a writable Dataset so they outlive this workspace.
 
@@ -221,7 +221,11 @@ Chips:
 - Picking `@` inserts `@name` into the composer text (and the prompt OpenCode receives) **and** adds the chip. Do not strip the token.
 - Adding from the resource panel appends to `context.json` and shows the chip. Provenance `addedBy: user | sage`. When Sage adds one, it reports in the Thread in a sentence ("I'll use card-transactions-q3") — mixed-initiative from the mock, but the panel is the accounting.
 
-The resource panel in Chat: **IN CONTEXT** (this Thread's `context.json`) above **PROJECT RESOURCES** (Datasets, Data Sources, Model APIs, LLM Aliases). Dataset and Data Source rows expand to browse files or database/schema/table. Files Sage writes as Artifacts stay in the Thread and `artifacts.json`; they are **not** auto-added to IN CONTEXT. `@` can still name them. Do not show `.sage/` except `.sage/scratch/`, and do not show `AGENTS.md`.
+The resource panel is one list, headed **In this project**: Plans, then Datasets, Data Sources, Model APIs, LLM Aliases, then Files. A group with nothing in it is not drawn at all — a group whose *listing failed* still is, carrying its reason, because empty and unknown are different answers. Dataset and Data Source rows expand to browse files or database/schema/table.
+
+Session context is **not** a second section in it. A row in this Thread's `context.json` wears a tick, with a tooltip pointing at the chips; a row that is not wears a `+` on hover, in Chat only. The chips over the composer are where context is shown and taken back — one accounting, not two. The row's own menu and the details drawer behind it both offer "Stop using here".
+
+Files Sage writes as Artifacts stay in the Thread and `artifacts.json`; they are **not** auto-added to context. `@` can still name them. Do not show `.sage/` except `.sage/scratch/`, and do not show `AGENTS.md`.
 
 Remove from project is on every membership parent. It is refused while a Binding still names that Resource. Removing a parent also drops matching chips from the open Thread.
 
@@ -236,7 +240,7 @@ Minimum Chat chrome that must work (the rest of the mock can wait):
 - Conversation rail of Threads in the current project
 - Composer with chips, `@`, attach, model picker (gateway aliases this caller can use; reasoning effort when the alias supports it)
 - Message list with Artifact blocks
-- Resource panel (IN CONTEXT / PROJECT RESOURCES)
+- Resource panel (one list, headed In this project)
 - The plan-suggestion callout and Open in Build — specified in [handoff.md](handoff.md)
 
 ### The conversation view (#56)
@@ -290,8 +294,8 @@ An implementer is done when all of these pass:
 1. Opening the Workbench finds or creates Default, starts this viewer's Sage Builder if it is down, and lands in Chat there. The chip says Default until they name it. "New conversation" does not create a Domino project. "New project" does.
 2. A Chat turn with "what's in this CSV?" on an attached file writes a PNG and/or a `.table.json` under `examples/<threadId>/`, appends the manifest, and the Thread shows the Artifact after reload. `src/` is untouched (git diff).
 3. A `sage-chat` attempt to edit `src/App.tsx` is stripped by the shim; the user-visible reply does not mention tools or permissions.
-4. Removing a chip drops that Resource from the next turn's prompt context and from IN CONTEXT. The previous user message still shows the chip it was sent with.
-5. `@` lists IN CONTEXT rows first, then this Thread's Artifacts. Picking a row leaves `@name` in the sent message; OpenCode's prompt includes that token and the file path. A generated PNG is not auto-chipped.
+4. Removing a chip drops that Resource from the next turn's prompt context, and the tick comes off its row in the panel. The previous user message still shows the chip it was sent with.
+5. `@` lists this Thread's context rows first, then its Artifacts. Picking a row leaves `@name` in the sent message; OpenCode's prompt includes that token and the file path. A generated PNG is not auto-chipped.
 6. Chat turns never produce a plan-approval card and never run `tsc`.
 7. `template/chat/AGENTS.md` is the prompt body OpenCode receives for `sage-chat` (inline in `opencode.json`, kept in sync).
 8. Tests: shim path-allowlist for `sage-chat`; Thread history does not leak into Build `history.jsonl`; Default slug hydrates the Default chip; a new conversation does not provision; New project does.

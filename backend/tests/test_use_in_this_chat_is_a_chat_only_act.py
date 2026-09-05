@@ -42,9 +42,11 @@ def _run(steps: list[dict]) -> list[dict]:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def _row(rows: list[dict], name: str, section: str) -> dict:
-    found = [r for r in rows if r["section"] == section and name in r["texts"]]
-    assert len(found) == 1, f"{name} appears {len(found)} times under {section}: {rows}"
+def _row(rows: list[dict], name: str) -> dict:
+    """The one panel row for `name`. No section to name any more: the panel is the Project's one
+    list (#151), so a Resource is in it once or not at all."""
+    found = [r for r in rows if name in r["texts"]]
+    assert len(found) == 1, f"{name} appears {len(found)} times in the panel: {rows}"
     return found[0]
 
 
@@ -57,7 +59,7 @@ def test_use_in_this_chat_still_offers_the_act_it_owns():
     """The positive claim the mode gate exists to protect: Chat keeps the act, unchanged, for a
     Resource nothing here has attached yet."""
     rows = _run([{"panel": "thr_many", "select": APP_ID, "mode": "chat"}])[-1]["rows"]
-    row = _row(rows, "Claude Sonnet 4", "In this project")
+    row = _row(rows, "Claude Sonnet 4")
     assert _keys(row) == ["mention"]
     assert [i["label"] for i in row["items"]] == ["Use in this chat"]
 
@@ -66,6 +68,6 @@ def test_use_in_this_chat_still_offers_the_act_it_owns():
 def test_stop_using_here_still_offers_the_way_back_out_in_chat():
     """The other half of the pair ADR-0015 named, on the same surface it was always meant for."""
     rows = _run([{"panel": "thr_many", "select": APP_ID, "mode": "chat"}])[-1]["rows"]
-    row = _row(rows, "Market data EOD", "In this project")
+    row = _row(rows, "Market data EOD")
     assert _keys(row) == ["remove-resource-from-conversation"]
     assert [i["label"] for i in row["items"]] == ["Stop using here"]

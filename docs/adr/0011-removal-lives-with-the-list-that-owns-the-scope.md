@@ -17,6 +17,12 @@ A Resource can leave a Conversation, leave a Built App, or leave the Project. We
 object is removed from the list that owns its scope, and every removal label names that scope in
 words**. One surface per scope, one guard per operation, and no bare verb that could mean any of them.
 
+> **The app's list moved surface in [ADR-0032](0032-the-panel-is-the-projects-one-list.md).** The
+> rule is unchanged — an object is removed from the list that owns its scope — but the list that
+> owns the Built App's scope is the App dependencies modal now, not a section in the resource
+> panel, and its removal went with it. The listing rule below ("one list, one scope") is what forced
+> it: a Project-scoped panel holding one app's records was two scopes in one column.
+
 > **Partially superseded by [ADR-0015](0015-the-conversation-is-not-a-removal-scope.md).** The rule
 > holds for the Built App and the Project. The Conversation is not a removal scope — stopping there
 > discards nothing — so its control says *"Stop using here"* and names no scope. Everything else in

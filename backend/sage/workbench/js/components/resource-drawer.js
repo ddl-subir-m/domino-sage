@@ -24,10 +24,22 @@ window.SW = window.SW || {};
     // whether this thing is in it.
     const inProject = Boolean(resource && resourceIndex[resource.id]);
 
+    // Kept as a distinct handler from `useHere` below: this one closes, because the resource is
+    // already in the project and there is nothing left on screen to watch change.
     const mention = async () => {
       await SW.store.addToContext(resource);
       close();
     };
+
+    // The way back out, and the reason the button is a toggle rather than a dead `In this chat`.
+    // The panel row behind this drawer now only MARKS context — a tick and a tooltip — so this is
+    // where a reader who wants it gone is sent, and a disabled button would be a dead end at the
+    // end of that trip. Same verb as the row's own menu and the chip's ×, so all three read alike
+    // (ADR-0015: the Conversation is not a removal scope, so no scope is named).
+    const stopUsing = () =>
+      SW.store
+        .removeResourceFromConversation(resource.id)
+        .catch((err) => antd.message.error(String((err && err.message) || err)));
 
     // The join, reported when it fails — because nothing else here would report it. The drawer
     // stays open, the alert above still says the resource is not in the project and the button
@@ -172,21 +184,28 @@ window.SW = window.SW || {};
             h(
               Button,
               {
-                type: 'primary',
-                disabled: attached,
+                // Filled to add, plain to take back: the act that grows what the assistant can see
+                // is the one being offered, and the one that shrinks it is available rather than
+                // urged.
+                type: attached ? 'default' : 'primary',
                 // A resource already in the project closes the drawer on its way out, the way it
                 // always did, and Sage acknowledges the pick in the Thread.
                 //
                 // A catalogue one does NOT close: the alert above says it is not in the project,
-                // and this button flipping to `In this chat` is where the user watches that stop
-                // being true. It is quiet for the same reason — the flip and the join toast are
-                // already the feedback, and with the drawer still up, a third acknowledgement is
-                // being told once per surface.
-                onClick: inProject
+                // and this button flipping is where the user watches that stop being true. It is
+                // quiet for the same reason — the flip and the join toast are already the feedback,
+                // and with the drawer still up, a third acknowledgement is being told once per
+                // surface.
+                //
+                // Taking it back never closes either: the `Where this is used` list two inches up
+                // is the answer that just changed, and closing the drawer would hide it.
+                onClick: attached
+                  ? stopUsing
+                  : inProject
                   ? mention
                   : useHere,
               },
-              attached ? 'In this chat' : 'Use in this chat'
+              attached ? 'Stop using here' : 'Use in this chat'
             )
           ),
       },

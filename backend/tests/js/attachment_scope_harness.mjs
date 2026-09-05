@@ -151,9 +151,12 @@ function hookState(init) {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
+// `modes/builder.js` joins the list because the app's scope moved into it: the panel is the
+// Project's list now, and `In {app}` is the App dependencies modal. Both surfaces are read below,
+// which is what keeps "one row per scope" a claim about two scopes rather than about one list.
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
                  'components/resource-tree.js', 'components/resource-panel.js',
-                 'components/composer.js']) {
+                 'components/composer.js', 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
@@ -190,56 +193,52 @@ function flatten(node, out = [], depth = 0) {
   return out;
 }
 
-// The panel's rows, each under the section head it was drawn beneath, and each head's own count.
-// A row is only an answer to "how many scopes list this file" if the section it sits under is part
-// of the reading, so the two are collected in one walk.
-// The Files drawer starts shut, so `openFiles` presses its toggle and reads the panel again — the
-// list under it is half of "the Project lists Uploads only" and a count alone does not say which
-// rows were counted. The press needs real hooks, which is why they are switchable above.
+// The panel's rows, each under the group head it was drawn beneath, and each head's own count. A
+// row is only an answer to "how many scopes list this file" if the section it sits under is part of
+// the reading, so the two are collected in one walk.
 //
-// The press is CHECKED rather than trusted: hook slots go by call order, so a `useState` added to
-// or moved within `ResourcePanel` would send the write to a neighbouring slot and leave the drawer
-// shut. Unchecked, that reads as an empty list — a wrong answer. Checked, it is a loud failure.
-function panel({ openFiles = false } = {}) {
-  if (openFiles) {
-    stateful = true;
-    hooks = [];
-    cursor = 0;
-    const toggle = flatten(SW.ResourcePanel()).find(
-      (n) => String((n.p || {}).className || '') === 'sw-drawer-head'
-    );
-    toggle.p.onClick();
-    cursor = 0;
-    const open = flatten(SW.ResourcePanel()).some(
-      (n) => String((n.p || {}).className || '').includes('sw-drawer is-open')
-    );
-    if (!open) throw new Error('the Files drawer did not open — check which hook slot holds filesOpen');
-    cursor = 0;
-  }
+// A head is `<label> (<count>)` inside `sw-res-group-label`; the sub-heads a multi-kind group draws
+// (Datasets, Data Sources) wear the same `sw-group-label` class and carry no count, which is what
+// the pattern below tells apart. There is no Files drawer to open any more — Files is an ordinary
+// group, drawn only when it holds something — so this reader needs no hooks of its own.
+const HEAD = /^(.*) \((\d+|…)\)$/;
+
+function textOf(node) {
+  return ((node.p || {}).children || node.c || []).flat(Infinity).join('');
+}
+
+function panel() {
   const sections = [];
   let head = null;
   for (const node of flatten(SW.ResourcePanel())) {
     const cls = String((node.p || {}).className || '');
-    if (cls === 'sw-panel-section-title') {
-      head = { title: ((node.p || {}).children || node.c || []).flat(Infinity).join(''), count: null, rows: [] };
+    if (cls === 'sw-group-label') {
+      const match = HEAD.exec(textOf(node));
+      if (!match) continue;                      // a sub-head, which belongs to the head above it
+      head = { title: match[1], count: match[2], rows: [] };
       sections.push(head);
       continue;
     }
-    // The count element is drawn immediately after its own title, so it belongs to the last head.
-    if (cls === 'sw-panel-section-count' && head) {
-      head.count = (node.c || []).flat(Infinity).join('');
-      continue;
-    }
-    // The Files drawer is a head of its own shape: a toggle with its own count beside it, outside
-    // any `sw-panel-section-title`. It is the one this issue narrows, so it is read as a section.
-    if (cls === 'sw-drawer-count') {
-      sections.push({ title: 'Files', count: (node.c || []).flat(Infinity).join(''), rows: [] });
-      head = sections[sections.length - 1];
-      continue;
-    }
-    if (cls === 'sw-res-name' && head) head.rows.push((node.c || []).flat(Infinity).join(''));
+    if (cls === 'sw-res-name' && head) head.rows.push(textOf(node));
   }
-  stateful = false;
+  return sections;
+}
+
+// The other scope, on the surface that now owns it. Same shape as `panel()` so the two can be read
+// against each other. The modal's heads carry `sw-app-group` — the marker ADR-0025's two labels
+// have worn since they were a section in the panel — and no count, so the count is the rows drawn.
+function appPanel() {
+  const sections = [];
+  let head = null;
+  for (const node of flatten(SW.AppDependenciesModal())) {
+    const cls = String((node.p || {}).className || '');
+    if (cls.includes('sw-app-group')) {
+      head = { title: textOf(node), rows: [] };
+      sections.push(head);
+      continue;
+    }
+    if (cls === 'sw-appdeps-name' && head) head.rows.push(textOf(node));
+  }
   return sections;
 }
 
@@ -285,9 +284,10 @@ const report = {
   files: (state.resourceGroups.file || []).map((r) => ({ id: r.id, path: r.path, source: r.source || null })),
   // What the app records, which is the other scope and the one that keeps the Attachment.
   appAttachments: (state.appAttachments || []).map((a) => a.path),
-  // Every section the panel drew, with its count and its rows, which is where "once per scope" is
-  // either true or false.
-  panel: panel({ openFiles: true }),
+  // Every group the panel drew, with its count and its rows, and beside it the app's own surface.
+  // Together they are where "once per scope" is either true or false.
+  panel: panel(),
+  appPanel: appPanel(),
   // Every row the @ menu offers, by name and by the query that found it.
   menu: menuFor('margins').map((r) => r.name),
   menuNotes: menuFor('notes').map((r) => r.name),

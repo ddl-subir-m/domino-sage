@@ -834,40 +834,91 @@ window.SW = window.SW || {};
     );
   }
 
-  // What the selected app depends on: the Bindings someone picked and the files someone attached,
-  // both written per app and re-read by `loadBuild` when the app switches. This used to sit in an
-  // always-on row under the header (#92) — reasonable while the resources panel didn't already show
-  // "In {app}" beside it, but redundant once it did, and confusing for exactly that reason. It moved
-  // behind the header's "App dependencies" menu item instead: on demand, not on every glance, and
-  // still the app's own surface — ADR-0021's door, reached one click later rather than always open.
+  // What the selected app depends on, and now the whole of the app's scope: the Bindings someone
+  // picked and the files someone attached, both written per app and re-read by `loadBuild` when the
+  // app switches.
+  //
+  // This is the one surface for that scope. It began as an always-on row under the header (#92),
+  // moved behind a menu item because the resources panel showed "In {app}" beside it, and has now
+  // absorbed that section outright. The panel is the Project's list; putting an app's list in it
+  // made a project-scoped surface do double duty, and the app's own doors — Add, Scope, and now
+  // Remove — are what ADR-0021 says belong on the app's own surface. ADR-0011's rule is unchanged
+  // and better served: an object is still removed from the list that owns its scope, and this is
+  // now that list. What ADR-0011 called "a second copy of the guard" was only a risk while there
+  // were two lists; there is one.
   //
   // `used === false` is the last build turn having looked and found nothing calling it; `undefined`/
   // `null` is no turn having left an answer for this app. Only the first draws a mark (#93) — this
   // is advisory (ADR-0010) and never a gate, so the mark is a word beside a name, not a warning.
   function AppDependenciesModal() {
-    const { activeApp, bindings, appAttachments, appDependenciesOpen } = SW.store.get();
+    const { activeApp, bindings, appAttachments, appDependenciesOpen, appRemoval } = SW.store.get();
     const close = () => SW.store.closeAppDependencies();
     if (!activeApp) return null;
 
-    const bound = (bindings || []).map((b) => b.display_name || b.name || b.id);
-    const unused = (bindings || []).map((b) => b.used === false);
-    // The Scope door, for the one kind that has a part to choose (#142): an Alias has no part to
-    // name and a Dataset is read whole, so every other kind draws none.
-    const doors = (bindings || []).map((b) => (SW.util.recordsScope(b.kind)
-      ? h(ScopeDoor, { key: SW.util.bindingId(b), binding: b, app: activeApp })
-      : null));
-    // No marks for the files: whether the source uses an ATTACHMENT is `_data_usage`'s question,
-    // asked live by detach and delete, not this list's.
-    const files = (appAttachments || []).map((a) => (a.path || a.file || '').split('/').pop());
+    const bound = bindings || [];
+    const files = appAttachments || [];
     const empty = bound.length === 0 && files.length === 0;
 
-    const row = (name, i, mark, door) =>
+    // Every label names the scope it acts on, which is ADR-0011's rule and the only thing telling
+    // this Remove apart from the Project's. `Delete from {dataset}` is the door onto Sage's own
+    // bytes and never onto a Dataset file somebody already had (ADR-0023).
+    const menuFor = (record, attachment) => ({
+      items: [
+        { key: 'remove', label: `Remove from ${activeApp.name}`, danger: true },
+        ...(attachment && SW.util.isSageUpload(attachment)
+          ? [{ key: 'delete', label: `Delete from ${attachment.dataset}`, danger: true }]
+          : []),
+      ],
+      onClick: ({ key }) => {
+        if (key === 'delete') return SW.store.deleteAttachmentFromApp(attachment);
+        return attachment
+          ? SW.store.removeAttachmentFromApp(attachment)
+          : SW.store.removeBindingFromApp(record);
+      },
+    });
+
+    // Both labels, always, over an app that records anything — including the one with nothing under
+    // it. That rule was the panel section's (ADR-0011, ADR-0025) and it comes here with the list:
+    // this is where somebody arrived intending to act, and "Files it carries — none" answers the
+    // question they came with. `held` is what the APP records, which is the only thing that can
+    // make a group empty here.
+    const group = (label, held, rows) =>
       h(
         'div',
-        { key: `${name}-${i}`, className: 'sw-appdeps-row' },
-        h('span', null, name),
+        { key: label, className: 'sw-appdeps-section' },
+        h(
+          'div',
+          { className: 'sw-group-label sw-app-group' },
+          SW.brand.text(held ? label : `${label} — none`)
+        ),
+        rows
+      );
+
+    // The kind, as the icon the panel's rows wear rather than as the record's own word. This list
+    // groups by the app's relationship to a thing and never by type (ADR-0025), so the kind cannot
+    // be a heading — but a row saying only a name leaves "is that a Data Source or an Alias"
+    // unanswered on the one surface where it decides what the Scope door beside it even means.
+    const KIND_ICON = {
+      data_source: 'datasource', llm_alias: 'model_llm', model_api: 'model_predictive',
+    };
+
+    const row = (key, name, { kind, mark, door, menu }) =>
+      h(
+        'div',
+        { key, className: 'sw-appdeps-row' },
+        h('span', { className: 'sw-appdeps-icon' }, SW.util.iconFor(KIND_ICON[kind] || kind)),
+        h('span', { className: 'sw-appdeps-name' }, name),
         door,
-        mark && h('span', { className: 'sw-appdeps-unused' }, ' (not used)')
+        mark && h('span', { className: 'sw-appdeps-unused' }, ' (not used)'),
+        h(
+          Dropdown,
+          { menu, trigger: ['click'], placement: 'bottomRight' },
+          h(
+            'button',
+            { className: 'sw-res-more', 'aria-label': `Actions for ${name}` },
+            h(MoreOutlined, null)
+          )
+        )
       );
 
     return h(
@@ -882,42 +933,96 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-appdeps-body' },
-        // One sentence, written once in `SW.util` and said by the panel's section too, so the two
-        // surfaces never drift into two answers about the same empty app (ADR-0011).
+        // What the last removal reported, after the act. Here rather than in a toast because it is
+        // only worth having if it can be acted on, and five seconds is not long enough to read a
+        // file list and decide (ADR-0011). It followed the removal door out of the panel.
+        appRemoval &&
+          h(
+            'div',
+            { className: 'sw-appdeps-notice' },
+            h('span', { className: 'sw-appdeps-notice-text' }, appRemoval.text),
+            // Writes the prompt into the composer and stops. Firing the turn from here could be
+            // refused by the turn lock, and would put work past a plan gate nobody read.
+            appRemoval.prompt &&
+              h(
+                Button,
+                {
+                  type: 'link',
+                  size: 'small',
+                  style: { padding: 0, height: 'auto' },
+                  onClick: () => {
+                    SW.store.seedComposer(appRemoval.prompt);
+                    close();
+                  },
+                },
+                `Ask ${SW.brand.assistant()} to clean this up`
+              ),
+            h(
+              Button,
+              {
+                type: 'link',
+                size: 'small',
+                style: { padding: 0, height: 'auto' },
+                onClick: () => SW.store.dismissAppRemoval(),
+              },
+              'Dismiss'
+            )
+          ),
+        // One sentence, written once in `SW.util`, so this and anything else describing an empty
+        // app never drift into two answers about the same thing (ADR-0011).
         empty
           ? h('div', { className: 'sw-appdeps-intro' }, SW.util.appScopeEmpty('Nothing yet.'))
           : h(
               Fragment,
               null,
-              // The same two labels the panel draws, on purpose (ADR-0011, ADR-0025): named by what
-              // the app needs and carries, not by the record's own type.
-              bound.length > 0 &&
-                h(
-                  'div',
-                  { className: 'sw-appdeps-section' },
-                  h('div', { className: 'sw-group-label' }, SW.brand.text('Needs to run')),
-                  bound.map((name, i) => row(name, i, unused[i], doors[i]))
-                ),
-              files.length > 0 &&
-                h(
-                  'div',
-                  { className: 'sw-appdeps-section' },
-                  h('div', { className: 'sw-group-label' }, SW.brand.text('Files it carries')),
-                  files.map((name, i) => row(name, i))
-                ),
-              // Still a pointer and not a second Remove: unbind and detach each report the app
-              // source that still uses what just went, and a second copy here would be a second
-              // guard to keep in step with the first (ADR-0011).
-              h(
-                'div',
-                { className: 'sw-appdeps-pointer' },
-                `Remove one in Project resources, under ${activeApp.name}.`
+              // Named by what the app cannot do without them, never by the record's own word
+              // (ADR-0025). Through `SW.brand.text` because that is a marked position: neither
+              // label carries a token today, and routing them anyway is what puts them where the
+              // lint can read them.
+              group(
+                'Needs to run',
+                bound.length,
+                bound.map((b) => row(
+                  SW.util.bindingId(b),
+                  b.display_name || b.name || b.id,
+                  {
+                    kind: b.kind,
+                    mark: b.used === false,
+                    // The Scope door, for the one kind that has a part to choose (#142): an Alias
+                    // has no part to name and a Dataset is read whole, so every other kind draws
+                    // none.
+                    door: SW.util.recordsScope(b.kind)
+                      ? h(ScopeDoor, { binding: b, app: activeApp })
+                      : null,
+                    menu: menuFor(b, null),
+                  }
+                ))
+              ),
+              group(
+                'Files it carries',
+                files.length,
+                // No "not used" marks here: whether the source uses an ATTACHMENT is
+                // `_data_usage`'s question, asked live by detach and delete, not this list's.
+                // Through the same derivation the @ menu offers and the turn resolves
+                // (`SW.util.attachmentRow`, #148) rather than a second split of the path here.
+                // This list is now the ONLY place an Attachment is drawn, so it is also the one
+                // that has to name it the way every other reader of that record does.
+                files.map((a) => row(
+                  a.path,
+                  SW.util.attachmentRow(a).name,
+                  { kind: 'file', menu: menuFor(null, a) }
+                ))
               )
             ),
         h('div', { className: 'sw-appdeps-foot' }, h(AddToApp, { app: activeApp }))
       )
     );
   }
+
+  // Exposed for the same reason `SW.ResourcePanel` is: it is now a surface with a list, a set of
+  // doors and an empty state of its own, and a reader that has to mount the whole of Build to see
+  // it is a reader nothing will check it with.
+  SW.AppDependenciesModal = AppDependenciesModal;
 
   function PreviewPane({ resumed }) {
     const { previewSrc, previewStatus, activeApp, costUrl, buildRunning } = SW.store.get();
