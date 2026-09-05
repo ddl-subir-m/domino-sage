@@ -14,7 +14,10 @@
 
 sageBuilder:
   title: "Sage"
-  iconUrl: "/assets/images/workspace-logos/jupyterlab.svg"
+  # Absolute URL, not a path: the tool nav loads this from the Domino UI, which has no mount
+  # for our repo. Sourced from backend/sage/workbench/img/workbench-tool-icon.png; edit the
+  # .svg beside it and re-export, do not redraw. An OEM points this at their own asset.
+  iconUrl: "https://raw.githubusercontent.com/ddl-subir-m/domino-sage/main/backend/sage/workbench/img/workbench-tool-icon.png"
   start:
     - "bash"
     - "/opt/sage/environment/app.sh"

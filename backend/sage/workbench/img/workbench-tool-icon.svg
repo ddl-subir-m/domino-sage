@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="AI Workbench">
+  <title>AI Workbench</title>
+  <!-- Tool-launcher icon for the Domino pluggable-tools `iconUrl`. It draws the Workbench's own
+       shape: a frame split into a narrow chat column and a wide preview pane, with the agent's
+       spark in the pane. Not the Domino mark - a partner replaces this file the way they replace
+       `logoUrl` and `faviconUrl` (ADR-0014), so it must not carry Domino's identity.
+
+       Ground is the default pack's `colors.primary`, matching img/domino-favicon.svg. It is a
+       filled badge, not a line mark, because we cannot see whether the tool nav paints icons on a
+       dark or a light bar, and a line mark disappears on one of them.
+
+       Strokes are 4.5 and 3.6 on a 64 grid, about 7% of the width. Thinner strokes and a third
+       element in either pane blur together at 20px, which is the size that matters. Content fills
+       68% of the badge, matching the favicon. Export the PNG from this file, do not redraw. -->
+  <rect width="64" height="64" rx="11.5" fill="#543FDE"/>
+  <g stroke="#FFFFFF" fill="none" stroke-width="4.5" stroke-linejoin="round">
+    <rect x="12.5" y="17" width="39" height="30" rx="4.5"/>
+    <path d="M25.5 17V47"/>
+  </g>
+  <g stroke="#FFFFFF" stroke-width="3.6" stroke-linecap="round">
+    <path d="M17 27H21"/>
+    <path d="M17 37H21"/>
+  </g>
+  <path d="M38.5 22.5C38.5 28.675 35.175 32 29 32C35.175 32 38.5 35.325 38.5 41.5C38.5 35.325 41.825 32 48 32C41.825 32 38.5 28.675 38.5 22.5Z" fill="#FFFFFF"/>
+</svg>
