@@ -2937,18 +2937,30 @@ window.SW = window.SW || {};
               // whose Summarise button calls an Alias it no longer has keeps the button.)
               const apps = (err.payload && err.payload.apps) || [];
               const refs = (err.payload && err.payload.refs) || [];
-              if (apps.length) {
-                const subject = SW.brand.text(
-                  apps.length > 1 ? '{builtAppPlural}' : 'one {builtApp}'
-                );
-                const fix = refs.length
+              // A live conversation holding a context chip refuses it too (#168), and that holder
+              // has no app source behind it — so `refs` is empty and the conversation titles are
+              // the only thing standing between the reader and a sentence they cannot act on.
+              const held = (err.payload && err.payload.conversations) || [];
+              if (apps.length || held.length) {
+                const subject = [
+                  apps.length &&
+                    SW.brand.text(apps.length > 1 ? '{builtAppPlural}' : 'one {builtApp}'),
+                  held.length && (held.length > 1 ? 'conversations' : 'one conversation'),
+                ].filter(Boolean).join(' and ');
+                const inApps = refs.length
                   ? ` Used in: ${refs.join(', ')}. Remove those uses in Build, then remove it here.`
                   // The code word this used to say names the app-scoped pair in `service.py` and
                   // never on screen, and the act it points at is now a control of its own (#96).
-                  : ' Remove it from that app in Build, then remove it here.';
+                  : apps.length ? ' Remove it from that app in Build, then remove it here.' : '';
+                // Both ways out, because they are not the same act: closing the chip keeps the
+                // conversation and its history, and only the reader knows which they meant.
+                const inChats = held.length
+                  ? ` Held in: ${held.join(', ')}. Close the chip there, or delete the` +
+                    ' conversation, then remove it here.'
+                  : '';
                 antd.Modal.info({
                   title: `${resource.name} is still used by ${subject}`,
-                  content: `${err.message}, so it can't leave ${scopeName} yet.` + fix,
+                  content: `${err.message}, so it can't leave ${scopeName} yet.` + inApps + inChats,
                   okText: 'Got it',
                 });
               } else {
