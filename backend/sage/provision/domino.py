@@ -135,9 +135,27 @@ class BuiltApp:
     status: str  # currentVersion.currentInstance.status: Running / Failed / Preparing / "" unknown
 
 
+@dataclass(frozen=True)
+class CredentialRef:
+    """One of the caller's Domino Git credentials, as much of it as a person needs to recognise it.
+
+    Carries no secret. `fingerprint` is deliberately absent: it is not a hash of the HTTPS secret
+    (ADR-0033) and it identifies nothing to somebody reading an error.
+    """
+
+    id: str
+    label: str      # e.g. "work PAT (github.com)", or "my key (github.com) [SSH]"
+    domain: str
+    protocol: str
+    usable: bool    # HTTPS, and for the host this control plane provisions against
+
+
 class ControlPlane(Protocol):
     def whoami(self) -> UserRef: ...
-    def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef: ...
+    @property
+    def git_host(self) -> str: ...
+    def git_credentials(self) -> list[CredentialRef]: ...
+    def create_project(self, name: str, *, git_url: str, git_credential_id: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
@@ -187,7 +205,6 @@ class DominoControlPlane:
         self._tool = builder_tool
         self._provider = git_service_provider
         self._git_host = git_host
-        self._cred_id: str | None = None  # resolved lazily, then cached
         self._me: UserRef | None = None       # whoami's answer, and the token it answered for —
         self._me_for: str | None = None       # see whoami(): the token CAN change under us
         self._transport = transport
@@ -230,34 +247,55 @@ class DominoControlPlane:
             r = c.delete(f"{self._host}{path}", headers=self._headers())
         return self._check(r, "DELETE", path)
 
-    def _git_credential_id(self) -> str:
-        """Id of the caller's Domino git credential for `git_host` (cached). Domino validates repo
-        access at project-create time, so a git-based project pointing at a private repo needs it."""
-        if self._cred_id is None:
-            uid = (self._get("/api/users/v1/self").get("user") or {}).get("id")
-            if not uid:
-                raise RuntimeError("could not resolve the calling user from /api/users/v1/self")
-            creds = self._get(f"/api/users/beta/credentials/{uid}").get("credentials") or []
-            match = next(
-                (c for c in creds if isinstance(c, dict) and c.get("domain") == self._git_host
-                 and (c.get("protocol") or "https") == "https"),
-                None,
-            )
-            if not match or not match.get("id"):
-                raise RuntimeError(
-                    brand.text(
-                        "no HTTPS Git credential for {host} in your {platformName} account — "
-                        "add one under Account Settings > Git Credentials, then try again",
-                        host=self._git_host,
-                    )
-                )
-            self._cred_id = str(match["id"])
-        return self._cred_id
+    @staticmethod
+    def _cred_label(c: dict[str, Any]) -> str:
+        """Name a credential the way its owner sees it in Account Settings, so an error can be acted
+        on. Carries no secret: the list holds no token, and the fingerprint is left out because it
+        identifies nothing to a person reading an error."""
+        name = str(c.get("name") or "").strip()
+        domain = str(c.get("domain") or "").strip()
+        proto = str(c.get("protocol") or "https").strip().lower()
+        label = f"{name} ({domain})" if name and domain else (name or domain or str(c.get("id") or "unnamed"))
+        return label if proto == "https" else f"{label} [{proto.upper()}]"
+
+    @property
+    def git_host(self) -> str:
+        """The host this control plane attaches credentials for. The caller needs it to say which
+        host it found nothing for."""
+        return self._git_host
+
+    def git_credentials(self) -> list[CredentialRef]:
+        """The caller's Domino Git credentials, in the order the platform lists them.
+
+        Reports; decides nothing (ADR-0028). Which one to send, and what to do when it is refused,
+        is the caller's judgement — Sage cannot tell a live credential from a dead one without
+        asking Domino, so only the caller knows what an attempt is worth (ADR-0033).
+        """
+        uid = (self._get("/api/users/v1/self").get("user") or {}).get("id")
+        if not uid:
+            raise RuntimeError("could not resolve the calling user from /api/users/v1/self")
+        raw = self._get(f"/api/users/beta/credentials/{uid}").get("credentials") or []
+        out = []
+        for c in raw:
+            if not isinstance(c, dict) or not c.get("id"):
+                continue
+            domain = str(c.get("domain") or "")
+            proto = str(c.get("protocol") or "https").lower()
+            out.append(CredentialRef(
+                id=str(c["id"]), label=self._cred_label(c), domain=domain, protocol=proto,
+                usable=domain == self._git_host and proto == "https",
+            ))
+        return out
 
     def create_project(
-        self, name: str, *, git_url: str, branch: str = "main", description: str = ""
+        self, name: str, *, git_url: str, git_credential_id: str, branch: str = "main",
+        description: str = "",
     ) -> ProjectRef:
         # NewProjectV1. ownerId omitted -> defaults to the calling user (the hub runs as that user).
+        #
+        # `git_credential_id` is passed in, never chosen here. Domino checks repo ACCESS inside this
+        # call — not that the credential exists — so this is the only place a credential is tested,
+        # and a rejection is reported as-is for the caller to judge (ADR-0033).
         body = {
             "name": name,
             "description": description or brand.text("Created by {assistantName}"),
@@ -266,7 +304,7 @@ class DominoControlPlane:
                 "uri": git_url,
                 "serviceProvider": self._provider,
                 "defaultRef": {"refType": "Branch", "value": branch},
-                "gitCredentialId": self._git_credential_id(),
+                "gitCredentialId": git_credential_id,
             },
         }
         data = self._post(_PROJECTS_PATH, body)
@@ -674,12 +712,36 @@ class FakeControlPlane:
     probed_paths: list[str] = field(default_factory=list)  # open_paths a readiness probe was run for
     deleted_apps: list[str] = field(default_factory=list)  # app_ids a deployment delete was asked for
     user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
+    credentials: list[CredentialRef] = field(default_factory=lambda: [
+        CredentialRef(id="cred-1", label="test PAT (github.com)", domain="github.com",
+                      protocol="https", usable=True),
+    ])
+    dead_credentials: set[str] = field(default_factory=set)  # ids create_project refuses, as Domino would
+    tried_credentials: list[str] = field(default_factory=list)  # ids create_project was called with, in order
+    host: str = "github.com"
     _seq: int = 0
 
     def whoami(self) -> UserRef:
         return self.user
 
-    def create_project(self, name: str, *, git_url: str, branch: str = "main", description: str = "") -> ProjectRef:
+    @property
+    def git_host(self) -> str:
+        return self.host
+
+    def git_credentials(self) -> list[CredentialRef]:
+        return list(self.credentials)
+
+    def create_project(self, name: str, *, git_url: str, git_credential_id: str = "cred-1",
+                       branch: str = "main", description: str = "") -> ProjectRef:
+        self.tried_credentials.append(git_credential_id)
+        if git_credential_id in self.dead_credentials:
+            # The shape Domino answers with: a 500 whose body blames repo access, not the
+            # credential's existence (ADR-0033).
+            raise RuntimeError(
+                f"POST {_PROJECTS_PATH} -> 500: "
+                f'{{"requestId":"fake-{len(self.tried_credentials)}","errors":["Cannot access Git '
+                f'repository with URI: {git_url}. This may be due to invalid Git credentials."]}}'
+            )
         self._seq += 1
         ref = ProjectRef(id=f"proj-{self._seq}", name=name, git_url=git_url)
         self.projects.append(ref)

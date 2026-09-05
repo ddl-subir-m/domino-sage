@@ -80,13 +80,14 @@ def _body_of(rel: str, opener: str) -> str:
 
 
 def _said(step: dict) -> str:
-    """Every word the header's scope row said, and nothing else on screen."""
-    return " ".join(
-        t
-        for p in step["parts"]
-        if p["className"].startswith("sw-app-scope")
-        for t in p["texts"]
-    )
+    """Every word the app's own list said, and nothing else on screen.
+
+    That list was a row above the preview when this was written and is the App dependencies modal
+    now (`624ff9b`, ADR-0035). What it is FOR is unchanged and is what this file asks about: it is
+    the surface that pairs an app's name with an app's records, so a poll that moved one without
+    the other prints the mismatch here."""
+    deps = step["appDeps"] or {"title": "", "said": []}
+    return " ".join([deps["title"] or ""] + deps["said"])
 
 
 # ---- the tick that moves the app ---------------------------------------------------------

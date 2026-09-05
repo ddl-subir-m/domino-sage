@@ -318,13 +318,14 @@ def test_the_pick_writes_the_filter_and_no_effect_watches_the_selected_app():
     # claim. Comments stripped, so the claim is about the code rather than how a sentence beside it
     # reads.
     #
-    # The five, and why each drops it. A filter is a question about the list, and it goes wherever
-    # the list it asks about stops being the one on screen: leaving the Project, and both ways the
-    # Rail closes (#150). Two were added once the Rail began starting hidden. The Rail OPENING,
-    # because Build's header can set the filter while nothing is showing, so the same filter nobody
-    # can see they applied arrives by that door instead. And starting a Conversation, because a new
-    # one has touched no app, so a standing filter hides the row for the Conversation somebody just
-    # pressed for — and the Rail then says nothing has changed that app yet.
+    # The six, and why each drops it. A filter is a question about the list, and it goes wherever
+    # the list it asks about stops being the one on screen: leaving the Project, and every way the
+    # Rail opens or closes (#150). Three were added once the Rail began starting hidden. The Rail
+    # OPENING, either by hand or to show a press its own answer, because Build's header can set the
+    # filter while nothing is showing, so the same filter nobody can see they applied arrives by
+    # those doors instead. And starting a Conversation, because a new one has touched no app, so a
+    # standing filter hides the row for the Conversation somebody just pressed for — and the Rail
+    # then says nothing has changed that app yet.
     store = (_WORKBENCH / "js" / "store.js").read_text()
     assert [
         ln.split("//")[0].strip() for ln in store.splitlines() if "railAppFilter" in ln
@@ -333,6 +334,7 @@ def test_the_pick_writes_the_filter_and_no_effect_watches_the_selected_app():
         "state.railAppFilter = null;",   # setScope
         "state.railAppFilter = null;",   # toggleRail, either way
         "state.railAppFilter = null;",   # collapseRail
+        "state.railAppFilter = null;",   # expandRail
         "state.railAppFilter = null;",   # newConversation
     ]
 
@@ -350,13 +352,24 @@ def test_rename_and_delete_are_text_items_in_the_overflow_beside_the_app_name():
     assert len(menus) == 1, step["menus"]
     items = menus[0]["items"]
     # Publish and Open app joined them above Rename (#89) on the same shape, which is the point:
-    # the menu grew and none of it turned into an icon.
-    assert [i["key"] for i in items if not i["divider"]] == ["publish", "open", "rename", "delete"]
-    assert all(i["label"] for i in items if not i["divider"]), items
-    # Danger, last, and below a divider — the three things Reset's shape is made of.
-    assert items[-1]["key"] == "delete"
-    assert items[-1]["danger"] is True
-    assert items[-2]["divider"] is True
+    # the menu grew and none of it turned into an icon. `624ff9b` grouped it — App above, Manage
+    # below — and the read-only glances that used to sit in the header came in as items rather than
+    # as controls of their own, which is the same shape again one level down.
+    assert [i["key"] for i in items if not i["divider"] and i["key"]] == [
+        "publish", "open", "reload", "rename", "delete", "dependencies", "history",
+    ]
+    assert all(i["label"] for i in items if not i["divider"] and not i["group"]), items
+    # Danger, last in its group, and below a divider — the three things Reset's shape is made of.
+    # "Last in its group" rather than last outright: `624ff9b` split the menu into App and Manage,
+    # and what Reset's precedent is about is the destructive item sitting at the bottom of the
+    # things that ACT, fenced off by a divider. Manage below it is read-only glances.
+    at = [i["key"] for i in items].index("delete")
+    assert items[at]["danger"] is True
+    assert items[at - 1]["divider"] is True
+    # Nothing that acts follows it: the rest of the menu is the next group and its children.
+    assert items[at + 1]["divider"] is True
+    assert items[at + 2]["group"] is True
+    assert not any(i["danger"] for i in items[at + 1:])
 
 
 @needs_node

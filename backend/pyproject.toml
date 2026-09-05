@@ -39,6 +39,10 @@ packages = ["sage"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# -n auto by default, because a bare `pytest` is what gets typed and serial is 6x slower: the full
+# suite is 36s across cores against 218s on one, and even a single file is 3.8s against 9.4s. Use
+# `-n0` to read interleaved output or to run one test under a debugger.
+addopts = "-n auto"
 
 [tool.ruff]
 line-length = 110

@@ -139,3 +139,127 @@ def test_upstream_error_ignores_ordinary_chunks():
     assert ka.upstream_error(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n') is None
     assert ka.upstream_error(b"data: [DONE]\n\n") is None
     assert ka.upstream_error(b": keepalive\n\n") is None
+
+
+def test_upstream_error_still_reads_a_frame_whose_content_mentions_the_word_error():
+    """The fast reject added for the per-chunk check keys on the literal `"error"`, which a model's
+    own prose can contain too. Rejecting cheaply must not start rejecting real frames — nor must a
+    content delta that merely says "error" get mistaken for one."""
+    assert ka.upstream_error(b'data: {"choices":[{"delta":{"content":"an \\"error\\" here"}}]}\n\n') is None
+    assert ka.upstream_error(b'data: {"error": {"message": "real"}}\n\n') == "real"
+
+
+# ---- the frame that arrives AFTER the first-byte budget ------------------------------------------
+
+def test_an_error_frame_that_arrives_after_the_budget_is_still_readable(monkeypatch):
+    """The Gemini/GCP failure, read out of /api/diag on 2026-09-04.
+
+    `upstream_error` was applied only to the eagerly-pulled `first` chunk, so the gateway's error
+    frame was recognised only when the provider failed inside FIRST_BYTE_BUDGET_S. Live, the log
+    correlated perfectly: every turn that logged "first byte 8.0s, pending; keepalive engaged" died
+    as "Invalid sage-gateway/openai-compatible-chat stream event", and every turn whose first byte
+    beat the budget got a readable message from the same gateway defect. The frame below is verbatim
+    from that capture — a gateway-side Python AttributeError relayed as a 200.
+
+    The 0.2s sleep is what makes this the real case: it pushes the frame past the (patched) budget,
+    so `first is EMPTY`, the stream commits, and the frame arrives inside the loop.
+    """
+    err = b'data: {"error": {"message": "\'list\' object has no attribute \'get\'", "type": "server_error"}}\n\n'
+
+    def gen():
+        time.sleep(0.2)   # the model thinks for longer than the first-byte budget
+        yield err
+
+    _fast(monkeypatch)
+    client, proj = _control_client(monkeypatch, gen)
+    resp = _post(client)
+
+    assert resp.status_code == 200
+    assert "'list' object has no attribute 'get'" in resp.text   # the gateway's reason reaches the user
+    assert "data: [DONE]" in resp.text                           # ...and the turn closes cleanly
+    assert '"type": "server_error"' not in resp.text             # the unparseable frame is NOT forwarded
+    assert proj.last_gateway_error is not None                   # telemetry recorded it
+
+
+def test_a_good_chunk_before_a_late_error_frame_is_kept(monkeypatch):
+    # The check now runs mid-stream, so it must end the stream without eating what already streamed.
+    def gen():
+        yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+        yield b'data: {"error": {"message": "provider gave up"}}\n\n'
+        yield b'data: {"choices":[{"delta":{"content":"never"}}]}\n\n'
+
+    client, _ = _control_client(monkeypatch, gen)
+    resp = _post(client)
+
+    assert '"content":"partial"' in resp.text    # what arrived before the failure is preserved
+    assert "provider gave up" in resp.text       # the reason is rendered
+    assert "never" not in resp.text              # and nothing after the error frame is forwarded
+
+
+def test_shim_app_surfaces_a_late_error_frame_too(monkeypatch):
+    # The standalone shim checked for an error frame nowhere at all, first chunk included.
+    def gen():
+        time.sleep(0.2)
+        yield b'data: {"error": {"message": "Function call is missing a thought_signature"}}\n\n'
+
+    _fast(monkeypatch)
+    client = _shim_client(monkeypatch, gen)
+    resp = _post(client)
+
+    assert resp.status_code == 200
+    assert "missing a thought_signature" in resp.text
+    assert "data: [DONE]" in resp.text
+
+
+# ---- what the tool calls look like on the way OUT (#155) ----------------------------------------
+
+def _batch(*sigs):
+    """One assistant message holding len(sigs) tool calls; a None entry means that call is unsigned."""
+    calls = []
+    for n, sig in enumerate(sigs):
+        c = {"id": f"c{n}", "type": "function",
+             "function": {"name": "read", "arguments": '{"path":"a"}'}}
+        if sig is not None:
+            c["extra_content"] = {"google": {"thought_signature": sig}}
+        calls.append(c)
+    return {"role": "assistant", "content": "", "tool_calls": calls}
+
+
+def test_the_listing_groups_calls_by_message():
+    """Grouping IS the diagnosis: verified live 2026-09-04, Gemini signs a parallel batch once and
+    accepts it back that way, so a flat per-call list cannot tell the healthy shape from the broken
+    one (#155)."""
+    entries = ka.tool_call_signatures([{"role": "user", "content": "go"}, _batch("abcd", None)])
+    assert entries == ["msg1[c0/read sig=4, c1/read sig=NONE]"]
+
+
+def test_tool_call_signatures_survives_junk():
+    # The request is whatever the client sent; a summariser that raises would take the turn with it.
+    assert ka.tool_call_signatures(None) == []
+    assert ka.tool_call_signatures("nope") == []
+    assert ka.tool_call_signatures([None, 7, {"role": "assistant", "tool_calls": [None, "x"]}]) == []
+    assert ka.tool_call_signatures(
+        [{"role": "assistant", "tool_calls": [{"extra_content": "not-a-dict"}]}]
+    ) == ["msg0[?/? sig=NONE]"]
+
+
+def test_an_unsigned_later_call_in_the_same_batch_is_not_a_gap():
+    """The false positive this rule was written to kill. Live, `[sig=408, sig=NONE]` in ONE message
+    round-tripped fine — an earlier build of this warning fired on it and claimed the request would
+    be rejected, which was wrong."""
+    healthy = [_batch("abcd", None, None)]
+    assert ka.unsigned_tool_messages("gemini-3.7-flash", healthy) == 0
+
+
+def test_a_tool_call_message_starting_unsigned_is_a_gap():
+    # The rejected shape: the same two calls split across messages, so the second starts bare.
+    split = [_batch("abcd"), _batch(None)]
+    assert ka.unsigned_tool_messages("gemini-3.7-flash", split) == 1
+    assert ka.unsigned_tool_messages("domino/gemini-3.7-flash", split) == 1   # provider-prefixed
+
+
+def test_the_gap_is_only_counted_for_a_model_that_signs_at_all():
+    split = [_batch("abcd"), _batch(None)]
+    for model in ("sonnet", "gpt-5.4", "bedrock-qwen3-coder"):
+        assert ka.unsigned_tool_messages(model, split) == 0
+    assert ka.unsigned_tool_messages("gemini-3.7-flash", None) == 0

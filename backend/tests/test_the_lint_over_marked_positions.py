@@ -431,7 +431,10 @@ def test_the_glossary_holds_both_kinds():
     assert kinds["Turn"] == "name"
     assert kinds["Remove"] == "word"
     assert sorted(k for k, v in kinds.items() if v == "word") == [
+        "Attach folder",
         "Build this again",
+        "Collaborator",
+        "Liveness",
         "Preflight",
         "Problem",
         "Remove",

@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..orchestrator import brand
-from ..router.models import Mode, ModelCatalog
+from ..router.models import Mode, ModelCatalog, signing_slot
 from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
 from .provider import HostedEndpoint, LlmAlias
 
@@ -301,6 +301,12 @@ def turn_slots(catalog: ModelCatalog, mode: Mode,
     never overridable, Plan and Implement take an explicit pick, and Auto ignores one. Two copies of
     a rule drift, so if that order ever changes, this changes with it.
 
+    The signing pin is read from `signing_slot`, not restated, for exactly that reason (ADR-0032).
+    It outranks every line below: a session with a signing model in any assignable slot routes every
+    Build turn to it, so checking the phase's own slot would both miss a dead signing alias AND
+    refuse a turn whose real model answers fine — the "contingency turned into a refusal" this
+    docstring warns about two paragraphs down, caused by a rule this function could not see.
+
     The escalation target is DELIBERATELY absent. A planning stall pins the plan-tier model for an
     Implement retry (see `escalated_pick`), and in Implement mode that slot is one this turn may
     never reach. Refusing a turn up front because a rescue path it probably will not take names a
@@ -312,6 +318,11 @@ def turn_slots(catalog: ModelCatalog, mode: Mode,
     Each slot is handed on exactly as it was configured. `turn_refusal` resolves it against the
     alias listing, because a slash in a slot cannot be read without one — see `slot_alias`.
     """
+    signing = signing_slot(catalog)
+    if signing is not None and not (mode in (Mode.PLAN, Mode.IMPLEMENT) and picked_model is not None):
+        # The pin holds, and it holds for every mode — including Auto, which would otherwise report
+        # two slots for a turn that can only reach one.
+        return [(signing, getattr(catalog, signing), False)]
     if mode is Mode.ASK:
         wanted = [("ask", catalog.ask, False)]
     elif mode is Mode.PLAN:

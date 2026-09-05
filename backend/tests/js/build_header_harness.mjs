@@ -807,6 +807,23 @@ function appDepContents(tree) {
   return out;
 }
 
+// The app's own list as ONE surface: what it is titled, and every word it says.
+//
+// The title is read because it is where the app's NAME is: `In {app}` was a section head in the
+// panel and a row above the preview before that, and it is a Modal title now (`624ff9b`,
+// ADR-0035). A Modal title is a prop rather than an element with a class, so a `parts` walk cannot
+// see it — and "this list names the app it belongs to" is the claim it carries. The removal routes
+// behind this list carry no app id, so that claim is load-bearing.
+function appDeps() {
+  if (!(SW.store.get().activeApp)) return null;
+  const inside = flatten(SW.AppDependenciesModal());
+  const head = inside.find((n) => typeof n.title === 'string' && n.title);
+  return {
+    title: head ? head.title : null,
+    said: inside.filter((n) => n.className && n.texts).flatMap((n) => n.texts),
+  };
+}
+
 // What the build history drawer IS, and what it says. Its overlay props are read off the element
 // itself — the mask, the X and the Escape key are the criterion, and each is its own prop — and its
 // list is read out of its own subtree so the pane behind it cannot answer for it.
@@ -905,7 +922,13 @@ function headerPicker(thread) {
   const nodes = flatten(SW.BuildMode({
     conversationId: thread, appId: (SW.store.get().activeApp || {}).id || null,
   }));
-  const at = nodes.findIndex((n) => n.className === 'sw-app-scope-add');
+  // The door moved off the header row and into the App dependencies modal (`624ff9b`, and the
+  // list followed it there in ADR-0035). Both anchors are accepted: the modal's foot is where it
+  // is, and `sw-app-scope-add` is where it was, so this reads either shape rather than asserting
+  // which one is on screen — that is the surrounding tests' question, not the reader's.
+  const at = nodes.findIndex(
+    (n) => n.className === 'sw-appdeps-foot' || n.className === 'sw-app-scope-add'
+  );
   if (at === -1) return null;
   const after = nodes.slice(at);
   const menu = after.find((n) => n.items);
@@ -937,10 +960,13 @@ function headerScopeDoors(thread) {
   const out = [];
   let name = null;
   nodes.forEach((n, i) => {
-    if (n.className === 'sw-app-scope-name' && (n.texts || []).length) {
+    // Same move as the add door above: the Scope door rides its Binding's row, and that row is in
+    // the modal now. Both spellings are read, for the same reason.
+    if ((n.className === 'sw-appdeps-name' || n.className === 'sw-app-scope-name')
+        && (n.texts || []).length) {
       name = (n.texts || []).filter((t) => t !== ', ').join('');
     }
-    if (n.className !== 'sw-app-scope-door') return;
+    if (n.className !== 'sw-appdeps-door' && n.className !== 'sw-app-scope-door') return;
     // The Dropdown and the Tooltip wrap the control, so both are walked BEFORE it — the nearest one
     // above this node is the one this door is inside.
     const above = nodes.slice(0, i).reverse();
@@ -1072,6 +1098,7 @@ for (const step of steps) {
     report.push({
       step: `build ${step.build}`,
       app: (SW.store.get().activeApp || {}).id || null,
+      appDeps: appDeps(),
       renderCalls,
       railMode: rail ? rail.mode || null : null,
       appRails: nodes.filter((n) => n.el === 'AppRail').length,
@@ -1466,6 +1493,7 @@ for (const step of steps) {
       rows: panelContents(SW.ResourcePanel()).map((r) => ({ section: r.section, texts: r.texts })),
       appRows: appDepContents(SW.AppDependenciesModal()).map((r) => ({ section: r.section, texts: r.texts })),
       parts: after.filter((n) => n.className && n.texts).map((n) => ({ className: n.className, texts: n.texts })),
+      appDeps: appDeps(),
       words: words(after),
       chipsBefore,
       chips: SW.store.get().attachments.map((a) => a.id),
@@ -1578,12 +1606,21 @@ for (const step of steps) {
     expanded = !!step.expand;
     historyFails = !!step.readFails;
     calls.length = 0;
-    const control = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }))
-      .find((n) => n.onClick && n.label === 'Build history');
-    if (!control && !step.closed) {
+    // Build history is an item in the header's own `…` menu now (`624ff9b`), where it used to be a
+    // control with an aria-label of its own. Both are accepted: what these tests are about is the
+    // drawer behind the door, not which shape the door takes.
+    const drawn = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+    const control = drawn.find((n) => n.onClick && n.label === 'Build history');
+    const menu = control
+      ? null
+      : drawn.find((n) => n.onMenu && (n.items || []).some((i) => i.key === 'history'));
+    if (!control && !menu && !step.closed) {
       throw new Error('nothing in the Build header opens the build history');
     }
-    if (control && !step.closed) control.onClick();
+    if (!step.closed) {
+      if (control) control.onClick();
+      else menu.onMenu({ key: 'history', domEvent: { stopPropagation() {} } });
+    }
 
     let tree = await paint();
     // What the drawer said before whatever the step does next. Null unless the step moves the
@@ -1635,10 +1672,16 @@ for (const step of steps) {
       SW.store.closeBuildHistory();
       await paint();
       calls.length = 0;
-      const again = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }))
-        .find((n) => n.onClick && n.label === 'Build history');
-      if (!again) throw new Error('nothing in the Build header re-opens the build history');
-      again.onClick();
+      const redrawn = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+      const again = redrawn.find((n) => n.onClick && n.label === 'Build history');
+      const againMenu = again
+        ? null
+        : redrawn.find((n) => n.onMenu && (n.items || []).some((i) => i.key === 'history'));
+      if (!again && !againMenu) {
+        throw new Error('nothing in the Build header re-opens the build history');
+      }
+      if (again) again.onClick();
+      else againMenu.onMenu({ key: 'history', domEvent: { stopPropagation() {} } });
       tree = await paint();
     }
 
@@ -1646,7 +1689,17 @@ for (const step of steps) {
     report.push({
       step: `history ${step.select || selected}`,
       app: (SW.store.get().activeApp || {}).id || null,
-      control: control ? { label: control.label, texts: control.texts || [] } : null,
+      // The door, in whichever shape the header draws it: a control with an aria-label and words of
+      // its own, or the menu item it became in `624ff9b`. Reported as one shape so the claim stays
+      // "the header says Build history" rather than "the header holds this element".
+      control: control
+        ? { label: control.label, texts: control.texts || [] }
+        : (menu
+          ? (() => {
+              const item = menu.items.find((i) => i.key === 'history');
+              return { label: item.label, texts: [item.label] };
+            })()
+          : null),
       calls: calls.slice(),
       drawer: readDrawer(tree),
       mid,
@@ -1697,6 +1750,7 @@ for (const step of steps) {
       rail: railOf('build'),
       bindings: (s.bindings || []).map((b) => b.display_name || b.name),
       attachments: (s.appAttachments || []).map((a) => a.file),
+      appDeps: appDeps(),
       parts: nodes
         .filter((n) => n.className && n.texts)
         .map((n) => ({ className: n.className, texts: n.texts })),
@@ -1879,6 +1933,7 @@ for (const step of steps) {
       // out loud — so a stale one is readable as a wrong pairing rather than inferred from a list.
       notice: s.appRemoval ? s.appRemoval.text : null,
       noticeBefore,
+      appDeps: appDeps(),
       parts: nodes
         .filter((n) => n.className && n.texts)
         .map((n) => ({ className: n.className, texts: n.texts })),

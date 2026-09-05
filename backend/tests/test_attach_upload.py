@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.assets.provider import Asset, DatasetFile, FakeAssetProvider
+from sage.assets.provider import Asset, DatasetFile, FakeAssetProvider, FileListing
 from sage.orchestrator.service import (
     AttachTooLarge,
     DataReferenced,
@@ -219,6 +219,37 @@ def test_detach_removes_a_leaked_copy_so_it_cant_reach_git(tmp_path: Path):
     assert not (proj.workspace.path / "src" / "data" / "d.csv").exists()   # leaked bytes gone from the tree
     assert orch._leaked_copy_paths(proj) == []                            # nothing left for the backstop
     assert _manifest(proj.workspace.path) == []
+
+
+def test_detach_keeps_a_source_file_that_only_shares_the_name(tmp_path: Path):
+    # _data_usage calls any app file with the attachment's BASENAME a copy, and reads neither — right
+    # for spotting a leaked CSV cheaply, not enough to delete on. An upload named App.tsx must not
+    # take src/App.tsx with it, or the app stops building over a name collision nobody chose.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("App.tsx", b"export default function FromTheDataset() {}")
+    theirs = (proj.workspace.path / "src" / "App.tsx").read_text()
+
+    out = orch.detach_file(res["path"])
+
+    assert out["removed_copies"] == []
+    assert (proj.workspace.path / "src" / "App.tsx").read_text() == theirs
+
+
+def test_detach_names_a_same_named_copy_it_could_not_prove_and_left(tmp_path: Path):
+    # The other half of the trade _is_leaked_copy makes: what it cannot prove stays, and the entry
+    # leaves the record either way — so _leaked_copy_paths stops covering the file and it would
+    # otherwise reach the next save with nothing on screen having mentioned it.
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"a,b\n1,2\n")
+    (proj.workspace.path / "src" / "d.csv").write_text("a,b\n")   # the first row only, not the file
+
+    out = orch.detach_file(res["path"])
+
+    assert out["removed_copies"] == []
+    assert out["kept_copies"] == ["src/d.csv"]
+    assert (proj.workspace.path / "src" / "d.csv").exists()
 
 
 def test_detach_reports_still_referenced_files_without_deleting_source(tmp_path: Path):
@@ -634,7 +665,7 @@ def test_promote_scratch_copies_onto_a_dataset_and_drops_the_scratch_copy(tmp_pa
 
 def test_list_asset_files_accepts_a_membership_id(tmp_path: Path):
     orch = _orch(tmp_path)
-    files = orch.list_asset_files("dataset:ds_sales_2026")
+    files = orch.list_asset_files("dataset:ds_sales_2026")["files"]
     names = {f["path"] for f in files}
     assert "train.csv" in names
 
@@ -655,7 +686,7 @@ class _UnmountedAssets:
         return [self.asset]
 
     def list_files(self, asset):
-        return [DatasetFile("raw/wells.csv", 0)]   # the API listing carries no sizes
+        return FileListing([DatasetFile("raw/wells.csv", 0)])  # the API listing carries no sizes
 
     def download_file(self, asset, rel_path, dest):
         self.downloads.append(rel_path)
@@ -666,7 +697,7 @@ class _UnmountedAssets:
 
 def test_a_dataset_with_no_mount_still_lists_its_files(tmp_path: Path):
     orch = _orch(tmp_path, assets=_UnmountedAssets())
-    files = orch.list_asset_files("ds_shared")
+    files = orch.list_asset_files("ds_shared")["files"]
     assert [f["path"] for f in files] == ["raw/wells.csv"]
     assert files[0]["attached"] is False
 

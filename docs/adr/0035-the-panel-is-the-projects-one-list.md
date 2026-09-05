@@ -96,7 +96,16 @@ would be marked live before its row existed.
 **The panel draws a group only when it holds something — or when its listing failed.** Six kind
 headings over nothing was the panel's loudest noise. The error half is not a nicety:
 `GET /api/resources` carries its reason per kind on purpose, and a group hidden for being empty when
-it is really unknown turns "the gateway is not answering" into "you have no models".
+it is really unknown turns "the gateway is not answering" into "you have no models". This is also
+what finally puts #161's group-level sentence on screen in the case it was written for — a kind that
+errored with no rows left to hang it over — since that group is now drawn for the sentence alone.
+
+**`EMPTY_HINT` and `.sw-group-empty` go with the branch that held them.** There is no empty group to
+say "No language models here yet." over. The per-group *way in* does not go with them: #164 had
+already moved that door out of the empty branch and onto the group head, where it is drawn whether
+or not the group holds anything — so the door survives the branch's deletion, which is the whole
+point of having moved it. Groups with no catalog behind them still get none, and `Files` joins that
+list for a new reason: a file arrives by Upload, so `openCatalog('file')` has nothing to open.
 
 **The search box is gone.** Filtering a list you can see all of is clutter; the search that matters
 is inside Browse Domino, over the catalogue you cannot see.

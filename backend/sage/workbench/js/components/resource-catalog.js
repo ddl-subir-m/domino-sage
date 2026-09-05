@@ -91,9 +91,6 @@ window.SW = window.SW || {};
     const { catalogOpen, catalogKind, scope } = SW.store.get();
     const [query, setQuery] = useState('');
     const [kind, setKind] = useState(null);
-    const [rows, setRows] = useState([]);
-    const [counts, setCounts] = useState({});
-    const [loading, setLoading] = useState(false);
     const [busyId, setBusyId] = useState(null);
     const [drill, setDrill] = useState(null);
 
@@ -107,40 +104,40 @@ window.SW = window.SW || {};
       }
     }, [catalogOpen, catalogKind]);
 
+    // Once per open, and never per keystroke. The rows below are already on screen off the store
+    // while this is in flight, so this is the platform correcting a listing rather than the wait
+    // before anything can be read.
     useEffect(() => {
-      if (!catalogOpen) return undefined;
-      let cancelled = false;
-      setLoading(true);
-      const timer = setTimeout(() => {
-        SW.api
-          .catalog({
-            projectId: scope.id,
-            q: query,
-            kind: kind || '',
-          })
-          .then((found) => {
-            if (cancelled) return;
-            setRows(found.results || []);
-            setCounts(found.counts || {});
-          })
-          .finally(() => !cancelled && setLoading(false));
-      }, 140);
-      return () => {
-        cancelled = true;
-        clearTimeout(timer);
-      };
-    }, [catalogOpen, query, kind, scope.id]);
+      if (!catalogOpen) return;
+      SW.store.refreshResourceListing();
+    }, [catalogOpen, scope.id]);
 
     if (!catalogOpen) return null;
+
+    // A view of what the store holds, recomputed on every draw. Typing and picking a kind are now
+    // filters over memory, so neither reaches the network (#159).
+    const view = SW.api.catalog({ q: query, kind: kind || '' });
+    // `null` is the window right after a project switch, when the store's listing has been cleared
+    // and the fresh one has not landed. That is a spinner, never an empty catalogue: an empty one
+    // reads as "Domino holds nothing you can add", which is the one thing that is not true here.
+    const loading = !view;
+    const rows = (view && view.results) || [];
+    const counts = (view && view.counts) || {};
+    // What `fetchDominoListing` could not read. Partial is the normal case — Datasets answered and
+    // Data Sources did not — so this has to be sayable beside rows, not only instead of them. An
+    // outage silently drawn as an empty catalogue tells somebody their platform is bare.
+    const listingErrors = Object.values((view && view.errors) || {}).filter(Boolean).join(' ');
+    // A search box with something in it, or a kind picked in the sidebar. It decides who gets to
+    // say why the list is empty: with a filter standing, the answer is the filter, and a refusal
+    // that has nothing to do with what was typed must not take that sentence over.
+    const narrowed = Boolean(query.trim()) || Boolean(kind);
 
     const add = async (resource) => {
       setBusyId(resource.id);
       try {
+        // No local patch of the row: `inProject` is read off the working set the store just
+        // reloaded, so the row and the rail cannot disagree about what happened.
         await SW.store.addToProject(resource);
-        setRows((current) =>
-          current.map((r) => (r.id === resource.id ? { ...r, inProject: true } : r))
-        );
-        if (drill && drill.id === resource.id) setDrill({ ...drill, inProject: true });
       } finally {
         setBusyId(null);
       }
@@ -242,17 +239,26 @@ window.SW = window.SW || {};
                   : h('span', { className: 'sw-cat-in' }, 'In project')
               )
             : null,
+          !drill && listingErrors && (rows.length > 0 || narrowed)
+            ? h('div', { className: 'sw-cat-note' }, listingErrors)
+            : null,
           h(
             'div',
             { className: 'sw-cat-list sw-scroll' },
             drill
               ? h(SW.ResourceTree, { resource: drillResource, query, variant: 'catalog' })
-              : loading && rows.length === 0
+              : loading
               ? h(Skeleton, { active: true, paragraph: { rows: 6 }, style: { padding: 16 } })
               : rows.length === 0
               ? h(Empty, {
                   style: { padding: 32 },
-                  description: query.trim()
+                  // A read that failed is not a platform with nothing in it, and the two must not
+                  // share a sentence. It only gets this one when nothing is narrowing the list:
+                  // otherwise the filter is why the list is empty, and the refusal is said in the
+                  // note above it instead.
+                  description: listingErrors && !narrowed
+                    ? listingErrors
+                    : query.trim()
                     // What the person typed is theirs: it fills a slot and is never scanned for
                     // tokens, so a search for `{dataset}` reads back as itself.
                     ? SW.brand.text('Nothing in {platformName} matches "{query}".',
@@ -276,7 +282,11 @@ window.SW = window.SW || {};
             h(
               'span',
               { className: 'sw-secondary' },
-              `${rows.length} ${rows.length === 1 ? 'result' : 'results'} · ${inCount} already in ${scope.name}`
+              // "0 results" while the listing is still being read would be the count contradicting
+              // the spinner beside it.
+              loading
+                ? SW.brand.text('Reading {platformName}…')
+                : `${rows.length} ${rows.length === 1 ? 'result' : 'results'} · ${inCount} already in ${scope.name}`
             ),
             h(Button, { onClick: () => SW.store.closeCatalog() }, 'Done')
           )

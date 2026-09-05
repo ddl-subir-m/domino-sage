@@ -1,0 +1,152 @@
+---
+status: accepted
+extends: ADR-0029 (a folder is the unit of the act — which turns the collision below from rare into
+  routine), ADR-0020 (the working set is orientation, never context)
+---
+
+# A mention names one file, or says what else it matched
+
+An `@` token used to be a basename. `mentionToken` took `path.split('/').pop()`
+(`backend/sage/workbench/js/util.js:373`), and `collectTurnRefs` tested every row against that token
+and pushed each distinct path it matched (`backend/sage/workbench/js/store.js:1057`).
+
+So with `raw/2025/data.csv` and `raw/2026/data.csv` both attached, `@data.csv` matched **both rows**,
+and the server honoured **both** — `_resolve_mentions` looks up exact manifest paths and finds each
+one (`backend/sage/orchestrator/service.py:4098`). Two descriptors were inlined. One file was asked
+for.
+
+This was always possible and always rare, because attaching two files with one basename took two
+deliberate clicks in two folders. [ADR-0029](0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)
+makes it routine: a partitioned folder is the thing a recursive attach is *for*, and identical
+basenames under different date partitions are the normal shape of one.
+
+## The token is generated, so the token can be made unique
+
+When a basename is not unique among the app's Attachments, `mentionToken` falls back to the shortest
+distinguishing path suffix — `@2026/data.csv`.
+
+This costs no rule anybody has to learn, because the menu *inserts* the token; a person types `@`,
+narrows, and picks. And it is safe in the matcher today: `mentionedIn` reads the token as its own
+word off `mentionTokensIn` (`util.js:453`), so a `/` and a `.` inside one match literally.
+
+Uniqueness is computed against the app's own Attachment list, and `mentionToken` is used by both the
+picker that inserts and the turn that reads back — which is why the fix lands in one function rather
+than two that can drift.
+
+### The token outlives the row
+
+A file's path is fixed, so the tokens it could have been given are a fixed set. A folder row's path
+is not: the roll-up level moves as the attachment count crosses the threshold, so `@01`, inserted
+while `raw/2026/01` was a row, names no row at all once the roll-up moves up to `raw/2026`.
+
+The same answer the ambiguous token gets, for the same reason. The row answers for the folders it
+absorbed, the turn carries the row that now stands for those files, and it says that it widened,
+naming what it carried. Wider than what was asked for is a visible cost the person can narrow; a
+mention that quietly carries nothing is the outcome ruled out. The widening is the smallest one
+there is — the row that absorbed it, never the whole Dataset — and that falls out of the grouping
+rather than being chosen: a file belongs to exactly one group, so only the group actually holding
+the files under the named folder can qualify.
+
+And the other direction, because the roll-up moves down as well as up. `@2026` was the month; files
+leave until the days are few enough to be rows of their own, or until there are few enough files to
+show one by one. Carrying nothing is the same silence. The files (and the rows below) answer for
+the folders above them, down to `public/data/<slug>` and not past it — `_by_folder`'s floor, so
+`@data` does not become a token of every Attachment. Groups whose key sits under the named folder,
+not every path under a prefix: a sibling group beside this subtree must not ride along. When the
+named folder is no longer a row, the turn still carries what it covered, and says the name matched
+several — the same sentence an ambiguous `@data.csv` gets.
+
+## A stale token resolves to everything it matches, and says so
+
+The uniqueness rule alone has a hole worth stating, because it is the failure this whole area was
+built to prevent. Text already sitting in the composer keeps the token it was given. If `@data.csv`
+was unique when it was typed and a later attach makes it ambiguous, `mentionToken` now computes
+`@2026/data.csv` for both rows, neither matches what is in the box, and **the mention silently
+carries nothing** — exactly what the comment at `util.js:360` exists to warn against.
+
+So: unique tokens going forward, and an ambiguous token that no longer resolves carries **all** its
+matches and reports that it did. The turn says the name matched three files and names them.
+
+Silence is the one outcome ruled out. A mention that quietly carries nothing produces an answer about
+the wrong thing, or an answer about nothing, with no error anywhere — the class of bug
+`collectTurnRefs` was written to end.
+
+Rejected: **refuse the ambiguous mention and carry none of them.** It turns an ordinary partitioned
+Dataset into a dead end, and the person cannot see why: the two files are indistinguishable in the
+menu, which is the next section.
+
+## The picker has to be able to reach the file it is disambiguating
+
+Two findings, and neither half works without the other.
+
+The query never looked at the folder. `workingSetFirst`'s matcher tested `row.name` and
+`path.split('/').pop()` — basename only (`util.js:510`). Typing `2026`, or `raw/2026`, matched nothing
+for `raw/2026/data.csv`.
+
+The row never showed the folder either. It rendered the name and a kind caption
+(`backend/sage/workbench/js/components/composer.js:606`). Two colliding files drew two identical rows
+— same icon, same label, same caption — that inserted the same text.
+
+So both change. The query matches on the full relative path, and the row shows the distinguishing
+parent folder in the caption slot it already has, with the full path in `title` the way `LeafRow`
+already does it in the Dataset tree. Filter-without-path means typing `2026` returns two rows still
+indistinguishable; path-without-filter means seeing the difference and being unable to narrow to it.
+
+Widening the matcher is contained, which is worth recording since `workingSetFirst` is shared on
+purpose. Its only other caller passes **no** query (`backend/sage/workbench/js/modes/builder.js:688`)
+and the matcher returns `true` on an empty query, so the widening reaches the composer's picker and
+nothing else.
+
+This is the better half of the fix. Unique tokens treat the symptom; a searchable, legible picker
+treats the cause, which is that the right file could not be seen or reached.
+
+## Above the threshold, the folder is the row
+
+The `@` menu used to show eight rows, deduplicated by id rather than by token (`workingSetFirst`).
+After a 200-file attach it was a window onto a list that cannot be seen, and eight rows out of 200
+read as a complete list.
+
+So the menu follows ADR-0029's threshold, by the same rule and for the same reason: above
+`FOLDER_COLLAPSE_THRESHOLD` the folder is the row, and a single file is reached by typing enough of
+its name — which now works, because the query reads the whole path. One rule across both surfaces,
+so the block the agent reads every turn and the menu the person picks from cannot come to disagree
+about what a Dataset mention means.
+
+"One rule" is load-bearing enough to say how. The threshold is read once, in Python, and the grouping
+is `_by_folder` — a roll-up loop with a floor, written for the block. So the menu is handed the
+ANSWER rather than the rule: every attachment in `/api/project` carries the folder its row collapses
+into (`menu_folder`), or `""` while there are few enough files to show one by one. A second copy of
+the loop in JavaScript is precisely how the two surfaces would come to disagree, and a second
+spelling of the threshold is how they would disagree about when.
+
+The collapse is applied to what the query MATCHED, not to the whole list, and that is what makes a
+single file reachable: narrow to one file in a partition and its group holds one. A group of one
+draws its file — the block's own rule ([ADR-0029](0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)),
+here for the same reason it is there. Every matched file is therefore under exactly one row, which
+is what the rejection below rules out doubling. The row's COUNT is the folder's rather than the
+match's, because the pick carries the folder: a count taken from the match reads "3 files" on a row
+that sends twelve.
+
+The menu's own cap is the threshold too (`composer.js` `limit`, held to the constant by test). Below
+it nothing collapses, so a menu that showed fewer rows than that would read as a complete list while
+hiding some — this section's defect in miniature; above it the roll-up leaves at most that many
+folders, so the collapsed list fits as well.
+
+A folder mention carries real server work, recorded here rather than discovered later:
+`_resolve_mentions` honours exact manifest paths only, so a folder token must expand to its member
+paths **and** collapse their descriptors the way the `AGENTS.md` block does — one folder summary, not
+200 `detail` blocks. Without the collapse, the folder row re-introduces exactly the context bloat
+ADR-0029 removed, through the other door. The expansion reads `_by_folder`'s own grouping rather than
+walking the paths under a prefix, because the groups sit at mixed depths: a Dataset with two loose
+files beside a partitioned subtree gives a shallow group and a deep one, and under a prefix the
+shallow row would carry both while its caption and its block line both said two. And a folder of one
+resolves to that file's own path, because a folder path is one the agent's read tool cannot use.
+
+The folder row is Build's. A folder mention is honoured against the app's manifest, which is a Build
+turn's channel; Chat resolves its tokens against the Conversation's own chips, where a folder is not
+one. Chat gains no folder act (ADR-0029), and this is the same line drawn in the menu — the row is
+offered nowhere it could not be carried.
+
+Rejected: **folder rows and file rows for the same files together.** It doubles the rows in a menu
+this short.
+Rejected: **file rows only, as today.** The status quo, and it misrepresents itself.

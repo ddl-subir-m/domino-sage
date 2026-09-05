@@ -243,10 +243,52 @@ def test_chat_prompt_routes_an_unmounted_dataset_to_the_data_library(tmp_path: P
     assert "autodoc" in prompt
     # Both halves of the identifier: the data library rejects a bare name and a bare id alike.
     assert 'get_dataset("dataset-autodoc-abc123")' in prompt
+    # `list_files()` hands back objects whose repr is bare `_File()`, so an agent told only that
+    # it "names its files" prints the list, learns nothing, and spends a turn guessing. The
+    # accessor is the answer to the question people actually ask of a Dataset.
+    assert "read `.name` on each" in prompt
     assert "not this Dataset" in prompt
     assert "Do not greet by asking what to build" in prompt
     assert f"examples/{tid}/" in prompt
     assert "not a React file" in prompt
+
+
+def test_chat_prompt_builds_the_dataset_handle_from_the_resource_id(tmp_path: Path):
+    """The client posts the Domino id as `resourceId` and no `id` at all (`api.js`
+    `addToConversation`), so `add_context` mints the row a `ctx_` id of its own. Reading `id`
+    here therefore built `dataset-<name>-ctx_...` and Domino answered, correctly, "Cannot find
+    Dataset entry." The test above passes an explicit `id`, which the `**item` spread keeps —
+    a shape that only a catalogue row has, which is why it never saw this.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    stored = orch.add_thread_context(
+        tid,
+        {"kind": "dataset", "name": "autodoc", "project": "Sage",
+         "resourceId": "dataset:abc123", "addedBy": "user"},
+    )
+    # The row really does carry a local id, so the assert below is about which field is read.
+    assert stored["id"].startswith("ctx_")
+    list(orch.chat_stream(tid, "whats in autodoc"))
+    prompt = oc.prompts[0]["text"]
+    assert 'get_dataset("dataset-autodoc-abc123")' in prompt
+    assert "ctx_" not in prompt
+
+
+def test_chat_prompt_says_so_when_a_dataset_chip_has_no_identifier(tmp_path: Path):
+    """No `resourceId` either, so the only id the row has is the `ctx_` one `add_context`
+    minted. There is no handle to build, and the honest sentence already written for that is
+    worth more than a call that cannot succeed: it is reachable only once a `ctx_` id is
+    refused. Held here rather than in the pack tests because those call `_chat_context_line`
+    directly, and it is the route through `add_thread_context` that had no cover.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {"kind": "dataset", "name": "autodoc", "project": "Sage"})
+    list(orch.chat_stream(tid, "whats in autodoc"))
+    prompt = oc.prompts[0]["text"]
+    assert "has no identifier for it" in prompt
+    assert "get_dataset(" not in prompt
 
 
 def test_chat_turn_arms_web_when_the_prompt_has_a_url(tmp_path: Path):

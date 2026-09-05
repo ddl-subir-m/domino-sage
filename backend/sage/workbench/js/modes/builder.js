@@ -630,7 +630,16 @@ window.SW = window.SW || {};
     const held = rows.filter((r) => inProject.has(r.id));
     const wider = rows.filter((r) => !inProject.has(r.id));
 
-    const option = (r) => ({ key: r.id, label: `${SW.util.iconFor(r.kind)} ${r.name}` });
+    // A row Domino no longer holds carries its mark into the label, because a disabled item never
+    // fires and this one must stay pickable: the mark informs and the bind is refused downstream by
+    // code that knows why, if it is refused at all (ADR-0034). In the label rather than a node of
+    // its own — antd draws this list, and the working set's own rows are the only ones that can be
+    // missing, so the catalogue half below never wears it.
+    const option = (r) => ({
+      key: r.id,
+      label: `${SW.util.iconFor(r.kind)} ${r.name}`
+        + (SW.util.isMissing(r) ? ` — ${SW.util.missingMark()}` : ''),
+    });
     // A disabled item never fires, so the reason has to be the label — and the two empties are two
     // different states with two different ways out. Everything bound is a finished app; nothing to
     // bind at all is a Project nobody has picked anything into yet, and Browse Domino is where that
@@ -909,7 +918,17 @@ window.SW = window.SW || {};
         h('span', { className: 'sw-appdeps-icon' }, SW.util.iconFor(KIND_ICON[kind] || kind)),
         h('span', { className: 'sw-appdeps-name' }, name),
         door,
-        mark && h('span', { className: 'sw-appdeps-unused' }, ' (not used)'),
+        // Two words beside a name cannot say what looked, when, or that nothing is blocked by the
+        // answer — and a creator who reads "not used" as "this will not publish" has been told the
+        // opposite of ADR-0010. The header's strip carried this sentence in the tooltip over the
+        // whole kind; here it belongs to the one row it qualifies. It explains and never acts: the
+        // mark is a word, and the acts on this row are in the menu beside it.
+        mark &&
+          h(
+            Tooltip,
+            { title: '“not used” is what the last build saw, and it publishes either way.' },
+            h('span', { className: 'sw-appdeps-unused' }, ' (not used)')
+          ),
         h(
           Dropdown,
           { menu, trigger: ['click'], placement: 'bottomRight' },

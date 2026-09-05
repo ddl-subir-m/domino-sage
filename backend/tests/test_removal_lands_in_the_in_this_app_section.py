@@ -166,10 +166,12 @@ def test_an_app_with_neither_takes_the_headers_own_sentence():
     caption = " ".join(_texts(step, "sw-appdeps-intro"))
     assert caption.endswith(TAIL)
     assert "sw-app-group" not in " ".join(p["className"] for p in step["parts"])
+    # It used to be said twice — once by the header's strip and once by the panel's section — and
+    # the pair was the reason for writing it in `SW.util`. The two surfaces are one since
+    # `624ff9b` and ADR-0035, so this asserts what that leaves: the sentence is still said, on the
+    # one surface that describes an empty app, and the helper is still where it comes from.
     header = _run([{"build": "thr_many", "select": "app_b"}])[-1]
-    said = " ".join(t for p in header["parts"] if p["className"].startswith("sw-app-scope")
-                    for t in p["texts"])
-    assert said.endswith(TAIL)
+    assert " ".join(header["appDeps"]["said"]).endswith(TAIL)
 
 
 @needs_node
@@ -227,7 +229,15 @@ def test_the_removal_label_follows_the_selected_app():
 @needs_node
 def test_removing_a_binding_calls_the_route_and_takes_the_row_away():
     step = _remove("Market data EOD", confirm=True)
-    assert step["calls"] == ["DELETE /bindings/data_source/ds_1"]
+    # The membership re-read behind it is #161's: `usedBy` is computed per read off the apps' own
+    # manifests, so an unbind changes what the Project rail says about this Resource and only a
+    # fresh read can tell it. Membership and the app's manifest, and NOT the platform listing —
+    # giving a Binding back cannot change what Domino holds (#162).
+    assert step["calls"] == [
+        "DELETE /bindings/data_source/ds_1",
+        "GET /project/resources",
+        "GET /project",
+    ]
     assert "Market data EOD" not in step["bindings"]
     assert not [r for r in _app_rows(step) if "Market data EOD" in r["texts"]]
 

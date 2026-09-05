@@ -169,6 +169,33 @@ async function fetchDominoListing() {
   };
 }
 
+// The error keys `fetchDominoListing` reports, against the group each failed leg leaves empty.
+const ERROR_KEY_BY_KIND = {
+  dataset: 'datasets',
+  datasource: 'data_sources',
+  model_llm: 'llm_aliases',
+  model_predictive: 'model_apis',
+};
+
+// Carry the rows of every kind the new listing could not read over from the one already in hand. A
+// leg that refused answers with an error string and no rows, which is NOT the same fact as a kind
+// Domino no longer holds: applied as it stands it empties the promote picker and the catalogue half
+// of the @ menu until the next scope load. The error travels with the carried rows, so what is on
+// screen is the last good answer plus a line saying the fresh read failed.
+function keepUnreadKinds(held, listing) {
+  if (!held || !listing || !listing.errors) return listing;
+  const groups = { ...(listing.groups || {}) };
+  let carried = false;
+  Object.keys(ERROR_KEY_BY_KIND).forEach((kind) => {
+    if (!listing.errors[ERROR_KEY_BY_KIND[kind]]) return;
+    const previous = (held.groups || {})[kind];
+    if (!previous || !previous.length) return;
+    groups[kind] = previous;
+    carried = true;
+  });
+  return carried ? { ...listing, groups } : listing;
+}
+
 function membershipKind(item) {
   const kind = item && item.kind;
   return (SW.util && SW.util.uiKind(kind)) || kind;
@@ -333,6 +360,12 @@ SW.api = {
   },
   resourceListing: () => fetchDominoListing(),
   overlayResourceListing: overlayListing,
+  keepUnreadKinds,
+  // Which key in `listing.errors` speaks for a kind. Exposed because `keepUnreadKinds` is not the
+  // only reader since #161: the store asks the same question a second way — a kind that refused
+  // marks none of its rows, and its rows here are the previous ones carried forward, so the error
+  // is the only thing telling a stale row from a live one (ADR-0034).
+  LISTING_ERROR_KEY: ERROR_KEY_BY_KIND,
   resource: (id) => {
     const { resourceIndex, catalogueParents } = SW.store.get();
     // The index holds the project's working set. A catalogue parent is not in it yet and the
@@ -343,21 +376,35 @@ SW.api = {
   },
   restrictedIn: () => Promise.resolve([]),
 
-  catalog: async ({ q, kind } = {}) => {
-    const [listing, membership] = await Promise.all([
-      fetchDominoListing(),
-      request('/project/resources').catch(() => ({ items: [] })),
-    ]);
-    const memberIds = new Set((membership.items || []).map((i) => i.id));
+  // A view of the listing the store already holds — the same listing the rail and the @ menu are
+  // drawn from — rather than a read of its own. So this is synchronous, and a keystroke costs a
+  // filter over rows already in memory instead of a fan-out to Domino that answers what the last
+  // one answered (#159).
+  //
+  // `null`, not an empty result, while the store has not read the platform yet. "Sage has not
+  // looked" and "Domino holds nothing you can add" are different sentences, and the caller is the
+  // only one that can draw them apart.
+  catalog: ({ q, kind } = {}) => {
+    const { resourceListing, resourceGroups } = SW.store.get();
+    if (!resourceListing) return null;
+    const groups = resourceListing.groups || {};
+    // Membership off the working set the store keeps, for the same reason the rows come from the
+    // store: it is the answer `/project/resources` would give, already read.
+    const memberIds = new Set(SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+      (k) => ((resourceGroups || {})[k] || []).map((r) => r.id)
+    ));
     const allKeys = ['dataset', 'datasource', 'model_llm', 'model_predictive', 'agent', 'skill', 'mcp'];
     const keys = kind ? [kind] : allKeys;
     const needle = (q || '').trim().toLowerCase();
+    const matches = (r) => !needle || (r.name || '').toLowerCase().includes(needle);
     const counts = {};
-    allKeys.forEach((k) => { counts[k] = (listing.groups[k] || []).length; });
+    // Counted after the search, so a kind offering `12` never opens on nothing: with a query
+    // standing, the sidebar's numbers are where the matches are.
+    allKeys.forEach((k) => { counts[k] = (groups[k] || []).filter(matches).length; });
     const results = [];
     keys.forEach((k) => {
-      (listing.groups[k] || []).forEach((r) => {
-        if (needle && !(r.name || '').toLowerCase().includes(needle)) return;
+      (groups[k] || []).forEach((r) => {
+        if (!matches(r)) return;
         results.push({
           ...r,
           inProject: memberIds.has(r.id),
@@ -367,7 +414,7 @@ SW.api = {
         });
       });
     });
-    return { results, counts, errors: listing.errors };
+    return { results, counts, errors: resourceListing.errors || {} };
   },
   addToProject: (projectId, resource) => {
     const row = typeof resource === 'string'
@@ -401,6 +448,14 @@ SW.api = {
   assetFiles: (datasetId) => request(`/project/assets/${encodeURIComponent(datasetId)}/files`),
   attachDatasetFile: (datasetId, path) =>
     post(`/project/assets/${encodeURIComponent(datasetId)}/files/attach`, { path }),
+  // Every file below one folder, in one act. `folder` is `''` for the Dataset root — that is this
+  // act at depth 0 rather than a second call with its own name (ADR-0029).
+  attachDatasetFolder: (datasetId, folder) =>
+    post(`/project/assets/${encodeURIComponent(datasetId)}/files/attach-folder`, { folder }),
+  // The mirror, in the same body shape. It takes back every file the app carries below the folder,
+  // or none of them — the app's source still using one refuses the whole act (ADR-0029).
+  detachDatasetFolder: (datasetId, folder) =>
+    post(`/project/assets/${encodeURIComponent(datasetId)}/files/detach-folder`, { folder }),
   dataSourceDatabases: (sourceId) => request(`/data-sources/${encodeURIComponent(sourceId)}/databases`),
   dataSourceSchemas: (sourceId, database) =>
     request(`/data-sources/${encodeURIComponent(sourceId)}/schemas?database=${encodeURIComponent(database || '')}`),
@@ -695,10 +750,19 @@ SW.api = {
   remix: async () => ({}),
   requestAccess: async () => ({}),
 
-  // The project's collaborators. Empty off Domino, and empty when the record can't be read —
-  // the plan page then shows ids where it would show names rather than failing to load.
-  members: () => request('/members').catch(() => ({ members: [], directory: [] })),
-  invite: async () => ({}),
+  // Who is on the Project, everyone who could be added, and which rows may not be removed. The
+  // route always answers 200 and carries its own `error`, so this catch is for the route not
+  // answering at all — our own server, not Domino. That is a FAILED READ and not the not-connected
+  // state: we tried and got nothing back, so the honest offer is a Retry rather than a claim about
+  // whether Sage is running against the platform, which this answer cannot support either way.
+  members: () => request('/members').catch((e) => ({
+    members: [], directory: [], ownerId: '', self: '', connected: false, error: e.message,
+  })),
+  // No project id in the body: the server uses its own. Answers 200 with per-person outcomes even
+  // when some of them failed, so the caller reads `failed`, not the status.
+  addCollaborators: (userIds) => request('/collaborators', { method: 'POST', body: { userIds } }),
+  removeCollaborator: (userId) =>
+    request(`/collaborators/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
   activity: async () => [],
   notifications: () => empty(),
   readNotification: async () => ({}),

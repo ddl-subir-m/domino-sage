@@ -11,6 +11,7 @@ Run:  uv run python -m sage.orchestrator.app
 from __future__ import annotations
 
 import collections
+import concurrent.futures
 import contextlib
 import logging
 import os
@@ -70,9 +71,11 @@ from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from ..workspace.threads import safe_id
 from .brand import text as brand_text
+from .describe import human_bytes
 from .service import (
-    AttachTooLarge, DataReferenced, Orchestrator, ResetBusy, ResourceNotBound, ResourceStillBound,
-    TurnBusy, UploadUnavailable,
+    AttachSourceMissing, AttachTooLarge, AttachWouldClobber, DataReferenced, DetachStopped,
+    FolderActUnavailable,
+    Orchestrator, ResetBusy, ResourceNotBound, ResourceStillBound, TurnBusy, UploadUnavailable,
 )
 
 _feedback = FeedbackRunner()
@@ -828,6 +831,21 @@ def _git_credential_diag() -> dict:
         return {"host": host, "error": str(e)}
 
 
+def _git_credential_list_diag() -> dict:
+    """Which of the caller's platform Git credentials the create loop would try, in order (#157).
+
+    `_git_credential_diag` above answers the container side. This is the API-list side, which had
+    nothing — so a user whose Project create was refused could not see that Sage held three
+    credentials and tried them in an order they cannot influence. No secret, and no fingerprint.
+    """
+    if _provision is None:
+        return {"error": "not connected to the platform"}
+    try:
+        return _provision.git_credential_diag()
+    except Exception as e:  # a diagnostic must never be the thing that breaks the diagnostics page
+        return {"error": str(e)}
+
+
 @control_app.get("/api/diag")
 def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
@@ -870,6 +888,7 @@ def diag() -> JSONResponse:
             "session_id": p.session_id,
         },
         "git_credential": _git_credential_diag(),
+        "git_credential_list": _git_credential_list_diag(),
         "debug_stream": ka.debug_stream_enabled(),
         "log_tail": list(_LOG_RING)[-60:],
         "opencode_log_tail": orchestrator._opencode_log_tail(30),
@@ -1315,9 +1334,20 @@ def list_resources() -> JSONResponse:
         "data_sources": orchestrator.list_data_sources,
     }
     body: dict = {"errors": {}}
-    for key, listing in kinds.items():
+    # All three at once, not one after another (#160). Measured on a real deployment: 0.5-0.8s of
+    # LLM Aliases plus 1.4-2.5s of Model APIs plus 0.3s of Data Sources, and the three summed to
+    # the whole of the response's 2.5-3.3s. Two Domino services, no call depending on another's
+    # answer, so the wait is now the slowest kind rather than the sum.
+    #
+    # Each kind still catches its own failure, off its own result: the reason stays per kind and
+    # the response stays 200, exactly as when the loop was serial.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(kinds), thread_name_prefix="sage-resources",
+    ) as pool:
+        answers = {key: pool.submit(listing) for key, listing in kinds.items()}
+    for key, answer in answers.items():
         try:
-            body[key] = listing()
+            body[key] = answer.result()
         except ResourceUnavailable as e:
             body[key], body["errors"][key] = [], str(e)
     return JSONResponse(content=body)
@@ -1642,7 +1672,7 @@ def health_problems() -> JSONResponse:
 @control_app.get("/api/project/assets/{dataset_id}/files")
 def list_asset_files(dataset_id: str) -> JSONResponse:
     try:
-        return JSONResponse(content={"files": orchestrator.list_asset_files(dataset_id)})
+        return JSONResponse(content=orchestrator.list_asset_files(dataset_id))
     except LookupError:
         return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
     except ResourceUnavailable as e:
@@ -1671,6 +1701,167 @@ async def attach_file(dataset_id: str, request: Request) -> JSONResponse:
             status_code=413,
             content={"error": f"attaching this file would exceed the {mb:.0f} MB limit for attached data"},
         )
+
+
+async def _folder_of(request: Request) -> object | None:
+    """The `folder` a folder-act body names, or `None` when the body cannot carry one.
+
+    `None` for a body that is not a JSON object, so both routes answer a malformed envelope with the
+    same 400 their `folder` guard gives a malformed field, rather than the 500 an `AttributeError`
+    on `[]` or a decode error on an empty body used to reach.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return None
+    return body.get("folder") if isinstance(body, dict) else None
+
+
+@control_app.post("/api/project/assets/{dataset_id}/files/attach-folder")
+async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
+    """Attach every file below one Dataset folder, in one act (ADR-0029).
+
+    `folder` is required and may be `""` — the Dataset root is this act at depth 0, not a second
+    route with its own name. A missing key is a malformed body rather than a root attach, because
+    the two are far too different to guess between.
+    """
+    # The ENVELOPE as well as the field. `[]`, `"raw"` and `null` have no `.get`, and an empty body
+    # has no JSON at all — both raise before the guard below and left the route answering an opaque
+    # framework 500 for a body it can perfectly well call malformed.
+    folder = (await _folder_of(request))
+    # A STRING, not merely present: `0`, `false` and `[]` all read as `""` further in, which is the
+    # Dataset root — the one value this route refuses to guess its way to.
+    if not isinstance(folder, str):
+        return JSONResponse(status_code=400, content={"error": "folder required"})
+    try:
+        return JSONResponse(content=orchestrator.attach_folder(dataset_id, folder))
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except AttachWouldClobber as e:
+        # Nothing was attached, and nothing was overwritten either — which is the point of saying so
+        # instead of writing over it. Named at the path, because that is where the person looks.
+        return JSONResponse(status_code=409, content={"error": brand_text(
+            "Nothing was attached. Something already sits at {path} that {assistantName} did not "
+            "put there, and it is not overwritten. Move or remove it, then attach the folder.",
+            path=e.path)})
+    except AttachSourceMissing as e:
+        # The folder is there; a file the listing named is not. Saying "folder not found" would
+        # contradict the row that was just clicked, which showed the count and the size.
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "Nothing was attached. {assistantName} listed a file this {dataset} no longer holds "
+            "({path}). Reopen this panel to list it again.", path=e.path)})
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "folder not found in the {dataset}")})
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid folder"})
+    except FolderActUnavailable as e:
+        # The reason the row already carried, said again by the act it withheld — one sentence,
+        # composed once, so the two can never disagree.
+        return JSONResponse(status_code=409, content={"error": e.reason})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    except OSError:
+        # The unwind above already took back every link this act made, so nothing is half-attached.
+        log.exception("attach_folder: could not write the links")
+        return JSONResponse(status_code=500, content={"error": brand_text(
+            "Nothing was attached. {assistantName} could not write into this app's files.")})
+    except AttachTooLarge as e:
+        # The three numbers ADR-0029 asks a refusal to name: what the folder weighs, what the app
+        # already carries, and the cap. A refusal that names them is a decision a person can act on.
+        return JSONResponse(status_code=413, content={"error": brand_text(
+            "Attaching this folder ({folder}) would take this app over the {cap} limit for "
+            "attached data. It already carries {current}.",
+            folder=human_bytes(e.incoming), cap=human_bytes(e.cap),
+            current=human_bytes(e.current),
+        )})
+
+
+@control_app.post("/api/project/assets/{dataset_id}/files/detach-folder")
+async def detach_folder(dataset_id: str, request: Request) -> JSONResponse:
+    """Remove every file the app carries below one Dataset folder, in one act (ADR-0029).
+
+    The mirror of `attach-folder`, including the shape of its body: `folder` is required and may be
+    `""` for the Dataset root, and a missing key is malformed rather than a silent whole-Dataset
+    removal.
+    """
+    folder = (await _folder_of(request))
+    if not isinstance(folder, str):
+        return JSONResponse(status_code=400, content={"error": "folder required"})
+    try:
+        return JSONResponse(content=orchestrator.detach_folder(dataset_id, folder))
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except DataReferenced as e:
+        # No partial state: nothing was removed. The refusal names the FILES rather than a count,
+        # because the files are the thing a person can go and act on — and it names the way out,
+        # which is the per-file door, since that one reports what still uses a file instead of
+        # refusing over it.
+        if not e.files:
+            # No file to name: the source fetches the FOLDER, building each path from a pattern, so
+            # one line of code is the dependency and it stands for every file below it.
+            where = ", ".join(e.refs[:3]) + (", …" if len(e.refs) > 3 else "")
+            return JSONResponse(status_code=409, content={
+                "error": f"Can't remove this folder — your app reads files from it ({where}). "
+                         "Nothing was removed. Edit the app to stop reading from this folder first.",
+                "files": [], "refs": e.refs, "copies": e.copies,
+            })
+        served = [f.removeprefix("public/data/") for f in e.files]
+        named = ", ".join(served[:3]) + (", …" if len(served) > 3 else "")
+        # The way out names the per-file door for what it is. That one REPORTS what still uses a
+        # file instead of refusing over it, which is the whole reason it remains a way out — and
+        # saying "remove them one at a time" without that reads like a trick for getting past this.
+        tail = ("Nothing was removed. Edit the app to stop using {them}, or remove {it} from the "
+                "app's own file list, which says what still uses a file rather than refusing.")
+        if len(served) == 1:
+            msg = (f"Can't remove this folder — your app still uses one of its files ({named}). "
+                   + tail.format(them="that file", it="it"))
+        else:
+            msg = (f"Can't remove this folder — your app still uses {len(served)} of its files "
+                   f"({named}). " + tail.format(them="them", it="them"))
+        return JSONResponse(status_code=409, content={
+            "error": msg, "files": e.files, "refs": e.refs, "copies": e.copies,
+        })
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid folder"})
+    except ResourceUnavailable as e:
+        # Only reachable when the app carries nothing from this Dataset yet, since that is the one
+        # branch that has to ask the platform for its name. The sibling route answers the same way.
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    except DetachStopped as e:
+        # The record follows the disk, so the count is real. Which SENTENCE is true depends on it:
+        # the first entry can fail as easily as the hundredth, and telling someone to go looking for
+        # files that all turned out to still be there is its own wrong answer.
+        log.exception("detach_folder: removal stopped after %s", e.detached)
+        if not e.recorded:
+            # The files went and the manifest did not follow, so the file list every other sentence
+            # here points at is not the record of anything.
+            msg = brand_text(
+                "The removal ran, but {assistantName} could not write this app's record of it. "
+                "Reopen the app to see what it carries now.")
+        elif e.detached:
+            msg = brand_text(
+                "The removal stopped part way through. Some of the folder is out of this app "
+                "already — its own file list is the record of what it still carries.")
+        else:
+            msg = brand_text(
+                "Nothing was removed — {assistantName} could not change this app's files.")
+        if e.removed:
+            # Copies deleted out of `src/` on the way. They were never in the manifest, so the file
+            # list this points at for everything else is no record of them.
+            msg += " These copies went with them: " + ", ".join(e.removed) + "."
+        if e.kept:
+            msg += (" These share a name and were left in place: " + ", ".join(e.kept)
+                    + " — check they are yours before saving.")
+        return JSONResponse(status_code=500, content={
+            "error": msg, "removed_copies": e.removed, "kept_copies": e.kept})
+    except OSError:
+        # AFTER `DetachStopped`, which is one of these and carries what actually happened. Anything
+        # left here failed OUTSIDE the removal — opening the project, reading its status — so this
+        # claims nothing about what moved, because nothing did.
+        log.exception("detach_folder: failed before the removal")
+        return JSONResponse(status_code=500, content={"error": brand_text(
+            "Nothing was removed — {assistantName} could not read this app.")})
 
 
 @control_app.post("/api/project/files/detach")
@@ -2227,10 +2418,58 @@ def review_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
 
 @control_app.get("/api/members")
 def members() -> JSONResponse:
-    """The people a plan can be sent to for review. Empty off Domino, and empty when the caller
-    cannot read the project record — the plan page then shows ids where it would show names, which
-    is worse than names and better than a page that will not load."""
+    """Who is on this Project, and everyone who could be added to it.
+
+    Two callers, deliberately one route. The plan page names a reviewer and resolves a comment's
+    author out of `members`; the People modal adds and removes, and needs `directory`, `ownerId` and
+    `self` beside them. A second endpoint would answer the same question twice and drift.
+
+    Always 200. A read that failed says so in `error` rather than in a status, because one of the
+    two callers must open anyway — see `list_members`, where that choice is made and stated.
+    """
     return JSONResponse(content=orchestrator.list_members())
+
+
+@control_app.post("/api/collaborators")
+async def add_collaborators(request: Request) -> JSONResponse:
+    """Add people to this Project, in the one role Sage assigns.
+
+    The body names people and nothing else. A project id in it would be an authorization surface —
+    whoever reached this route could add people to a Project this Builder is not bound to — so the
+    server uses its own, and a `projectId` sent anyway is ignored rather than honoured.
+
+    There is no permission pre-check: ADR-0018 rejected exactly this shape of Sage-side
+    authorization list. Domino refuses, and the refusal is what the creator reads.
+
+    200 with per-person outcomes, including when some of them failed. A partial failure is a normal
+    answer here, not an error condition — two people added and one refused is two people added.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # A list, checked rather than assumed: a bare string is iterable, so `{"userIds": "u-ada"}` —
+    # the obvious singular-for-plural slip — would otherwise be read one CHARACTER at a time and
+    # answer 200 with five refusals naming "u", "-", "a", "d", "a".
+    sent = body.get("userIds")
+    user_ids = [str(u) for u in sent if str(u)] if isinstance(sent, list) else []
+    if not user_ids:
+        return JSONResponse(status_code=400, content={"error": "userIds required"})
+    try:
+        return JSONResponse(content=orchestrator.add_collaborators(user_ids))
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@control_app.delete("/api/collaborators/{user_id}")
+def remove_collaborator(user_id: str) -> JSONResponse:
+    """Take one person off this Project, and with it their access to any App published from it."""
+    try:
+        return JSONResponse(content=orchestrator.remove_collaborator(user_id))
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @control_app.post("/api/project/build/stop")
@@ -2353,19 +2592,32 @@ async def chat_completions(request: Request):
                 flagged = True
                 project.tool_call_responses += 1
 
-        if first is ka.DONE:
-            return
-        if first is not ka.EMPTY:
-            # A provider error relayed as a 200 + one `data: {"error": …}` frame. Nothing raised, so
-            # without this it forwards as-is and OpenCode dies on an unparseable event with no payload.
-            upstream_msg = ka.upstream_error(first)
+        # A provider error relayed as a 200 + one `data: {"error": …}` frame. Nothing raised, so
+        # without this it forwards as-is and OpenCode dies on an unparseable event with no payload.
+        # Checked on EVERY chunk: it used to be checked only on the eagerly-pulled `first`, so the
+        # frame was recognised only when the provider failed inside FIRST_BYTE_BUDGET_S. A model that
+        # thought for longer committed the stream first, and its error frame then went out raw —
+        # which is every "Invalid sage-gateway/openai-compatible-chat stream event" in the wild.
+        stopped = False
+
+        def relay(chunk: bytes):
+            nonlocal stopped
+            upstream_msg = ka.upstream_error(chunk)
             if upstream_msg:
                 log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
                 project.last_gateway_error = {"message": upstream_msg}
+                stopped = True
                 yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
                 return
-            sniff(first)
-            yield first  # the first real chunk the eager pull already consumed
+            sniff(chunk)
+            yield chunk
+
+        if first is ka.DONE:
+            return
+        if first is not ka.EMPTY:
+            yield from relay(first)  # the first real chunk the eager pull already consumed
+            if stopped:
+                return
         while True:
             item = ka.get(q, ka.KEEPALIVE_INTERVAL_S)
             if item is ka.EMPTY:
@@ -2385,8 +2637,9 @@ async def chat_completions(request: Request):
                     "This is usually an upstream idle or duration limit — please retry."
                 )
                 return
-            sniff(item)
-            yield item
+            yield from relay(item)
+            if stopped:
+                return
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

@@ -151,3 +151,55 @@ def test_clicking_another_conversation_discards_it():
     step = _run([{"newConversation": True}, {"open": "thr_both"}, {"railRows": "chat"}])[2]
     assert all("New conversation" not in r for r in step["rows"]), step["rows"]
     assert _active(step) and "Desks" in _active(step)[0]
+
+
+# The fourth time. The three above were fixed by making the press DO more or SHOW more; this one
+# was already doing and already showing, into a panel that was shut. The Workbench loads with the
+# Rail collapsed (#150), so the collapsed head's icon is the button most people press, and from
+# there the pending row — the only thing on screen that says the press worked — is drawn behind the
+# panel being clicked. The centre pane cannot stand in for it: the press lands you on an empty
+# Conversation, and from an empty Conversation the pane was already the landing and stays it, so
+# nothing at all moves. So the press opens the Rail, which is the expanded head's rule read from
+# the other side rather than an exception to it.
+
+
+@needs_node
+def test_the_collapsed_head_shows_the_row_it_just_made():
+    """The press has one answer on screen. It has to be on screen."""
+    step = _run([{"pressCollapsedNew": "chat"}])[0]
+    assert step["railHidden"] is False, "the press left the Rail shut over its own answer"
+    assert step["rows"], "the Rail drew no rows"
+    first = step["rows"][0]
+    assert "New conversation" in first, first
+    assert "is-active" in first.split("|")[0], first
+
+
+@needs_node
+def test_it_opens_the_rail_in_build_too():
+    """One Rail in both modes (#82), and the same press behind both."""
+    step = _run([{"pressCollapsedNew": "build"}])[0]
+    assert step["railHidden"] is False
+    assert "New conversation" in step["rows"][0], step["rows"][0]
+
+
+@needs_node
+def test_the_press_still_navigates():
+    """Opening the Rail is the half that was missing, not a replacement for the half that was
+    there: the route has to stop naming the Conversation the press just closed."""
+    step = _run([{"pressCollapsedNew": "chat"}])[0]
+    assert step["hash"] == "#/chat", step["hash"]
+
+
+@needs_node
+def test_the_press_is_not_a_choice_about_the_rail():
+    """A Rail opened to show an answer is not somebody asking to keep the list open. Writing the
+    preference here would leave it open on every load after one press."""
+    step = _run([{"pressCollapsedNew": "chat"}])[0]
+    assert step["prefRailHidden"] is not False, step["prefRailHidden"]
+
+
+@needs_node
+def test_nothing_is_written_for_the_collapsed_press_either():
+    """Same contract as the expanded one. The row is a placeholder, and a placeholder that costs a
+    Thread on disk is not one."""
+    assert _run([{"pressCollapsedNew": "chat"}])[0]["writes"] == []

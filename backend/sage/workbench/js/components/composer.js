@@ -35,7 +35,7 @@ window.SW = window.SW || {};
   // (#148). Without it the menu would go on offering every file it ever offered EXCEPT the app's
   // own data — the one kind a Build prompt names most.
   function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents,
-                             appAttachments) {
+                             appAttachments, collapse) {
     const context = (attachments || []).map((att) => ({
       id: att.resourceId || att.id,
       name: att.resourceName,
@@ -66,11 +66,23 @@ window.SW = window.SW || {};
     // Parents only — the store filters to `MEMBERSHIP_PARENT_KINDS`, off a listing that has no
     // leaf in it to begin with. That is what keeps a warehouse table out of this menu, which must
     // never fetch a warehouse catalog (docs/workbench/chat.md).
+    // `collapse` is Build's. Above the threshold the app's Attachments come back as folder rows
+    // (ADR-0030), and a folder mention is honoured by `_resolve_mentions` against the app's own
+    // manifest — a Build turn's channel. Chat resolves its tokens against the Conversation's chips,
+    // where a folder is not a chip, so it is offered a folder nowhere it could not carry one.
+    // Chat gains no folder act (ADR-0029), and this is the same line drawn in the menu.
     return SW.util.workingSetFirst({
       groups: [context, produced, resourceGroups.pin || [], project, files, attached],
       catalogue: catalogueParents,
       query,
-      limit: 8,
+      // The same number as `FOLDER_COLLAPSE_THRESHOLD` in `sage/orchestrator/service.py`, and the
+      // same number for the same reason: at or below it nothing collapses, so the menu has to be
+      // able to show the whole list or it goes back to reading as complete when it is not. Above
+      // it the collapse holds the app's Attachments to at most that many folder rows, so the
+      // collapsed list fits too. Held together by
+      // `test_the_menu_shows_as_many_rows_as_the_collapse_lets_through`.
+      limit: 10,
+      collapse,
     });
   }
 
@@ -84,10 +96,6 @@ window.SW = window.SW || {};
     if (/\s/.test(token)) return null;
     return { start: at, query: token };
   }
-
-  // Prefer the file's basename so "@data.csv" matches the path OpenCode reads. Shared with the turn
-  // that reads these tokens back out of the prompt, so the two cannot drift apart.
-  const mentionToken = (resource) => SW.util.mentionToken(resource);
 
   // The gap between what the prompt names and what the selected Built App holds, said BEFORE the
   // send (#136). The dead end it removes is a whole turn long: the mention is dropped, the answer
@@ -146,7 +154,7 @@ window.SW = window.SW || {};
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
-      catalog, buildModel, buildPhase, openWeightModels,
+      catalog, buildModel, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
     } = SW.store.get();
     const [text, setText] = useState('');
@@ -174,9 +182,15 @@ window.SW = window.SW || {};
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
+    // The list uniqueness is computed against, for the token this menu INSERTS and for the folder its
+    // rows show (ADR-0030). One list for both, so the folder a person reads on a row and the token
+    // that lands in the box cannot disagree about which of two `data.csv` the click meant. The
+    // folder rows are in it as well as the files: a folder row is given a token too, and two
+    // partitions both called `2026` would otherwise both be offered as `@2026`.
+    const mentionPeers = SW.util.attachmentPeers(appAttachments);
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts,
-                          catalogueParents, appAttachments)
+                          catalogueParents, appAttachments, showMode)
       : [];
     const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));
     const buildModes = BUILD_MODES();
@@ -250,11 +264,18 @@ window.SW = window.SW || {};
 
     const pickMention = async (resource) => {
       if (!mention) return;
-      const token = mentionToken(resource);
+      // Prefer the file's basename so "@data.csv" matches the path OpenCode reads, and fall back to
+      // the shortest distinguishing suffix when the app holds two files of that name (ADR-0030).
+      // Derived by the util the TURN reads these tokens back with, so the two cannot drift apart.
+      const token = SW.util.mentionToken(resource, mentionPeers);
       const after = text.slice(mention.start).replace(/^@\S*/, '');
       const pad = after === '' || /^\s/.test(after) ? '' : ' ';
       setText(text.slice(0, mention.start) + token + pad + after);
       setMention(null);
+      // A folder row is not a Resource and has no chip to become: it is offered only because every
+      // file under it is already attached to this app, which is the very thing a chip would say
+      // (ADR-0030). Adding one would post a `folder:` id no Resource answers to.
+      if (resource.kind === 'folder') return;
       // The @name is already in the box. Unreported, this sends a prompt mentioning a file that
       // was never attached.
       await SW.store.addToContext(resource, { quiet: true }).catch(sayFailed);
@@ -332,12 +353,27 @@ window.SW = window.SW || {};
     // menu answers, and the router (llm_router) is the only authority on it: Ask is pinned to
     // `ask`, Auto follows the phase, and Plan and Implement take their own slot — and are the only
     // two that will honour an override at all.
-    const pinnedSlot = activeBuildMode.id === 'ask'
+    //
+    // `signingSlot` outranks all of that and is NOT recomputed here. A model that signs its tool
+    // calls cannot share a session with one that does not, so one assignment takes every mode and
+    // every phase (ADR-0032). This copy of the precedence could not see that rule, and every line
+    // below reads `pinnedModel` — so the label, the `(default)` marker and the override comparison
+    // were all naming a model the turn would not run on.
+    const pinnedSlot = signingSlot || (activeBuildMode.id === 'ask'
       ? 'ask'
       : activeBuildMode.id === 'auto'
         ? (buildPhase === 'implement' ? 'implement' : 'plan')
-        : activeBuildMode.id;
+        : activeBuildMode.id);
     const pinnedModel = (catalog && catalog[pinnedSlot]) || '';
+    // Why the mode is not running its own slot's model. Without this the person who assigned
+    // gpt-5.4 to Plan sees Gemini and has nothing to read — the guarantee they cannot see is the
+    // one they file as a bug.
+    const SLOT_NAME = { plan: 'Plan', implement: 'Implement', ask: 'Ask' };
+    const pinWhy = signingSlot
+      ? `${pinnedModel} signs its tool calls, so one session cannot mix it with another model. `
+        + `Every Build turn runs on it while ${SLOT_NAME[signingSlot] || signingSlot} is assigned `
+        + 'to it.'
+      : '';
     const overridable = activeBuildMode.id === 'plan' || activeBuildMode.id === 'implement';
     // The four configured slots reduced to the models behind them: two slots pointing at one model
     // are one row, not two the person has to tell apart.
@@ -581,8 +617,29 @@ window.SW = window.SW || {};
                       ? `Not in ${scope.name} yet`
                       : `In ${scope.name}`
               ),
-              suggestions.map((resource, index) =>
-                h(
+              suggestions.map((resource, index) => {
+                // The folder that tells this row from the other one wearing its name (ADR-0030).
+                // Two colliding files drew two identical rows — same icon, same label, same caption
+                // — that inserted the same text, which is the half of the defect a unique token
+                // cannot reach: the right file could not be SEEN, let alone picked.
+                //
+                // Off the same peer list the token is built from, so the caption reads `2026`
+                // exactly when the box will read `@2026/data.csv`. A row showing a folder its own
+                // click does not carry would point at a file the click cannot reach.
+                const folder = SW.util.mentionSuffix(resource.path, mentionPeers)
+                  .split('/').slice(0, -1).join('/');
+                // A folder row stands for files nobody can see, so it says how many (ADR-0030).
+                // That is the one thing worth knowing before picking it, and it is the difference
+                // between a row that reads as one file and a row that reads as the partition.
+                //
+                // It keeps the distinguishing folder beside the count, and for the reason this
+                // caption exists at all: two Datasets partitioned by year both offer a row called
+                // `2024`, which is the collision the row replaced arriving at the row itself. Same
+                // suffix the token is built from, so the words on the row and the word in the box
+                // still name one thing.
+                const caption = resource.kind !== 'folder' ? folder
+                  : `${resource.count} files${folder ? ` in ${folder}` : ''}`;
+                return h(
                   'button',
                   {
                     key: resource.id,
@@ -592,7 +649,22 @@ window.SW = window.SW || {};
                     onClick: () => pickMention(resource),
                   },
                   h('span', { className: 'sw-res-icon' }, SW.util.iconFor(resource.kind)),
-                  h('span', { className: 'sw-mention-name' }, resource.name),
+                  // The whole path in `title`, the way `LeafRow` already does it in the Dataset
+                  // tree: the folder beside it says WHICH of the two this is, and the title says
+                  // where it lives without spending a row's width on it.
+                  h('span', { className: 'sw-mention-name', title: resource.path || resource.name },
+                    resource.name),
+                  // Domino no longer holds it (ADR-0034). Marked, not withheld: the row stays
+                  // selectable and carries its reason at the point of picking, because a refusal
+                  // here would be Sage's third and would only pre-empt one the creator gets a step
+                  // later, from code that knows more about the failure than this menu does
+                  // (ADR-0027). Its own slot rather than the caption ladder below, which is
+                  // first-match — a missing file with a folder caption would otherwise be marked in
+                  // the rail and nowhere here.
+                  SW.util.isMissing(resource)
+                    ? h('span', { className: 'sw-mention-missing' }, SW.util.missingMark())
+                    : null,
+                  caption ? h('span', { className: 'sw-caption' }, caption) : null,
                   attachedIds.has(resource.id)
                     ? h('span', { className: 'sw-incontext-tag' }, 'in context')
                     // The menu has ONE heading and it describes the first row only. A catalogue
@@ -601,9 +673,14 @@ window.SW = window.SW || {};
                     // itself, the way `in context` already does for the same reason.
                     : catalogueIds.has(resource.id)
                       ? h('span', { className: 'sw-caption' }, `not in ${scope.name}`)
-                      : h('span', { className: 'sw-caption' }, SW.util.labelFor(resource.kind))
-                )
-              )
+                      // The kind is what a row says when it has nothing more useful to say. A row
+                      // that has just named its folder does, and two captions are one more than the
+                      // slot holds — so the kind gives way, being the half that tells nothing apart.
+                      : caption
+                        ? null
+                        : h('span', { className: 'sw-caption' }, SW.util.labelFor(resource.kind))
+                );
+              })
             ),
           h(Input.TextArea, {
             value: text,
@@ -744,16 +821,23 @@ window.SW = window.SW || {};
                       chipLabel(override || pinnedModel)))
                 )
               : overridable
-                ? h(
-                    Dropdown,
-                    { menu: buildModelMenu, trigger: ['click'], placement: 'topRight' },
-                    h(
-                      Button,
-                      { size: 'small', 'aria-label': 'Build model' },
-                      h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
-                        h(DownOutlined, { style: { fontSize: 9 } }))
-                    )
-                  )
+                ? (() => {
+                    const control = h(
+                      Dropdown,
+                      { menu: buildModelMenu, trigger: ['click'], placement: 'topRight' },
+                      h(
+                        Button,
+                        { size: 'small', 'aria-label': 'Build model' },
+                        h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
+                          h(DownOutlined, { style: { fontSize: 9 } }))
+                      )
+                    );
+                    // Wrapped only when there IS something to say. Plan and Implement have never
+                    // carried a tooltip, and the menu still works — an in-session pick outranks the
+                    // pin, which is the router's own rule (ADR-0032). So this explains the label
+                    // without taking the control away.
+                    return pinWhy ? h(Tooltip, { title: pinWhy }, control) : control;
+                  })()
                 // Ask and Auto honour no override — Ask is pinned to its slot and Auto follows the
                 // phase — so there is no menu to offer. They open the panel instead: a disabled
                 // control with a working door behind it answers "why can't I change this" with
@@ -761,9 +845,12 @@ window.SW = window.SW || {};
                 : h(
                     Tooltip,
                     {
-                      title: activeBuildMode.id === 'ask'
+                      // `pinWhy` first: the Auto sentence below names two models, and under the
+                      // pin there is only one. A confident, specific, false sentence is the worst
+                      // thing this control can say.
+                      title: pinWhy || (activeBuildMode.id === 'ask'
                         ? `Ask runs on ${pinnedModel}, and so does Chat.`
-                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build.`,
+                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build.`),
                     },
                     h(
                       Button,

@@ -38,15 +38,34 @@ window.SW = window.SW || {};
       label: 'Predictive models',
       subgroups: [{ kind: 'model_predictive' }],
     },
-    { key: 'agents', label: 'Agents', subgroups: [{ kind: 'agent' }] },
-    { key: 'skills', label: 'Skills', subgroups: [{ kind: 'skill' }] },
-    { key: 'mcp', label: 'MCPs', subgroups: [{ kind: 'mcp' }] },
+    // `placeholder` is "no catalog behind this yet", and it is what the group's add door is gated
+    // on (#164). These three draw nothing until OpenCode config wires them, so under the
+    // draw-only-when-held rule below they are invisible today — the flag is what keeps the door
+    // from appearing on the day they are not.
+    { key: 'agents', label: 'Agents', placeholder: true, subgroups: [{ kind: 'agent' }] },
+    { key: 'skills', label: 'Skills', placeholder: true, subgroups: [{ kind: 'skill' }] },
+    { key: 'mcp', label: 'MCPs', placeholder: true, subgroups: [{ kind: 'mcp' }] },
     // The Project's own Uploads. It was a collapsible drawer pinned to the bottom of the panel —
     // its own pattern, its own chevron, its own empty sentence — for a list that behaves like every
     // other group. Folded in here: one pattern, and it disappears when there are no files, which
     // the drawer never did.
-    { key: 'file', label: 'Files', subgroups: [{ kind: 'file' }] },
+    //
+    // `placeholder` for the opposite reason to the three above: a file does not come from the
+    // catalog at all, it comes from Upload, so `openCatalog('file')` has nothing to open. The head
+    // draws no `+`; the panel's own Add menu carries Upload a file.
+    { key: 'file', label: 'Files', placeholder: true, subgroups: [{ kind: 'file' }] },
   ];
+
+  // Which kind a group's add door pre-filters the catalog to. One helper for both doors, so the
+  // two cannot disagree. A group with two kinds has no honest filter: `api.catalog` takes a single
+  // kind and the catalog's own sidebar is flat, so there is no "Datasets + Data Sources" to ask
+  // for. `undefined` opens on Everything, which reaches both — where `subgroups[0].kind` silently
+  // meant Datasets and hid Data Sources behind a filter the caller never chose (#164).
+  const addKind = (group) => (group.subgroups.length === 1 ? group.subgroups[0].kind : undefined);
+
+  // `EMPTY_HINT` went with the branch that held it. A group with nothing in it is not drawn at all
+  // now, so there is no row left to say "No language models here yet." over — and the sentence a
+  // wholly empty project needs is the panel's own empty state, said once.
 
   const ERROR_KEYS = {
     data: ['datasets', 'data_sources'],
@@ -107,6 +126,25 @@ window.SW = window.SW || {};
       label: 'No app is selected',
       disabled: true,
     };
+    // Whether Domino still holds what this row names, and the Built Apps that bind it — read
+    // together because between them they decide which removal door the row offers. Liveness is
+    // computed in `applyListing` and only there, so this reads it rather than working it out
+    // again; a second place subtracting these two sets is the disagreement that function exists to
+    // prevent (ADR-0034).
+    const missing = SW.util.isMissing(resource);
+    const used = resource.usedBy || [];
+    // A missing Resource that an app still binds cannot leave the Project: `remove_project_resource`
+    // answers 409, naming that app. The refusal stays — the Binding belongs to the app and removal
+    // lives with the list that owns the scope (ADR-0011) — so the row points at the act that would
+    // work instead of the one that is certain to be refused. One item per app, because each one has
+    // to be visited.
+    const stuck = missing && used.length > 0;
+    const missingTitle = missing
+      ? `${SW.util.missingTitle()}${stuck
+        ? ` ${used.map((u) => u.name).join(', ')} still ${used.length > 1 ? 'use' : 'uses'} it,`
+          + ` so it cannot leave this project until it leaves ${used.length > 1 ? 'them' : 'the app'}.`
+        : ''}`
+      : null;
     const items = contextItem
       ? [{ key: 'remove-from-conversation', label: 'Stop using here' }]
       : [
@@ -135,7 +173,13 @@ window.SW = window.SW || {};
           ...(resource.membershipParent
             ? [
                 { type: 'divider' },
-                { key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true },
+                ...(stuck
+                  ? used.map((u) => ({
+                      key: `unbind-app:${u.appId}`,
+                      label: `Remove from ${u.name}`,
+                      danger: true,
+                    }))
+                  : [{ key: 'remove', label: `Remove from ${SW.store.get().scope.name}`, danger: true }]),
               ]
             : []),
           // The Project-scope door onto the scratch bytes themselves (ADR-0023) — shown regardless
@@ -153,6 +197,9 @@ window.SW = window.SW || {};
         return SW.store.removeResourceFromConversation(resource.id);
       }
       if (key === 'remove') return SW.store.removeFromProject(resource);
+      if (key.startsWith('unbind-app:')) {
+        return SW.store.openAppBindings(key.slice('unbind-app:'.length));
+      }
       if (key === 'to-app') return SW.store.addScratchToDataset(resource, '');
       if (key === 'delete-scratch') return SW.store.deleteScratchFile(resource);
       if (key.startsWith('to-dataset:')) {
@@ -161,12 +208,12 @@ window.SW = window.SW || {};
       return undefined;
     };
 
-    // The Built Apps that bind this Resource, each with its Scope — the server's answer, carried
-    // on the Project row (#133). It was a kind list before, because nothing filled the field and a
-    // count of nothing had to be kept off the rows most likely to show it. Now the field is only
-    // ever non-empty for a Resource an app really binds, so the data is its own gate: no kind can
-    // be left out of the count by being forgotten in a list nobody revisits.
-    const used = resource.usedBy || [];
+    // `used` is the Built Apps that bind this Resource, each with its Scope — the server's answer,
+    // carried on the Project row (#133). It was a kind list before, because nothing filled the
+    // field and a count of nothing had to be kept off the rows most likely to show it. Now the
+    // field is only ever non-empty for a Resource an app really binds, so the data is its own gate:
+    // no kind can be left out of the count by being forgotten in a list nobody revisits. Read above
+    // the menu since #161, because it decides which removal the menu offers.
     const secondary = required && app
       ? `Required by ${app.name}`
       // The negative of the line above, and it outranks the Project-wide count below it because
@@ -219,7 +266,22 @@ window.SW = window.SW || {};
           h(
             'span',
             { className: 'sw-res-name-line' },
-            h('span', { className: 'sw-res-name' }, resource.name)
+            h('span', { className: 'sw-res-name' }, resource.name),
+            // Domino no longer holds it. Marked rather than removed, and marked rather than
+            // greyed: the creator picked this row deliberately and an app may still bind it, so a
+            // row that vanished overnight would leave nobody anything to act on (ADR-0034). The
+            // reason is the tooltip and the act is in the menu two inches right, which is where
+            // every other act on this row already lives.
+            SW.util.isMissing(resource) &&
+              h(
+                Tooltip,
+                { title: missingTitle },
+                h(
+                  Tag,
+                  { bordered: false, className: 'sw-sens sw-sens-restricted' },
+                  SW.util.missingMark()
+                )
+              )
           ),
           secondary &&
             h(
@@ -505,17 +567,50 @@ window.SW = window.SW || {};
         noMenu: true,
       });
 
-    const groupLabel = (key, label, count) => {
+    // A group head: the caret that folds it, and the way in beside it. `group` is null for Plans,
+    // which is a list of documents rather than of things the catalog holds — there is nothing for
+    // an add door to open.
+    //
+    // The head holds two controls, so the head itself cannot be one: a `+` nested in a
+    // `role="button"` div is invalid markup, and its click would bubble and collapse the group it
+    // had just opened a catalog for (#164). The caret is a real button, the `+` is another, and the
+    // row keeps neither cursor nor hover of its own.
+    const groupLabel = (key, label, count, group) => {
       const isCollapsed = collapsed[key];
       return h(
         'div',
-        {
-          className: 'sw-res-group-label',
-          onClick: () => setCollapsed({ ...collapsed, [key]: !isCollapsed }),
-          role: 'button',
-        },
-        h(isCollapsed ? RightOutlined : DownOutlined, { style: { fontSize: 9, color: '#8F8FA3' } }),
-        h('span', { className: 'sw-group-label' }, `${label} (${count})`)
+        { className: 'sw-res-group-label' },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'sw-res-group-toggle',
+            'aria-expanded': !isCollapsed,
+            onClick: () => setCollapsed({ ...collapsed, [key]: !isCollapsed }),
+          },
+          h(isCollapsed ? RightOutlined : DownOutlined, { style: { fontSize: 9, color: '#8F8FA3' } }),
+          h('span', { className: 'sw-group-label' }, `${label} (${count})`)
+        ),
+        // The way in does not depend on the group being empty. This door used to live only in the
+        // empty branch, so adding the first thing to a group took the door away with it, and a
+        // caller wanting a second one had to know about the head's dropdown (#164). It is drawn
+        // always, not on hover like `.sw-res-more`: a way in that appears only under the pointer is
+        // the same missing affordance in a quieter form.
+        group && !group.placeholder &&
+          h(
+            Tooltip,
+            { title: SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`), placement: 'left' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'sw-res-group-add',
+                'aria-label': SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`),
+                onClick: () => SW.store.openCatalog(addKind(group)),
+              },
+              h(PlusOutlined, { style: { fontSize: 11 } })
+            )
+          )
       );
     };
 
@@ -616,11 +711,18 @@ window.SW = window.SW || {};
         GROUPS.map((group) => {
           const items = groupRows(group);
           const count = items.reduce((acc, i) => acc + i.rows.length, 0);
+          // Every failed kind in this group, not the first. `data` holds two of them, so a `.find`
+          // here reported a Data Sources outage and stayed silent about a simultaneous Datasets one
+          // — and the group would look half-checked with nothing saying which half. Each sentence
+          // names its own kind, which is what keeps a group-level line legible over rows from a kind
+          // that answered (#161).
           const listingError = (ERROR_KEYS[group.key] || [])
             .map((k) => (resourceErrors || {})[k])
-            .find(Boolean);
+            .filter(Boolean)
+            .join(' ') || null;
           // Empty and known is nothing to draw. Empty and UNKNOWN still is — see the note on
-          // GROUPS above.
+          // GROUPS above. This is also what puts #161's group-level sentence on screen in the case
+          // it was written for: a kind that errored and has no rows left to hang it over.
           if (count === 0 && !listingError) return null;
           const isCollapsed = collapsed[group.key];
           const named = items.filter((i) => i.rows.length).length > 1;
@@ -628,9 +730,19 @@ window.SW = window.SW || {};
           return h(
             Fragment,
             { key: group.key },
-            groupLabel(group.key, group.label, count),
+            groupLabel(group.key, group.label, count, group),
+            // A kind that would not list says so here, above its rows, because the fact is the
+            // KIND's rather than any row's — stamping it on twelve rows says it twelve times. It
+            // used to render only in the empty state, which is the one place it could never appear
+            // for the case that needs it: a kind that errored AND still has rows, carried forward
+            // by `keepUnreadKinds`. Those rows are the last good answer and none of them is marked
+            // missing, so without this line nothing on screen says the fresh read failed (ADR-0034).
+            //
+            // Only a kind that ERRORED gets a sentence. A kind that is merely uncheckable — Model
+            // APIs, whose fan-out silently drops projects — stays quiet, because Preflight's rule
+            // is that "we could not check" stays a state unless the dependency itself is the fault.
             !isCollapsed && listingError &&
-              h('div', { className: 'sw-panel-note is-error' }, listingError),
+              h('div', { className: 'sw-group-note' }, listingError),
             !isCollapsed &&
               items.map(({ sub, rows: subRows }) =>
                 subRows.length

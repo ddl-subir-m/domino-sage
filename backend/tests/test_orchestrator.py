@@ -81,7 +81,7 @@ def test_attach_file_symlinks_live_bytes_into_public_data(tmp_path: Path):
     ws = orch.project(start_preview=False).workspace.path
     ds = _dataset(orch, "sales_2026")
 
-    files = orch.list_asset_files(ds)
+    files = orch.list_asset_files(ds)["files"]
     assert {f["path"] for f in files} == {"train.csv", "README.md"}
     assert all(not f["attached"] for f in files)
 
@@ -91,7 +91,8 @@ def test_attach_file_symlinks_live_bytes_into_public_data(tmp_path: Path):
     assert link.is_symlink() and link.is_file()          # points at the live mount, not a copy
     assert "month,revenue" in link.read_text()
     assert [e["file"] for e in orch.project().attached] == ["train.csv"]
-    assert orch.list_asset_files(ds)[0]["attached"] or orch.list_asset_files(ds)[1]["attached"]
+    listed = orch.list_asset_files(ds)["files"]
+    assert listed[0]["attached"] or listed[1]["attached"]
 
     # gitignored + advertised to the agent in AGENTS.md
     assert "public/data/" in (ws / ".gitignore").read_text().split()

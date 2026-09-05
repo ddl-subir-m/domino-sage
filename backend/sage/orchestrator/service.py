@@ -10,6 +10,7 @@ Deep module, narrow interface: project / build / build_stream / shutdown.
 from __future__ import annotations
 
 import base64
+import filecmp
 import json
 import logging
 import os
@@ -28,7 +29,7 @@ import httpx
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
-from ..assets.provider import Asset, AssetProvider, FakeAssetProvider
+from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, FileListing
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
@@ -116,7 +117,7 @@ from ..resources.publish_guard import (
     publish_problems,
 )
 from ..router.model_control import ModelControl
-from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase
+from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, signing_slot
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager, ensure_ignore_line
@@ -245,6 +246,7 @@ _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
+    "mentions-ambiguous",
     "app_change", "build-stalled", "gateway-call", "gateway-alias-unbound",
 })
 
@@ -506,6 +508,78 @@ class AttachTooLarge(Exception):
         super().__init__(f"attach would exceed cap: {current + incoming} > {cap} bytes")
 
 
+class FolderActUnavailable(Exception):
+    """The folder act cannot be offered for this Dataset. Two causes, one refusal (ADR-0029):
+
+      * a Dataset this container has no mount for has to be fetched a file at a time through
+        `_download_attachment`, with nothing to report an unbounded serial download through;
+      * a truncated listing is a sorted prefix, so early folders are whole and late ones are cut
+        or absent with nothing downstream able to tell which, so the cap cannot be pre-flighted
+        and the confirmation has no numbers to show.
+
+    `reason` is composed here rather than at the two ends, so the sentence the row draws before the
+    click and the sentence the refusal carries after it are the same sentence.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+class AttachSourceMissing(Exception):
+    """The listing named a file the mount does not hold, part way through a folder attach.
+
+    Distinct from "no such folder", which the same `FileNotFoundError` used to cover: the folder
+    plainly exists — the person picked it off a row showing its file count and size — so a refusal
+    saying it does not points at the wrong thing to go and fix. What actually happened is that the
+    Dataset changed under a listing already on screen.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        super().__init__(path)
+
+
+class DetachStopped(OSError):
+    """A folder removal could not finish, and `detached` is how much of it went before that.
+
+    The record follows the disk, so the count is real either way — but "some of it is already out"
+    and "nothing moved" are different sentences to a person deciding where to look, and the first
+    entry failing is as likely as the hundredth.
+    """
+
+    def __init__(self, detached: int, removed: list[str], kept: list[str], cause: BaseException, *,
+                 recorded: bool = True) -> None:
+        self.detached = detached
+        # Whether the manifest caught up with the disk. False means the two have come apart, and
+        # the app's own file list — which every other sentence here points at — is not the record.
+        self.recorded = recorded
+        # Copies already deleted out of `src/`. They were never in the manifest, so the app's own
+        # file list — which the failure points at for everything else — is no record of them.
+        self.removed = removed
+        # And what was LEFT: same-named files this act could not prove were the data. The warning
+        # about them matters most here, where the record and the disk have actually come apart.
+        self.kept = kept
+        super().__init__(str(cause))
+
+
+class AttachWouldClobber(Exception):
+    """A file already sits where one of a folder's attachments would be linked, and it is not one.
+
+    `_link_attachment` replaces whatever is at the path, which is right for a stale symlink and
+    right for the single attach — one file, one act, nothing else in flight. Over a folder it is
+    not: the bytes destroyed cannot be put back, and no unwind can restore them, so an act that
+    promises to land whole or not at all has to find out BEFORE it writes anything.
+
+    A symlink is not this. Replacing one is how a re-attach works, and how a folder act's own
+    leftovers are cleared on a retry.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        super().__init__(path)
+
+
 class UploadUnavailable(Exception):
     """No writable dataset is mounted to receive an upload."""
 
@@ -549,10 +623,16 @@ class ResourceNotBound(Exception):
 class DataReferenced(Exception):
     """The app's source still uses an attached file — either fetches it (`refs`) or has copied its
     bytes into `src/` (`copies`, the git-leaking pattern we forbid). Deleting the data would leave
-    that code dangling, so delete is blocked; the user edits the app to stop using it, or Detaches."""
+    that code dangling, so delete is blocked; the user edits the app to stop using it, or Detaches.
 
-    def __init__(self, path: str, refs: list[str], copies: list[str]) -> None:
+    `path` is what was refused and `files` are the attached files that refused it. For one file they
+    say the same thing; for a folder act they do not, and it is the FILES a person can go and act on
+    — a folder of 200 where 3 are still used names those 3 (ADR-0029)."""
+
+    def __init__(self, path: str, refs: list[str], copies: list[str],
+                 files: list[str] | None = None) -> None:
         self.path, self.refs, self.copies = path, refs, copies
+        self.files = files if files is not None else [path]
         super().__init__(f"{path} is used by the app")
 
 
@@ -580,11 +660,197 @@ def _slug(name: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name).strip("_") or "dataset"
 
 
+def _path_parts(path: str) -> tuple[str, ...]:
+    """A caller's path as the segments it really names — no separator confusion, no traversal.
+
+    One copy, because a file path and the folder path that contains it have to be normalised by the
+    same rule or a folder act could name a subtree its own files are not in.
+    """
+    rel = PurePosix(str(path or "").replace("\\", "/"))
+    # `strip("/")`, because POSIX has TWO anchors: `PurePosix("//raw").parts` is `('//', 'raw')`,
+    # and a bare `"/"` test let `//` through — `_folder_prefix("//raw")` then returned `'//raw/'`,
+    # which matches nothing and reproduces the silent no-op this filter exists to stop.
+    return tuple(p for p in rel.parts if p.strip("/") not in ("", ".", ".."))
+
+
 def _attach_dest(dataset_name: str, file_path: str) -> str:
     """Workspace-relative POSIX path a dataset file is symlinked to."""
-    rel = PurePosix(file_path.replace("\\", "/"))
-    parts = [p for p in rel.parts if p not in ("", ".", "..")]
-    return PurePosix("public/data", _slug(dataset_name), *parts).as_posix()
+    return PurePosix("public/data", _slug(dataset_name), *_path_parts(file_path)).as_posix()
+
+
+def _link_attachment(dest: Path, src: Path) -> None:
+    """Stand an attachment's path on the bytes it serves, replacing whatever was there.
+
+    One copy, because both acts that attach a Dataset file make this same link and a difference
+    between them would be a difference in what the preview serves.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink() or dest.exists():
+        dest.unlink()
+    dest.symlink_to(src)
+
+
+def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
+                   size: int) -> dict:
+    """The manifest record one Dataset file gets, whichever act put it there.
+
+    The file is the unit of the record (ADR-0029), so the folder act writes exactly what the single
+    attach writes — one shape, from one place, because rehydrate, detach, leak detection and the
+    commit backstop all read it and none of them learns a second one.
+
+    `source="dataset"`: the Dataset's own bytes are never Sage's to delete. Detach removes only what
+    sits in the workspace — the symlink, or the copy downloaded in its place.
+    """
+    return {"dataset_id": dataset_id, "dataset": dataset_name, "file": file_path, "path": rel,
+            "size": size, "source": "dataset", "dataset_rel_path": file_path}
+
+
+# Above this many attached files, a folder is described once instead of file by file (ADR-0029).
+#
+# Read today by the managed `AGENTS.md` block the agent re-reads every turn
+# (`_write_agents_data_block`). ONE number rather than a literal in that function, because the `@`
+# menu a person picks from is to follow the same rule for the same reason (ADR-0030) and the two
+# must not come to disagree about what a Dataset mention means.
+#
+# Per-file lines are right for five files and ruinous for two hundred — the prompt would then grow
+# with the file count, on every turn, forever.
+FOLDER_COLLAPSE_THRESHOLD = 10
+
+
+def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
+    """Attachments grouped by the folder that will stand for them, rolled up until there are
+    few enough groups to be worth calling a collapse.
+
+    Grouping by the immediate parent alone is not enough, and the shape that breaks it is a
+    normal one: a Dataset partitioned to the day — `raw/2024/01/01/part.csv` — gives one folder
+    per file, so a block of 365 folder lines still grows with the file count on every turn,
+    which is the whole cost ADR-0029 removes. So the deepest level is merged into its own parent
+    until the block is back under the threshold.
+
+    The floor is `public/data/<slug>`, one line per Dataset. Rolling past it would merge two
+    Datasets into a single line about `public/data`, and the served path is the one thing this
+    block exists to be exact about.
+
+    Module level rather than a method, because two surfaces group by it now: the `AGENTS.md` block
+    the agent re-reads every turn, and the `@` menu a person picks from (ADR-0030). One rule, so
+    the two cannot come to disagree about what a Dataset mention means.
+    """
+    floor = len(PurePosix("public/data").parts) + 1     # public/data/<slug>
+    folders: dict[str, list[dict]] = {}
+    for e in entries:
+        folders.setdefault(PurePosix(e["path"]).parent.as_posix(), []).append(e)
+    while len(folders) > FOLDER_COLLAPSE_THRESHOLD:
+        deepest = max(len(PurePosix(f).parts) for f in folders)
+        if deepest <= floor:
+            break
+        rolled: dict[str, list[dict]] = {}
+        for folder, held in folders.items():
+            up = PurePosix(folder)
+            key = up.parent.as_posix() if len(up.parts) == deepest else folder
+            rolled.setdefault(key, []).extend(held)
+        folders = rolled
+    return folders
+
+
+def _folder_members(groups: dict[str, list[dict]], folder: str) -> tuple[str, list[dict]]:
+    """The folder row one `@folder` mention names, and what it stands for — `("", [])` for neither.
+
+    Read out of `_by_folder`'s own grouping rather than by walking the paths under a prefix, so the
+    row, the `AGENTS.md` line and the turn all name one set. A prefix walk is not the same set: the
+    groups sit at mixed depths, so a Dataset with two loose files beside a partitioned subtree gives
+    a `public/data/ds` group of two AND a `public/data/ds/raw/2026` group of ten. Under a prefix the
+    shallow row would carry all twelve — the deeper row's files a second time — while its own
+    caption and its own block line both said two.
+
+    It needs no recursion for the enclosing case: where the roll-up made a group's key an ANCESTOR of
+    where its files sit, the group already holds them.
+
+    Then the ENCLOSING row, because a folder row's path is not fixed the way a file's is. The
+    roll-up level moves as the attachment count crosses the threshold, so `@01`, given while
+    `raw/2026/01` was a row, names no row at all once the roll-up moves up to `raw/2026`. Carrying
+    the row that now stands for those files is wider than what was asked for; carrying nothing is
+    the silence ADR-0030 rules out, and the widening is reported on the turn by
+    `_ambiguous_mentions`, which is the same answer that decision gives an ambiguous token.
+
+    At most one row can enclose it, so the widening is the smallest one there is: a question about
+    one day is answered with the month that absorbed it, never with the whole Dataset. That falls
+    out of the grouping rather than being chosen here — a file belongs to exactly one group, so only
+    the group that actually holds the files under the named folder can qualify.
+
+    Then the other direction: the named folder split into rows below it. `@2026` was the month;
+    files leave until the days are few enough to be rows of their own, and carrying nothing is
+    the same silence. Groups whose key sits under `at`, not every path under a prefix — a sibling
+    group beside this subtree must not ride along. And not above the Dataset slug, which is the
+    grouping's floor: inventing a row there would carry every year in the Dataset for a path
+    nobody was offered.
+    """
+    at = str(folder or "").rstrip("/")
+    if at in groups:
+        return at, groups[at]
+    enclosing = next(((k, held) for k, held in groups.items()
+                      if at.startswith(k + "/") and any(e["path"].startswith(at + "/") for e in held)),
+                     None)
+    if enclosing:
+        return enclosing
+    floor = len(PurePosix("public/data").parts) + 1
+    if len(PurePosix(at).parts) > floor:
+        held = [e for k, members in groups.items() if k.startswith(at + "/") for e in members]
+        if held:
+            return at, held
+    return "", []
+
+
+def _menu_folders(attached: list[dict]) -> dict[str, tuple[str, int]]:
+    """Which folder each attachment's `@` menu row stands under, and how many files that row stands
+    for — `{}` while there are few enough files for the menu to show them one by one.
+
+    The menu is handed the ANSWER rather than the rule. `_by_folder`'s roll-up is a loop with a
+    floor, and a second copy of it in JavaScript is precisely how the block the agent reads and the
+    menu the person picks from would come to disagree — which is the drift ADR-0030 says one rule
+    across both surfaces exists to prevent. It also keeps `FOLDER_COLLAPSE_THRESHOLD` read in one
+    place and spelled in one language.
+
+    The COUNT travels with the folder for a reason the menu cannot supply for itself: it collapses
+    the rows a query matched, so a count taken from those would read "3 files" on a row whose pick
+    carries twelve. The row stands for the folder, so it says the folder's size.
+    """
+    if len(attached) <= FOLDER_COLLAPSE_THRESHOLD:
+        return {}
+    return {e["path"]: (folder, len(held))
+            for folder, held in _by_folder(attached).items() for e in held}
+
+
+def _folder_prefix(folder: str) -> str:
+    """A Dataset folder as a path prefix its files start with — `""` for the root.
+
+    The root is the same act at depth 0 rather than a second feature, so `""`, `"/"` and `"."` all
+    mean the whole Dataset. Anything else goes through `_path_parts`, the same normalisation
+    `_attach_dest` puts a file path through, so a `..` in the middle of one cannot widen the subtree
+    it names — and so a folder prefix and the paths under it cannot disagree.
+    """
+    raw = str(folder or "").replace("\\", "/")
+    if any(p == ".." for p in PurePosix(raw).parts):
+        # `_path_parts` DROPS `..`, which is right for a file path (it cannot then escape the
+        # mount) and wrong for a folder: `../other` would normalise to `other/` and the act would
+        # take a subtree the caller never named. The route's 400 is the honest answer.
+        #
+        # A leading separator is NOT this. `/raw` in a Dataset can only mean `raw` — it names no
+        # other subtree — so `_path_parts` drops the root component and both doors read it the same
+        # way. Left in, it produced `public/data/slug//raw/`, which matched nothing: a 404 from one
+        # route and a silent `detached: 0` from the other.
+        raise ValueError(folder)
+    parts = _path_parts(raw)
+    return PurePosix(*parts).as_posix() + "/" if parts else ""
+
+
+def _attach_root(dataset_name: str) -> str:
+    """`public/data/<slug>/` — where every file from one Dataset is served from.
+
+    Half of what `_attach_dest` builds, split out because a folder act needs the root on its own: the
+    prefix its subtree starts with is this plus `_folder_prefix`, and building it from the same piece
+    is what stops the set an act names and the paths its files were given from disagreeing.
+    """
+    return PurePosix("public/data", _slug(dataset_name)).as_posix() + "/"
 
 
 # Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept so a
@@ -699,8 +965,16 @@ def _dataset_unique_name(item: dict, name: str) -> str:
 
     Both halves are needed: the Domino data library rejects a bare name and a bare id alike. A chip
     with no id is worth an honest sentence, not a call that cannot succeed.
+
+    `resourceId` is where the Domino id lives, because `add_context` mints the stored row an `id`
+    of its own. Reading `id` first built `dataset-<name>-ctx_...`, and Domino answered, correctly,
+    "Cannot find Dataset entry." `id` stays as the fallback for a catalogue row, which is what the
+    file branch below hands in. A `ctx_` id is refused rather than dressed up as a handle: the
+    honest sentence in `_chat_context_line` is unreachable until something can return "".
     """
-    ds_id = _bare_kind_id(str(item.get("id") or ""), "dataset")
+    ds_id = _bare_kind_id(str(item.get("resourceId") or item.get("id") or ""), "dataset")
+    if ds_id.startswith("ctx_"):
+        return ""
     return f"dataset-{name}-{ds_id}" if (name and ds_id) else ""
 
 
@@ -1607,6 +1881,14 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
     if not t:
         return False
     names = {name.lower(), Path(path).name.lower(), Path(name).name.lower()}
+    # Every whole-segment tail of the path, because the @ menu inserts a QUALIFIED token —
+    # `@2026/data.csv` — the moment two attached files share a basename (ADR-0030). Chat draws the
+    # same composer as Build (`modes/chat.js`), so without these a person picks a row here and the
+    # token they were given names nothing on this side: no descriptor attached, and Chat has no
+    # "couldn't use that" line to say so. The silent carry the ADR rules out, in the other half of
+    # the product. Tails rather than the one token the menu would build TODAY, for the reason
+    # `mentionTokens` gives: typed text keeps its token while the Attachment list moves under it.
+    names.update(tok.lstrip("@").lower() for tok in _mention_tokens(path))
     names.update(n.replace(" ", "_") for n in list(names))
     stems = {n.rsplit(".", 1)[0] for n in names if "." in n}
     return t in names or t in stems
@@ -1642,6 +1924,7 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
         if path:
             return brand.text(
                 "- {dataset} {name}{where}, files at {path}. Read those files. "
+                "This chip does not put them in an app; Attach folder on this {dataset} is that act. "
                 "Do not search the rest of this workspace for a substitute.",
                 name=name, where=where, path=path,
             )
@@ -1657,7 +1940,8 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
             "- {dataset} {name}{where}. Not mounted here, so read it with the {platformName} data "
             'library: `from domino_data.datasets import DatasetClient` then '
             '`DatasetClient().get_dataset("{unique}")`. '
-            '`.list_files()` names its files and `.download_file(<file>, "/tmp/<file>")` fetches '
+            '`.list_files()` returns file objects — read `.name` on each, since the list itself '
+            'prints as `[_File(), _File()]`. `.download_file(<name>, "/tmp/<name>")` fetches '
             "one to read with pandas. Do not search this git repo or any other folder for a "
             "project of the same name — that is not this {dataset}.",
             name=name, where=where, unique=unique,
@@ -2037,21 +2321,61 @@ _USAGE_PATH = ".sage/usage.json"
 # #119 calls them `sage*` — so the set is `Workspace.helpers.owned`, resolved per app (#119).
 
 
-def _is_inlined_copy(raw: bytes, text: str) -> bool:
-    """True if `text` (a source file) inlines the attachment `raw` — the whole file, or just a
-    leading sample of it (the agent hardcoding the prompt preview instead of fetching at runtime).
+def _is_inlined_copy(body: str, read: int, text: str) -> bool:
+    """True if `text` (a source file) inlines the attachment — the whole file, or just a leading
+    sample of it (the agent hardcoding the prompt preview instead of fetching at runtime).
 
     The sample check requires the first `_SAMPLE_MATCH_ROWS` lines to appear verbatim as a contiguous
     block: a multi-line run makes an accidental match on ordinary code vanishingly unlikely.
+
+    Takes the attachment ALREADY DECODED, with the number of bytes that were READ alongside —
+    capped by `_attachment_bytes` at one past `_COPY_SCAN_MAX`, which is what keeps the guard below
+    honest without being the file's real size. This runs once per
+    (attachment, source file) pair, so decoding in here decoded the same bytes once for every code
+    file in the app — 200 attachments across 50 sources is 10,000 decodes of the same content, and
+    a folder act asks for all of them inside one request.
     """
-    body = raw.decode("utf-8", "ignore")
-    if 64 <= len(raw) <= _COPY_SCAN_MAX and body in text:
+    if 64 <= read <= _COPY_SCAN_MAX and body in text:
         return True
     lines = body.splitlines()
     if len(lines) <= _SAMPLE_MATCH_ROWS:
         return False  # too few lines to tell a "sample" from the whole file (covered by the check above)
     sample = "\n".join(lines[:_SAMPLE_MATCH_ROWS]).strip()
     return len(sample) >= _SAMPLE_MATCH_MIN_BYTES and sample in text
+
+
+# Characters that can go on being part of a served path in source. A template stops the literal at
+# the first one that cannot — `${`, a quote, a backtick, whitespace, `+`.
+_PATH_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./")
+
+
+def _fetches_under(text: str, root: str, folder: str) -> bool:
+    """Whether `text` names a served path that could reach into `folder`.
+
+    `root` is `data/<slug>/` and `folder` is the served prefix of the subtree being removed. Source
+    that builds its URLs from a pattern — which the managed `AGENTS.md` block teaches it to do —
+    names no file, so the literal it DOES contain is a prefix: `data/rev/raw/` out of
+    `` `data/rev/raw/${year}/${name}` ``.
+
+    Each such literal is compared with `folder` BOTH ways, because either can be the shorter:
+
+      * the literal reaches into the folder — `data/rev/raw/` against `data/rev/raw/2024/`;
+      * the folder contains the literal's target — `data/rev/raw/` against `data/rev/`.
+
+    A plain "does the folder or any ancestor appear" test gets the first case by matching the
+    Dataset root, and then refuses every folder in the Dataset for an app that fetches one other
+    subtree by pattern. Comparing the literal the source actually names keeps the two apart.
+    """
+    at = text.find(root)
+    while at != -1:
+        end = at + len(root)
+        while end < len(text) and text[end] in _PATH_CHARS:
+            end += 1
+        named = text[at:end]
+        if named.startswith(folder) or folder.startswith(named):
+            return True
+        at = text.find(root, end)
+    return False
 
 
 def _workspace_relative(text: str) -> str:
@@ -2288,6 +2612,10 @@ class Project:
 
     def status(self) -> dict:
         s = self.control.snapshot()
+        folders = _menu_folders(self.attached)
+        attached = [{**e, "menu_folder": folder, "menu_folder_count": count}
+                    for e in self.attached
+                    for folder, count in (folders.get(e["path"], ("", 0)),)]
         try:
             upstream = self.supervisor.upstream()
         except RuntimeError:
@@ -2298,7 +2626,13 @@ class Project:
             "untitled": self.record.is_untitled(),
             "workspace": str(self.workspace.path),
             "preview_upstream": upstream,
-            "attached": list(self.attached),
+            # `menu_folder` is the row the `@` menu draws this file under and `menu_folder_count`
+            # is how many files that row stands for, or `""`/`0` while the menu still shows files
+            # one by one (ADR-0030). Computed onto the payload and never onto the record:
+            # `.sage/attachments.json` stays one entry per file in exactly the shape a single
+            # attach writes, because rehydrate, detach, leak detection and the commit backstop all
+            # read it and none of them learns a second entry shape (ADR-0029).
+            "attached": attached,
             "scratch": _list_scratch_files(self.record.path),
             "model": {
                 # `mode` is what routes right now — the pin, while a turn is running (see
@@ -2319,6 +2653,12 @@ class Project:
                     "implement": self.shim.catalog.implement,
                     "ask": self.shim.catalog.ask,
                 },
+                # The picker draws the model each mode will run on by restating the router's
+                # precedence in JS. It cannot see the signing pin, which outranks all of it, so a
+                # session with a signing model in any slot would show the slot's own model and run
+                # something else (ADR-0032). Sent as the slot name, not a model, because that is
+                # what the picker already keys its rows by.
+                "signing_slot": signing_slot(self.shim.catalog),
             },
             "cost": {"url": self.cost_url, "project": self.cost_project},
             "manage": self.manage_url,
@@ -2429,6 +2769,69 @@ _PLAN_SHAPE_PHASED = (
     "writing 'None'.\n"
     "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
 
+# The planner's one way out of writing a plan (#150). Without it there was none: the gated turn's
+# only branch was "write the plan", so `run: env | grep -i canary` on a first turn came back as
+# seven steps of generic scaffolding — "Define purpose. Shape layout. Create content." — with
+# nothing of the prompt in it, behind an Approve button that made the filler look considered.
+#
+# Same trade `_asks_to_reset` takes: the worst a false positive costs here is one turn that asks
+# what to build, which is a sentence. The instruction is deliberately concrete about the shapes
+# that reach this — a request naming no app is the ABSENCE of a signal, which is why no string
+# rule can find it and the model has to be the one to say so.
+#
+# Carried by the gated build turn only, not folded into _PLAN_SHAPE: the Chat handoff shares that
+# constant and checks its plan with an `if not plan_md` that has never heard of the sentinel, so a
+# refusal there would render as the plan. A handoff also plans from a whole conversation rather
+# than one prompt, and cannot be empty of an app in this way.
+_NO_APP_SENTINEL = "NO APP DESCRIBED"
+_PLAN_REFUSAL = (
+    "First decide whether there is anything here to plan. If the request names no app and no "
+    "change to one — a shell command, a pasted error, a stray note — write exactly "
+    f"{_NO_APP_SENTINEL} on the first line, then one sentence naming what is missing, and nothing "
+    "else: no headings, no plan. Never invent an app the request did not ask for.")
+
+
+# How far in to look for the sentinel. Not just the first line: `plan_md` is every assistant text
+# part joined (`plan_text_parts`), so a planner that emits "Looking at the request." as its own part
+# before refusing puts a lead-in ahead of it — and one lead-in is not the bound, a model can write
+# three before it gets to the point. Depth is nearly free because the sentinel has to LEAD its line:
+# the false positive worth guarding is a plan that MENTIONS the phrase mid-sentence, and that stays
+# safe at any depth. Bounded rather than unbounded only so a long plan cannot drift into a match.
+_NO_APP_SCAN_LINES = 8
+
+
+def _refuses_to_plan(plan_md: str) -> str | None:
+    """The sentence explaining `NO APP DESCRIBED`, or None for an ordinary plan (see _PLAN_REFUSAL).
+
+    The sentinel must LEAD one of the first few lines, once list, quote, heading and emphasis marks
+    are read through and case is set aside — told to lead a line, a planner reaches for the markup
+    it leads every other line with, and writes `# NO APP DESCRIBED`, `- NO APP DESCRIBED` or
+    `## No app described`. Leading rather than equalling the line, because matching it exactly failed in the
+    expensive direction: told to write a sentinel and then a sentence, models write `NO APP
+    DESCRIBED.` or keep the sentence on the same line, and a missed refusal does not fall back to
+    today's behaviour — it renders as an Approve card whose entire plan body is the sentinel, which
+    is a worse card than the filler plan this exists to stop. A false positive costs one turn that
+    asks what to build; a false negative costs the whole point of the check.
+
+    `""` and `None` are different answers. A bare sentinel with no sentence under it is still a
+    refusal; collapsing the two would render that same card.
+    """
+    lines = [ln.strip() for ln in (plan_md or "").splitlines() if ln.strip()]
+    for i, line in enumerate(lines[:_NO_APP_SCAN_LINES]):
+        head = line.strip("#*_`~->• ").strip()
+        if not head.upper().startswith(_NO_APP_SENTINEL):
+            continue
+        # Whatever follows the sentinel on its own line is the sentence, once the punctuation
+        # joining them is dropped. Only the JOIN is stripped, never the sentence's own full stop —
+        # the message reads `<sentence> Say what the app should show…`, and a sentence that lost
+        # its stop runs into the next one.
+        rest = head[len(_NO_APP_SENTINEL):].lstrip(" .:;,—–-").strip()
+        if not rest and i + 1 < len(lines):
+            rest = lines[i + 1].lstrip("-*•# ").strip()
+        return rest[:1].upper() + rest[1:] if rest else ""
+    return None
+
+
 # What a Build turn is told to DO with the Chat half of its Conversation (#53). The transcript
 # itself is rendered by chat_compact.chat_summary; this is the framing, which lives here with the
 # turn's other preambles.
@@ -2466,6 +2869,135 @@ _DROPPED_MENTION_NOTE = (
     "data in place of what is missing. Say which mention you could not use. If the rest of the "
     "request stands on its own, build that part and nothing more; if it does not, stop there and "
     "say so.")
+
+# What the agent is told when one @name matched several attached files (ADR-0030). Short, because
+# unlike the note above this describes something that WORKED: every file the name matched is on this
+# turn, with its own descriptor, so the agent is not missing anything and has nothing to repair. The
+# only thing it cannot know is that the person may have meant one of them.
+_AMBIGUOUS_MENTION_NOTE = (
+    "One @name in their request above matched more than one attached file. This is what they were "
+    "told about it:\n\n"
+    "{said}\n\n"
+    "Every file it matched is attached to this turn, so nothing is missing. But they may have meant "
+    "one of them: if which one changes what you would build, ask before building.")
+
+
+_AT_TOKEN = re.compile(r"(^|\s)@([^\s]+?)(?=[\s,;:!?)\]}'\"]|\.(?!\w)|$)")
+
+
+def _mention_tokens_in(text: str) -> set[str]:
+    """Every "@token" standing in `text` as its own word. `mentionTokensIn` in
+    `workbench/js/util.js` is the same rule, and it has to be: what the composer INSERTED and what
+    the turn reads back have to be read off the prompt the same way.
+
+    The trailing "." is the whole subtlety. A "." ends a sentence far more often than it begins a
+    suffix, so "@data.csv." is a mention of `data.csv` — but reading EVERY "." that way makes
+    "@report.csv" a mention of `report` as well, and an app holding both rides a turn with a file
+    nobody named. So "." closes a token only when no word character follows it."""
+    return {"@" + m.group(2) for m in _AT_TOKEN.finditer(text or "")}
+
+
+def _mentioned_in(text: str, token: str) -> bool:
+    """Whether "@token" stands in `text` as its own word — so a longer name does not match a shorter
+    one's prefix, and a bare basename does not match INSIDE the qualified token `@2026/data.csv`
+    that ADR-0030 now inserts for the same file."""
+    if not token:
+        return False
+    return _mention_word(token) in _mention_tokens_in(text)
+
+
+def _mention_word(text: str) -> str:
+    """"@" plus one path or name, spelled the way the composer spells a token. `mentionWord` in
+    `workbench/js/util.js` is the same two rules: whitespace collapsed to "_" so the token is ONE
+    word in the box, and a leading "@" dropped so a file called "@notes" is not "@@notes".
+
+    Spelled here rather than assumed, because the file `data.csv` and the file `my data.csv` reach
+    this function looking alike and stand in the prompt as `@data.csv` and `@my_data.csv`. Testing
+    the raw name would find the first and never the second."""
+    return "@" + re.sub(r"\s+", "_", text or "").lstrip("@")
+
+
+def _mention_tokens(path: str) -> list[str]:
+    """Every token that could name `path`, longest tail first. `mentionTokens` in
+    `workbench/js/util.js` is the same set, and it has to be: what the client MATCHED on is what
+    this reports about.
+
+    A file under `public/data/` also answers for the folders above it, because a folder row's
+    token outlives the row (ADR-0030): `@2024` was a row, files leave, the menu shows them one
+    by one, and without the parent tails `_ambiguous_mentions` would watch the turn carry five
+    files and say nothing. Stop at `public/data/<slug>` inclusive — `_by_folder`'s floor — so
+    `@data` does not become a token of every Attachment. Chat's `_at_token_hits` reads this too,
+    and the floor is what keeps `@data` from lighting up every chip that happens to live there.
+    """
+    raw = str(path or "")
+    paths = [raw] if raw else [""]
+    parts = [p for p in raw.split("/") if p]
+    if parts[:2] == ["public", "data"]:
+        for n in range(len(parts) - 1, 2, -1):
+            folder = "/".join(parts[:n])
+            if folder not in paths:
+                paths.append(folder)
+    out: list[str] = []
+    seen: set[str] = set()
+    for each in paths:
+        segments = each.split("/")
+        for take in range(len(segments), 0, -1):
+            token = _mention_word("/".join(segments[len(segments) - take:]))
+            if token not in seen:
+                seen.add(token)
+                out.append(token)
+    return out
+
+
+def _ambiguous_mentions(resolved: list[dict] | None, prompt: str) -> str:
+    """The sentence for an @name this turn resolved to more than one attached file, or "" for none.
+
+    ADR-0030 makes the token the menu inserts unique going forward, and text already sitting in the
+    composer keeps the token it was GIVEN. `@data.csv` was unique when it was typed; attaching a
+    sibling partition later makes it name two files. `collectTurnRefs` carries all of them rather
+    than dropping the mention, because a mention that quietly carries nothing produces an answer
+    about the wrong thing, or about nothing, with no error anywhere. This is the other half of that
+    decision: it carries all of them AND says so, naming each, so the person can narrow it if they
+    meant one. Silence is the one outcome ruled out.
+
+    Read off `_resolve_mentions`' own answer, the way `_unusable_mentions` is, so what is reported
+    can never drift from what the turn actually used — and grouped by the TOKEN that stands in the
+    prompt rather than by the basename, because that is what `collectTurnRefs` matched on. Grouping
+    by basename would miss an ambiguous qualified token (`@a/data.csv` naming two files two folders
+    down) and would report two deliberate mentions of `@2025/data.csv` and `@2026/data.csv` as
+    ambiguous — they resolve to two files sharing one basename, and there is nothing ambiguous
+    about them.
+    """
+    typed = _mention_tokens_in(prompt)
+    by_token: dict[str, list[str]] = {}
+    for item in resolved or []:
+        path = str(item.get("path") or "")
+        for token in _mention_tokens(path):
+            if token not in typed:
+                continue
+            named = by_token.setdefault(token, [])
+            if path not in named:
+                named.append(path)
+    lines: list[str] = []
+    # The other way a mention carries more than was asked for, and the same answer: say so, name
+    # what it carried, so the person can narrow it. A folder token outlives the row it was given
+    # for — `_by_folder`'s roll-up level moves as the attachment count does — and the turn carries
+    # the row that now stands for those files rather than nothing.
+    for item in resolved or []:
+        asked = str(item.get("asked") or "")
+        named = next((t for t in _mention_tokens(asked) if t in typed), "") if asked else ""
+        if named:
+            lines.append(f"{named} is no longer a folder of its own, so the turn carried "
+                         f"`{item['path']}` instead — {item['summary']}.")
+    for token, paths in by_token.items():
+        if len(paths) < 2:
+            continue
+        # The count first, because that is the surprise, and then every path — a sentence that said
+        # "matched several" without naming them leaves the reader unable to tell which one is the
+        # extra. The remedy is the menu, which can now reach either one (ADR-0030).
+        lines.append(f"{token} names {len(paths)} attached files, so this turn carries all of them: "
+                     f"{', '.join(paths)}. Pick one from the @ menu to name just it.")
+    return " ".join(lines)
 
 
 class Orchestrator:
@@ -2707,14 +3239,96 @@ class Orchestrator:
     # cheap way the pin does: a plan page is not a reason to boot Vite or seed an app.
 
     def list_members(self) -> dict:
-        """Who can be named as a reviewer, and whose id a comment resolves to. `directory` is the
-        wider set the Workbench looks names up in; here they are the same list, because Sage only
-        ever learns about the people on this project."""
-        people = [
-            {"id": p.id, "name": p.name, "title": p.title, "avatar": p.avatar}
-            for p in self._resources.list_collaborators(self._domino_project_id)
-        ]
-        return {"members": people, "directory": people}
+        """Who is on this Project, and everyone who could be added to it. Two callers, one truth.
+
+        The plan page reads `members` to name a reviewer and resolve a comment's author. The People
+        modal reads all of it: `directory` is the wider set it offers to add — everyone on the
+        deployment, filtered in the browser against `members` — and `ownerId` and `self` are the two
+        rows that must not offer Remove.
+
+        This is where ADR-0028's forgiveness lives. The provider now raises when it cannot read, and
+        this catches, because the plan page must open either way: ids where names would be is worse
+        than names and much better than a page that will not load. What it does NOT do is spend the
+        distinction to buy that — three states leave here as three different answers:
+
+          connected false          Sage is not running against the platform. Nothing was read
+                                   because there was nothing to read.
+          connected, error ""      A working read. Empty members means a Project worked on alone.
+          error set                The read failed, and the modal offers a Retry rather than an
+                                   empty picker that says the creator has no colleagues.
+        """
+        connected = bool(self._domino_project_id)
+        out: dict = {"members": [], "directory": [], "ownerId": "", "self": "",
+                     "connected": connected, "error": ""}
+        if not connected:
+            return out
+        # Two reads, caught separately, because they fail independently and cost different callers
+        # different things. Sharing one `try` meant a directory outage — a read the plan page never
+        # makes — took the reviewer names down with it, which is the exact failure ADR-0028 is about,
+        # one layer up.
+        try:
+            people = self._resources.list_collaborators(self._domino_project_id)
+            out["members"] = [
+                {"id": c.id, "name": c.name, "title": c.title, "avatar": c.avatar, "role": c.role}
+                for c in people
+            ]
+            out["ownerId"] = next((c.id for c in people if c.owner), "")
+            out["self"] = self._resources.caller_id()
+        except ResourceUnavailable as e:
+            out["error"] = str(e)
+        try:
+            out["directory"] = [
+                {"id": p.id, "name": p.name, "title": p.title, "avatar": p.avatar}
+                for p in self._resources.list_directory()
+            ]
+        except ResourceUnavailable as e:
+            # First failure wins the field: both are "the read failed", the modal's answer to either
+            # is the same Retry, and a second error field would ask every caller to learn which.
+            out["error"] = out["error"] or str(e)
+        return out
+
+    def add_collaborators(self, user_ids: list[str]) -> dict:
+        """Add each person, and report per person.
+
+        One call each rather than the bulk route, because a partial failure has to name who it
+        failed on: the modal keeps that person selected for a one-click retry. Nothing is rolled
+        back — the people who were added are added, and undoing them would be a second act the
+        creator did not ask for.
+
+        The reason travels as the platform said it. It is a runtime value, so no Sage prose is
+        invented for it and the brand lint never scans it.
+        """
+        project_id = self._project_to_share()
+        added: list[str] = []
+        failed: list[dict] = []
+        for user_id in user_ids:
+            try:
+                self._resources.add_collaborator(project_id, user_id)
+            except ResourceUnavailable as e:
+                failed.append({"id": user_id, "reason": str(e)})
+            else:
+                added.append(user_id)
+        return {"added": added, "failed": failed}
+
+    def remove_collaborator(self, user_id: str) -> dict:
+        """Take one person off the Project. Under `GRANT_BASED` visibility that is also what takes
+        away their access to any App published from it, which is why the confirm names both."""
+        self._resources.remove_collaborator(self._project_to_share(), user_id)
+        return {"removed": user_id}
+
+    def _project_to_share(self) -> str:
+        """The Project a write is aimed at, refused up front when there is not one.
+
+        A write off the platform is refused whole rather than per person: with no Project there is
+        nothing to have failed at, and reporting it against each name would say the people were the
+        problem.
+        """
+        if not self._domino_project_id:
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} is not running against {platformName}, so it cannot change who is "
+                "on this {project}."
+            ))
+        return self._domino_project_id
 
     def _plan_docs_record(self) -> ProjectRecord:
         return self.project(start_preview=False, seed_app=False).record
@@ -3557,7 +4171,12 @@ class Orchestrator:
         runtime, so the raw bytes have no business in a prompt. Computing it here is deliberate:
         Python reads the /mnt/data mounts fine (the agent is the one that can't), and caching it in
         the committed manifest means each mount file is described once, not once per turn. Entries
-        written before descriptors existed are backfilled on first use."""
+        written before descriptors existed are backfilled on first use.
+
+        The cache is filled into the entry here and PERSISTED BY THE CALLER. This wrote the manifest
+        itself once per file, which made a 200-file folder attach rewrite the whole manifest 200
+        times through `_write_agents_data_block` (ADR-0029). Every caller already writes it once for
+        its own act, so the write belongs there — one per act rather than one per file."""
         cached = entry.get("descriptor")
         if cached:
             return cached
@@ -3573,7 +4192,6 @@ class Orchestrator:
             d = {"kind": "unavailable", "summary": f"not described ({type(e).__name__})",
                  "detail": "", "size": 0}
         entry["descriptor"] = d
-        project.workspace.write_attachments(project.attached)
         return d
 
     def _resolve_mentions(self, project: Project, mentions: list[str] | None) -> list[dict] | None:
@@ -3588,24 +4206,95 @@ class Orchestrator:
         if not mentions:
             return None
         known = {e["path"]: e for e in project.attached}
+        groups = _by_folder(project.attached)
         out: list[dict] = []
+        # Whether this turn learned a shape worth keeping. `_descriptor` fills the cache into the
+        # entry and leaves the write to its caller (ADR-0029), so a turn that describes a file for
+        # the first time persists it once here rather than once per mention — and a folder mention
+        # describes every member, so an eight-file folder is eight shapes worked out once.
+        #
+        # Asked BEFORE the describing, never after: `_descriptor` writes the cache into the entry it
+        # was handed, so by the end of the loop every entry looks as though it always had one and
+        # the write would never happen at all.
+        fresh = False
         for m in mentions:
             entry = known.get(m)
-            if entry is None:
+            asked = m
+            key, members = ("", []) if entry is not None else _folder_members(groups, m)
+            # A folder of one is described exactly as well by naming the file, and better — the
+            # branch the `AGENTS.md` block already takes. It is also the only one that hands the
+            # agent a path its read tool can use.
+            if len(members) == 1:
+                entry, m, members = members[0], members[0]["path"], []
+            if entry is None and not members:
                 continue
-            try:
-                real = _safe_join(project.app_for_turn().path, m).resolve()
-            except (ValueError, OSError):
+            if members:
+                members = [e for e in members if self._on_disk(project, e["path"])]
+                if not members:
+                    # Every file under it is gone: the Dataset was unmounted, or a rehydrate left
+                    # the symlinks dangling. Dropped rather than promised, so the refusal names it
+                    # the way it names a single file whose path resolves to nothing — a folder path
+                    # the agent trusts resolves to the SPA fallback, which is the failure the
+                    # managed block spends a paragraph warning about.
+                    continue
+                fresh = fresh or any(not e.get("descriptor") for e in members)
+                item = self._folder_mention(project, key, members)
+                # The row asked for is not the row that answered: the roll-up moved under a token
+                # already in the composer. Carried on the item so the sentence that reports the
+                # widening is read off this same answer, the way every other one is.
+                if key != asked.rstrip("/"):
+                    item["asked"] = asked
+                out.append(item)
                 continue
-            if not real.is_file():
+            real = self._on_disk(project, m)
+            if real is None:
                 continue
+            fresh = fresh or not entry.get("descriptor")
             d = self._descriptor(project, entry)
             item = {"path": m, "name": PurePosix(m).name,
                     "summary": d["summary"], "detail": d["detail"]}
             if d["kind"] == "image":
                 item["image_uri"] = self._image_data_uri(real)
             out.append(item)
+        if fresh:
+            project.workspace.write_attachments(project.attached)
         return out or None
+
+    @staticmethod
+    def _on_disk(project: Project, path: str) -> Path | None:
+        """The real file a workspace-relative attachment path reaches, or None.
+
+        The record says a file is attached; only this says it is still there. A Dataset can be
+        unmounted under a live app and a rehydrate can leave the symlinks dangling, and
+        `_descriptor` reads the shape cached in the manifest without touching disk — so nothing
+        else in a mention would notice.
+        """
+        try:
+            real = _safe_join(project.app_for_turn().path, path).resolve()
+        except (ValueError, OSError):
+            return None
+        return real if real.is_file() else None
+
+    def _folder_mention(self, project: Project, folder: str, members: list[dict]) -> dict:
+        """One `@folder` mention, said once (ADR-0030).
+
+        The expansion is the easy half. The COLLAPSE is the reason this exists: `send_prompt`
+        inlines a descriptor per item, so two hundred items is two hundred `detail` blocks — the
+        exact context bloat ADR-0029 took out of the `AGENTS.md` block, arriving through the other
+        door. Attachment-driven bloat has already wedged OpenCode mid-build once.
+
+        The summary is the block's own sentence, from the block's own helper: a folder of CSVs
+        sharing one schema is described BETTER once than two hundred times, so the collapse loses
+        nothing. No `detail`, and no `image_uri` either — images ride the prompt as data URIs, and
+        a folder of them would ride all of them.
+
+        The path IS the folder. The agent already has the served-path pattern for it out of the
+        managed block, and the alternative — naming every member — is the enumeration this
+        collapse exists to remove.
+        """
+        shape = self._shared_shape([self._descriptor(project, e) for e in members])
+        return {"path": folder, "name": PurePosix(folder).name or folder,
+                "summary": f"{len(members)} files — {shape}", "detail": ""}
 
     def _resource_mention_note(self, project: Project, resources: list[dict] | None) -> str:
         """The block a turn carries for the Resources the creator @mentioned (#31), or "" for none.
@@ -3682,8 +4371,20 @@ class Orchestrator:
         resolves to nothing cannot: there is no act to offer it, and a button that cannot complete is
         the dead end this sentence exists to remove. That drop keeps the prose and gets no row.
         """
-        kept = {a["path"] for a in (resolved or [])}
-        missing = [m for m in (mentions or []) if m not in kept]
+        # `asked` is on a folder mention the roll-up widened (ADR-0030): the turn carried a row
+        # above the one named, so the path in the answer is not the path in the request. Read as
+        # used, or the turn would carry it AND report it as dropped in the same breath.
+        kept = {a["path"] for a in (resolved or [])} | {
+            str(a["asked"]) for a in (resolved or []) if a.get("asked")}
+
+        # A folder mention is kept when the turn carried something under it: `_resolve_mentions`
+        # answers a folder of many with the folder's own path and a folder of one with the file's
+        # (ADR-0030), and reporting the second as dropped would be this sentence telling on a
+        # mention that worked.
+        def used(m: str) -> bool:
+            return m in kept or any(p.startswith(m.rstrip("/") + "/") for p in kept)
+
+        missing = [m for m in (mentions or []) if not used(m)]
         bound = {b.key for b in parse_bindings(project.app_for_turn().read_bindings())}
         unbound = [r for r in (resources or []) if isinstance(r, dict)
                    and (str(r.get("kind") or ""), str(r.get("id") or "")) not in bound]
@@ -3704,7 +4405,20 @@ class Orchestrator:
         # has a file the person can point at, and telling them to attach a file they can see beats
         # telling them a file they can see isn't there.
         chat_files = [m for m in missing if m.startswith(_SCRATCH_PREFIX)]
-        others = [m for m in missing if m not in chat_files]
+        # What the app HOLDS and could still not use. `_resolve_mentions` drops a file whose path
+        # reaches nothing on disk and a folder whose every member does — an unmounted Dataset, or a
+        # rehydrate that left the symlinks dangling — and "not attached to this app" would then be
+        # false twice over: it IS attached, its row is in the panel, and attaching it again is not
+        # the way back. Named apart so the sentence describes the state the reader is actually in,
+        # and given no row, because no one button closes it.
+        held = {e["path"] for e in project.attached}
+        folders = _by_folder(project.attached)
+        # `_folder_members`, not `in folders`: a token whose row split into rows below it is no
+        # longer a group key, but the files under it are still attached. Calling that "not
+        # attached" would offer to attach them again — the wrong door, and a lie about the panel.
+        gone = [m for m in missing
+                if m not in chat_files and (m in held or bool(_folder_members(folders, m)[1]))]
+        others = [m for m in missing if m not in chat_files and m not in gone]
         lines: list[str] = []
         entries: list[dict] = []
         if chat_files:
@@ -3712,6 +4426,9 @@ class Orchestrator:
                          "Attach it to the app in the Data panel, then ask again.")
             entries += [{"kind": "file", "id": m, "name": PurePosix(m).name,
                          "app": where, "appId": whose} for m in chat_files]
+        if gone:
+            lines.append(f"Couldn't use {named(gone)} — this app holds it, but its files aren't in "
+                         "the workspace right now.")
         if others:
             lines.append(f"Couldn't use {named(others)} — not attached to this app. "
                          "Attach it in the Data panel, then ask again.")
@@ -5563,6 +6280,9 @@ class Orchestrator:
                 self._voice_agents_md(project)
                 self._splice_instructions(project)
                 self._write_agents_data_block(project)   # AGENTS.md is new; the attachments are not
+                # The list is unchanged; any SHAPE the block just described is not, and
+                # `_descriptor` leaves that write to its caller now (ADR-0029).
+                project.workspace.write_attachments(project.attached)
                 project.workspace.clear_built()
                 # The usage label is derived from the source Reset just put back to the template, so
                 # it goes with it (#93). Unlike the Bindings themselves, which are setup and survive.
@@ -6004,6 +6724,12 @@ class Orchestrator:
         # `_DROPPED_MENTION_NOTE` spends its length taking away.
         unusable, unusable_rows = self._unusable_mentions(project, mention_files, mentions, resources)
         unusable_note = _DROPPED_MENTION_NOTE.format(said=unusable) if unusable else ""
+        # The opposite gap, read off the same answer: not a mention that carried nothing, but one
+        # that carried more than the person asked for (ADR-0030). Spent the same two ways — the
+        # bubble below and a note to the agent — for the same reason, so neither is told something
+        # the other has not heard.
+        ambiguous = _ambiguous_mentions(mention_files, prompt)
+        ambiguous_note = _AMBIGUOUS_MENTION_NOTE.format(said=ambiguous) if ambiguous else ""
         # What was said in the Chat half of this Conversation (#53). Rides the prompt text beside
         # `resource_note`, and for the same reason: the gate/answer/plan forks below wrap `current`
         # in their own preamble, so a block that has to sit at the END of what the agent reads
@@ -6199,9 +6925,16 @@ class Orchestrator:
                            "would touch so the plan fits the current code, then write the plan. "
                            + _PLAN_VOICE + "\n\n" + shape + "\n\n" + current)
             else:
+                # The way out rides the blank-template branch only, and is stated ahead of the
+                # shape — a plan's format is the wrong place to learn there may be no plan to
+                # format (#150). Not the has_built branch: its exemplars include "a pasted error",
+                # which against an app that already exists is an ordinary "fix this" and the
+                # commonest request there is. Refusing that would be a regression, and would refuse
+                # it with copy written for an empty project. The filler plan #150 reports needs a
+                # blank template to happen — there is nothing to read, so nothing anchors the plan.
                 current = ("This is a brand-new app from a blank template — there are no existing "
                            "files worth reading, so plan straight from the request. "
-                           + _PLAN_VOICE + "\n\n" + shape + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + _PLAN_REFUSAL + "\n\n" + shape + "\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -6242,15 +6975,20 @@ class Orchestrator:
                        "no other code blocks.\n\n" + current)
         plan_text_parts: list[str] = []  # accumulates the planner's text to persist as plan.md
 
-        # Tell the UI whether a plan card still waiting for approval survives this turn. It doesn't
-        # once we're about to overwrite plan.md (a gated turn) or change the app under it; it does
-        # across an answer-only turn, which touches neither — asking a question shouldn't cost the
-        # user the plan they were reading.
-        if not answer_only and not is_approval:
+        # Tell the UI a plan card still waiting for approval did not survive this turn, because the
+        # app changed under it. It does survive an answer-only turn, which changes nothing — asking
+        # a question shouldn't cost the user the plan they were reading.
+        #
+        # And it survives a GATED turn, which used to be marked stale here on the theory that the
+        # turn was about to overwrite plan.md. It isn't yet: `write_plan` runs only once there is a
+        # plan, so a gated turn that produced none — an empty plan, or a request naming no app
+        # (#150) — left plan.md holding a plan the server would still build, with its Approve button
+        # gone from the screen. Nothing is lost by not saying it: `plan-proposed` already supersedes
+        # the previous card when a plan does arrive, and a gated turn is read-only, so it cannot be
+        # the thing that changed the app. `arch` needs no mention of its own — it implies `gate`.
+        if not answer_only and not is_approval and not gate:
             yield {"type": "plan-stale",
-                   "note": "Superseded by the architecture below." if arch
-                           else "Superseded by a newer plan below." if gate
-                           else "No longer current — the app changed after this plan."}
+                   "note": "No longer current — the app changed after this plan."}
 
         # `user_text` is what the person actually typed, when that differs from the prompt we send the
         # agent (a typed approval is expanded into the full approve prompt) — the transcript should
@@ -6272,6 +7010,16 @@ class Orchestrator:
             if unusable:
                 yield persist({"type": "mentions-unresolved", "message": unusable,
                                "entries": unusable_rows})
+            # Its own event, and not a second sentence on the one above, because the two are not the
+            # same news. A drop is a failure and draws red; this describes a turn that WORKED —
+            # every file the name matched is attached, nothing is missing — and the person is being
+            # told they may have meant one of them. Said in the red the refusal wears, it would read
+            # as a turn that had gone wrong, which is the opposite of what happened.
+            #
+            # It carries no rows: an ambiguous mention has no fix button, because the act that
+            # closes it is retyping the mention the menu can now reach (ADR-0030).
+            if ambiguous:
+                yield persist({"type": "mentions-ambiguous", "message": ambiguous})
 
         # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
         # strong model for the Implement retry (see the nudge branch); restored on exit so we never
@@ -6515,18 +7263,19 @@ class Orchestrator:
             send_ts = time.monotonic()
             client.send_prompt(sid,
                                "\n\n".join(p for p in (current, chat_note, resource_note,
-                                                       unusable_note) if p),
+                                                       unusable_note, ambiguous_note) if p),
                                agent=agent, attachments=mention_files)
-            # All four ride the first (user) turn only, not the nudge/fix follow-ups: those carry
+            # All five ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
             # Resource. The Chat background goes with them — a nudge is Sage talking to itself
             # about the code it just failed to write, and the conversation behind it hasn't moved.
-            # The dropped-mention note goes with them for the same reason: it answers what the
-            # person typed, and a nudge mentions nothing.
+            # Both mention notes go with them for the same reason: they answer what the person
+            # typed, and a nudge mentions nothing.
             mention_files = None
             resource_note = ""
             chat_note = ""
             unusable_note = ""
+            ambiguous_note = ""
             appeared = False
             start = time.monotonic()
             # When OpenCode last produced anything, and so what the quiet deadline below is measured
@@ -6825,6 +7574,21 @@ class Orchestrator:
                         "a bit more detail about what you want can help — or switch to Implement to "
                         "build it directly.")})
                     yield persist({"type": "done", "ok": False, "decision": "empty plan"})
+                    return
+                # The planner looked at the request and found no app in it (#150). The same class of
+                # outcome as the empty plan above — nothing to approve — so the same events and no
+                # new event type, but its own message: that one says the system failed, this one
+                # says the prompt did. No diagnostics either; this turn worked exactly as asked.
+                # The planner's sentence names what was missing from THIS request, which is the half
+                # only it could write; the way out is the half written here.
+                refusal = None if arch else _refuses_to_plan(plan_md)
+                if refusal is not None:
+                    log.info("plan gate: no app in the request — %s", refusal or "no reason given")
+                    yield persist({"type": "error", "message": (
+                        (refusal + " " if refusal else "")
+                        + "Say what the app should show or let someone do, then send the request "
+                          "again — or switch to Implement to run it directly.")})
+                    yield persist({"type": "done", "ok": False, "decision": "no app described"})
                     return
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
@@ -8488,6 +9252,10 @@ class Orchestrator:
         `project` is empty for a Model API deployed here, and names the project otherwise. The rail
         renders it as a row's second line, so it has to be blank rather than "this project" — a label
         repeated on every row would say nothing while hiding the rows where it says something.
+
+        A partial listing shows its rows and says nothing about being partial (#163). The rail's
+        question is "what could I compose?", and the rows it found are a true answer to that; the
+        completeness flag exists for the one caller that reads absence as a fact, which is preflight.
         """
         return [
             {
@@ -8497,7 +9265,7 @@ class Orchestrator:
                 "status": m.status,
                 "project": m.project_name,
             }
-            for m in self._resources.list_model_apis(self._domino_project_id)
+            for m in self._resources.list_model_apis(self._domino_project_id).models
         ]
 
     def list_data_sources(self) -> list[dict]:
@@ -9228,7 +9996,10 @@ class Orchestrator:
         return {
             # `problems` outranks `unreachable`, because one listing failing does not unlearn what
             # another one answered. `error` still carries what could not be checked, so a caller is
-            # never told that a partial answer was the whole one.
+            # never told that a partial answer was the whole one — with the one exception ADR-0034
+            # chose deliberately: a Model APIs listing the fan-out cut short reports "ok" and no
+            # error, because its uncheckability is a standing state on a creator past the cap rather
+            # than news, and a sentence they read at every session open is noise (#163).
             "state": "problems" if problems else "unreachable" if errors else "ok",
             "error": " ".join(errors) or None,
             # `message` is the two halves joined and reads exactly as it always did — the Rail
@@ -9250,10 +10021,22 @@ class Orchestrator:
         same single request it made before this. A listing that fails maps to None rather than being
         omitted, which is the same answer to `stale_bindings` and a different one to the caller: the
         `error` it produces is how "we could not check" stays distinguishable from "nothing is wrong".
+
+        An INCOMPLETE Model APIs listing maps to None too, and to no error (#163). No new concept
+        either way: None already means "nothing was learned", which is exactly what a listing the
+        fan-out cut short is worth to a function that only ever outputs gone-ness. It costs nothing,
+        because a truncated listing was never authoritative for absence. And it stays silent because
+        ADR-0034 settled that this kind's uncheckability is a state and not a sentence — the one
+        failure that earns a line is the dependency itself refusing, which still raises and still
+        does.
         """
+        def model_apis() -> list | None:
+            listing = self._resources.list_model_apis(self._domino_project_id)
+            return listing.models if listing.complete else None
+
         fetchers = (
             (KIND_LLM_ALIAS, self._resources.list_llm_aliases),
-            (KIND_MODEL_API, lambda: self._resources.list_model_apis(self._domino_project_id)),
+            (KIND_MODEL_API, model_apis),
             (KIND_DATA_SOURCE, self._resources.list_data_sources),
         )
         listings: dict[str, list | None] = {}
@@ -9311,24 +10094,91 @@ class Orchestrator:
             raise LookupError(dataset_id)
         return asset
 
-    def list_asset_files(self, dataset_id: str) -> list[dict]:
+    @staticmethod
+    def _attach_seed(project: Project, dataset_id: str) -> dict | None:
+        """An attachment showing where this Dataset's files are actually served from.
+
+        The served root is `public/data/<slug>/` and `_slug` runs on the Dataset's NAME, so
+        rebuilding it from the name a Dataset has TODAY is wrong the moment one is renamed: the
+        files stay where they were put. An entry records both the served path and the path inside
+        the Dataset, so their difference is the root the files really have — which is what lets a
+        removal act on a Dataset that has since been unshared, with nothing to ask for a name.
+
+        Only entries that RECORD their Dataset can bridge it. `_rehydrate_attached`'s symlink-scan
+        fallback writes no `dataset_id`, so a workspace rebuilt entirely by that path has no seed,
+        and an id can only be turned into a slug by asking the platform for the name. That is a real
+        limit, not an oversight: the caller passes an id, and nothing on disk maps one to a slug.
+        """
+        return next((e for e in project.attached
+                     if e.get("dataset_id") == dataset_id and e.get("file")
+                     and e["path"].endswith("/" + e["file"])), None)
+
+    @staticmethod
+    def _folder_act_reason(asset: Asset, listing: FileListing) -> str:
+        """Why the folder act is unavailable for this Dataset, or "" when it is available.
+
+        One sentence, composed once. The Dataset tree draws it on the folder row before the click
+        and `attach_folder` refuses with it after one, so a row that offers the act and a route that
+        would turn it down cannot exist (ADR-0029).
+        """
+        if listing.truncated:
+            return brand.text(
+                "{assistantName} could not list all of this {dataset}, so it cannot tell which "
+                "folders in it are whole. Attach the files you need one at a time."
+            )
+        if not asset.mount_path:
+            # Not "cannot measure it": since #153 the sizes are known here. What is still missing is
+            # a way to fetch a folder — every file comes down separately through
+            # `_download_attachment`, with nothing to report progress through (ADR-0029).
+            return brand.text(
+                "This {dataset} isn't mounted in this workspace, so {assistantName} would have to "
+                "fetch a folder from it one file at a time, with no way to show progress. Attach "
+                "the files you need instead."
+            )
+        return ""
+
+    def list_asset_files(self, dataset_id: str) -> dict:
         """Files in a Dataset, each with its size and whether it's already attached. Size is 0 for
-        a Dataset with no mount here — the API listing names files without measuring them."""
+        a Dataset with no mount here — the API listing names files without measuring them.
+
+        `truncated` says the listing stopped at the provider's cap, so what came back is part of
+        the Dataset and no subtree in it can be proven whole (ADR-0029).
+
+        `folder_act` is whether a folder row in this tree may offer **Attach folder**, and the
+        reason when it may not. Read off the same listing rather than asked for separately, because
+        the two things that withhold the act — no mount, a cut tail — are both facts about it.
+
+        `attach_root` is where this Dataset's files are served from, `public/data/<slug>/`. Sent
+        rather than rebuilt on the client, because rebuilding it means a second copy of `_slug` that
+        is one edit away from disagreeing with this one — and the removal counts what sits under it,
+        including the entries a rehydrated workspace left with no `dataset_id` to be found by."""
         asset = self._find_asset(dataset_id)
         attached = {e["path"] for e in self.project(start_preview=False).attached}
+        listing = self._assets.list_files(asset)
         out = []
-        for f in self._assets.list_files(asset):
+        for f in listing.files:
             dest = _attach_dest(asset.name, f.path)
             out.append({"path": f.path, "size": f.size, "dest": dest, "attached": dest in attached})
-        return out
+        reason = self._folder_act_reason(asset, listing)
+        # The Dataset's CURRENT name, which is what every other door on this page keys on: `dest`
+        # above, `attach_file`, `attach_folder`'s `held` check, and `upload_file` all run `_slug`
+        # over it. Sending the root the files were put under instead — which `detach_folder` derives
+        # from the record — splits this answer in half after a rename: the rows would report
+        # `attached: false` against the new slug while the removal counted the old one, and the
+        # attach would then re-link every file under a second root, twice against the cap and twice
+        # on publish. A rename orphaning the old slug is one behaviour across the whole feature, and
+        # re-slugging the manifest is the change that fixes it, not a second root here.
+        return {"files": out, "truncated": listing.truncated,
+                "attach_root": _attach_root(asset.name),
+                "folder_act": {"available": not reason, "reason": reason}}
 
     def _download_attachment(self, asset: Asset, file_path: str, dest: Path, total: int,
                              prune_root: Path) -> int:
         """Fetch one file from a Dataset this container has no mount for. Returns its size.
 
-        The API listing carries no sizes, so the cap can only be enforced against real bytes: the
-        download lands beside its destination and is moved into place once it fits, and is deleted
-        when it does not. A partial or over-cap download never becomes an attachment — and never
+        The cap is enforced against the bytes that actually arrived, not the size the listing
+        quoted: the download lands beside its destination and is moved into place once it fits, and
+        is deleted when it does not. A partial or over-cap download never becomes an attachment — and never
         leaves the directories it needed behind either, so a refused attach is invisible in the
         tree the preview serves.
         """
@@ -9376,10 +10226,7 @@ class Orchestrator:
             dest = _safe_join(project.workspace.path, rel)
             if local_source is not None:
                 size = local_source.stat().st_size
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if dest.is_symlink() or dest.exists():
-                    dest.unlink()
-                dest.symlink_to(local_source)
+                _link_attachment(dest, local_source)
             elif not asset.mount_path:
                 size = self._download_attachment(
                     asset, file_path, dest, total,
@@ -9392,16 +10239,9 @@ class Orchestrator:
                 size = src.stat().st_size
                 if total + size > self._attach_max_bytes:
                     raise AttachTooLarge(self._attach_max_bytes, total, size)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if dest.is_symlink() or dest.exists():
-                    dest.unlink()
-                dest.symlink_to(src)
-            # source="dataset": the Dataset's own bytes are never Sage's to delete. Detach removes
-            # only what sits in the workspace — the symlink, or the copy downloaded in its place.
+                _link_attachment(dest, src)
             project.attached.append(
-                {"dataset_id": dataset_id, "dataset": asset.name, "file": file_path, "path": rel,
-                 "size": size, "source": "dataset", "dataset_rel_path": file_path}
-            )
+                _dataset_entry(dataset_id, asset.name, file_path, rel, size))
             self._ensure_gitignored(project.workspace.path, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
@@ -9410,6 +10250,127 @@ class Orchestrator:
         return {"attached": file_path, "dataset": asset.name, "path": rel, "size": size,
                 "descriptor": entry.get("descriptor"),
                 "status": project.status()}
+
+    def attach_folder(self, dataset_id: str, folder: str) -> dict:
+        """Attach every file below one Dataset folder, at any depth including the root (ADR-0029).
+
+        The folder is the unit of the ACT and the file stays the unit of the RECORD: this writes the
+        same `.sage/attachments.json` entry per file that `attach_file` writes for one, so rehydrate,
+        detach, leak detection and the commit backstop are all untouched and none of them learns a
+        second entry shape.
+
+        No partial state, in either direction. The subtree is measured first and the whole act is
+        refused when it crosses the cap — a part-attached folder would leave the Built App with a
+        data directory nobody chose — and a link that cannot be made unwinds the ones that were.
+
+        One write per record, not one per file. N single attaches rewrote the whole manifest N times
+        (`_descriptor` used to persist its own cache), so the set is computed first and then written
+        once: one `_ensure_gitignored`, one `_write_agents_data_block`, one `write_attachments`, and
+        the one `_rebaseline_turn` the block already makes.
+
+        Mounted Datasets only, and only while the listing is whole — see `_folder_act_reason`.
+        Already-attached files are passed over rather than counted twice, so the act is idempotent
+        and `attached` reports what it actually added.
+        """
+        project = self.project()
+        asset = self._find_asset(dataset_id)
+        listing = self._assets.list_files(asset)
+        reason = self._folder_act_reason(asset, listing)
+        if reason:
+            raise FolderActUnavailable(reason)
+        prefix = _folder_prefix(folder)
+        below = [f for f in listing.files if f.path.startswith(prefix)]
+        if not below:
+            raise FileNotFoundError(folder)
+        held = {e["path"] for e in project.attached}
+        wanted = [f for f in below if _attach_dest(asset.name, f.path) not in held]
+        if not wanted:
+            # Everything below it is already carried. Nothing to write, and nothing to re-baseline
+            # a running turn over either — the same no-op `attach_file` makes for one file.
+            return {"attached": 0, "bytes": 0, "dataset": asset.name,
+                    "folder": prefix.rstrip("/"), "status": project.status()}
+        total = sum(e["size"] for e in project.attached)
+        incoming = sum(f.size for f in wanted)
+        if total + incoming > self._attach_max_bytes:
+            raise AttachTooLarge(self._attach_max_bytes, total, incoming)
+        data_root = project.workspace.path / "public" / "data"
+        # Not `or ""`: `_folder_act_reason` has already refused an unmounted Dataset, and a fallback
+        # here would resolve to the working directory and link against it rather than fail.
+        mount = Path(asset.mount_path)
+        # Nothing real is overwritten, and it is settled before the first link. A path holding a
+        # FILE rather than a symlink is something this act did not put there — and destroying it
+        # part way through an act that then refuses would be the partial state in its worst form,
+        # since the bytes are the one thing an unwind cannot give back.
+        needed: set[Path] = set()
+        for f in wanted:
+            rel = _attach_dest(asset.name, f.path)
+            standing = _safe_join(project.workspace.path, rel)
+            if standing.exists() and not standing.is_symlink():
+                # A directory trips this as readily as a file, and telling someone to move "a file"
+                # they will find is a folder describes neither what is there nor what to do.
+                raise AttachWouldClobber(rel)
+            needed.add(standing.parent)
+        # And the DIRECTORIES those links need. A real file standing at `public/data/<slug>/raw`
+        # is not any leaf path, so it slipped the check above and surfaced as a `NotADirectoryError`
+        # out of `mkdir` — a generic 500 in place of the refusal that names the path and says what
+        # to do about it. Walked per unique parent rather than per file, so a folder of 200 in one
+        # directory costs one walk.
+        # RESOLVED, on both sides. `_safe_join` builds on `root.resolve()`, so `standing` is
+        # resolved and `project.workspace.path` may not be — and where any component of it is a
+        # symlink the two never compare equal, the walk runs past the workspace to `/`, and the
+        # `relative_to` below raises `ValueError`, which the route answers with "invalid folder".
+        stop = project.workspace.path.resolve()
+        for parent in needed:
+            for ancestor in (parent, *parent.parents):
+                if ancestor == stop:
+                    break
+                if ancestor.exists() and not ancestor.is_dir():
+                    raise AttachWouldClobber(ancestor.relative_to(stop).as_posix())
+        made: list[Path] = []
+        entries: list[dict] = []
+        described = False
+        try:
+            for f in wanted:
+                rel = _attach_dest(asset.name, f.path)
+                src = _safe_join(mount, f.path)
+                if not src.is_file():
+                    raise AttachSourceMissing(f.path)
+                dest = _safe_join(project.workspace.path, rel)
+                _link_attachment(dest, src)
+                made.append(dest)
+                entries.append(_dataset_entry(dataset_id, asset.name, f.path, rel, f.size))
+            # The record is inside the same try the links are. A write that failed after `extend`
+            # used to leave the files in the preview and answer "Nothing was attached" — the lie
+            # detach cannot unwind (the bytes are gone) and attach still can. The sentence the
+            # route already carries stays true because the tree goes back to empty with it.
+            project.attached.extend(entries)
+            self._ensure_gitignored(project.workspace.path, "public/data/")
+            self._write_agents_data_block(project)
+            described = True
+            project.workspace.write_attachments(project.attached)
+        except Exception:
+            # Nothing attached, and nothing left in the tree the preview serves either — including
+            # the directories the links needed, which is what `_prune_empty_dirs` is for. Every link
+            # this made stood on nothing, because the pre-flight above refused over anything real.
+            gone = {e["path"] for e in entries}
+            project.attached[:] = [e for e in project.attached if e["path"] not in gone]
+            for link in reversed(made):
+                try:
+                    if link.is_symlink() or link.exists():
+                        link.unlink()
+                    _prune_empty_dirs(link.parent, data_root)
+                except OSError:
+                    log.exception("attach_folder: could not unwind %s", link)
+            if described:
+                # AGENTS.md was rewritten for files that are about to not exist. Best-effort: the
+                # raise below is the one the person sees, and a second failure here must not hide it.
+                try:
+                    self._write_agents_data_block(project)
+                except OSError:
+                    log.exception("attach_folder: could not restore AGENTS.md after unwind")
+            raise
+        return {"attached": len(entries), "bytes": incoming, "dataset": asset.name,
+                "folder": prefix.rstrip("/"), "status": project.status()}
 
     def fetch_dataset_file_for_chat(self, dataset_id: str, file_path: str) -> dict:
         """One Dataset file, put where a Chat turn can read it and nowhere else.
@@ -9461,12 +10422,23 @@ class Orchestrator:
         usage = self._data_usage(project, entry) if entry else {"refs": [], "copies": []}
         name = PurePosix(path).name
         removed: list[str] = []
+        kept: list[str] = []
         for rel in usage["copies"]:
-            if PurePosix(rel).name == name:  # the raw file copied in — leaked data, no app logic of its own
-                cp = _safe_join(project.workspace.path, rel)
-                if cp.is_symlink() or cp.is_file():
-                    cp.unlink()
-                    removed.append(rel)
+            # The raw file copied in — leaked data, with no app logic of its own. The basename picks
+            # the candidate and `_is_leaked_copy` reads the bytes, because a source file that merely
+            # shares a name with a Dataset file is the app's own and deleting it breaks the build.
+            if PurePosix(rel).name != name:
+                continue
+            if not self._is_leaked_copy(project.workspace, entry, rel):
+                # Left, because it could not be proven. Reported for the same reason the folder act
+                # reports it: the entry is about to leave the record, so the commit backstop stops
+                # covering this file and it would otherwise reach a save unannounced.
+                kept.append(rel)
+                continue
+            cp = _safe_join(project.workspace.path, rel)
+            if cp.is_symlink() or cp.is_file():
+                cp.unlink()
+                removed.append(rel)
         dest = _safe_join(project.workspace.path, path)
         if dest.is_symlink() or dest.exists():
             dest.unlink()
@@ -9475,7 +10447,199 @@ class Orchestrator:
         self._write_agents_data_block(project)
         project.workspace.write_attachments(project.attached)
         still_used = sorted(set(usage["refs"] + [r for r in usage["copies"] if PurePosix(r).name != name]))
-        return {"detached": path, "removed_copies": removed, "refs": still_used, "status": project.status()}
+        return {"detached": path, "removed_copies": removed,
+                "kept_copies": sorted(set(kept) - set(removed)), "refs": still_used,
+                "status": project.status()}
+
+    def detach_folder(self, dataset_id: str, folder: str) -> dict:
+        """Remove every file the app carries below one Dataset folder, at any depth including the
+        root — the removal half of the folder act (ADR-0029), and the mirror of `attach_folder`.
+
+        No partial state, in either direction. `attach_folder` measures the subtree first and refuses
+        the whole act over the cap; this reads the app's own source first and refuses the whole act
+        while any file in the set is still used, naming those files. A folder of 200 where 3 are
+        referenced detaches none of them: detaching 197 would leave the app fetching data that is no
+        longer there, and the person would have been told nothing they could act on.
+
+        Still used means what `detach_file` already reports as `refs` — source that fetches the file,
+        or source with its bytes inlined. A same-named RAW copy is not app logic, so it is deleted
+        here exactly as `detach_file` deletes it: once the entry leaves `project.attached` the commit
+        backstop (`_leaked_copy_paths`) stops covering it, and the bytes would ride into the next
+        save. A leak is a thing to clean up, never a reason to refuse.
+
+        ONE reference scan over the set, not one per file. `_scan_app_sources` walks the whole app
+        tree and reads every code file into memory, which is precisely the 200-times cost this ADR
+        exists to remove, so it is hoisted and handed to `_data_usage`.
+
+        Unlike the attach half this reads NOTHING from the Dataset's contents — not its listing and
+        not its mount. Bulk attach is offered only where the subtree can be measured, because the cap
+        has to be pre-flighted and the confirmation has to show real numbers; every path and size a
+        removal acts on is already in the app's own manifest. So a Dataset that has lost its mount,
+        or whose listing is now truncated, does not strand what it already gave.
+
+        A Dataset UNSHARED from the project is a weaker promise, and only through this route: the
+        `_attach_seed` fallback below serves it, but the Workbench cannot offer the act, because the
+        tree it is drawn on is built from `list_asset_files` and that resolves the Dataset first.
+        The Dataset's own bytes are never touched — this takes the declaration and the app's copy,
+        which is what `detach_file` takes for one file (ADR-0011). Deleting an Upload's bytes is
+        `delete_file`'s act and stays there.
+
+        There is no unwind, and none that could be written: `attach_folder` has one because a link it
+        made can be taken back, while bytes downloaded in place of a link are gone once unlinked. So
+        what this half guarantees instead is that the RECORD follows the DISK — an unlink that fails
+        part way still leaves the manifest describing exactly what the preview still serves, rather
+        than files that are no longer there.
+        """
+        project = self.project()
+        label = _folder_prefix(folder).rstrip("/")
+        # The served root comes from the RECORD, not from the Dataset. Asking the Dataset for its
+        # name to rebuild the slug would make a removal depend on the Dataset still being shared
+        # with this project — and stranding the files of a Dataset that went away is exactly what
+        # this half exists not to do. An entry carries both halves of the path, so their difference
+        # is the root, and `_slug` stays in one place.
+        # The Dataset's CURRENT name first, because that is the root the tree drew its offer
+        # against — `list_asset_files` and `attach_folder` both key on it. Taking the record's root
+        # instead makes this act on a different set than the one the button was drawn over: after a
+        # rename and a re-attach there are entries under two slugs, and `next(...)` would find the
+        # old one while the row counted the new.
+        #
+        # The record is the FALLBACK, and it is what makes a Dataset that has been unshared — or a
+        # platform that is not answering — still give back what it already gave. Only entries that
+        # record their Dataset can bridge that; see `_attach_seed`.
+        try:
+            asset = self._find_asset(dataset_id)
+            root, source = _attach_root(asset.name), asset.name
+        except (LookupError, ResourceUnavailable):
+            seed = self._attach_seed(project, dataset_id)
+            if seed is None:
+                raise
+            # `.get`, because `_attach_seed` guarantees `path` and `file` and nothing else. A
+            # `KeyError` here is a `LookupError`, which the route answers with "{dataset} not
+            # found" — the one reply that says nothing happened.
+            root, source = seed["path"][: -len(seed["file"])], seed.get("dataset", "")
+        prefix = root + _folder_prefix(folder)
+        # Path prefix AND the Dataset, because `_slug` collapses punctuation: two Datasets named
+        # `my data` and `my-data` share a slug and land in one tree, and a removal that took the
+        # prefix alone would unlink the other one's files and credit this Dataset for them. An entry
+        # with NO `dataset_id` is rehydrated (`detach_file` is keyed on the workspace path for
+        # exactly that reason) — it records no Dataset to be attributed to, so the path is all there
+        # is to go on and it goes with the folder it sits in.
+        doomed = [e for e in project.attached if e["path"].startswith(prefix)
+                  and e.get("dataset_id") in (dataset_id, None, "")]
+        if not doomed:
+            # The end state asked for already holds — the same no-op the attach half makes for a
+            # folder the app already carries whole. Nothing to write, and nothing to re-baseline a
+            # running turn over.
+            return {"detached": 0, "bytes": 0, "dataset": source, "folder": label,
+                    "removed_copies": [], "kept_copies": [], "status": project.status()}
+        sources = self._scan_app_sources(project.workspace)
+        # The app fetching the FOLDER, rather than any one file in it by name. `_data_usage` looks
+        # for a literal served path per file, and the managed `AGENTS.md` block this same act writes
+        # teaches the agent to build one from a pattern — `fetch \`data/<slug>/<folder>/<subpath>\``
+        # — so in the shape Sage asks for, no individual file's path appears anywhere and the scan
+        # below would find nothing to refuse over. The prefix is what a template is built on, so it
+        # is what a template leaves behind.
+        served_prefix = prefix.removeprefix("public/")
+        served_root = root.removeprefix("public/")
+        templated = sorted(rel for rel, text in sources
+                           if text is not None and _fetches_under(text, served_root, served_prefix))
+        blocked: list[str] = []
+        refs: set[str] = set()
+        inlined: set[str] = set()
+        leaked: list[tuple[dict, list[str]]] = []
+        kept: list[str] = []
+        for entry in doomed:
+            usage = self._data_usage(project, entry, sources)
+            name = PurePosix(entry["path"]).name
+            copied_in = [c for c in usage["copies"] if PurePosix(c).name != name]
+            # `fetches`, not `refs`: a refusal has to name a real dependency. `refs` also fires on
+            # the bare basename appearing anywhere in any source, which for one file is a warning
+            # worth erring on and for a folder is a permanent block on a common filename.
+            if usage["fetches"] or copied_in:
+                blocked.append(entry["path"])
+                refs.update(usage["fetches"])
+                inlined.update(copied_in)
+            same_name = [c for c in usage["copies"] if PurePosix(c).name == name]
+            proven = [c for c in same_name if self._is_leaked_copy(project.workspace, entry, c)]
+            # The other half of the trade `_is_leaked_copy` makes. What could not be proven stays,
+            # and once the entry leaves the record the commit backstop stops covering it — so it is
+            # named, rather than left for a person to find in a diff they did not expect.
+            kept.extend(c for c in same_name if c not in proven)
+            leaked.append((entry, proven))
+        if blocked:
+            # Files first, because ADR-0029 asks a refusal to name them and a literal path says
+            # which. The prefix below also matches a literal one, so checking it first would answer
+            # "the folder" for a case that can say "these three".
+            raise DataReferenced(label, sorted(refs), sorted(inlined), files=sorted(blocked))
+        if templated:
+            # Named as the FOLDER, because that is what the source asked for. There is no file to
+            # name: one line of code is the dependency, and it stands for all of them.
+            raise DataReferenced(label, templated, [], files=[])
+        data_root = project.workspace.path / "public" / "data"
+        removed: list[str] = []
+        done: list[dict] = []
+        try:
+            for entry, raw_copies in leaked:
+                # The attachment FIRST, then the copies it justifies removing. The other way round,
+                # a `dest.unlink()` that failed on the first entry left `done` empty and `removed`
+                # full — a refusal reading "Nothing was removed" that then listed the files it had
+                # just deleted, with the manifest still claiming to carry them.
+                dest = _safe_join(project.workspace.path, entry["path"])
+                if dest.is_symlink() or dest.exists():
+                    dest.unlink()
+                # Recorded the moment the link is gone, and BEFORE the prune. A directory left
+                # standing is cosmetic; a manifest entry for a link that no longer exists is the
+                # dangling record this whole block is here to prevent.
+                done.append(entry)
+                for rel in raw_copies:
+                    copy = _safe_join(project.workspace.path, rel)
+                    if copy.is_symlink() or copy.is_file():
+                        copy.unlink()
+                        removed.append(rel)
+                _prune_empty_dirs(dest.parent, data_root)
+        except (OSError, ValueError) as e:
+            # Re-raised carrying the count, so the route can say whether anything actually went
+            # rather than assume it did — the first entry failing is as likely as the hundredth.
+            # The `finally` still runs, and still commits what did.
+            #
+            # `ValueError` too: `_safe_join` raises it for a recorded path that resolves outside the
+            # workspace. Left to escape it would reach the route's "invalid folder" 400, describing
+            # a partly finished removal as a malformed request.
+            raise DetachStopped(len(done), sorted(set(removed)),
+                                sorted(set(kept) - set(removed)), e) from e
+        finally:
+            # The RECORD follows the disk, whatever happened. There is no unwind to write — the
+            # bytes an unmounted Dataset's attachment was downloaded into are gone once unlinked —
+            # so the guarantee this half can keep is that the manifest never describes a file the
+            # preview no longer serves. A link that will not unlink (a read-only parent, a mount
+            # that went away) therefore raises with the record already matching what is on disk,
+            # and `_write_agents_data_block` describes exactly that. Still one write per act: this
+            # block runs once, on the way out either way.
+            if done:
+                gone = {e["path"] for e in done}
+                project.attached[:] = [e for e in project.attached if e["path"] not in gone]
+                try:
+                    self._write_agents_data_block(project)
+                    project.workspace.write_attachments(project.attached)
+                except (OSError, ValueError) as e:
+                    # As one kind, and carrying what happened. Left to escape, a `ValueError` from
+                    # `_safe_join` reached the route's "invalid folder" 400 — a malformed-request
+                    # answer for a removal that had already unlinked files — and an `OSError` hit a
+                    # bare handler that could not tell this from a failure before anything moved.
+                    raise DetachStopped(len(done), sorted(set(removed)),
+                                        sorted(set(kept) - set(removed)), e,
+                                        recorded=False) from e
+        # `.get`, because this runs AFTER the removal has committed: a record written before sizes
+        # were kept would otherwise raise `KeyError` — a `LookupError`, which the route answers with
+        # "{dataset} not found", hiding a removal that actually happened.
+        return {"detached": len(done), "bytes": sum(e.get("size", 0) for e in done),
+                "dataset": source, "folder": label,
+                # Two attachments can share a basename and so claim one leaked copy between them.
+                # Minus what went: two attachments can share a basename, and one may prove the
+                # copy while the other cannot. Reported in both lists it would tell someone to go
+                # and check a file that is no longer there.
+                "removed_copies": sorted(set(removed)), "kept_copies": sorted(set(kept) - set(removed)),
+                "status": project.status()}
 
     def upload_file(self, filename: str, data: bytes, dataset_id: str | None = None) -> dict:
         """Write an uploaded file into a writable dataset mount (persisted, and outside git), then
@@ -9705,6 +10869,40 @@ class Orchestrator:
                 out.append((fp.relative_to(root).as_posix(), text))
         return out
 
+    def _is_leaked_copy(self, app: Workspace, entry: dict, rel: str) -> bool:
+        """Whether the app-tree file at `rel` is the attachment's DATA copied in, rather than the
+        app's own source that happens to share its name.
+
+        `_data_usage` calls any app file with the attachment's BASENAME a copy and reads neither —
+        cheap, and right for what it is for, which is spotting a CSV the agent dropped into `src/`
+        without scanning megabytes. It is not enough to DELETE on: a Dataset holding a file named
+        `App.tsx` would take `src/App.tsx` with it, and the app would stop building over a name
+        collision nobody chose.
+
+        The proof is the BYTES, and nothing else is proof. Not the extension either: `_SCAN_EXTS` is
+        eleven web-source extensions, so "outside it, therefore data" sweeps in every `.svg`, `.png`,
+        `.md` and `.txt` an app legitimately owns — `src/assets/logo.svg` would go with a Dataset
+        that happens to hold a `logo.svg`.
+
+        Unprovable means KEEP, and that direction is chosen. The cost of keeping is that a copy this
+        act would have removed stays, and once the entry leaves `project.attached` the commit
+        backstop (`_leaked_copy_paths`) stops covering it, so those bytes can reach git. The cost of
+        deleting is a file the person wrote, gone, with no undo and a build that stops. A leak is
+        visible in the diff of the next save and can be taken back out; the deletion cannot. So the
+        two cases that cannot be proven — a sample rather than a whole copy, and a dangling symlink
+        after the Dataset lost its mount — leave the file alone.
+        """
+        try:
+            src = app.path / entry["path"]
+            copy = _safe_join(app.path, rel)
+            if not (src.is_file() and copy.is_file()):
+                return False                # nothing to compare against, so nothing is proven
+            if src.stat().st_size != copy.stat().st_size:
+                return False
+            return filecmp.cmp(str(src), str(copy), shallow=False)
+        except (OSError, ValueError):
+            return False
+
     def _data_usage(self, project: Project, entry: dict,
                     sources: list[tuple[str, str | None]] | None = None,
                     app: Workspace | None = None) -> dict:
@@ -9724,21 +10922,36 @@ class Orchestrator:
         served = entry["path"][len("public/"):]        # data/<slug>/uploads/<name>
         name = PurePosix(entry["path"]).name
         refs: list[str] = []
+        # The subset of `refs` that named the SERVED PATH rather than just the basename. `refs`
+        # errs towards "used" and always has, which is right where the answer only warns; a folder
+        # act REFUSES on it, and a Dataset holding `index.html` or `data.json` would then be
+        # permanently un-removable because some unrelated import mentions that token.
+        fetches: list[str] = []
         copies: list[str] = []
-        raw: bytes | None = None
+        # A sentinel, not `None`: `None` is also what `_attachment_bytes` returns for a dangling
+        # symlink — the Dataset that lost its mount, which this half exists to keep serving — and
+        # the two read the same, so the read was retried for every source file, for every entry.
+        unread = object()
+        raw: bytes | None | object = unread
+        body: str | None = None
         for rel, text in sources:
             if PurePosix(rel).name == name:            # a file copied under the app tree (any type)
                 copies.append(rel)
                 continue
             if text is None:                            # non-code file, nothing more to inspect
                 continue
-            if raw is None:
+            if raw is unread:
                 raw = self._attachment_bytes(app, entry)
-            if raw is not None and _is_inlined_copy(raw, text):
+                # Decoded once for the whole scan, never once per source file below.
+                body = raw.decode("utf-8", "ignore") if raw is not None else None
+            if body is not None and _is_inlined_copy(body, len(raw), text):
                 copies.append(rel)                      # data bytes inlined into source (full or sample)
-            elif served in text or name in text:
+            elif served in text:
                 refs.append(rel)
-        return {"refs": refs, "copies": copies}
+                fetches.append(rel)          # the served path itself: a real runtime dependency
+            elif name in text:
+                refs.append(rel)             # the bare name, which errs towards "used" on purpose
+        return {"refs": refs, "fetches": fetches, "copies": copies}
 
     def _resource_usage(self, workspace: Workspace, binding: Binding,
                         sources: list[tuple[str, str | None]] | None = None) -> list[str]:
@@ -9926,9 +11139,88 @@ class Orchestrator:
         to, and the path is the same in every app while pointing at a file in only one."""
         try:
             p = app.path / entry["path"]
-            return p.read_bytes() if p.is_file() else None
+            if not p.is_file():
+                return None
+            # Capped, because the only reader compares against `_COPY_SCAN_MAX` and anything over it
+            # is excluded from the verbatim check anyway. Reading one byte PAST the cap keeps that
+            # comparison honest: a file that fills the buffer is bigger than the cap and is meant to
+            # fail the guard. Uncapped, a folder act near the 500 MB attach ceiling pulled every
+            # attachment fully into memory, one after another, inside one request.
+            with p.open("rb") as fh:
+                return fh.read(_COPY_SCAN_MAX + 1)
         except OSError:
             return None
+
+    def _attached_file_line(self, project: Project, entry: dict) -> str:
+        """One attached file, told to the agent. One-line shape only: this block is re-read every
+        turn, so the full descriptor stays out of it — that one is inlined by `send_prompt` for
+        @mentioned files alone."""
+        path = entry["path"]
+        return (f"- disk `{path}` — {self._descriptor(project, entry)['summary']} "
+                f"— fetch `{path.removeprefix('public/')}` (relative to base) "
+                f"— from dataset **{entry['dataset']}**")
+
+    @staticmethod
+    def _shared_shape(descriptors: list[dict]) -> str:
+        """The shape a folder's files share, for the line that stands in for all of them.
+
+        A folder of 200 CSVs sharing one schema is described better once than 200 times, so an
+        identical summary is simply said once. When they differ, the KINDS are named instead of the
+        first file's summary standing in for files it does not describe."""
+        summaries = {d["summary"] for d in descriptors}
+        if len(summaries) == 1:
+            return summaries.pop()
+        kinds = sorted({d["kind"] for d in descriptors})
+        return f"{', '.join(kinds[:-1])} and {kinds[-1]} files" if len(kinds) > 1 \
+            else f"{kinds[0]} files"
+
+    def _attached_data_lines(self, project: Project) -> list[str]:
+        """What the managed block says about the attached files: one line each, or one line per
+        folder once there are enough of them to matter (ADR-0029).
+
+        The block is re-read every turn, so above `FOLDER_COLLAPSE_THRESHOLD` the prompt would grow
+        with the file count forever — attachment-driven context bloat has already wedged OpenCode
+        mid-build once. The collapse keeps the block's whole reason for existing, which is why it is
+        safe: it is prescriptive because agents otherwise guess a flat `/data/<name>`, hit the SPA
+        fallback instead of the CSV, and "fix" it by copying the file into `src/`. A served-path
+        PATTERN teaches that as well as an enumeration does.
+
+        A folder holding one file keeps its file line: naming the file describes it exactly as well
+        as summarising it would, and better.
+
+        What it saves is PROMPT bytes, per turn, forever — not describe work. `_shared_shape` needs a
+        descriptor for every entry in a group, so `describe()` still runs once per attached file. The
+        descriptor is cached into the entry, so that cost is paid once per file rather than once per
+        turn; but it is paid where the act is, which for `attach_folder` means inside one request.
+        """
+        if len(project.attached) <= FOLDER_COLLAPSE_THRESHOLD:
+            return [self._attached_file_line(project, e) for e in project.attached]
+        folders = _by_folder(project.attached)
+        lines: list[str] = []
+        for folder, entries in folders.items():
+            if len(entries) == 1:
+                lines.append(self._attached_file_line(project, entries[0]))
+                continue
+            shape = self._shared_shape([self._descriptor(project, e) for e in entries])
+            # Nearly always one name: `_by_folder` never rolls past `public/data/<slug>`. Nearly,
+            # because `_slug` collapses punctuation, so two Datasets named `my data` and `my-data`
+            # share a slug and land in one tree — and naming only the first would credit one
+            # Dataset for the other's files.
+            sources = sorted({e["dataset"] for e in entries})
+            # `<name>` only when the files really sit in this folder. `_by_folder` rolls the deepest
+            # level up into its parent, so a group's key can be an ANCESTOR of where its files are —
+            # a Dataset partitioned to the day rolls `raw/2026/01/part.csv` up to `raw/2026`, and a
+            # line promising `raw/2026/<name>` names a path that does not exist. The agent would
+            # follow it, get the SPA fallback instead of the CSV, and "fix" it by copying the file
+            # into `src/` — the exact leak this block exists to prevent.
+            leaf = "<name>" if all(PurePosix(e["path"]).parent.as_posix() == folder
+                                   for e in entries) else "<subpath>"
+            lines.append(
+                f"- {len(entries)} files in `{folder}` — {shape} "
+                f"— fetch `{folder.removeprefix('public/')}/{leaf}` (relative to base) "
+                f"— from dataset **{'**, **'.join(sources)}**"
+            )
+        return lines
 
     _AGENTS_BEGIN = "<!-- sage:attached-data:begin -->"
     _AGENTS_END = "<!-- sage:attached-data:end -->"
@@ -9968,14 +11260,7 @@ class Orchestrator:
                  "skips them and returns no matches even when the value IS present. A search that "
                  "finds nothing here proves nothing — read the file instead."), "",
             ]
-            for e in project.attached:
-                path = e["path"]
-                served = path.removeprefix("public/")
-                # One-line shape only. This block is re-read every turn, so the full descriptor stays
-                # out of it — that one is inlined by send_prompt for @mentioned files alone.
-                shape = self._descriptor(project, e)["summary"]
-                lines.append(f"- disk `{path}` — {shape} — fetch `{served}` (relative to base) "
-                             f"— from dataset **{e['dataset']}**")
+            lines += self._attached_data_lines(project)
             block = f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}"
         else:
             block = ""

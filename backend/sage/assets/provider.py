@@ -22,7 +22,10 @@ from ..resources.provider import ResourceUnavailable
 # /domino/datasets/local; git-based projects use /mnt/data (local) and /mnt/imported/data (shared).
 # DOMINO_DATASET_MOUNT_PATH / DOMINO_MOUNT_PATHS override (os.pathsep- or comma-separated).
 DEFAULT_DATASET_MOUNT_ROOTS = ("/domino/datasets/local", "/mnt/data", "/mnt/imported/data")
-# Backstop so a pathological dataset (millions of files) can't wedge a file listing.
+# How many files a listing returns, and how far it will stat to build one. It does NOT bound the
+# directory traversal: `walk_files` sorts the whole mount before taking a prefix, because the
+# prefix has to be the sorted one (ADR-0029) and nothing can know which names sort first without
+# seeing all of them. A pathological mount still costs one full traversal per listing.
 _MAX_FILES = 5000
 
 
@@ -65,28 +68,44 @@ def dataset_unique_name(asset: Asset) -> str:
 @dataclass(frozen=True)
 class DatasetFile:
     path: str  # POSIX path relative to the dataset's mount root (e.g. "raw/train.csv")
-    size: int  # bytes, or 0 when only the API listing named this file (it carries no sizes)
+    size: int  # bytes, real on both paths: stat() when mounted, the API rows when not
 
 
-def walk_files(root: Path) -> list[DatasetFile]:
+@dataclass(frozen=True)
+class FileListing:
+    """A Dataset's files, and whether the listing stopped short of the end of them.
+
+    The mounted walk is sorted, so its cap cuts the tail: early folders are whole, late ones are
+    cut or missing, and nothing downstream can tell which is which (ADR-0029). `truncated` is what
+    lets a caller refuse an act it cannot prove the scope of, rather than act on a silent partial
+    answer.
+    """
+
+    files: list[DatasetFile]
+    truncated: bool = False
+
+
+def walk_files(root: Path) -> FileListing:
     """List regular files under a dataset mount, relative + sized. Skips dotfiles and caps count."""
     out: list[DatasetFile] = []
     for p in sorted(root.rglob("*")):
-        if len(out) >= _MAX_FILES:
-            break
         if not p.is_file() or any(part.startswith(".") for part in p.relative_to(root).parts):
             continue
         try:
             size = p.stat().st_size
         except OSError:
             continue
+        # Measured after the filters, so the cap is reported cut only by a file it would have
+        # listed. A `.ipynb_checkpoints` directory sorting last is not a lost tail.
+        if len(out) >= _MAX_FILES:
+            return FileListing(out, truncated=True)
         out.append(DatasetFile(p.relative_to(root).as_posix(), size))
-    return out
+    return FileListing(out)
 
 
 class AssetProvider(Protocol):
     def list_datasets(self, project_id: str | None) -> list[Asset]: ...
-    def list_files(self, asset: Asset) -> list[DatasetFile]: ...
+    def list_files(self, asset: Asset) -> FileListing: ...
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int: ...
 
 
@@ -99,8 +118,8 @@ class UnconfiguredAssetProvider:
             "configured to reach one, so it cannot tell which {datasetPlural} you have."
         ))
 
-    def list_files(self, asset: Asset) -> list[DatasetFile]:
-        return []
+    def list_files(self, asset: Asset) -> FileListing:
+        return FileListing([])
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         raise ResourceUnavailable(brand.text(
@@ -145,8 +164,8 @@ class FakeAssetProvider:
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         return list(self.assets)
 
-    def list_files(self, asset: Asset) -> list[DatasetFile]:
-        return walk_files(Path(asset.mount_path)) if asset.mount_path else []
+    def list_files(self, asset: Asset) -> FileListing:
+        return walk_files(Path(asset.mount_path)) if asset.mount_path else FileListing([])
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         import shutil
@@ -196,7 +215,8 @@ class DominoAssetProvider:
     them can be read: `mount_path` is set only when this container happens to have the files on
     disk, and that is a fast path, not a gate. A mount covers one project and is fixed when the
     execution starts, so most Datasets a person can read — including every Dataset shared with them
-    from another project — are never mounted here. Those are read through `domino_data` instead.
+    from another project — are never mounted here. Those are listed straight off the datasetrw API
+    and read a file at a time through `domino_data`.
     """
 
     _PAGE = 100
@@ -315,17 +335,21 @@ class DominoAssetProvider:
                 break
         return found
 
-    def list_files(self, asset: Asset) -> list[DatasetFile]:
-        """The files in a Dataset: from the mount when this container has one, from the Domino data
-        library when it does not.
+    def _files_api_json(self, path: str, params: dict[str, Any], asset: Asset) -> Any:
+        """GET one datasetrw endpoint about a Dataset's files, or refuse naming that Dataset.
 
-        The API listing carries names but no sizes, so those files report 0 — "not known from here",
-        not "empty". Nothing renders a size; the attach cap measures the real bytes on download.
+        The prefix is `/v4`, not the `/api` that `list_datasets` uses: `swagger.json` declares
+        `"servers": [{"url": "/v4"}]`, and `/api/datasetrw/snapshots/{id}` answers 404 where
+        `/v4/...` answers 200. The provider calling two different prefixes is correct, not a
+        tidy-up waiting to happen.
         """
-        if asset.mount_path:
-            return walk_files(Path(asset.mount_path))
+        import httpx
+
         try:
-            names = [getattr(f, "name", "") for f in self._sdk_dataset(asset).list_files()]
+            headers = {"Authorization": f"Bearer {self._token_provider()}"}
+            r = httpx.get(f"{self._api_host}/v4/{path}", headers=headers, params=params,
+                          timeout=self._timeout_s)
+            data = r.json() if r.status_code < 400 else None
         except ResourceUnavailable:
             raise
         except Exception as e:
@@ -335,7 +359,67 @@ class DominoAssetProvider:
                     name=asset.name, err=type(e).__name__,
                 )
             ) from e
-        return [DatasetFile(n, 0) for n in names if n][:_MAX_FILES]
+        if r.status_code >= 400:
+            raise ResourceUnavailable(
+                brand.text(
+                    "{platformName} answered {code} for the files in {dataset} {name}.",
+                    name=asset.name, code=r.status_code,
+                )
+            )
+        return data
+
+    def _latest_snapshot_id(self, asset: Asset) -> str | None:
+        """The snapshot whose files a listing should describe: the highest Active version.
+
+        `Asset.tag_snapshots` cannot answer this — it holds a snapshot id only for a Dataset
+        somebody tagged, and an untagged one is the common case. `snapshots/{datasetId}` answers for
+        both: a bare JSON array of every snapshot, no envelope and no paging. `None` means the
+        Dataset has nothing committed yet, which is an empty listing rather than a failure.
+        """
+        rows = self._files_api_json(f"datasetrw/snapshots/{asset.id}", {}, asset) or []
+        active = [s for s in rows if s.get("lifecycleStatus") == "Active"]
+        if not active:
+            return None
+        return str(max(active, key=lambda s: s.get("version") or 0).get("id") or "") or None
+
+    def list_files(self, asset: Asset) -> FileListing:
+        """The files in a Dataset, sized: from the mount when this container has one, from the
+        datasetrw API when it does not.
+
+        The API path used to go through `domino_data`, whose listing endpoint returns names and
+        nothing else, so every file in an unmounted Dataset reported 0 bytes. `files/recursive`
+        carries the sizes the platform already knows, and it returns the whole tree in one response
+        — no `page_size`, no continuation token — so the cap is applied here and `truncated` is
+        measured against the real count instead of inferred from a full page.
+        """
+        if asset.mount_path:
+            return walk_files(Path(asset.mount_path))
+        snapshot_id = self._latest_snapshot_id(asset)
+        if not snapshot_id:
+            return FileListing([])
+        # `path` is a required query parameter and must be EMPTY for the root: `?path=/` answers
+        # 400 "Invalid path input", `?path=` answers 200.
+        body = self._files_api_json(
+            f"datasetrw/snapshot/{snapshot_id}/files/recursive", {"path": ""}, asset)
+        files: list[DatasetFile] = []
+        for row in (body or {}).get("rows") or []:
+            name = row.get("name") or {}
+            # Directories come back as rows of their own, with a null size. Kept, a folder would
+            # read as a 0-byte file — the very thing this listing is here to stop reporting.
+            if name.get("isDirectory"):
+                continue
+            # `fileName` is the full path relative to the Dataset root and already POSIX, so it
+            # agrees with what `walk_files` produces for the same tree. `label` is only the
+            # basename, and reading it would collapse every nested file onto its siblings.
+            path = str(name.get("fileName") or name.get("label") or "")
+            if not path:
+                continue
+            files.append(DatasetFile(path, int((row.get("size") or {}).get("sizeInBytes") or 0)))
+        # Sorted before the cut, because the cap has to take the sorted prefix (ADR-0029) and the
+        # rows do not arrive in that order. Counted before it too: the whole tree is in hand, so
+        # `truncated` is a fact here rather than the inference the paged SDK listing had to make.
+        files.sort(key=lambda f: f.path)
+        return FileListing(files[:_MAX_FILES], truncated=len(files) > _MAX_FILES)
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         """Copy one file out of a Dataset this container has no mount for. Returns bytes written."""

@@ -41,9 +41,11 @@ def test_the_typed_name_is_the_projects_description(tmp_path):
     seen = {}
 
     class Recorder(FakeControlPlane):
-        def create_project(self, name, *, git_url, branch="main", description=""):
+        def create_project(self, name, *, git_url, git_credential_id="cred-1", branch="main",
+                           description=""):
             seen["description"] = description
-            return super().create_project(name, git_url=git_url, branch=branch, description=description)
+            return super().create_project(name, git_url=git_url, git_credential_id=git_credential_id,
+                                          branch=branch, description=description)
 
     _service(tmp_path, Recorder()).create_app("Quarterly Revenue")
 

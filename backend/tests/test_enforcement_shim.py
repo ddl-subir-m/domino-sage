@@ -11,6 +11,7 @@ from dataclasses import replace as _replace
 from sage.gateway.client import FakeGatewayClient
 from sage.router.model_control import ModelControl
 from sage.router.models import Mode, ModelCatalog, Phase, supports_vision
+import sage.shim.keepalive as ka
 from sage.shim.enforcement import IMAGE_OMITTED, EnforcementShim
 
 CATALOG = ModelCatalog(
@@ -685,3 +686,138 @@ def test_a_clean_turn_still_routes_on_the_write_flip():
     assert sent["model"] == "cheap-vendor"
     assert labels.route_reason is None
     assert all(m.get("role") != "system" for m in sent["messages"])
+
+
+# ---- the signing veto and the outgoing signature summary (#155, ADR-0032) -----------------------
+
+def _gemini_catalog():
+    return _replace(CATALOG, plan="gemini-3.7-flash", implement="gemini-3.7-flash",
+                    ask="gemini-3.7-flash")
+
+
+def _batch(*sigs):
+    calls = []
+    for n, sig in enumerate(sigs):
+        c = {"id": f"c{n}", "type": "function",
+             "function": {"name": "read", "arguments": '{"path":"a"}'}}
+        if sig is not None:
+            c["extra_content"] = {"google": {"thought_signature": sig}}
+        calls.append(c)
+    return {"role": "assistant", "content": "", "tool_calls": calls}
+
+
+def _gemini_shim(gw):
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    return EnforcementShim(control, _gemini_catalog(), gw)
+
+
+def _mixed_shim(gw):
+    """The live shape (#155): the signing model is the implement slot, plan is an ordinary model.
+    So the veto has somewhere to fall back TO, unlike the all-Gemini catalog above."""
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    return EnforcementShim(control, _replace(CATALOG, implement="gemini-3.7-flash"), gw)
+
+
+def test_history_from_a_model_that_does_not_sign_is_refused(caplog):
+    """The cause that reached a user, reproduced end to end on 2026-09-04 (#155).
+
+    The shim re-resolves the model per request, so an auto-plan turn runs on sonnet while OpenCode
+    keeps one session and believes it is all Gemini. The implement turn then replays sonnet's
+    `toolu_*` tool calls — unsigned, every one — and Gemini rejects the whole request with the
+    user's verbatim `default_api:bash` 400. The pin stops new sessions getting here; this is what
+    happens to one that already did.
+
+    Driven through `handle` on purpose: the veto reads the RESOLVED model, so a unit test of the
+    pure helpers cannot catch a mis-wired call site — an earlier build of the summary this replaces
+    had a NameError here that every pure-function test passed straight over.
+    """
+    gw = FakeGatewayClient()
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(_mixed_shim(gw).handle(
+            {"model": "gemini-3.7-flash",
+             "messages": [{"role": "user", "content": "go"}, _batch(None), _batch(None)]},
+            project="p"))
+    sent_request, _ = gw.seen[-1]
+    assert sent_request["model"] == "strong-vendor"   # past the implement slot, which signs
+    assert any("refused" in r.getMessage() and "unsigned tool calls" in r.getMessage()
+               for r in caplog.records), [r.getMessage() for r in caplog.records]
+
+
+def test_a_split_model_turn_bound_for_gemini_is_refused_too(caplog):
+    """A tool-call message starting with an unsigned call is what Gemini rejects, with an opaque
+    "position N". This is the rarer of the two causes — a signed batch taken apart across messages
+    rather than history from a model that never signs — and the same veto covers it."""
+    gw = FakeGatewayClient()
+    list(_mixed_shim(gw).handle(
+        {"model": "gemini-3.7-flash",
+         "messages": [{"role": "user", "content": "go"}, _batch("sig-a"), _batch(None)]},
+        project="p"))
+    sent_request, _ = gw.seen[-1]
+    assert sent_request["model"] == "strong-vendor"
+
+
+def test_a_healthy_gemini_parallel_batch_is_not_refused():
+    """The live-verified healthy shape: one message, first call signed, the rest bare. The veto must
+    not touch it — it is what every ordinary Gemini turn looks like, and refusing it would nullify
+    the model the user assigned on every single turn."""
+    gw = FakeGatewayClient()
+    list(_mixed_shim(gw).handle(
+        {"model": "gemini-3.7-flash",
+         "messages": [{"role": "user", "content": "go"}, _batch("sig-a", None, None)]},
+        project="p"))
+    sent_request, _ = gw.seen[-1]
+    assert sent_request["model"] == "gemini-3.7-flash"
+
+
+def test_a_catalog_that_signs_everywhere_sends_anyway_and_says_so(caplog):
+    """No assignable slot can answer, so the request goes as-is and the gateway rejects it. That is
+    today's behaviour for a configuration the user built; substituting a model they never assigned
+    would be new machinery serving one alias."""
+    gw = FakeGatewayClient()
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(_gemini_shim(gw).handle(
+            {"model": "gemini-3.7-flash", "messages": [_batch(None)]}, project="p"))
+    sent_request, _ = gw.seen[-1]
+    assert sent_request["model"] == "gemini-3.7-flash"
+    assert any("nowhere safe to go" in r.getMessage() for r in caplog.records), \
+        [r.getMessage() for r in caplog.records]
+
+
+def test_an_ordinary_model_is_never_refused(caplog):
+    # gpt-5.4 and sonnet never sign, and never demand a signature back. Refusing here would fire on
+    # every normal turn in every project.
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    gw = FakeGatewayClient()
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(_shim(control, gw).handle(
+            {"model": "cheap-vendor", "messages": [_batch(None), _batch(None)]}, project="p"))
+    sent_request, _ = gw.seen[-1]
+    assert sent_request["model"] == "cheap-vendor"
+    assert not [r for r in caplog.records if "refused" in r.getMessage()]
+
+
+def test_the_outgoing_listing_only_appears_with_debug_stream_on(caplog, monkeypatch):
+    gw = FakeGatewayClient()
+    shim = _gemini_shim(gw)
+    req = {"model": "gemini-3.7-flash", "messages": [_batch("sig-a", None)]}
+
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(shim.handle(dict(req), project="p"))
+    assert not [r for r in caplog.records if "outgoing tool calls" in r.getMessage()]
+
+    caplog.clear()
+    monkeypatch.setattr(ka, "_debug_stream", True)
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(shim.handle(dict(req), project="p"))
+    listed = [r.getMessage() for r in caplog.records if "outgoing tool calls" in r.getMessage()]
+    assert listed and "msg0[c0/read sig=5, c1/read sig=NONE]" in listed[0], listed
+
+
+def test_the_signature_summary_never_takes_the_turn_down_on_a_malformed_body():
+    # The messages are whatever the client sent. Raising here would turn a bad request into a crash.
+    gw = FakeGatewayClient()
+    shim = _gemini_shim(gw)
+    for messages in ([{"role": "assistant", "tool_calls": [None, "x"]}],
+                     [{"role": "assistant", "tool_calls": [{"extra_content": "nope"}]}],
+                     "not-a-list"):
+        list(shim.handle({"model": "gemini-3.7-flash", "messages": messages}, project="p"))

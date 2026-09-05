@@ -3,26 +3,19 @@
 One Domino Environment image that carries Sage's code, the agent runtime (OpenCode), and a warm
 React+Vite template with baked `node_modules`. Chat and Build are one orchestrator process.
 
-## Happy path
+Two launch paths, same process:
 
-Publish **this repo** as a Domino App on the Sage Environment (below), and open it. That is the
-only manual launch step. Its UI has a **Create app** button; clicking it provisions the viewer's
-Default Project, starts their own Sage Builder workspace, and builds in that workspace — you never
-launch the `sageBuilder` pluggable tool yourself, it starts automatically as part of that flow.
-
-Under the hood that is two processes running the same orchestrator:
-
-1. **Published App — the door.** Root `app.sh` starts the workbench (`SAGE_PROXY_MODE=app`, port
-   8888). Domino's App proxy strips the mount prefix; Vite's prefix is empty. It does **not** run
-   Chat or Build: `/mnt/code` is Sage source, so the App finds or creates the viewer's Default
-   Project and sends them to their own Sage Builder (ADR-0004). Listings, provisioning and model
-   calls all use the sidecar at `:8899`, which is the viewer. To provision, the App's container
-   needs an **HTTPS Git credential** (Account Settings > Git Credentials) — it creates the `sage-*`
-   repo and pushes the seed with it. Set `SAGE_GIT_HOST` when that host is not `github.com`.
-2. **Sage Builder workspace** — the `sageBuilder` pluggable tool, launched by the App's Create-app
-   flow inside the git-based app project it just provisioned. [`environment/app.sh`](app.sh) starts
-   the same orchestrator with `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the
-   Built App.
+1. **Published App — the door.** Publish **this repo** as a Domino App. Root `app.sh` starts the
+   workbench (`SAGE_PROXY_MODE=app`, port 8888). Domino's App proxy strips the mount prefix; Vite's
+   prefix is empty. It does **not** run Chat or Build: `/mnt/code` is Sage source, so the App finds
+   or creates the viewer's Default Project and sends them to their own Sage Builder (ADR-0004).
+   Listings, provisioning and model calls all use the sidecar at `:8899`, which is the viewer.
+   To provision, the App's container needs an **HTTPS Git credential** (Account Settings > Git
+   Credentials) — it creates the `sage-*` repo and pushes the seed with it. Set `SAGE_GIT_HOST`
+   when that host is not `github.com`.
+2. **Sage Builder workspace** — launch the `sageBuilder` pluggable tool in a **git-based app
+   project**. [`environment/app.sh`](app.sh) starts the same orchestrator with
+   `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the Built App.
 
 There is no Hub, no second server, and no `sageHub` tool.
 
@@ -46,12 +39,39 @@ commits. A published Workbench App must **not** treat that checkout as an app �
 
 ## Fill-ins before it builds
 
-1. **Base image** — `FROM <your-standard-domino-base-image>` at the top of the Dockerfile. This
-   Dockerfile is written to layer on top of whatever base image your Domino instance already
-   standardizes on. Some instances (e.g. locked-down ones) won't let you create a new/public
-   Environment from scratch — layering on the standard base is the workaround, not a preference.
-2. **`SAGE_REPO_URL` / `SAGE_REV`** — where to clone Sage from. If the repo is **private**, the
-   build-time `git clone` needs a credential (secret build-arg token, or a public deploy mirror).
+1. **Base image** — `FROM <your-standard-domino-base-image>` at the top of the Dockerfile.
+2. **`SAGE_REPO_URL` / `SAGE_REV`** — where to clone Sage from.
+
+   If the repo is **private**, set `SAGE_GIT_TOKEN` in the Environment's **Environment Variables**
+   box — but **only ever a short-lived token.** A build arg is not a secret: Docker's `ARG`
+   documentation says build-time values "are visible to any user of the image with the
+   `docker history` command", so the PAT is recoverable in plaintext from the built image by anyone
+   who can pull it. Expiry is what protects you, not the Dockerfile.
+
+   Recipe, per rebuild of the clone layer:
+   1. Mint a fine-grained PAT — read-only Contents, this repo only, **expiry tomorrow**.
+   2. Paste it into the variables box, bump `SAGE_CACHE_BUST`, rebuild.
+   3. Delete the variable. Let the token expire.
+
+   The Dockerfile's two mitigations (`ARG` never `ENV`; the header clone) are real but cover the
+   **runtime** half only — the container's `env` and its filesystem. Neither touches image metadata.
+   See #151 for the full reasoning and the durable fix (build in CI, have Domino pull the image).
+
+   **Verified 2026-09-03:** Domino passes its Environment Variables as build args, and an `ARG`
+   that is never promoted to `ENV` dies with the build. Tested by feeding one variables-box entry
+   to both `SAGE_CANARY` (`ARG` only) and `SAGE_CANARY_ECHO` (`ARG`+`ENV`): a rebuilt workspace
+   showed the echo carrying the value and `SAGE_CANARY` absent, with `SAGE_CACHE_BUST` confirming
+   the rebuild had taken. The canary lines were removed afterwards.
+
+   So `SAGE_GIT_TOKEN` is **not** readable from a workspace's `env`, which is the exposure that
+   mattered most — `sage-chat` and `sage-implement` run with `bash: allow`, so every Sage user could
+   otherwise have read it by asking the agent. The remaining exposure is `docker history`, which
+   needs the ability to pull the image: admins and CI, not ordinary users. Short expiry still
+   applies, and is now the only control the token depends on.
+
+   To confirm a rebuild actually took effect, `SAGE_CACHE_BUST` is promoted to `ENV` and shows in
+   `env`. Bump its value per rebuild, or every image reports the same string.
+
 3. **Gateway** — set `GATEWAY_BASE_URL` in the Environment's **Environment Variables** box so builds
    can reach a model. Without it the UI and preview still work; builds can't call the LLM.
    - Set it at the **Environment** level, not the project level. Workspaces inherit the

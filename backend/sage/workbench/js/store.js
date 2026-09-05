@@ -93,7 +93,7 @@ window.SW = window.SW || {};
     handoffOpen: false,
     handoffDraft: null,
     graduationOpen: false,
-    inviteOpen: false,
+    peopleOpen: false,
     paletteOpen: false,
     scopePickerOpen: false,
     // The Build header's own add door, open. Controlled from here rather than left to antd because
@@ -113,10 +113,33 @@ window.SW = window.SW || {};
     // The catalogue parents this viewer can reach that are NOT in the project rail. The @ menu
     // offers them last, because picking one joins the project on the way in (see `attach`).
     catalogueParents: [],
+    // The last listing read off the platform, whole and unfiltered — what `/api/resources` and
+    // `/api/assets` answered together. Browse Domino is drawn from this rather than reading the
+    // platform again per keystroke (#159). `null` means Sage has not looked yet, which nothing may
+    // draw as "there is nothing to add".
+    resourceListing: null,
+    // Which project the listing above was read under. The listing itself describes the platform
+    // rather than the project, but the membership it is read against does not, so a scope change
+    // is the one thing that has to drop it. Held here rather than dropped on every load, because
+    // a reload of the SAME scope would then blank an open catalogue for the length of a round
+    // trip.
+    resourceListingScope: null,
     gatewayAliases: [],
     resourcesLoading: true,
     members: [],
     directory: [],
+    // The three states `/api/members` keeps apart, held apart here too. `connected` false is "not
+    // running against the platform"; `error` set is "the read failed"; neither set with no members
+    // is a Project genuinely worked on alone. Collapsing any two of them would tell a creator their
+    // colleagues do not exist when what is true is that Sage could not look.
+    membersConnected: false,
+    membersError: '',
+    membersLoading: true,
+    // The two rows the People modal must not offer Remove on, in Domino's id space. `state.me`
+    // cannot stand in for `selfId`: it is read off the viewer JWT, whose subject is the identity
+    // provider's id and does not join against a collaborator row.
+    ownerId: '',
+    selfId: '',
     userIndex: {},
     activity: [],
     charts: {},
@@ -213,6 +236,9 @@ window.SW = window.SW || {};
     catalog: null,
     buildModel: '',
     buildPhase: 'plan',
+    // Which slot pinned the whole session, or '' (ADR-0032). Server-computed: the picker
+    // restates the router's precedence below, and the signing pin is the one rule it cannot see.
+    signingSlot: '',
     // Only ever non-empty on an `openai` gateway, where /healthz names the open-weight models this
     // deployment will accept beyond the four configured slots. On Domino it is [], and the picker
     // is the four slots alone.
@@ -330,6 +356,7 @@ window.SW = window.SW || {};
     }
     if ('picked_model' in m) state.buildModel = m.picked_model || '';
     if (m.phase) state.buildPhase = m.phase;
+    if ('signing_slot' in m) state.signingSlot = m.signing_slot || '';
     if ('chat_model' in m || m.chat_model === null) {
       state.model = m.chat_model || '';
     }
@@ -343,6 +370,24 @@ window.SW = window.SW || {};
   }
 
   let scopeLoad = 0;
+  // Which platform listing read is the current one (#159). Two are routinely in the air — the one
+  // a scope load defers and the one Browse Domino fires when it opens — and the older answering
+  // last would put a row somebody just deleted back in the rail. A generation counter for the same
+  // reason the two below have one: the newest read is the one that gets to write.
+  let listingRead = 0;
+  // Which read of what the PROJECT holds is the current one — its membership and its `/project`
+  // record together, which is the pair every refresh below takes. Same shape as the listing counter
+  // above and needed for the same reason since #162: a working-set refresh no longer bumps
+  // `scopeLoad`, so a scope load is no longer cancelled by a mutation landing under it and the two
+  // can now write the same fields in either order.
+  //
+  // CLAIMED AT ENTRY by both writers, which is the whole of what makes it order them. The scope
+  // load issues its `/project` read in a second phase, behind the membership read — ticketing it
+  // there would put it AFTER a refresh that started later, and the scope load would then throw
+  // away the very Add that fired the refresh. So the ticket is taken where the function starts,
+  // and both of its phases stand or fall on it: applying half of one read and half of another is
+  // how the Uploads group ends up empty with nothing on the way to refill it.
+  let projectRead = 0;
   // Which open is the current one. `selectApp` guards with `selecting`, which makes a second
   // asker bail — right there, because you are already going where it asked. Wrong here: clicking
   // A after B must land on A, not be ignored. So this is a generation counter like `scopeLoad`,
@@ -482,21 +527,149 @@ window.SW = window.SW || {};
     }
   }
 
+  // The kinds whose listing is complete by construction, so absence from one that answered means
+  // Domino no longer holds the row. `model_predictive` is deliberately not here: `list_model_apis`
+  // fans out over the creator's member projects, SKIPS any non-home project that fails and caps the
+  // fan-out at twenty-five — so a Model API can be permanently absent from a listing that reports
+  // complete success. Absence there is not evidence. The cost is that a deleted Model API goes on
+  // looking live, and we took it knowingly: a false death is a new harm where a false life is an
+  // old one (ADR-0034). #163 is the provider-side repair that would upgrade the kind.
+  const CHECKABLE_KINDS = ['dataset', 'datasource', 'model_llm'];
+
+  // The one group holding rows a level below the listing: a warehouse table and a pinned Dataset
+  // path, both of which `groupsFromMembership` puts in `pin` whatever their kind. They take their
+  // parent's word.
+  const CHILD_GROUPS = ['pin'];
+
+  // Whether Domino still holds what each working-set row names. Members MINUS the listing — the
+  // other subtraction `catalogueParents` is one half of, over the same two collections, which is
+  // why it costs nothing here and why it is written here and nowhere else.
+  //
+  // Computed on read and never written to the membership file, for the reason `usedBy` is not: a
+  // stored copy is wrong the moment anybody deletes anything.
+  //
+  // Three values, because two would state a fact Sage does not have. `unchecked` is not a residue:
+  // `state.resourceListing` is null until the deferred read lands, a kind that refused has its
+  // previous rows carried forward by `keepUnreadKinds` — present, stale and wrong at once — and one
+  // kind can never be checked at all.
+  function stampLiveness(groups, listing) {
+    const next = { ...groups };
+    const byParent = {};
+    SW.util.MEMBERSHIP_PARENT_KINDS.forEach((kind) => {
+      // The error is asked BEFORE the rows, because a refused leg arrives here holding the rows it
+      // could not re-read. Reading those as the platform's answer would mark nothing dead and call
+      // the rest alive off a listing nobody got.
+      //
+      // And the group has to BE an array. `fetchDominoListing` writes all four keys on every real
+      // answer, so a kind with none never came from a read: `refreshResourceListing` writes a
+      // synthetic `{ errors: { listing }, groups: {} }` when the read itself faults, and that error
+      // is keyed on the whole listing rather than on any kind. Without this the next working-set
+      // change would re-apply it, find no per-kind error and an empty group, and mark every Dataset,
+      // Data Source and Alias in the project dead at once — the false death ADR-0034 gave up a whole
+      // kind to avoid.
+      const group = (listing && listing.groups && listing.groups[kind]) || null;
+      const checkable = CHECKABLE_KINDS.indexOf(kind) !== -1
+        && Array.isArray(group)
+        && !(listing.errors || {})[SW.api.LISTING_ERROR_KEY[kind]];
+      // An Alias is matched on its id OR its name, because that kind's id space is not stable.
+      // `join_aliases` keys a row on the record's id when `/api/aliases` has a record for it and on
+      // the BARE NAME when it does not — and a gateway answering 200 with no records raises nothing,
+      // so the kind still reads as checkable while every id in it has just changed shape. On ids
+      // alone that would mark every language model in the project dead at once, which is the false
+      // death this whole function is arranged to avoid. Both halves are carried on both sides: the
+      // membership row keeps `alias`, and the listing row sets it from the gateway's name.
+      const held = new Set(
+        (group || []).flatMap((r) => [r.id, r.alias]).filter(Boolean)
+      );
+      next[kind] = (groups[kind] || []).map((row) => {
+        const known = held.has(row.id) || (!!row.alias && held.has(row.alias));
+        const liveness = !checkable ? 'unchecked' : (known ? 'live' : 'missing');
+        byParent[row.id] = liveness;
+        return { ...row, liveness };
+      });
+    });
+    // A Table under a missing Data Source is certainly unreachable, so this direction is sound. The
+    // converse is not covered: a Table dropped from a Data Source that still exists stays live, and
+    // finding it would cost a cascade call per row on every scope load.
+    CHILD_GROUPS.forEach((kind) => {
+      next[kind] = (groups[kind] || []).map(
+        (row) => (byParent[row.parentId] ? { ...row, liveness: byParent[row.parentId] } : row)
+      );
+    });
+    return next;
+  }
+
+  // Everything a fresh platform listing decides, in one place, because two writers for these
+  // fields is how the rail and the catalogue end up disagreeing about what Domino holds. Called
+  // once on a scope load and again each time Browse Domino opens.
+  function applyListing(read) {
+    // A leg that refused reports an error and no rows. Keeping the rows it could not re-read is
+    // what stops an open of Browse Domino during an outage from emptying the promote picker and
+    // the @ menu's catalogue half.
+    const listing = SW.api.keepUnreadKinds(state.resourceListing, read);
+    state.resourceListing = listing;
+    state.resourceListingScope = state.scope && state.scope.id;
+    applyResourceGroups(
+      stampLiveness(SW.api.overlayResourceListing(state.resourceGroups, listing), listing),
+      {
+        aliases: (listing.groups && listing.groups.model_llm) || [],
+        errors: listing.errors || {},
+      }
+    );
+    // The overlay keeps only the Datasets already in the rail. A scratch file can be promoted
+    // onto any Dataset this container mounts writable, so that set is kept whole here.
+    state.datasetTargets = ((listing.groups && listing.groups.dataset) || []).filter((d) => d.writable);
+    // Same read, same reason: the overlay discards every non-member, and the @ menu needs them.
+    // Parents only — a warehouse table is a level down and this listing never fetched one.
+    const members = new Set(
+      SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+        (kind) => (state.resourceGroups[kind] || []).map((r) => r.id)
+      )
+    );
+    state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
+      (kind) => (((listing.groups && listing.groups[kind]) || []).filter((r) => !members.has(r.id)))
+    );
+  }
+
   async function loadScopeData() {
     const scope = state.scope;
     const gen = ++scopeLoad;
+    const projectGen = ++projectRead;
 
     const [resources, activity] = await Promise.all([
       SW.api.resources(scope.id),
       SW.api.activity(scope.id),
     ]);
     if (gen !== scopeLoad) return;
-    applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
-    // Cleared here, with the members it is the complement of, and not left standing until the
-    // deferred listing below refills it. The two are read together: a resource that IS a member of
-    // the scope just picked but was not a member of the last one would otherwise sit in the @ menu
-    // captioned `not in {project}` — the opposite of true — until the listing landed.
-    state.catalogueParents = [];
+    // Unless a working-set refresh has read the Project since this load started. Its answer is
+    // newer than this one by exactly the Add or the Remove that fired it, and writing this
+    // membership over it would put back the row the viewer has just taken out.
+    if (projectGen === projectRead) {
+      applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
+    }
+    // Both halves of the last project's answer, dropped together and on the SCOPE changing rather
+    // than on which membership read turned out to be newest. `catalogueParents` is the complement
+    // of the members: a resource that IS a member of the scope just picked but was not a member of
+    // the last one would otherwise sit in the @ menu captioned `not in {project}` — the opposite of
+    // true — until the deferred listing landed. A refresh that superseded the write above cleared
+    // neither, so tying the clear to that write would leave the catalogue describing the project
+    // the viewer has just left.
+    //
+    // Only when the project actually changed. A scope change invalidates the membership the
+    // listing is read against, not the platform's rows, so a reload of the same scope keeps what
+    // it holds rather than replacing an open catalogue with a spinner for the length of a round
+    // trip — the flicker the rows-from-the-store change exists to remove (#159).
+    if (state.resourceListingScope !== scope.id) {
+      state.resourceListing = null;
+      state.catalogueParents = [];
+    }
+    // The membership written above is unstamped, and on a SAME-scope reload the listing to stamp it
+    // against is still in hand — kept deliberately, three lines up. This load is not only the
+    // project switch: an attach, a part-finished detach and a promote all call it, and without this
+    // every `missing` mark and every group note would vanish for the length of the deferred read
+    // below — 2.5-3.3 s on a real deployment — and then come back. The same re-apply
+    // `refreshWorkingSet` ends on, for the same reason (#161).
+    if (state.resourceListing) applyListing(state.resourceListing);
     state.resourcesLoading = false;
     state.activity = activity;
     notify();
@@ -511,67 +684,129 @@ window.SW = window.SW || {};
     );
 
     const appTicket = appScopeTicket();
+    const listingGen = ++listingRead;
     Promise.all([
       SW.api.project().catch(() => ({ attached: [] })),
       SW.api.resourceListing(),
     ]).then(([project, listing]) => {
       if (gen !== scopeLoad) return;
-      // Off the same read, because this is the other moment the app's manifest changes: adding a
-      // scratch file to a Dataset attaches it, and the panel refreshes through here rather than
-      // through `loadBuild`. Without this the Build header would go on saying the app ships
-      // nothing until the next app switch (#92).
-      applyAppScope(appTicket, { appAttachments: project.attached || [] });
-      // The Project's Uploads, and ONLY those. An Attachment is a record the selected app keeps,
-      // so it is listed under that app and nowhere else — one row per scope, which is the rule
-      // ADR-0011 already held for every other kind (#148). Both lists fed this group before, so
-      // after a crossing (#147) one file was drawn three times in Build: an Upload under the
-      // Project, an Attachment under the Project, and the same Attachment under the app.
-      //
-      // The `public/data/…` row was load-bearing rather than decorative — `collectTurnRefs` walks
-      // these groups to turn "@data.csv" into a path the turn can carry — and that read is off
-      // `appAttachments` now, which is where the record lives.
-      const files = (project.scratch || []).map((e) => ({
-        id: `file:${e.path}`,
-        name: e.name || (e.path || '').split('/').pop(),
-        kind: 'file',
-        path: e.path,
-        source: 'scratch',
-      }));
-      applyResourceGroups(
-        SW.api.overlayResourceListing({ ...state.resourceGroups, file: files }, listing),
-        {
-          aliases: (listing.groups && listing.groups.model_llm) || [],
-          errors: listing.errors || {},
-        }
-      );
-      // The overlay keeps only the Datasets already in the rail. A scratch file can be promoted
-      // onto any Dataset this container mounts writable, so that set is kept whole here.
-      state.datasetTargets = ((listing.groups && listing.groups.dataset) || []).filter((d) => d.writable);
-      // Same read, same reason: the overlay discards every non-member, and the @ menu needs them.
-      // Parents only — a warehouse table is a level down and this listing never fetched one.
-      const members = new Set(
-        SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
-          (kind) => (state.resourceGroups[kind] || []).map((r) => r.id)
-        )
-      );
-      state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
-        (kind) => (((listing.groups && listing.groups[kind]) || []).filter((r) => !members.has(r.id)))
-      );
+      // On the ticket this load took at entry, the same one its membership stood on. A refresh
+      // that has written since holds the newer answer here too, by exactly the Upload that fired
+      // it. The listing below is a separate read on a separate ticket, so dropping this half of
+      // the answer does not drop that one.
+      if (projectGen === projectRead) applyProjectRead(appTicket, project);
+      // Unless a later read has already landed — the files above are this load's own and are
+      // written either way, but the platform's answer is only the newest one's to write.
+      if (listingGen === listingRead) applyListing(listing);
       notify();
     }).catch(() => {});
 
-    const members = await SW.api.members(scope.id || null);
+    const read = await SW.api.members();
     if (gen !== scopeLoad) return;
-    state.members = members.members;
-    state.directory = members.directory;
+    applyMembers(read);
+    notify();
+  }
+
+  // Everything a read of `/project` writes. Both refreshes take that read, and two copies of this
+  // mapping would be two answers about what an Upload row carries.
+  function applyProjectRead(appTicket, project) {
+    // Off the same read, because this is the other moment the app's manifest changes: adding a
+    // scratch file to a Dataset attaches it, and the panel refreshes through here rather than
+    // through `loadBuild`. Without this the Build header would go on saying the app ships
+    // nothing until the next app switch (#92).
+    applyAppScope(appTicket, { appAttachments: project.attached || [] });
+    // The Project's Uploads, and ONLY those. An Attachment is a record the selected app keeps,
+    // so it is listed under that app and nowhere else — one row per scope, which is the rule
+    // ADR-0011 already held for every other kind (#148). Both lists fed this group before, so
+    // after a crossing (#147) one file was drawn three times in Build: an Upload under the
+    // Project, an Attachment under the Project, and the same Attachment under the app.
+    //
+    // The `public/data/…` row was load-bearing rather than decorative — `collectTurnRefs` walks
+    // these groups to turn "@data.csv" into a path the turn can carry — and that read is off
+    // `appAttachments` now, which is where the record lives.
+    const files = (project.scratch || []).map((e) => ({
+      id: `file:${e.path}`,
+      name: e.name || (e.path || '').split('/').pop(),
+      kind: 'file',
+      path: e.path,
+      source: 'scratch',
+    }));
+    applyResourceGroups({ ...state.resourceGroups, file: files });
+  }
+
+  // Everything a working-set change can move, and nothing it cannot (#162). `loadScopeData` ends
+  // every call with a platform listing read that measures 5.1 s on a real deployment (#160), and
+  // putting a Resource into the Project — or taking one out — cannot change what Domino holds.
+  // Membership is a local file that answers in 145 ms, so the mutation callers take this instead
+  // and the listing read stays with the scope changes that are the only thing it answers.
+  //
+  // The listing already in hand is re-APPLIED rather than re-read, because membership is the other
+  // half of what `applyListing` computes: `catalogueParents` is the platform's rows MINUS the
+  // working set, so a row that just joined has to leave the @ menu's catalogue half, and one that
+  // just left has to reappear there. Both without a fetch to say so. That is also why the listing
+  // is not DROPPED here the way a scope change drops it — nothing is on the way to refill it, so
+  // the catalogue would blank for good rather than for one round trip.
+  //
+  // `members` is not re-read either: who is in the Project is not something an Add can change.
+  async function refreshWorkingSet() {
+    const scope = state.scope;
+    // Read rather than bumped, unlike the scope load: this is not a new scope, so a scope load
+    // already in flight still has the newest word and must not be cancelled by an Add landing
+    // under it. Same guard `reloadMembers` takes, for the same reason — it writes the same fields.
+    const gen = scopeLoad;
+    const appTicket = appScopeTicket();
+    const projectGen = ++projectRead;
+    const [resources, activity, project] = await Promise.all([
+      SW.api.resources(scope.id),
+      SW.api.activity(scope.id),
+      SW.api.project().catch(() => ({ attached: [] })),
+    ]);
+    // Both reads are taken together and both are written together, so one ticket covers both.
+    // Applying half of this read and half of a newer one is how the Uploads group ends up empty:
+    // the membership write replaces the whole group map, and `applyProjectRead` is what puts the
+    // `file` group back into it.
+    if (gen !== scopeLoad || projectGen !== projectRead) return;
+    applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
+    applyProjectRead(appTicket, project);
+    state.activity = activity;
+    state.resourcesLoading = false;
+    // In the window between a project switch and its deferred listing landing there is nothing to
+    // re-apply. That load will apply its own answer against the membership written just above.
+    if (state.resourceListing) applyListing(state.resourceListing);
+    notify();
+  }
+
+  // Split out of the scope load because the People modal re-reads it on its own: a Retry after a
+  // failed read, and a refresh after an add or a remove. One writer for these fields, so the modal
+  // and the plan page can never end up looking at different answers.
+  function applyMembers(read) {
+    state.members = read.members || [];
+    state.directory = read.directory || [];
+    state.ownerId = read.ownerId || '';
+    state.selfId = read.self || '';
+    state.membersConnected = read.connected === true;
+    state.membersError = read.error || '';
+    state.membersLoading = false;
 
     // Anything that renders a name or avatar looks the person up here, so
     // author IDs on plans and comments resolve even for non-members.
     state.userIndex = {};
-    [...members.directory, ...members.members].forEach((user) => {
+    [...state.directory, ...state.members].forEach((user) => {
       state.userIndex[user.id] = user;
     });
     if (state.me) state.userIndex[state.me.id] = state.me;
+  }
+
+  // Under the same generation guard as the scope load, because it writes the same fields. A Retry
+  // in flight when the creator switches Project would otherwise land the old Project's people on
+  // the new one — and these particular fields decide who a Remove button is offered for.
+  async function reloadMembers() {
+    const gen = scopeLoad;
+    state.membersLoading = true;
+    notify();
+    const read = await SW.api.members();
+    if (gen !== scopeLoad) return;
+    applyMembers(read);
     notify();
   }
 
@@ -949,6 +1184,11 @@ window.SW = window.SW || {};
             // rejection inside this catch, where it was previously invisible.
             const ev = JSON.parse(line.slice(6));
             if (endedBadly(ev)) failed = true;
+            // Withdrawn again by a `done` that says nothing about the platform. `endedBadly` reads
+            // the decision, but the `error` frame carrying the sentence arrives BEFORE the `done`
+            // and is a failure by frame type alone, so this has to take the flag back rather than
+            // stop it being set.
+            else if (ev.type === 'done' && NO_PLATFORM_FAULT[ev.decision]) failed = false;
             try { await onEvent(ev); } catch (err) { /* keep-alive or partial */ }
           }
         }
@@ -994,6 +1234,11 @@ window.SW = window.SW || {};
     // left with no button to take. The `error` frame beside it already carries the whole sentence,
     // so a "Stopped — model unavailable" line under it would only say it worse, twice.
     'model unavailable': true,
+    // The planner read the request and found no app in it (#150). Here for the same reason: the
+    // `error` frame beside it already asks what the app should do and names the other way to run
+    // the request, and this turn did exactly what it was designed to do — a red "Stopped — no app
+    // described" under a question reads as a failure the person has to go and fix.
+    'no app described': true,
   };
 
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
@@ -1001,6 +1246,14 @@ window.SW = window.SW || {};
   // and a `const` cannot be read before the line that makes it.
   const ASKED_FOR = { stopped: true, cancelled: true, 'context changed': true,
                       'plan moved on': true, ...GATE_DECISIONS };
+
+  // Endings after which a gateway listing could not be the answer, so `readSSE` must not pay for
+  // one. Deliberately not every ASKED_FOR decision: `model unavailable` also arrives as an `error`
+  // beside a gate decision, and there the listing IS the answer — that turn was refused BECAUSE of
+  // the platform, and the chip is how the person finds out (#125, ADR-0027). Here the planner read
+  // the request, found no app in it and said so; nothing was asked of the platform at all, and
+  // every stray note or shell command would otherwise buy a listing for a turn that worked (#150).
+  const NO_PLATFORM_FAULT = { 'no app described': true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
@@ -1045,9 +1298,26 @@ window.SW = window.SW || {};
     // longer lists (#148), so without this line they would be offered by the @ menu and resolved
     // by no turn. Derived on the read rather than held in state: `appAttachments` is already the
     // record, and a second copy would need invalidating at every door that attaches or detaches.
-    [...Object.values(groups), SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {
+    // Read off the text ONCE. This runs on every composer keystroke (`unusableMentions`), and it
+    // asks its question of every candidate token of every row — which after a folder attach is a
+    // few hundred rows times the depth of each path. Compiling a regex per question made that the
+    // cost of typing.
+    const typed = SW.util.mentionTokensIn(text);
+    // Through `attachmentPeers`, so the folder rows the @ menu draws above the threshold are read
+    // back too (ADR-0030). A folder token is not a tail of any file's own path, so without the
+    // folders beside them a picked folder row would put a word in the box that the turn carries
+    // nothing for — which is the silence this function ends. Files still answer a FOLDER token
+    // that outlived its row (`mentionTokens` adds the parent tails), so a `@2024` kept in the
+    // box after the count dropped below the threshold still names those files.
+    [...Object.values(groups), SW.util.attachmentPeers(state.appAttachments)].forEach((rows) => {
       (rows || []).forEach((row) => {
-        if (!SW.util.mentionedIn(text, SW.util.mentionToken(row))) return;
+        // Every token this row could have been GIVEN, not the one it would be given now. Text
+        // already sitting in the composer keeps its token while the Attachment list moves under it,
+        // in both directions: an attach makes `@data.csv` answer `@2026/data.csv`, and a detach
+        // collapses it back. Reading only today's answer is how a mention comes to carry NOTHING —
+        // no refusal, no warning — which is the one outcome ADR-0030 rules out. A token that names
+        // several rows names all of them, and `_ambiguous_mentions` says so on the turn.
+        if (!SW.util.mentionTokens(row).some((token) => typed.has(token))) return;
         // A bindingKey IS the Binding identity, so the rows that carry one are exactly the rows the
         // server can honor as Resources. No second list of kinds to keep in step with that one.
         if (row.bindingKey && row.bindingKey.length === 2) {
@@ -1068,7 +1338,18 @@ window.SW = window.SW || {};
         if (path && !mentions.includes(path)) mentions.push(path);
       });
     });
-    return { mentions, resources };
+    // A folder row and the files it stands for both answer the same token once files grow parent
+    // tails. Sending both would inline the files AND the folder summary — the bloat ADR-0029
+    // took out of the block, back through this door. Keep the parent; drop what sits under it.
+    // Sibling folders (a month that split into days) are not under one another, so they all stay
+    // and the turn says the name matched several (`_ambiguous_mentions`).
+    const nested = new Set();
+    mentions.forEach((p) => {
+      mentions.forEach((other) => {
+        if (p !== other && p.startsWith(`${other}/`)) nested.add(p);
+      });
+    });
+    return { mentions: mentions.filter((p) => !nested.has(p)), resources };
   }
 
   function buildHistoryToMessages(history) {
@@ -1227,6 +1508,11 @@ window.SW = window.SW || {};
           entries: ev.entries || [],
           live: !!ev.live,
         });
+      } else if (ev.type === 'mentions-ambiguous' && ev.message) {
+        // A plain line, not the refusal's red one: this turn used everything the name matched, so
+        // nothing failed and nothing is missing. What is worth knowing is that the name reached
+        // more files than the person probably meant, and the sentence says which (ADR-0030).
+        ensureAssistant().blocks.push({ type: 'status', value: ev.message });
       } else if (ev.type === 'reset-offer' && ev.message) {
         // `live` is set only on the frame that arrived over SSE this session (see applyBuildEvent),
         // and a reload replaces buildHistory with plain server rows that never carry it. So a
@@ -1919,7 +2205,7 @@ window.SW = window.SW || {};
       await SW.api.addToProject(state.scope.id, resourceId);
     }
     if ((turn.installs || []).length || (turn.attaches || []).length) {
-      await loadScopeData();
+      await refreshWorkingSet();
     }
 
     state.typing = null;
@@ -2453,6 +2739,17 @@ window.SW = window.SW || {};
       notify();
     },
 
+    // The mirror of it, and it does not write the preference for the same reason: the Rail opening
+    // because a press had nowhere else to show its answer is not somebody choosing to keep the
+    // list open. `newConversation` is the one caller — the pending row it sets is the only thing
+    // on screen that says the press worked, and from the collapsed head that row is behind the
+    // panel you just clicked, so the press looked dead.
+    expandRail() {
+      state.railHidden = false;
+      state.railAppFilter = null;
+      notify();
+    },
+
     // Called when a script turn has opensPanel. Sage asking you to pick a kind
     // of thing is a browse task, so it opens the catalogue scoped to that kind
     // rather than filtering a panel that may not contain the answer yet.
@@ -2478,6 +2775,33 @@ window.SW = window.SW || {};
       notify();
     },
 
+    // These are shared platform Resources: another person can delete one, or add one, between a
+    // scope load and somebody opening Browse Domino. So the catalogue re-reads the platform once
+    // when it opens and redraws when the read lands — one refresh per open, in the background,
+    // with the rows already on screen the whole time.
+    async refreshResourceListing() {
+      const scopeGen = scopeLoad;
+      const gen = ++listingRead;
+      const listing = await SW.api.resourceListing().catch(() => null);
+      if (gen !== listingRead || scopeGen !== scopeLoad) return;
+      if (!listing) {
+        // A platform that refused is answered with error strings rather than a rejection, and
+        // `applyListing` carries the unread kinds over — so reaching here at all takes a fault in
+        // the read itself. Whatever the cause, what must not be left standing is "Sage has not
+        // looked yet", which is a spinner with nothing left to end it.
+        if (state.resourceListing) return;
+        state.resourceListing = {
+          errors: { listing: SW.brand.text('Could not read {platformName}.') },
+          groups: {},
+        };
+        state.resourceListingScope = state.scope && state.scope.id;
+        notify();
+        return;
+      }
+      applyListing(listing);
+      notify();
+    },
+
     closeCatalog() {
       state.catalogOpen = false;
       state.catalogKind = null;
@@ -2497,11 +2821,45 @@ window.SW = window.SW || {};
     // went through this.
     async addToProject(resource, options = {}) {
       const result = await SW.api.addToProject(state.scope.id, resource);
-      await loadScopeData();
+      await refreshWorkingSet();
       if (!options.silent && result.added) {
         antd.message.success(`${resource.name} is now in ${state.scope.name}`);
       }
       return result;
+    },
+
+    // Where a Binding is taken back: the app's own list, which is the list that owns the scope
+    // (ADR-0011). Pointed at from a Project row whose Resource is gone from Domino and is still
+    // bound — that row's Remove is refused by `remove_project_resource` with a 409 naming this very
+    // app, so the row offers the act that would work instead of the one that cannot (ADR-0034). The
+    // guard on the Resource itself is left alone: relaxing it for a dead Resource would silently
+    // break an app that still ships the Binding.
+    //
+    // Selected before the route is written, in that order and for the reason `buildPlanAgain` does
+    // it: the server holds one selected app per Project, so a route that lands ahead of the
+    // selection lands on somebody else's Bindings.
+    async openAppBindings(appId) {
+      if (!appId) return;
+      // `selectApp` swallows its own failure: it warns and hands back the app that was already
+      // selected. Routing anyway would put a dead app id in `?app=`, and BuildMode's effect would
+      // ask for it again and warn a second time over a page still showing the old app. So the
+      // navigation is gated on the select having actually landed — the warning is already on
+      // screen, and one is enough.
+      const selected = await store.selectApp({ id: appId });
+      if (!selected || selected.id !== appId) return false;
+      SW.router.go(SW.appRoute({ id: appId }));
+      // Said on arrival, always. The row this came from is styled as a removal and labelled with a
+      // removal's words, because that is what the 409 names and what ADR-0011 makes the app's act —
+      // but pressing it moves the creator rather than removing anything, and a destructive-looking
+      // control that silently teleports you owes you the sentence saying why you are here.
+      // Opened, not merely named. The list of what an app uses is the App dependencies modal now
+      // (ADR-0035), which is behind a header menu item — so a pointer that only said the words
+      // would land the reader on a preview with no list in sight. ADR-0011's rule is that a
+      // pointer is a promise the destination can act; this is that promise kept.
+      state.appDependenciesOpen = true;
+      antd.message.info(`Take it out of ${appScopeName()} in the list of what this app uses.`);
+      notify();
+      return true;
     },
 
     async removeFromProject(resource) {
@@ -2557,7 +2915,7 @@ window.SW = window.SW || {};
             state.attachments = (state.attachments || []).filter(
               (a) => a.resourceId !== resource.id && a.parentId !== resource.id
             );
-            await loadScopeData();
+            await refreshWorkingSet();
             antd.message.info(`${resource.name} is out of ${scopeName}`);
             resolve(true);
           },
@@ -2598,7 +2956,7 @@ window.SW = window.SW || {};
             state.attachments = (state.attachments || []).filter(
               (a) => a.resourceId !== resource.id && a.parentId !== resource.id
             );
-            await loadScopeData();
+            await refreshWorkingSet();
             antd.message.info(`${resource.name} is deleted.`);
             resolve(true);
           },
@@ -2691,7 +3049,7 @@ window.SW = window.SW || {};
       // the index IS the working set and a row is whatever the door that drew it chose to carry.
       // Only when it was absent: a Resource already in the rail changed nothing about membership,
       // and re-reading the whole scope for it is a handful of calls for no news.
-      if (!state.resourceIndex[resource.id]) await loadScopeData();
+      if (!state.resourceIndex[resource.id]) await refreshWorkingSet();
       return true;
     },
 
@@ -2814,6 +3172,166 @@ window.SW = window.SW || {};
         // the record itself is drawn with, so the sentence and the screen agree.
         : `${pick.name} is ${SW.util.NO_SCOPE_YET} in ${where}. Choose one from the same control.`);
       return true;
+    },
+
+    // A folder of Dataset files, into the selected Built App ---------------
+    //
+    // The one act in the Dataset tree that is not a single file, which is why it is the one that
+    // confirms (ADR-0029). The numbers are not politeness: the total attach budget is what decides
+    // whether the act can succeed at all, so what the folder weighs and what the app already
+    // carries have to be on screen BEFORE the click rather than inside the refusal after it.
+    //
+    // Every number in the question comes from the row that asked it, never from a second read. The
+    // row's count and size are the listing's own, and the server measures the same subtree again
+    // before it links anything — so a stale tree costs a refusal that names real numbers, never a
+    // partial attach.
+    //
+    // The app is captured where the question is asked and checked again before the act, exactly as
+    // `removeBindingFromApp` does it: a modal can sit open for as long as somebody leaves it there,
+    // and the title is a promise about which app gains the files.
+    async attachFolderToApp({ datasetId, label, folder, files, bytes }) {
+      const asked = state.activeApp;
+      if (!asked || !datasetId || !files) return false;
+      const where = asked.name;
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Attach ${SW.util.number(files)} ${files === 1 ? 'file' : 'files'}`
+            + ` (${SW.util.bytes(bytes)}) to ${where}?`,
+          // What the act commits to, in one sentence. Not "there is no undo" — there is one, and
+          // naming it is what keeps this confirm from reading as a warning about a cheap act.
+          content: `${where} carries every file below ${label} from then on, and ships them when `
+            + 'you publish it. Take one back out from the app’s own list.',
+          okText: `Attach folder to ${where}`,
+          onOk: async () => {
+            let result;
+            if (!state.activeApp || state.activeApp.id !== asked.id) {
+              antd.message.warning(
+                `Nothing was attached. The selected app changed to ${appScopeName()} while this `
+                + `was open, and this attach named ${where}.`
+              );
+              resolve(false);
+              return;
+            }
+            try {
+              result = await SW.api.attachDatasetFolder(datasetId, folder);
+            } catch (err) {
+              // The server's own sentence, which is the only one that can name the three numbers a
+              // cap refusal turns on. Retold here it would be a second, vaguer copy.
+              antd.message.error(`${label} could not be attached to ${where}: ${err.message}`);
+              resolve(false);
+              return;
+            }
+            // The whole scope, because an attach moves two lists at once: the app's files and the
+            // Build header's account of what it ships. Same refresh the crossing makes.
+            await loadScopeData();
+            // The receipt names what the act ADDED, which is not always what the row counted: a
+            // file already in the app is passed over rather than attached twice, and a receipt
+            // claiming otherwise would be a count nobody could reconcile with the list.
+            antd.message.success(result.attached
+              ? `${SW.util.number(result.attached)} ${result.attached === 1 ? 'file' : 'files'} `
+                + `from ${label} ${result.attached === 1 ? 'is' : 'are'} in ${where}. `
+                + 'Remove one from the app’s own list.'
+              : `${where} already carries every file in ${label}.`);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
+    // The same folder, back out of the selected Built App -------------------
+    //
+    // The mirror of the attach above, and it inherits the removal vocabulary rather than inventing
+    // a second one: the label names the app it acts on, because that is the only thing telling the
+    // three removal scopes apart (ADR-0011).
+    //
+    // It names a COUNT and no size. The attach half shows both because the cap is what its numbers
+    // are for — it is the thing that decides whether the act can succeed — and no cap decides a
+    // removal. A size here would be decoration, and this row is offered over files the app carries
+    // rather than over a listing, so it has no size of its own to quote anyway.
+    //
+    // The app is captured where the question is asked and checked again before the act, exactly as
+    // the attach does it: a modal can sit open for as long as somebody leaves it there.
+    // Resolves `true` when the folder came out, `'stale'` when a request was sent and failed —
+    // which can still have moved files, so the caller re-reads — and `false` when nothing was
+    // asked of the server at all.
+    async removeFolderFromApp({ datasetId, label, folder, files }) {
+      const asked = state.activeApp;
+      if (!asked || !datasetId || !files) return false;
+      const where = asked.name;
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Remove ${SW.util.number(files)} ${files === 1 ? 'file' : 'files'} from ${where}?`,
+          // What is taken and what is kept, in one sentence. The Dataset's own bytes are never
+          // Sage's to remove, and the folder can be attached again from the same tree — so this
+          // says what it costs rather than warning about an act that is cheap to undo.
+          content: SW.brand.text(
+            `${where} stops carrying them and stops shipping them when you publish it. The files `
+            + 'stay in the {dataset}, and the folder can be attached again from here.'
+          ),
+          okText: `Remove folder from ${where}`,
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            if (!state.activeApp || state.activeApp.id !== asked.id) {
+              antd.message.warning(
+                `Nothing was removed. The selected app changed to ${appScopeName()} while this was `
+                + `open, and this removal named ${where}.`
+              );
+              resolve(false);
+              return;
+            }
+            let result;
+            try {
+              result = await SW.api.detachDatasetFolder(datasetId, folder);
+            } catch (err) {
+              // The server's own sentence, because only it can name the files the app still uses.
+              // Retold here it would be a second, vaguer copy of the one thing a person can act on.
+              antd.message.error(`${label} could not be removed from ${where}: ${err.message}`);
+              // A failure here is not always "nothing happened": a removal that stops part way
+              // commits what it did, and the message points at the app's file list as the record
+              // of what is left. That list has to be re-read for the message to be true. A refusal
+              // moved nothing, so this only costs it a fetch.
+              await loadScopeData();
+              // `'stale'` rather than `false`, because the DATASET LISTING has to be re-read too:
+              // its `attached` flags still say the part-removed files are carried, so their rows
+              // would offer no way to put them back. Truthy, so the caller's re-read fires; not
+              // `true`, so nobody reads this as the act having succeeded.
+              resolve('stale');
+              return;
+            }
+            // The whole scope, because a removal moves the same two lists an attach does: the app's
+            // files and the Build header's account of what it ships.
+            await loadScopeData();
+            // No `appRemoval` notice: that one exists to report what the app's source STILL uses
+            // after a removal went through, and here nothing can — source that still used a file is
+            // what refuses this act outright rather than something to report afterwards.
+            const leaked = result.removed_copies || [];
+            const copies = leaked.length
+              ? ` ${leaked.length === 1 ? 'A copy' : 'Copies'} left in ${leaked.join(', ')} `
+                + `went with ${leaked.length === 1 ? 'it' : 'them'}.`
+              : '';
+            // What was left behind, because the server could not prove it was the data rather than
+            // a file somebody wrote. Said out loud: the app stops covering these once its record
+            // drops them, so they would otherwise turn up unannounced in the next save's diff.
+            const left = result.kept_copies || [];
+            const kept = left.length
+              ? ` ${left.join(', ')} ${left.length === 1 ? 'shares a name with one of them and was'
+                : 'share names with them and were'} left in place — check ${left.length === 1
+                ? 'it is' : 'they are'} yours before saving.`
+              : '';
+            // The no-op branch its attach mirror has. The row's count can be stale against the
+            // record — a build turn may have detached something since — and a receipt reading
+            // "0 files are out" would be a success message about nothing happening.
+            antd.message.success(result.detached
+              ? `${SW.util.number(result.detached)} ${result.detached === 1 ? 'file' : 'files'} `
+                + `from ${label} ${result.detached === 1 ? 'is' : 'are'} out of `
+                + `${where}.${copies}${kept}`
+              : `${where} was already carrying nothing from ${label}.`);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
     },
 
     // Closing a gap a refused @mention named --------------------------------
@@ -3063,6 +3581,17 @@ window.SW = window.SW || {};
               appRemoval: removalNotice(where, result.name || name, result.refs || []),
             });
             notify();
+            // `usedBy` is the Project row's, computed by `list_project_resources` off the apps' own
+            // manifests — and this act just changed one of them. The read above answers with the
+            // APP's list and says nothing about the Project's, so without this the rail would go on
+            // naming an app that no longer binds anything. Since #161 that is not only a wrong
+            // subtitle: a row whose Resource is gone from Domino offers the app's door INSTEAD of
+            // the Project's, so a stale `usedBy` leaves the row pointing at an app it has already
+            // left, with no way out short of a reload.
+            //
+            // Membership only, which is a 145 ms local read — the platform listing an unbind cannot
+            // change is not re-read (#162).
+            await refreshWorkingSet();
             resolve(true);
           },
           onCancel: () => resolve(false),
@@ -3101,12 +3630,20 @@ window.SW = window.SW || {};
         );
       const leaked = result.removed_copies || [];
       const copies = leaked.length ? ` A copy left in ${leaked.join(', ')} went with it.` : '';
+      // What could not be proven to be the data, so was left where it is. Said out loud because the
+      // app stops covering it the moment its record drops the file, and the bytes would otherwise
+      // turn up in a save nobody expected them in.
+      const left = result.kept_copies || [];
+      const kept = left.length
+        ? ` ${left.join(', ')} shares its name and was left in place — check it is yours before `
+          + 'saving.'
+        : '';
       // The route hands back no manifest, so the list is the one on screen minus what just went —
       // filtered HERE, off whatever the newest read left, and installed under the act's own ticket
       // so a `/project` read that started before the detach cannot put the file back (#101).
       applyAppScope(appScopeTicket(gen), {
         appAttachments: (state.appAttachments || []).filter((a) => a.path !== attachment.path),
-        appRemoval: removalNotice(where, name, result.refs || [], `${source}${copies}`),
+        appRemoval: removalNotice(where, name, result.refs || [], `${source}${copies}${kept}`),
       });
       notify();
       return true;
@@ -3196,7 +3733,7 @@ window.SW = window.SW || {};
       // Pointing at something from the catalogue brings it into the project on
       // the way in, so the panel has to hear about its new member.
       if (attachment.joinedProject) {
-        await loadScopeData();
+        await refreshWorkingSet();
         if (!options.silent) {
           antd.message.success(`${attachment.resourceName} added to ${state.scope.name}`);
         }
@@ -4488,7 +5025,7 @@ window.SW = window.SW || {};
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || 'Upload failed');
-      await loadScopeData();
+      await refreshWorkingSet();
       const resource = {
         id: `file:${body.path}`,
         name: name,
@@ -4510,7 +5047,7 @@ window.SW = window.SW || {};
 
     async unpinLeaf(parent, pin) {
       await SW.api.unpinFromProject(parent.id, pin);
-      await loadScopeData();
+      await refreshWorkingSet();
       return true;
     },
 
@@ -4638,9 +5175,13 @@ window.SW = window.SW || {};
 
     // Shared refresh helpers ---------------------------------------------
 
+    // No caller in the Workbench: a scope load is reached through `setScope` or through boot.
+    // `js/working_set_refresh_harness.mjs` reaches `loadScopeData` through it, to put one in
+    // flight against a mutation — so a dead-export sweep takes two tests with it.
     reloadScopeData: loadScopeData,
     reloadThreads: loadThreadList,
     reloadAttachments: refreshAttachments,
+    reloadMembers,
 
     // The panel's pin names the plan document, so renaming one on the plan page has to reach the
     // pin without a reload. `refreshProjectPlan` does not notify on its own — its other callers

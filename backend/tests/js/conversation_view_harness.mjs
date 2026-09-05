@@ -368,6 +368,13 @@ function planCardText(block) {
 // `toggleRail`, because this is the harness getting at the list and not a person choosing anything.
 function railRows(mode) {
   SW.store.set({ railHidden: false });
+  return drawnRows(mode);
+}
+
+// The same read with the opening taken out, for the one claim that is about a Rail nobody opened:
+// the collapsed head's "New conversation" is supposed to leave the list on screen, and a read that
+// opens the Rail itself cannot tell that apart from one that stayed shut.
+function drawnRows(mode) {
   const rows = [];
   const walk = (node, row) => {
     if (node === null || node === undefined || node === false || node === true) return;
@@ -385,6 +392,24 @@ function railRows(mode) {
   };
   walk(SW.ConversationRail({ mode }), null);
   return rows.map((r) => `${r.className} | ${r.words.join(' ')}`);
+}
+
+// The press itself, off the button the person actually reaches for. Every other step here calls the
+// store action the button runs, which is the half that was never in doubt: the flag was being set
+// all along and no one could see it. So this one goes through the handler, and the claim it makes is
+// about what the Rail draws afterwards.
+function pressRail(mode, label) {
+  let onClick = null;
+  const walk = (node) => {
+    if (!node || typeof node !== 'object' || onClick) return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node.p && node.p['aria-label'] === label && node.p.onClick) { onClick = node.p.onClick; return; }
+    if (typeof node.t === 'function') { walk(node.t(node.p || {})); return; }
+    walk(node.c);
+  };
+  walk(SW.ConversationRail({ mode }));
+  if (!onClick) throw new Error(`the rail drew no "${label}" button`);
+  onClick();
 }
 
 // What a block says, short enough to assert on. A build run reports its face and its fold
@@ -547,6 +572,28 @@ for (const step of steps) {
       rows: railRows(route.startsWith('#/build') ? 'build' : 'chat'),
       // Nothing may be written. An empty conversation that survives the press is one the rail
       // has to list forever, and the row above exists precisely so that none is needed.
+      writes: writes.slice(),
+    });
+  } else if (step.pressCollapsedNew) {
+    // The collapsed head's icon, pressed. The Rail is put back to how the Workbench loads — shut —
+    // because that IS the condition under test: from there the pending row is the only answer the
+    // press has, and the panel it is drawn in is the one being clicked.
+    await SW.store.reloadThreads();
+    const mode = step.pressCollapsedNew === 'build' ? 'build' : 'chat';
+    sandbox.location.hash = mode === 'build' ? '#/build' : '#/chat';
+    SW.store.set({ railHidden: true });
+    writes.length = 0;
+    pressRail(mode, 'New conversation');
+    report.push({
+      step: `pressCollapsedNew ${mode}`,
+      railHidden: SW.store.get().railHidden,
+      // Read WITHOUT opening anything, so "the list is on screen" is the press's doing.
+      rows: drawnRows(mode),
+      // Where the press left the route, since the press navigates as well as clears.
+      hash: sandbox.location.hash,
+      // The preference is a hand-made choice and this press is not one. A Rail that loads shut
+      // must still load shut afterwards.
+      prefRailHidden: SW.prefs.get('railHidden'),
       writes: writes.slice(),
     });
   } else if (step.firstMessage) {

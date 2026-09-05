@@ -287,30 +287,38 @@ a.sw-topnav-link {
 .sw-scope-row-count { font-size: var(--fs-12); color: var(--gray-500); white-space: nowrap; }
 .sw-scope-pop-footer { border-top: 1px solid var(--gray-300); padding: var(--s2) var(--s4); }
 
-/* Presence --------------------------------------------------------------- */
+/* Collaborators ----------------------------------------------------------- */
 
+/* The stack carried a status dot in each corner. Nothing on the server has ever implemented
+   presence, so the dot said "offline" about everybody, always. It is gone rather than greyed:
+   a stack of avatars is who works here, which is a fact Domino actually holds. */
 .sw-presence { display: flex; align-items: center; gap: 2px; }
 .sw-presence-slot { position: relative; display: inline-flex; margin-right: -4px; }
 .sw-presence-slot .sw-avatar { box-shadow: 0 0 0 2px var(--white); }
-.sw-presence-slot::after {
-  content: '';
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1.5px solid var(--white);
-  background: var(--gray-400);
-}
-.sw-presence-slot.is-active::after  { background: var(--success); }
-.sw-presence-slot.is-viewing::after { background: var(--info); }
-.sw-presence-slot.is-idle::after    { background: var(--gray-400); }
 .sw-presence-more {
   font-size: var(--fs-12);
   color: var(--gray-500);
   margin: 0 var(--s2) 0 var(--s2);
 }
+
+.sw-people-list { display: grid; gap: var(--s2); }
+.sw-people-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--gray-200);
+}
+.sw-people-row:last-child { border-bottom: none; }
+.sw-people-main { flex: 1; min-width: 0; }
+.sw-people-name { color: var(--dark-700); }
+/* The raw platform role. Sized down and set apart because it is a value, not a label we chose. */
+.sw-people-role {
+  font-size: var(--fs-12);
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+.sw-people-error { display: grid; gap: var(--s3); justify-items: start; }
 
 /* Notifications ---------------------------------------------------------- */
 
@@ -430,16 +438,15 @@ a.sw-topnav-link {
 }
 .sw-panel-add { flex: none; }
 
-/* A line about the list rather than a row in it: still loading, or a kind whose listing failed.
-   The error keeps the group heading above it, so "could not list" is attached to the name of the
-   thing that could not be listed. */
+/* A line about the whole list rather than a row in it: the panel is still loading. A kind whose
+   listing FAILED says so at its own group head instead — see `.sw-group-note` — because that fact
+   belongs to the kind, not to the panel. */
 .sw-panel-note {
   padding: var(--s2) var(--s3);
   font-size: var(--fs-12);
   color: var(--gray-600);
   line-height: 1.5;
 }
-.sw-panel-note.is-error { color: var(--warning-text); background: var(--warning-bg); }
 
 /* Nothing in the project. Small, because this is a 280-320px rail and not a page — but it keeps
    the shape of the full-size empty state: a mark, a line, a sentence, one way out. The button is
@@ -490,15 +497,55 @@ a.sw-topnav-link {
 }
 .sw-panel-hint > span { flex: 1; }
 
+/* The row holds two controls, so it can no longer be one itself: the caret toggles,
+   the + opens the catalog. A nested button inside a role="button" div is invalid,
+   and its click would bubble and collapse the group it just opened a catalog for.
+   The row keeps no cursor and no hover of its own — the pointer feedback belongs to
+   whichever button is under the pointer, and a hand cursor over a strip that answers
+   nothing is the row still claiming to be a control. So all of the row's padding goes to
+   the toggle, the vertical side included — padding left on the row would be a band above
+   the label that no longer toggles, and a hover stripe floating short of the row's edges.
+   That padding is symmetric where the row's used to lean top-heavy: the row centres its
+   children, so the label and the + sit on one line only while the toggle's own box is
+   centred on its text. The leading the head had is put back as a margin, which is outside
+   the row and so outside the alignment. */
 .sw-res-group-label {
   display: flex;
   align-items: center;
-  gap: var(--s2);
-  padding: var(--s3) var(--s3) var(--s1);
-  cursor: pointer;
+  margin-top: var(--s1);
+  padding: 0 var(--s1) 0 0;
   user-select: none;
 }
-.sw-res-group-label:hover { background: var(--gray-100); }
+.sw-res-group-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.sw-res-group-toggle:hover { background: var(--gray-100); }
+.sw-res-group-add {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--gray-500);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sw-res-group-add:hover { background: var(--gray-200); color: var(--dark-700); }
+.sw-res-group-toggle:focus-visible,
+.sw-res-group-add:focus-visible { outline: 2px solid var(--purple-500); outline-offset: -2px; }
 .sw-res-subgroup {
   padding: var(--s2) var(--s3) 2px 28px;
   display: flex;
@@ -629,6 +676,22 @@ a.sw-topnav-link {
   color: var(--gray-500);
   padding: 8px 4px;
 }
+/* Deliberately NOT the muted rule above. That grey is for a placeholder standing in for content —
+   "no files here", "still loading" — and this sentence is the opposite: it qualifies the rows
+   underneath it, which are the ones the eye goes to first. Styled as the placeholder it read as
+   one, above a dense list, on the one screen whose whole premise is that a tree which looks
+   complete is what misleads. So it takes `.sw-problem`'s card, the treatment this Workbench
+   already uses for a caveat somebody has to actually read. */
+.sw-tree-truncated {
+  font-size: var(--fs-12);
+  line-height: 1.4;
+  color: var(--warning-text);
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  border-radius: var(--radius);
+  padding: var(--s2);
+  margin-bottom: 4px;
+}
 .sw-tree-folder-head, .sw-tree-step, .sw-tree-crumb-btn {
   border: none;
   background: none;
@@ -646,6 +709,40 @@ a.sw-topnav-link {
   color: var(--purple-700);
 }
 .sw-tree-folder-body { padding-left: 12px; }
+/* A folder's own row: the name it opens by, and the act that takes everything under it
+   (ADR-0029). The head keeps its own hit area and the acts sit beside it, so opening a folder and
+   attaching one are two targets rather than one ambiguous row. */
+.sw-tree-folder-row, .sw-tree-root-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  /* A row can carry both directions at once — attach what is missing, remove what is carried — and
+     both labels name the app, so in a narrow rail they wrap under the folder name rather than
+     overflowing it. */
+  flex-wrap: wrap;
+}
+.sw-tree-folder-row .sw-tree-folder-head { flex: 1; min-width: 0; }
+.sw-tree-root-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-12);
+  color: var(--gray-500);
+  padding: 4px 0;
+}
+.sw-tree-folder-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* The numbers the act confirms with, on screen BEFORE the click rather than inside the refusal
+   after it: the attach cap is what decides whether this act can succeed at all. */
+.sw-tree-folder-meta {
+  font-size: var(--fs-11);
+  color: var(--gray-500);
+  white-space: nowrap;
+}
 .sw-tree-leaf {
   display: flex;
   align-items: center;
@@ -695,6 +792,18 @@ a.sw-topnav-link {
   white-space: nowrap;
 }
 
+/* A kind that would not list, said once above its rows. It sits between the group head and the
+   first row because it is a fact about the KIND — it is as true of a group holding twelve carried
+   rows as of an empty one, and only the group head is above both (#161). */
+.sw-group-note {
+  padding: 0 var(--s3) var(--s2) 28px;
+  font-size: var(--fs-12);
+  color: var(--warning-text);
+  line-height: 1.5;
+}
+/* `.sw-group-empty` went with the branch that drew it: a group with nothing in it is not drawn at
+   all now, so there is no empty row left to style. The panel's own empty state — `.sw-panel-empty`
+   above — is what a wholly empty project gets instead, said once rather than once per kind. */
 
 /* Shared with the composer's @-mention list, the plan view, and the builder's
    decision list — all of which own a piece of conversation state. */
@@ -707,6 +816,20 @@ a.sw-topnav-link {
   border-radius: 9px;
   background: var(--purple-100);
   color: var(--purple-700);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The @ menu's copy of the rail's `missing` mark. Same words, told apart from `in context` beside
+   it by colour rather than shape: both are facts about the row, and one of them is a warning (#161). */
+.sw-mention-missing {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--error-bg);
+  color: var(--error);
   font-size: var(--fs-11);
   font-weight: 600;
   white-space: nowrap;

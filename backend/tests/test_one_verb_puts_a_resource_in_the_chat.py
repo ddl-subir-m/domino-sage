@@ -23,7 +23,7 @@ _JS = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
 TREE = (_JS / "components" / "resource-tree.js").read_text()
 DRAWER = (_JS / "components" / "resource-drawer.js").read_text()
 PANEL = (_JS / "components" / "resource-panel.js").read_text()
-# The app's own list, and so the app's own removal, lives on the app's surface (ADR-0032).
+# The app's own list, and so the app's own removal, lives on the app's surface (ADR-0035).
 BUILDER = (_JS / "modes" / "builder.js").read_text()
 
 SURFACES = {"resource-tree.js": TREE, "resource-drawer.js": DRAWER, "resource-panel.js": PANEL}
@@ -77,7 +77,7 @@ def test_the_row_menu_names_stopping_without_borrowing_the_removal_verb():
     assert "Stop using here" in PANEL
     assert "Remove from this conversation" not in PANEL
     # The two that really do remove keep their verb; this rename must not eat them (ADR-0011).
-    # The Project's is here; the app's is on the app's own surface, where its list went (ADR-0032).
+    # The Project's is here; the app's is on the app's own surface, where its list went (ADR-0035).
     assert "`Remove from ${SW.store.get().scope.name}`" in PANEL
     assert "`Remove from ${activeApp.name}`" in BUILDER
 
@@ -122,8 +122,13 @@ def test_the_pin_tooltip_goes_through_the_brand_pack():
 def test_only_pin_carries_the_tooltip():
     """Unpin needs no explanation — the thing is already pinned, and whoever pinned it has seen the
     tooltip. Counted over the `h(` call rather than the word, so that importing another antd
-    component whose name sits beside Tooltip in the destructure does not read as a second one."""
-    assert TREE_FLAT.count("h( Tooltip,") == 1
+    component whose name sits beside Tooltip in the destructure does not read as a second one.
+
+    Counted over `LeafRow`, which is the row this claim is about. The folder row beside it carries
+    one too, for the opposite reason: its act is sometimes UNAVAILABLE, and a disabled control that
+    does not say why is the dead end (ADR-0029)."""
+    leaf = _flat(TREE.split("function LeafRow(")[1].split("\n  }")[0])
+    assert leaf.count("h( Tooltip,") == 1
 
 
 # Membership stopped being a gate in front of the verb ------------------------

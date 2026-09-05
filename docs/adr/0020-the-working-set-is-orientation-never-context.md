@@ -93,7 +93,7 @@ a correctness bug, not a missing nicety. `_record` and `add_thread_context` are 
 join today, and a third door must pass through one of them.
 
 **The panel is this list and nothing else, since
-[ADR-0032](0032-the-panel-is-the-projects-one-list.md).** Orientation being the job is what settled
+[ADR-0035](0035-the-panel-is-the-projects-one-list.md).** Orientation being the job is what settled
 it: two other scopes were stacked in the same column, and a surface whose job is to orient cannot
 also be the place three scopes are told apart by their headings.
 

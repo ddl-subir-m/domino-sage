@@ -306,7 +306,7 @@ window.SW = window.SW || {};
         )
       ),
       h('span', { className: 'sw-topnav-spacer' }),
-      h(SW.PresenceStack, { onInvite: () => SW.store.set({ inviteOpen: true }) }),
+      h(SW.CollaboratorStack, { onOpen: () => SW.store.set({ peopleOpen: true }) }),
       // No panel toggle here. There were two of them within about sixty pixels of each other —
       // this one and the panel's own Hide button — in different containers, drawn with the same
       // chevron, doing the same thing. The one that survives is the one that sits ON the thing it
@@ -365,7 +365,7 @@ window.SW = window.SW || {};
       h(SW.ResourceDrawer, null),
       h(SW.HandoffSheet, null),
       h(SW.GraduationModal, null),
-      h(SW.InviteModal, null),
+      h(SW.PeopleModal, null),
       h(SW.CommandPalette, null),
       h(SW.ModelAssignmentsDrawer, null),
       h(SW.ProblemsDrawer, null),

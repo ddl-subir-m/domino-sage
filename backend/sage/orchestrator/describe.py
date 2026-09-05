@@ -69,7 +69,7 @@ def describe(path: str, *, max_detail_chars: int = 1200) -> dict:
         # Magic bytes already identified the type, and that identification is reliable — a parse
         # failure must degrade the DESCRIPTION, not the identification. A truncated PDF is still a
         # PDF, and telling the agent that beats a useless "unavailable".
-        summary = f"{kind} — {_human(size)}, could not be parsed"
+        summary = f"{kind} — {human_bytes(size)}, could not be parsed"
         detail = (f"Identified as {kind} by its magic bytes, but parsing failed "
                   f"({type(e).__name__}) — the file may be truncated or corrupt. "
                   f"Content was NOT previewed.")
@@ -210,7 +210,7 @@ def _describe_json(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     pasted into the prompt invites the model to hardcode them as the app's data.
     """
     if size > _JSON_PARSE_LIMIT:
-        return (f"JSON — {_human(size)}, too large to parse for a schema",
+        return (f"JSON — {human_bytes(size)}, too large to parse for a schema",
                 ("Schema not inferred: the document exceeds the in-memory parse limit. "
                  "The app should stream it at runtime from its served URL."))
     with open(path, encoding="utf-8", errors="strict") as f:
@@ -301,7 +301,7 @@ def _describe_excel(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     try:
         from openpyxl import load_workbook
     except ImportError:
-        return (f"Excel workbook — {_human(size)}, sheet details unavailable",
+        return (f"Excel workbook — {human_bytes(size)}, sheet details unavailable",
                 ("openpyxl is not installed, so sheet names and dimensions could not be read. "
                  "The file is a valid .xlsx workbook."))
 
@@ -324,7 +324,7 @@ def _describe_parquet(path: str, head: bytes, hint, size: int) -> tuple[str, str
     try:
         import pyarrow.parquet as pq
     except ImportError:
-        return (f"Parquet file — {_human(size)}, schema unavailable",
+        return (f"Parquet file — {human_bytes(size)}, schema unavailable",
                 ("pyarrow is not installed, so the column schema could not be read from the footer. "
                  "The file is a valid Parquet file."))
 
@@ -345,7 +345,7 @@ def _describe_pdf(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     try:
         from pypdf import PdfReader
     except ImportError:
-        return (f"PDF document — {_human(size)}, page details unavailable",
+        return (f"PDF document — {human_bytes(size)}, page details unavailable",
                 ("pypdf is not installed, so page count and text extraction were skipped. "
                  "The file is a valid PDF."))
 
@@ -400,7 +400,7 @@ def _describe_image(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     """
     fmt, dims = _image_header(head)
     wh = f"{dims[0]}x{dims[1]}" if dims else "dimensions unknown"
-    detail = (f"{fmt} image, {wh}, {_human(size)}.\n"
+    detail = (f"{fmt} image, {wh}, {human_bytes(size)}.\n"
               "Pixel data is not previewed. The app should reference the image by its served URL.")
     return f"{fmt} image — {wh}", detail
 
@@ -538,13 +538,13 @@ def _webp_dims(head: bytes) -> tuple[int, int] | None:
 def _describe_text(path: str, head: bytes, text: str, size: int) -> tuple[str, str]:
     """The one kind where raw content is the right answer — bounded, and already known decodable."""
     lines = text.splitlines()
-    return f"Text — {_human(size)}", "First lines:\n" + "\n".join(lines[:40])
+    return f"Text — {human_bytes(size)}", "First lines:\n" + "\n".join(lines[:40])
 
 
 def _describe_binary(path: str, head: bytes, hint: str | None, size: int) -> tuple[str, str]:
     what = hint or "unrecognized binary format"
-    return (f"Binary — {_human(size)}, {what}",
-            (f"{os.path.basename(path)}: {_human(size)}, {what}.\n"
+    return (f"Binary — {human_bytes(size)}, {what}",
+            (f"{os.path.basename(path)}: {human_bytes(size)}, {what}.\n"
              "Content was NOT previewed — the bytes are not text and decoding them would produce "
              "garbage. Treat this file as an opaque blob served by URL."))
 
@@ -582,7 +582,11 @@ def _cap(detail: str, limit: int) -> str:
     return detail[:limit - len(note)] + note
 
 
-def _human(n: int) -> str:
+def human_bytes(n: int) -> str:
+    """A size a person reads. Public, because two other surfaces now say one out loud: the folder
+    act's refusal names what a subtree weighs (ADR-0029), and the Dataset tree's own row shows the
+    same number before the click — `SW.util.bytes` in the Workbench is this function, digit for
+    digit, so the sentence before the act and the one after it cannot disagree."""
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"

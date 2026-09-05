@@ -60,6 +60,34 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Fewer, Bigger Turns
+
+**Model latency between tool calls is the main cost of a session. Spend fewer turns.**
+
+Batch your tool calls:
+- Put independent reads, greps and test runs in ONE message.
+- Never send a lone `grep` or `sed -n` when you already know the next one.
+- If two commands do not depend on each other, they go together.
+
+Run tests less often, and never serially:
+- Run targeted node IDs while you iterate: `uv run pytest -q tests/test_x.py::test_y`.
+- Run the full suite once, before you commit — not after each edit.
+- `-n auto` is the default in `pyproject.toml`. Do not remove it. Use `-n0` only to read
+  interleaved output or to run one test under a debugger.
+
+## 6. Scoped Reviews
+
+**Review only what changed. A whole-repo review costs ~13 minutes of turns and finds no more.**
+
+- Review the changed paths, not the project. If you cannot name the changed paths, ask.
+- Never run the full test suite as part of a review. Run only the tests that cover the
+  changed files. That is the commit's job, not the review's.
+- More than ~12 changed files: stop. Report the count, group the files, and ask which group
+  to review first.
+- After you fix findings, re-review ONLY the files you touched. Do not re-run the review over
+  the whole change — that repeat is the most expensive mistake here.
+- Default to `medium`. Use `high` or `max` only when asked for it.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

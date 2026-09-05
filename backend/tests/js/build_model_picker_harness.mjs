@@ -37,6 +37,9 @@ const CATALOG = {
 };
 // What an `openai` gateway adds. One of them is already a configured slot, so the extras list has
 // to drop it — offering the same model under two headings is the same duplicate as above.
+// A model that signs its tool calls, for the pin (ADR-0032).
+const SIGNING_MODEL = 'google/gemini-3.7-flash';
+
 const OPEN_WEIGHT = [
   { id: 'deepseek/deepseek-v3', provider: 'DeepSeek' },
   { id: 'qwen/qwen-2-5', provider: 'Qwen' },
@@ -46,6 +49,9 @@ const OPEN_WEIGHT = [
 let mode = 'auto';
 let phase = 'plan';
 let picked = null;
+// Server-computed (ADR-0032). Set by a step, never derived here — the point of the field is
+// that the picker cannot work it out, so a harness that derived it would test nothing.
+let signingSlot = null;
 const calls = [];
 const fetched = [];
 
@@ -63,6 +69,7 @@ const status = () => ({
   model: {
     mode, selected_mode: mode, phase, picked_model: picked,
     chat_model: null, reasoning_effort: null, catalog: CATALOG,
+    signing_slot: signingSlot,
   },
 });
 
@@ -166,6 +173,11 @@ for (const step of steps) {
     continue;
   }
 
+  if ('signing' in step) {
+    // The server reports the slot and the assignment together, so the fixture moves together too.
+    signingSlot = step.signing;
+    if (step.signing) CATALOG[step.signing] = SIGNING_MODEL;
+  }
   await SW.store.setBuildMode(step.mode);
   await settle();
   // A build in flight. `pick` is read live out of ModelControl.snapshot — it has no per-turn pin
@@ -188,7 +200,9 @@ for (const step of steps) {
       : { key: i.key, label: i.label })) : null,
     selectedKeys: menu ? menu.p.menu.selectedKeys : null,
     // What a mode with no override says instead, so "you cannot change this" is not silence.
-    why: menu ? null : String((pickerTip(before) || { p: {} }).p.title || '') || null,
+    // Reported whether or not a menu is offered: under the signing pin a mode has BOTH, and
+    // gating this on the menu is how the pin's explanation would go unasserted.
+    why: String((pickerTip(before) || { p: {} }).p.title || '') || null,
     // A browser dispatches no mouse events on a disabled button, so a Tooltip wrapped straight
     // round one never opens. What sits between them is the difference between an explanation and
     // silence, and it is invisible to every other assertion here.

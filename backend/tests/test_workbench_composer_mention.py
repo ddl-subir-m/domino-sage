@@ -18,7 +18,7 @@ CSS = (WB / "css" / "chat.css").read_text()
 def test_picking_a_mention_inserts_at_name_instead_of_stripping_it():
     # The token itself is derived in util.js, because the turn has to read the same one back out of
     # the prompt (see test_workbench.test_a_build_turn_carries_what_its_mentions_name).
-    assert "SW.util.mentionToken(resource)" in UI
+    assert "SW.util.mentionToken(resource, mentionPeers)" in UI
     assert "setText(text.slice(0, mention.start) + token + pad + after)" in UI
     assert "The mention resolves into a chip rather than into text" not in UI
 
@@ -114,12 +114,12 @@ def test_the_new_group_is_appended_last():
     assert "[...(groups || []), catalogue || []].forEach(" in UTIL
 
 
-def test_the_cap_of_eight_survives_the_new_group():
+def test_the_cap_survives_the_new_group():
     # A sixth source of rows is a sixth way to overflow the menu. The cap is asked for once and
     # applied once, by the shared helper, after every group has been through it — so it still
     # counts them all.
-    assert UI.count("limit: 8,") == 1
-    assert "return limit ? out.slice(0, limit) : out;" in UTIL
+    assert UI.count("limit: 10,") == 1
+    assert "return limit ? rows.slice(0, limit) : rows;" in UTIL
 
 
 def test_no_table_or_dataset_file_can_reach_the_new_group():
@@ -161,16 +161,23 @@ def test_the_group_is_dropped_when_the_scope_changes_rather_than_when_it_refills
     opposite of true, until the listing lands."""
     reset = "state.catalogueParents = [];"
     assert reset in STORE
-    # Beside the synchronous members write, ahead of the deferred listing that refills it.
+    # Beside the synchronous members write, ahead of the deferred listing that refills it. The
+    # refill is `applyListing`, which the deferred `.then` calls and Browse Domino reuses (#159).
     before, after = STORE.split(reset, 1)
     assert "applyResourceGroups(resources.groups," in before.rsplit("async function loadScopeData", 1)[-1]
-    assert "state.catalogueParents = SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(" in after
+    assert "applyListing(listing);" in after
 
 
 def test_the_store_asks_for_nothing_new_to_fill_the_group():
     """`resourceListing()` already returned the whole catalogue and `overlayResourceListing` threw
-    the non-members away. Keeping them costs no request; a second fetch on every scope load would."""
-    assert STORE.count("SW.api.resourceListing()") == 1
+    the non-members away. Keeping them costs no request; a second fetch on every scope load would.
+
+    Counted inside `loadScopeData` rather than over the file: the other call site is Browse Domino
+    re-reading the platform when it opens (#159), which is a different act on a different door.
+    """
+    load = STORE[STORE.index("async function loadScopeData"):
+                 STORE.index("  // Split out of the scope load because the People modal")]
+    assert load.count("SW.api.resourceListing()") == 1
 
 
 def test_the_join_flag_reaches_the_store_that_reads_it():

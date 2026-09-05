@@ -12,6 +12,7 @@ import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -24,6 +25,7 @@ from sage.resources.provider import (
     FakeResourceProvider,
     LlmAlias,
     ModelApi,
+    ModelApiListing,
     ResourceUnavailable,
     accessible_ids,
     cascade_levels,
@@ -269,15 +271,22 @@ def test_model_apis_are_unlistable_rather_than_empty_when_there_is_no_domino_api
 
 
 @contextmanager
-def stub_domino_api(pages: list[object], *, user: object = None, projects: object = None):
-    """A Domino API that answers the Model API listing, handing out `pages` in order and recording
-    every path it was asked for (query string included).
+def stub_domino_api(pages: list[object] | dict[str, list[object]], *,
+                    user: object = None, projects: object = None):
+    """A Domino API that answers the Model API listing from `pages` and records every path it was
+    asked for (query string included).
 
-    `pages` are for the LISTING only, and are consumed in listing order however many other calls the
-    provider makes around them. The project fan-out (#42) asks two more questions first — who is
-    calling, and which projects do they belong to — and those are answered from `user` and
-    `projects`. Both default to a 404, which is a Domino that will not say: the fan-out then collapses
-    to the builder's own project, which is the shape every test written before #42 assumes.
+    `pages` are for the LISTING only. As a LIST they are consumed in listing order, however many
+    other calls the provider makes around them — the shape a test that only ever asks about one
+    project wants. As a DICT they are keyed on project id and consumed per project, which is what
+    the fan-out needs since #160 made it parallel: the projects no longer arrive in a fixed order,
+    so a list would hand one project's payload to another and the test would pass or fail on the
+    scheduler.
+
+    The project fan-out (#42) asks two more questions first — who is calling, and which projects do
+    they belong to — and those are answered from `user` and `projects`. Both default to a 404, which
+    is a Domino that will not say: the fan-out then collapses to the builder's own project, which is
+    the shape every test written before #42 assumes.
 
     Answering by path rather than by call order for exactly that reason. Order made the stub read as
     a script of the provider's internals, so adding one call to the provider rewrote every test that
@@ -285,6 +294,15 @@ def stub_domino_api(pages: list[object], *, user: object = None, projects: objec
     """
     seen: list[str] = []
     listings: list[str] = []
+    served: dict[str, int] = {}
+
+    def listing_payload(path: str) -> object:
+        if not isinstance(pages, dict):
+            return pages[min(len(listings) - 1, len(pages) - 1)] if pages else None
+        pid = parse_qs(urlparse(path).query).get("projectId", [""])[0]
+        rows = pages.get(pid) or []
+        served[pid] = served.get(pid, 0) + 1
+        return rows[min(served[pid] - 1, len(rows) - 1)] if rows else None
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -292,10 +310,12 @@ def stub_domino_api(pages: list[object], *, user: object = None, projects: objec
             if self.path.startswith("/api/users/v1/self"):
                 payload = user
             elif self.path.startswith("/api/projects/beta/projects"):
-                payload = projects
+                # A callable is answered per path, which is how a test drives the pager: page one
+                # answers and page two 503s. A plain object answers every offset, as it always did.
+                payload = projects(self.path) if callable(projects) else projects
             else:
                 listings.append(self.path)
-                payload = pages[min(len(listings) - 1, len(pages) - 1)] if pages else None
+                payload = listing_payload(self.path)
             if payload is None:
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
@@ -327,7 +347,7 @@ def test_the_provider_scopes_the_listing_to_the_project_it_was_asked_about():
         out = DominoResourceProvider(
             "http://gw/v1", lambda: "gwtok", api_host=api_host, api_token_provider=lambda: "apitok"
         ).list_model_apis("proj-1")
-    assert [m.name for m in out] == ["churn-risk", "demand-forecast", "never-deployed"]
+    assert [m.name for m in out.models] == ["churn-risk", "demand-forecast", "never-deployed"]
     assert seen[0].startswith("/api/modelServing/v1/modelApis?")
     assert "projectId=proj-1" in seen[0]
 
@@ -341,7 +361,7 @@ def test_a_project_with_more_model_apis_than_one_page_is_listed_whole():
     with stub_domino_api([page(["a"], 2), page(["b"], 2), page([], 2)]) as (api_host, seen):
         p = DominoResourceProvider("http://gw/v1", lambda: "t", api_host=api_host)
         p._PAGE = 1
-        assert [m.name for m in p.list_model_apis("proj-1")] == ["a", "b"]
+        assert [m.name for m in p.list_model_apis("proj-1").models] == ["a", "b"]
     assert "offset=1" in seen[1]
 
 
@@ -353,9 +373,18 @@ def test_a_project_with_more_model_apis_than_one_page_is_listed_whole():
 _ME = {"user": {"id": "u-me", "userName": "subir"}}
 
 
-def _projects(*records: dict) -> dict:
+def _projects(*records: dict, total: int | None = None) -> dict:
+    # `total` defaults to "this is the whole list", so the pager stops after one page. A test that
+    # wants a second page claims more than it hands over.
     return {"projects": list(records),
-            "metadata": {"pagination": {"offset": 0, "limit": 100, "totalCount": len(records)}}}
+            "metadata": {"pagination": {"offset": 0, "limit": 100,
+                                        "totalCount": len(records) if total is None else total}}}
+
+
+def _asked_about(listings: list[str]) -> list[str]:
+    # Which projects the fan-out asked about. The order it asked in stopped being a fact about the
+    # code when the calls started overlapping (#160), so tests read the set and not the sequence.
+    return [parse_qs(urlparse(p).query).get("projectId", [""])[0] for p in listings]
 
 
 def _model_apis(*names: str) -> dict:
@@ -371,15 +400,17 @@ def test_the_listing_spans_the_projects_this_caller_belongs_to_and_names_each_ro
         {"id": "proj-2", "name": "Sage", "ownerId": "u-else",
          "collaborators": [{"id": "u-me", "role": "Contributor"}]},
     )
-    with stub_domino_api([_model_apis("churn"), _model_apis("priority")],
+    with stub_domino_api({"proj-1": [_model_apis("churn")], "proj-2": [_model_apis("priority")]},
                          user=_ME, projects=projects) as (api_host, listings):
         out = DominoResourceProvider(
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis("proj-1")
 
-    # Home first, and blank — the rail is already in that project's context.
-    assert [(m.name, m.project_name) for m in out] == [("churn", ""), ("priority", "Sage")]
-    assert "projectId=proj-1" in listings[0] and "projectId=proj-2" in listings[1]
+    # Home first, and blank — the rail is already in that project's context. Still ordered although
+    # the calls now overlap (#160): the answers are read back in membership order, not in whichever
+    # order Domino happened to return them, so the rail does not reshuffle between two opens.
+    assert [(m.name, m.project_name) for m in out.models] == [("churn", ""), ("priority", "Sage")]
+    assert sorted(_asked_about(listings)) == ["proj-1", "proj-2"]
 
 
 def test_off_domino_the_listing_fans_out_over_membership_with_no_home_project():
@@ -393,7 +424,7 @@ def test_off_domino_the_listing_fans_out_over_membership_with_no_home_project():
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis(None)
 
-    assert {m.name for m in out} == {"churn", "priority"}
+    assert {m.name for m in out.models} == {"churn", "priority"}
     assert any("projectId=proj-1" in path for path in listings)
     assert any("projectId=proj-2" in path for path in listings)
 
@@ -411,7 +442,7 @@ def test_a_project_the_caller_only_has_visibility_on_is_never_asked_about():
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis("proj-1")
 
-    assert [m.name for m in out] == ["churn"]
+    assert [m.name for m in out.models] == ["churn"]
     assert len(listings) == 1 and "projectId=proj-1" in listings[0]
 
 
@@ -427,7 +458,7 @@ def test_one_model_bound_into_two_projects_is_offered_once():
         ).list_model_apis("proj-1")
 
     # First writer wins, so the row keeps the home project's blank label rather than gaining one.
-    assert [(m.id, m.project_name) for m in out] == [("churn", "")]
+    assert [(m.id, m.project_name) for m in out.models] == [("churn", "")]
 
 
 def test_a_domino_that_will_not_say_who_is_calling_still_lists_the_builders_own_project():
@@ -439,8 +470,94 @@ def test_a_domino_that_will_not_say_who_is_calling_still_lists_the_builders_own_
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
         ).list_model_apis("proj-1")
 
-    assert [m.name for m in out] == ["churn"]
+    assert [m.name for m in out.models] == ["churn"]
     assert len(listings) == 1
+    # Still a degrade rather than an error, and now it admits to being one (#163). Membership was
+    # never enumerated, so a Model API in another project is missing from this listing without
+    # having been deleted — and absence here must not be read as deletion.
+    assert not out.complete
+
+
+def test_a_domino_that_names_no_caller_id_is_the_same_degrade_as_one_that_refuses():
+    # The quieter half of the path above: `/self` answers 200 with no id in it. Same consequence —
+    # the fan-out is the home project alone — so it must report the same incompleteness.
+    with stub_domino_api([_model_apis("churn")], user={"user": {"userName": "subir"}}) as (api_host, _):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+    assert [m.name for m in out.models] == ["churn"]
+    assert not out.complete
+
+
+def test_a_membership_list_cut_short_by_a_failed_page_is_not_reported_whole():
+    """The pager breaks out of pagination on a page that fails, which leaves `mine` holding the
+    pages that did answer (#163). A creator on 150 projects whose second page 503s gets membership
+    covering the first hundred, and every Binding past that page used to read as deleted.
+
+    The cap is not what bites here — two projects against a cap of 25 — so this isolates the pager.
+    """
+    def projects(path):
+        # Page one answers and claims a second page exists; page two 404s, which the provider reads
+        # as a refusal and the pager as "stop here".
+        return _projects({"id": "proj-2", "name": "Sage", "ownerId": "u-me"}, total=2) \
+            if "offset=0" in path else None
+
+    pages = {"proj-1": [_model_apis("churn")], "proj-2": [_model_apis("priority")]}
+    with stub_domino_api(pages, user=_ME, projects=projects) as (api_host, _):
+        p = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        p._PAGE = 1
+        out = p.list_model_apis("proj-1")
+
+    # The projects it did enumerate are still fanned out over and still listed.
+    assert {m.name for m in out.models} == {"churn", "priority"}
+    assert not out.complete
+
+
+def test_a_membership_list_that_outruns_the_pager_is_not_reported_whole():
+    """`_MAX_PAGES` is a backstop against a pager that will not terminate, and reaching it means the
+    membership read never finished — a member project could be on the page after the last one read.
+
+    Nothing here is a member, so the fan-out is the home project alone and the only thing under test
+    is what running out of pages does to `complete`. An empty `mine` is the case most likely to be
+    got wrong: it looks exactly like a creator who genuinely works alone in one project.
+    """
+    def projects(path):
+        # No `totalCount` and never an empty page, so the loop can only stop by running out of turns.
+        offset = int(parse_qs(urlparse(path).query)["offset"][0])
+        return {"projects": [{"id": f"visible-{offset}", "name": f"P{offset}", "ownerId": "u-else",
+                              "collaborators": [{"id": "u-other", "role": "Owner"}]}]}
+
+    with stub_domino_api({"proj-1": [_model_apis("churn")]}, user=_ME,
+                         projects=projects) as (api_host, listings):
+        p = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        p._PAGE, p._MAX_PAGES = 1, 2
+        out = p.list_model_apis("proj-1")
+
+    assert [m.name for m in out.models] == ["churn"]
+    assert _asked_about(listings) == ["proj-1"]
+    assert not out.complete
+
+
+def test_a_membership_page_in_a_shape_we_cannot_read_is_not_the_end_of_the_list():
+    """An empty page is Domino saying "no more"; a page this code cannot parse is not. Collapsing
+    the two would make the flag lie in the one case it exists for — a renamed key or a new envelope
+    yields no members at all, and marking THAT whole reports every out-of-home Binding as deleted.
+
+    The nastiest shape is the plausible one: a 200 with a well-formed body under a different key.
+    """
+    with stub_domino_api({"proj-1": [_model_apis("churn")]}, user=_ME,
+                         projects={"items": [{"id": "proj-2", "name": "Sage", "ownerId": "u-me"}]},
+                         ) as (api_host, listings):
+        out = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
+        ).list_model_apis("proj-1")
+
+    # Degrades to the home project, as an unreadable membership always has.
+    assert [m.name for m in out.models] == ["churn"]
+    assert _asked_about(listings) == ["proj-1"]
+    assert not out.complete
 
 
 def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
@@ -462,8 +579,13 @@ def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
 
     with stub_domino_api([_model_apis("churn")], user=_ME, projects=projects) as (api_host, _):
         p = Provider("http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
-        assert [m.name for m in p.list_model_apis("proj-1")] == ["churn"]
-        assert calls == ["proj-1", "proj-2"]
+        out = p.list_model_apis("proj-1")
+        assert [m.name for m in out.models] == ["churn"]
+        assert sorted(calls) == ["proj-1", "proj-2"]
+        # The skip is survivable and is not silent (#163). It used to be both: a 200 carrying rows
+        # the fan-out knew were partial, which preflight then read as proof that everything absent
+        # from them had been deleted.
+        assert not out.complete
 
         class HomeBroken(Provider):
             def _model_apis_in(self, project_id, project_name):
@@ -473,6 +595,67 @@ def test_the_home_projects_failure_is_fatal_and_another_projects_is_not():
             "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
         with pytest.raises(ResourceUnavailable):
             broken.list_model_apis("proj-1")
+
+
+def test_a_listing_that_reached_every_project_says_so_and_a_capped_one_says_it_did_not():
+    """`_MAX_FANOUT_PROJECTS` cuts the tail of the member list, so a creator on more projects than
+    that has some whose Model APIs are absent from a listing that reports plain success (#163).
+
+    The cap itself stays: `_member_projects` pages through the whole membership, so removing it
+    makes the fan-out unbounded and re-opens #160. What changes is that the listing now says it was
+    cut, which is the one bit preflight needs to stop reading absence as deletion.
+    """
+    projects = _projects(
+        {"id": "proj-1", "name": "test-ds", "ownerId": "u-me"},
+        {"id": "proj-2", "name": "Sage", "ownerId": "u-me"},
+        {"id": "proj-3", "name": "Underwriting", "ownerId": "u-me"},
+    )
+    pages = {"proj-1": [_model_apis("churn")], "proj-2": [_model_apis("priority")],
+             "proj-3": [_model_apis("risk")]}
+    with stub_domino_api(pages, user=_ME, projects=projects) as (api_host, listings):
+        p = DominoResourceProvider(
+            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t")
+        whole = p.list_model_apis("proj-1")
+        assert {m.name for m in whole.models} == {"churn", "priority", "risk"}
+        assert whole.complete
+
+        # Set on the instance the way `_PAGE` is above: three projects and a cap of one states the
+        # property without standing up twenty-six of them.
+        p._MAX_FANOUT_PROJECTS = 1
+        listings.clear()
+        capped = p.list_model_apis("proj-1")
+
+    # A partial listing still returns its rows — the rail goes on showing what was found. The cap
+    # sorts by name, so "Sage" survives and "Underwriting" is never asked about.
+    assert {m.name for m in capped.models} == {"churn", "priority"}
+    assert not capped.complete
+    assert sorted(_asked_about(listings)) == ["proj-1", "proj-2"]
+
+
+def test_the_fan_out_asks_every_project_at_once_rather_than_one_after_another():
+    """Measured on a real deployment: 16 projects, ~70-130 ms each, 1.1-2.1 s of the rail's wait
+    spent adding them up (#160). The calls do not depend on each other, so they overlap.
+
+    A barrier rather than a stopwatch, so the test states the property instead of a threshold: each
+    project's call waits for all three to arrive. Serial code cannot get past the first one, and
+    fails here in the time it takes the barrier to break rather than flaking on a slow machine.
+    """
+    at_once = threading.Barrier(3, timeout=5)
+
+    class Provider(DominoResourceProvider):
+        def _member_projects(self, home_project_id):
+            return [("proj-1", ""), ("proj-2", "Sage"), ("proj-3", "Underwriting")], True
+
+        def _model_apis_in(self, project_id, project_name):
+            at_once.wait()
+            return [ModelApi(project_id, f"model-in-{project_id}", None, "Running",
+                             project_name=project_name)]
+
+    out = Provider("http://gw/v1", lambda: "t", api_host="http://api",
+                   api_token_provider=lambda: "t").list_model_apis("proj-1")
+
+    # Membership order, not completion order — see the ordering note in the fan-out test above.
+    assert [m.id for m in out.models] == ["proj-1", "proj-2", "proj-3"]
 
 
 def test_one_model_is_readable_by_id_whatever_project_it_lives_in():
@@ -757,10 +940,10 @@ def test_the_orchestrator_hands_its_own_project_down_as_the_home_of_the_listing(
     class Recording(FakeResourceProvider):
         def list_model_apis(self, project_id):
             asked.append(project_id)
-            return [
+            return ModelApiListing([
                 ModelApi("m1", "churn-risk", "Scores cancellation risk.", "Running"),
                 ModelApi("m2", "churn-risk", None, "Running", project_name="Underwriting"),
-            ]
+            ])
 
     orch = _orch(tmp_path, Recording())
     orch._domino_project_id = "proj-1"
@@ -820,6 +1003,39 @@ def test_the_route_carries_both_kinds_and_one_failing_service_does_not_blank_the
     assert "model_apis" not in bad["errors"]
     assert [d["name"] for d in bad["data_sources"]][:1] == ["Snowflake-Data-Warehouse"]
     assert "data_sources" not in bad["errors"]
+
+
+def test_the_route_asks_the_three_kinds_at_once_rather_than_one_after_another(tmp_path: Path, monkeypatch):
+    """Measured on a real deployment: 0.5-0.8 s of LLM Aliases, 1.4-2.5 s of Model APIs and 0.3 s
+    of Data Sources, adding up to the whole of the rail's 2.5-3.3 s wait (#160). Two Domino
+    services, three independent calls — they overlap.
+
+    Same barrier as the fan-out test: each kind's call waits for all three to arrive, so serial code
+    cannot get past the first one. See that test for why this is not a stopwatch.
+    """
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
+
+    at_once = threading.Barrier(3, timeout=5)
+
+    class Slow(FakeResourceProvider):
+        def list_llm_aliases(self):
+            at_once.wait()
+            return super().list_llm_aliases()
+
+        def list_model_apis(self, project_id):
+            at_once.wait()
+            return super().list_model_apis(project_id)
+
+        def list_data_sources(self):
+            at_once.wait()
+            return super().list_data_sources()
+
+    monkeypatch.setattr(appmod, "orchestrator", _orch(tmp_path, Slow()))
+    body = TestClient(appmod.control_app).get("/api/resources").json()
+    assert body["errors"] == {}
+    assert body["llm_aliases"] and body["model_apis"] and body["data_sources"]
 
 
 # ---- the cascade (#11) ---------------------------------------------------------------------------
@@ -1093,46 +1309,7 @@ def test_a_vendor_alias_has_no_endpoint_url():
     assert alias.endpoint_url is None
 
 
-# ---- collaborators, for naming a plan's reviewers ------------------------------------------------
-
-
-def test_collaborators_come_back_as_people_with_names():
-    """Domino answers /v4/projects/{id}/collaborators with Person records, so there is no second
-    lookup to turn ids into the names a plan comment is shown under."""
-    people = [
-        {"id": "u-a", "fullName": "Ada Lovelace", "userName": "ada", "avatarUrl": "/a.png"},
-        {"id": "u-b", "fullName": "Grace Hopper", "userName": "grace", "avatarUrl": ""},
-    ]
-    with stub_domino_api([people]) as (api_host, listings):
-        out = DominoResourceProvider(
-            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
-        ).list_collaborators("proj-1")
-
-    assert [(p.id, p.name, p.title) for p in out] == [
-        ("u-a", "Ada Lovelace", "ada"),
-        ("u-b", "Grace Hopper", "grace"),
-    ]
-    assert listings[0] == "/v4/projects/proj-1/collaborators"
-
-
-def test_a_collaborator_with_no_full_name_is_still_nameable():
-    with stub_domino_api([[{"id": "u-a", "userName": "ada"}]]) as (api_host, _):
-        out = DominoResourceProvider(
-            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
-        ).list_collaborators("proj-1")
-    assert out[0].name == "ada"
-
-
-def test_a_project_record_the_caller_cannot_read_is_no_reviewers_not_an_error():
-    """The plan page then shows ids where it would show names. That is worse than names and better
-    than a page that will not load, which is the same call `_member_projects` makes."""
-    with stub_domino_api([None]) as (api_host, _):
-        out = DominoResourceProvider(
-            "http://gw/v1", lambda: "t", api_host=api_host, api_token_provider=lambda: "t",
-        ).list_collaborators("proj-1")
-    assert out == []
-
-
-def test_off_domino_there_is_nobody_to_review_a_plan():
-    assert FakeResourceProvider().list_collaborators("proj-1") == []
-    assert DominoResourceProvider("http://gw/v1", lambda: "t").list_collaborators("proj-1") == []
+# Collaborators used to be tested here, when they were one read for one caller. They are now two
+# reads Domino disagrees on, with writes beside them, and they live in
+# `test_a_collaborator_is_added_not_invited.py` — including the contract change ADR-0028 made to
+# what an unreadable project record costs.

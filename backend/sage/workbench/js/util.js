@@ -23,6 +23,7 @@ window.SW = window.SW || {};
     artifact:         { icon: '🖼', label: 'artifact',       group: 'artifacts' },
     skill:            { icon: '📘', label: 'skill',          group: 'skills' },
     mcp:              { icon: '🧩', label: 'MCP',            group: 'mcp' },
+    folder:           { icon: '📁', label: 'folder',         group: 'files' },
   };
 
   // The Resource kinds that get a membership row of their own, in the UI id space. A Dataset file
@@ -70,6 +71,30 @@ window.SW = window.SW || {};
     // a reader who wants it gone has to be sent to where it can go. The panel offers no verb for
     // that: "Stop using here" is on the row's own menu and in the drawer behind it.
     IN_CONTEXT_TITLE: 'In this conversation — it is one of the chips above the composer.',
+
+    // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —
+    // the rail, the @ menu and the bind picker — so the words are written once, the way
+    // `SOVEREIGN_TITLE` is: a person carries what they read from one menu to the other (ADR-0021).
+    //
+    // It marks and never withholds. A missing row stays selectable and says why at the point of
+    // picking, because a Problem informs and never blocks (ADR-0027) and the two acts Sage refuses
+    // already catch this downstream, knowing more about the failure than a picker does.
+    missingMark() {
+      return SW.brand.text('not in {platformName}');
+    },
+    // Says what the check actually proves, and no more. All three checkable listings are filtered
+    // to what the CALLER may see — Datasets by `minimumPermission`, Data Sources and Aliases by the
+    // accessible set — so an absence is a deletion or a revoked grant, and Sage cannot tell which
+    // from here. A sentence asserting the Resource is gone would be flatly wrong for the second
+    // case, and the second case is the one where somebody else can put it back.
+    missingTitle() {
+      return SW.brand.text(
+        'You can no longer reach this on {platformName}: it was deleted, or your access to it was.'
+      );
+    },
+    isMissing(row) {
+      return !!row && row.liveness === 'missing';
+    },
 
     // Every composer offers the same @ affordance, so the half of the placeholder that advertises
     // it is written once. Only the lead changes with what the composer is for.
@@ -228,6 +253,16 @@ window.SW = window.SW || {};
         // from the symlink's parent directory, and printing that as a Dataset name would name a
         // source the entry does not have.
         subtitle: entry && entry.dataset_id ? entry.dataset : path,
+        // The row this file collapses into once there are more attachments than a menu of eight
+        // can honestly show, or "" while the menu still shows files one by one (ADR-0030). The
+        // SERVER decides it, by the function the `AGENTS.md` block already groups with: the
+        // roll-up is a loop with a floor, and a second copy of it here is exactly how the block
+        // the agent re-reads every turn and this menu would come to disagree.
+        menuFolder: String((entry && entry.menu_folder) || ''),
+        // How many files that row stands for — the FOLDER's size, not the query's. The collapse is
+        // applied to the rows a query matched, so a count taken from those would read "3 files" on
+        // a row whose pick carries twelve.
+        menuFolderCount: Number((entry && entry.menu_folder_count) || 0),
       };
     },
 
@@ -247,24 +282,226 @@ window.SW = window.SW || {};
         .map((e) => SW.util.attachmentRow(e));
     },
 
+    // Above the threshold, the folder is the row (ADR-0030). The menu shows eight rows, so after a
+    // 200-file attach it is a window onto a list that cannot be seen — and eight rows out of 200
+    // read as a complete list, which is the menu misrepresenting itself.
+    //
+    // Applied to the rows a query already MATCHED, not to the whole list, which is what makes a
+    // single file reachable by typing enough of its name: narrow to one file in a partition and
+    // its group holds one, so it draws its own row. A group of one drawing its file is the
+    // `AGENTS.md` block's rule as well, for the same reason — naming the file describes it exactly
+    // as well as summarising would, and better.
+    //
+    // Rows carrying no folder are untouched and keep their order, so this is a no-op everywhere
+    // the server did not collapse: below the threshold, and for every group that is not the app's
+    // Attachments.
+    collapseFolders(rows) {
+      const held = {};
+      // Every folder BETWEEN a row and its files. The roll-up level moves as the attachment count
+      // does, so a token given for `raw/2026/01` names no row once the roll-up moves up to
+      // `raw/2026` — and a matcher reading only today's path finds nothing, which is the silent
+      // carry ADR-0030 rules out. These are the folders this row absorbed, so the token it was
+      // given still reaches it and the turn says it widened.
+      const absorbed = {};
+      (rows || []).forEach((r) => {
+        if (!r || !r.menuFolder) return;
+        held[r.menuFolder] = (held[r.menuFolder] || 0) + 1;
+        const under = String(r.path || '').slice(r.menuFolder.length + 1).split('/');
+        let at = r.menuFolder;
+        if (!absorbed[r.menuFolder]) absorbed[r.menuFolder] = [];
+        under.slice(0, -1).forEach((segment) => {
+          at += `/${segment}`;
+          if (absorbed[r.menuFolder].indexOf(at) === -1) absorbed[r.menuFolder].push(at);
+        });
+      });
+      const drawn = new Set();
+      const out = [];
+      (rows || []).forEach((row) => {
+        const folder = (row && row.menuFolder) || '';
+        if (!folder || held[folder] < 2) {
+          out.push(row);
+          return;
+        }
+        if (drawn.has(folder)) return;
+        drawn.add(folder);
+        // `held` decides WHETHER to collapse — a group of one still draws its file, whatever the
+        // folder's size — and the row then reports the folder's size, because that is what the
+        // pick carries.
+        out.push(SW.util.folderRow(folder, row.menuFolderCount || held[folder],
+                                   absorbed[folder]));
+      });
+      return out;
+    },
+
+    // One folder, as a row. `path` is the folder, because that is what `_resolve_mentions` expands
+    // and what `mentionTokens` builds this row's tokens from — the same field a file row is
+    // resolved through, so the turn needs no second rule to read a pick back.
+    folderRow(folder, count, absorbed) {
+      const path = String(folder || '');
+      return {
+        id: `folder:${path}`,
+        name: path.split('/').pop(),
+        kind: 'folder',
+        path,
+        count,
+        subtitle: path,
+        // Folders this row stands over, so a token given when one of THEM was the row still names
+        // it. Read by `mentionTokens` only; nothing draws them.
+        absorbed: absorbed || [],
+      };
+    },
+
+    // Every row the app's Attachments can be offered as: its files, and the folders they collapse
+    // into. The list `mentionToken` computes uniqueness against and the list `collectTurnRefs`
+    // reads a token back off, because a token has to be unique among everything that could have
+    // been GIVEN one — two partitions both called `2026` name the same folder row otherwise.
+    attachmentPeers(entries) {
+      const files = SW.util.attachmentRows(entries);
+      return files.concat(SW.util.collapseFolders(files).filter((r) => r.kind === 'folder'));
+    },
+
+    // The shortest tail of `path` that names it and no other file in `peers` — "data.csv" while the
+    // basename stands alone, "2026/data.csv" once a sibling partition holds one too (ADR-0030).
+    // Whole-segment tails only, so what comes back is a path a person can read and type.
+    //
+    // Uniqueness is a question about a list, so it is asked only of a member of that list: a path
+    // `peers` does not hold keeps its basename. That is deliberately narrow. An Upload and the
+    // Attachment it crossed into (#147) say the same word ON PURPOSE, and computing this against
+    // every row a menu can offer would rename one of them for a collision that is not this one.
+    mentionSuffix(path, peers) {
+      const full = String(path || '');
+      const segments = full.split('/');
+      const base = segments[segments.length - 1];
+      const known = (peers || []).map((row) => String((row && row.path) || '')).filter(Boolean);
+      if (!full || known.indexOf(full) === -1) return base;
+      const rivals = known.filter((other) => other !== full);
+      // Up to and INCLUDING the whole path, which is a candidate like any other: a root-level file
+      // colliding with a nested one has no distinguishing tail at all, and the loop has to reach
+      // that answer rather than be short of it by one and fall out with the basename unchecked.
+      for (let take = 1; take <= segments.length; take += 1) {
+        const suffix = segments.slice(segments.length - take).join('/');
+        // A tail distinguishes only if no rival ENDS with it on a segment boundary: "data.csv" is
+        // shared by "raw/2025/data.csv", and "6/data.csv" is not a tail anything has.
+        if (!rivals.some((r) => r === suffix || r.endsWith('/' + suffix))) return suffix;
+      }
+      return full;
+    },
+
     // The "@token" one row is named by. Prefer the file's basename so "@data.csv" matches the path
     // OpenCode reads. Lives here rather than in the composer because the menu that INSERTS a token
     // and the turn that reads it back off the prompt have to derive it the same way — a token only
     // one of them can produce is a mention that silently carries nothing (see store.collectTurnRefs).
-    mentionToken(resource) {
-      const fromPath = String((resource && resource.path) || '').split('/').pop();
+    //
+    // `peers` is the app's own Attachment list, and the token falls back to the shortest
+    // distinguishing suffix when the basename is not unique in it (ADR-0030). This costs no rule
+    // anybody has to learn, because the menu INSERTS the token: a person types "@", narrows, picks.
+    // Called with no peers it is the basename it has always been.
+    //
+    // This is the WRITING half only. Reading a token back off a prompt is `mentionTokens` below,
+    // which does not take peers at all — text already typed keeps the token it was given while the
+    // peer list moves under it, so what a row would be called today is the wrong question there.
+    mentionToken(resource, peers) {
+      const path = String((resource && resource.path) || '');
+      const fromPath = path ? SW.util.mentionSuffix(path, peers) : '';
       const fromName = String((resource && resource.name) || '').split('/').pop();
-      const token = (fromPath || fromName || 'resource').replace(/\s+/g, '_').replace(/^@+/, '');
-      return '@' + token;
+      return SW.util.mentionWord(fromPath || fromName || 'resource');
+    },
+
+    // "@" plus one path or name, spelled the way a token has to be spelled: whitespace collapsed to
+    // "_" so the token is ONE word in the box, and a leading "@" dropped so a file called "@notes"
+    // is not "@@notes". Its own function because every producer and every reader of a token has to
+    // spell it identically — `_ambiguous_mentions` in `orchestrator/service.py` is the server's copy.
+    mentionWord(text) {
+      return '@' + String(text || '').replace(/\s+/g, '_').replace(/^@+/, '');
+    },
+
+    // Every token that could stand in the box for this row: the one the menu inserts today, and
+    // every one it could have inserted before. Text already typed keeps the token it was GIVEN
+    // while the peer list moves under it — a sibling is attached, a sibling is DETACHED, the
+    // selected Built App changes mid-turn (#77). Matching only today's answer is how
+    // `@2026/data.csv` comes to name nothing the day its twin is removed and `mentionToken`
+    // collapses back to `@data.csv`: the same silent carry ADR-0030 rules out, running backwards.
+    //
+    // Whole-segment tails, because that is the whole set `mentionToken` can ever produce. A token
+    // that names several rows names ALL of them, and the turn says so (`_ambiguous_mentions`).
+    mentionTokens(resource) {
+      const path = String((resource && resource.path) || '');
+      if (!path) return [SW.util.mentionToken(resource)];
+      // A file's path is fixed, so its own tails are the whole set. A folder ROW's is not — the
+      // roll-up level moves as the attachment count crosses the threshold — so a folder row also
+      // answers for the folders it absorbed, and the turn reports that it carried the wider one
+      // (`_ambiguous_mentions`). Wider than what was asked for and said so, rather than silent.
+      //
+      // And the folders ABOVE this row, because the roll-up moves down as well as up: `@2024`
+      // was a row, files leave, the menu shows files one by one, and without the parent tails
+      // a file cannot answer `@2024`. Stop at `public/data/<slug>` inclusive — `_by_folder`'s
+      // floor — so `@data` does not become a token of every Attachment.
+      const paths = [path].concat((resource && resource.absorbed) || []);
+      const parts = path.split('/').filter(Boolean);
+      if (parts[0] === 'public' && parts[1] === 'data') {
+        for (let n = parts.length - 1; n >= 3; n -= 1) {
+          const folder = parts.slice(0, n).join('/');
+          if (paths.indexOf(folder) === -1) paths.push(folder);
+        }
+      }
+      const out = [];
+      paths.forEach((each) => {
+        const segments = String(each).split('/');
+        for (let take = 1; take <= segments.length; take += 1) {
+          const token = SW.util.mentionWord(segments.slice(segments.length - take).join('/'));
+          if (out.indexOf(token) === -1) out.push(token);
+        }
+      });
+      return out;
+    },
+
+    // Every "@token" standing in the text as its own word. ONE pass over the prompt, and the set
+    // every reader of a token asks its question of — `collectTurnRefs` tests a few hundred candidate
+    // tokens per keystroke, and a regex compiled per candidate is that cost multiplied by the depth
+    // of every path.
+    //
+    // The trailing "." is the whole subtlety. A "." ends a sentence far more often than it begins a
+    // suffix, so "@data.csv." has to be a mention of `data.csv` — but reading EVERY "." that way
+    // makes "@report.csv" a mention of `report` as well, and an app holding both `report` and
+    // `report.csv` then rides a turn with a file nobody named. So "." closes a token only when no
+    // word character follows it.
+    mentionTokensIn(text) {
+      const found = new Set();
+      const pattern = /(^|\s)@([^\s]+?)(?=[\s,;:!?)\]}'"]|\.(?!\w)|$)/g;
+      let match = pattern.exec(String(text || ''));
+      while (match) {
+        found.add('@' + match[2]);
+        match = pattern.exec(String(text || ''));
+      }
+      return found;
     },
 
     // Whether "@<token>" still stands in the text as its own word. Punctuation may follow it —
     // people write "@data.csv, please" — but a longer name must not match a shorter one's prefix.
+    // Defined by the extractor above rather than beside it, because a second regex for the same
+    // rule is how the one that INSERTS and the one that reads back come to disagree.
     mentionedIn(text, token) {
       const bare = String(token || '').replace(/^@+/, '');
       if (!bare) return false;
-      const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(^|\\s)@${escaped}(?=[\\s,.;:!?)\\]}'"]|$)`).test(String(text || ''));
+      return SW.util.mentionTokensIn(text).has(SW.util.mentionWord(bare));
+    },
+
+    // The part of a path a person is actually searching for. Two prefixes sit on paths all through
+    // this menu and in nobody's head: `public/data/<slug>/`, where an Attachment is mounted
+    // (`_attach_dest`), and `.sage/scratch/`, where a Chat upload lives. Searching them matches
+    // EVERY row that carries one — on "data", on "public", on "sage" — and the menu shows eight, so
+    // the row being hunted for is pushed off the list by the one thing it has in common with the
+    // rest. Applied in `workingSetFirst` rather than stamped on a row, so it reaches every group
+    // that has a path: the app's Attachments, the Project's Uploads, and the Conversation's chips,
+    // which carry the mount path too.
+    searchablePath(path) {
+      const p = String(path || '').replace(/^\.\//, '');
+      if (p.startsWith('.sage/scratch/')) return p.slice('.sage/scratch/'.length);
+      const parts = p.split('/');
+      if (parts.length > 3 && parts[0] === 'public' && parts[1] === 'data') {
+        return parts.slice(3).join('/');
+      }
+      return p;
     },
 
     // The Chat explorer is the project's pickable working set, not the repo.
@@ -289,16 +526,24 @@ window.SW = window.SW || {};
     // which is the one thing a person carries from one surface to the other.
     //
     // One row per id, the first occurrence winning, so a Resource two groups both hold is offered by
-    // the nearer one. `query` matches the name or the file's basename, because the basename is what
-    // `mentionToken` builds a token from — asking the same question of the same string keeps what a
-    // person typed and what the menu keeps from drifting apart.
-    workingSetFirst({ groups, catalogue, query, limit }) {
+    // the nearer one. `query` matches the name or the file's whole relative path, because the path
+    // is what `mentionToken` builds a token from once a basename collides (ADR-0030) — asking the
+    // same question of the same string keeps what a person typed and what the menu keeps from
+    // drifting apart. On the basename alone, "2026" and "raw/2026" reached nothing for
+    // `raw/2026/data.csv`, which left the one file a person could see two rows of as the one file
+    // they could not narrow to. Through `searchablePath`, because the mount prefixes these paths
+    // share are the one part of them nobody is searching for.
+    //
+    // The widening is contained, which is worth recording since this helper is shared on purpose:
+    // the Build header's picker passes NO query (`modes/builder.js`), and the matcher returns true
+    // on an empty one, so it reaches the composer's @ menu and nothing else.
+    workingSetFirst({ groups, catalogue, query, limit, collapse }) {
       const lowered = String(query || '').trim().toLowerCase();
       const matches = (row) => {
         if (!lowered) return true;
         const name = String(row.name || '').toLowerCase();
-        const base = String(row.path || '').split('/').pop().toLowerCase();
-        return name.includes(lowered) || base.includes(lowered);
+        const path = SW.util.searchablePath(row.path).toLowerCase();
+        return name.includes(lowered) || path.includes(lowered);
       };
       const seen = new Set();
       const out = [];
@@ -309,7 +554,12 @@ window.SW = window.SW || {};
           out.push(row);
         });
       });
-      return limit ? out.slice(0, limit) : out;
+      // Between the matcher and the limit, which is the only place it can go: collapsing before
+      // the match would hide the file a person is typing towards, and after the limit it would
+      // fold eight arbitrary rows out of two hundred. Opt-in, because only the composer's @ menu
+      // draws a folder — the Build header's picker offers Bindings, which have no path at all.
+      const rows = collapse ? SW.util.collapseFolders(out) : out;
+      return limit ? rows.slice(0, limit) : rows;
     },
 
     // Which level of a Data Source a walk is standing on, given the levels it HAS and the ones
@@ -374,6 +624,20 @@ window.SW = window.SW || {};
 
     number(value) {
       return Number(value || 0).toLocaleString('en-US');
+    },
+
+    // A size a person reads. `human_bytes` in `sage/orchestrator/describe.py`, digit for digit:
+    // the Dataset tree shows what a folder weighs BEFORE the click and the server's refusal names
+    // the same number after it (ADR-0029), so a mismatch here would read as two different folders.
+    bytes(value) {
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let n = Number(value || 0);
+      let unit = 0;
+      while (n >= 1024 && unit < units.length - 1) {
+        n /= 1024;
+        unit += 1;
+      }
+      return unit === 0 ? `${Math.round(n)} B` : `${n.toFixed(1)} ${units[unit]}`;
     },
 
     compactNumber(value) {

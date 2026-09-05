@@ -18,9 +18,10 @@ from typing import Any
 from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import (Mode, ModelCatalog, is_bedrock, reasoning_efforts_for,
+from ..router.models import (Mode, ModelCatalog, Reason, is_bedrock, reasoning_efforts_for,
                             supports_vision)
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
+from . import keepalive as ka
 from .chat_paths import strip_denied_writes
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
@@ -238,6 +239,38 @@ class EnforcementShim:
         # documented this as the contract: no session-level model, the shim decides per request.
         request = {**request, "model": decision.model}
 
+        log = logging.getLogger("sage.shim")
+
+        # ADR-0032: the veto. Signing is a session-level contract, and a tool-call message whose
+        # FIRST call is unsigned is a hard 400 on the WHOLE request for a signing model (verified
+        # live, #155). The router's pin keeps a session single-model going forward; this catches the
+        # sessions it cannot help — one poisoned before the pin shipped, one a rescue escalation took
+        # out of the signing model for good, or one where the user changed their pick mid-session.
+        #
+        # Read from the history rather than from what we remember resolving. `_recover_session`
+        # resurrects a session out of opencode.db with the poison intact and our memory empty, which
+        # is the exact path this bug lives on; and a text-only turn from another model leaves nothing
+        # to reject, which a memory of "we resolved sonnet once" would latch on anyway.
+        #
+        # Runs BEFORE _strip_images and split_parallel_tool_calls, both of which read
+        # request["model"] to decide whether to rewrite history.
+        if ka.unsigned_tool_messages(request["model"], request.get("messages")):
+            fallback = llm_router.resolve_unsigned(state, self._catalog)
+            log.info(
+                "model policy: %s refused, this session's history carries unsigned tool calls "
+                "(#155) — %s",
+                request["model"],
+                f"falling back to {fallback.model}" if fallback is not None
+                else "every assignable slot signs, so there is nowhere safe to go; sending anyway",
+            )
+            if fallback is not None:
+                request = {**request, "model": fallback.model}
+                # Rebind the decision, do not just edit the request. Everything downstream reads it
+                # — the model-policy summary and the rescue line — and a summary that says
+                # "resolved=gpt-5.4 (signing-pin)" contradicts itself: signing-pin means pinned TO
+                # the signing model. Verified live 2026-09-04, which is how this was caught.
+                decision = replace(fallback, reason=Reason.SIGNING_VETO)
+
         # Function tools and `reasoning_effort` are mutually exclusive on chat/completions for the
         # GPT-5 family: the gateway answers 400 with "Function tools with reasoning_effort are not
         # supported for gpt-5.4 in /v1/chat/completions". Chat turns always carry tools, so with
@@ -301,7 +334,6 @@ class EnforcementShim:
         if is_bedrock(request["model"]) and isinstance(request.get("messages"), list):
             request = {**request, "messages": split_parallel_tool_calls(request["messages"])}
 
-        log = logging.getLogger("sage.shim")
         log.info(
             "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s)",
             requested, request["model"], decision.reason.value, state.phase.value, decision.locked,
@@ -322,6 +354,20 @@ class EnforcementShim:
                 decision.model if signals.phase is not signals.base_phase else "no",
                 signals.reason, " | ".join(signals.samples),
             )
+
+        # What the tool calls in this request look like on the way OUT, grouped by message. Behind
+        # the debug flag: the unsigned-first-call shape used to be warned about here, and the veto
+        # above now refuses it instead, so there is nothing left to warn about unconditionally.
+        if ka.debug_stream_enabled():
+            sig_entries = ka.tool_call_signatures(request.get("messages"))
+            if sig_entries:
+                shown = sig_entries[:ka.DEBUG_REQUEST_MAX_CALLS]
+                log.info(
+                    "outgoing tool calls, by message (%d%s): %s",
+                    len(sig_entries),
+                    f", first {len(shown)} shown" if len(shown) < len(sig_entries) else "",
+                    " | ".join(shown),
+                )
 
         # Cost-attribution tags (sent as X-LLM-Tag-sage-*, queryable in the gateway usage dashboard).
         labels = CostLabels(

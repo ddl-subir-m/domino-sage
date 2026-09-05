@@ -22,7 +22,7 @@ composer's @ menu, and the body of a real Build turn. One fixture, four readers 
 of the bug.
 
 WHERE THE APP'S LIST IS. It was a section in the panel; it is the App dependencies modal since #151
-([ADR-0032](../../docs/adr/0032-the-panel-is-the-projects-one-list.md)). That move is what makes
+([ADR-0035](../../docs/adr/0035-the-panel-is-the-projects-one-list.md)). That move is what makes
 "one row per scope" visible rather than merely true — the two scopes are two surfaces now, and a
 row in the wrong one has nowhere to hide.
 """
@@ -108,7 +108,7 @@ def test_the_app_s_own_list_is_the_one_place_the_attachment_appears():
 
     assert _app_group(report, "Files it carries")["rows"] == ["margins.csv", "AGENTS.md"]
     assert _group(report, "Files")["rows"] == ["notes.csv", "margins.csv"]
-    # And the app's list is not in the panel at all — the two scopes are two surfaces (ADR-0032).
+    # And the app's list is not in the panel at all — the two scopes are two surfaces (ADR-0035).
     assert [g["title"] for g in report["panel"]] == ["Data", "Files"]
 
 
@@ -191,7 +191,7 @@ def test_the_row_the_panel_draws_is_the_row_the_menu_offers_and_the_turn_resolve
     the menu comes to offer something the turn cannot resolve. `SW.util.attachmentRow` is the one."""
     util = (WB / "js" / "util.js").read_text()
     store = (WB / "js" / "store.js").read_text()
-    # The app's own list, which is where the Attachment row is drawn since ADR-0032. It derived the
+    # The app's own list, which is where the Attachment row is drawn since ADR-0035. It derived the
     # basename itself while it was a summary beside the panel's copy; now that it is the only copy,
     # it has to be the same derivation as the menu's and the turn's.
     builder = (WB / "js" / "modes" / "builder.js").read_text()
@@ -200,7 +200,10 @@ def test_the_row_the_panel_draws_is_the_row_the_menu_offers_and_the_turn_resolve
     assert "attachmentRow(entry) {" in util
     assert "SW.util.attachmentRow(a).name," in builder
     assert "const attached = SW.util.attachmentRows(appAttachments);" in composer
-    assert "SW.util.attachmentRows(state.appAttachments)].forEach((rows) => {" in store
+    assert "SW.util.attachmentPeers(state.appAttachments)].forEach((rows) => {" in store
+    # The plural is what the peers are built from, so the turn still walks the panel's own rows —
+    # plus the folders they collapse into above the threshold (ADR-0030).
+    assert "const files = SW.util.attachmentRows(entries);" in util
     # The path is the field the server keys on, so it cannot be dropped from the row on the way out.
     assert "id: `file:${path}`," in util
     # The plural is the singular plus the pick filter, and the two menus that pick share it — one
@@ -213,6 +216,7 @@ def test_the_project_s_file_group_is_built_from_one_list():
     """The bug in one line: `files` was a concatenation of two scopes' lists. A `project.attached`
     reader here is that shape coming back."""
     store = (WB / "js" / "store.js").read_text()
-    files = store[store.index("const files = (project.scratch"):store.index("applyResourceGroups(\n        SW.api.overlayResourceListing(")]
+    files = store[store.index("const files = (project.scratch"):
+                  store.index("applyResourceGroups({ ...state.resourceGroups, file: files });")]
 
     assert "project.attached" not in files

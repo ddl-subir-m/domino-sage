@@ -63,6 +63,17 @@ unrelated thing.
 _Kind_: name
 _Avoid_: Artifact, artifacts
 
+**Collaborator**:
+A person Domino records as working on the [[Project]], alongside its owner. Sage adds one role and
+offers no choice of role, because the roles differ in ways a creator has no way to judge from the
+Workbench. Adding is immediate: there is no invitation, no acceptance, and nothing the person has
+to do — they are on the Project the moment the creator picks them. A Collaborator can open a
+[[Built App]] published from that Project; the one Domino role that cannot is named on its own row,
+because a role name does not carry that fact.
+_Kind_: word
+_Avoid_: invite, invitee (Sage cannot invite — there is no acceptance step to wait on), member,
+teammate
+
 ### Gateways
 
 **LLM Gateway**:
@@ -194,6 +205,11 @@ what one Built App carries is two named things and not one. A Binding may also p
 Attachment, but most do not. Removing an Attachment takes the declaration and the app's copy of the
 file. The source it was attached from is never touched, unless that source is a Dataset folder Sage
 wrote itself, which is the one case a person can ask to delete outright.
+A folder is the unit of the act and a file is the unit of the record, so attaching a folder
+makes one Attachment per file below it and never an Attachment named after the folder. Above a
+threshold the app's own description of them collapses to the folder, because the block that
+carries it is re-read on every turn
+([ADR-0029](docs/adr/0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)).
 On screen the list of them is headed "Files it carries". The head keeps the word *file* where the
 Binding's head drops the word *binding*, because the two lists are not the same shape: one holds
 several kinds of thing, and this one holds exactly one, so naming it costs nothing and the empty
@@ -266,7 +282,8 @@ _Avoid_: Hub, notebook, App container (that is the Workbench process)
 
 **Chat**:
 The Workbench mode for open-ended questions and analysis. It produces Artifacts. It does not
-edit `src/`. Driven by the OpenCode agent `sage-chat`.
+edit `src/`. Driven by the OpenCode agent `sage-chat`. It is not a terminal: code a person types
+is run, and its result is explained rather than echoed back as raw output.
 _Kind_: name
 _Avoid_: ask mode (Build has a mode called Ask and this is not it — the collision is why the
 word must not stand in for Chat), assistant, sandbox, Jupyter, notebook
@@ -432,9 +449,9 @@ harness object that holds Recall), history (that is the transcript), memory
 ### Handling rules
 
 **Remove**:
-Taking something out of one of the two durable lists that can hold it: a Built App or the Project.
-Every label names which — "Remove from <app>", "Remove from <project>" — because the scope is the
-only thing that tells the two apart. The act belongs to the list that owns that scope, so a summary
+Taking something out of a durable list that holds it: a Built App, or the Project — which holds
+both Resources and people. Every label names which — "Remove from <app>", "Remove from <project>",
+"Remove <person>" — because the scope is the only thing that tells them apart. The act belongs to the list that owns that scope, so a summary
 of a list points at it and never removes on its behalf. See
 [ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md).
 _Kind_: word
@@ -458,6 +475,23 @@ Resource stays wherever it lives, and naming it again is the whole way back. See
 _Kind_: word
 _Avoid_: "Remove from this conversation" (it borrows a verb for a cost this act does not have),
 detach, a bare "Stop using" (it does not say where)
+
+**Attach folder**:
+Putting every file below one Dataset folder into a Built App in a single act, at any depth and
+including the Dataset's own root. It is the same word the app's single-file door already uses, so
+the label is "Attach folder to <app>" and its inverse is "Remove folder from <app>". Both refuse
+whole rather than land half: over the size cap, or with any file still read by the app's code,
+nothing moves and the sentence names the numbers or the files. The attach is offered only on a
+mounted Dataset with a complete listing — every file in an unmounted one comes down one at a time
+and nothing reports how far along that got (#153 corrected the other reason: the sizes are
+knowable there after all); the removal reads the app's
+own record and needs nothing from the Dataset at all, so one that has lost its mount, had its
+listing truncated, or been unshared from the project outright does not strand what it already gave.
+See
+[ADR-0029](docs/adr/0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md).
+_Kind_: word
+_Avoid_: "Attach all", "Add folder", import, sync, upload (that makes an [[Upload]]), "Attach
+dataset" (the root is a folder like any other, and the whole-Dataset chip is a different act)
 
 **Shared credential**:
 A Data Source credential belonging to a service account rather than a person, so every
@@ -524,3 +558,15 @@ a sidecar that will not answer is a Problem in its own right, because there the 
 never lights the chip.
 _Kind_: word
 _Avoid_: health check, healthcheck, probe, validation, diagnostics, readiness
+
+**Liveness**:
+Whether Domino still holds the Resource a [[Working set]] row names. It takes three values — live,
+missing and unchecked — because two would state a fact Sage does not have: the platform listing may
+not be read yet, a kind's read may have failed, and one kind's listing can drop rows without saying
+so. Absence proves deletion only where the listing is complete. Computed from the listing already in
+hand and never written down, as `usedBy` is. It informs and never refuses: a missing row can still
+be picked, and says why at the point of picking. See
+[ADR-0034](docs/adr/0034-absence-proves-deletion-only-where-the-listing-is-complete.md).
+_Kind_: word
+_Avoid_: health, status (both belong to [[Problem]]), availability or unavailable (those describe a
+Resource that exists but will not serve), dead, stale, orphaned, existence check, validation

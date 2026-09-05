@@ -177,7 +177,7 @@ def test_the_row_names_the_plan_and_not_the_app(tmp_path: Path):
     which is exactly what it looks like once the app has been renamed away from its plan.
 
     The pinned card carried it in a label reading "Working from a plan". The plan is a row in the
-    Project's list now (#151, ADR-0032), so the noun is the group heading over it — and the row's
+    Project's list now (#151, ADR-0035), so the noun is the group heading over it — and the row's
     own subtitle names the app besides, which the pin never did. Read off the source, because what
     is asserted is that the words exist at all."""
     panel = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"

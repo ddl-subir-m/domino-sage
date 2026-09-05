@@ -16,7 +16,9 @@ best-effort and mark it so.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +27,7 @@ from urllib.parse import quote
 
 from ..orchestrator import brand
 from . import naming
-from .domino import BUILDER_WORKSPACE_NAME, BuiltApp, ControlPlane, ProjectRef
+from .domino import BUILDER_WORKSPACE_NAME, BuiltApp, ControlPlane, CredentialRef, ProjectRef
 from .github import RepoInfo, RepoNameConflict, RepoProvider
 from .seed import seed_and_push
 
@@ -110,6 +112,76 @@ def workspace_is_running(ws: dict[str, Any]) -> bool:
     if isinstance(info, dict) and "isRunning" in info:
         return bool(info.get("isRunning"))
     return str(ws.get("state") or ws.get("status") or "").lower() == "running"
+
+
+_ERR_JSON = re.compile(r"->\s*\d+:\s*(\{.*\})\s*$", re.DOTALL)
+_REQUEST_ID = re.compile(r'"requestId"\s*:\s*"[^"]*",?\s*')
+
+
+def _platform_message(err: str) -> str:
+    """Domino's own words out of a provider error, with the per-call requestId taken off.
+
+    Display only, never control flow (ADR-0033) — the message is unversioned copy. The requestId
+    has to go or two identical refusals read as different failures and never group.
+    """
+    m = _ERR_JSON.search(err)
+    if m:
+        try:
+            body = json.loads(m.group(1))
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            errs = body.get("errors")
+            if isinstance(errs, list) and errs:
+                return " ".join(str(x) for x in errs).strip()
+            if body.get("message"):
+                return str(body["message"]).strip()
+    return _REQUEST_ID.sub("", err).strip()
+
+
+def _no_git_credential_text(host: str, creds: list[CredentialRef]) -> str:
+    """Why nothing could be tried. "You have none" and "you have some, none for this host" are two
+    problems with two fixes, and one text for both told a user with three credentials to add one."""
+    if not creds:
+        return brand.text(
+            "no HTTPS Git credential for {host} in your {platformName} account — add one under "
+            "Account Settings > Git Credentials, then try again",
+            host=host,
+        )
+    return brand.text(
+        "no HTTPS Git credential for {host} in your {platformName} account. You have: {have}. Add "
+        "an HTTPS credential for {host} under Account Settings > Git Credentials, then try again",
+        host=host, have=", ".join(c.label for c in creds),
+    )
+
+
+def _every_credential_failed_text(
+    host: str, name: str, failures: list[tuple[CredentialRef, str]]
+) -> str:
+    """Every credential that was tried, grouped by what Domino said about it (ADR-0033).
+
+    One line per distinct message, not per credential: Domino's refusal runs to three sentences, and
+    printing it once per PAT buries the one thing that differs between them. The grouping does real
+    work — it separates "all my credentials are dead" from "one is dead and one hit something else",
+    which are different fixes.
+    """
+    if len(failures) == 1:
+        cred, err = failures[0]
+        return brand.text(
+            "your Git credential {label} could not reach {name}: {why}. Check it under Account "
+            "Settings > Git Credentials",
+            # rstrip: Domino's sentence already ends in a full stop, and the template adds one.
+            label=cred.label, name=name, why=_platform_message(err).rstrip("."),
+        )
+    groups: dict[str, list[str]] = {}
+    for cred, err in failures:
+        groups.setdefault(_platform_message(err), []).append(cred.label)
+    lines = "\n".join(f"  {', '.join(labels)} — {msg}" for msg, labels in groups.items())
+    return brand.text(
+        "none of your {n} HTTPS Git credentials for {host} could reach {name}.\n\n{lines}\n\n"
+        "Check these under Account Settings > Git Credentials.",
+        n=len(failures), host=host, name=name, lines=lines,
+    )
 
 
 class ProvisionService:
@@ -201,14 +273,55 @@ class ProvisionService:
             # The repo name, not `name`: _create_repo may have taken a -N candidate, and the project
             # has to carry the same suffix.
             repo_name = repo.full_name.split("/", 1)[-1]
-            project = self._cp.create_project(
-                repo_name, git_url=repo.clone_url, branch=self._branch, description=display_name)
+            project = self._create_project(repo_name, repo.clone_url, display_name)
         except Exception:
             self._rollback_repo(repo)
             raise
 
         ws = self._cp.create_workspace(project.id, branch=self._branch)
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
+
+    def _create_project(self, repo_name: str, git_url: str, description: str) -> ProjectRef:
+        """Create the Domino Project, trying each of the caller's credentials for the host until one
+        works (ADR-0033).
+
+        Domino checks repo access inside the create call, and that is the only way to tell a live
+        credential from a dead one: the credentials API carries nothing that joins to the token this
+        container's checkout holds, so Sage cannot name the credential it is already using. It stops
+        guessing and lets Domino answer.
+
+        ANY failure moves to the next candidate. Domino's message is copy — control flow that read
+        it would stop retrying the day the wording changed, and the observed refusal is a 500, so
+        keying on 4xx would miss it. A refused create leaves no Project behind (live-verified), which
+        is what makes trying all of them safe and uncapped.
+        """
+        creds = self._cp.git_credentials()
+        usable = [c for c in creds if c.usable]
+        if not usable:
+            raise RuntimeError(_no_git_credential_text(self._cp.git_host, creds))
+        failures: list[tuple[CredentialRef, str]] = []
+        for cred in usable:
+            try:
+                return self._cp.create_project(
+                    repo_name, git_url=git_url, git_credential_id=cred.id,
+                    branch=self._branch, description=description)
+            except Exception as e:
+                log.warning("project create refused the Git credential %s", cred.label)
+                failures.append((cred, str(e)))
+        raise RuntimeError(_every_credential_failed_text(self._cp.git_host, repo_name, failures))
+
+    def git_credential_diag(self) -> dict:
+        """Which credentials the create loop would try, in order, and which it would skip (#157).
+
+        `credentials.credential_probe()` reports the container side; this is the API-list side, which
+        had nothing. No secret, and no fingerprint — it identifies nothing to a person (ADR-0033).
+        """
+        creds = self._cp.git_credentials()
+        return {
+            "host": self._cp.git_host,
+            "will_try": [c.label for c in creds if c.usable],
+            "skipped": [c.label for c in creds if not c.usable],
+        }
 
     def open_app(self, project_id: str, *, owner: str | None = None) -> dict[str, Any]:
         """Return a runnable workspace in an existing Project: reuse a running one, else restart a

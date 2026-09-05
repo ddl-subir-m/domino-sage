@@ -94,8 +94,19 @@ def upstream_error(chunk: bytes) -> str | None:
     openai-compatible-chat stream event" with no payload, which is unactionable. Recognising the shape
     here is what turns it into a message a person can read (see error_sse).
 
-    Observed live: a Bedrock ValidationException relayed this way. Returns None for an ordinary chunk.
+    Callers must run this on EVERY chunk, not only the eagerly-pulled first one. The frame arrives
+    whenever the provider gets round to failing, and a model that thinks for longer than
+    FIRST_BYTE_BUDGET_S has already committed the stream by then (see the callers in
+    orchestrator/app.py and shim/app.py).
+
+    Observed live: a Bedrock ValidationException, a Gemini missing-thought_signature 400, and a bare
+    gateway `'list' object has no attribute 'get'`. Returns None for an ordinary chunk.
     """
+    # Fast reject before any parsing: an error frame always carries the literal `"error"` key, and
+    # this now runs against every chunk of every stream — without it each content delta would pay a
+    # json.loads on the hot path.
+    if b'"error"' not in chunk:
+        return None
     for line in chunk.split(b"\n"):
         payload = line.strip()
         if not payload.startswith(b"data:"):
@@ -112,6 +123,92 @@ def upstream_error(chunk: bytes) -> str | None:
             continue
         return str(err.get("message") or err) if isinstance(err, dict) else str(err)
     return None
+
+
+# How many assistant tool-call messages the debug listing shows before it stops.
+DEBUG_REQUEST_MAX_CALLS = 20
+
+
+def tool_call_signatures(messages: object) -> list[str]:
+    """One entry per assistant message that holds tool calls, listing each call's signature state.
+
+    Grouped BY MESSAGE, not flattened per call, because the grouping is the whole diagnosis.
+    Verified live against the dogfood gateway on 2026-09-04 (#155): Gemini signs a parallel batch
+    ONCE, on the first call, and accepts it back that way — `[sig=408, sig=NONE]` in one message is
+    healthy. Split the same batch across two assistant messages and it is rejected. So a flat list
+    of calls cannot tell the healthy shape from the broken one; only the grouping can.
+
+    Deliberately NOT a raw body dump. The request carries the whole conversation, so dumping it
+    would bury /api/diag's 400-line ring in prompt text and leak far more than the question needs.
+
+    This is the only place the outgoing side is visible at all — SAGE_DEBUG_STREAM shows the
+    gateway's responses, and OpenCode's own request is otherwise unobservable from here, which is
+    exactly why #155 stayed ambiguous for so long.
+    """
+    if not isinstance(messages, list):
+        return []
+    out: list[str] = []
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        calls = [c for c in (m.get("tool_calls") or []) if isinstance(c, dict)]
+        if not calls:
+            continue
+        parts = []
+        for call in calls:
+            fn = call.get("function")
+            name = (fn.get("name") if isinstance(fn, dict) else None) or "?"
+            sig = _signature(call)
+            parts.append("{}/{} sig={}".format(
+                call.get("id") or "?", name, len(sig) if sig else "NONE"))
+        out.append(f"msg{i}[{', '.join(parts)}]")
+    return out
+
+
+def _signature(call: dict) -> str | None:
+    extra = call.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    sig = google.get("thought_signature") if isinstance(google, dict) else None
+    return sig if isinstance(sig, str) and sig else None
+
+
+def unsigned_tool_messages(model: object, messages: object) -> int:
+    """Assistant tool-call messages whose FIRST call carries no signature — the shape Gemini rejects.
+
+    The predicate is per MESSAGE, not per call, and that distinction is the finding. Signing is a
+    property of the model turn: Gemini puts one signature on the first call of a parallel batch and
+    accepts the batch back unchanged, so a later call in the same message having none is normal and
+    must not be reported. A tool-call message whose first call is bare is the rejected shape, and it
+    has two live causes: history written by a model that does not sign at all (the common one — the
+    shim re-resolves the model per request, so a phase that ran on sonnet leaves `toolu_*` calls in
+    a session OpenCode believes is Gemini's), or a signed batch taken apart across messages.
+
+    Counted only for Gemini — the one model on the gateway that signs at all. Every other alias
+    sends no signature ever, so applying this anywhere else would fire on every ordinary turn. The
+    asymmetry is one-directional: sonnet and gpt-5.4 both accept Gemini's `extra_content` back
+    unchanged (verified live), so only the Gemini-bound direction needs watching.
+
+    Reproduced end to end on 2026-09-04 (#155): plan on sonnet, then an implement turn on Gemini in
+    the same session, which returns the user's verbatim `default_api:bash` 400.
+
+    DELIBERATELY BROADER than the gateway's own rule. Probed live on 2026-09-04: the same unsigned
+    history is accepted (HTTP 200) when the LAST message is a user turn, and rejected (400) when the
+    model has to continue from a tool result. So the first request of a turn would slip through and
+    every request after it in that turn would fail. Reading the last role would buy one Gemini reply
+    and then break the turn anyway, mid-flight, with the model changing under the agent. Refusing
+    the whole session is the conservative direction and the stable one (ADR-0032).
+    """
+    bare_model = str(model).rsplit("/", 1)[-1].lower()
+    if "gemini" not in bare_model or not isinstance(messages, list):
+        return 0
+    gap = 0
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        calls = [c for c in (m.get("tool_calls") or []) if isinstance(c, dict)]
+        if calls and not _signature(calls[0]):
+            gap += 1
+    return gap
 
 
 def error_sse(message: str) -> Iterator[bytes]:

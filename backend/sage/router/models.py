@@ -33,6 +33,8 @@ class Reason(str, Enum):
     IMPLEMENT_OVERRIDE = "implement-override"
     CHAT_DEFAULT = "chat-default"
     CHAT_OVERRIDE = "chat-override"
+    SIGNING_PIN = "signing-pin"
+    SIGNING_VETO = "signing-veto"
 
 
 # Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified by
@@ -65,6 +67,36 @@ _REASONING_EFFORTS = ("low", "medium", "high")
 
 def is_bedrock(model: ModelId) -> bool:
     return model.rsplit("/", 1)[-1] in BEDROCK_SERVED
+
+
+# Gateway aliases that attach a `thought_signature` to their tool calls and reject any later request
+# that does not hand it back (ADR-0031). Signing is a property of the MODEL, but the transcript is a
+# property of the harness session, and OpenCode replays the whole transcript every request — so one
+# session must never mix a signing model with a non-signing one. See llm_router's pin, which keeps a
+# session single-model, and resolve_unsigned, which is where a session that already mixed them goes
+# (ADR-0032).
+#
+# Must stay DISJOINT from BEDROCK_SERVED: split_parallel_tool_calls takes a parallel batch apart
+# across messages, and a signed batch carries its one signature on the FIRST call, so splitting one
+# would manufacture the very shape Gemini rejects. A test holds the two sets apart.
+SIGNS_TOOL_CALLS = frozenset({"gemini-3.7-flash"})
+
+
+def signs(model: ModelId) -> bool:
+    return model.rsplit("/", 1)[-1] in SIGNS_TOOL_CALLS
+
+
+def signing_slot(catalog: "ModelCatalog") -> str | None:
+    """The first assignable slot holding a signing model, or None (ADR-0032).
+
+    THE one copy of the pin's input. `llm_router._pin_signing` routes by it and
+    `preflight.turn_slots` preflights by it, because a turn that preflights one alias and runs on
+    another is worse than no preflight: it refuses builds that were going to succeed.
+    """
+    for slot in ASSIGNABLE_SLOTS:
+        if signs(getattr(catalog, slot)):
+            return slot
+    return None
 
 
 def reasoning_efforts_for(model: ModelId) -> tuple[str, ...]:
