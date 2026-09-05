@@ -328,6 +328,40 @@ def test_try_again_resumes_a_phased_build_at_the_phase_that_broke(tmp_path: Path
     assert ws.has_built() is True
 
 
+def test_putting_a_partly_built_plan_away_names_it_as_what_the_app_was_built_from(tmp_path: Path):
+    """Cancelling a plan two phases into its build means "stop offering to finish this", not
+    "nothing here came from it". Archived as cancelled, the pin skipped it and named an EARLIER
+    plan, so the phases that ran left no trace anywhere (#173)."""
+    orch, _oc = _phased_run_that_dies_in_phase_two(tmp_path)
+
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+    ws = _workspace(orch)
+    assert ws.read_plan_retry_step() == 2       # phase 1 finished and is on disk
+
+    orch.archive_plan_doc(ws.live_plan_doc_id(), True)
+
+    assert "Trades table" in (ws.read_archived_plan() or "")
+    assert orch.read_plan_pin()["status"] == "built"
+
+
+def test_the_transcript_cancel_puts_a_partly_built_plan_away_the_same_way(tmp_path: Path):
+    """The rule lives in `archive_plan` so that the three doors that press Cancel cannot disagree,
+    and this is the one people actually reach: the plan card's own Cancel. The plan page's Archive
+    button refuses while the Conversation that proposed the plan still answers, which after a build
+    that died it usually does."""
+    orch, _oc = _phased_run_that_dies_in_phase_two(tmp_path)
+
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+
+    assert orch.cancel_plan()["archived"] is True
+
+    ws = _workspace(orch)
+    assert ws.read_plan() is None
+    assert "Trades table" in (ws.read_archived_plan() or "")
+
+
 def test_a_phased_build_that_finishes_first_time_owes_nothing(tmp_path: Path):
     """The behaviour the resume point must not have widened: an unbroken phased build archives its
     plan, so no later turn reads it as current intent."""
