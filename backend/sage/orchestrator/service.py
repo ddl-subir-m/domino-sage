@@ -2769,6 +2769,69 @@ _PLAN_SHAPE_PHASED = (
     "writing 'None'.\n"
     "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
 
+# The planner's one way out of writing a plan (#150). Without it there was none: the gated turn's
+# only branch was "write the plan", so `run: env | grep -i canary` on a first turn came back as
+# seven steps of generic scaffolding — "Define purpose. Shape layout. Create content." — with
+# nothing of the prompt in it, behind an Approve button that made the filler look considered.
+#
+# Same trade `_asks_to_reset` takes: the worst a false positive costs here is one turn that asks
+# what to build, which is a sentence. The instruction is deliberately concrete about the shapes
+# that reach this — a request naming no app is the ABSENCE of a signal, which is why no string
+# rule can find it and the model has to be the one to say so.
+#
+# Carried by the gated build turn only, not folded into _PLAN_SHAPE: the Chat handoff shares that
+# constant and checks its plan with an `if not plan_md` that has never heard of the sentinel, so a
+# refusal there would render as the plan. A handoff also plans from a whole conversation rather
+# than one prompt, and cannot be empty of an app in this way.
+_NO_APP_SENTINEL = "NO APP DESCRIBED"
+_PLAN_REFUSAL = (
+    "First decide whether there is anything here to plan. If the request names no app and no "
+    "change to one — a shell command, a pasted error, a stray note — write exactly "
+    f"{_NO_APP_SENTINEL} on the first line, then one sentence naming what is missing, and nothing "
+    "else: no headings, no plan. Never invent an app the request did not ask for.")
+
+
+# How far in to look for the sentinel. Not just the first line: `plan_md` is every assistant text
+# part joined (`plan_text_parts`), so a planner that emits "Looking at the request." as its own part
+# before refusing puts a lead-in ahead of it — and one lead-in is not the bound, a model can write
+# three before it gets to the point. Depth is nearly free because the sentinel has to LEAD its line:
+# the false positive worth guarding is a plan that MENTIONS the phrase mid-sentence, and that stays
+# safe at any depth. Bounded rather than unbounded only so a long plan cannot drift into a match.
+_NO_APP_SCAN_LINES = 8
+
+
+def _refuses_to_plan(plan_md: str) -> str | None:
+    """The sentence explaining `NO APP DESCRIBED`, or None for an ordinary plan (see _PLAN_REFUSAL).
+
+    The sentinel must LEAD one of the first few lines, once list, quote, heading and emphasis marks
+    are read through and case is set aside — told to lead a line, a planner reaches for the markup
+    it leads every other line with, and writes `# NO APP DESCRIBED`, `- NO APP DESCRIBED` or
+    `## No app described`. Leading rather than equalling the line, because matching it exactly failed in the
+    expensive direction: told to write a sentinel and then a sentence, models write `NO APP
+    DESCRIBED.` or keep the sentence on the same line, and a missed refusal does not fall back to
+    today's behaviour — it renders as an Approve card whose entire plan body is the sentinel, which
+    is a worse card than the filler plan this exists to stop. A false positive costs one turn that
+    asks what to build; a false negative costs the whole point of the check.
+
+    `""` and `None` are different answers. A bare sentinel with no sentence under it is still a
+    refusal; collapsing the two would render that same card.
+    """
+    lines = [ln.strip() for ln in (plan_md or "").splitlines() if ln.strip()]
+    for i, line in enumerate(lines[:_NO_APP_SCAN_LINES]):
+        head = line.strip("#*_`~->• ").strip()
+        if not head.upper().startswith(_NO_APP_SENTINEL):
+            continue
+        # Whatever follows the sentinel on its own line is the sentence, once the punctuation
+        # joining them is dropped. Only the JOIN is stripped, never the sentence's own full stop —
+        # the message reads `<sentence> Say what the app should show…`, and a sentence that lost
+        # its stop runs into the next one.
+        rest = head[len(_NO_APP_SENTINEL):].lstrip(" .:;,—–-").strip()
+        if not rest and i + 1 < len(lines):
+            rest = lines[i + 1].lstrip("-*•# ").strip()
+        return rest[:1].upper() + rest[1:] if rest else ""
+    return None
+
+
 # What a Build turn is told to DO with the Chat half of its Conversation (#53). The transcript
 # itself is rendered by chat_compact.chat_summary; this is the framing, which lives here with the
 # turn's other preambles.
@@ -6862,9 +6925,16 @@ class Orchestrator:
                            "would touch so the plan fits the current code, then write the plan. "
                            + _PLAN_VOICE + "\n\n" + shape + "\n\n" + current)
             else:
+                # The way out rides the blank-template branch only, and is stated ahead of the
+                # shape — a plan's format is the wrong place to learn there may be no plan to
+                # format (#150). Not the has_built branch: its exemplars include "a pasted error",
+                # which against an app that already exists is an ordinary "fix this" and the
+                # commonest request there is. Refusing that would be a regression, and would refuse
+                # it with copy written for an empty project. The filler plan #150 reports needs a
+                # blank template to happen — there is nothing to read, so nothing anchors the plan.
                 current = ("This is a brand-new app from a blank template — there are no existing "
                            "files worth reading, so plan straight from the request. "
-                           + _PLAN_VOICE + "\n\n" + shape + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + _PLAN_REFUSAL + "\n\n" + shape + "\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -7499,6 +7569,21 @@ class Orchestrator:
                         "a bit more detail about what you want can help — or switch to Implement to "
                         "build it directly.")})
                     yield persist({"type": "done", "ok": False, "decision": "empty plan"})
+                    return
+                # The planner looked at the request and found no app in it (#150). The same class of
+                # outcome as the empty plan above — nothing to approve — so the same events and no
+                # new event type, but its own message: that one says the system failed, this one
+                # says the prompt did. No diagnostics either; this turn worked exactly as asked.
+                # The planner's sentence names what was missing from THIS request, which is the half
+                # only it could write; the way out is the half written here.
+                refusal = None if arch else _refuses_to_plan(plan_md)
+                if refusal is not None:
+                    log.info("plan gate: no app in the request — %s", refusal or "no reason given")
+                    yield persist({"type": "error", "message": (
+                        (refusal + " " if refusal else "")
+                        + "Say what the app should show or let someone do, then send the request "
+                          "again — or switch to Implement to run it directly.")})
+                    yield persist({"type": "done", "ok": False, "decision": "no app described"})
                     return
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it

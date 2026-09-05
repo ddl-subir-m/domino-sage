@@ -1210,6 +1210,11 @@ window.SW = window.SW || {};
     // left with no button to take. The `error` frame beside it already carries the whole sentence,
     // so a "Stopped — model unavailable" line under it would only say it worse, twice.
     'model unavailable': true,
+    // The planner read the request and found no app in it (#150). Here for the same reason: the
+    // `error` frame beside it already asks what the app should do and names the other way to run
+    // the request, and this turn did exactly what it was designed to do — a red "Stopped — no app
+    // described" under a question reads as a failure the person has to go and fix.
+    'no app described': true,
   };
 
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
