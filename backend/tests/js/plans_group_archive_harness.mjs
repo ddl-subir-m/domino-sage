@@ -139,9 +139,54 @@ const planRows = (nodes) => nodes
     };
   });
 
+// What each row's overflow offers, and the handler behind it. The Dropdown carries its menu as a
+// prop rather than as children, so this reads the prop: that the plan row supplies its own menu at
+// all is the claim, and the source cannot be grepped for a value reaching a component.
+const planMenus = (nodes) => nodes
+  .filter((n) => typeof (n.p || {}).className === 'string'
+    && n.p.className.startsWith('sw-res-row'))
+  .map((n) => {
+    const drawn = flatten(n);
+    const name = drawn.find((d) => (d.p || {}).className === 'sw-res-name');
+    const dropdown = drawn.find((d) => d.t === 'Dropdown');
+    const menu = dropdown ? (dropdown.p || {}).menu || {} : null;
+    return {
+      name: name ? text(name) : '',
+      items: menu ? (menu.items || []).map((i) => i.key) : null,
+      onClick: menu ? menu.onClick : null,
+    };
+  });
+
 const report = {};
 
-if (act === 'drawn') {
+if (act === 'menu') {
+  // A named plan and an unnamed one. The rail draws "Untitled plan" for the second so the row has
+  // something to say, and the rename box must not prefill that: it is a label this list chose, not
+  // a name anybody gave the document.
+  SW.store.set({
+    resourceGroups: {}, resourcesLoading: false, resourceErrors: {},
+    plans: [
+      { id: '001', title: 'A consumption dashboard.', status: 'draft', appId: 'app_a',
+        archived: false },
+      { id: '003', title: '', status: 'draft', appId: '', archived: false },
+    ],
+    activePlanId: '001', apps: [{ id: 'app_a', name: 'Desk exposure' }],
+  });
+  const menus = planMenus(panel());
+  report.menus = menus.map(({ name, items }) => ({ name, items }));
+
+  // Press Rename on the unnamed one. Modal.confirm is stubbed to keep the config, because what the
+  // box opens WITH is the half of this that a list of item keys cannot show.
+  let opened = null;
+  sandbox.antd.Modal.confirm = (config) => { opened = config; };
+  const unnamed = menus.find((m) => m.name === 'Untitled plan');
+  unnamed.onClick({ key: 'rename', domEvent: { stopPropagation: () => {} } });
+  report.opened = opened && {
+    title: opened.title,
+    okText: opened.okText,
+    defaultValue: (opened.content.p || {}).defaultValue,
+  };
+} else if (act === 'drawn') {
   const nodes = panel();
   report.head = head(nodes);
   report.rows = planRows(nodes);

@@ -2,10 +2,10 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useRef, Fragment } = React;
-  const { Tooltip, Button, Tag, Dropdown } = antd;
+  const { Tooltip, Button, Tag, Dropdown, Input, Modal } = antd;
   const {
     DownOutlined, RightOutlined, PlusOutlined, MoreOutlined, DoubleRightOutlined,
-    ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined,
+    ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined, EditOutlined,
   } = icons;
 
   // What the caller can pick now. Agents / Skills / MCPs are still listed because OpenCode config
@@ -96,11 +96,12 @@ window.SW = window.SW || {};
     // A single always-visible act, for a row whose whole point is to be opened into something else.
     // `{ icon, title, onClick }`. Plans carry one; nothing else does yet.
     action,
-    // Suppress the overflow entirely, rather than drawing the disabled one below. For a row that
-    // was never going to have a menu — a plan is not a Resource and holds none of the three scopes
-    // this menu acts on — where "no actions here, check the other modes" would be a wrong answer
-    // rather than a dead end.
-    noMenu,
+    // The overflow, supplied by the caller instead of worked out from the Resource. `{ items,
+    // onClick }`, the shape antd's Dropdown already takes. For a row the built-in menu has no
+    // answer for — a plan is not a Resource and holds none of the three scopes that menu acts on,
+    // so "no actions here, check the other modes" would be a wrong answer rather than a dead end.
+    // Same precedent as `action` above: the plan row is the one row whose controls are its own.
+    menu,
     expandable,
     expanded,
     onToggleExpand,
@@ -232,6 +233,10 @@ window.SW = window.SW || {};
       }
       return undefined;
     };
+
+    // A caller's menu replaces the Resource one outright — items and handler together, because the
+    // two are one answer and half of each would be a list whose clicks nothing catches.
+    const rowMenu = menu || { items, onClick: onMenu };
 
     // `used` is the Built Apps that bind this Resource, each with its Scope — the server's answer,
     // carried on the Project row (#133). It was a kind list before, because nothing filled the
@@ -386,9 +391,7 @@ window.SW = window.SW || {};
           )
         ),
 
-      noMenu
-        ? null
-        : contextItem
+      contextItem
         ? h(
             'button',
             {
@@ -408,7 +411,7 @@ window.SW = window.SW || {};
         : h(
             Dropdown,
             {
-              menu: { items, onClick: onMenu },
+              menu: rowMenu,
               trigger: ['click'],
               open: menuOpen,
               onOpenChange: setMenuOpen,
@@ -418,7 +421,7 @@ window.SW = window.SW || {};
             // rather than an empty menu a click reveals (#147's mode gate is what made items=[]
             // reachable here). menu.items stays [] rather than the node disappearing, which is
             // what a caller reading the menu off this tree needs to still find.
-            items.length === 0
+            rowMenu.items.length === 0
               ? h(
                   Tooltip,
                   { title: 'No actions here — check the other modes and sections' },
@@ -525,6 +528,9 @@ window.SW = window.SW || {};
       return {
         id: plan.id,
         name: plan.title || 'Untitled plan',
+        // What the document is really called, kept beside the label the rail draws. The two differ
+        // for a plan with no name, and the rename box wants the real one.
+        title: plan.title || '',
         kind: 'plan',
         live,
         // Which app, because a plan is app-specific and this list is the Project's (ADR-0008). A
@@ -608,7 +614,50 @@ window.SW = window.SW || {};
           title: 'Open the plan',
           onClick: () => SW.store.openPlanArtifact(row.id),
         },
-        noMenu: true,
+        // Renaming, where the name is read. The plan page has had the pencil since the plan got a
+        // name somebody chose, but that is a click past this row, and this row is where a bad name
+        // is noticed. Every other list in the Workbench renames from its own row — a Conversation
+        // and a Built App both do — and the plan document was the one that did not.
+        //
+        // Only renaming. Archiving stays on the page for the reason written beside that button: it
+        // is a judgement call about a document that may carry other people's comments and
+        // approvals, so the walk that shows you the document first is the point. A rename is
+        // metadata, writes no version, and costs a reviewer nothing.
+        menu: {
+          items: [{ key: 'rename', label: 'Rename', icon: h(EditOutlined, null) }],
+          onClick: ({ key, domEvent }) => {
+            domEvent.stopPropagation();
+            if (key !== 'rename') return;
+            // The document's own title, not the row's label: `name` falls back to "Untitled plan"
+            // so the rail has something to draw, and prefilling that would put a placeholder into
+            // the box as though somebody had chosen it.
+            let value = row.title;
+            Modal.confirm({
+              title: 'Rename plan',
+              content: h(Input, {
+                defaultValue: row.title,
+                'aria-label': 'Plan name',
+                onChange: (e) => {
+                  value = e.target.value;
+                },
+              }),
+              okText: 'Rename',
+              onOk: async () => {
+                const next = (value || '').trim();
+                if (!next) {
+                  antd.message.warning('Give the plan a name.');
+                  // Rejecting keeps the box open on the empty name, rather than closing on a
+                  // warning that leaves the plan called what it was called.
+                  throw new Error('no name');
+                }
+                await SW.api.patchPlan(row.id, { title: next });
+                // One read behind both surfaces: `refreshProjectPlan` sets the pin and this list
+                // together on purpose, so the row and the pin cannot disagree about the name.
+                SW.store.reloadProjectPlan();
+              },
+            });
+          },
+        },
       });
 
     // A group head: the caret that folds it, and the way in beside it. `group` is null for Plans,
