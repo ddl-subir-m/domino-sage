@@ -3523,9 +3523,12 @@ class Orchestrator:
         the cancel: the stray `plan.md` is retired in the same act, so the app stops pointing at a
         document the panel has just hidden.
 
-        Retired as cancelled, not as built. Nothing here knows a build ever consumed it — the plan
-        is live precisely because none did — and `read_archived_plan` must not go on to describe
-        the app as built from a plan somebody just put away.
+        Retired as a cancel, which is usually not as built: nothing here knows a build ever
+        consumed it, and `read_archived_plan` must not go on to describe the app as built from a
+        plan somebody just put away. "The plan is live precisely because none did" is the near-miss
+        to avoid — a phased build that died consumed part of it, and `archive_plan` reads the step
+        it left behind to tell the two apart (#173). That split belongs there, where the other two
+        Cancel doors reach it too.
         """
         project = self.project(start_preview=False, seed_app=False)
         doc = project.record.read_plan_doc(plan_id)

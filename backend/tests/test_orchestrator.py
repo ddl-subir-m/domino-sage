@@ -791,6 +791,33 @@ def test_archive_plan_never_clobbers_prior_archives(tmp_path: Path):
     assert [p.read_text() for p in archived] == ["first", "second"]
 
 
+def test_cancelling_a_partly_built_plan_archives_it_as_built(tmp_path: Path):
+    """A phased build that died left its finished phases on disk on purpose, so the app IS partly
+    built from this plan. Archived as cancelled, the pin would skip it and name the plan of an
+    EARLIER build instead, and the phases that ran would leave no trace anywhere (#173)."""
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
+    ws.write_plan("first")
+    ws.archive_plan()                    # built
+    ws.write_plan("second")
+    ws.set_plan_retry_step(3)            # phases 1 and 2 finished before it died
+    dest = ws.archive_plan(cancelled=True)
+    assert dest is not None and not dest.stem.endswith("-cancelled")
+    assert ws.read_archived_plan() == "second"
+
+
+def test_cancelling_a_plan_no_phase_finished_is_still_a_cancel(tmp_path: Path):
+    """The split lands at 1, not 0: the step is written BEFORE its phase runs, so step 1 means
+    nothing finished — which is also what a whole build that gave up writes."""
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
+    ws.write_plan("first")
+    ws.archive_plan()
+    ws.write_plan("second")
+    ws.set_plan_retry_step(1)
+    dest = ws.archive_plan(cancelled=True)
+    assert dest is not None and dest.stem.endswith("-cancelled")
+    assert ws.read_archived_plan() == "first"
+
+
 def _turn(ws: Workspace, prompt: str, reply: str) -> None:
     ws.append_history({"type": "user", "text": prompt})
     ws.append_history({"type": "agent", "kind": "text", "text": reply})

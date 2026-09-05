@@ -660,9 +660,31 @@ class Workspace:
         filenames, because the three are not the same fact: `read_archived_plan` answers "what is
         this app built from", and neither a plan nobody built nor a plan nobody kept is an answer
         to that.
+
+        A cancel that a phased build got partway through is not one of those (#173). The step
+        `read_plan_retry_step` holds is written BEFORE its phase runs, so a step above 1 means
+        phases 1..N-1 finished and their code is on disk on purpose (see _phased_approve) — the app
+        IS partly this plan. Cancelled, the pin would skip it and go on to name the plan of an
+        EARLIER build, and the phases that ran would leave no trace anywhere; named, it overclaims
+        the steps that never ran and is far closer to the code. So the split is here rather than in
+        the three doors that press Cancel, or the same press would mean different things depending
+        on where it was pressed. No fourth filename: "partly" is an answer to "what is this app
+        built from", not a fourth question, and `read_archived_plan` skipping it would render it
+        identically to a cancel.
+
+        The split fires for `cancelled` only. `superseded` has the same hole — `_supersede_live_plan`
+        runs before the new `write_plan` clears the step, so a plan a new request replaces two
+        phases in is skipped by the pin exactly as a cancelled one was — and #173 weighed the two
+        failures for the Cancel doors. Left standing rather than widened past on the way, because
+        supersede also marks the DOCUMENT `superseded`, and what that pair should say together is
+        its own question.
         """
         if not self.plan_path.exists():
             return None
+        # Read before the clear below, and at 1 rather than 0: step 1 means nothing finished, which
+        # is also what a whole build that gave up writes (see _approve_locked).
+        if cancelled and self.read_plan_retry_step() > 1:
+            cancelled = False
         archive_dir = self.path / ".sage" / "plans"
         archive_dir.mkdir(parents=True, exist_ok=True)
         suffix = "-cancelled" if cancelled else "-superseded" if superseded else ""
@@ -684,7 +706,8 @@ class Workspace:
         plan pin reads this so it can say "Working from" instead of falling back to "No plan yet"
         the moment the first build finishes. Cancelled and superseded archives are skipped — the
         pin would otherwise claim the app was built from a plan the user had just dismissed, or
-        from one a later Conversation replaced before anybody approved it. Sorted
+        from one a later Conversation replaced before anybody approved it. A cancel a phased build
+        got partway through is archived plain and so is not skipped — see `archive_plan`. Sorted
         numerically, not lexically: `archive_plan` zero-pads to three digits and would run out at
         1000.
         """
