@@ -553,7 +553,24 @@ a.sw-topnav-link {
   justify-content: center;
 }
 .sw-res-group-add:hover { background: var(--gray-200); color: var(--dark-700); }
+/* The Plans group's way back to what was put away (#167). It sits where the `+` sits on the groups
+   that have one, and carries words rather than an icon: the count is the answer to "where did my
+   plan go", and a number you have to hover to read is no answer. */
+.sw-res-group-archived {
+  flex: none;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--purple-600);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 2px var(--s2);
+  white-space: nowrap;
+}
+.sw-res-group-archived:hover { background: var(--gray-200); }
 .sw-res-group-toggle:focus-visible,
+.sw-res-group-archived:focus-visible,
 .sw-res-group-add:focus-visible { outline: 2px solid var(--purple-500); outline-offset: -2px; }
 .sw-res-subgroup {
   padding: var(--s2) var(--s3) 2px 28px;

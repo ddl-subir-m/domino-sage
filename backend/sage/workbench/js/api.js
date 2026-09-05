@@ -584,6 +584,12 @@ SW.api = {
   createPlan: (body) => post('/plans', body),
   patchPlan: (id, body) => patch(`/plans/${encodeURIComponent(id)}`, body),
   review: (id, body) => post(`/plans/${encodeURIComponent(id)}/review`, body),
+  // Put a plan away, or take it back out (#167). Its own route rather than a field on `patchPlan`,
+  // because this one can be refused — the plan a build is waiting on stays where the Approve card
+  // can find it — and a PATCH that silently declined one of its fields would say nothing about why.
+  // 409 carries both the sentence and the reason word; the caller shows what it says.
+  archivePlan: (id, archived) =>
+    post(`/plans/${encodeURIComponent(id)}/archive`, { archived: !!archived }),
 
   handoff: (payload) => post('/handoff', payload),
 
