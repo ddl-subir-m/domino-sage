@@ -1316,3 +1316,22 @@ def test_chat_pick_rejects_unknown_embeddings_and_invalid_effort(tmp_path: Path)
         orch.set_chat_pick("gpt-5.4", "ludicrous")
     with pytest.raises(ValueError, match="invalid reasoning_effort"):
         orch.set_chat_pick("sonnet", "high")
+
+
+# --- a malformed tool call must not take the stream down --------------------------------------
+from sage.orchestrator.service import _tool_detail
+
+
+def test_a_tool_call_with_unparsed_arguments_yields_no_label():
+    # Measured: when the model emits invalid JSON for a `write`, OpenCode fails the session and
+    # the part carries its raw arguments string where a dict belongs. Reading that for a label
+    # crashed approve_stream with AttributeError and lost the whole build.
+    part = {"state": {"status": "completed", "input": '{"filePath": "src/Dashboard.tsx", "conte'}}
+    assert _tool_detail("write", part) == ""
+    assert _tool_detail("bash", part) == ""
+    assert _tool_detail("todowrite", part) == ""
+    # A part with no state at all, and one whose state is not an object either.
+    assert _tool_detail("write", {}) == ""
+    assert _tool_detail("write", {"state": "completed"}) == ""
+    # The ordinary case still labels the file.
+    assert _tool_detail("write", {"state": {"input": {"filePath": "src/App.tsx"}}}) == "src/App.tsx"

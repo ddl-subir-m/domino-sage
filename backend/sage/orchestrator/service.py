@@ -2394,7 +2394,14 @@ _SUBJECT_KEYS = ("pattern", "path", "filePath", "url", "name", "query", "descrip
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
-    inp = (part.get("state") or {}).get("input") or {}
+    # Measured live: when the model emits malformed JSON for a tool call, OpenCode fails the
+    # session ("Invalid JSON input for openai-chat tool call write") and hands the part its raw
+    # arguments *string* instead of a dict. A label is not worth crashing the whole stream over,
+    # so an input that is not a dict yields no label.
+    state = part.get("state")
+    inp = (state or {}).get("input") if isinstance(state, dict) else None
+    if not isinstance(inp, dict):
+        return ""
     if tool in ("edit", "write", "read"):
         path = inp.get("path") or inp.get("filePath") or ""
         return _workspace_relative(path)
