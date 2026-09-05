@@ -221,7 +221,7 @@ Chips:
 - Picking `@` inserts `@name` into the composer text (and the prompt OpenCode receives) **and** adds the chip. Do not strip the token.
 - Adding from the resource panel appends to `context.json` and shows the chip. Provenance `addedBy: user | sage`. When Sage adds one, it reports in the Thread in a sentence ("I'll use card-transactions-q3") — mixed-initiative from the mock, but the panel is the accounting.
 
-The resource panel is one list, headed **In this project**: Plans, then Datasets, Data Sources, Model APIs, LLM Aliases, then Files. A group with nothing in it is not drawn at all — a group whose *listing failed* still is, carrying its reason, because empty and unknown are different answers. Dataset and Data Source rows expand to browse files or database/schema/table.
+The resource panel is one list, headed **Project resources**: Plans, then Data (Datasets and Data Sources under one head), Language models, Predictive models, Agents, Skills, MCPs, then Files. A group with nothing in it is not drawn at all — a group whose *listing failed* still is, carrying its reason, because empty and unknown are different answers. Dataset and Data Source rows expand to browse files or database/schema/table.
 
 Session context is **not** a second section in it. A row in this Thread's `context.json` wears a tick, with a tooltip pointing at the chips; a row that is not wears a `+` on hover, in Chat only. The chips over the composer are where context is shown and taken back — one accounting, not two. The row's own menu and the details drawer behind it both offer "Stop using here".
 
@@ -240,7 +240,7 @@ Minimum Chat chrome that must work (the rest of the mock can wait):
 - Conversation rail of Threads in the current project
 - Composer with chips, `@`, attach, model picker (gateway aliases this caller can use; reasoning effort when the alias supports it)
 - Message list with Artifact blocks
-- Resource panel (one list, headed In this project)
+- Resource panel (one list, headed Project resources)
 - The plan-suggestion callout and Open in Build — specified in [handoff.md](handoff.md)
 
 ### The conversation view (#56)
