@@ -27,6 +27,11 @@
   --error-bg:   #FBEAED;
   --info-bg:    #E6F1FA;
 
+  /* The secondary button's fill. Its own token rather than --purple-200 (#D9D2FA): that one is a
+     border and chip colour, and this is a control's ground — near neighbours on the ramp, but a
+     button that drifted with a chip's border would be a rename away from wrong. */
+  --btn-secondary-bg: #D1CBF6;
+
   /* Warning is the only bg so far with a border dark enough to need naming. */
   --warning-border: #EFE6A8;
   /* Warning as ink rather than fill. --warning is too light to read on. */
@@ -83,10 +88,6 @@
 }
 @media (max-width: 1180px) {
   :root { --builder-chat-w: 288px; --rail-w: 208px; --dock-expanded: 280px; }
-  /* The panel heading carries a title, a count, Add and Hide. At 280px the four do not fit with
-     Add spelled out, so it sheds its label and keeps its icon — the tooltip says the rest. The
-     empty state's copy of the same button never does: it is the only thing on that screen. */
-  .sw-panel-add-label { display: none; }
 }
 
 /* antd's <App> renders a wrapper div between #root and the shell, so it has

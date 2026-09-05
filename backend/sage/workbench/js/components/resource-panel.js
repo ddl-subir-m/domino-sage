@@ -622,42 +622,20 @@ window.SW = window.SW || {};
       // group label the section heads used to wear — a rail with three shouting subheadings and no
       // title reads as three lists rather than one panel. The dock drew a tab bar here; there is
       // one panel now, so a tab that can only be the tab you are on is a control with nothing to
-      // choose. Hiding the panel is the one act that belonged to that bar, and it stays: it is the
-      // panel's own control, and the sub bar's near-identical twin two rows up is gone.
+      // choose.
       //
-      // The words are the working set's own prose label, promoted from a section head to the title
-      // — the two used to be a tab reading "{project} resources" over a head reading "In this
-      // project", which is one list named twice. Which of the two survives is settled by
-      // `CONTEXT.md`: the list holds Assets as well as Resources, and Plans since this change, so
-      // "resources" is a claim about the contents that most of them do not meet and is on the
-      // glossary's _Avoid_ list for exactly that reason.
+      // Title and act on two rows. One row held four things — a name, a count, a door and the
+      // chevron that hides the panel — which reads as a toolbar rather than a heading, and it was
+      // the reason the Add label had to disappear on a narrow rail. A heading is a heading; the act
+      // goes under it, with room for its own words at every width.
       h(
         'div',
         { className: 'sw-panel-head' },
-        h('h2', { className: 'sw-panel-title' }, 'In this project'),
-        h(
-          'span',
-          { className: 'sw-panel-count sw-num' },
-          resourcesLoading ? '…' : total
-        ),
+        h('h2', { className: 'sw-panel-title' }, 'Project resources'),
         h('span', { className: 'sw-topnav-spacer' }),
-        h(
-          Dropdown,
-          { menu: addMenu, trigger: ['click'], placement: 'bottomRight' },
-          h(
-            Button,
-            {
-              size: 'small',
-              type: 'primary',
-              className: 'sw-panel-add',
-              icon: h(PlusOutlined, { style: { fontSize: 10 } }),
-            },
-            // Hidden below 1180px, where the dock is 280px and the row would overflow. The icon and
-            // its tooltip carry it there; the empty state's copy of this button never sheds its
-            // label, because that one is the only thing on screen.
-            h('span', { className: 'sw-panel-add-label' }, 'Add resources')
-          )
-        ),
+        // The one control that hides the panel, and it stays on the title row: it is the dock's
+        // chrome rather than one of the panel's own acts, and the sub bar's near-identical twin
+        // two rows up is gone.
         h(
           Tooltip,
           { title: `Hide the side panel · ${SW.util.shortcut('⌘/')}` },
@@ -672,6 +650,25 @@ window.SW = window.SW || {};
               onClick: () => SW.store.toggleDockOpen(),
             },
             h(DoubleRightOutlined, null)
+          )
+        )
+      ),
+
+      h(
+        'div',
+        { className: 'sw-panel-actions' },
+        h(
+          Dropdown,
+          { menu: addMenu, trigger: ['click'], placement: 'bottomLeft' },
+          h(
+            Button,
+            {
+              size: 'small',
+              type: 'primary',
+              className: 'sw-panel-add',
+              icon: h(PlusOutlined, { style: { fontSize: 10 } }),
+            },
+            'Add resources'
           )
         )
       ),
@@ -783,7 +780,11 @@ window.SW = window.SW || {};
               { menu: addMenu, trigger: ['click'], placement: 'bottom' },
               h(
                 Button,
-                { size: 'small', icon: h(PlusOutlined, { style: { fontSize: 10 } }) },
+                {
+                  size: 'small',
+                  className: 'sw-btn-secondary',
+                  icon: h(PlusOutlined, { style: { fontSize: 10 } }),
+                },
                 'Add resources'
               )
             )

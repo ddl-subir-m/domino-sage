@@ -121,7 +121,7 @@ def test_the_panel_is_headed_by_the_project_and_names_no_app():
     under two heads; a reader had to work out which of them a row belonged to before its menu made
     sense. It has one heading, it names no app, and the app's own records are not in it."""
     step = _panel("app_a")
-    assert step["sections"] == ["In this project"]
+    assert step["sections"] == ["Project resources"]
     assert not [r for r in step["rows"] if r["section"] and "Desk dashboard" in r["section"]]
     # And the file the app carries is not among the Project's rows — it is one row, in one scope.
     assert not [r for r in step["rows"] if "margins.csv" in r["texts"]]

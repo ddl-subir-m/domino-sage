@@ -402,8 +402,8 @@ a.sw-topnav-link {
 
 /* The panel's one heading. A title, not a group label: the all-caps 11px treatment below belongs
    to the groups INSIDE the list, and wearing it up here made the panel read as another group
-   rather than as the thing they are all in. This row is also the dock's chrome — it replaced a tab
-   bar of one tab — so it carries the Add door and the control that hides the panel. */
+   rather than as the thing they are all in. It carries nothing but its own name and the control
+   that hides the panel — the dock's chrome, where the tab bar used to be. */
 .sw-panel-head {
   flex: none;
   height: 40px;
@@ -411,7 +411,6 @@ a.sw-topnav-link {
   align-items: center;
   gap: var(--s2);
   padding: 0 var(--s2) 0 var(--s3);
-  border-bottom: 1px solid var(--gray-300);
 }
 .sw-panel-title {
   flex: none;
@@ -422,19 +421,15 @@ a.sw-topnav-link {
   line-height: 1.3;
   color: var(--dark-700);
 }
-.sw-panel-count {
+
+/* The panel's act, on its own row under the heading it belongs to. Left-aligned with the title
+   rather than pushed right: it is the one thing to do here, not a corner control. The border sits
+   under this row instead of under the title, so the two read as one header block. */
+.sw-panel-actions {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: var(--gray-200);
-  color: var(--gray-600);
-  font-size: var(--fs-11);
-  font-weight: 600;
+  display: flex;
+  padding: 0 var(--s3) var(--s3);
+  border-bottom: 1px solid var(--gray-300);
 }
 .sw-panel-add { flex: none; }
 
@@ -483,6 +478,20 @@ a.sw-topnav-link {
   color: var(--gray-600);
   line-height: 1.5;
 }
+
+/* The secondary button. antd's default is a white ground with a grey border, which beside the
+   filled primary reads as disabled rather than as the quieter of two doors. Given a ground of its
+   own it reads as a second act. Hover and active step it one notch each way, because a control
+   whose fill never moves reads as a label. `!important` throughout: these lose to antd's own
+   `.ant-btn-default` specificity otherwise, and the component is themed at the token level in
+   `theme.js` rather than per-class. */
+.sw-btn-secondary.ant-btn {
+  background: var(--btn-secondary-bg) !important;
+  border-color: var(--btn-secondary-bg) !important;
+  color: var(--purple-700) !important;
+}
+.sw-btn-secondary.ant-btn:hover { background: var(--purple-200) !important; border-color: var(--purple-200) !important; }
+.sw-btn-secondary.ant-btn:active { background: var(--purple-500) !important; border-color: var(--purple-500) !important; color: var(--white) !important; }
 
 .sw-panel-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--s5); }
 .sw-panel-hint {
