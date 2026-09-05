@@ -87,13 +87,15 @@ def test_pressing_the_door_opens_the_catalog_on_that_kind():
     assert empty["catalogOpen"] and empty["catalogKind"] == "model_predictive"
 
 
-def test_a_group_holding_two_kinds_opens_on_everything():
-    """`Data` covers Datasets and Data Sources, and the catalog takes one kind or none.
+def test_a_group_holding_two_kinds_opens_on_that_group():
+    """`Data` covers Datasets and Data Sources, so its door asks the catalog for both.
 
-    Picking the first subgroup would silently mean Datasets and hide Data Sources behind a
-    filter the caller never chose. `null` is Everything, which reaches both.
+    It opened on Everything while the catalog took one kind or none, which reached both kinds and
+    a fistful of models with them — a door labelled Data landing on a list of everything. Picking
+    the first subgroup is not the answer either: that silently means Datasets and hides Data
+    Sources behind a filter the caller never chose.
     """
-    assert _act("press-data")["catalogKind"] is None
+    assert _act("press-data")["catalogKind"] == "data"
 
 
 def test_pressing_the_door_does_not_collapse_the_group():

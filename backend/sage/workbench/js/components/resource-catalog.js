@@ -10,6 +10,11 @@ window.SW = window.SW || {};
   // why this is a surface you open rather than a 300px column you live beside.
   const KINDS = [
     { key: null, label: 'Everything' },
+    // The rail groups both of these under `Data`, and its add door has to land somewhere. Without
+    // this entry the door opened on Everything, because a single kind would have meant Datasets and
+    // hidden Data Sources behind a filter nobody chose (#164). The two stay listed below it: a
+    // group is a wider filter than either kind, never a replacement for them.
+    { key: 'data', label: 'Data', kinds: ['dataset', 'datasource'] },
     { key: 'dataset', label: '{datasetPlural}' },
     { key: 'datasource', label: '{dataSourcePlural}' },
     { key: 'model_llm', label: 'Language models' },
@@ -18,6 +23,14 @@ window.SW = window.SW || {};
     { key: 'skill', label: 'Skills' },
     { key: 'mcp', label: 'MCPs' },
   ];
+
+  // What the number beside a sidebar entry says. `catalog` counts kinds, so a group entry adds its
+  // own up rather than asking for a count of a kind that does not exist.
+  function sideCount(entry, counts) {
+    if (!entry.kinds) return counts[entry.key];
+    const under = entry.kinds.filter((k) => counts[k] !== undefined);
+    return under.length ? under.reduce((n, k) => n + counts[k], 0) : undefined;
+  }
 
   function CatalogRow({ resource, scope, onAdd, onOpen, busy }) {
     return h(
@@ -116,7 +129,10 @@ window.SW = window.SW || {};
 
     // A view of what the store holds, recomputed on every draw. Typing and picking a kind are now
     // filters over memory, so neither reaches the network (#159).
-    const view = SW.api.catalog({ q: query, kind: kind || '' });
+    // A sidebar entry standing for a group asks for every kind under it; every other one asks for
+    // itself.
+    const picked = KINDS.find((e) => e.key === kind);
+    const view = SW.api.catalog({ q: query, kind: (picked && picked.kinds) || kind || '' });
     // `null` is the window right after a project switch, when the store's listing has been cleared
     // and the fresh one has not landed. That is a spinner, never an empty catalogue: an empty one
     // reads as "Domino holds nothing you can add", which is the one thing that is not true here.
@@ -193,8 +209,8 @@ window.SW = window.SW || {};
               },
               h('span', null, SW.brand.text(entry.label)),
               entry.key &&
-                counts[entry.key] !== undefined &&
-                h('span', { className: 'sw-cat-side-count' }, counts[entry.key])
+                sideCount(entry, counts) !== undefined &&
+                h('span', { className: 'sw-cat-side-count' }, sideCount(entry, counts))
             )
           )
         ),

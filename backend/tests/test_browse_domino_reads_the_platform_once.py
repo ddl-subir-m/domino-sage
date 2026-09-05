@@ -88,6 +88,9 @@ def test_the_sidebar_counts_say_where_the_matches_are():
     assert counts["dataset"] == 2
     assert counts["model_llm"] == 1
     assert counts["datasource"] == 0
+    # `Data` stands for both kinds under it, so its number is theirs added up rather than a count
+    # of a kind nothing is filed under. It is the filter the rail's Data door lands on (#164).
+    assert counts["data"] == counts["dataset"] + counts["datasource"]
 
 
 def test_picking_a_kind_reaches_no_network():

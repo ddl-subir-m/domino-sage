@@ -50,12 +50,12 @@ window.SW = window.SW || {};
     },
   ];
 
-  // Which kind a group's add door pre-filters the catalog to. One helper for both doors, so the
-  // two cannot disagree. A group with two kinds has no honest filter: `api.catalog` takes a single
-  // kind and the catalog's own sidebar is flat, so there is no "Datasets + Data Sources" to ask
-  // for. `undefined` opens on Everything, which reaches both — where `subgroups[0].kind` silently
-  // meant Datasets and hid Data Sources behind a filter the caller never chose (#164).
-  const addKind = (group) => (group.subgroups.length === 1 ? group.subgroups[0].kind : undefined);
+  // Which filter a group's add door pre-selects in the catalog. One helper for both doors, so the
+  // two cannot disagree. A group holding two kinds asks for its GROUP — the catalog's sidebar now
+  // carries an entry per group as well as per kind, so `Data` is askable. It used to open on
+  // Everything, because the only alternative then was `subgroups[0].kind`, which silently meant
+  // Datasets and hid Data Sources behind a filter the caller never chose (#164).
+  const addKind = (group) => (group.subgroups.length === 1 ? group.subgroups[0].kind : group.key);
 
   const EMPTY_HINT = {
     data: 'No data here yet.',
