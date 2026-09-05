@@ -2391,6 +2391,22 @@ def _workspace_relative(text: str) -> str:
 _SUBJECT_KEYS = ("pattern", "path", "filePath", "url", "name", "query", "description")
 
 
+def _unparsed_tool_input(part: dict) -> bool:
+    """True when a tool call's arguments never parsed into a dict.
+
+    Measured live (2026-09-05): a model emitted invalid JSON for a `write`, OpenCode put the raw
+    arguments *string* where the input dict belongs, and then failed the session with
+    "Invalid JSON input for openai-chat tool call write". Normal streaming does not look like this
+    — OpenCode fills the input dict incrementally, which is why a call caught half-sent reads as a
+    dict with fewer keys rather than as text. If it read as text routinely, `_tool_detail` would
+    have been raising AttributeError on every large call since it was written, not once.
+    """
+    state = part.get("state")
+    if not isinstance(state, dict):
+        return False
+    return isinstance(state.get("input"), str) and bool(state["input"].strip())
+
+
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
@@ -7299,6 +7315,9 @@ class Orchestrator:
             # or a `glob` starting — and a step starting IS a new OpenCode message, whatever the
             # transcript can show for it. Movement, for the quiet deadline; nothing renders from it.
             in_flight: set[tuple[str, object]] = set()
+            # Set when a tool call's arguments arrive unparsed, cleared by any part that lands
+            # after it. Only a turn that ENDS with this standing had its work cut off.
+            broken_call: str | None = None
             poll_failures = 0
             while True:
                 if project.stop_requested:
@@ -7361,6 +7380,13 @@ class Orchestrator:
                             if status in ("pending", "running", "in_progress"):
                                 in_flight.add(key)
                                 tool_open = True
+                                # Noted here, never reported here. OpenCode normally drops the
+                                # session immediately after this, but if it instead recovers and
+                                # the call completes, the `seen.add` below clears the flag and
+                                # nothing is said. That way the report cannot cry wolf on a turn
+                                # that went on to finish.
+                                if _unparsed_tool_input(part):
+                                    broken_call = tool
                                 # Live "active" hint so a long step names what it's doing instead of
                                 # dead air. Only for tools whose streaming input already carries a
                                 # useful detail (a file path, a command); this deliberately skips
@@ -7383,6 +7409,7 @@ class Orchestrator:
                                         yield {"type": "active", "tool": tool, "detail": detail}
                                 continue
                             seen.add(key)
+                            broken_call = None
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
                             if tool in ("edit", "write"):
@@ -7395,6 +7422,7 @@ class Orchestrator:
                             yield persist(ev)
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
+                            broken_call = None
                             # Take the marker out before anything else looks at this text — the
                             # dedupe below, the plan card, the transcript. Stripped on EVERY turn,
                             # including gated ones: the claim is only honoured on a build turn (see
@@ -7532,6 +7560,27 @@ class Orchestrator:
                         "{assistantName} will build it without planning it again.")
                 yield persist({"type": "error", "message": message})
                 yield persist({"type": "done", "ok": False, "decision": "gateway error"})
+                return
+
+            if broken_call is not None:
+                # A give-up, exactly as the gateway case above is: OpenCode drops the session when
+                # a tool call's arguments do not parse, so whatever the model was part-way through
+                # writing never landed. It has to be said out loud, because the shape it leaves
+                # behind is quiet — the files written before the break are usually orphans nothing
+                # imports yet, so the typecheck goes green and the person is handed a finished-
+                # looking build of an app that never changed.
+                if owns_turn:
+                    self._turn_gave_up = True
+                restore_mode()
+                message = (f"The model sent a broken {broken_call} call, so this build stopped "
+                           "part-way through. Anything already written to your app is still "
+                           "there. Try the same request again.")
+                if owns_turn and is_approval:
+                    message += brand.text(
+                        '\n\nThe plan you approved is still here — say "try again" and '
+                        "{assistantName} will build it without planning it again.")
+                yield persist({"type": "error", "message": message})
+                yield persist({"type": "done", "ok": False, "decision": "broken tool call"})
                 return
 
             # Answer-only turn (Ask mode, or any question in Auto): it answered read-only and changed

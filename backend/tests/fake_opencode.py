@@ -42,6 +42,11 @@ class Turn:
     # not hypothetical (the crash this reproduces). True prepends one ahead of every other part, so
     # a test can assert the turn survives it rather than reconstructing the shape by hand.
     stray_content: bool = False
+    # A live OpenCode has left a tool call's arguments as the raw, unparsed string when the model
+    # emitted invalid JSON for them, then failed the session — real, not hypothetical (the
+    # AttributeError of 2026-09-05 reproduces from this shape). True appends one still-running
+    # `write` after this turn's other parts, which is where the live one sat: last, and open.
+    broken_write: bool = False
 
 
 class FakeOpenCode:
@@ -133,6 +138,10 @@ class FakeOpenCode:
             path.write_text(body)
             parts.append({"id": f"m{n}-w{j}", "type": "tool", "tool": "write",
                           "state": {"status": "completed", "input": {"filePath": rel}}})
+        if turn.broken_write:
+            parts.append({"id": f"m{n}-b", "type": "tool", "tool": "write",
+                          "state": {"status": "running",
+                                    "input": '{"filePath": "src/Dashboard.tsx", "conte'}})
         if turn.prelude:
             parts.append({"id": f"m{n}-p", "type": "text", "text": turn.prelude})
         if turn.text:
