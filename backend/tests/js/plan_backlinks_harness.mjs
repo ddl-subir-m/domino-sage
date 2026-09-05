@@ -153,7 +153,7 @@ const props = { planId: plan.id, variant, onClose() {} };
 await mount(props);
 const tree = await mount(props);
 
-const conversation = labelled(tree, 'From this conversation');
+const conversation = labelled(tree, 'Open conversation');
 const builder = labelled(tree, 'Open in Builder');
 const build = labelled(tree, 'Build this');
 // One control, two words, and which word it wears is the whole of what it says about the document.

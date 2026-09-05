@@ -530,7 +530,7 @@ window.SW = window.SW || {};
                           SW.conversationRoute({ id: plan.originThreadId }, SW.router.get().mode)
                         ),
                     },
-                    'From this conversation'
+                    'Open conversation'
                   )
                 )
             )
