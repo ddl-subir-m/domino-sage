@@ -2026,6 +2026,26 @@ window.SW = window.SW || {};
              href: `#/${t.kind}/${t.conversation}` };
   }
 
+  // A turn this tab is streaming, named by the tab itself (#126). `applyTurnState` was the only
+  // writer of `state.runningTurn`, and nothing polls `/build/state` while a send is holding its own
+  // stream open — so a build started here had no named turn to match for its whole length, and the
+  // Stop bar under the composer stayed missing until a mode switch reloaded the state behind it.
+  // A streaming turn can answer the question itself: it knows its kind, its conversation and its
+  // app, which is every field the bar compares. Claimed on the first frame that is neither the
+  // queue's `pending` nor one of the two ways a turn ends without ever running.
+  function claimRunningTurn(kind, conversationId, appId) {
+    const claim = { kind, conversation: conversationId || '', app: appId || '' };
+    state.runningTurn = claim;
+    return claim;
+  }
+
+  // Forget it again as the send unwinds — but only while this tab's own claim is still the one
+  // standing. A poll, or a later turn in this tab, may have replaced it with a different answer,
+  // and that one outlives the turn that is ending here.
+  function releaseRunningTurn(claim) {
+    if (claim && state.runningTurn === claim) state.runningTurn = null;
+  }
+
   // What `/build/state` says, folded into the flags that render. The server's lock is the authority
   // on whether a turn is running; this tab's own open turns are the authority on whether it may
   // stop showing one. A turn waiting in line holds neither — it is queued behind a lock somebody
@@ -4191,11 +4211,17 @@ window.SW = window.SW || {};
       // rail's Building mark is what reports the turn once the person has moved on.
       const turnApp = state.activeApp && state.activeApp.id;
       const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
+      // And the conversation this turn belongs to, captured for the same reason: opening another
+      // one mid-build is allowed, and the turn stays the turn it was when it was sent.
+      const turnThread = state.thread.id;
       // The queue's two ends of this send: `ticket` is what a Cancel would name, and `unran` is
       // whether the turn ended without ever running — which is the only case where the bubble
       // drawn just below has to come back off the screen again.
       let ticket = '';
       let unran = false;
+      // This tab's own name for the turn, once it is actually running. Held so the `finally` can
+      // take back exactly what it put there and nothing else.
+      let claim = null;
       appendBuildRow({ type: 'user', text: bubble });
       liveBuildTurns += 1;
       state.buildRunning = true;
@@ -4226,6 +4252,11 @@ window.SW = window.SW || {};
           if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'build'); notify(); return; }
           if (ev.contextChanged) { unran = true; store.seedComposer(ev.prompt || text); }
           if (ev.type === 'done' && ev.decision === 'cancelled') unran = true;
+          // Past the queue and past the two ways a turn ends without running: this turn holds the
+          // lock, so name it, and the Stop bar has something to match against from the first frame.
+          if (!unran && !claim) {
+            claim = claimRunningTurn('build', turnThread, turnApp);
+          }
           // Once the rail has moved on, these events describe an app that is no longer on screen.
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -4246,6 +4277,7 @@ window.SW = window.SW || {};
         // means a turn is running in this project — its own, or the one it is queued behind.
         state.buildRunning = liveBuildTurns > 0;
         state.buildTyping = state.buildRunning ? state.buildTyping : null;
+        releaseRunningTurn(claim);
         notify();
         // Reload rather than keep a half-turn on screen: the transcript showing now is the other
         // app's, and it was deliberately never given this turn's events. A turn that never ran gets
@@ -4318,8 +4350,12 @@ window.SW = window.SW || {};
       // refused when one is already going (#79).
       const turnApp = state.activeApp && state.activeApp.id;
       const movedOn = () => state.activeApp && state.activeApp.id !== turnApp;
+      const turnThread = state.thread.id;
       let ticket = '';
       let unran = false;
+      // This tab's own name for the turn once it is running, so the Stop bar has something to match
+      // (#126). Held so the `finally` takes back exactly what it put there. See claimRunningTurn.
+      let claim = null;
       // The same sentence the server writes for this turn, so the optimistic row does not change
       // wording the moment the transcript reloads underneath it.
       appendBuildRow({ type: 'user', text: buildAgain ? BUILD_AGAIN_TEXT : 'Approved the plan.' });
@@ -4355,6 +4391,10 @@ window.SW = window.SW || {};
               || (ev.type === 'done' && ['cancelled', 'plan moved on'].includes(ev.decision))) {
             unran = true;
           }
+          // Past the queue and past every way this turn ends without running: it holds the lock, so
+          // name it, and the Stop bar can match it from the first frame rather than only after a
+          // mode switch has reloaded the state behind it.
+          if (!unran && !claim) claim = claimRunningTurn('build', turnThread, turnApp);
           if (movedOn()) return;
           applyBuildEvent(ev);
           notify();
@@ -4371,6 +4411,7 @@ window.SW = window.SW || {};
         dropQueuedTurn(ticket);
         state.buildRunning = liveBuildTurns > 0;
         state.buildTyping = state.buildRunning ? state.buildTyping : null;
+        releaseRunningTurn(claim);
         notify();
         // `unran` reloads for the same reason `movedOn` does: an approve that never ran left an
         // "Approved the plan." bubble the server has no record of, and the plan is still waiting.
@@ -4673,6 +4714,9 @@ window.SW = window.SW || {};
       // back off the screen, because the server recorded nothing to replace it with.
       let ticket = '';
       let unran = false;
+      // And this tab's own name for the turn once it is running, so Chat's Stop bar has something
+      // to match while this send holds the only stream there is. See claimRunningTurn.
+      let claim = null;
       liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
@@ -4738,6 +4782,10 @@ window.SW = window.SW || {};
             return;
           }
           if (ev.type === 'done' && ev.decision === 'cancelled') { unran = true; return; }
+          // Past the queue and past the two ways a turn ends without running: this one holds the
+          // lock, so name it. Before the `mine()` check below, because a turn whose reader has
+          // walked away is still the turn holding the lock.
+          if (!claim) claim = claimRunningTurn('chat', turnThread, '');
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
           // answer appearing under a different question.
@@ -4842,6 +4890,7 @@ window.SW = window.SW || {};
         // conversation is busy" — so it stays true while any of them is still here.
         state.chatRunning = liveChatTurns > 0;
         if (mine()) state.typing = null;
+        releaseRunningTurn(claim);
         notify();
       }
       // Back on the conversation this turn ran in, but the stream stopped writing to the view when
