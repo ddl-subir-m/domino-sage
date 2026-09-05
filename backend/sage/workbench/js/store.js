@@ -2711,7 +2711,7 @@ window.SW = window.SW || {};
     // a panel you opened is open again on the next load, and a panel you closed stays closed.
     // `focusPanel` below is the deliberate exception.
     //
-    // `dockTab` holds `'resources'` or `null` and there is no second value to pick since ADR-0032:
+    // `dockTab` holds `'resources'` or `null` and there is no second value to pick since ADR-0035:
     // one panel, so the tab bar it belonged to is gone. The key and its two doors survive because
     // the STATE they carry — open or closed, remembered per viewer (#150) — is unchanged, and
     // because `'activity'` is already written into records that exist (see `prefs.js`).
@@ -3056,7 +3056,7 @@ window.SW = window.SW || {};
       // pointer takes — it names the destination in the words the reader will actually see on the
       // way to it. Those words are the header menu item's (`modes/builder.js`), which is the thing
       // that gets clicked. It said "Project resources, under {app}" while the panel held a section
-      // per app; the panel is the Project's one list now (#151) and the app's own records — with
+      // per app; the panel is the Project's one list now (ADR-0035) and the app's own records — with
       // the removal that acts on them — are behind that menu item.
       // A Data Source arrives with no Scope, which is a named unfinished state and not an error
       // (#142) — so the receipt names the second act rather than leaving it to be found. No other
