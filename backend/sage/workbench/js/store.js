@@ -365,6 +365,10 @@ window.SW = window.SW || {};
   // last would put a row somebody just deleted back in the rail. A generation counter for the same
   // reason the two below have one: the newest read is the one that gets to write.
   let listingRead = 0;
+  // The scope load whose listing has already spent its one retry, so a leg that goes on refusing
+  // costs one extra read and not a poll.
+  let listingRetryFor = -1;
+  const LISTING_RETRY_MS = 4000;
   // Which read of what the PROJECT holds is the current one — its membership and its `/project`
   // record together, which is the pair every refresh below takes. Same shape as the listing counter
   // above and needed for the same reason since #162: a working-set refresh no longer bumps
@@ -621,6 +625,23 @@ window.SW = window.SW || {};
     );
   }
 
+  // Read the platform once more when a leg of the listing refused. Nothing else on the panel does:
+  // the next listing arrives with a scope change or with somebody opening Browse Domino, and until
+  // then a refusal stands as a group note over rows that are the LAST good answer carried forward.
+  // A gateway that refuses one read — a 40x while the token sidecar is still warming, measured at
+  // boot — therefore leaves "the gateway answered 400" under a group visibly full of models, and
+  // the only thing that clears it is an unrelated act. One re-read, once per scope load, so a
+  // platform that is really down costs one extra call rather than a poll.
+  function retryFailedListing(listing, gen) {
+    if (listingRetryFor === gen) return;
+    if (!Object.values((listing && listing.errors) || {}).some(Boolean)) return;
+    listingRetryFor = gen;
+    setTimeout(() => {
+      // Not into a scope nobody is looking at any more. That load fires its own listing read.
+      if (gen === scopeLoad) store.refreshResourceListing();
+    }, LISTING_RETRY_MS);
+  }
+
   async function loadScopeData() {
     const scope = state.scope;
     const gen = ++scopeLoad;
@@ -678,7 +699,10 @@ window.SW = window.SW || {};
       if (projectGen === projectRead) applyProjectRead(appTicket, project);
       // Unless a later read has already landed — the files above are this load's own and are
       // written either way, but the platform's answer is only the newest one's to write.
-      if (listingGen === listingRead) applyListing(listing);
+      if (listingGen === listingRead) {
+        applyListing(listing);
+        retryFailedListing(listing, gen);
+      }
       notify();
     }).catch(() => {});
 
@@ -2756,6 +2780,7 @@ window.SW = window.SW || {};
         return;
       }
       applyListing(listing);
+      retryFailedListing(listing, scopeGen);
       notify();
     },
 
