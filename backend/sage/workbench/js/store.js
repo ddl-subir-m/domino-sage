@@ -1494,9 +1494,16 @@ window.SW = window.SW || {};
           value: ev.ok ? 'Typecheck passed' : `Typecheck: ${ev.errors} error(s)`,
         });
       } else if (ev.type === 'done') {
-        // Two questions, read off two lists. They used to be one list, which is why asking a
-        // question took the plan card's buttons away for good (#178).
-        if (pendingPlan && !KEEPS_THE_PLAN_CARD[ev.decision]) pendingPlan.pending = false;
+        // Two questions, read off two different things. They used to be one list, which is why
+        // asking a question took the plan card's buttons away for good (#178).
+        //
+        // `readOnly` is the server saying this turn was never offered edit tools, so it cannot be
+        // what changed the app and the plan under it is still the plan it would build. A decision
+        // can't answer that on its own: `gateway error` and `stalled` end a gated turn that wrote
+        // nothing and a half-finished build alike, and only the first should keep the card.
+        if (pendingPlan && !KEEPS_THE_PLAN_CARD[ev.decision] && !ev.readOnly) {
+          pendingPlan.pending = false;
+        }
         if (!GATE_DECISIONS[ev.decision]) {
           ensureAssistant().blocks.push({
             type: 'status',

@@ -2431,16 +2431,13 @@ def archive_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
         # whose Conversation is deleted (#167), and a plan whose card lost its action row when its
         # build failed (#174); both archive instead of refusing.
         #
-        # Two more routes to that shape are closed at the source rather than answered here (#178):
-        # an answer-only turn and `plan-stale` both used to clear the card's `pending` without a
-        # build ever running, and the card now survives both.
-        #
-        # Not all of them. A GATED turn that FAILS still closes an earlier card — `gateway error`,
-        # `stalled`, `wedged` and `empty plan` are none of them gate decisions — and a gated turn
-        # calls `write_plan` only once it has a plan, so `plan.md` still holds the earlier one and
-        # this refusal still names two buttons that are no longer on the screen. Same shape, its own
-        # fix: the decisions that keep the card are the ones after which the plan is still the plan
-        # the server would build, and a turn that died before planning anything is one of those.
+        # The remaining routes to that shape are closed at the source rather than answered here,
+        # which is why this refusal can go on assuming the two buttons it names are on the screen
+        # (#178). An answer-only turn and `plan-stale` both used to clear the card's `pending`
+        # without a build ever running, and so did a GATED turn that failed — `gateway error`,
+        # `stalled`, `wedged` and `empty plan` are none of them gate decisions, and `write_plan`
+        # runs only once there is a plan, so `plan.md` went on holding the earlier one. The card now
+        # survives all three: a `done` closes it only when the turn it ends could have written.
         if e.reason == "busy":
             return JSONResponse(status_code=409, content={"error": brand_text(
                 "{assistantName} is working on something else in this project, so this plan "

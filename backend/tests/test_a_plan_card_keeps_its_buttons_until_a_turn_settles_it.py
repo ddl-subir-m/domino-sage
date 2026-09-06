@@ -25,6 +25,19 @@ the plan card keeps its buttons, and whether the ending draws a status line of i
 thing that tells the person their question was heard. The two lists are split, so both tests below
 have to pass together; either alone is a fix that breaks the other half.
 
+--- The gated turn that failed (permanent) ---
+
+The third door to the same refusal, found reviewing the first two. A gated turn that dies —
+`gateway error`, `stalled`, `wedged`, an empty plan — ends on a decision that is not a gate
+decision, so it closed the earlier card. But a gated turn is read-only by construction and
+`write_plan` runs only once there IS a plan, so `plan.md` still held the earlier one and Archive
+went on refusing it against two buttons no longer on the screen.
+
+A decision cannot answer this by itself: `gateway error` ends a gated turn that wrote nothing and a
+half-finished build alike, and only the first may keep the card. So the server says it. Every
+terminal `done` passes through one `persist`, and it now carries the read-only reason when there was
+one — which is also why this is not a list the next failure decision can fall off.
+
 --- The change request (for the length of one turn) ---
 
 `plan-stale` closed the card too, and it is never persisted — neither sender calls `persist`. So the
@@ -214,6 +227,71 @@ def test_a_refused_approval_says_the_same_thing_before_and_after_a_reload():
     reloaded = _drawn(_PENDING_PLAN + _REFUSED_ON_A_DEAD_MODEL)
 
     assert live["plans"] == reloaded["plans"] == [{"pending": True, "cancelled": False}]
+
+
+# --- the turn that failed before it planned anything ---------------------------------------------
+
+
+@needs_node
+def test_a_gated_turn_that_died_leaves_the_earlier_plan_approvable():
+    """The third route, read where it is permanent. Nothing here is a gate decision, so before the
+    read-only mark this card came back without its buttons on every load — and `plan.md` still held
+    the plan, so Archive went on refusing it and naming buttons that were gone."""
+    drawn = _drawn(_PENDING_PLAN + [
+        {"type": "user", "text": "add a column for settlement date"},
+        {"type": "error", "message": "The gateway returned 502."},
+        {"type": "done", "ok": False, "decision": "gateway error", "readOnly": "plan"},
+    ])
+
+    assert drawn["plans"] == [{"pending": True, "cancelled": False}]
+
+
+@needs_node
+def test_a_half_finished_build_still_closes_its_plan_card():
+    """The same decision on a turn that COULD write, which is why the decision alone cannot answer
+    it. This build had edit tools and got partway before the gateway died, so the app really may
+    have moved under the earlier plan and the card must settle."""
+    drawn = _drawn(_PENDING_PLAN + [
+        {"type": "user", "text": "add a column for settlement date"},
+        {"type": "error", "message": "The gateway returned 502."},
+        {"type": "done", "ok": False, "decision": "gateway error"},
+    ])
+
+    assert drawn["plans"] == [{"pending": False, "cancelled": False}]
+
+
+def test_a_gated_turn_that_produces_no_plan_says_it_was_read_only(tmp_path: Path):
+    """The server half, end to end. The mark rides every terminal `done` through one `persist`
+    rather than the seven yield sites that can end a turn, so this pins the reason reaches history
+    at all — the UI can only keep the card if the row a reload replays carries it."""
+    orch, _oc = _build(tmp_path, [Turn(text="   ")])
+
+    events = _run(orch, "build me a trades dashboard", Mode.PLAN)
+    done = next(e for e in events if e.get("type") == "done")
+
+    assert done["decision"] == "empty plan"
+    assert done["readOnly"] == "plan"
+
+
+def test_a_build_turn_that_can_write_carries_no_read_only_mark(tmp_path: Path):
+    """The other side of the same server fact. A turn with edit tools must not claim the plan
+    survived it — that is the mark being handed to the one turn it would be wrong for.
+
+    The app is planned and built first because the first build gates whatever the mode says, and a
+    gated turn is read-only: without that the change request comes back `gate violated` and the mark
+    it carries is the honest one."""
+    orch, _oc = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
+    ])
+    list(orch.build_stream("build me a dashboard"))
+    list(orch.approve_stream())
+
+    events = _run(orch, "make the table sortable", Mode.IMPLEMENT)
+    done = next(e for e in events if e.get("type") == "done")
+
+    assert "readOnly" not in done
 
 
 # --- and what the server never says --------------------------------------------------------------

@@ -7169,6 +7169,22 @@ class Orchestrator:
             # sets it once for the whole build.
             if owns_turn and ev["type"] == "done" and not answer_only and not arch:
                 project.app_for_turn().set_last_turn_failed(not ev.get("ok"))
+            # Why a plan card still waiting for approval survives this ending (#178). A read-only
+            # turn was never offered edit tools, so it cannot be the thing that changed the app, and
+            # the plan under it is still the plan the server would build. The UI closes the card on
+            # every `done` whose decision isn't a gate decision — which is right for a build that
+            # ran, and wrong for a GATED turn that died before it planned anything: `write_plan`
+            # runs only once there is a plan, so `plan.md` still holds the earlier one and Archive
+            # goes on refusing it while its Approve and Cancel are off the screen.
+            #
+            # Here rather than at the yield sites for the reason the two records below give: every
+            # terminal `done` passes through persist(), and the seven that can end a turn are seven
+            # chances to forget. The reason string rather than a bare flag, because /api/diag can
+            # then say WHICH rule kept the card. Absent on a build turn, and absent from every row
+            # written before this shipped — the decision list in the UI still carries `answered`,
+            # which is what those old transcripts replay through.
+            if ev["type"] == "done" and read_only:
+                ev["readOnly"] = read_only
             # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
             # must not reach history either, or a reload would replay six "build is clean" dividers.
             # The rail's app tag, recording half. Here rather than at the four yield sites that
