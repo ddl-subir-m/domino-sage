@@ -446,6 +446,29 @@ def test_an_edit_to_a_document_naming_no_app_writes_no_live_copy(tmp_path: Path,
     assert project.workspace.live_plan_doc_id() == ""
 
 
+def test_an_edit_writes_no_plan_back_once_the_live_copy_is_gone(tmp_path: Path, monkeypatch):
+    """`livePlanDocId` can outlive the `plan.md` it names, so being the live document is not on its
+    own a reason to write one (#177).
+
+    Taken here by removing the file rather than by `archive_plan`, which is the door that clears the
+    id on its way past (`manager.py`) and so leaves nothing for this guard to catch. What does leave
+    the pair disagreeing is everything OUTSIDE the app's own API: a git checkout of a branch written
+    before the plan, a restored volume, a hand-deleted file. Writing the plan back from an edit
+    would put the app into "waiting for approval" on a handoff nobody confirmed.
+    """
+    client, orch = _routed(tmp_path, monkeypatch)
+    project = orch.project(start_preview=False)
+    project.record.create_plan_doc(PLAN, title="A dashboard", app_id=project.workspace.app_id)
+    project.workspace.write_plan(PLAN, "001")
+    project.workspace.plan_path.unlink()
+
+    client.patch("/api/plans/001", json={"sections": {"users": "The head of desk."}})
+
+    # The premise: the app still names the document, and the copy is still gone.
+    assert project.workspace.live_plan_doc_id() == "001"
+    assert project.workspace.read_plan() is None
+
+
 def test_an_edit_with_no_live_plan_touches_nothing_else(tmp_path: Path, monkeypatch):
     """After a build has consumed and archived the handoff, editing the document is just editing a
     document — it must not write a new plan.md and put the app back into "waiting for approval"."""
