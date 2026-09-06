@@ -3260,13 +3260,24 @@ class Orchestrator:
         markdown = live or (project.workspace.read_archived_plan() or "").strip()
         if not markdown:
             return {}
-        # The document this plan.md was written alongside, so the pin can open the plan page rather
-        # than a modal of the raw text. Newest first, and the newest is the one plan.md belongs to.
-        # Empty for a workspace whose plan predates plan documents — the pin falls back to the text.
+        # The document the markdown above was written FROM, so the pin can open the plan page rather
+        # than a modal of the raw text. Asked of the app — `live_plan_doc_id` while the plan is
+        # live, its archived counterpart once a build has consumed it — rather than guessed from the
+        # document list, because "the newest document naming this app" is a different question with
+        # a different answer (see `Workspace.write_plan`). It answered the same way often enough to
+        # look like one question, and #176 is the two coming apart: a plan drafted in Chat after
+        # this one was written, or the document left standing once this plan's was archived,
+        # outranks the one the text on screen came from and lends it its name and its link.
+        #
         # The copy is the app's and the document is the Project's, which is why this reads two
-        # surfaces to answer one question — and why it asks for this app's documents rather than
-        # the Project's, which now include other apps'.
-        docs = self._app_plan_docs(project)
+        # surfaces to answer one question.
+        doc_id = (project.workspace.live_plan_doc_id() if live
+                  else project.workspace.read_archived_plan_doc_id())
+        # By id rather than through `_plan_docs_naming_app`: that filter drops an archived document
+        # on purpose (#167), and this is the one reader that must still name one — it is showing its
+        # text. "" is the honest answer for a workspace whose plan predates plan documents, and for
+        # a document since deleted; both fall back to the plan's own first line below.
+        doc = project.record.read_plan_doc(doc_id) if doc_id else None
         # The DOCUMENT's title, falling back to plan.md's first line. The two are the same words
         # until somebody renames the document, and after that only one of them is a name anybody
         # chose: plan.md's first line is what the model wrote and nothing can edit it. The fallback
@@ -3275,12 +3286,12 @@ class Orchestrator:
         # Renaming the Built App is deliberately NOT one of the things that reaches here: an app is
         # not its plan, and the same title is the plan page's heading and the transcript's plan
         # card, on a document that carries comments and approvals (ADR-0008).
-        doc_title = str(docs[0].get("title") or "").strip() if docs else ""
+        doc_title = str(doc.get("title") or "").strip() if doc else ""
         # Live no longer means "awaiting approval" — approving a plan sets the DOCUMENT's status
         # (draft/in_review/approved) but doesn't archive plan.md, so a plan can sit live-and-approved
         # for a while before a build actually consumes it. Report the doc's real status while live;
         # fall back to "awaiting" only for a workspace plan that predates plan documents (no doc to ask).
-        doc_status = str(docs[0].get("status") or "").strip() if docs else ""
+        doc_status = str(doc.get("status") or "").strip() if doc else ""
         return {
             "title": doc_title or chat_handoff.plan_title(markdown),
             "markdown": markdown,
@@ -3295,7 +3306,7 @@ class Orchestrator:
             # and the resume point is the phased parser's step, which counts briefs — "step 4 of 3"
             # is a reading the pair could produce, so the step travels alone.
             "retryStep": project.workspace.read_plan_retry_step(),
-            "planId": docs[0]["id"] if docs else "",
+            "planId": doc["id"] if doc else "",
         }
 
     # ---- Plan documents ----
