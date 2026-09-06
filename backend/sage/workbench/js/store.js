@@ -1271,6 +1271,19 @@ window.SW = window.SW || {};
   const ASKED_FOR = { stopped: true, cancelled: true, 'context changed': true,
                       'plan moved on': true, ...GATE_DECISIONS };
 
+  // Endings after which a plan card still waiting for approval keeps its Approve and Cancel. Every
+  // gate decision is one, for the reason written beside them: the turn never ran, so the plan it
+  // left waiting is still the plan the server would build.
+  //
+  // A separate list from GATE_DECISIONS rather than more entries in it, because the two answer
+  // different questions — that one is "does this ending need a status line of its own", this one is
+  // "does the card survive it" — and `answered` splits them. An answer-only turn is a question the
+  // person asked BESIDE the card, not instead of it: it is read-only, it never touches plan.md, and
+  // the server skips `plan-stale` for exactly that reason. So the card must survive it. But it also
+  // has no card of its own, so the "Answered" chip is the only thing on screen saying the question
+  // was heard, and suppressing that is what a GATE_DECISIONS entry would have done (#178).
+  const KEEPS_THE_PLAN_CARD = { ...GATE_DECISIONS, answered: true };
+
   // Endings after which a gateway listing could not be the answer, so `readSSE` must not pay for
   // one. Deliberately not every ASKED_FOR decision: `model unavailable` also arrives as an `error`
   // beside a gate decision, and there the listing IS the answer — that turn was refused BECAUSE of
@@ -1434,7 +1447,19 @@ window.SW = window.SW || {};
           blocks: [block],
         });
       } else if (ev.type === 'plan-stale') {
-        if (pendingPlan) pendingPlan.pending = false;
+        // Deliberately nothing, and named here rather than left to fall off the end of the chain so
+        // that an unread type reads as a decision instead of the oversight #94 was about.
+        //
+        // It used to close the plan card. It is the one event that did and is never persisted —
+        // neither sender calls `persist` — so it was the only thing on that card drawn from state a
+        // reload discards: the buttons went on a change request and came back on F5 (#178).
+        //
+        // Closing the card was also redundant. The card draws no actions at all while a turn is
+        // running, and the turn that yields this ends with a persisted `done` whose decision settles
+        // the card for good — so the honest ending always arrived a moment later anyway. Where the
+        // two disagreed, this one was the wrong one: a typed approval yields this and can then be
+        // refused for an unbound model, and that refusal tells the person to pick another model and
+        // approve again (#125). Taking the Approve button first is what made that a dead end.
       } else if (ev.type === 'plan-superseded') {
         // Written into THIS conversation's transcript by a turn in ANOTHER one, which handed off
         // into the same Built App (#59). Without it the card here goes on offering "Approve &
@@ -1469,8 +1494,10 @@ window.SW = window.SW || {};
           value: ev.ok ? 'Typecheck passed' : `Typecheck: ${ev.errors} error(s)`,
         });
       } else if (ev.type === 'done') {
+        // Two questions, read off two lists. They used to be one list, which is why asking a
+        // question took the plan card's buttons away for good (#178).
+        if (pendingPlan && !KEEPS_THE_PLAN_CARD[ev.decision]) pendingPlan.pending = false;
         if (!GATE_DECISIONS[ev.decision]) {
-          if (pendingPlan) pendingPlan.pending = false;
           ensureAssistant().blocks.push({
             type: 'status',
             ok: ev.ok,
