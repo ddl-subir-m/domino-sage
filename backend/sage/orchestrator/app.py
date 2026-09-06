@@ -2415,12 +2415,29 @@ def archive_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
         # shows the error raw. The page reads `reason`; the word and the sentence are composed one
         # place apart on purpose, because only the page knows which of its two buttons is asking.
         #
-        # "Waiting to be built from", not "being built right now" (#167): the guard reads which
-        # plan is live, never whether a turn is running, and a plan sits live from the moment the
-        # gate writes it. Both acts it names are on the plan card in the Conversation that proposed
-        # it — the only place a Cancel exists — so the sentence says where to go rather than what
-        # to do. The refusal cannot reach a creator whose Conversation is gone: the archive retires
-        # that plan itself instead of naming a card nobody can open.
+        # A sentence per reason word, because the two refusals send people to different doors and a
+        # sentence that named both would be wrong half the time. "Waiting to be built from" used to
+        # cover the busy case too (#167) on the grounds that the guard never read whether a turn
+        # was running; it does now, so that case says the true thing instead.
+        #
+        # The busy sentence names no button on purpose. The guard takes the whole `_turn_lock`, and
+        # its holder may be a build (which has a Stop) or a Publish or a sync (which have nothing
+        # to press). Naming Stop would re-open the very "names a door that is not open" dead end
+        # #167 and #174 exist to close. "Try again in a moment" is true of every holder.
+        #
+        # The waiting sentence's two acts are on the plan card in the Conversation that proposed it
+        # — the only place a Cancel exists — so it says where to go rather than what to do. Two
+        # cases where it named a door that was not open are gone rather than reworded: a creator
+        # whose Conversation is deleted (#167), and a plan whose card lost its action row when its
+        # build failed (#174); both archive instead of refusing.
+        #
+        # Not every dead end of that shape is closed. `plan-stale` and an answer-only turn also
+        # clear the card's `pending` without a build ever running, so a plan can still refuse here
+        # with both buttons off the screen. That route is untouched by #174 and wants its own fix.
+        if e.reason == "busy":
+            return JSONResponse(status_code=409, content={"error": brand_text(
+                "{assistantName} is working on something else in this project, so this plan "
+                "cannot be put away yet. Try again in a moment."), "reason": e.reason})
         return JSONResponse(status_code=409, content={"error": brand_text(
             "This plan is the one this {builtApp} is waiting to be built from, so it cannot be put "
             "away. Approve it or cancel it in the conversation it came from."), "reason": e.reason})

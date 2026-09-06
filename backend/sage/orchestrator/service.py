@@ -3452,6 +3452,28 @@ class Orchestrator:
         app = self._wm.app_workspace(self._project_id, app_id)
         return app.live_plan_doc_id() == str(doc.get("id") or "")
 
+    def _awaits_first_approval(self, doc: dict) -> bool:
+        """Whether this document is the live plan AND no build has run from it yet (#174).
+
+        The narrower half of `_is_the_live_plan`, because a plan stays live for two opposite
+        reasons. One is "nobody has approved it yet" — an Approve card is open on it, and hiding
+        the document would strand that card. The other is "a build ran and did not finish": the
+        approve turn keeps `plan.md` alive on purpose so "try again" can resume it, and that plan
+        is waiting for nothing. Told apart by `read_plan_retry_step`, the same fact `archive_plan`
+        reads to name the archive (#173) — a plan waiting for its first approval and a plan whose
+        build died are otherwise identical on disk.
+
+        Sits beside `_is_the_live_plan` rather than inside the archive guard so both readers of
+        `live_plan_doc_id` can see it: the two must never disagree about which plan is live
+        (ADR-0024). `_build_again_state` deliberately still asks the wider question — approving a
+        live plan IS its build however far the last attempt got, so "Build this again" is the
+        wrong second door for either kind.
+        """
+        if not self._is_the_live_plan(doc):
+            return False
+        app = self._wm.app_workspace(self._project_id, str(doc.get("appId") or ""))
+        return app.read_plan_retry_step() == 0
+
     def _build_again_state(self, project: Project, doc: dict) -> dict:
         """Whether this plan document may be built again, and why not when it may not (ADR-0024).
 
@@ -3517,38 +3539,87 @@ class Orchestrator:
         where the field is born. Nothing is destroyed here: the comments, the approvals and every
         version are exactly where they were, which is what makes taking it back out honest.
 
-        One refusal, and only on the way in: the document `.sage/plan.md` was written from right
-        now AND the Conversation that proposed it still answers. That plan is the one an Approve
-        card is asking about, and hiding it would leave the card pointing at a document the panel
-        no longer lists. Asked of `_is_the_live_plan`, the same read "Build this again" refuses on,
-        so the two can never disagree about which plan is live (ADR-0024).
+        Two refusals, and only on the way in, both asked of the live plan. Which plan is live is
+        asked of `_is_the_live_plan`, the same read "Build this again" refuses on, so the two can
+        never disagree about that (ADR-0024).
 
-        The Conversation half is what keeps the refusal answerable. Its copy names two acts —
-        approve it, or cancel it — and BOTH of them live on the plan card in that transcript: there
-        is no Cancel anywhere else, and `delete_thread` does not touch the app's live plan. So a
-        plan left live by a build that gave up (`_approve_stream` keeps it on purpose, to resume
-        from) and whose Conversation was then deleted used to refuse forever, naming two doors that
-        no longer existed. With nothing left to answer the refusal, putting the document away IS
-        the cancel: the stray `plan.md` is retired in the same act, so the app stops pointing at a
-        document the panel has just hidden.
+        The first: another turn holds `_turn_lock`. `archive_plan` renames `.sage/plan.md` away,
+        clears `livePlanDocId` and zeroes the resume step, and a phased build reads and writes all
+        three as it goes — so Archive pressed from a second tab mid-build would pull the plan out
+        from under a turn still streaming, and the next phase would write a resume point for a
+        document that no longer exists.
+
+        Taken as the lock itself, not read off `turn_busy`, because the question is not "is one
+        running" but "may I touch the tree" — and between those two answers a queued turn can be
+        admitted. The archive is a few local file operations, so it can hold the lock for its whole
+        length rather than checking and then acting; that is the pattern the other doors onto the
+        working tree already use (#39).
+
+        Deliberately the WHOLE lock, not "is a build running on this app". Every writer takes it —
+        chat, publish, sync, create/delete app — because one operation owns the working tree at a
+        time, and the plan document lives in that tree. So the copy for this refusal names no
+        button: it cannot know whether the holder is a build with a Stop, or a Publish with
+        nothing. It says Sage is busy and to try again, which is true of every holder.
+
+        Not covered by the waiting half below, which is why it is asked at all: `_phased_approve`
+        writes `set_plan_retry_step(step.n)` BEFORE each phase runs, so from phase 1 onward a live
+        build looks exactly like a build that already finished.
+
+        A WEDGED workspace is let through without the lock. It holds `_turn_lock` for good and has
+        no turn in it (#39), so refusing there would be a dead end with no way out at all — worse
+        than the one this whole change removes. The cost is real and accepted: a wedged session may
+        still be alive in the tree, and if it ever returns it will write a resume step for a
+        `plan.md` that is no longer there. That leaves a stale step, which the next `write_plan`
+        zeroes; the alternative leaves a plan nobody can ever put away.
+
+        The second: the document is still waiting for its first approval AND the Conversation that
+        proposed it still answers. That plan is the one an Approve card is asking about, and hiding
+        it would leave the card pointing at a document the panel no longer lists.
+
+        Both of that one's halves are there to keep the refusal answerable, because its copy names
+        two acts — approve it, or cancel it — and BOTH of them live on the plan card in that
+        transcript: there is no Cancel anywhere else, and `delete_thread` does not touch the app's
+        live plan.
+
+        The Conversation half: a plan left live by a build that gave up, whose Conversation was
+        then deleted, used to refuse forever, naming two doors that no longer existed (#167).
+
+        The waiting half: the card loses that whole action row the moment a build fails, because
+        the row is gated on `pending` and a failed build persists a `done` whose decision is not a
+        gate decision. So the plan a build got partway through refused with a live Conversation and
+        an empty card — a dead end with no Cancel anywhere (#174). `_awaits_first_approval` asks
+        the question the refusal actually means, and the answer is exactly when the card really
+        does carry the two buttons. Not fixed by re-arming `pending` instead: pending means "there
+        is an Approve to press", and putting an Approve on a plan mid-build is a worse bug.
+
+        With nothing left to answer the refusal, putting the document away IS the cancel: the
+        stray `plan.md` is retired in the same act, so the app stops pointing at a document the
+        panel has just hidden.
 
         Retired as a cancel, which is usually not as built: nothing here knows a build ever
         consumed it, and `read_archived_plan` must not go on to describe the app as built from a
         plan somebody just put away. "The plan is live precisely because none did" is the near-miss
         to avoid — a phased build that died consumed part of it, and `archive_plan` reads the step
-        it left behind to tell the two apart (#173). That split belongs there, where the other two
-        Cancel doors reach it too.
+        it left behind to tell the two apart (#173). That split belongs there, where all three
+        Cancel doors reach it too — and the door #174 opens is the one that reaches it most.
         """
         project = self.project(start_preview=False, seed_app=False)
         doc = project.record.read_plan_doc(plan_id)
         if doc is None:
             return None
         if archived and self._is_the_live_plan(doc):
-            if self._origin_live(project, doc):
-                raise PlanArchiveRefused("awaiting approval")
-            # `_is_the_live_plan` is False for a document naming no app, so there is one here.
-            self._wm.app_workspace(
-                self._project_id, str(doc.get("appId") or "")).archive_plan(cancelled=True)
+            held = self._turn_lock.acquire(blocking=False)
+            if not held and not self._turn_wedged:
+                raise PlanArchiveRefused("busy")
+            try:
+                if self._awaits_first_approval(doc) and self._origin_live(project, doc):
+                    raise PlanArchiveRefused("awaiting approval")
+                # `_is_the_live_plan` is False for a document naming no app, so there is one here.
+                self._wm.app_workspace(
+                    self._project_id, str(doc.get("appId") or "")).archive_plan(cancelled=True)
+            finally:
+                if held:
+                    self._turn_lock.release()
         return project.record.patch_plan_doc_meta(plan_id, archived=bool(archived))
 
     def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
