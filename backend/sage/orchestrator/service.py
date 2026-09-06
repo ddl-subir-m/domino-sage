@@ -7146,6 +7146,16 @@ class Orchestrator:
         log.info("turn attachments: requested=%s resolved=%s", len(mentions or []),
                  [(a["name"], a["summary"], len(a.get("image_uri") or "")) for a in (mention_files or [])])
 
+        # Bound here, not at the assignment 300 lines down, because `persist` closes over it and
+        # reads it on every terminal `done` (#178). The real value is worked out once the fork this
+        # turn took is known; until then "not read-only" is the safe reading, and it is the answer
+        # for every turn that reaches a `done` before that point. Written out rather than left to
+        # short-circuit evaluation, which is what kept this safe by accident: the type check happens
+        # to run first, and the two `persist` calls that precede the assignment happen not to be
+        # `done`s. The next early exit that persists one would raise UnboundLocalError instead —
+        # inside an error path, which is the worst place to find out.
+        read_only = ""
+
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
         def persist(ev: dict) -> dict:
@@ -7183,6 +7193,15 @@ class Orchestrator:
             # then say WHICH rule kept the card. Absent on a build turn, and absent from every row
             # written before this shipped — the decision list in the UI still carries `answered`,
             # which is what those old transcripts replay through.
+            #
+            # That fallback is narrower than this rule, and the gap is accepted rather than
+            # overlooked. `answered` names ONE of the endings tagged here, so an old transcript
+            # whose gated turn died on a `gateway error` has neither the decision nor this key, and
+            # its card still closes with Archive still refusing underneath. Only rows written from
+            # here on carry the answer. Nothing can be done about that without rewriting history,
+            # which is a worse trade than one stale transcript: the plan those old rows point at is
+            # long since built or replaced, and the person is one new turn away from a card that is
+            # right.
             if ev["type"] == "done" and read_only:
                 ev["readOnly"] = read_only
             # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
