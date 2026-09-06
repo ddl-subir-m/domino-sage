@@ -3675,10 +3675,20 @@ class Orchestrator:
         # editing an older plan after its build must not resurrect it as the thing being built.
         # The document is the Project's and the copy is the app's, so this is the one place the two
         # surfaces meet — deliberately, because copying between them is what it is for.
-        if doc and project.workspace.read_plan() is not None:
-            newest = self._app_plan_docs(project)
-            if newest and newest[0]["id"] == plan_id:
-                project.workspace.write_plan(doc["markdown"], plan_id)
+        # "The document it belongs to" is `_is_the_live_plan`, which reads `live_plan_doc_id` off the
+        # app, and not "the newest document for this app" — a different question with a different
+        # answer (#177, see `Workspace.write_plan`). The two diverge whenever a plan becomes live
+        # after a newer one was written into the same app, which is every confirmed Chat handoff
+        # that outlived a Build conversation. Asked this way the copy, the archive guard and "Build
+        # this again" all agree about which plan is live (ADR-0024).
+        if doc and self._is_the_live_plan(doc):
+            # The DOCUMENT's app, not the selected one: the Plan page opens any plan in the Project,
+            # including another app's, and `_is_the_live_plan` has just answered about that app.
+            app = self._wm.app_workspace(self._project_id, str(doc.get("appId") or ""))
+            # `live_plan_doc_id` can outlive the `plan.md` it names, so the file has to be there:
+            # writing one back from an edit would resurrect a handoff a build already archived.
+            if app.read_plan() is not None:
+                app.write_plan(doc["markdown"], plan_id)
         return doc
 
     def review_plan_doc(self, plan_id: str, body: dict) -> dict | None:
