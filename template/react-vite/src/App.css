@@ -5,6 +5,9 @@
   background: #fafafa;
   color: #2e2e38;
   font-family: var(--sans);
+  /* The card sits beside the Workbench chat, which sets no tracking. Without this it inherits
+     the 0.18px from :root and the same Inter reads as a different face. */
+  letter-spacing: normal;
 }
 
 .sage-card {
@@ -25,6 +28,7 @@
 
 .sage-card p {
   margin: 0 0 1.25rem;
+  font-size: 13px;
   color: #65657b;
   line-height: 1.5;
 }
