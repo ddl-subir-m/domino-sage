@@ -400,8 +400,11 @@ def test_editing_the_live_plan_reaches_the_build_not_just_the_page(tmp_path: Pat
     steps that are no longer there."""
     client, orch = _routed(tmp_path, monkeypatch)
     project = orch.project(start_preview=False)
-    project.workspace.write_plan(PLAN)
-    project.record.create_plan_doc(PLAN, title="A dashboard")
+    project.record.create_plan_doc(PLAN, title="A dashboard",
+                                   app_id=project.workspace.app_id)
+    # Written the way every real door writes it: the plan and the document it came from, together.
+    # Which document is live is recorded, not worked out from the list afterwards (#177).
+    project.workspace.write_plan(PLAN, "001")
 
     client.patch("/api/plans/001", json={"sections": {
         "plan": "1. **Desk table** — Show notional by desk.\n"
@@ -418,13 +421,29 @@ def test_editing_an_older_plan_does_not_become_the_thing_being_built(tmp_path: P
     quietly hand it to the next approve."""
     client, orch = _routed(tmp_path, monkeypatch)
     project = orch.project(start_preview=False)
-    project.record.create_plan_doc(PLAN, title="Old")
-    project.workspace.write_plan(PLAN)
-    project.record.create_plan_doc(PLAN, title="Live")
+    app_id = project.workspace.app_id
+    project.record.create_plan_doc(PLAN, title="Old", app_id=app_id)
+    project.record.create_plan_doc(PLAN, title="Live", app_id=app_id)
+    project.workspace.write_plan(PLAN, "002")
 
     client.patch("/api/plans/001", json={"sections": {"users": "Somebody else."}})
 
     assert "Somebody else." not in project.workspace.read_plan()
+
+
+def test_an_edit_to_a_document_naming_no_app_writes_no_live_copy(tmp_path: Path, monkeypatch):
+    """A plan drafted in Chat carries no app until its handoff is confirmed, so there is no copy of
+    it for an edit to reach — whatever else is live in the app on screen is some other plan's, and
+    writing over it would hand the next build words nobody handed it."""
+    client, orch = _routed(tmp_path, monkeypatch)
+    project = orch.project(start_preview=False)
+    project.record.create_plan_doc(PLAN, title="Drafted in Chat")
+    project.workspace.write_plan(PLAN, "")
+
+    client.patch("/api/plans/001", json={"sections": {"users": "Somebody else."}})
+
+    assert "Somebody else." not in project.workspace.read_plan()
+    assert project.workspace.live_plan_doc_id() == ""
 
 
 def test_an_edit_with_no_live_plan_touches_nothing_else(tmp_path: Path, monkeypatch):
