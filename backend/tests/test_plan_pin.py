@@ -375,3 +375,29 @@ def test_the_newest_built_archive_names_its_own_document(tmp_path: Path):
     assert pin["markdown"].startswith("A risk heatmap.")
     assert pin["title"] == "Risk heatmap"
     assert pin["planId"] == second["id"]
+
+
+def test_a_partly_built_plan_a_new_request_replaced_can_still_be_named(tmp_path: Path):
+    """Where #175 meets #176. That plan now archives PLAIN, so `read_archived_plan` returns it and
+    the pin shows its text — which means the pin has to be able to name it, and can only do so if
+    `archive_plan`'s marker gate fired. The gate keys on the filename rather than on the
+    `superseded` flag exactly so that it does.
+
+    The document keeps its `superseded` stamp throughout: the pin says what this app was built
+    from, the document says what became of the plan, and neither is the other's answer."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ws = project.workspace
+    replaced = project.record.create_plan_doc(PLAN, title="Desk exposure", app_id=ws.app_id)
+    ws.write_plan(PLAN, replaced["id"])
+    ws.set_plan_retry_step(4)                     # phases 1-3 of 6 finished
+    ws.archive_plan(superseded=True)
+    project.record.patch_plan_doc_meta(replaced["id"], status="superseded")
+
+    pin = orch.read_plan_pin()
+
+    assert pin["markdown"].startswith("A desk exposure dashboard.")
+    assert pin["title"] == "Desk exposure"
+    assert pin["planId"] == replaced["id"]
+    assert pin["status"] == "built"
+    assert orch.read_plan_doc(replaced["id"])["status"] == "superseded"
