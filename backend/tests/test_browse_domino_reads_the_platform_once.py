@@ -141,7 +141,7 @@ def test_adding_a_resource_reads_the_project_rather_than_the_platform():
     """
     out = _act("add")
     asked = out["afterAct"]["requests"] + out["lateRequests"]
-    assert not [u for u in asked if u.endswith("/api/resources") or u.endswith("/api/assets")], asked
+    assert not [u for u in asked if u.endswith(("/api/resources", "/api/assets"))], asked
     # The membership file, and `/project` for the app's manifest and the Uploads. Nothing else.
     assert [u.rsplit("/api/", 1)[-1] for u in asked] == [
         "project/resources",

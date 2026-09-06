@@ -23,8 +23,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .models import (ASSIGNABLE_SLOTS, Mode, ModelCatalog, ModelDecision, Phase, Reason,
-                     SessionState, signing_slot, signs)
+from .models import (
+    ASSIGNABLE_SLOTS,
+    Mode,
+    ModelCatalog,
+    ModelDecision,
+    Phase,
+    Reason,
+    SessionState,
+    signing_slot,
+    signs,
+)
 
 
 def resolve(state: SessionState, catalog: ModelCatalog) -> ModelDecision:

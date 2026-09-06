@@ -17,8 +17,8 @@ from pathlib import Path
 
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
-from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.resources.app_helpers import TEMPLATE
+from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.resources.pinned_model import render_config
 
 CONFIG_PATH = TEMPLATE.llm_config_path

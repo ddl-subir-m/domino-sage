@@ -1,7 +1,6 @@
-from pathlib import Path
-
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -702,7 +701,7 @@ def test_chat_first_turn_saves(tmp_path: Path):
 
 
 def test_chat_text_followup_saves_on_idle_not_every_turn(tmp_path: Path):
-    orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="And by region, APAC.")])
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="And by region, APAC.")])
     calls = _track_saves(orch)
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "what's our gross exposure by desk?"))
@@ -790,7 +789,7 @@ def test_flush_chat_save_and_shutdown_cancel_idle(tmp_path: Path):
 
 def test_analysis_turns_do_not_suggest_handoff(tmp_path: Path):
     gw = ScriptedGateway("CHAT")
-    orch, oc = _orch(tmp_path, [
+    orch, _oc = _orch(tmp_path, [
         Turn(text="Rates."),
         Turn(text="By region, APAC."),
         Turn(text="Still Rates."),
@@ -874,7 +873,7 @@ def test_explicit_build_request_skips_classifier(tmp_path: Path):
 
 def test_not_now_suppresses_and_classifier_does_not_run_again(tmp_path: Path):
     gw = ScriptedGateway("APP")
-    orch, oc = _orch(tmp_path, [Turn(text="A dashboard."), Turn(text="More.")], gateway=gw)
+    orch, _oc = _orch(tmp_path, [Turn(text="A dashboard."), Turn(text="More.")], gateway=gw)
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
     patched = orch.patch_thread(tid, {"handoff": "suppress"})
@@ -951,7 +950,7 @@ def test_the_handoff_plan_turn_asks_for_the_plan_document_shape(tmp_path: Path):
 
 
 def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
-    orch, oc = _orch(tmp_path, [
+    orch, _oc = _orch(tmp_path, [
         Turn(text="Rates."),
         Turn(text=_PLAN),
     ])

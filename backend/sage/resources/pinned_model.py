@@ -155,8 +155,8 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
         ]
     code = [
         "```tsx",
-        f'import {{ askModel, checkModel }} from "./{names.llm}";'
-        f'  // from a subfolder: "../{names.llm}"',
+        (f'import {{ askModel, checkModel }} from "./{names.llm}";'
+        f'  // from a subfolder: "../{names.llm}"'),
         "",
         'const answer = await askModel([{ role: "user", content: question }]);',
     ]

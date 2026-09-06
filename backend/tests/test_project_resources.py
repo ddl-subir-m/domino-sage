@@ -75,7 +75,7 @@ def test_pin_a_dataset_file_and_a_table_then_unpin(tmp_path: Path):
         "id": "data_source:ds-dwh", "kind": "datasource", "name": "Snowflake-Data-Warehouse",
         "pin": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
     })
-    tables = [r for r in orch.list_project_resources() if r["id"] == "data_source:ds-dwh"][0]
+    tables = next(r for r in orch.list_project_resources() if r["id"] == "data_source:ds-dwh")
     assert tables["pins"][0]["table"] == "DIM_ACCOUNT"
 
     assert orch.unpin_project_resource("dataset:ds_sales_2026", {"path": "train.csv"}) is True

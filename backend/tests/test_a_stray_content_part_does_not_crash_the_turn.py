@@ -64,7 +64,7 @@ def _orch(tmp: Path, turns: list[Turn]):
 
 
 def test_a_stray_string_part_is_skipped_and_the_build_still_finishes(tmp_path: Path):
-    orch, oc = _orch(tmp_path, [
+    orch, _oc = _orch(tmp_path, [
         Turn(text="Added the table.", writes={"src/Table.tsx": "export default function Table() {}"},
              stray_content=True),
     ])

@@ -138,8 +138,8 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential],
         ]
     code = [
         "```tsx",
-        f'import {{ callModelApi, ModelApiError }} from "./{names.model_api}";'
-        f'  // from a subfolder: "../{names.model_api}"',
+        (f'import {{ callModelApi, ModelApiError }} from "./{names.model_api}";'
+        f'  // from a subfolder: "../{names.model_api}"'),
         "",
         "const result = await callModelApi({ score: 0.9 });  // whatever this model's function takes",
     ]

@@ -52,7 +52,7 @@ def _platform_reads(out: dict) -> list:
     """
     return [
         url for url in out["requests"]
-        if url.endswith("/api/resources") or url.endswith("/api/assets")
+        if url.endswith(("/api/resources", "/api/assets"))
     ]
 
 

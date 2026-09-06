@@ -139,7 +139,7 @@ def test_turn_state_names_the_running_chat_turn(tmp_path: Path):
     orch = _orch(tmp_path, oc, verdict="CHAT")
     tid = orch.create_thread()["id"]
 
-    events, finished = _stream(orch.chat_stream(tid, "how many rows?"))
+    _events, finished = _stream(orch.chat_stream(tid, "how many rows?"))
     assert finished.wait(30) is True
 
     running = [s["running_turn"] for s in oc.seen if s.get("running_turn")]
@@ -158,7 +158,7 @@ def test_turn_state_names_the_running_build_turn(tmp_path: Path):
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
 
-    events, finished = _stream(orch.build_stream("add a chart", conversation=tid))
+    _events, finished = _stream(orch.build_stream("add a chart", conversation=tid))
     assert finished.wait(30) is True
 
     running = [s["running_turn"] for s in oc.seen if s.get("running_turn")]
@@ -181,7 +181,7 @@ def test_stopping_a_build_hands_the_lock_to_a_chat_turn_that_says_so(tmp_path: P
     tid = orch.create_thread()["id"]
 
     oc.stay_running = True                                   # a build turn that will not end on its own
-    build, build_done = _stream(orch.build_stream("add a chart", conversation=tid))
+    _build, build_done = _stream(orch.build_stream("add a chart", conversation=tid))
     _wait_for(lambda: any(s.get("running_turn") for s in oc.seen))
 
     chat, chat_done = _stream(orch.chat_stream(tid, "how many rows?"))
@@ -205,7 +205,7 @@ def test_a_stop_aimed_at_the_build_does_not_kill_the_chat_turn_behind_it(tmp_pat
     tid = orch.create_thread()["id"]
 
     oc.stay_running = True
-    build, build_done = _stream(orch.build_stream("add a chart", conversation=tid))
+    _build, build_done = _stream(orch.build_stream("add a chart", conversation=tid))
     _wait_for(lambda: any(s.get("running_turn") for s in oc.seen))
 
     chat, chat_done = _stream(orch.chat_stream(tid, "how many rows?"))
@@ -267,7 +267,7 @@ def test_a_stop_aimed_at_another_app_does_not_reach_this_build(tmp_path: Path):
     tid = orch.create_thread()["id"]
 
     oc.stay_running = True
-    build, build_done = _stream(orch.build_stream("add a chart", conversation=tid))
+    _build, build_done = _stream(orch.build_stream("add a chart", conversation=tid))
     _wait_for(lambda: any(s.get("running_turn") for s in oc.seen))
 
     running = orch.turn_state()["running_turn"]

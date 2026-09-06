@@ -300,9 +300,9 @@ def test_a_folder_partitioned_to_the_day_still_collapses(tmp_path: Path):
     # are, and `raw/2026/part.csv` does not exist. An agent following that pattern would get the SPA
     # fallback instead of the CSV and "fix" it by copying the file into `src/` — the leak this block
     # exists to prevent.
-    assert block == ["- 24 files in `public/data/sales_2026/raw/2026` — CSV — 2 columns, 1 rows "
+    assert block == [("- 24 files in `public/data/sales_2026/raw/2026` — CSV — 2 columns, 1 rows "
                      "— fetch `data/sales_2026/raw/2026/<subpath>` (relative to base) "
-                     "— from dataset **sales_2026**"]
+                     "— from dataset **sales_2026**")]
 
 
 def test_a_folder_whose_files_really_are_in_it_still_says_name(tmp_path: Path):
@@ -399,9 +399,9 @@ def test_a_truncated_listing_refuses_the_folder_act_at_every_level(tmp_path: Pat
 
 @pytest.fixture
 def route(tmp_path, monkeypatch):
-    import sage.orchestrator.app as appmod
-
     from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
 
     orch, ds, ws = _ready(tmp_path)
     monkeypatch.setattr(appmod, "orchestrator", orch)
@@ -423,7 +423,7 @@ def test_the_route_attaches_the_subtree_and_says_what_it_did(route):
 
 
 def test_the_route_takes_the_root_as_the_same_act(route):
-    client, ds, orch, _ = route
+    client, ds, _orch, _ = route
 
     assert _post(client, ds, "").json()["attached"] == 6
     # A body with no `folder` at all is malformed, never a silent whole-Dataset attach.
@@ -501,7 +501,7 @@ def test_the_clobber_refusal_survives_a_workspace_reached_through_a_symlink(tmp_
 
 def test_a_stale_symlink_is_replaced_rather_than_refused(route):
     """A symlink is how a re-attach works, and how this act's own leftovers clear on a retry."""
-    client, ds, orch, ws = route
+    client, ds, _orch, ws = route
     stale = ws / "public" / "data" / "sales_2026" / "raw" / "2024" / "part-1.csv"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.symlink_to(ws / "package.json")
@@ -572,9 +572,9 @@ def test_the_route_refuses_over_the_cap_with_the_three_numbers(route, monkeypatc
 
 
 def test_the_route_refuses_an_unmounted_dataset_with_the_rows_own_reason(tmp_path, monkeypatch):
-    import sage.orchestrator.app as appmod
-
     from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
 
     orch = _orch(tmp_path, _Unmounted())
     orch.project(start_preview=False)

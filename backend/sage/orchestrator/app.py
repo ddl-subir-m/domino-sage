@@ -45,8 +45,14 @@ _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import (
-    DEFAULT_SIDECAR_URL, GatewayUpstreamError, bearer_from_authorization, bind_viewer_token,
-    jwt_identity, sidecar_token, static_token, viewer_token,
+    DEFAULT_SIDECAR_URL,
+    GatewayUpstreamError,
+    bearer_from_authorization,
+    bind_viewer_token,
+    jwt_identity,
+    sidecar_token,
+    static_token,
+    viewer_token,
 )
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
@@ -73,9 +79,18 @@ from ..workspace.threads import safe_id
 from .brand import text as brand_text
 from .describe import human_bytes
 from .service import (
-    AttachSourceMissing, AttachTooLarge, AttachWouldClobber, DataReferenced, DetachStopped,
+    AttachSourceMissing,
+    AttachTooLarge,
+    AttachWouldClobber,
+    DataReferenced,
+    DetachStopped,
     FolderActUnavailable,
-    Orchestrator, PlanArchiveRefused, ResetBusy, ResourceNotBound, ResourceStillBound, TurnBusy,
+    Orchestrator,
+    PlanArchiveRefused,
+    ResetBusy,
+    ResourceNotBound,
+    ResourceStillBound,
+    TurnBusy,
     UploadUnavailable,
 )
 

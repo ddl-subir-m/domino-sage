@@ -11,9 +11,6 @@ a directory named off the wire. `safe_id` is that rule in one place, and these a
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from sage.workspace.manager import ProjectRecord

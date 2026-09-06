@@ -224,9 +224,8 @@ def test_the_directory_is_everyone_on_the_deployment():
 
 
 def test_a_directory_that_cannot_be_read_is_reported():
-    with stub_collaborator_api(directory=None) as (host, _):
-        with pytest.raises(ResourceUnavailable):
-            provider(host).list_directory()
+    with stub_collaborator_api(directory=None) as (host, _), pytest.raises(ResourceUnavailable):
+        provider(host).list_directory()
 
 
 # ---- the provider: the writes --------------------------------------------------------------------

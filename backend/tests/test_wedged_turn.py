@@ -234,7 +234,7 @@ def test_giving_up_stops_opencode_before_it_releases_the_lock(tmp_path: Path):
 
 
 def test_the_next_turn_is_accepted_once_the_session_confirms_it_stopped(tmp_path: Path):
-    orch, oc = _wedged(tmp_path, turns=[Turn(text="wedged"),
+    orch, _oc = _wedged(tmp_path, turns=[Turn(text="wedged"),
                                         Turn(text="done", writes={"src/chart.tsx": "chart\n"})])
     list(orch.build_stream("add a chart"))
     # The stop above already cleared `stay_running`, so the second turn runs like any other.
@@ -249,7 +249,7 @@ def test_a_stop_that_does_not_return_keeps_the_lock(tmp_path: Path):
     """The second failure. Sage cannot show that OpenCode let go of the working tree, so it does not
     pretend otherwise: the lock stays held, and the workspace refuses further turns rather than run
     one over a session that may still be writing."""
-    orch, oc = _wedged(tmp_path, stops=False)
+    orch, _oc = _wedged(tmp_path, stops=False)
 
     events = list(orch.build_stream("add a chart"))
 
@@ -266,7 +266,7 @@ def test_the_wedged_notice_survives_a_reload(tmp_path: Path):
     list(orch.build_stream("add a chart"))
 
     history = orch.project(start_preview=False).app_for_turn().read_history()
-    row = [e for e in history if e.get("type") == "build-stalled"][0]
+    row = next(e for e in history if e.get("type") == "build-stalled")
     assert "Restart the workspace" in row["message"]
     assert row["prompt"] == ""   # nothing a retry could reach until the restart
 

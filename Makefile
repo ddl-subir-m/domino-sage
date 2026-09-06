@@ -1,4 +1,4 @@
-.PHONY: setup test shim opencode lock clean
+.PHONY: setup test lint shim opencode lock clean
 
 # One-command reproducible setup (lockfile-driven).
 setup:
@@ -6,9 +6,19 @@ setup:
 	cd backend && uv sync --extra dev
 
 # Backend tests. -n auto fans them across cores. Drop it to read interleaved output or to run
-# a single failure under a debugger: `cd backend && uv run pytest -q <nodeid>`.
+# a single failure under a debugger: `cd backend && uv run --extra dev pytest -q <nodeid>`.
+#
+# `--extra dev` rather than relying on `make setup` having run: pytest lives in that extra, and a
+# fresh checkout or git worktree has a venv built from the default dependencies alone. Without it
+# `uv run pytest` does not run a smaller suite, it fails to spawn at all — and piped through
+# anything that swallows the exit code, that failure reads as a pass (#166).
 test:
-	cd backend && uv run pytest -q -n auto
+	cd backend && uv run --extra dev pytest -q -n auto
+
+# Lint. Ruff is pinned exactly (see `required-version` in backend/pyproject.toml), so this and CI
+# cannot disagree about what counts as clean.
+lint:
+	cd backend && uv run --extra dev ruff check
 
 # Run the enforcement shim alone (FakeGateway unless GATEWAY_BASE_URL/KEY are set).
 shim:

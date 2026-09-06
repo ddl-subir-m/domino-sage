@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import replace as _replace
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,6 @@ from sage.resources.provider import (
     LlmAlias,
     ResourceUnavailable,
 )
-from dataclasses import replace as _replace
-
 from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn

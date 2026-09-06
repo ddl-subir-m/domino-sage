@@ -161,7 +161,7 @@ def test_a_sibling_folder_with_a_shared_name_prefix_is_not_taken_too(tmp_path: P
 def test_a_dataset_sharing_a_slug_keeps_its_own_files(tmp_path: Path):
     """`_slug` collapses punctuation, so `my data` and `my-data` land in one `public/data/my_data`
     tree. For the block that describes them that is a naming wrinkle; here it would delete."""
-    orch, ds, ws = _ready(tmp_path)
+    orch, ds, _ws = _ready(tmp_path)
     twin = dict(orch.project().attached[0])
     twin.update(dataset_id="ds_twin", dataset="sales-2026",
                 path="public/data/sales_2026/raw/2024/twin.csv", file="raw/2024/twin.csv")
@@ -626,8 +626,9 @@ def test_a_folder_that_climbs_out_is_refused_rather_than_renormalised(tmp_path: 
 
 @pytest.fixture()
 def route(tmp_path, monkeypatch):
-    import sage.orchestrator.app as appmod
     from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
 
     orch, ds, ws = _ready(tmp_path)
     monkeypatch.setattr(appmod, "orchestrator", orch)

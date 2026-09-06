@@ -86,7 +86,7 @@ def signs(model: ModelId) -> bool:
     return model.rsplit("/", 1)[-1] in SIGNS_TOOL_CALLS
 
 
-def signing_slot(catalog: "ModelCatalog") -> str | None:
+def signing_slot(catalog: ModelCatalog) -> str | None:
     """The first assignable slot holding a signing model, or None (ADR-0032).
 
     THE one copy of the pin's input. `llm_router._pin_signing` routes by it and

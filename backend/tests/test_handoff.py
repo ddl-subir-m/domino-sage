@@ -15,8 +15,8 @@ import pytest
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator import handoff
 from sage.orchestrator.service import _PLAN_SHAPE, _PLAN_VOICE
-from sage.workspace import plan_doc
 from sage.router.models import ModelCatalog
+from sage.workspace import plan_doc
 
 CATALOG = ModelCatalog(
     sovereign_plan="sov-plan", sovereign_implement="sov-implement", sovereign_ask="sov-ask",

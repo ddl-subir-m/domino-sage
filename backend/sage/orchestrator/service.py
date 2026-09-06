@@ -92,12 +92,12 @@ from ..resources.preflight import (
     credential_fix,
     endpoint_binding_fix,
     missing_credentials,
+    slot_alias,
     slots_on_dead_endpoints,
     stale_bindings,
     stale_fault,
     stale_fix,
     turn_refusal,
-    slot_alias,
     turn_slots,
     unresolved_slots,
 )
@@ -135,9 +135,8 @@ from ..workspace.threads import (
     snapshot_files,
     title_from_prompt,
 )
-from . import brand, chat_compact, scope
+from . import brand, chat_compact, recall, scope
 from . import handoff as chat_handoff
-from . import recall
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
 
@@ -6532,8 +6531,7 @@ class Orchestrator:
                 done = {"type": "done", "ok": False, "decision": "step failed"}
                 # After the error and before `done`, so a client reading the stream in order sees
                 # what failed before it is offered a way out of it.
-                for ev_out in self._maybe_offer_recall(store, thread_id):
-                    yield ev_out
+                yield from self._maybe_offer_recall(store, thread_id)
             if artifacts:
                 done["artifacts"] = artifacts
             store.append_history(thread_id, done)
@@ -8453,15 +8451,14 @@ class Orchestrator:
         # plan marks one. What approval MEANS stays the review flow's own rule: named reviewers who
         # have not signed off keep the plan in review, because building was never their sign-off.
         approved_doc = self._approved_plan_doc(project, plan_id) if live_plan.strip() else None
-        if approved_doc:
-            # A version, not an overwrite, for the same reason a document edit makes one: the
-            # draft people commented on has to survive the edit that built over it.
-            #
-            # Written HERE, above the refusal below, and the sign-offs are moved BELOW it. The two
-            # halves want opposite answers to "did this turn run": nothing a person typed may be
-            # lost to a turn that was refused, and nothing on record may be destroyed by one.
-            if live_plan.strip() != (approved_doc.get("markdown") or "").strip():
-                project.record.write_plan_doc_version(approved_doc["id"], live_plan)
+        # A version, not an overwrite, for the same reason a document edit makes one: the draft
+        # people commented on has to survive the edit that built over it.
+        #
+        # Written HERE, above the refusal below, and the sign-offs are moved BELOW it. The two
+        # halves want opposite answers to "did this turn run": nothing a person typed may be lost
+        # to a turn that was refused, and nothing on record may be destroyed by one.
+        if approved_doc and live_plan.strip() != (approved_doc.get("markdown") or "").strip():
+            project.record.write_plan_doc_version(approved_doc["id"], live_plan)
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
         # pinned to this turn only (see arm_turn_mode), never written to the user's picker. The

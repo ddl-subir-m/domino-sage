@@ -18,8 +18,7 @@ from typing import Any
 from ..gateway.client import CostLabels, GatewayClient
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import (Mode, ModelCatalog, Reason, is_bedrock, reasoning_efforts_for,
-                            supports_vision)
+from ..router.models import Mode, ModelCatalog, Reason, is_bedrock, reasoning_efforts_for, supports_vision
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
 from . import keepalive as ka
 from .chat_paths import strip_denied_writes

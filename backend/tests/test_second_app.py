@@ -181,10 +181,10 @@ def test_a_row_stops_naming_an_app_that_has_been_deleted(tmp_path: Path):
     orch.draft_handoff_plan(tid)
     orch.confirm_handoff(tid, {"resources": False, "artifacts": False, "transcript": False})
     built = orch.project(start_preview=False).workspace.app_id
-    assert [r for r in orch.list_threads() if r["id"] == tid][0]["boundAppId"] == built
+    assert next(r for r in orch.list_threads() if r["id"] == tid)["boundAppId"] == built
 
     orch.delete_app(built)
-    assert [r for r in orch.list_threads() if r["id"] == tid][0]["boundAppId"] is None
+    assert next(r for r in orch.list_threads() if r["id"] == tid)["boundAppId"] is None
 
 
 def test_confirming_the_same_handoff_twice_reopens_its_app_rather_than_minting_a_twin(

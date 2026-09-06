@@ -15,8 +15,8 @@ from pathlib import Path
 
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
-from sage.resources.bindings import Binding
 from sage.resources.app_helpers import TEMPLATE
+from sage.resources.bindings import Binding
 from sage.resources.pinned_model import agents_block, pinned_alias, render_config
 from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.models import ModelCatalog

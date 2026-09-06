@@ -72,4 +72,16 @@ required-version = "==0.16.1"
 ignore = [
     "BLE001",  # blind `except Exception` — the fail-open handlers described above
     "S110",    # `try/except/pass` — same handlers, where there is genuinely nothing to log
+    # A nested `with` around `pytest.raises` is the point, not an accident: the inner block scopes
+    # exactly the call that is expected to raise, and flattening it moves the expectation onto a
+    # line that also builds the fixture. Stated here for the same reason as the two above — the
+    # alternative is a `noqa` on every such test, which is the form this file already found drifts.
+    "SIM117",  # nested `with` — deliberate where the inner one scopes what must raise
 ]
+
+# `Body`, `Query` and friends in a parameter default are how FastAPI declares a route's inputs; the
+# call is evaluated once at import and is not the mutable-default hazard B008 exists to catch. Named
+# here rather than ignored wholesale so B008 still fires on a real mutable default anywhere else.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Body", "fastapi.Depends", "fastapi.File", "fastapi.Form",
+                          "fastapi.Header", "fastapi.Path", "fastapi.Query"]

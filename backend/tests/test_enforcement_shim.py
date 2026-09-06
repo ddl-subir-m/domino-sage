@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from dataclasses import replace as _replace
 
+import sage.shim.keepalive as ka
 from sage.gateway.client import FakeGatewayClient
 from sage.router.model_control import ModelControl
 from sage.router.models import Mode, ModelCatalog, Phase, supports_vision
-import sage.shim.keepalive as ka
 from sage.shim.enforcement import IMAGE_OMITTED, EnforcementShim
 
 CATALOG = ModelCatalog(

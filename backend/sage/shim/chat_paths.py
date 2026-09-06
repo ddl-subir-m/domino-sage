@@ -39,7 +39,7 @@ def chat_path_allowed(path: str, thread_id: str) -> bool:
         return False
     examples = f"examples/{thread_id}/"
     meta = f".sage/threads/{thread_id}/"
-    return rel.startswith(examples) or rel.startswith(meta)
+    return rel.startswith((examples, meta))
 
 
 def write_path_from_tool_call(call: dict[str, Any]) -> str | None:

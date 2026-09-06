@@ -15,8 +15,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator, _tool_detail, _unparsed_tool_input
 from sage.router.models import ModelCatalog

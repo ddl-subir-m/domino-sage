@@ -36,8 +36,8 @@ import pytest
 
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
-from sage.resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
 from sage.resources.app_helpers import TEMPLATE
+from sage.resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
 from sage.resources.pinned_model import render_config
 
 CONFIG_PATH = TEMPLATE.llm_config_path

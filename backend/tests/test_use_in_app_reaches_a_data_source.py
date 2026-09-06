@@ -251,8 +251,8 @@ def test_a_binding_with_no_scope_reads_as_an_unfinished_state_and_not_an_error()
     assert "data source" not in row["texts"]
     # The hover says what choosing one would do, which is the way out of the unfinished state.
     assert row["tips"] == [
-        "Choose which database, schema or table Desk dashboard reads in Market data EOD. "
-        "You can change it later."
+        ("Choose which database, schema or table Desk dashboard reads in Market data EOD. "
+        "You can change it later.")
     ]
 
 

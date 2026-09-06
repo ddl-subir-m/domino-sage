@@ -7,7 +7,6 @@ behind Sage — there is `.sage/plan.md` and its archive — so this is what the
 from __future__ import annotations
 
 import re
-
 from pathlib import Path
 
 from fastapi.testclient import TestClient

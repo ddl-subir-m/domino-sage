@@ -213,7 +213,7 @@ def test_publishing_stamps_the_row_the_card_reads(tmp_path: Path):
 def test_a_republish_moves_the_publish_time(tmp_path: Path, monkeypatch):
     """`record_domino_app` runs on the first publish only, so it cannot be where the time lives: a
     re-publish ships a new version to the same App and moves the code behind the URL."""
-    import sage.workspace.manager as manager
+    from sage.workspace import manager
 
     orch = _orch(tmp_path, control_plane=FakeControlPlane())
     workspace = orch.project(start_preview=False).workspace

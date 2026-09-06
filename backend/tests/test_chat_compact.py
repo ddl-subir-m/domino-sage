@@ -17,6 +17,7 @@ from .test_chat_turn import _orch
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
     import time
+
     from sage.orchestrator import handoff
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)

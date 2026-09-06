@@ -9,8 +9,16 @@ from __future__ import annotations
 import pytest
 
 from sage.router.llm_router import resolve, resolve_unsigned
-from sage.router.models import (BEDROCK_SERVED, SIGNS_TOOL_CALLS, Mode, ModelCatalog, Phase,
-                                Reason, SessionState, signing_slot)
+from sage.router.models import (
+    BEDROCK_SERVED,
+    SIGNS_TOOL_CALLS,
+    Mode,
+    ModelCatalog,
+    Phase,
+    Reason,
+    SessionState,
+    signing_slot,
+)
 
 CATALOG = ModelCatalog(
     sovereign_plan="sovereign-plan-8b",

@@ -364,7 +364,7 @@ def implement_note(workspace: Path) -> str:
     digest = digest_path.read_text().strip()
     if not digest:
         return ""
-    return "\n".join([_HANDOFF_LINE, "", digest])
+    return f"{_HANDOFF_LINE}\n\n{digest}"
 
 
 # A leading list marker, which `lstrip("#")` never removed and which the plan shape invites: the

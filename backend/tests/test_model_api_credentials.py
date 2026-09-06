@@ -19,6 +19,7 @@ import pytest
 
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
+from sage.resources.app_helpers import TEMPLATE as HELPERS
 from sage.resources.bindings import KIND_MODEL_API, Binding
 from sage.resources.model_api_credentials import (
     IGNORE_RULE,
@@ -28,7 +29,6 @@ from sage.resources.model_api_credentials import (
     verify_credential,
 )
 from sage.resources.model_api_snippet import parse_snippet
-from sage.resources.app_helpers import TEMPLATE as HELPERS
 from sage.resources.pinned_model_api import (
     agents_block,
     bound_model_apis,
