@@ -96,6 +96,53 @@ runs the baked `/opt/sage`. Two containers, two Sages — the App can be running
 `/mnt/code` while every builder it opens is on whatever the image holds. When a builder behaves like
 older code, check `/api/diag` (`sage_rev`) there before suspecting the door.
 
+### `SAGE_SELF_UPDATE=1` — the same loop for a builder that has no mount
+
+Set it as a project- or Environment-level variable and `app.sh` fetches `SAGE_REV` over the baked
+clone and resets to it before booting. That closes the gap the paragraph above names: a builder with
+no source mount can still run current code. **Off by default.** Dependencies stay baked — this moves
+code, nothing else.
+
+It costs **one last Environment rebuild** to arrive, because the tool's `start` runs the *baked*
+`environment/app.sh`. After that a code change costs a workspace restart. (The App route needs no
+rebuild: root `app.sh` already prefers the `app.sh` on its mount.)
+
+Where the credential comes from, and why it is borrowed. **Verified in a real Builder 2026-09-06:**
+`/opt/sage` is a checkout owned by `ubuntu` and writable, and `fetch --depth 1` takes ~1s — but it
+carries **no credential of its own** (`credential fill` there returns 0 bytes). Domino wires a
+credential *per repository*, into the checkout's own `.git/config`, so the only token in the
+container is the workspace repo's at `/mnt/code`. We borrow it, the same sweep
+`provision/credentials.py` does. It read `domino-sage` because it is an account-wide classic PAT; a
+fine-grained PAT scoped to the app repo alone will not, and the block then boots the baked code.
+
+The borrowed token is set for the single `git fetch` that needs it — never exported, never in
+`argv`. That is not decoration: `sage-chat` runs with `bash: allow`, so anything left in the
+orchestrator's environment is readable by asking the agent. Contrast `SAGE_GIT_TOKEN` above, which
+is a *build* arg and needs short expiry instead.
+
+Four guards, each printing why it declined:
+
+| Guard | Why |
+|---|---|
+| `SAGE_APP_HOME` has no `.git` | Nothing to update |
+| `SAGE_APP_HOME` is the workspace or `/mnt/code` | That is the mount you edit — a reset would destroy uncommitted work |
+| A tracked file is modified | Someone is hand-patching the image |
+| No HTTPS credential for the host | Nothing to authenticate with |
+
+Everything fails open. `set -e` is on, so each step sits in an `if` or ends `|| true`: a container
+that cannot reach the host boots the image it already has, which is the pre-existing behaviour.
+
+Two things to know before you switch it on:
+
+- **`reset --hard`, never `git clean`.** The baked `node_modules` (202MB) and `.venv` are gitignored,
+  so a reset leaves them; a clean would delete both and leave the workspace unbootable.
+- **A template dependency change still needs a rebuild.** The reset updates
+  `template/react-vite/package-lock.json` but not the `node_modules` baked beside it. `app.sh`
+  hashes that lockfile either side of the reset and prints a `STALE` warning when it moves. Heed it.
+
+Leave it off anywhere you treat as production, so a published Built App keeps running the image it
+was tested against.
+
 Builders take the Environment's **active** revision — Sage sends no `environmentRevisionSpec` — so a
 rebuilt Environment reaches the next builder without restarting the Workbench App. A published Built
 App is the opposite: it pins the revision it was published on, so a deployed app keeps running the
