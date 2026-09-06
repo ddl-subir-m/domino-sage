@@ -362,6 +362,41 @@ def test_the_transcript_cancel_puts_a_partly_built_plan_away_the_same_way(tmp_pa
     assert "Trades table" in (ws.read_archived_plan() or "")
 
 
+def _phased_run_replaced_by_a_new_request(tmp_path: Path):
+    """Sends 1-4 are the run that dies in phase 2; send 5 is the NEW request's plan, which is what
+    supersedes the standing one."""
+    return _build(tmp_path, [
+        Turn(text=PHASED_PLAN),
+        _writes("src/data.ts"),              # 2. phase 1 — lands
+        _writes("src/Table.tsx"),            # 3. phase 2, first attempt — gateway dies
+        _writes("src/Table.tsx"),            # 4. phase 2, _run_step's own retry — dies too
+        Turn(text="1. A risk heatmap\n2. Wire up data"),   # 5. the replacement plan
+    ], break_on={3, 4}, phased=True)
+
+
+def test_a_new_request_replacing_a_partly_built_plan_keeps_it_as_what_was_built(tmp_path: Path):
+    """The supersede door, through the orchestrator rather than the Workspace, because the ordering
+    is the whole trap (#175): `_supersede_live_plan` archives the standing plan and the new
+    `write_plan` zeroes the step on the very NEXT line. A fix that read the step any later would
+    read 0, call this an ordinary supersede, and still pass a Workspace-level test.
+
+    Both surfaces are asserted together, which is the sub-decision the issue asked to settle: the
+    FILE reads as what this app was built from, and the DOCUMENT keeps its `superseded` stamp for
+    the panel badge and the card's "This plan is kept" copy. Two questions, two true answers."""
+    orch, _oc = _phased_run_replaced_by_a_new_request(tmp_path)
+
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+    ws = _workspace(orch)
+    assert ws.read_plan_retry_step() == 2         # phase 1 finished and is on disk
+    replaced = ws.live_plan_doc_id()
+
+    list(orch.build_stream("actually build me a risk heatmap"))
+
+    assert "Trades table" in (ws.read_archived_plan() or "")
+    assert orch.read_plan_doc(replaced)["status"] == "superseded"
+
+
 def test_a_phased_build_that_finishes_first_time_owes_nothing(tmp_path: Path):
     """The behaviour the resume point must not have widened: an unbroken phased build archives its
     plan, so no later turn reads it as current intent."""

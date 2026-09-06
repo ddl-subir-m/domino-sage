@@ -818,6 +818,49 @@ def test_cancelling_a_plan_no_phase_finished_is_still_a_cancel(tmp_path: Path):
     assert ws.read_archived_plan() == "first"
 
 
+def test_superseding_a_partly_built_plan_archives_it_as_built(tmp_path: Path):
+    """The #173 split applied to the other door (#175). A new request replacing a plan three phases
+    into its build retires it for a different reason than Cancel does, but the phases that ran are
+    on disk either way — so the file says the same thing whichever door it came through."""
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
+    ws.write_plan("first")
+    ws.archive_plan()                        # an earlier build
+    ws.write_plan("second")
+    ws.set_plan_retry_step(4)                # phases 1-3 of 6 finished
+    dest = ws.archive_plan(superseded=True)
+    assert dest is not None and not dest.stem.endswith("-superseded")
+    assert ws.read_archived_plan() == "second"
+
+
+def test_superseding_a_plan_no_build_ever_touched_is_still_a_supersede(tmp_path: Path):
+    """Unchanged by #175, and the reason the split reads the step rather than the door. A plan
+    replaced before any build started IS just replaced: nothing on disk came from it, so naming it
+    as what the app was built from would be the overclaim the plain filename exists to avoid."""
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
+    ws.write_plan("first")
+    ws.archive_plan()
+    ws.write_plan("second")                  # step 0 — no build has touched it
+    dest = ws.archive_plan(superseded=True)
+    assert dest is not None and dest.stem.endswith("-superseded")
+    assert ws.read_archived_plan() == "first"
+
+
+def test_a_cancelled_replacement_falls_back_to_the_partly_built_plan(tmp_path: Path):
+    """The extra hop that made #175 quieter than #173. Nothing is wrong at supersede time — the new
+    plan fills the pin on the very next line. It surfaces one step later, when that replacement is
+    cancelled at step 0 and `read_archived_plan` looks back: past the replacement, and before this
+    past the `-superseded` file too, all the way to a plan an EARLIER build was made from."""
+    ws = Workspace(project_id="p", path=tmp_path, app_id="app_t")
+    ws.write_plan("first")
+    ws.archive_plan()                        # an earlier build, archived plain
+    ws.write_plan("second")
+    ws.set_plan_retry_step(4)                # phases 1-3 of 6 finished
+    ws.archive_plan(superseded=True)         # a new request replaces it
+    ws.write_plan("third")                   # the replacement, which nobody builds
+    ws.archive_plan(cancelled=True)          # and which is then cancelled at step 0
+    assert ws.read_archived_plan() == "second"
+
+
 def _turn(ws: Workspace, prompt: str, reply: str) -> None:
     ws.append_history({"type": "user", "text": prompt})
     ws.append_history({"type": "agent", "kind": "text", "text": reply})

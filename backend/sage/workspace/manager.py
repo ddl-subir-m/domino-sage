@@ -672,19 +672,27 @@ class Workspace:
         built from", not a fourth question, and `read_archived_plan` skipping it would render it
         identically to a cancel.
 
-        The split fires for `cancelled` only. `superseded` has the same hole — `_supersede_live_plan`
-        runs before the new `write_plan` clears the step, so a plan a new request replaces two
-        phases in is skipped by the pin exactly as a cancelled one was — and #173 weighed the two
-        failures for the Cancel doors. Left standing rather than widened past on the way, because
-        supersede also marks the DOCUMENT `superseded`, and what that pair should say together is
-        its own question.
+        The split fires for BOTH doors (#175). Supersede had the same hole — `_supersede_live_plan`
+        runs before the new `write_plan` clears the step, so a plan a new request replaced two
+        phases in was skipped by the pin exactly as a cancelled one was. #173 left it standing only
+        because supersede also stamps the DOCUMENT `superseded`, and what that pair should say
+        together was its own question.
+
+        It is answered, and the answer is that they are not in conflict: the FILE says what this app
+        was built from, and the DOCUMENT says what became of this plan. A partly-built plan that a
+        new request replaced has a true answer to each — built from, and replaced — so the file goes
+        plain and the document stamp is left exactly as it was. The same argument #173 used to
+        refuse a fourth filename: "partly" is not a fourth question.
         """
         if not self.plan_path.exists():
             return None
         # Read before the clear below, and at 1 rather than 0: step 1 means nothing finished, which
         # is also what a whole build that gave up writes (see _approve_locked).
-        if cancelled and self.read_plan_retry_step() > 1:
+        if self.read_plan_retry_step() > 1:
+            # Both flags fall away for the one reason, so the same press cannot mean two things:
+            # phases finished and their code is on disk, whichever door retired the plan.
             cancelled = False
+            superseded = False
         archive_dir = self.path / ".sage" / "plans"
         archive_dir.mkdir(parents=True, exist_ok=True)
         suffix = "-cancelled" if cancelled else "-superseded" if superseded else ""
@@ -701,8 +709,8 @@ class Workspace:
             # suffixed archive — `_supersede_live_plan` runs each time a handoff is re-crossed.
             #
             # Keyed on `suffix`, the OUTCOME, and deliberately not on `cancelled`/`superseded`, the
-            # intent. The split above already archives a partly-built cancel plain (#173), and #175
-            # would do the same for a partly-built supersede; either way the file becomes one
+            # intent. The split above archives a partly-built cancel plain (#173) and, since #175,
+            # a partly-built supersede too; either way the file becomes one
             # `read_archived_plan` returns, so the pin shows its text and must be able to name it.
             # A gate written against the flags would skip the marker for exactly those files and
             # leave that pin nameless, which is the bug this records against (#176).
