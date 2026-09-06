@@ -127,11 +127,19 @@ def test_the_gateway_family_means_keep_waiting(status):
     assert _domino(lambda r: httpx.Response(status, text="Bad Gateway")).workspace_http_ready(OPEN_URL) is False
 
 
-@pytest.mark.parametrize("status", [200, 401, 403, 404])
+@pytest.mark.parametrize("status", [200, 401, 403])
 def test_anything_that_answered_means_the_browser_gets_a_page(status):
     """Not "is this Sage" — "will the gateway serve rather than error". A 401 is Domino's own wall in
     front of a proxy that is up, and the browser carries a session this probe does not."""
     assert _domino(lambda r: httpx.Response(status)).workspace_http_ready(OPEN_URL) is True
+
+
+def test_the_404_the_workspace_ingress_gives_everyone_is_not_an_answer():
+    """Measured 2026-09-06, not feared: that ingress authenticates by browser session cookie and
+    answers a flat 404 to everything else. A running builder, a bogus run id and a project that
+    does not exist all return the same 404, so reading it as ready made this a constant True —
+    a gate that narrowed nothing while looking like it closed the 502."""
+    assert _domino(lambda r: httpx.Response(404)).workspace_http_ready(OPEN_URL) is None
 
 
 def test_an_unreachable_proxy_cannot_tell():

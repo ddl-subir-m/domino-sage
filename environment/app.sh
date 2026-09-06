@@ -41,6 +41,25 @@ export SAGE_PROXY_MODE="${SAGE_PROXY_MODE:-workspace}"
 export SAGE_CONTROL_HOST="${SAGE_CONTROL_HOST:-0.0.0.0}"
 export SAGE_CONTROL_PORT="${SAGE_CONTROL_PORT:-8888}"
 
+# Answer that port NOW. Domino calls the session running when the container is up; everything below
+# — uv resolving the venv, the package import, uvicorn binding — takes seconds more on a cold
+# container, and for that whole gap the workspace proxy has no upstream and answers 502 Bad Gateway.
+# That 502 was the first page a new viewer ever saw. This placeholder holds the port with a page
+# that refreshes itself; run() kills it in the instant before uvicorn binds. Run by path with the
+# system python3, not through uv: needing the venv would put it on the wrong side of the gap.
+# Non-fatal — an image with no python3 on PATH boots exactly as it did before.
+#
+# Resolved beside THIS script, not under SAGE_APP_HOME, for the same reason the root app.sh execs
+# the checkout's entrypoint: on the App route those two are different revisions, and the page has
+# to ship with the script that starts it. Safe to run from a checkout because it is stdlib-only —
+# SAGE_APP_HOME still owns everything that needs the baked venv.
+sage_boot_page="$(cd "$(dirname "$0")" && pwd)/../backend/sage/orchestrator/boot_page.py"
+if command -v python3 >/dev/null 2>&1 && [ -f "$sage_boot_page" ]; then
+  python3 "$sage_boot_page" &
+  export SAGE_BOOT_PAGE_PID=$!
+  echo "[sage] boot page holding port $SAGE_CONTROL_PORT (pid $SAGE_BOOT_PAGE_PID)"
+fi
+
 # Gateway (Domino AI Gateway / sovereign router). FILL IN for a real build — set GATEWAY_BASE_URL
 # (+ creds; the sidecar token at :8899 is used by default and re-acquired per call). Without it the
 # orchestrator still boots and serves the UI/preview, but builds can't reach a model.

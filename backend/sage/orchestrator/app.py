@@ -2831,6 +2831,44 @@ def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
         log.error("[wiring] could NOT install global opencode config (%s) — OpenCode will use its free tier", e)
 
 
+def _release_boot_page(host: str, port: int) -> None:
+    """Take the control port back from the placeholder `app.sh` left holding it.
+
+    `sage/orchestrator/boot_page.py` answers that port from the first second of the container so a
+    viewer who arrives mid-boot reads "your workspace is starting" instead of the proxy's 502. It
+    has no signal handler: SIGTERM's default disposition ends it and the kernel frees the port. We
+    then wait for the port rather than assume it, so uvicorn cannot lose a race with a process we
+    are the one killing. A few tens of milliseconds, against the seconds the placeholder covered.
+
+    Every failure here is a no-op on purpose. No placeholder, a pid that is already gone, a pid we
+    may not signal, a port that never frees — each leaves the boot exactly as it was before this
+    existed, and uvicorn's own bind error is a better report than anything we could invent.
+    """
+    import signal
+    import socket
+
+    pid = os.environ.get("SAGE_BOOT_PAGE_PID")
+    if not pid:
+        return
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except (ValueError, OSError) as e:
+        log.info("boot page: nothing to release (pid %r, %s)", pid, type(e).__name__)
+        return
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((host, port))
+            except OSError:
+                time.sleep(0.05)
+                continue
+        log.info("boot page: released port %s", port)
+        return
+    log.warning("boot page: port %s did not free after SIGTERM to pid %s", port, pid)
+
+
 def run() -> None:
     """Run the single control app (:8080, preview mounted at /preview) in one process."""
     import asyncio
@@ -2844,6 +2882,9 @@ def run() -> None:
     # Loopback locally; Domino's pluggable-tool proxy reaches the tool port from outside the
     # process, so set SAGE_CONTROL_HOST=0.0.0.0 there (matches the Phase-0 spike).
     control_host = os.environ.get("SAGE_CONTROL_HOST", "127.0.0.1")
+    # Last thing before the bind, so the placeholder covers the import and the opencode config
+    # write above it, and the window with nothing on the port stays as short as it can be.
+    _release_boot_page(control_host, control_port)
     server = uvicorn.Server(uvicorn.Config(control_app, host=control_host, port=control_port, log_level="info"))
 
     # Install our own signal handler (instead of uvicorn's) so a SIGTERM reliably reaches

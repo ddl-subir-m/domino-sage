@@ -401,11 +401,24 @@ class DominoControlPlane:
         page a new viewer ever saw. So ask the same proxy the browser is about to ask, over the
         internal host, the way save_workspace_work already reaches a running builder.
 
-        True  — something answered, so the browser gets a page rather than the gateway's error.
+        True  — the builder itself answered, so the browser gets a page rather than an error.
         False — the proxy has no upstream yet (the gateway family): keep waiting.
-        None  — the probe could not tell (no route, a timeout, an auth wall in front of the proxy).
-                The caller then falls back to Domino's own answer, so a probe that can never work
-                anywhere leaves the door exactly as it was rather than closing it.
+        None  — the probe could not tell (no route, a timeout, a wall in front of the proxy). The
+                caller then falls back to Domino's own answer, so a probe that cannot work leaves
+                the door exactly as it was rather than closing it.
+
+        **On Domino today this answers None every time, and that is measured, not feared.** The
+        workspace ingress authenticates by browser session cookie; anything else gets a flat 404
+        with `domino-server: nginx-ingress,workspace,` on it. Verified 2026-09-06 against a running
+        builder: identical 404 with a valid bearer token, with no auth, with a bogus run id and
+        with a project that does not exist. So this cannot separate a builder that is up from one
+        that was never created, and 404 is read as "cannot tell" rather than "ready" — the older
+        reading made this function a constant True, which is how a gate that was believed to be
+        closing the 502 was in fact never narrowing anything.
+
+        What actually closes that gap is `sage/orchestrator/boot_page.py`, which answers the port
+        from the first second of the container so there is no 502 to gate. This stays, honest and
+        logged, for the day the platform offers a path a token can read.
         """
         url = f"{self._host}{open_path.rstrip('/')}/healthz"
         try:
@@ -414,11 +427,16 @@ class DominoControlPlane:
         except httpx.HTTPError as e:
             log.info("readiness probe couldn't reach %s (%s) — trusting the session state", url, type(e).__name__)
             return None
+        # Logged on every branch. The first version logged only the two None branches, so the
+        # branch it actually took in production wrote nothing, and the log could never have shown
+        # that the gate was doing nothing.
+        log.info("readiness probe: %s -> %s", url, r.status_code)
         if r.status_code in (502, 503, 504):
             return False
+        if r.status_code == 404:
+            return None
         if r.status_code < 500:
             return True
-        log.info("readiness probe: %s -> %s — trusting the session state", url, r.status_code)
         return None
 
     def archive_project(self, project_id: str) -> dict[str, Any]:
