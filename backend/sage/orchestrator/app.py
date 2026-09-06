@@ -2431,9 +2431,13 @@ def archive_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
         # whose Conversation is deleted (#167), and a plan whose card lost its action row when its
         # build failed (#174); both archive instead of refusing.
         #
-        # Not every dead end of that shape is closed. `plan-stale` and an answer-only turn also
-        # clear the card's `pending` without a build ever running, so a plan can still refuse here
-        # with both buttons off the screen. That route is untouched by #174 and wants its own fix.
+        # The remaining routes to that shape are closed at the source rather than answered here,
+        # which is why this refusal can go on assuming the two buttons it names are on the screen
+        # (#178). An answer-only turn and `plan-stale` both used to clear the card's `pending`
+        # without a build ever running, and so did a GATED turn that failed — `gateway error`,
+        # `stalled`, `wedged` and `empty plan` are none of them gate decisions, and `write_plan`
+        # runs only once there is a plan, so `plan.md` went on holding the earlier one. The card now
+        # survives all three: a `done` closes it only when the turn it ends could have written.
         if e.reason == "busy":
             return JSONResponse(status_code=409, content={"error": brand_text(
                 "{assistantName} is working on something else in this project, so this plan "
