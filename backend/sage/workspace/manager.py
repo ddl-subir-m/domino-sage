@@ -694,6 +694,19 @@ class Workspace:
             n += 1
             dest = archive_dir / f"{n:03d}{suffix}.md"
         self.plan_path.rename(dest)
+        if not suffix:
+            # Recorded exactly when the file can be read back. `_newest_built_archive` keeps
+            # digits-only stems, so a marker under `NNN-cancelled` or `NNN-superseded` could never
+            # be found again, and writing one would grow `archivedPlanDocIds` by a dead key per
+            # suffixed archive — `_supersede_live_plan` runs each time a handoff is re-crossed.
+            #
+            # Keyed on `suffix`, the OUTCOME, and deliberately not on `cancelled`/`superseded`, the
+            # intent. The split above already archives a partly-built cancel plain (#173), and #175
+            # would do the same for a partly-built supersede; either way the file becomes one
+            # `read_archived_plan` returns, so the pin shows its text and must be able to name it.
+            # A gate written against the flags would skip the marker for exactly those files and
+            # leave that pin nameless, which is the bug this records against (#176).
+            self._remember_archived_plan_doc_id(dest.stem)   # before the clear below, its source
         self._set_live_plan_doc_id("")   # nothing is live here now, so no document is the live one
         self.set_plan_retry_step(0)   # and nothing live is owed a build
         return dest
@@ -711,14 +724,54 @@ class Workspace:
         numerically, not lexically: `archive_plan` zero-pads to three digits and would run out at
         1000.
         """
-        archive_dir = self.path / ".sage" / "plans"
-        built = [p for p in archive_dir.glob("[0-9]*.md") if p.is_file() and p.stem.isdigit()]
-        if not built:
+        newest = self._newest_built_archive()
+        if newest is None:
             return None
         try:
-            return max(built, key=lambda p: int(p.stem)).read_text()
+            return newest.read_text()
         except OSError:
             return None
+
+    def _newest_built_archive(self) -> Path | None:
+        """The file `read_archived_plan` reads, or None when no build has consumed a plan. Lifted
+        out so `read_archived_plan_doc_id` answers about the SAME file rather than about its own
+        idea of which one is newest."""
+        archive_dir = self.path / ".sage" / "plans"
+        built = [p for p in archive_dir.glob("[0-9]*.md") if p.is_file() and p.stem.isdigit()]
+        return max(built, key=lambda p: int(p.stem)) if built else None
+
+    def _remember_archived_plan_doc_id(self, stem: str) -> None:
+        """Record which document the plan being archived was written from, against the archive file
+        it just became. `livePlanDocId` is about to be cleared, and after that nothing on disk can
+        say where an archived plan came from (#176).
+
+        Keyed by the archive file's name, so a second build's marker cannot be read for the first
+        build's file. Records nothing for a plan written without a document behind it — the CLI, the
+        tests, every workspace older than plan documents — and a reader with no marker falls back to
+        the plan's own first line, which is what those workspaces already show."""
+        settings = _read_settings_file(self._settings_path)
+        doc_id = settings.get("livePlanDocId")
+        doc_id = doc_id.strip() if isinstance(doc_id, str) else ""
+        if not doc_id:
+            return
+        known = settings.get("archivedPlanDocIds")
+        settings["archivedPlanDocIds"] = {**(known if isinstance(known, dict) else {}), stem: doc_id}
+        _write_settings_file(self._settings_path, settings)
+
+    def read_archived_plan_doc_id(self) -> str:
+        """The document the plan `read_archived_plan` returns was written from, or "" when nothing
+        recorded one. The archived counterpart to `live_plan_doc_id`, and read the same way: off the
+        app, not guessed from the document list, because the newest document naming this app is a
+        different question with a different answer (see `write_plan`).
+
+        "" is the honest answer, not a failure: an archive from before the marker cannot be tied to
+        a document at all, and a pin that named one anyway would be naming the wrong plan."""
+        newest = self._newest_built_archive()
+        if newest is None:
+            return ""
+        known = _read_settings_file(self._settings_path).get("archivedPlanDocIds")
+        stored = known.get(newest.stem) if isinstance(known, dict) else None
+        return stored.strip() if isinstance(stored, str) else ""
 
     @property
     def _settings_path(self) -> Path:

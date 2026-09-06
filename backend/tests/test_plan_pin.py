@@ -168,17 +168,22 @@ def test_a_consumed_plan_owes_nothing(tmp_path: Path):
 
 
 def _doc_for_the_live_plan(orch: Orchestrator, title: str) -> dict:
-    """The document the gate writes beside plan.md, which is what the pin opens."""
-    record = orch.project(start_preview=False, seed_app=False).record
-    app_id = orch.project(start_preview=False).workspace.app_id
-    return record.create_plan_doc(PLAN, title=title, app_id=app_id)
+    """The document the gate writes beside plan.md, which is what the pin opens.
+
+    Bound to plan.md the way the gate binds it. The pin reads which document its text came from off
+    the app rather than off the document list (#176), so a document merely created beside an unbound
+    plan.md is nobody's — which is the state of a workspace that predates plan documents.
+    """
+    project = orch.project(start_preview=False)
+    doc = project.record.create_plan_doc(PLAN, title=title, app_id=project.workspace.app_id)
+    project.workspace.write_plan(PLAN, doc["id"])
+    return doc
 
 
 def test_the_pin_says_what_the_document_is_called(tmp_path: Path):
     """The pin named the plan by plan.md's first line, which is what the model wrote and nothing
     can edit. The document's title is the one a person can change, so the pin reads that."""
     orch = _orch(tmp_path)
-    orch.project(start_preview=False).workspace.write_plan(PLAN)
     doc = _doc_for_the_live_plan(orch, "A desk exposure dashboard.")
 
     orch.patch_plan_doc(doc["id"], {"title": "Desk exposure"})
@@ -202,7 +207,6 @@ def test_renaming_the_app_does_not_rename_its_plan(tmp_path: Path):
     card, on a document carrying comments and approvals, so a rename of the app leaves it alone."""
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace
-    ws.write_plan(PLAN)
     _doc_for_the_live_plan(orch, "A desk exposure dashboard.")
 
     orch.rename_app(ws.app_id, "Desk exposure")
@@ -289,3 +293,85 @@ def test_the_pin_calls_a_real_endpoint():
     api = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js" / "api.js").read_text()
     assert "projectPlan: () => request('/project/plan')" in api
     assert "async () => ({})" not in api.split("plans:")[1].split("handoff:")[0]
+
+
+# ---- the pin's two halves name the same plan (#176) -------------------------------------------
+#
+# The card is built from a body and a name, and until #176 they were two independent lookups: the
+# markdown off the workspace, the title and the link off the newest document naming the app. Nothing
+# tied the two, so a document that outranked the one the markdown came from lent it its name.
+
+
+def test_a_live_plan_reads_the_document_it_was_written_from(tmp_path: Path):
+    """Not the newest document naming the app. A plan drafted in Chat after this one was written is
+    newer and belongs to nobody here yet, and lending it its name is the whole of #176."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ws = project.workspace
+    doc = project.record.create_plan_doc(PLAN, title="Desk exposure", app_id=ws.app_id)
+    ws.write_plan(PLAN, doc["id"])
+    project.record.create_plan_doc("A risk heatmap.\n", title="Risk heatmap", app_id=ws.app_id)
+
+    pin = orch.read_plan_pin()
+
+    assert pin["title"] == "Desk exposure"
+    assert pin["planId"] == doc["id"]
+
+
+def test_an_archived_document_does_not_lend_its_name_to_the_built_plan(tmp_path: Path):
+    """The report in #176. Archiving the document of a built plan drops it out of the app's
+    candidates, and the markdown on disk is untouched — so the pin drew the built plan's text under
+    whatever document was left standing, and its link opened that one."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ws = project.workspace
+    built = project.record.create_plan_doc(PLAN, title="Desk exposure", app_id=ws.app_id)
+    ws.write_plan(PLAN, built["id"])
+    ws.archive_plan()
+    orch.archive_plan_doc(built["id"], True)
+    project.record.create_plan_doc("A risk heatmap.\n", title="Risk heatmap", app_id=ws.app_id)
+
+    pin = orch.read_plan_pin()
+
+    assert pin["markdown"].startswith("A desk exposure dashboard.")
+    assert pin["title"] == "Desk exposure"
+    assert pin["planId"] == built["id"]
+
+
+def test_an_archive_written_without_a_document_claims_none(tmp_path: Path):
+    """A workspace that predates the marker, or a plan written off a bare CLI turn. The
+    correspondence cannot be proven, so the pin names the plan from its own first line and offers no
+    link — today's answer for a workspace with no documents at all, rather than the wrong one."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ws = project.workspace
+    ws.write_plan(PLAN)
+    ws.archive_plan()
+    project.record.create_plan_doc("A risk heatmap.\n", title="Risk heatmap", app_id=ws.app_id)
+
+    pin = orch.read_plan_pin()
+
+    assert pin["markdown"].startswith("A desk exposure dashboard.")
+    assert pin["title"] == "A desk exposure dashboard."
+    assert pin["planId"] == ""
+
+
+def test_the_newest_built_archive_names_its_own_document(tmp_path: Path):
+    """Two builds, two documents. `read_archived_plan` returns the newer file, so the marker read
+    beside it has to be the newer one's — a marker keyed by anything but the file would drift."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ws = project.workspace
+    first = project.record.create_plan_doc(PLAN, title="Desk exposure", app_id=ws.app_id)
+    ws.write_plan(PLAN, first["id"])
+    ws.archive_plan()
+    second = project.record.create_plan_doc("A risk heatmap.\n", title="Risk heatmap",
+                                            app_id=ws.app_id)
+    ws.write_plan("A risk heatmap.\n", second["id"])
+    ws.archive_plan()
+
+    pin = orch.read_plan_pin()
+
+    assert pin["markdown"].startswith("A risk heatmap.")
+    assert pin["title"] == "Risk heatmap"
+    assert pin["planId"] == second["id"]
