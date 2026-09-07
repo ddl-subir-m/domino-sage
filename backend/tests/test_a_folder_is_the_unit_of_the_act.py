@@ -412,6 +412,22 @@ def test_a_truncated_listing_refuses_the_folder_act_at_every_level(tmp_path: Pat
     assert orch.project().attached == []
 
 
+def test_the_truncated_refusal_is_short_enough_to_read_on_a_row(tmp_path: Path, monkeypatch):
+    """Twelve words, the same budget its sibling above is written to. Both reasons reach the same
+    two surfaces — a tooltip on the disabled button and the whole of `attach_folder`'s 409 body —
+    so one of them written long is the same reader charged twice (#189). Why the act is withheld
+    and what to do instead survive; which folders cannot be proven whole is the comment's job."""
+    monkeypatch.setattr(assets, "_MAX_FILES", 3)
+    orch, ds, _ = _ready(tmp_path, per_year=3)
+
+    reason = orch.list_asset_files(ds)["folder_act"]["reason"]
+
+    assert len(reason.split()) <= 12
+    assert "list" in reason and "Attach" in reason
+    # Templated like its sibling: a pack that renames the term still renders (ADR-0014).
+    assert "Dataset" in reason and "{" not in reason
+
+
 # --- The route the Workbench reaches it through ------------------------------------------------
 
 
