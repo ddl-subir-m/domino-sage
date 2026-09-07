@@ -185,31 +185,38 @@ def test_a_half_read_catalog_offers_no_way_to_pick_a_table_from_it(tmp_path: Pat
 # ---- what the stream takes back --------------------------------------------------------------
 
 
-def test_a_store_that_stops_answering_halfway_takes_the_card_back_rather_than_offering_half(
+def test_a_store_that_answers_none_of_its_databases_takes_the_card_back(
         tmp_path: Path, monkeypatch):
-    """Refused rather than truncated, now that a truncated list has been on the screen.
+    """Refused rather than truncated, in the one case that is still a refusal after #191.
 
-    This is the case streaming created. The first database's names were shown, the second database
-    would not answer, and the tables the person actually wanted may be the ones nobody read. A card
-    left standing on that half would say "here is what your warehouse holds" about a warehouse it
-    gave up on — so it is taken back, and the turn goes on to the build it would have run before
-    any of this existed, where the assistant meets the unscoped section and asks.
+    A walk that read SOME database keeps what it found and names what it could not read — that
+    card is covered next door, in `test_one_unreadable_database...`. A walk that read none of
+    them is not a partial answer, it is no answer: the card would have nothing true to put on it,
+    so it is taken back and the turn goes on to the build it would have run before any of this
+    existed, where the assistant meets the unscoped section and asks.
+
+    The message is the point of the assertion. "Holds no Tables" is a fact about the warehouse and
+    would be a lie here — nobody managed to read it — so the two ways of finding nothing must not
+    come out saying the same thing.
     """
     orch = _orch(tmp_path)
     _two_databases(orch)
     client = _client(orch, monkeypatch)
     built = []
     orch._build_stream = lambda *a, **k: built.append(1) or iter([])  # type: ignore[method-assign]
-    walk = orch._resources.list_database_tables
     orch._resources.list_database_tables = (  # type: ignore[method-assign]
-        lambda source, database: walk(source, database) if database == "DWH" else (
-            _ for _ in ()).throw(ResourceUnavailable("the warehouse stopped answering")))
+        lambda source, database: (_ for _ in ()).throw(
+            ResourceUnavailable("the warehouse stopped answering")))
     _bind(client)
 
     frames = _frames(client.post("/api/project/build/stream", json={"prompt": PROMPT}).text)
 
+    # The frame sequence and not just the absence of a card: a database that will not answer is
+    # skipped now rather than ending the walk, so the frames go on going out — one before the
+    # first query and one after each database — and stopping that is a regression this file is
+    # the only place to catch.
     assert [f["type"] for f in frames if f["type"].startswith("table-")] == [
-        "table-search", "table-search", "table-search-ended"]
+        "table-search", "table-search", "table-search", "table-search-ended"]
     ended = next(f for f in frames if f["type"] == "table-search-ended")
     assert ended["sourceId"] == "ds-dwh"
     # And it says so on the way out. Names appearing and then vanishing is the one thing streaming

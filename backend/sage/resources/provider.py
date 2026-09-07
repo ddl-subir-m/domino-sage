@@ -522,12 +522,12 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
     # stock deployment mounts more: `tpch` and `tpcds` answer `information_schema` perfectly well,
     # so their synthetic `CUSTOMER` and `ORDERS` would rank as real answers.
     #
-    # Databricks's `hive_metastore` is NOT dropped, and the cost of that is worth stating: it has no
-    # `information_schema`, so on a workspace that still has it the walk errors, and `_walk_catalog`
-    # gives up on every catalog rather than answer with some of them — the same refuse-rather-than-
-    # truncate rule the database budget follows. The alternative is worse: a workspace migrated to
-    # Unity Catalog keeps its legacy tables under `hive_metastore`, so skipping it would answer a
-    # search by hiding data. Telling those apart needs a Databricks workspace to look at.
+    # Databricks's `hive_metastore` is NOT dropped, and it no longer costs the walk anything. It has
+    # no `information_schema`, so on a workspace that still has it the walk errors on that catalog —
+    # but `_database_candidates` now skips a database it cannot read and the card names it (#191),
+    # instead of the whole store answering nothing. Dropping it here would be the worse trade
+    # either way: a workspace migrated to Unity Catalog keeps its legacy tables under
+    # `hive_metastore`, so skipping it silently would answer a search by hiding data.
     "DatabricksConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, quote="`",
                                    columns=_ANSI_COLUMNS, sample=_SAMPLE_3,
                                    database_tables=_ANSI_DATABASE_TABLES,
