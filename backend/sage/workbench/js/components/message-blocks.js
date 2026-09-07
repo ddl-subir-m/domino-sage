@@ -1118,6 +1118,107 @@ window.SW = window.SW || {};
     );
   }
 
+  // What a bound Dataset holds, for the person to pick from (#196, ADR-0039). The click ATTACHES,
+  // and that is the whole design rather than a step before one: a Dataset gets no scope on its
+  // Binding, because its declaration already exists and is the Attachment. So this card writes the
+  // record the product already has, on the surface that already owns it (ADR-0021).
+  //
+  // A row is a folder or a file, and the SERVER decided which — above the collapse threshold the
+  // folder is the row, so answering a Dataset partitioned to the day is one click instead of two
+  // hundred (ADR-0029, ADR-0030). Nothing here re-derives that: a second copy of the roll-up in
+  // JavaScript is exactly how this card and the `@` menu would come to disagree about what a
+  // Dataset looks like.
+  //
+  // Same `live` rule as the three offers above it, and the sharpest reason for it here: a replayed
+  // card's buttons would attach files to an app and start a build out of a message somebody is only
+  // scrolling back through.
+  function DatasetFiles({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    // DERIVED, not seeded, for the reason the card above documents at length: the transcript keys
+    // blocks by index and React keeps the instance, so a `useState` initializer runs once and would
+    // hold that first answer over every later render of this card.
+    const [expanded, setExpanded] = useState(false);
+    const rows = (expanded ? block.allRows : block.rows) || [];
+    const hidden = (block.total || 0) - rows.length;
+    // Keyed on kind AND path: a folder row and a file row can name the same path — the root folder
+    // of a Dataset holding one loose file — and a key that dropped the kind would spin both.
+    const at = (row) => `${row.kind}:${row.path}`;
+    // A folder row with no path is the Dataset taken whole, which is the same act at depth 0 rather
+    // than a second one (see `_folder_prefix`). It says the Dataset's name, because "" would be a
+    // button with no label on it.
+    const label = (row) => row.path || block.datasetName;
+    const pick = (row) => (block.threadId
+      // In Chat the click writes a `dsfile:` chip and nothing else — there is no Built App to
+      // attach to, and the chip is what a handoff already turns into `App.requires`.
+      ? SW.store.pinDatasetFileAndAsk(block.prompt, block.threadId, block.datasetId, row.path)
+      : (row.kind === 'folder'
+        ? SW.store.attachFolderAndBuild(block.prompt, block.datasetId, row.path, block.answered)
+        : SW.store.attachFileAndBuild(block.prompt, block.datasetId, row.path, block.answered)));
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        // Gone rather than greyed out on a replay, which is what every offer around this does: a
+        // list of dead buttons under a sentence still asking somebody to pick reads as an app that
+        // has broken, not as a question already answered.
+        block.live && block.prompt
+          ? h(
+            'div',
+            null,
+            h(
+              'div',
+              { className: 'sw-dataset-files' },
+              rows.map((row) => h(
+                Button,
+                {
+                  key: at(row),
+                  size: 'small',
+                  className: 'sw-dataset-pick',
+                  loading: busy === at(row),
+                  disabled: !!busy,
+                  onClick: run(at(row), () => pick(row)),
+                },
+                label(row),
+                // What the row stands for, which the label cannot say for a folder: the click
+                // carries every file below it, and a row that showed only a path would understate
+                // an act that attaches two hundred files.
+                h('span', { className: 'sw-dataset-count' },
+                  row.kind === 'folder'
+                    ? ` — ${SW.util.number(row.count)} ${row.count === 1 ? 'file' : 'files'}`
+                    : ` — ${SW.util.bytes(row.size || 0)}`)
+              )),
+              hidden > 0
+                ? h(Button, {
+                  type: 'link',
+                  size: 'small',
+                  className: 'sw-dataset-more',
+                  onClick: () => setExpanded(true),
+                }, `Show all ${SW.util.number(block.total)} rows`)
+                : null
+            ),
+            // The way past the question, for an app that genuinely holds its own data and for a
+            // person who does not want to answer. Without it a Dataset nobody wants to attach from
+            // puts this card in front of every request forever.
+            h(Button, {
+              type: 'text',
+              size: 'small',
+              loading: busy === 'none',
+              disabled: !!busy,
+              onClick: run('none', () => (block.threadId
+                ? SW.store.askWithoutAttaching(block.prompt, block.threadId, block.datasetId)
+                : SW.store.buildWithoutAttaching(
+                  block.prompt, block.datasetId, block.answered))),
+            }, block.threadId ? 'Answer without a file' : 'Build without attaching anything')
+          )
+          : null
+      )
+    );
+  }
+
   // A change that happened, attached to the app it happened to. This is where
   // Review and Publish belong: a turn can change two apps, and the preview can
   // only show one of them, so the entry — not the panel — is what makes every
@@ -1348,6 +1449,8 @@ window.SW = window.SW || {};
         return h(SourceCandidates, { block });
       case 'table_candidates':
         return h(TableCandidates, { block });
+      case 'dataset_files':
+        return h(DatasetFiles, { block });
       case 'build_stalled':
         return h(BuildStalled, { block });
       case 'plan_suggestion':

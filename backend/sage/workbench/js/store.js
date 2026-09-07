@@ -1175,6 +1175,23 @@ window.SW = window.SW || {};
           matched: ev.matched || 0,
           live: !!ev.live,
         });
+      } else if (ev.type === 'dataset-files' && ev.message) {
+        // What a Dataset holds, asked about in Chat (#196). The click writes a `dsfile:` chip
+        // rather than an Attachment — Chat has no Built App — and `threadId` is what says so.
+        ensureAssistant().blocks.push({
+          type: 'dataset_files',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          datasetId: ev.datasetId || '',
+          datasetName: ev.datasetName || '',
+          threadId: ev.threadId || '',
+          rows: ev.rows || [],
+          allRows: ev.allRows || [],
+          total: ev.total || 0,
+          matched: ev.matched || 0,
+          truncated: !!ev.truncated,
+          live: !!ev.live,
+        });
       } else if (ev.type === 'recall-cleared') {
         assistant = null;
         messages.push({
@@ -1754,6 +1771,27 @@ window.SW = window.SW || {};
           matched: ev.matched || 0,
           live: !!ev.live,
         });
+      } else if (ev.type === 'dataset-files' && ev.message) {
+        // What a bound Dataset holds, for the click that attaches one (#196). Same `live` rule as
+        // the cards around it and the same reason: a replayed card would attach a file and start a
+        // build out of a message somebody is only reading back.
+        ensureAssistant().blocks.push({
+          type: 'dataset_files',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          datasetId: ev.datasetId || '',
+          datasetName: ev.datasetName || '',
+          // A row is a file or a folder, and which it is decided the click as well as the label:
+          // above the collapse threshold the folder is the row, so one click carries what would
+          // otherwise be two hundred (ADR-0029, ADR-0030).
+          rows: ev.rows || [],
+          allRows: ev.allRows || [],
+          total: ev.total || 0,
+          matched: ev.matched || 0,
+          truncated: !!ev.truncated,
+          answered: ev.answered || {},
+          live: !!ev.live,
+        });
       } else if (ev.type === 'source-candidates' && ev.message) {
         // The Data Sources a caller can reach, for the click that records one (#185). Same `live`
         // rule as the card below it, and the same reason: a replayed card would record a Binding
@@ -2322,7 +2360,8 @@ window.SW = window.SW || {};
     // six weeks ago has probably been closed since.
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
         || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'
-        || ev.type === 'table-candidates' || ev.type === 'source-candidates') ev.live = true;
+        || ev.type === 'table-candidates' || ev.type === 'source-candidates'
+        || ev.type === 'dataset-files') ev.live = true;
     appendBuildRow(ev);
   }
 
@@ -4432,7 +4471,8 @@ window.SW = window.SW || {};
     // the wait plus the turn — and a tab can have several of them at once.
     async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false,
                                   skipTableGate = false, skipSourceGate = false,
-                                  chosenSource = '', sourceName = '' } = {}) {
+                                  chosenSource = '', sourceName = '',
+                                  skipDatasetGate = false, datasetDismissed = '' } = {}) {
       if (!text.trim()) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
@@ -4442,7 +4482,8 @@ window.SW = window.SW || {};
       // A Data Source pick is a click too, but not that one: what it answered was which store,
       // so the bubble says which store. Written the same both ends (see _picked_source_text).
       const bubble = sourceName ? `Use ${sourceName}.`
-        : ((skipResetGate || skipIncomingGate || skipTableGate || skipSourceGate)
+        : ((skipResetGate || skipIncomingGate || skipTableGate || skipSourceGate
+            || skipDatasetGate)
           ? 'Build it.' : text);
       // The app this turn is for. Switching Built App mid-build is allowed and the build carries on
       // server-side (#77), so the events below have to be checked against this before they are
@@ -4476,6 +4517,7 @@ window.SW = window.SW || {};
           body: JSON.stringify({
             prompt: text, conversation: state.thread.id,
             skipResetGate, skipIncomingGate, skipTableGate, skipSourceGate, chosenSource,
+            skipDatasetGate, datasetDismissed,
             mentions: refs.mentions, resources: refs.resources,
           }),
         });
@@ -4627,6 +4669,72 @@ window.SW = window.SW || {};
       // moved to — with `echo` off and the question never written, under a card they cannot see.
       if (!opened || !state.thread || state.thread.id !== threadId) return null;
       return store.sendMessage(prompt, { echo: false, skipTableGate: true });
+    },
+
+    // The Dataset card's click (#196, ADR-0039). Two acts again — the attach stands whether or not
+    // the build after it succeeds, and the build is an ordinary turn taking the turn lock — and the
+    // attach is the DECLARATION here, not a step before one: a Dataset needs no scope on its
+    // Binding because its files are declared by being attached.
+    //
+    // `answered` carries the gates this turn was already past, so the replay does not walk back
+    // into one the person has settled. `skipDatasetGate` is this card being answered.
+    async attachFileAndBuild(prompt, datasetId, path, answered) {
+      await SW.api.attachDatasetFile(datasetId, path);
+      // The whole scope, because an attach moves two lists at once: the app's files and the Build
+      // header's account of what it ships. Reloading the transcript beside it is what RETIRES the
+      // card — the server's copy carries no `live` — so the same card cannot be answered twice,
+      // months later, into another attach and another build.
+      await Promise.all([loadScopeData(), store.loadBuild({ keepPreview: true })]);
+      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipDatasetGate: true });
+    },
+
+    // The folder row's click, which is one act rather than two hundred (ADR-0029). No confirm in
+    // front of it, unlike the Data panel's folder attach: this click IS the answer to a question
+    // Sage asked, and a modal on top of it would be the same question a second time.
+    async attachFolderAndBuild(prompt, datasetId, folder, answered) {
+      await SW.api.attachDatasetFolder(datasetId, folder);
+      await Promise.all([loadScopeData(), store.loadBuild({ keepPreview: true })]);
+      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipDatasetGate: true });
+    },
+
+    // The way past the card: this app holds its own data, or the person does not want the question.
+    // Nothing is attached, and the answer OUTLIVES this request — `datasetDismissed` names the
+    // Dataset so the app is not asked again. Without that name the gate, which reads the app's
+    // state rather than the request's words, would put this card in front of "make the button
+    // blue". The agent is still told the Dataset cannot be read (#195), which is what keeps failing
+    // open from meaning failing silently.
+    async buildWithoutAttaching(prompt, datasetId, answered) {
+      await store.loadBuild({ keepPreview: true });
+      return store.sendBuildPrompt(prompt, {
+        ...(answered || {}), skipDatasetGate: true, datasetDismissed: datasetId,
+      });
+    },
+
+    // And the way past it in Chat, remembered against the Thread for the same reason: the card is
+    // drawn off the Thread's own Dataset row, so without this the row would put the same card in
+    // front of every question the conversation ever asks.
+    async askWithoutAttaching(prompt, threadId, datasetId) {
+      const opened = await store.openThread(threadId);
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(prompt, {
+        echo: false, skipDatasetGate: true, datasetDismissed: datasetId,
+      });
+    },
+
+    // The same click, answered in Chat (#196). A different record, not a different act: Chat has no
+    // Built App to attach to, so the file joins Session context as a `dsfile:` chip and crosses
+    // into `App.requires` at the handoff.
+    //
+    // `echo` is off and `skipDatasetGate` is on for the one reason between them: the question is
+    // already in the transcript above the card, and the server will not write it a second time.
+    async pinDatasetFileAndAsk(prompt, threadId, datasetId, path) {
+      await SW.api.pinThreadDatasetFile(threadId, datasetId, path);
+      const opened = await store.openThread(threadId);
+      // The chip stands either way — it was written above, and it belongs to the Thread rather than
+      // to whatever is on screen. What must not follow it is the question landing in a conversation
+      // the person has moved to, which is the race `chooseTableAndAsk` documents beside this.
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(prompt, { echo: false, skipDatasetGate: true });
     },
 
     async buildWithIncoming(prompt) {
@@ -4981,8 +5089,10 @@ window.SW = window.SW || {};
     // `skipTableGate` is a candidate card being answered (#188): the table is already on the
     // Thread and the question is already in the transcript, so the turn neither re-asks nor
     // re-writes the person's sentence. `echo` is off for the same reason on that path.
+    // `skipDatasetGate` says the same of the Dataset card (#196) — the file is pinned by then.
     async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
-                              skipTableGate = false } = {}) {
+                              skipTableGate = false, skipDatasetGate = false,
+                              datasetDismissed = '' } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -5075,7 +5185,7 @@ window.SW = window.SW || {};
           headers: { 'Content-Type': 'application/json' },
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
-          body: JSON.stringify({ prompt: text, skipTableGate }),
+          body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -5199,6 +5309,14 @@ window.SW = window.SW || {};
             state.typing = null;
             ensurePushed();
             assistant.blocks = [...assistant.blocks, { ...ev, type: 'table_candidates', live: true }];
+            notify();
+          } else if (ev.type === 'dataset-files') {
+            // What a Dataset holds, asked about before the turn ran (#196). `live` is set here and
+            // nowhere else, for the reason the card above it is: this frame arrived over SSE, so
+            // its buttons belong to the person looking at it.
+            state.typing = null;
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks, { ...ev, type: 'dataset_files', live: true }];
             notify();
           }
         });

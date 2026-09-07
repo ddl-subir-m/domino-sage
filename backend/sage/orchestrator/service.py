@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
 from .. import timing
-from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, FileListing
+from ..assets.provider import Asset, AssetProvider, DatasetFile, FakeAssetProvider, FileListing
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
@@ -49,7 +49,7 @@ from ..provision import naming
 # `app_viewer_url` beside it for the rail row's `Open app` door (#89) — same module, and the same
 # reason: the URL grammar is the control plane's, so only one file gets to know it.
 from ..provision.domino import NotFound, app_viewer_url
-from ..resources import table_search
+from ..resources import dataset_files, table_search
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
     KIND_DATASET,
@@ -819,6 +819,59 @@ def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
             rolled.setdefault(key, []).extend(held)
         folders = rolled
     return folders
+
+
+def _dataset_rows(dataset_name: str, files: Sequence[DatasetFile], *, folders: bool) -> list[dict]:
+    """The rows a Dataset card offers, from the grouping the Dataset tree already uses (#196).
+
+    Below `FOLDER_COLLAPSE_THRESHOLD` the file is the row; above it the folder is (ADR-0029,
+    ADR-0030). The threshold is not re-decided here and neither is the roll-up: `_by_folder` is
+    handed exactly the destination paths an attach would write, so this card, the `@` menu and the
+    managed block all group at one level by one rule. A second copy of that loop is precisely how
+    they would come to disagree about what a Dataset looks like.
+
+    `folders=False` asks for file rows whatever the count, and it is asked by the two surfaces that
+    have no folder act to offer: Chat, which pins one file at a time, and a Build listing whose act
+    is withheld — a cut tail, or no mount here. That is `_folder_act_reason` being READ rather than
+    a second opinion about it, and the fallback is the files because there is nothing else on this
+    Dataset a person could click (ADR-0029).
+
+    Capped, unlike the table card's list. The provider's own cap is 5,000 files, and a listing that
+    reaches it is exactly the one whose folder act is withheld — so the uncapped version of this
+    writes five thousand rows into the transcript, on the shape most likely to produce them. Every
+    row past the cap is reachable through the Data panel's tree, which is the ordinary door and the
+    one story 15 keeps.
+    """
+    rows = [{"kind": "file", "path": f.path, "size": f.size} for f in files]
+    if not folders or len(files) <= FOLDER_COLLAPSE_THRESHOLD:
+        return rows[:dataset_files.MAX_ROWS]
+    # Where the best-ranked file in each group sits, so the folder holding the closest match is the
+    # row read first. The grouping answers WHAT the rows are; the ranking still answers their order.
+    at: dict[str, int] = {}
+    for i, f in enumerate(files):
+        at.setdefault(_attach_dest(dataset_name, f.path), i)
+    root = _attach_root(dataset_name)
+    groups = _by_folder([{"path": p} for p in at])
+    folders_at = sorted(groups.items(), key=lambda kv: min(at[e["path"]] for e in kv[1]))
+    if len(folders_at) < 2:
+        # One folder row is not a choice: whatever it is called it attaches every file in the
+        # Dataset, and the question this card asks is which files to read. A Dataset of twelve loose
+        # files rolls up to exactly that, so falling back to the files is what keeps the card an
+        # answerable question rather than an all-or-nothing button.
+        return rows[:dataset_files.MAX_ROWS]
+    return [{"kind": "folder",
+             # Dataset-relative, which is what `attach_folder` takes. The roll-up's floor is
+             # `public/data/<slug>` itself, and that key is the whole Dataset — `_folder_prefix`
+             # already reads "" as the root, so depth 0 is the same act rather than a second one.
+             "path": key[len(root):] if key.startswith(root) else "",
+             # WHAT THE CLICK ATTACHES, which is not the same as what the group holds. `_by_folder`
+             # groups on the immediate parent and rolls up from the deepest level, so its groups can
+             # sit at mixed depths and one key can enclose another; `attach_folder` takes everything
+             # under the prefix. A row counted off the group would say "6 files" over a click that
+             # carries twelve — the understatement ADR-0029's folder act exists to avoid, and a way
+             # to trip the size cap on an act somebody was told was small.
+             "count": sum(1 for d in at if d.startswith(key + "/"))}
+            for key, _ in folders_at]
 
 
 def _folder_members(groups: dict[str, list[dict]], folder: str) -> tuple[str, list[dict]]:
@@ -3358,6 +3411,12 @@ class Orchestrator:
         # The remote commit a person chose to build past, per Built App. A decision made once stands
         # until the remote moves on: re-asking every turn is a wall, not a choice.
         self._incoming_dismissed: dict[str, str] = {}
+        # The Datasets somebody chose to work without, keyed `(app or Thread, dataset)` (#196).
+        # Remembered for the reason above it, and here the reason is sharper: the Dataset gate fires
+        # on the STATE of the app rather than on the words of the request, so a Binding nobody wants
+        # to attach from would otherwise put the card in front of "make the button blue". An app
+        # that holds its own data is a real case, and the way past the card has to stay past it.
+        self._dataset_dismissed: set[tuple[str, str]] = set()
         # Every table in one database of one Data Source, keyed on both, read once per session
         # (#183, ADR-0038). Filtering the catalog buys tokens and never seconds — the filtered query
         # measured SLOWER than the unfiltered scan, being the same scan — so the whole thing is
@@ -5010,7 +5069,8 @@ class Orchestrator:
                      resources: list[dict] | None = None, conversation: str | None = None,
                      skip_reset_gate: bool = False, skip_incoming_gate: bool = False,
                      skip_table_gate: bool = False, skip_source_gate: bool = False,
-                     chosen_source: str = ""):
+                     chosen_source: str = "", skip_dataset_gate: bool = False,
+                     dismissed_dataset: str = ""):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
@@ -5035,7 +5095,18 @@ class Orchestrator:
         Source somebody picked when the app recorded none, and it is the answer this turn is built
         on rather than a hint: it is what the table search below runs against, whatever the prose
         says. `skip_source_gate` is the other button on that card — build without a store at all —
-        and it is the only thing that says a request naming a warehouse was never about one."""
+        and it is the only thing that says a request naming a warehouse was never about one.
+
+        `skip_dataset_gate` is the last card being answered (#196): a file or a folder was attached,
+        or the person took the way past it and is building with nothing attached at all. Both of
+        that card's buttons set it, for the reason both buttons on the incoming-changes offer do —
+        taking the way past a question answers it as much as answering it does.
+
+        `dismissed_dataset` is the way past ALONE, and it names the Dataset the card was about. The
+        skip flag answers this request; this one answers the app, because the gate reads the app's
+        state rather than the request's words and would otherwise ask the same question of "make the
+        button blue". An attach sends no name here, and needs none: attaching is what stops the gate
+        firing again on its own."""
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = _TurnTicket(new_id("turn"))
@@ -5161,6 +5232,38 @@ class Orchestrator:
                     prompt, resources, answered, chosen_source, picked)
                 if offered:
                     return
+            # And last of all, the question a Dataset asks (#196, ADR-0039). After the two Data
+            # Source gates rather than beside them, for two reasons that point the same way: a Data
+            # Source with no table is a store Sage cannot read at all while a Dataset with no
+            # attachments still lets a build start, and this costs one platform listing that a turn
+            # which was never going to run should not pay for.
+            #
+            # `skip_dataset_gate` is the card being ANSWERED, not the gate being bypassed: the click
+            # has attached the files by the time this replay arrives, so it would not fire again for
+            # the Dataset it was about. What the flag stops is a SECOND unattached Dataset turning
+            # the build that click just bought into another question — and it is also the whole of
+            # the way past the card, where nothing was attached at all.
+            if dismissed_dataset:
+                # Recorded before the gate rather than inside it, because the gate is about to be
+                # skipped: the name arrives only from the card's own way-past button, so it is the
+                # Dataset that was asked about and nothing has to be re-derived to find it.
+                self._dataset_dismissed.add((app.app_id, dismissed_dataset))
+            if not skip_dataset_gate:
+                # The gates already answered ride along, `skipTableGate` included. It is not in
+                # `answered` above because the Data Source card is drawn BEFORE the table search and
+                # would carry it into a store nobody has picked a table in yet; by here that search
+                # has run, so passing it on is what stops a second unscoped store re-asking.
+                #
+                # `chosenSource` rides along too, and it is not a gate: it is the store somebody
+                # picked off the Data Source card earlier in this same turn, and a replay that
+                # dropped it would send the turn back to matching prose against a question they
+                # already answered with a click.
+                offer = self._dataset_offer(
+                    prompt, {**answered, "skipTableGate": skip_table_gate,
+                             "chosenSource": chosen_source}, picked)
+                if offer is not None:
+                    yield from offer
+                    return
             # A button answering the offer is a click, not a second typing of the request — the
             # prompt is already a bubble in the transcript, put there by _reset_offer. So the turn
             # gets the short line the click deserves, the way an Approve click does, instead of
@@ -5172,7 +5275,8 @@ class Orchestrator:
                 # started by choosing a Data Source says which one, whatever gate the turn before
                 # it had also answered.
                 user_text=(picked or ("Build it." if skip_reset_gate or skip_incoming_gate
-                                      or skip_table_gate or skip_source_gate else None)))
+                                      or skip_table_gate or skip_source_gate or skip_dataset_gate
+                                      else None)))
         except TurnWedged:
             # Swallowed, not re-reported: the turn already said what happened in its own stream, and
             # a traceback on top of it would only be a second, worse version of the same sentence.
@@ -5575,7 +5679,8 @@ class Orchestrator:
                 yield thread, item
 
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
-                    already_asked: bool = False, skip_table_gate: bool = False):
+                    already_asked: bool = False, skip_table_gate: bool = False,
+                    skip_dataset_gate: bool = False, dismissed_dataset: str = ""):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -5587,6 +5692,9 @@ class Orchestrator:
         the Thread (#188). The question is on the record for the same reason `already_asked` is —
         the turn that offered the card wrote it there — so this arrives as a whole new turn taking
         the lock again rather than a paused one resuming.
+
+        `skip_dataset_gate` says the same of the Dataset card (#196): the file is pinned to the
+        Thread by the time this arrives, and the question is already on the record.
         """
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
@@ -5614,7 +5722,9 @@ class Orchestrator:
         try:
             for ev in self._chat_stream(thread_id, prompt, timeout_s=timeout_s,
                                         already_asked=already_asked,
-                                        skip_table_gate=skip_table_gate):
+                                        skip_table_gate=skip_table_gate,
+                                        skip_dataset_gate=skip_dataset_gate,
+                                        dismissed_dataset=dismissed_dataset):
                 if holding and ev.get("type") == "done":
                     # Released before the yield rather than after, so a client that hangs up on
                     # `done` still frees it here. Baseline first: it means "no turn running", and a
@@ -6466,7 +6576,8 @@ class Orchestrator:
         return "\n".join(lines)
 
     def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
-                     already_asked: bool = False, skip_table_gate: bool = False):
+                     already_asked: bool = False, skip_table_gate: bool = False,
+                     skip_dataset_gate: bool = False, dismissed_dataset: str = ""):
         import time
 
         project = self._chat_project()
@@ -6497,7 +6608,7 @@ class Orchestrator:
         # `skip_table_gate` joins `already_asked` here for the same reason it joins it below: the
         # turn that drew the candidate card wrote this sentence to the Thread before it drew one, so
         # writing it again would print the person's question twice under one card.
-        if not already_asked and not skip_table_gate:
+        if not already_asked and not skip_table_gate and not skip_dataset_gate:
             store.append_history(thread_id, user_ev)
             yield user_ev
 
@@ -6533,6 +6644,22 @@ class Orchestrator:
         # that click bought into another question.
         if not skip_table_gate:
             offer = self._chat_table_offer(store, project, thread_id, prompt, items)
+            if offer is not None:
+                yield from offer
+                return
+        # And a Dataset on this Thread with no file pinned from it (#196, ADR-0039), asked last for
+        # the reason Build asks it last: a store with no table cannot be read at all, while a
+        # Dataset nobody has picked a file from still lets a turn run. `skip_dataset_gate` is the
+        # card being ANSWERED — the chip is on the Thread by then — and it stops a second Dataset
+        # turning the answer that click bought into another question.
+        if dismissed_dataset:
+            # Against the Thread rather than the app, because a Thread is what Chat's account of
+            # "this conversation is about that Dataset" hangs on. Same reason as Build's: the gate
+            # reads the Thread's rows rather than the question's words, so a Dataset nobody wants to
+            # pin from would meet every later question with the same card.
+            self._dataset_dismissed.add((thread_id, dismissed_dataset))
+        if not skip_dataset_gate:
+            offer = self._chat_dataset_offer(store, thread_id, prompt, items)
             if offer is not None:
                 yield from offer
                 return
@@ -7702,6 +7829,193 @@ class Orchestrator:
                    "allGroups": table_search.grouped(ranking.candidates),
                    "total": len(ranking.candidates), "matched": ranking.matched},
                   {"type": "done", "ok": False, "decision": "table candidates"})
+        for ev in events:
+            store.append_history(thread_id, ev)
+            yield ev
+
+    # ---- the Dataset gate (#196, ADR-0039) -------------------------------------------------------
+
+    def _dataset_candidates(self, asset: Asset, prompt: str, *, folders: bool) -> dict:
+        """What one Dataset holds, ordered by the request and grouped the way its tree groups it.
+
+        THE ONE METHOD BOTH SURFACES CALL, which is #193's rule one Asset over. Build's card and
+        Chat's card are one question asked in two places, and the seam between them is exactly where
+        #183 and #188 drifted: once both were on main, the same question put a different row first
+        in each for no reason a person could learn. There is no catalog cost here to make Chat the
+        expensive surface, so there was never a reason to split them (ADR-0039).
+
+        NOTHING IS SEARCHED FOR AND NOTHING IS READ. `list_files` already names every file with its
+        size, whether the listing was cut and whether the folder act is available; opening the files
+        to draw a card would rebuild exactly the cost ADR-0029 removed. The ordering is name
+        matching only, and `dataset_files` says why it is not a ranker.
+
+        `folders` is the one thing the two surfaces do not share, and it is about the ACT rather
+        than the answer — see `_dataset_rows`.
+        """
+        listing = self._assets.list_files(asset)
+        ranking = dataset_files.rank(prompt, asset.name, listing.files)
+        # The availability rule read off the same listing the rows come from, so a row that offers
+        # the folder act and a route that would turn it down cannot exist (ADR-0029).
+        reason = self._folder_act_reason(asset, listing)
+        rows = _dataset_rows(asset.name, ranking.candidates, folders=folders and not reason)
+        return {"rows": rows[:dataset_files.SHORTLIST], "allRows": rows, "total": len(rows),
+                "matched": ranking.matched, "truncated": listing.truncated}
+
+    def _dataset_offer(self, prompt: str, answered: dict, user_text: str = ""):
+        """Events for a turn whose app records a Dataset and has attached nothing from it, or None.
+
+        THE DEAD END ADR-0038 CLOSED, reached through the other door. `bind_dataset` has written a
+        real Binding since #141, and the working set stays out of the prompt (ADR-0020) — so the
+        agent is told the app uses a Dataset and handed no path it can read. It then builds on
+        data it made up, and the result looks finished and is worthless.
+
+        It fires whether or not the prose names the Dataset, and whether or not there is exactly
+        one. "Build me a daily summary of calls" names nothing and is precisely the request that
+        invents data, and #185 already settled the other half: silence is not an answer.
+
+        NO SCOPE IS OFFERED AND NONE IS WRITTEN. The click attaches — the record the product already
+        has, on the surface that already owns it (ADR-0021) — because a "which files" field on the
+        Binding would be a second record of one fact, leaving `bind_dataset` and `attach_file` in
+        competition to be believed (ADR-0039).
+
+        Returns None in the three cases that leave today's behaviour exactly as it was: no Dataset
+        is recorded with nothing attached, the listing will not answer, or the Dataset is empty. A
+        platform outage must not take somebody's build hostage — and the managed block still says
+        this app cannot read its Dataset, so failing open does not mean failing silently.
+
+        THE FIRST unattached Dataset where an app records two. That is one question and this answers
+        one; the second is asked on the turn after the first is answered, which is how `named_source`
+        already handles two unscoped Data Sources and how a person would answer them anyway.
+        """
+        project = self.project()
+
+        def dismissed(binding: Binding) -> bool:
+            return (project.app_for_turn().app_id, binding.id) in self._dataset_dismissed
+
+        def held(binding: Binding) -> bool:
+            # By id, and by the root the files are served from. A workspace rebuilt by
+            # `_rehydrate_attached`'s symlink scan has entries with no `dataset_id` on them, and
+            # reading the id alone would ask about a Dataset whose files are already in the tree.
+            root = _attach_root(binding.display_name)
+            return any(str(e.get("dataset_id") or "") == binding.id
+                       or str(e.get("path") or "").startswith(root)
+                       for e in project.attached)
+
+        bindings = parse_bindings(project.workspace.read_bindings())
+        binding = next((b for b in bindings if b.kind == KIND_DATASET
+                        and not held(b) and not dismissed(b)), None)
+        if binding is None:
+            return None
+        try:
+            with timing.span("gate.dataset"):
+                card = self._dataset_candidates(self._find_asset(binding.id), prompt, folders=True)
+        except (LookupError, ResourceUnavailable) as e:
+            log.info("dataset files: %s could not be listed — %s", binding.display_name, e)
+            return None
+        except Exception:
+            log.exception("dataset files: could not list %s", binding.display_name)
+            return None
+        if not card["total"]:
+            # An empty Dataset is not a question: there is nothing to pick, and a card saying so
+            # would stop a build over a fact the managed block already states.
+            return None
+        return self._dataset_files_events(prompt, binding, card, answered, user_text)
+
+    def _dataset_files_events(self, prompt: str, binding: Binding, card: dict, answered: dict,
+                              user_text: str = ""):
+        """The card itself: what the Dataset holds, and the request to replay after the attach."""
+        project = self.project()
+        name = binding.display_name
+        if card["matched"]:
+            message = brand.text(
+                "{assistantName} listed what {name} holds. Pick what this {builtApp} should read — "
+                "the click attaches it and then builds what you asked for.", name=name)
+        else:
+            # The list is still shown where nothing matched, for the reason the table card shows
+            # its own: "no name matched" is a fact about the names and not about the Dataset, and
+            # the person very often knows the file by sight.
+            message = brand.text(
+                "No file name in {name} matches this request, so {assistantName} will not guess "
+                "one. Pick what this {builtApp} should read, or build without attaching anything.",
+                name=name)
+        events = ({"type": "user", "text": user_text or prompt},
+                  # The prompt rides along so the click can replay the request rather than making
+                  # the person type it again, and `answered` carries the gates this turn was already
+                  # past — without it, answering this card loses the flag that answered the reset
+                  # offer, which re-offers, which loses this one. #185 found that loop; inheriting
+                  # the fix is cheaper than rediscovering it.
+                  {"type": "dataset-files", "prompt": prompt, "message": message,
+                   "datasetId": binding.id, "datasetName": name, "answered": answered,
+                   "rows": card["rows"], "allRows": card["allRows"],
+                   "total": card["total"], "matched": card["matched"],
+                   "truncated": card["truncated"]},
+                  {"type": "done", "ok": False, "decision": "dataset files"})
+        for ev in events:
+            project.workspace.append_history(ev, project.build_conversation)
+            if ev["type"] != "user":
+                yield ev
+
+    def _chat_dataset_offer(self, store: ThreadStore, thread_id: str, prompt: str,
+                            items: list[dict]):
+        """The same question, from Chat, or None to let the turn run (#196, ADR-0039).
+
+        The mode somebody happens to be standing in must not decide whether Sage goes and looks —
+        ADR-0038's rule, unchanged. What differs is only where the answer is written down. Chat has
+        no Built App and so no manifest to attach to; the record it does have is the `dsfile:` pin,
+        where a Dataset file joins Session context as a chip and its `describe.py` output reaches
+        the prompt. A handoff already turns Session context naming a Resource into `App.requires`,
+        so the answer travels without a second record being invented to carry it.
+
+        The Dataset is read off the Thread's own context rows, which is where Chat keeps its account
+        of what a conversation is about — the same place `_chat_table_offer` reads its Data Source.
+        """
+        pinned = {str(i.get("datasetId") or "") for i in items
+                  if str(i.get("kind") or "") == "file" and i.get("datasetId")}
+        dataset_id = next(
+            (d for i in items if str(i.get("kind") or "") == "dataset"
+             # `resourceId` rather than `id`: `add_context` mints its own row id, and a `ctx_` one
+             # names no Dataset the platform can be asked about (see `_dataset_unique_name`).
+             and (d := _bare_kind_id(str(i.get("resourceId") or ""), "dataset"))
+             and not d.startswith("ctx_") and d not in pinned
+             and (thread_id, d) not in self._dataset_dismissed),
+            "")
+        if not dataset_id:
+            return None
+        try:
+            asset = self._find_asset(dataset_id)
+            card = self._dataset_candidates(asset, prompt, folders=False)
+        except (LookupError, ResourceUnavailable) as e:
+            log.info("dataset files: %s could not be listed — %s", dataset_id, e)
+            return None
+        except Exception:
+            log.exception("dataset files: could not list %s", dataset_id)
+            return None
+        if not card["total"]:
+            return None
+        return self._chat_dataset_files_events(store, thread_id, prompt, asset, card)
+
+    def _chat_dataset_files_events(self, store: ThreadStore, thread_id: str, prompt: str,
+                                   asset: Asset, card: dict):
+        """The card itself, written to the Thread rather than to a Built App's transcript."""
+        if card["matched"]:
+            message = brand.text(
+                "{assistantName} listed what {name} holds. Pick the file this {chat} should read — "
+                "the click adds it to this conversation and then answers what you asked.",
+                name=asset.name)
+        else:
+            message = brand.text(
+                "No file name in {name} matches this question, so {assistantName} will not guess "
+                "one. Pick the file to read, or say more about the data you mean.", name=asset.name)
+        events = ({"type": "dataset-files", "prompt": prompt, "message": message,
+                   "datasetId": asset.id, "datasetName": asset.name,
+                   # What tells the click which door to write through. The Build card carries the
+                   # gates its turn was already past instead; a Chat turn has none to carry, and the
+                   # record it writes is this Thread's.
+                   "threadId": thread_id,
+                   "rows": card["rows"], "allRows": card["allRows"],
+                   "total": card["total"], "matched": card["matched"],
+                   "truncated": card["truncated"]},
+                  {"type": "done", "ok": False, "decision": "dataset files"})
         for ev in events:
             store.append_history(thread_id, ev)
             yield ev
@@ -11333,6 +11647,34 @@ class Orchestrator:
             row["columns"] = columns
         store.write_context(thread_id, {"items": items})
         return {"items": items}
+
+    def confirm_thread_dataset_file(self, thread_id: str, dataset_id: str, path: str) -> dict:
+        """A file clicked on the Dataset card in Chat: pin it to the Thread (#196, ADR-0039).
+
+        Chat has no Built App, so there is no Attachment to write and no Binding to hold a scope.
+        The record Chat has is the `dsfile:` chip, and `add_thread_context` is the writer that
+        already makes one — it fetches the bytes for the question, runs `describe.py` over them and
+        puts the file's line in the prompt, and a handoff turns a Session context row naming a
+        Resource into `App.requires`. So this is that writer with the card's file in it and nothing
+        parallel to it.
+
+        No re-check that the file is still there, unlike `_verify_table_choice` beside it. That
+        check exists because a Data Source's catalog is cached for the session and can be stale
+        against the store; this listing is read fresh on every card, so there is no remembered
+        answer here to be wrong.
+        """
+        asset = self._find_asset(dataset_id)
+        return self.add_thread_context(thread_id, {
+            "kind": "file",
+            "name": PurePosix(path).name or path,
+            # The leaf id the composer's `@` menu and the handoff both already read. Bare on both
+            # halves: `dsfile:` ids carry the Domino id and the Dataset-relative path, and nothing
+            # downstream strips a second prefix off either (see `_dataset_pseudo_path`).
+            "resourceId": f"dsfile:{asset.id}:{path}",
+            "datasetId": asset.id, "datasetRelPath": path, "datasetName": asset.name,
+            "parentId": f"dataset:{asset.id}",
+            "addedBy": "user",
+        })
 
     def _write_bound_schema(self, source: DataSource, binding: Binding) -> None:
         """Read what the bound tables hold, once, and record it for the agent (#15).

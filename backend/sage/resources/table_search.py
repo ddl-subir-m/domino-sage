@@ -216,24 +216,35 @@ def rank(prompt: str, source: Binding, tables: Iterable[Candidate]) -> Ranking:
     `STG_GONG__CALLS` score the same, and the shorter-name tie-break is a coin toss dressed as an
     order until the model ranker arrives to make it a judgement.
     """
-    asked = [w for w in (_fold(w) for w in _words(prompt)) if w not in _ASKING]
-    handles = _handles(source.display_name, source.name)
-    asked = [w for w in asked if w not in handles]
-    scored = [(_score(asked, c.table), c) for c in tables]
+    asked = asked_words(prompt, source.display_name, source.name)
+    scored = [(name_score(asked, c.table), c) for c in tables]
     scored.sort(key=lambda p: (-p[0][0], -p[0][1], len(p[1].table), p[1].schema, p[1].table))
     return Ranking(tuple(c for _, c in scored),
                    sum(1 for (whole, part), _ in scored if whole or part))
 
 
-def _score(asked: list[str], table: str) -> tuple[int, int]:
-    """How many of the request's words the table name says, whole words first.
+def asked_words(prompt: str, *names: str) -> list[str]:
+    """The request's own words: what it says, less the words that name the thing it says it about.
+
+    Public because the Dataset card asks the same question of file names that this file asks of
+    table names (#196, ADR-0039). One splitter and one stop list across both, so the two surfaces
+    cannot come to disagree about whether a request names something for no reason a person could
+    learn.
+    """
+    asked = [w for w in (_fold(w) for w in _words(prompt)) if w not in _ASKING]
+    handles = _handles(*names)
+    return [w for w in asked if w not in handles]
+
+
+def name_score(asked: list[str], name: str) -> tuple[int, int]:
+    """How many of the request's words the name says, whole words first.
 
     Two numbers rather than one weighted sum: a whole word is a different kind of evidence from a
     substring — `CALLS` in `GONG__CALLS` against `CALL` inside `RECALLED` — and collapsing them into
     a score would need a weight nobody can defend from the names alone.
     """
-    tokens = {_fold(t) for t in _SPLIT.split(table.lower()) if t}
-    flat = "".join(_SPLIT.split(table.lower()))
+    tokens = {_fold(t) for t in _SPLIT.split(name.lower()) if t}
+    flat = "".join(_SPLIT.split(name.lower()))
     whole = sum(1 for w in asked if w in tokens)
     return whole, sum(1 for w in asked if w not in tokens and w in flat)
 
