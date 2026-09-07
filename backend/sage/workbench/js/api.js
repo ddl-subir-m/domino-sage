@@ -697,6 +697,13 @@ SW.api = {
   confirmThreadTableCandidate: (threadId, resourceId, scope) =>
     post(`/threads/${encodeURIComponent(threadId)}/context/data_source/`
       + `${encodeURIComponent(resourceId)}/candidate`, scope || {}),
+  // The Dataset card's click in Chat (#196, ADR-0039). Its own route rather than the plain context
+  // door, because the chip's leaf id, its name and its parent are all derivable from the Dataset id
+  // and the file's path — and deriving them here is the second copy that produced the fabricated
+  // `<datasetId>:<relPath>` path this codebase already had to hunt down.
+  pinThreadDatasetFile: (threadId, datasetId, path) =>
+    post(`/threads/${encodeURIComponent(threadId)}/context/dataset/`
+      + `${encodeURIComponent(datasetId)}/file`, { path }),
   // The two app-scoped removals (ADR-0011). Both answer with the app source that STILL uses what
   // just went — read by the route before the record goes, because a Data Source's queries are found
   // through the record — so neither caller has to scan anything to report it.

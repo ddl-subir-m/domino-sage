@@ -568,6 +568,24 @@
 .sw-table-candidates.is-reading { max-height: 160px; }
 .sw-table-pick.is-reading { color: var(--gray-600); font-size: var(--fs-12); }
 
+/* What a Dataset holds, for the person to pick from (#196). One row per pick rather than the
+   table card's two-level grouping, because the grouping is already IN the row: above the collapse
+   threshold a row is a folder and below it a file (ADR-0029, ADR-0030), so a heading over them
+   would be a second account of the same shape. Stacked, because a path is long and wraps badly
+   beside its neighbour. Scrollable for the same reason the card above is. */
+.sw-dataset-files {
+  margin-top: var(--s2);
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s1);
+}
+.sw-dataset-pick { font-family: var(--mono); }
+.sw-dataset-count { color: var(--gray-600); }
+.sw-dataset-more { padding-left: 0; margin-top: var(--s2); }
+
 /* A change, attached to the app it happened to. One turn can change two apps
    and the preview only shows one, so this is the record — every change is
    visible and reviewable here whether or not the panel is pointing at it. */

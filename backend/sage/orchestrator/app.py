@@ -2157,6 +2157,13 @@ def build_stream(body: dict) -> StreamingResponse:
     skip_source_gate = bool((body or {}).get("skipSourceGate"))
     # And the pick itself, which the table search runs against whatever the prose named.
     chosen_source = str((body or {}).get("chosenSource") or "")
+    # Set by either button on a Dataset card (#196): a file or folder was attached, or the person
+    # chose to build with nothing attached. Both answer the card, so both arrive here.
+    skip_dataset_gate = bool((body or {}).get("skipDatasetGate"))
+    # And the way past it alone, which names the Dataset so the answer outlives this one request:
+    # the gate reads the app's state rather than the request's words, so without a name to remember
+    # it asks again on the next sentence, whatever the sentence is about.
+    dismissed_dataset = str((body or {}).get("datasetDismissed") or "")
 
     def refuse_with(message: str) -> StreamingResponse:
         def refuse():
@@ -2178,7 +2185,8 @@ def build_stream(body: dict) -> StreamingResponse:
     return StreamingResponse(
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
                                             skip_reset_gate, skip_incoming_gate, skip_table_gate,
-                                            skip_source_gate, chosen_source),
+                                            skip_source_gate, chosen_source, skip_dataset_gate,
+                                            dismissed_dataset),
                   "build_stream"),
         media_type="text/event-stream")
 
@@ -2388,12 +2396,15 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
             import json as _json
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
         return StreamingResponse(refuse(), media_type="text/event-stream")
+    # The two skip flags are a card being answered, not a gate being skipped (#188, #196): the turn
+    # that drew the card wrote the question to the Thread, so a replay must not write it a second
+    # time. `datasetDismissed` outlives this request — see the build route above for why.
     return StreamingResponse(
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt,
-            # The card being answered, not the gate being skipped (#188). The turn that drew the
-            # card wrote the question to the Thread, so the replay must not write it a second time.
-            skip_table_gate=bool((body or {}).get("skipTableGate"))), "chat_stream"),
+            skip_table_gate=bool((body or {}).get("skipTableGate")),
+            skip_dataset_gate=bool((body or {}).get("skipDatasetGate")),
+            dismissed_dataset=str((body or {}).get("datasetDismissed") or "")), "chat_stream"),
         media_type="text/event-stream")
 
 
@@ -2431,6 +2442,36 @@ async def confirm_thread_table_candidate(thread_id: str, resource_id: str,
         return JSONResponse(status_code=400, content={"error": str(e)})
     except ResourceUnavailable as e:
         # The table has gone since the card was drawn, which is the whole point of checking.
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+# The Dataset card's click, in Chat (#196, ADR-0039). Its own route rather than the plain context
+# door beside it, because the card knows a Dataset id and a Dataset-relative path and nothing else:
+# the chip's leaf id, its name and its parent are all derivable from those two, and deriving them on
+# the client is the second copy that produced the fabricated `<datasetId>:<relPath>` path this
+# codebase already had to hunt down (see `_dataset_pseudo_path`).
+@control_app.post("/api/threads/{thread_id}/context/dataset/{dataset_id}/file")
+async def pin_thread_dataset_file(thread_id: str, dataset_id: str,
+                                  request: Request) -> JSONResponse:
+    """Pin the file a person picked off a Dataset card to this Thread's Session context."""
+    body = await request.json()
+    path = str((body or {}).get("path") or "").strip()
+    if not path:
+        return JSONResponse(status_code=400, content={"error": brand_text(
+            "Pick one file. {assistantName} does not add a whole {dataset} from here."
+        )})
+    try:
+        return JSONResponse(content=orchestrator.confirm_thread_dataset_file(
+            thread_id, dataset_id, path))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "unknown thread"})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "That {dataset} is not one {platformName} offers you, so its files cannot be added."
+        )})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 

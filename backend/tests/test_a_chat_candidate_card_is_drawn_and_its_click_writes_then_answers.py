@@ -98,7 +98,10 @@ def test_the_click_writes_the_record_first_and_then_asks_the_question_again():
     assert out["click"] == {"database": "DWH", "schema": "MARTS", "table": "GONG__CALLS"}
     assert "api/threads/thr_1/chat/stream" in out["routes"]
     assert out["routes"].index("api/threads/thr_1/chat/stream") > 0
-    assert out["replay"] == {"prompt": PROMPT, "skipTableGate": True}
+    # The Dataset card's two fields ride along at their defaults, because a Chat turn carries every
+    # gate flag the route reads (#196) and this click answers only the table one.
+    assert out["replay"] == {"prompt": PROMPT, "skipTableGate": True,
+                             "skipDatasetGate": False, "datasetDismissed": ""}
 
 
 @needs_node
