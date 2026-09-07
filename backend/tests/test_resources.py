@@ -8,6 +8,7 @@ path runs on the injected fake.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1211,9 +1212,17 @@ def test_an_unknown_source_id_is_a_lookup_failure_not_an_empty_list(tmp_path: Pa
         orch.list_data_source_databases("ds-does-not-exist")
 
 
-def test_the_cascade_cannot_look_inside_a_source_without_the_domino_data_library():
+def test_the_cascade_cannot_look_inside_a_source_without_the_domino_data_library(monkeypatch):
     # The library ships in the Domino image, not in Sage's venv, so this is the state a developer
     # running the backend on a laptop is in — and the message has to separate it from "empty".
+    #
+    # The absence is STAGED rather than assumed. `domino` is an optional extra, so whether the
+    # import fails was a property of whoever's venv ran the suite: green on a laptop without it,
+    # red on one with it, and the failure was the auth error a real `DataSourceClient` raises with
+    # no credentials — a different branch of `_query` entirely, asserting nothing this test is about.
+    # `None` in `sys.modules` is what makes an installed module unimportable, so this now reads the
+    # same on both machines.
+    monkeypatch.setitem(sys.modules, "domino_data.data_sources", None)
     p = DominoResourceProvider("http://gw/v1", lambda: "tok")
     with pytest.raises(ResourceUnavailable, match="not installed here"):
         p.list_databases(_source("SnowflakeConfig"))
