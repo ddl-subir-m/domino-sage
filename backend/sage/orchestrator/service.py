@@ -8194,11 +8194,11 @@ class Orchestrator:
             if gate and not agent_wrote():
                 plan_md = _tidy_plan("\n".join(plan_text_parts))
                 restore_mode()
-                # A weak planner can finish this read-only turn without emitting any plan text —
-                # finish this read-only turn without emitting any plan text — leaving nothing to
-                # approve. Don't persist a blank plan or present an approve card that would build
-                # from an empty plan; report it as a failed planning turn, with the same diagnostics
-                # a stalled build gets, since "no plan text" is usually "no inference reached us".
+                # A weak planner can finish this read-only turn without emitting any plan text,
+                # leaving nothing to approve. Don't persist a blank plan or present an approve card
+                # that would build from an empty plan; report it as a failed planning turn, with the
+                # same diagnostics a stalled build gets, since "no plan text" is usually "no
+                # inference reached us".
                 if not plan_md:
                     log.warning("%s gate produced no text (model_calls=%d) — reporting empty plan",
                                 "architecture" if arch else "plan", project.model_calls)
