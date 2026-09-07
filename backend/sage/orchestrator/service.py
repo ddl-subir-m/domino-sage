@@ -7342,6 +7342,10 @@ class Orchestrator:
         # Before the first query, not after it: the first database IS the wait this is about.
         yield self._table_search_frame(binding, ())
         found: list[Candidate] = []
+        # Filled by `_database_candidates`, which skips a database that will not answer rather than
+        # discarding the ones that did (#191). Read twice below: it decides what the card says about
+        # the gap, and — when nothing was found — which of the two ways this walk failed.
+        skipped: list[str] = []
         gave_up = ""
         cannot_finish = brand.text(
             "{assistantName} could not finish reading {name}, so it has no {scopePlural} to offer "
@@ -7354,7 +7358,7 @@ class Orchestrator:
                 # better anyway: `gate.table` becomes the shape of the search — what each database
                 # cost, and where the frames went out between them.
                 with timing.span("gate.table", part=database or "*"):
-                    found += self._database_candidates(source, binding, database)
+                    found += self._database_candidates(source, binding, database, skipped)
                     frame = self._table_search_frame(
                         binding, table_search.rank(prompt, binding, found).candidates)
                 yield frame
@@ -7377,19 +7381,23 @@ class Orchestrator:
             yield {"type": "table-search-ended", "sourceId": binding.id}
             yield {"type": "stopped"}
             return True
-        # Everything read so far is dropped along with the walk, which is #182's rule holding now
-        # that a partial list has been on the screen: a card built from the databases that answered
-        # would say "no name matched" about a warehouse nobody finished reading, and the table they
-        # wanted would be in the one that failed.
+        # Nothing found is the one case that still takes the card back, and after #191 it is also
+        # the only one: a walk where SOME database answered now keeps what it read and names what
+        # it could not, but a walk where none of them did is not a partial answer — it is no answer,
+        # and the card would have nothing true to put on it.
+        #
+        # `skipped` picks between the two things "nothing" can mean. A store that answered and held
+        # no tables is a fact about the store; a store nobody could finish reading is a fact about
+        # the connection, and saying the first about the second would be the lie #182 refuses.
         #
         # It says so on the way out. Names appearing and then vanishing with no account of why is
         # the one thing streaming can do that silence could not, and the assistant's own "which
         # table?" a moment later does not say whether the store failed or held nothing.
         if not found:
             yield {"type": "table-search-ended", "sourceId": binding.id,
-                   "message": gave_up or brand.text(
+                   "message": gave_up or (cannot_finish if skipped else brand.text(
                        "{name} holds no {scopePlural} {assistantName} can offer for this request.",
-                       name=binding.display_name)}
+                       name=binding.display_name))}
             return False
         # Names first, then a model over the names (#184). The name rank is what the model is shown
         # and what it falls back to, not what the card ends up carrying: "gong" matches 27 of the
@@ -7413,7 +7421,8 @@ class Orchestrator:
                 session=project.session_id,
                 version=project.shim.version,
             )
-        yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text)
+        yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text,
+                                                 skipped)
         return True
 
     def _table_search_frame(self, binding: Binding, candidates: tuple[Candidate, ...]) -> dict:
@@ -7501,7 +7510,7 @@ class Orchestrator:
 
     def _table_candidates_events(self, prompt: str, binding: Binding,
                                  ranking: table_search.Ranking, answered: dict,
-                                 user_text: str = ""):
+                                 user_text: str = "", skipped: list[str] | None = None):
         """The card itself: what matched, what else there is, and the request to replay after."""
         project = self.project()
         name = binding.display_name
@@ -7518,6 +7527,10 @@ class Orchestrator:
                 "No {scope} name in {name} matches this request, so {assistantName} will not "
                 "guess one. Pick the {scope} this {builtApp} should read, or say more about the "
                 "data you mean.", name=name)
+        # A database the walk could not read is named here rather than left out (#191). It rides on
+        # both messages, matched or not: "no name matched" over a half-read warehouse is exactly
+        # the sentence that would be a lie without it.
+        message += self._skipped_note(skipped or [])
         shortlist = ranking.candidates[:table_search.SHORTLIST]
         # `user_text` is set when this card follows a Data Source pick (#185), and then it is the
         # pick that goes on the transcript: the request is already a bubble above the card that was
@@ -7578,8 +7591,9 @@ class Orchestrator:
             # a question. Same two helpers underneath, so the two paths cannot come to
             # disagree about which databases a search reads.
             found: list[Candidate] = []
+            skipped: list[str] = []
             for database in self._databases_to_walk(source, binding):
-                found += self._database_candidates(source, binding, database)
+                found += self._database_candidates(source, binding, database, skipped)
         except (LookupError, ResourceUnavailable) as e:
             log.info("table search: %s could not be walked — %s", binding.display_name, e)
             return None
@@ -7589,7 +7603,7 @@ class Orchestrator:
         if not found:
             return None
         return self._chat_table_candidates_events(
-            store, thread_id, prompt, binding, table_search.rank(prompt, binding, found))
+            store, thread_id, prompt, binding, table_search.rank(prompt, binding, found), skipped)
 
     def _chat_mentioned_sources(self, prompt: str, items: list[dict]) -> list[str]:
         """The Data Source ids this sentence @named, which win over a prose match.
@@ -7611,7 +7625,8 @@ class Orchestrator:
         return [i for i in out if i]
 
     def _chat_table_candidates_events(self, store: ThreadStore, thread_id: str, prompt: str,
-                                      binding: Binding, ranking: table_search.Ranking):
+                                      binding: Binding, ranking: table_search.Ranking,
+                                      skipped: list[str] | None = None):
         """The card itself, written to the Thread rather than to a Built App's transcript."""
         name = binding.display_name
         if ranking.matched:
@@ -7627,6 +7642,9 @@ class Orchestrator:
                 "No {scope} name in {name} matches this question, so {assistantName} will not "
                 "guess one. Pick the {scope} to read, or say more about the data you mean.",
                 name=name)
+        # Same sentence the Build card adds, from the same helper (#191): the mode somebody happens
+        # to be standing in must not decide whether they are told a database went unread.
+        message += self._skipped_note(skipped or [])
         shortlist = ranking.candidates[:table_search.SHORTLIST]
         events = ({"type": "table-candidates", "prompt": prompt, "message": message,
                    "sourceId": binding.id, "sourceName": name,
@@ -7686,10 +7704,10 @@ class Orchestrator:
                 "one go.", name=source.name, count=len(databases)))
         return databases
 
-    def _database_candidates(self, source: DataSource, binding: Binding,
-                             database: str) -> list[Candidate]:
+    def _database_candidates(self, source: DataSource, binding: Binding, database: str,
+                             skipped: list[str]) -> list[Candidate]:
         """Every table one database can offer, read in one query and kept for the session (#182,
-        ADR-0038).
+        ADR-0038). A database that will not answer is SKIPPED and named, not raised through.
 
         Not the cascade with its levels folded together. Walking a schema at a time costs ~3s a
         level, about 45 seconds over the 15 schemas of the live warehouse, against 3.84s for one
@@ -7700,12 +7718,74 @@ class Orchestrator:
         found while the rest is still being read. The filtering is local because the measurement
         says so: the filtered query was SLOWER than the unfiltered scan, being the same scan, so
         narrowing buys tokens and never seconds.
+
+        One unreadable database must not discard the databases that were read (#191). It used to:
+        the exception came out here, both callers caught it around the whole walk, and a warehouse
+        with one bad database answered nothing at all. Databricks is the case that made it visible
+        — a Unity Catalog workspace lists `hive_metastore` beside the real catalogs and it has no
+        `information_schema`, so the walk errored there every time — but the bug was never
+        Databricks's: a Trino catalog whose backing store is down does the same, and so does any
+        database the proxy user cannot read.
+
+        This is not the database budget's refuse-rather-than-truncate rule reversed. That rule is
+        about a LIE — a card saying "no name matched" about a warehouse nobody finished reading —
+        and it fires before any query runs, so nothing has been read and there is nothing partial
+        to report. A card that NAMES the database it could not read tells no lie: the person can
+        see the gap and act on it. `skipped` is what carries the names to the card, and it is a
+        list the caller owns rather than a return value, so the two callers cannot come to disagree
+        about which failures the card is supposed to mention.
+
+        A failure is NOT cached, which is the same call the budget refusal makes: every other
+        cached listing costs a click when it drifts, and a database that was down when the session
+        started would otherwise stay skipped until the workspace restarts, with no way back but a
+        restart of their own. What that costs is the failing query again on the next question. For
+        the missing-`information_schema` case that is a fast error; for a store that went down
+        after its database list was cached it is four dead round trips a turn rather than one,
+        bounded only by `_DATABASES_SEARCHED` and by whatever timeout the connector applies. That
+        is the same ceiling the healthy walk already spends, so it is not bought back here with a
+        consecutive-failure cap — but it is the reason to look here first if a dead store ever
+        starts feeling slower than it used to.
         """
         key = (source.id, database)
         if key not in self._table_catalog:
-            self._table_catalog[key] = self._resources.list_database_tables(source, database)
+            try:
+                self._table_catalog[key] = self._resources.list_database_tables(source, database)
+            except (LookupError, ResourceUnavailable) as e:
+                log.info("table search: %s in %s could not be read — %s", database,
+                         binding.display_name, e)
+                skipped.append(database)
+                return []
+            except Exception:
+                log.exception("table search: could not read %s in %s", database,
+                              binding.display_name)
+                skipped.append(database)
+                return []
         return [Candidate(database, t.schema, t.name) for t in self._table_catalog[key]
                 if not binding.schema or t.schema == binding.schema]
+
+    @staticmethod
+    def _skipped_note(skipped: list[str]) -> str:
+        """The sentence a card adds when the walk could not read every database (#191).
+
+        Shared by both cards for the reason the walk itself is shared: a person who gets a card out
+        of the same store from Chat and from Build must be told about the same gap in the same
+        words. It equalises the PARTIAL walk only. The walk where nothing answered still ends
+        differently in the two modes — Build takes its card back with a sentence, Chat has no card
+        to take back and so says nothing — which is older than this and is not settled here.
+
+        Written out in both numbers rather than pluralised. There is no pluralisation engine here
+        any more than there is one in the brand pack, and "any Tables they hold" about a single
+        database is the kind of small wrongness that makes a person doubt the rest of the card.
+        """
+        if not skipped:
+            return ""
+        if len(skipped) == 1:
+            return " " + brand.text(
+                "{assistantName} could not read {database}, so any {scopePlural} it holds are not "
+                "on this list.", database=skipped[0])
+        return " " + brand.text(
+            "{assistantName} could not read {databases}, so any {scopePlural} they hold are not "
+            "on this list.", databases=", ".join(skipped[:-1]) + " and " + skipped[-1])
 
     def _wedged_refusal(self):
         """Events yielded when a streaming turn cannot run because the workspace is wedged (#39).
