@@ -1154,6 +1154,27 @@ window.SW = window.SW || {};
           ok: false,
           value: ev.message || (ev.type === 'stopped' ? 'Stopped.' : 'The turn failed.'),
         });
+      } else if (ev.type === 'table-candidates' && ev.message) {
+        // The tables a search found in Chat, for the click that records one (#188). `live` is set
+        // only on a frame that arrived over SSE this session, and a reload replaces the history
+        // with plain server rows that never carry it — so a replayed card renders as its sentence
+        // with the buttons gone, rather than writing a table and running a turn out of a message
+        // somebody is only scrolling back through.
+        ensureAssistant().blocks.push({
+          type: 'table_candidates',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          sourceId: ev.sourceId || '',
+          sourceName: ev.sourceName || '',
+          // What tells the click which door to write through: with a Thread the record goes on the
+          // conversation, without one it goes on the Built App's Binding.
+          threadId: ev.threadId || '',
+          groups: ev.groups || [],
+          allGroups: ev.allGroups || [],
+          total: ev.total || 0,
+          matched: ev.matched || 0,
+          live: !!ev.live,
+        });
       } else if (ev.type === 'recall-cleared') {
         assistant = null;
         messages.push({
@@ -1282,7 +1303,7 @@ window.SW = window.SW || {};
     // the request, and this turn did exactly what it was designed to do — a red "Stopped — no app
     // described" under a question reads as a failure the person has to go and fix.
     'no app described': true,
-    // The two candidate cards (#183, #185). Same reason again, and the cards say it loudest: each
+    // The candidate cards (#183, #185, #188). Same reason again, and the cards say it loudest: each
     // one is a list of buttons asking the person to choose, and a red "Stopped —" line under it
     // reads as the app having broken rather than as a question waiting for an answer.
     'table candidates': true,
@@ -4582,6 +4603,27 @@ window.SW = window.SW || {};
       return store.sendBuildPrompt(prompt, { ...(answered || {}), skipSourceGate: true });
     },
 
+    // The same click, answered in Chat (#188). Two acts here too — the record stands whether or not
+    // the answer after it succeeds — but the record is the Thread's own context row, because Chat
+    // has no Built App to depend on anything. It reaches the Built App's Binding at the handoff.
+    //
+    // Reloading the Thread retires the card, as it does in Build: the server's copy carries no
+    // `live`, so its buttons go with the reload and the same card cannot be answered twice.
+    //
+    // `echo` is off and `skipTableGate` is on for one reason between them: the question is already
+    // in the transcript above the card, and the server will not write it a second time.
+    async chooseTableAndAsk(prompt, threadId, sourceId, scope) {
+      await SW.api.confirmThreadTableCandidate(threadId, sourceId, scope);
+      const opened = await store.openThread(threadId);
+      // The record stands either way — it is written above, and it belongs to the Thread rather
+      // than to whatever is on screen. What must not follow it is the answer: `openThread` returns
+      // null when a click on another conversation supersedes it, and `sendMessage` reads
+      // `state.thread`, so replaying here would post this question into the conversation the person
+      // moved to — with `echo` off and the question never written, under a card they cannot see.
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(prompt, { echo: false, skipTableGate: true });
+    },
+
     async buildWithIncoming(prompt) {
       await store.loadBuild({ keepPreview: true });
       return store.sendBuildPrompt(prompt, { skipIncomingGate: true });
@@ -4931,7 +4973,11 @@ window.SW = window.SW || {};
     // question is already on the Thread and already on screen, so neither end records it again.
     //   `echo: false` — do not push a second bubble for a question already in the transcript.
     //   `url`         — the decline route, which suppresses and then streams that turn.
-    async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride } = {}) {
+    // `skipTableGate` is a candidate card being answered (#188): the table is already on the
+    // Thread and the question is already in the transcript, so the turn neither re-asks nor
+    // re-writes the person's sentence. `echo` is off for the same reason on that path.
+    async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
+                              skipTableGate = false } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -5024,7 +5070,7 @@ window.SW = window.SW || {};
           headers: { 'Content-Type': 'application/json' },
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
-          body: JSON.stringify({ prompt: text }),
+          body: JSON.stringify({ prompt: text, skipTableGate }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -5141,6 +5187,14 @@ window.SW = window.SW || {};
               at: new Date().toISOString(),
               blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
             });
+          } else if (ev.type === 'table-candidates') {
+            // The tables a search found, asked about before the turn ran (#188). `live` is set here
+            // and nowhere else: this frame arrived over SSE, so its buttons belong to the person
+            // looking at it, while the copy a reload reads back off the Thread has none.
+            state.typing = null;
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks, { ...ev, type: 'table_candidates', live: true }];
+            notify();
           }
         });
       } catch (err) {

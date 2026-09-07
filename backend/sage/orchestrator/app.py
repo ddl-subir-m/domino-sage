@@ -2389,8 +2389,49 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
             yield f"data: {_json.dumps({'type': 'error', 'message': 'prompt required'})}\n\n"
         return StreamingResponse(refuse(), media_type="text/event-stream")
     return StreamingResponse(
-        _turn_sse(orchestrator.chat_stream(thread_id, prompt), "chat_stream"),
+        _turn_sse(orchestrator.chat_stream(
+            thread_id, prompt,
+            # The card being answered, not the gate being skipped (#188). The turn that drew the
+            # card wrote the question to the Thread, so the replay must not write it a second time.
+            skip_table_gate=bool((body or {}).get("skipTableGate"))), "chat_stream"),
         media_type="text/event-stream")
+
+
+# The Chat half of the candidate click (#188). Its own route rather than the Binding one above,
+# because what it writes is a different record: Chat has no Built App to depend on anything, so the
+# choice goes on the Thread's own context row and crosses into a Binding at the handoff.
+@control_app.post("/api/threads/{thread_id}/context/data_source/{resource_id}/candidate")
+async def confirm_thread_table_candidate(thread_id: str, resource_id: str,
+                                         request: Request) -> JSONResponse:
+    """Record the table a person picked off a candidate card in Chat, once it is proved still there."""
+    body = await request.json()
+    database, schema, table = _scope_levels(body)
+    if not table:
+        # A candidate is always one table, here as much as on the Binding door: "somewhere in
+        # PUBLIC" does not say which table holds the data.
+        return JSONResponse(status_code=400, content={"error": brand_text(
+            "Pick one {scope}. {assistantName} does not record a schema from here."
+        )})
+    try:
+        return JSONResponse(content=orchestrator.confirm_thread_table_candidate(
+            thread_id, resource_id, database, schema, table))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "unknown thread"})
+    except ResourceNotBound:
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "This {chat} isn't using that {dataSource}, so there is no {scope} to record. "
+            "Add it to the {chat} first."
+        )})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "That {dataSource} is not one {platformName} offers you, so its {scope} cannot be "
+            "recorded."
+        )})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ResourceUnavailable as e:
+        # The table has gone since the card was drawn, which is the whole point of checking.
+        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @control_app.post("/api/threads/{thread_id}/handoff/decline")

@@ -5563,13 +5563,18 @@ class Orchestrator:
                 yield thread, item
 
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
-                    already_asked: bool = False):
+                    already_asked: bool = False, skip_table_gate: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
         answer, and the person declined the offer (`decline_handoff_stream`). The turn runs; the two
         things that belong to asking do not. Recording it again would print the person's sentence
         twice, which is exactly the transcript they produced by hand when declining did nothing.
+
+        `skip_table_gate` says a candidate on a table card was clicked and the table is already on
+        the Thread (#188). The question is on the record for the same reason `already_asked` is —
+        the turn that offered the card wrote it there — so this arrives as a whole new turn taking
+        the lock again rather than a paused one resuming.
         """
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
@@ -5596,7 +5601,8 @@ class Orchestrator:
         holding = True
         try:
             for ev in self._chat_stream(thread_id, prompt, timeout_s=timeout_s,
-                                        already_asked=already_asked):
+                                        already_asked=already_asked,
+                                        skip_table_gate=skip_table_gate):
                 if holding and ev.get("type") == "done":
                     # Released before the yield rather than after, so a client that hangs up on
                     # `done` still frees it here. Baseline first: it means "no turn running", and a
@@ -6448,7 +6454,7 @@ class Orchestrator:
         return "\n".join(lines)
 
     def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
-                     already_asked: bool = False):
+                     already_asked: bool = False, skip_table_gate: bool = False):
         import time
 
         project = self._chat_project()
@@ -6476,7 +6482,10 @@ class Orchestrator:
             # Names live on the event so a later chip-remove still paints this message.
             "context": [{"id": i["id"], "name": i.get("name"), "kind": i.get("kind")} for i in items],
         }
-        if not already_asked:
+        # `skip_table_gate` joins `already_asked` here for the same reason it joins it below: the
+        # turn that drew the candidate card wrote this sentence to the Thread before it drew one, so
+        # writing it again would print the person's question twice under one card.
+        if not already_asked and not skip_table_gate:
             store.append_history(thread_id, user_ev)
             yield user_ev
 
@@ -6498,6 +6507,22 @@ class Orchestrator:
                 store.append_history(thread_id, done)
                 yield early
                 yield done
+                return
+
+        # A Data Source on this Thread whose table nobody has chosen (#188)? The same search Build
+        # runs, from the mode the person happens to be standing in — a question does not deserve a
+        # worse answer than a build request. After the handoff offer above, because a request that
+        # is really "build me an app" belongs in Build and should not spend seconds reading a
+        # warehouse first.
+        #
+        # `skip_table_gate` is the card being ANSWERED, not the gate being bypassed: the click
+        # writes the table onto the Thread's own row, so this would not fire again for the Data
+        # Source it was about, and the flag stops a SECOND unchosen Data Source turning the answer
+        # that click bought into another question.
+        if not skip_table_gate:
+            offer = self._chat_table_offer(store, thread_id, prompt, items)
+            if offer is not None:
+                yield from offer
                 return
 
         immediate = "first" if was_first else None
@@ -7520,6 +7545,102 @@ class Orchestrator:
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
                 yield ev
+
+    def _chat_table_offer(self, store: ThreadStore, thread_id: str, prompt: str,
+                          items: list[dict]):
+        """The same search, from Chat (#188, ADR-0038), or None to let the turn run.
+
+        The mode somebody happens to be standing in must not decide whether Sage will go and look.
+        What differs is only where the answer is written down: Chat has no Built App and so no
+        Binding to hold a table, so the record goes on the Thread's own context row — which is the
+        record `binding_from_context` already reads on the way across a handoff, so the table
+        reaches the Built App through a path that was already there.
+
+        The alternative — searching here but sending the person to Build to confirm — would make
+        them answer the same question twice across the crossing, which is the friction this whole
+        feature exists to remove.
+
+        Falls through in the same three cases the Build gate does, and for the same reason: no such
+        Data Source is named, the store will not say what it holds, or it holds nothing to offer.
+        """
+        bindings = [b for b in (chat_handoff.binding_from_context(i) for i in items)
+                    if b is not None]
+        binding = table_search.named_source(prompt, self._chat_mentioned_sources(prompt, items),
+                                            bindings)
+        if binding is None:
+            return None
+        try:
+            source = self._data_source(binding.id)
+            if not walks_whole_database(source):
+                return None
+            # The Build gate streams its walk (#186); this one does not, because a Chat turn
+            # has no build to be waited on and the same frames would be a progress bar over
+            # a question. Same two helpers underneath, so the two paths cannot come to
+            # disagree about which databases a search reads.
+            found: list[Candidate] = []
+            for database in self._databases_to_walk(source, binding):
+                found += self._database_candidates(source, binding, database)
+        except (LookupError, ResourceUnavailable) as e:
+            log.info("table search: %s could not be walked — %s", binding.display_name, e)
+            return None
+        except Exception:
+            log.exception("table search: could not walk %s", binding.display_name)
+            return None
+        if not found:
+            return None
+        return self._chat_table_candidates_events(
+            store, thread_id, prompt, binding, table_search.rank(prompt, binding, found))
+
+    def _chat_mentioned_sources(self, prompt: str, items: list[dict]) -> list[str]:
+        """The Data Source ids this sentence @named, which win over a prose match.
+
+        A mention is an identity rather than a guess — the person picked the row out of the menu and
+        its id came back with it — so it answers the case the prose path cannot: somebody who names
+        the store with `@` and then describes the data in words that name no store at all.
+        """
+        tokens = {m.group(1).lower() for m in _CHAT_AT.finditer(prompt or "")}
+        if not tokens:
+            return []
+        out: list[str] = []
+        for item in items:
+            if str(item.get("kind") or "") not in ("data_source", "datasource", "table"):
+                continue
+            name = str(item.get("sourceName") or item.get("name") or "")
+            if name and any(_at_token_hits(t, name, "") for t in tokens):
+                out.append(self._context_source_id(item))
+        return [i for i in out if i]
+
+    def _chat_table_candidates_events(self, store: ThreadStore, thread_id: str, prompt: str,
+                                      binding: Binding, ranking: table_search.Ranking):
+        """The card itself, written to the Thread rather than to a Built App's transcript."""
+        name = binding.display_name
+        if ranking.matched:
+            message = brand.text(
+                "{assistantName} read what {name} holds. Pick the {scope} this question should "
+                "read — the click records it for this {chat} and then answers what you asked.",
+                name=name)
+        else:
+            # Never an invented name, and never the alphabetical top five presented as answers. The
+            # list is still shown, because "no name matched" is a fact about the names and not about
+            # the warehouse — the person often knows the table by sight.
+            message = brand.text(
+                "No {scope} name in {name} matches this question, so {assistantName} will not "
+                "guess one. Pick the {scope} to read, or say more about the data you mean.",
+                name=name)
+        shortlist = ranking.candidates[:table_search.SHORTLIST]
+        events = ({"type": "table-candidates", "prompt": prompt, "message": message,
+                   "sourceId": binding.id, "sourceName": name,
+                   # What tells the click which door to write through. The Build card carries the
+                   # gates its turn was already past instead; a Chat turn has none to carry, and
+                   # the record it writes is this Thread's.
+                   "threadId": thread_id,
+                   "groups": table_search.grouped(shortlist),
+                   "allGroups": table_search.grouped(ranking.candidates),
+                   "total": len(ranking.candidates), "matched": ranking.matched},
+                  {"type": "done", "ok": False, "decision": "table candidates"})
+        for ev in events:
+            store.append_history(thread_id, ev)
+            yield ev
 
     def _databases_to_walk(self, source: DataSource, binding: Binding) -> list[str]:
         """Which databases one search reads, or a refusal naming why it will not read them.
@@ -11012,6 +11133,17 @@ class Orchestrator:
         The panel's own picker is not sent through here. Its list came from a cascade the creator
         walked seconds ago, so it is checking a fact it just established.
         """
+        self._verify_table_choice(source_id, database, schema, table)
+        return self.scope_data_source(source_id, database, schema, table)
+
+    def _verify_table_choice(self, source_id: str, database: str, schema: str,
+                             table: str) -> DataSource:
+        """The chosen table, looked for again in the store. Raises when it has gone.
+
+        Shared by the two doors a candidate can be confirmed through — a Built App's Binding and a
+        Thread's own context row (#188) — because the failure it covers belongs to the choice and
+        not to where the choice is written down.
+        """
         source = self._data_source(source_id)
         if table not in self._resources.list_tables(source, database, schema):
             # The check just proved the remembered list is wrong about this database, so it is
@@ -11026,7 +11158,55 @@ class Orchestrator:
                 "{table} is no longer in {schema}, so {assistantName} did not record it. Ask "
                 "again to search {name} as it is now.",
                 table=table, schema=schema or database, name=source.name))
-        return self.scope_data_source(source_id, database, schema, table)
+        return source
+
+    def confirm_thread_table_candidate(
+        self, thread_id: str, source_id: str, database: str, schema: str, table: str,
+    ) -> dict:
+        """A candidate clicked in Chat: prove the table is still there, record it on the Thread.
+
+        Chat has no Built App, so there is no Binding to hold the table (#188). The Thread's own
+        context row is where the choice goes — the row a handoff already reads through
+        `binding_from_context`, so the table crosses into the Binding by the path that was there
+        before this, in the one call `_bind_from_handoff` already makes. No second, parallel record.
+
+        The columns are read here for the same reason the panel's picker reads them: the row is what
+        the turn prompt renders from, and a table with no columns beside it sends the agent to ask
+        the store what it just chose.
+        """
+        project = self._chat_project()
+        store = ThreadStore(project.record.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        items = store.read_context(thread_id).get("items") or []
+        rows = [i for i in items
+                if str(i.get("kind") or "") in ("data_source", "datasource", "table")
+                and self._context_source_id(i) == source_id]
+        if not rows:
+            # The same refusal the Binding door gives, for the same fact: a table is part of a
+            # dependency, and there is no dependency here to make it part of.
+            raise ResourceNotBound(source_id)
+        # The row the search actually asked about, which is the one with no table on it — a Thread
+        # can hold two rows for one store, because pinning a table in the panel adds a second chip
+        # that is stored as a `data_source` row carrying a scope. Taking whichever came first wrote
+        # the answer onto the pinned chip, silently moving a table the person had already chosen
+        # while leaving the row the card was about still unanswered — so the same card came back on
+        # the next question, for good.
+        row = next((r for r in rows if not (r.get("scope") or {}).get("table")), rows[0])
+        source = self._verify_table_choice(source_id, database, schema, table)
+        scope = {"database": database, "schema": schema, "table": table}
+        row["scope"] = scope
+        row["sourceName"] = source.name
+        # Dropped before it is re-read, not overwritten only when the read works. `add_thread_context`
+        # can write these conditionally because its row is new; this row may already carry another
+        # table's columns, and a store that refuses the read would leave those sitting beside the
+        # scope that just moved — handing the agent the wrong column names for the right table.
+        row.pop("columns", None)
+        columns = self._columns_for_context(source, scope)
+        if columns:
+            row["columns"] = columns
+        store.write_context(thread_id, {"items": items})
+        return {"items": items}
 
     def _write_bound_schema(self, source: DataSource, binding: Binding) -> None:
         """Read what the bound tables hold, once, and record it for the agent (#15).
