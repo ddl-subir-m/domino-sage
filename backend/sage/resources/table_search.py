@@ -97,15 +97,19 @@ def _fold(word: str) -> str:
     return word[:-1] if len(word) > 3 and word.endswith("s") else word
 
 
-def _handles(binding: Binding) -> set[str]:
+def _handles(*names: str) -> set[str]:
     """The words in a Data Source's name that could only mean this one.
 
     `Snowflake-Data-Warehouse` is reached by "snowflake"; "data" and "warehouse" would answer for
     any store in the project. A name made entirely of generic words keeps them all rather than
     reducing to nothing — a source someone called `test` has no other handle, and a Data Source
     that can never be named would put this whole path out of reach for them.
+
+    Several names rather than one, because what a store is called depends on where it is read
+    from: a Binding carries the name it was recorded under and the display name beside it, and a
+    row off Domino's listing carries only its own.
     """
-    words = {_fold(w) for w in _words(f"{binding.display_name} {binding.name}")}
+    words = {_fold(w) for w in _words(" ".join(names))}
     return (words - _GENERIC_SOURCE) or words
 
 
@@ -133,9 +137,72 @@ def named_source(prompt: str, mentioned: Iterable[str], bindings: list[Binding])
             return binding
     said = {_fold(w) for w in _words(prompt)}
     for binding in unscoped:
-        if said & _handles(binding):
+        if said & _handles(binding.display_name, binding.name):
             return binding
     return None
+
+
+# Words that say "a store somewhere else", read only where the app records NO Data Source at all
+# (#185). Deliberately short. This is asked of a request that names nothing we hold, so a word here
+# that is also ordinary app-building English — "data", "table", "database" — would stop somebody
+# who asked for a to-do app and never meant a warehouse. A word missing from it costs today's
+# behaviour instead, which is the direction to be wrong in.
+_STORE_WORDS = frozenset(_fold(w) for w in [
+    "warehouse", "lakehouse", "datasource", "datasources", "snowflake", "redshift", "bigquery",
+    "databricks", "postgres", "postgresql", "mysql", "oracle", "teradata", "athena", "trino",
+    "presto", "sqlserver", "mongodb", "clickhouse", "vertica", "netezza",
+])
+
+
+@dataclass(frozen=True)
+class Offer:
+    """Every Data Source the caller can reach, best first, and how many the request named.
+
+    Both, for the reason `Ranking` carries both: the order is a convenience and the count is a
+    claim. A card that drew its first row as the recommended one where nothing was named would be
+    recommending the top of a listing — which is this code choosing a store after all, in the one
+    place it has no evidence at all.
+    """
+
+    sources: tuple[dict, ...]
+    named: int
+
+
+def offer_sources(prompt: str, mentioned: Iterable[str], sources: list[dict]) -> Offer | None:
+    """The Data Sources to put in front of a request that has none recorded (#185), or None.
+
+    Three outcomes, and the empty offer is not the None. None says the request was never about a
+    store and this turn is none of this code's business. An offer holding nothing says it was, and
+    that the platform offers this caller nothing to read it from — which is a sentence somebody
+    has to be told, because the alternative is an app built on rows the assistant invented.
+
+    Every reachable source is offered and the ones the request names are only moved to the front.
+    A caller who owns exactly one is still asked: using the only one silently is the same
+    inference through a side door, and it would change under them the day a second one appears
+    (ADR-0038).
+    """
+    ids = {str(i) for i in mentioned if str(i)}
+    said = {_fold(w) for w in _words(prompt)}
+    # A row with no id is a row no click can answer: the button would record nothing and, sharing
+    # its empty name with every other such row, would leave them all live while it ran.
+    sources = [s for s in sources if str(s.get("id") or "")]
+
+    def names(source: dict) -> bool:
+        # The WHOLE name, not a word of it, which is what makes a name safe to trigger on. One
+        # word off a store's name is an accident waiting to happen — "add a billing page" against
+        # a source called `billing-oracle` is a request about a screen, not about a warehouse —
+        # while a request that says every distinctive word in a name is naming that store.
+        # And the generic words go without coming back. `_handles` keeps them for a store named
+        # out of nothing else, so that `test` can still be reached by name once somebody has bound
+        # it (#183) — but here that fallback would put this card in front of "add a test page",
+        # which is the ordinary English the word list above is kept short to stay out of.
+        handles = _handles(str(source.get("name") or "")) - _GENERIC_SOURCE
+        return bool(str(source.get("id") or "") in ids or (handles and handles <= said))
+
+    named = [s for s in sources if names(s)]
+    if not named and not (said & _STORE_WORDS):
+        return None
+    return Offer(tuple(named + [s for s in sources if not names(s)]), len(named))
 
 
 def rank(prompt: str, source: Binding, tables: Iterable[Candidate]) -> Ranking:
@@ -150,7 +217,7 @@ def rank(prompt: str, source: Binding, tables: Iterable[Candidate]) -> Ranking:
     order until the model ranker arrives to make it a judgement.
     """
     asked = [w for w in (_fold(w) for w in _words(prompt)) if w not in _ASKING]
-    handles = _handles(source)
+    handles = _handles(source.display_name, source.name)
     asked = [w for w in asked if w not in handles]
     scored = [(_score(asked, c.table), c) for c in tables]
     scored.sort(key=lambda p: (-p[0][0], -p[0][1], len(p[1].table), p[1].schema, p[1].table))

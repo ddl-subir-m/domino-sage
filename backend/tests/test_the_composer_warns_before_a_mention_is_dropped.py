@@ -129,13 +129,13 @@ def test_the_acts_are_the_store_s_and_the_chip_writes_no_second_copy():
 
 def test_the_busy_helper_is_shared_rather_than_copied_a_fourth_time():
     """Cards in the transcript and the composer both draw a one-click act. The copies were at three
-    when this surface asked for a fourth, and the table candidate card (#183) is the next one to
-    reach for it rather than write its own."""
+    when this surface asked for a fourth, and the two candidate cards (#183, #185) are the next
+    ones to reach for it rather than write their own."""
     assert "useBusyAct() {" in UTIL
     assert "const [busy, run] = SW.util.useBusyAct();" in UI
     blocks = (WB / "js" / "components" / "message-blocks.js").read_text()
     assert "function useBusyAct() {" not in blocks
-    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 4
+    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 5
 
 
 # ---- and what it must not do ---------------------------------------------------------------

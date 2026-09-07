@@ -930,6 +930,62 @@ window.SW = window.SW || {};
     );
   }
 
+  // The Data Sources this caller can reach, for the person to pick one (#185, ADR-0038). The
+  // question before the card below it: a table search needs a store to search, and an app that
+  // records none leaves it nothing to read.
+  //
+  // Every source is drawn even where there is exactly one, because using the only one silently is
+  // the same inference through a side door — and the day a second one appears the app would start
+  // reading somewhere else without anybody saying so.
+  //
+  // Same `live` rule as every offer here: a replayed card would record a Binding and start a build
+  // out of a message somebody is scrolling back through.
+  function SourceCandidates({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.prompt
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Space, { size: 8, wrap: true },
+                (block.sources || []).map((source, i) => h(Button, {
+                  key: source.id,
+                  // One filled button per card, and only where the request named a store: the
+                  // server put that one first and says so. Where it named none the order is the
+                  // listing's own, and drawing its head as the recommended row would be a
+                  // recommendation made out of nothing.
+                  type: block.named && i === 0 ? 'primary' : 'default',
+                  size: 'small',
+                  loading: busy === source.id,
+                  disabled: !!busy,
+                  onClick: run(source.id, () => SW.store.chooseSourceAndSearch(
+                    block.prompt, source.id, source.name, block.answered)),
+                }, source.name)),
+                // The way past a question this request was never asking. The words that reach this
+                // card are a heuristic, and one that is wrong has to cost a click rather than a
+                // retyped request. It is also the only button on the card for a caller the
+                // platform offers nothing.
+                h(Button, {
+                  type: 'text',
+                  size: 'small',
+                  loading: busy === 'none',
+                  disabled: !!busy,
+                  onClick: run('none',
+                    () => SW.store.buildWithoutSource(block.prompt, block.answered)),
+                }, 'Build without one'))
+            )
+          : null
+      )
+    );
+  }
+
   // The tables a search found, for the person to pick one (#183, ADR-0038). Sage finds; the person
   // binds — so this card IS the declaration, and every button on it writes the same record the
   // panel's picker writes before replaying the request that produced the card.
@@ -1279,6 +1335,8 @@ window.SW = window.SW || {};
         return h(ResetOffer, { block });
       case 'incoming_changes':
         return h(IncomingChanges, { block });
+      case 'source_candidates':
+        return h(SourceCandidates, { block });
       case 'table_candidates':
         return h(TableCandidates, { block });
       case 'build_stalled':
