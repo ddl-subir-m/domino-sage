@@ -209,7 +209,8 @@ def test_install_opencode_config_voices_the_global_copy_only(tmp_path, monkeypat
     _install_opencode_config(src_dir, 9999)
     src = json.loads((src_dir / "opencode.json").read_text())
     assert "Sage's" in src["agent"]["sage-chat"]["prompt"]
-    assert ":9999" in src["provider"]["sage-gateway"]["options"]["baseURL"]
+    # The source is read, never written (#199) — not even for the port.
+    assert src["provider"]["sage-gateway"]["options"]["baseURL"] == "http://127.0.0.1:8080/v1"
     global_cfg = json.loads((home / ".config" / "opencode" / "opencode.json").read_text())
     assert global_cfg["agent"]["sage-chat"]["prompt"] == "You are Acme's chat agent."
     assert global_cfg["provider"]["sage-gateway"]["name"] == "Sage Enforcement Shim"

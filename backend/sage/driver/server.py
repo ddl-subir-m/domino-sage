@@ -39,17 +39,22 @@ class OpenCodeServer:
         cmd = ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
         if self._log_path:
             cmd.append("--print-logs")
-        # OpenCode discovers PROJECT config by walking up from the session's dir (the workspace) to the
-        # git root, and GLOBAL config from ~/.config/opencode — neither reaches our opencode.json here
-        # in cwd. Without it OpenCode never loads the sage-gateway provider/agents and silently falls
-        # back to its built-in free tier (429 FreeUsageLimitError). OPENCODE_CONFIG loads our file as
-        # "custom config" (above global, below project) — the documented way to point it at our config.
+        # OpenCode discovers PROJECT config by walking up from THIS cwd (not the session's dir) to a
+        # git root, and project outranks everything below it — measured, see `_opencode_project_dir`
+        # in the orchestrator (#199). So cwd is a dir of Sage's own holding only the voiced config,
+        # and `opencode.json` beside us is the one that wins. It may not exist yet when the
+        # orchestrator was started without its boot path, and Popen will not create a missing cwd.
+        self._cwd.mkdir(parents=True, exist_ok=True)
+        # OPENCODE_CONFIG loads a file as "custom config" — above global, below project. Redundant
+        # with the project copy on a healthy boot, and the belt for a boot where the install could
+        # not write: without any of the three OpenCode never sees the sage-gateway provider and
+        # drops to its built-in free tier (429 FreeUsageLimitError).
         env = dict(os.environ)
-        # The voiced copy first. `opencode.json` in cwd is the checked-in source, and its agent
-        # prompts name the assistant and the nouns as `{assistantName}` / `{dataset}` tokens; the
-        # orchestrator resolves them against the pack and installs the result globally, but leaves
-        # the source unresolved on purpose, so a pack never writes its words into a repo file.
-        # Point OPENCODE_CONFIG at the source and OpenCode reads those braces out loud to the user.
+        # Both candidates are voiced copies today; the global one is preferred only because the
+        # orchestrator writes it on every boot. Whichever we point at must be a resolved copy — the
+        # checked-in source names the assistant and the nouns as `{assistantName}` / `{dataset}`
+        # tokens, deliberately left unresolved so a pack never writes its words into a repo file,
+        # and handing OpenCode that file makes it read the braces out loud to the user.
         for cfg in (_VOICED_CONFIG, self._cwd / "opencode.json"):
             if cfg.exists():
                 env["OPENCODE_CONFIG"] = str(cfg)

@@ -140,6 +140,20 @@ _SAGE_REV = _sage_rev()
 _REPO = Path(__file__).resolve().parents[3]
 
 
+def _opencode_project_dir() -> Path:
+    """The cwd we give the OpenCode server, holding the one config it loads as PROJECT config.
+
+    OpenCode discovers project config off the git root of its own cwd, and project outranks both
+    the custom source (`OPENCODE_CONFIG`) and the global one. `/opt/sage` is a git checkout, so
+    while the server ran there its *unvoiced* `opencode.json` won every boot and Chat read the
+    pack's `{dataSource}` braces out loud (#199). A dir of its own, holding only the voiced copy,
+    turns that precedence from the trap into the mechanism.
+
+    Resolved per call rather than at import, so `HOME` is read when it is used.
+    """
+    return Path(os.path.expanduser("~/.config/sage-opencode"))
+
+
 def _slot(var: str, default: str) -> str:
     """A catalog slot from the environment, treating blank as unset.
 
@@ -397,7 +411,10 @@ orchestrator = Orchestrator(
     gateway=_gateway,
     catalog=_build_catalog(),
     project_id=os.environ.get("DOMINO_PROJECT_NAME", _WORKSPACE_DIR.name),
-    opencode_cwd=Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),  # where opencode.json lives
+    # Not SAGE_OPENCODE_CWD: that names the checked-in *source*, and a server run there loads it as
+    # project config (#199). This is the server's cwd and the dir `_opencode_base_port` reads, so
+    # /api/diag reports the port of the file OpenCode really dials.
+    opencode_cwd=_opencode_project_dir(),
     assets=_build_assets(),
     resources=_build_resources(),
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
@@ -2986,26 +3003,30 @@ _brand_images = _BrandImages(directory=_BRAND_DIR, check_dir=False)
 control_app.mount("/brand", _brand_images, name="brand-img")
 
 
-def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
-    """Make OpenCode actually load Sage's provider/agents/model — the real fix.
+def _install_opencode_config(source_dir: Path, control_port: int) -> None:
+    """Make OpenCode load Sage's provider/agents/model, in the pack's own words.
 
-    OpenCode's own server log proves it loads config ONLY from ~/.config/opencode (global) and from
-    project config walked up from the *session* dir (the workspace); it NEVER reads SAGE_OPENCODE_CWD.
-    So /opt/sage/opencode.json was never loaded, and OpenCode silently fell back to its built-in free
-    tier (HTTP 429 FreeUsageLimitError). OPENCODE_CONFIG (env) didn't take effect either.
+    Measured on opencode-ai@1.18.4 with a marker prompt in each source: project config WINS, and
+    both custom (`OPENCODE_CONFIG`) and global lose to it. Project config is discovered off the git
+    root of the *server's* cwd, so `/opt/sage` being a git checkout made its unvoiced opencode.json
+    the winner on every boot — Chat answered "a Snowflake connection is called a {dataSource}" (#199).
 
-    So write our config into the global path OpenCode demonstrably reads — no env-var dependency, no
-    precedence guesswork. Align the sage-gateway baseURL to the port the shim serves, then write to both
-    opencode.json and opencode.jsonc so ours is the last-loaded global source and wins over any free-tier
-    default. Keep the source file aligned too (in case OPENCODE_CONFIG is honored) — port only, not
-    brand voice, so an OEM pack does not rewrite the repo. Logs to app logs."""
+    So the voiced blob goes to `_opencode_project_dir()`, which is where the server now runs and is
+    made a git root here, and to the global path as well. Ours is then the project source AND the
+    last-loaded global one, so nothing falls back to OpenCode's free tier (HTTP 429
+    FreeUsageLimitError). The sage-gateway baseURL is aligned to the port the shim serves first.
+
+    The checked-in source is READ and never written: it is the unvoiced template, and rewriting it
+    left a tracked diff in the image that `app.sh` reads as "someone hand-patched this" and skips
+    self-update over. Logs to app logs."""
     import json
     import re
+    import subprocess
     from copy import deepcopy
 
     from .brand import apply_agent_voice
 
-    src = opencode_cwd / "opencode.json"
+    src = source_dir / "opencode.json"
     try:
         cfg = json.loads(src.read_text())
     except Exception as e:  # missing/unreadable — flag, don't crash the boot
@@ -3015,12 +3036,20 @@ def _install_opencode_config(opencode_cwd: Path, control_port: int) -> None:
     base = opts.get("baseURL", "")
     if base:
         opts["baseURL"] = re.sub(r"(://[^/:]+):\d+", rf"\g<1>:{control_port}", base)
-    blob = json.dumps(cfg, indent=2) + "\n"
-    try:  # keep the source aligned (OPENCODE_CONFIG path, if honored)
-        src.write_text(blob)
-    except OSError as e:
-        log.warning("[wiring] could not rewrite %s: %s", src, e)
     voiced = json.dumps(apply_agent_voice(deepcopy(cfg)), indent=2) + "\n"
+    project_dir = _opencode_project_dir()
+    try:
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "opencode.json").write_text(voiced)
+        # A dir with no git root above it is no project at all — OpenCode reports project "global"
+        # and discovers no project config. `git init` is what makes the copy beside it outrank the
+        # rest. Best effort: if it fails the global copy below is voiced too, so the words hold.
+        if not (project_dir / ".git").exists():
+            subprocess.run(["git", "init", "-q"], cwd=project_dir, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log.warning("[wiring] installed Sage config into %s (the OpenCode server's cwd)", project_dir)
+    except OSError as e:
+        log.error("[wiring] could NOT install %s (%s) — Chat may speak unresolved pack tokens", project_dir, e)
     global_dir = Path(os.path.expanduser("~/.config/opencode"))
     try:
         global_dir.mkdir(parents=True, exist_ok=True)
