@@ -452,12 +452,22 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                                 sample=_SAMPLE_TOP, database_tables=_ANSI_DATABASE_TABLES,
                                 bookkeeping_databases=_SQL_SERVER_SYSTEM),
     # Two levels. A Postgres connection is bound to one database and cannot read another's catalog,
-    # so listing the others would offer choices that then fail. `pg_%` and `information_schema` are
-    # dropped: they are the server's own bookkeeping, never what an app was built to read.
+    # so listing the others would offer choices that then fail. The server's own catalogs and
+    # `information_schema` are dropped: they are its bookkeeping, never what an app was built to
+    # read. The underscore is ESCAPED, because `_` is a LIKE wildcard — `pg_%` reads "pg, then any
+    # one character", which drops a user schema named `pgbouncer` along with them (#192).
+    #
+    # Escaped with an explicit `ESCAPE`, and never with a backslash, because this entry is shared by
+    # Redshift and Greenplum and the three disagree about backslash before LIKE ever sees the
+    # pattern: PostgreSQL leaves it alone under `standard_conforming_strings`, while Redshift's
+    # literal parser consumes one — so `'pg\_%'` would arrive there as `pg_%` and be a wildcard
+    # again, leaving the bug fixed on one connector and not the two aliased to it. `#` is nobody's
+    # metacharacter, and `ESCAPE` says which character is meant rather than relying on a default.
     "PostgreSQLConfig": SqlDialect(
         None,
         ("SELECT SCHEMA_NAME AS name FROM INFORMATION_SCHEMA.SCHEMATA "
-         "WHERE SCHEMA_NAME NOT LIKE 'pg_%' AND SCHEMA_NAME <> 'information_schema' "
+         "WHERE SCHEMA_NAME NOT LIKE 'pg#_%' ESCAPE '#' "
+         "AND SCHEMA_NAME <> 'information_schema' "
          "ORDER BY SCHEMA_NAME"),
         ("SELECT TABLE_NAME AS name FROM INFORMATION_SCHEMA.TABLES "
          "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME"),
@@ -471,7 +481,7 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
         # inside one database, and an empty prefix would leave `FROM .INFORMATION_SCHEMA.TABLES`.
         database_tables=("SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name "
                          "FROM INFORMATION_SCHEMA.TABLES "
-                         "WHERE TABLE_SCHEMA NOT LIKE 'pg_%' "
+                         "WHERE TABLE_SCHEMA NOT LIKE 'pg#_%' ESCAPE '#' "
                          "AND TABLE_SCHEMA <> 'information_schema' "
                          "ORDER BY TABLE_SCHEMA, TABLE_NAME"),
     ),

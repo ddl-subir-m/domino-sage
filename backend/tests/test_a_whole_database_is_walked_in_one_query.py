@@ -272,11 +272,13 @@ def test_a_store_with_no_database_level_leaves_no_empty_prefix_where_a_database_
 
 
 def test_the_two_level_families_drop_the_server_databases_that_are_not_anybodys_data():
-    # Postgres keeps its `pg_%` catalogs out, the same way its own `schemas` statement does. The
+    # Postgres keeps the server's own catalogs out, the same way its own `schemas` statement does,
+    # and escapes the underscore so a user schema named `pgbouncer` is not swept up with them
+    # (#192, which pins what the pattern MEANS rather than how it is spelled). The
     # MySQL family's one statement covers MariaDB, SingleStore and ClickHouse too, so it names
     # every one of their bookkeeping databases rather than only MySQL's.
     postgres = SQL_DIALECTS["PostgreSQLConfig"]
-    assert "NOT LIKE 'pg_%'" in postgres.database_tables
+    assert "NOT LIKE 'pg#_%' ESCAPE '#'" in postgres.database_tables
     mysql = SQL_DIALECTS["MySQLConfig"].database_tables
     for bookkeeping in ("mysql", "performance_schema", "sys", "system", "cluster", "memsql"):
         assert f"'{bookkeeping}'" in mysql, bookkeeping
