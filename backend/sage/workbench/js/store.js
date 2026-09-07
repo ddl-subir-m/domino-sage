@@ -686,7 +686,7 @@ window.SW = window.SW || {};
     }
     // The membership written above is unstamped, and on a SAME-scope reload the listing to stamp it
     // against is still in hand — kept deliberately, three lines up. This load is not only the
-    // project switch: an attach, a part-finished detach and a promote all call it, and without this
+    // project switch: an attach and a part-finished detach both call it, and without this
     // every `missing` mark and every group note would vanish for the length of the deferred read
     // below — 2.5-3.3 s on a real deployment — and then come back. The same re-apply
     // `refreshWorkingSet` ends on, for the same reason (#161).
@@ -5222,7 +5222,14 @@ window.SW = window.SW || {};
         return null;
       }
       const oldId = resource.id;
-      await loadScopeData();
+      // The working set, not the whole scope. A promote moves a row between two groups the
+      // membership read and `/project` answer for separately, and `loadScopeData` writes the first
+      // and DEFERS the second — so for the length of the platform listing read (2.5-3.3 s) the
+      // group map it wrote carries no `file` key at all, and the Files heading and every row under
+      // it vanish before the promoted one comes back on the Dataset. `refreshWorkingSet` reads both
+      // halves together and writes them together, which is why the Upload directly above this has
+      // never flickered. Nothing a promote changes is something the platform listing answers (#162).
+      await refreshWorkingSet();
       const tid = conversationId();
       const old = (state.attachments || []).find(
         (a) => a.resourceId === oldId || a.path === resource.path

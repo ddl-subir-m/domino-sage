@@ -10,7 +10,7 @@
 // the @ menu. A refresh that skipped the listing and left those alone would be fast and wrong.
 //
 // Input on stdin: `{ "act": "add" | "remove" | "pin" | "unpin" | "switch" | "race" | "overlap" |
-// "stale-load" | "switch-race" }`.
+// "stale-load" | "switch-race" | "promote" }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -84,6 +84,14 @@ function answer(url, init) {
       membership = membership.filter((m) => m.id !== id);
     }
     return { ok: true };
+  }
+  // A promote moves the bytes: the file leaves the Project's Uploads and lands on the Dataset, so
+  // the `/project` read taken after it names one file where it named two. That is the SECOND of the
+  // two lists a promote moves, and the one `/api/project/resources` cannot answer for.
+  if (url.split('?')[0].endsWith('/api/project/scratch/promote')) {
+    const { path } = JSON.parse(init.body);
+    scratch = scratch.filter((f) => f.path !== path);
+    return { path: 'datasets/d1/rows.csv' };
   }
   if (url.endsWith('/api/project')) return { scratch, attached: [] };
   if (url.endsWith('/api/threads')) return { threads: [] };
@@ -189,6 +197,12 @@ const settle = async () => {
 
 const PIN = { database: 'analytics', schema: 'public', table: 'orders' };
 
+// Every paint of the Uploads group, not just the last one. A flicker is by definition a frame that
+// is gone by the time the act returns, so sampling the end state cannot see it: the panel draws on
+// each `notify`, and a group with nothing in it is not drawn at all — heading included.
+const paints = [];
+SW.store.subscribe(() => { paints.push(names((SW.store.get().resourceGroups || {}).file)); });
+
 // What the catalogue half of the @ menu holds partway through an act, for the acts that have a
 // partway worth looking at.
 let mid = null;
@@ -228,6 +242,28 @@ if (act === 'add') {
   await new Promise((resolve) => setTimeout(resolve, 40));
   mid = names(SW.store.get().catalogueParents);
   await load;
+} else if (act === 'promote') {
+  // Two Uploads in the Files group, one of them sent to a Dataset through the row's own menu. The
+  // claim is about the OTHER one as much as this one: both vanished for the length of the deferred
+  // platform read, because the membership answer that gets written on the way through carries no
+  // `file` key at all.
+  scratch = [
+    { path: 'public/data/rows.csv', name: 'rows.csv' },
+    { path: 'public/data/notes.csv', name: 'notes.csv' },
+  ];
+  await SW.store.reloadScopeData();
+  // Settled first, and only then the record cleared: the setup load defers its own `/project` read,
+  // so its paints — the empty one this test is about included — would otherwise be counted against
+  // the act that has not run yet.
+  await settle();
+  paints.length = 0;
+  // The setup load is a real scope load and reads the platform, which is its job. Cleared so what
+  // the list holds afterwards is the PROMOTE's fan-out and nothing else.
+  requests.length = 0;
+  await SW.store.addScratchToDataset(
+    { id: 'file:public/data/rows.csv', name: 'rows.csv', kind: 'file', path: 'public/data/rows.csv' },
+    'd1',
+  );
 } else if (act === 'race') {
   // A mutation inside the window the scope load defers its listing behind. `setScope` returns once
   // the membership and the people are read; the `/project` half is still out, carrying a snapshot
@@ -245,6 +281,7 @@ console.log(JSON.stringify({
   requests,
   mid,
   files: names((SW.store.get().resourceGroups || {}).file),
+  paints,
   rail: railNames(),
   catalogueParents: names(state.catalogueParents),
   listingHeld: !!state.resourceListing,

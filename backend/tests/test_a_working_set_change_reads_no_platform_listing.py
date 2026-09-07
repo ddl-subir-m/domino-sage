@@ -173,3 +173,34 @@ def test_switching_project_still_reads_the_whole_platform():
     out = _act("switch")
     assert sorted(_platform_reads(out)) == ["GET ./api/assets", "GET ./api/resources"]
     assert "GET ./api/members" in out["requests"]
+
+
+def test_a_promote_never_paints_the_uploads_group_empty():
+    """Sending an Upload to a Dataset must not blank the Files section on the way (#162).
+
+    A promote moves two lists: the membership, which `/api/project/resources` answers, and the
+    Project's Uploads, which only `/api/project` answers. `loadScopeData` writes the first and
+    DEFERS the second behind the platform listing — 2.5-3.3 s on a real deployment — and the group
+    map it writes in between carries no `file` key at all. Since a group with nothing in it is not
+    drawn, the Files heading and every row under it disappeared for that window and then came back.
+
+    So the claim is about a frame, not an end state: every paint between the click and the answer
+    has to hold the file that was NOT promoted. `refreshWorkingSet` reads both halves together and
+    writes them together, which is why the Upload it already served has never flickered.
+    """
+    out = _act("promote")
+    assert out["paints"] == [["notes.csv"]]
+    assert out["files"] == ["notes.csv"]
+
+
+def test_a_promote_asks_the_platform_for_nothing():
+    """And it is a working-set change like any other: moving a file onto a Dataset that is already
+    mounted cannot change which Datasets Domino holds."""
+    out = _act("promote")
+    assert _platform_reads(out) == []
+    # The membership and the Uploads, which are the two lists the act actually moved.
+    assert out["requests"] == [
+        "POST ./api/project/scratch/promote",
+        "GET ./api/project/resources",
+        "GET ./api/project",
+    ]
