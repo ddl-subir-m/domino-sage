@@ -606,6 +606,10 @@
   background: var(--gray-100);
   padding: var(--s3);
   display: grid;
+  /* An auto track is never narrower than the head row's min-content, and the head row holds a
+     nowrap prompt, so the row sized itself to the whole prompt and walked out of this border.
+     min-width: 0 on the prompt lets it shrink; it does not shrink what it asks the track for. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--s2);
 }
 .sw-buildrun-head { display: flex; align-items: center; gap: var(--s2); }
@@ -640,6 +644,8 @@
   border-radius: var(--radius);
   padding: var(--s2) var(--s3);
   display: grid;
+  /* Capped for the reason .sw-buildrun is capped: same shape, same nowrap face, same escape. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--s2);
 }
 .sw-leadin-head { display: flex; align-items: center; gap: var(--s2); }
