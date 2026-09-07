@@ -58,7 +58,7 @@ def test_wiring_the_config_for_the_live_port_keeps_the_options_name(tmp_path, mo
     """`_install_opencode_config` reaches into the very bag this key lives in.
 
     It rewrites `options.baseURL` to the port the shim actually serves, and writes the result to
-    `~/.config/opencode` — the copy OpenCode demonstrably loads, so it is the copy that decides
+    every copy OpenCode demonstrably loads, so those are the copies that decide
     whether Gemini works. Rewriting one key of `options` in place leaves the rest alone today; a
     refactor that rebuilt the bag from the fields it cares about would drop `name` and take Gemini
     down with it, in the one file where the failure is invisible.
@@ -73,7 +73,7 @@ def test_wiring_the_config_for_the_live_port_keeps_the_options_name(tmp_path, mo
 
     _install_opencode_config(src_dir, 9999)
 
-    for written in (src_dir / "opencode.json",
+    for written in (tmp_path / "home" / ".config" / "sage-opencode" / "opencode.json",
                     tmp_path / "home" / ".config" / "opencode" / "opencode.json"):
         options = json.loads(written.read_text())["provider"]["sage-gateway"]["options"]
         assert options["name"] == "google", written
