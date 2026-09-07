@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Button, Table, Tooltip, Tag, Space, Input } = antd;
+  const { Button, Table, Tooltip, Tag, Space, Input, Spin } = antd;
   const {
     CopyOutlined, RightOutlined, DownOutlined, PushpinOutlined, ReloadOutlined,
     ExportOutlined, DownloadOutlined, ThunderboltOutlined,
@@ -948,10 +948,52 @@ window.SW = window.SW || {};
     // read as answers. Only where the whole list is a list: a real warehouse holds 602 tables, and
     // mounting all of them the moment a vague prompt lands costs a paint on every re-render of the
     // transcript. Past that the button below says how many there are and one click opens them.
-    const [all, setAll] = useState(!block.matched && (block.total || 0) <= 60);
+    // DERIVED, not seeded, because this component is not remounted between the searching card and
+    // the settled one (#186): `putTableCard` replaces the block at the same index and the transcript
+    // keys blocks by index, so React keeps the instance. A `useState` initializer would therefore
+    // run exactly once — on the first searching frame, where `total` and `matched` are both 0 — and
+    // hold `all` true through a settled card carrying 602 tables, which is the one case the cap
+    // exists to prevent. The state is only the click, which is the only thing state is for here.
+    const [expanded, setExpanded] = useState(false);
+    const all = expanded || (!block.matched && (block.total || 0) <= 60);
     const groups = (all ? block.allGroups : block.groups) || [];
     const shown = groups.reduce((n, g) => n + (g.tables || []).length, 0);
     const hidden = (block.total || 0) - shown;
+
+    // The warehouse is still being read (#186). The names found so far are shown and none of them
+    // is a button: reading is what turns a fifteen-second silence into a wait somebody can sit
+    // through, and picking waits for the walk because a click sends the request again — a request
+    // sent now would queue behind the very turn that is still walking, which would then finish by
+    // drawing its settled card onto a transcript that had already answered one.
+    //
+    // `block.groups` and not `groups`: a searching frame carries the shortlist alone, because there
+    // is no whole list yet to show all of, and reading `allGroups` here would draw an empty card
+    // under a sentence promising names.
+    if (block.searching) {
+      const reading = block.groups || [];
+      return h(
+        'div',
+        { className: 'sw-nudge' },
+        h(Spin, { size: 'small', style: { marginTop: 4 } }),
+        h(
+          'div',
+          { className: 'sw-nudge-main' },
+          h('div', null, block.message),
+          reading.length
+            ? h('div', { className: 'sw-table-candidates is-reading' },
+                reading.map((group) => h(
+                  'div',
+                  { className: 'sw-table-group', key: `${group.database}.${group.schema}` },
+                  h('div', { className: 'sw-table-group-head' },
+                    [group.database, group.schema].filter(Boolean).join('.')),
+                  h(Space, { size: 6, wrap: true },
+                    (group.tables || []).map((table) => h(
+                      'span', { className: 'sw-table-pick is-reading', key: table }, table)))
+                )))
+            : null
+        )
+      );
+    }
 
     return h(
       'div',
@@ -998,7 +1040,7 @@ window.SW = window.SW || {};
                     type: 'link',
                     size: 'small',
                     className: 'sw-table-more',
-                    onClick: () => setAll(true),
+                    onClick: () => setExpanded(true),
                     // Through the pack, because the sentence right above it is: a button reading
                     // "Show all 602 tables" under "Pick the Dataset table…" is one surface using
                     // two words for one thing. The marked-position lint cannot catch a bare

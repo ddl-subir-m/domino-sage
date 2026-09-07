@@ -1408,6 +1408,44 @@ window.SW = window.SW || {};
     return { mentions: mentions.filter((p) => !nested.has(p)), resources };
   }
 
+  // One table card per Data Source per turn, replaced in place as the search fills it in (#186).
+  //
+  // The transcript is derived from the whole event list every time a frame lands, so a search that
+  // reports three databases pushes three frames through here — and pushing a block each would draw
+  // one card per database under a sentence asking the person to pick a table from one warehouse.
+  // Keyed on the source rather than on position, because two unscoped stores in one turn are two
+  // questions and the second is asked on the turn after the first (see `named_source`).
+  // Searched across every message rather than inside the current one, the way `dropTableCard` is.
+  // Today the frames of one search always land in one message — the gate runs before anything that
+  // would start a new one — but that is a fact about the order events happen to arrive in, and if
+  // it ever stops holding, the settled card is pushed into a NEW message while the searching one
+  // stays behind in the old: two cards for one search, one of them permanently reading.
+  function putTableCard(messages, fallback, block) {
+    for (const message of messages) {
+      const at = (message.blocks || []).findIndex(
+        (b) => b.type === 'table_candidates' && b.searching && b.sourceId === block.sourceId);
+      if (at >= 0) { message.blocks[at] = block; return; }
+    }
+    fallback.blocks.push(block);
+  }
+
+  // Only ever the card still saying "reading". A settled card is the turn's answer and stays.
+  // A null `sourceId` means every one of them, which is what the end of a turn says: whatever the
+  // search was reading, it is not reading it now.
+  //
+  // Over the messages already built, and never through `ensureAssistant`: a searching card can only
+  // exist in a message that exists, and asking for one here would MAKE an empty assistant message
+  // on every `done` — a blank row in the transcript, and a miscount for anything reading rows.
+  function dropTableCard(messages, sourceId) {
+    for (const message of messages) {
+      for (let i = (message.blocks || []).length - 1; i >= 0; i -= 1) {
+        const b = message.blocks[i];
+        if (b.type === 'table_candidates' && b.searching
+            && (sourceId === null || b.sourceId === sourceId)) message.blocks.splice(i, 1);
+      }
+    }
+  }
+
   function buildHistoryToMessages(history) {
     const messages = [];
     let assistant = null;
@@ -1518,6 +1556,12 @@ window.SW = window.SW || {};
           value: ev.ok ? 'Typecheck passed' : `Typecheck: ${ev.errors} error(s)`,
         });
       } else if (ev.type === 'done') {
+        // A turn is over, so nothing is still reading a warehouse (#186). The search takes its own
+        // card back when it ends, and this is the backstop for the ends it does not reach — a
+        // stream cut mid-walk, or an exception past the first frame. Without it a spinner and
+        // "…is reading what X holds…" sit over a finished turn until the page is reloaded, which
+        // is the one state on this card nobody can answer their way out of.
+        dropTableCard(messages, null);
         // Two questions, read off two different things. They used to be one list, which is why
         // asking a question took the plan card's buttons away for good (#178).
         //
@@ -1538,6 +1582,8 @@ window.SW = window.SW || {};
           });
         }
       } else if (ev.type === 'error' && ev.message) {
+        // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
+        dropTableCard(messages, null);
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
       } else if (ev.type === 'saved') {
         const value = ev.ok
@@ -1628,12 +1674,46 @@ window.SW = window.SW || {};
           count: ev.count || (ev.files || []).length,
           live: !!ev.live,
         });
+      } else if (ev.type === 'table-search' && ev.message) {
+        // The same card while the warehouse is still being read (#186). One block that fills in
+        // rather than one per frame: the search says what it has after each database lands, and a
+        // transcript that grew a card per database would read as four searches instead of one.
+        //
+        // No `prompt`, so nothing on it is answerable — that is the server's rule and the reason is
+        // about turns: a click sends the request again, and a request sent while the walk is still
+        // running queues behind the turn doing the walking.
+        putTableCard(messages, ensureAssistant(), {
+          type: 'table_candidates',
+          searching: true,
+          message: ev.message,
+          prompt: '',
+          sourceId: ev.sourceId || '',
+          sourceName: ev.sourceName || '',
+          answered: {},
+          groups: ev.groups || [],
+          allGroups: [],
+          total: ev.total || 0,
+          matched: 0,
+          live: false,
+        });
+      } else if (ev.type === 'table-search-ended') {
+        // The search gave up — the store stopped answering, or it held nothing to offer — so the
+        // sentence saying it is reading goes with it. Left standing it would say "reading" for the
+        // rest of the session, over a turn that had already moved on to the ordinary build.
+        //
+        // A line in its place, because names appearing and then vanishing is the one thing
+        // streaming can do that silence could not: the assistant's own "which table?" a moment
+        // later does not say whether the store failed or held nothing. A Stop carries no message —
+        // the person who pressed it knows why the card went.
+        dropTableCard(messages, ev.sourceId || '');
+        if (ev.message) ensureAssistant().blocks.push({ type: 'status', value: ev.message });
       } else if (ev.type === 'table-candidates' && ev.message) {
         // The tables a search found, for the click that records one (#183). Same `live` rule as the
         // offers around it, and the sharper reason: a replayed card would write a record and start
         // a build from a message somebody is only reading back.
-        ensureAssistant().blocks.push({
+        putTableCard(messages, ensureAssistant(), {
           type: 'table_candidates',
+          searching: false,
           message: ev.message,
           prompt: ev.prompt || '',
           sourceId: ev.sourceId || '',
@@ -1680,7 +1760,12 @@ window.SW = window.SW || {};
         });
       }
     }
-    return messages;
+    // An assistant message that ended up holding nothing is not a turn saying nothing — it is a
+    // block that was taken back out (#186). A search stopped or cut mid-walk leaves exactly that:
+    // the searching card was the message's only block, because the gate runs before any build
+    // output. Every other message here is built by pushing a block, so an empty one can only be
+    // one of those. Filtered rather than never emptied, so the retirement rules stay one rule.
+    return messages.filter((m) => m.role !== 'assistant' || (m.blocks || []).length);
   }
 
   // ---- the merged conversation (#56) ---------------------------------------------------------

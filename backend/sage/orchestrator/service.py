@@ -296,10 +296,15 @@ _REMOTE_CHECK_SECONDS = 30.0
 # short of pasting a thousand-file merge into the transcript; the full count rides beside it.
 _INCOMING_FILES_SHOWN = 20
 # How many databases one table search will walk when the Binding names none (#183). One
-# database-wide query is 3.84s on the live warehouse (ADR-0038), and this runs on the turn's own
-# path before anything streams — so the ceiling is roughly how long a person may sit in silence
-# before the card appears. Four rather than one because a Data Source holding a handful of databases
-# is ordinary; a Data Source holding twenty is a question about which one, not a search.
+# database-wide query is 3.84s on the live warehouse (ADR-0038), so the ceiling is roughly how long
+# a person waits before the card they can answer appears. The search says what it is reading and
+# shows the best names it has each time a database lands (#186), which makes that a wait rather
+# than a silence — the shortlist is re-ranked over everything known so far, so a name from the
+# first database can be displaced by a better one from the second, because the five names on screen
+# have to be the five best known and not the five found earliest. It does not make the walk free,
+# so the ceiling stays. Four rather than one because a Data Source holding
+# a handful of databases is ordinary; a Data Source holding twenty is a question about which one,
+# not a search.
 _DATABASES_SEARCHED = 4
 
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
@@ -3360,6 +3365,13 @@ class Orchestrator:
         # no query at all. A stale LIST is harmless, which is why this may live for a session; a
         # stale CHOICE is not, which is why `confirm_table_candidate` never reads it.
         self._table_catalog: dict[tuple[str, str], list[Table]] = {}
+        # The databases one Data Source holds, kept beside the tables in them (#186). The cheaper
+        # half of the same question and the same argument: a search that asks what databases exist
+        # before every walk pays a query to learn what it already knows, and the answer moves on the
+        # timescale a warehouse is reorganised on rather than the one a person asks questions on.
+        # Read only by the search — the panel's cascade is a door somebody is walking now, so it
+        # keeps asking the store, as `confirm_table_candidate` does.
+        self._source_databases: dict[str, list[str]] = {}
         # Chat files are written every turn; git save is coalesced (docs/workbench/chat.md).
         self._chat_dirty = False
         self._chat_dirty_thread: str | None = None
@@ -5095,13 +5107,20 @@ class Orchestrator:
             # it stops is a SECOND unscoped Data Source turning the build that click just bought
             # into another question.
             if not skip_table_gate:
-                with timing.span("gate.table"):
-                    offer = self._table_offer(prompt, resources, {
-                        "skipResetGate": skip_reset_gate,
-                        "skipIncomingGate": skip_incoming_gate,
-                    })
-                if offer is not None:
-                    yield from offer
+                # `yield from` for its return value rather than for its events alone: the gate
+                # streams while it walks (#186), so whether it ends the turn is not knowable until
+                # it has finished streaming. A version that decided first and streamed afterwards
+                # would be the silence this replaced.
+                #
+                # The `gate.table` spans are opened inside it, around the queries and not around
+                # this call: a span wrapping a generator stays open across every suspension at a
+                # `yield`, so it would read the consumer's time as the gate's and stop being
+                # comparable with what the other gates report.
+                offered = yield from self._table_offer(prompt, resources, {
+                    "skipResetGate": skip_reset_gate,
+                    "skipIncomingGate": skip_incoming_gate,
+                })
+                if offered:
                     return
             # A button answering the offer is a click, not a second typing of the request — the
             # prompt is already a bubble in the transcript, put there by _reset_offer. So the turn
@@ -7104,7 +7123,8 @@ class Orchestrator:
                 yield ev
 
     def _table_offer(self, prompt: str, resources: list[dict] | None, answered: dict):
-        """Events for a request that names a Data Source with no table chosen (#183), or None.
+        """Events for a request that names a Data Source with no table chosen (#183). True if it
+        answered the turn.
 
         The refusal this replaces was correct and useless. `bound_schema` told the assistant it
         could not query and could not choose, the assistant said so, and the person — who had picked
@@ -7119,11 +7139,20 @@ class Orchestrator:
         it felt confident, which builds an app that works in this session and breaks for every
         viewer of the published one.
 
-        Returns None — and the turn goes on to the ordinary build — in three cases, all of which
-        leave today's behaviour exactly as it was: no such Data Source is named, the store will not
-        say what it holds, or it holds nothing to offer. Falling through means the assistant meets
-        the unscoped section and asks, which is a worse answer than the card and a better one than a
-        card with nothing on it.
+        IT STREAMS (#186) because it is slow enough to have to. One database-wide query is 3.84s and
+        this walks up to four of them, so the version that returned a finished card left a person
+        looking at an idle composer for up to fifteen seconds — which reads as a hang, and whose
+        obvious remedy is to send the request again and queue a second turn behind the walk. The
+        `table-search` frames say what is being read and then what has been found; the settled
+        `table-candidates` card is still one event and still the only answerable one.
+
+        Returns False — and the turn goes on to the ordinary build — in four cases, all of which
+        leave today's behaviour exactly as it was: no such Data Source is named, it cannot be walked
+        in one query, the store stops answering, or it holds nothing to offer. The last two happen
+        after the streaming has begun, so they take the card back with `table-search-ended` rather
+        than leaving a sentence on screen that will never finish. Falling through means the
+        assistant meets the unscoped section and asks, which is a worse answer than the card and a
+        better one than a card with nothing on it.
         """
         project = self.project()
         binding = table_search.named_source(
@@ -7133,31 +7162,92 @@ class Orchestrator:
             parse_bindings(project.workspace.read_bindings()),
         )
         if binding is None:
-            return None
+            return False
         try:
-            source = self._data_source(binding.id)
-            # Asked BEFORE the query, which is what this predicate exists for: a connector that
-            # cannot be walked in one go is a different question rather than a failed one, and it
-            # must never be answered by sweeping the schemas in turn — that sweep is the cost the
-            # database-wide statement exists to avoid. False for a connector with no dialect at all
-            # too, on the same practical ground: there is nothing to walk either way.
-            if not walks_whole_database(source):
-                return None
-            found = self._walk_catalog(source, binding)
+            with timing.span("gate.table", part="databases"):
+                source = self._data_source(binding.id)
+                # Asked BEFORE the query, which is what this predicate exists for: a connector that
+                # cannot be walked in one go is a different question rather than a failed one, and
+                # it must never be answered by sweeping the schemas in turn — that sweep is the cost
+                # the database-wide statement exists to avoid. False for a connector with no dialect
+                # at all too, on the same practical ground: there is nothing to walk either way.
+                if not walks_whole_database(source):
+                    return False
+                # Which databases there are, and whether there are too many to search, are both
+                # settled before anything is said — so a store that was never going to be searched
+                # does not flash a card that has to be taken back. It is one metadata round trip
+                # against 3.84s a database, which is why the frame below still lands first in
+                # anything a person would notice.
+                databases = self._databases_to_walk(source, binding)
         except (LookupError, ResourceUnavailable) as e:
             log.info("table search: %s could not be walked — %s", binding.display_name, e)
-            return None
+            return False
         except Exception:
             log.exception("table search: could not walk %s", binding.display_name)
-            return None
+            return False
+        # Before the first query, not after it: the first database IS the wait this is about.
+        yield self._table_search_frame(binding, ())
+        found: list[Candidate] = []
+        gave_up = ""
+        cannot_finish = brand.text(
+            "{assistantName} could not finish reading {name}, so it has no {scopePlural} to offer "
+            "for this request.", name=binding.display_name)
+        try:
+            for database in databases:
+                if project.stop_requested:
+                    break
+                # One span per database rather than one over the walk, which the timeline reads
+                # better anyway: `gate.table` becomes the shape of the search — what each database
+                # cost, and where the frames went out between them.
+                with timing.span("gate.table", part=database or "*"):
+                    found += self._database_candidates(source, binding, database)
+                    frame = self._table_search_frame(
+                        binding, table_search.rank(prompt, binding, found).candidates)
+                yield frame
+        except (LookupError, ResourceUnavailable) as e:
+            log.info("table search: %s stopped answering — %s", binding.display_name, e)
+            found, gave_up = [], cannot_finish
+        except Exception:
+            log.exception("table search: could not finish walking %s", binding.display_name)
+            found, gave_up = [], cannot_finish
+        # POLLED, because this is now a wait somebody can sit through and decide against (#186).
+        # Between databases and not inside one: a database-wide query is a single blocking call, so
+        # a Stop pressed just after one begins lands when it returns — up to 3.84s on the measured
+        # warehouse. That is the granularity available without a second connection to cancel on.
+        # Nothing has been written by here — no files, and the streaming frames are never persisted
+        # — so stopping costs nothing to unwind. What it must not do is leave the flag standing:
+        # `stop_build` sets it and only the turn that trips over it clears it, so a Stop pressed
+        # during the walk would otherwise kill the person's NEXT question before it ran a step.
+        if project.stop_requested:
+            project.stop_requested = False
+            yield {"type": "table-search-ended", "sourceId": binding.id}
+            yield {"type": "stopped"}
+            return True
+        # Everything read so far is dropped along with the walk, which is #182's rule holding now
+        # that a partial list has been on the screen: a card built from the databases that answered
+        # would say "no name matched" about a warehouse nobody finished reading, and the table they
+        # wanted would be in the one that failed.
+        #
+        # It says so on the way out. Names appearing and then vanishing with no account of why is
+        # the one thing streaming can do that silence could not, and the assistant's own "which
+        # table?" a moment later does not say whether the store failed or held nothing.
         if not found:
-            return None
+            yield {"type": "table-search-ended", "sourceId": binding.id,
+                   "message": gave_up or brand.text(
+                       "{name} holds no {scopePlural} {assistantName} can offer for this request.",
+                       name=binding.display_name)}
+            return False
         # Names first, then a model over the names (#184). The name rank is what the model is shown
         # and what it falls back to, not what the card ends up carrying: "gong" matches 27 of the
         # live warehouse's 602 tables and scores `MARTS.GONG__CALLS` exactly like
         # `STAGING.STG_GONG__CALLS`, so ordering by name alone is a coin toss on the one distinction
         # that decides the app. The ranker fails CLOSED to a layer heuristic — it can reorder these
         # candidates and it can never take them away.
+        #
+        # It runs AFTER the last streamed frame and before the settled card, which is why the frames
+        # carry the name order and the card carries the model's. The two orders differing across
+        # that boundary is the point rather than a glitch: the frames are the walk reporting what it
+        # has found, and the card is the answer.
         ranking = table_search.rank(prompt, binding, found)
         with timing.span("gate.table.rank"):
             ranking = table_rank.rank_with_model(
@@ -7169,7 +7259,30 @@ class Orchestrator:
                 session=project.session_id,
                 version=project.shim.version,
             )
-        return self._table_candidates_events(prompt, binding, ranking, answered)
+        yield from self._table_candidates_events(prompt, binding, ranking, answered)
+        return True
+
+    def _table_search_frame(self, binding: Binding, candidates: tuple[Candidate, ...]) -> dict:
+        """The card while the warehouse is still being read: what is known so far, and no way to
+        pick from it.
+
+        READABLE, NOT ANSWERABLE, and the seam that enforces it is the absent prompt. A click is two
+        acts — it writes the record and it sends the request again — and the second one would queue
+        behind the turn still doing the walking, which then ends by drawing its settled card onto a
+        transcript that had already answered one. So picking waits for the walk; reading does not,
+        and reading is the part that makes the wait legible.
+
+        Its own event type rather than a flag on `table-candidates`, because the two cases that end
+        the search take the card back: a `table-candidates` frame is the settled answer
+        this path either reaches or does not, and nothing downstream should have to check a boolean
+        to know which one it is holding.
+        """
+        return {"type": "table-search", "sourceId": binding.id,
+                "sourceName": binding.display_name,
+                "message": brand.text("{assistantName} is reading what {name} holds…",
+                                      name=binding.display_name),
+                "groups": table_search.grouped(candidates[:table_search.SHORTLIST]),
+                "total": len(candidates)}
 
     def _shortlist_columns(self, source: DataSource, shortlist: Sequence[Candidate],
                            budget: float) -> dict[Candidate, list[str]]:
@@ -7275,46 +7388,70 @@ class Orchestrator:
             if ev["type"] != "user":
                 yield ev
 
-    def _walk_catalog(self, source: DataSource, binding: Binding) -> list[Candidate]:
-        """Every table a search can offer, read in one query per database (#182, ADR-0038).
+    def _databases_to_walk(self, source: DataSource, binding: Binding) -> list[str]:
+        """Which databases one search reads, or a refusal naming why it will not read them.
 
         Narrowed by whatever the Binding already says: a person who chose a database answered part
         of the question, and re-offering the other databases would ask it again. What they did not
         answer is which table, which is the only level this path ever settles.
 
-        Not the cascade with its levels folded together. Walking a schema at a time costs ~3s a
-        level, about 45 seconds over the 15 schemas of the live warehouse, against 3.84s for one
-        database-wide query — and a search that takes a minute is slower than reading the data
-        catalog by hand, which is the thing it exists to save.
+        Answered before a word reaches the person (#186), which is what keeps the two questions that
+        cost no query out of the streaming: a store nobody can search this way is refused in silence,
+        exactly as it was before the search said anything at all.
         """
+        if binding.database:
+            return [binding.database]
+        if source.id not in self._source_databases:
+            self._source_databases[source.id] = self._resources.list_databases(source)
         # Not the raw list: a two-level store keys on the empty string the way the cascade passes
         # it, a three-level store that lists nothing has nothing to walk, and the engine's own
         # catalogs are not candidates. `walkable_databases` draws all three, because all three are
-        # facts about the connector rather than about this caller.
-        databases = ([binding.database] if binding.database
-                     else walkable_databases(source, self._resources.list_databases(source)))
+        # facts about the connector rather than about this caller — which is also why it sits
+        # outside the cache: the QUERY is what a session should only pay for once, and the filter
+        # over its answer is pure.
+        databases = walkable_databases(source, self._source_databases[source.id])
         if len(databases) > _DATABASES_SEARCHED:
-            # Bounded because this runs before anything streams, and the budget is measured: one
+            # Bounded because a person is sitting in front of it, and the budget is measured: one
             # database-wide query is 3.84s on the live warehouse, so twenty of them is a turn that
-            # sits silent for over a minute — slower than reading the data catalog by hand, which is
-            # the thing this exists to save.
+            # says "reading" for over a minute — slower than reading the data catalog by hand, which
+            # is the thing this exists to save.
             #
             # Refused rather than truncated. A partial list is the one answer this path must not
             # give: the card would say what it found, the table they wanted would be in the database
             # nobody walked, and "no name matched" would be a lie about their warehouse. So the turn
             # falls through and the person is asked — and the database is a level they can settle
             # from the panel, which is the surface that owns that door (ADR-0021).
+            #
+            # NOT remembered, which is the one answer here worth forgetting. Every other cached
+            # listing costs a click when it drifts; this one makes the search unavailable, so a
+            # session that kept it would go on refusing a Data Source somebody had since trimmed
+            # to three databases, with no way back but a restart.
+            self._source_databases.pop(source.id, None)
             raise ResourceUnavailable(brand.text(
                 "{name} holds {count} databases, which is more than {assistantName} searches in "
                 "one go.", name=source.name, count=len(databases)))
-        out: list[Candidate] = []
-        for database in databases:
-            key = (source.id, database)
-            if key not in self._table_catalog:
-                self._table_catalog[key] = self._resources.list_database_tables(source, database)
-            out += [Candidate(database, t.schema, t.name) for t in self._table_catalog[key]
-                    if not binding.schema or t.schema == binding.schema]
-        return out
+        return databases
+
+    def _database_candidates(self, source: DataSource, binding: Binding,
+                             database: str) -> list[Candidate]:
+        """Every table one database can offer, read in one query and kept for the session (#182,
+        ADR-0038).
+
+        Not the cascade with its levels folded together. Walking a schema at a time costs ~3s a
+        level, about 45 seconds over the 15 schemas of the live warehouse, against 3.84s for one
+        database-wide query — and a search that takes a minute is slower than reading the data
+        catalog by hand, which is the thing it exists to save.
+
+        One database at a time rather than the whole walk at once, so the caller can say what it has
+        found while the rest is still being read. The filtering is local because the measurement
+        says so: the filtered query was SLOWER than the unfiltered scan, being the same scan, so
+        narrowing buys tokens and never seconds.
+        """
+        key = (source.id, database)
+        if key not in self._table_catalog:
+            self._table_catalog[key] = self._resources.list_database_tables(source, database)
+        return [Candidate(database, t.schema, t.name) for t in self._table_catalog[key]
+                if not binding.schema or t.schema == binding.schema]
 
     def _wedged_refusal(self):
         """Events yielded when a streaming turn cannot run because the workspace is wedged (#39).
@@ -10749,6 +10886,9 @@ class Orchestrator:
             # happen: asking again would rebuild the same card off the same stale catalog and offer
             # the same dropped table, for the life of the process.
             self._table_catalog.pop((source.id, database), None)
+            # And the database listing with it, so "as it is now" is the whole store and not the
+            # tables inside a list of databases remembered from the same stale read (#186).
+            self._source_databases.pop(source.id, None)
             raise ResourceUnavailable(brand.text(
                 "{table} is no longer in {schema}, so {assistantName} did not record it. Ask "
                 "again to search {name} as it is now.",
