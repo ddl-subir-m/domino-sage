@@ -115,7 +115,7 @@ def test_chat_offers_the_conversation_act_and_nothing_app_scoped():
     row = _row(step["rows"], "Claude Sonnet 4")
     assert not any("Not used by" in t for t in row["texts"])
     assert not any(i["label"] == "Use in Rate curve viewer" for i in row["items"])
-    assert any(i["label"] == "Use in this chat" for i in row["items"])
+    assert any(i["label"] == "Use in this conversation" for i in row["items"])
 
 
 # ---- the refusal, which is the sentence that reported the bug -------------------------
@@ -149,7 +149,7 @@ def test_the_refusal_names_the_app_and_the_act_and_stops_once_the_binding_exists
 
     said, _ = orch._unusable_mentions(proj, None, None, [ref])
     assert "@sonnet" in said
-    assert "Gong sentiment doesn't use it yet" in said
+    assert "Gong sentiment can't call @sonnet yet" in said
     assert "Use in Gong sentiment" in said
     assert "connect" not in said.lower()
 
@@ -168,14 +168,14 @@ def test_an_unnamed_app_is_called_what_the_rail_calls_it(tmp_path: Path):
     proj = orch.project(start_preview=False)
     said, _ = orch._unusable_mentions(
         proj, None, None, [{"kind": KIND_LLM_ALIAS, "id": "a", "name": "s"}])
-    assert "Unnamed Built App doesn't use it yet" in said
+    assert "Unnamed Built App can't call @s yet" in said
     assert "Use in Unnamed Built App" in said
 
 
 def test_the_template_never_quotes_a_label_the_panel_cannot_draw():
     """The mistake this fix made twice. The panel draws `Use in {app name}`, so a string compiled
     into a Built App cannot quote the label it means — and the one label it CAN spell exactly,
-    "Use in this chat", is the wrong scope sitting directly above the right one in the same menu.
+    "Use in this conversation", is the wrong scope sitting directly above the right one in the same menu.
     The old text promised "Use on", which named no control at all."""
     said = (Path(__file__).resolve().parents[2] / "template" / "react-vite" / "src"
             / "appLlm.ts").read_text()

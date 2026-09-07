@@ -2,7 +2,7 @@
 
 WHAT MOVED. Every act that adds is offered on the surface that owns the scope it writes. A Binding
 is the Built App's, so its door is the app's own surface — the Build header — and not a row two
-items below `Use in this chat` in a panel that owns no app scope. The labels were never the problem:
+items below `Use in this conversation` in a panel that owns no app scope. The labels were never the problem:
 ADR-0011 had already made them name their scopes, and naming a scope does not carry the weight of
 one act writing a chip and the next writing a manifest a published app depends on weeks later.
 
@@ -255,7 +255,7 @@ def test_binding_a_row_the_project_has_not_joined_posts_it_the_same_way():
 def test_the_act_says_what_it_did_and_how_to_reverse_it():
     """The receipt ADR-0021 asks for in place of the confirm it refused: separation carries the
     weight, so the sentence comes AFTER and names the scope and the way back. Naming the app twice
-    is the point — the scope is what tells this act from `Use in this chat`, and the way out is
+    is the point — the scope is what tells this act from `Use in this conversation`, and the way out is
     named in the words the reader will see on the way to it (ADR-0011).
 
     The way out and the way in are now the same surface. That was the change #151 made and it is

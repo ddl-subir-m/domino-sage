@@ -256,7 +256,7 @@ window.SW = window.SW || {};
       h(
         'span',
         { className: 'sw-tree-leaf-acts' },
-        h(Button, { size: 'small', type: 'link', onClick: onMention }, 'Use in this chat'),
+        h(Button, { size: 'small', type: 'link', onClick: onMention }, 'Use in this conversation'),
         pinned
           ? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin')
           // Pin only reorders the @ menu — it sends nothing. Sitting unlabelled beside the control
@@ -368,7 +368,7 @@ window.SW = window.SW || {};
     if (error) {
       return treeFailure(
         error,
-        '{assistantName} couldn’t list the files in this {dataset}.',
+        "{assistantName} couldn't list the files in this {dataset}.",
         'Check it is still shared with this project in {platformName}, then reopen this panel.',
       );
     }
@@ -620,7 +620,7 @@ window.SW = window.SW || {};
         scopeBar(),
         treeFailure(
           error,
-          '{assistantName} couldn’t look inside this {dataSource}.',
+          "{assistantName} couldn't look inside this {dataSource}.",
           'Check your credentials for it in {platformName}, then reopen this panel.',
         )
       );

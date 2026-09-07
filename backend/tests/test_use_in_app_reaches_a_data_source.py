@@ -155,7 +155,7 @@ def test_a_listing_that_fails_leaves_the_position_standing():
     step = _at(walk=["DWH"], fail="schema")
     assert step["crumb"] == ["DWH"]
     # And it still says what went wrong, in the platform's own words (#121).
-    assert any("couldn’t look inside" in t for t in step["words"])
+    assert any("couldn't look inside" in t for t in step["words"])
 
 
 # ---- the flag that did two jobs -----------------------------------------------------------------
@@ -199,7 +199,7 @@ def test_chat_shows_neither_the_sign_nor_the_alias_door():
     assert step["doors"] == []
     row = _source_row(step)
     assert not any("Not used by" in t for t in row["texts"])
-    assert any(i["label"] == "Use in this chat" for i in row["items"])
+    assert any(i["label"] == "Use in this conversation" for i in row["items"])
     # Asked of the MENUS as well as of the screen, because the two hide the act in different places:
     # `doors` reads the labels controls carry as children, and a Dropdown item's label is data on a
     # prop — so no menu item could ever have shown up in the assertion above.
@@ -287,7 +287,7 @@ def test_remove_from_the_app_still_reaches_a_data_source():
     assert any(i["key"] == "remove" and i["label"] == f"Remove from {APP}"
                for i in in_app["items"])
     # And the removal stayed the app list's: the Project row offers the Project's, not the app's.
-    # `mention` no longer rides along here: #147 mode-gated `Use in this chat` to Chat, and this
+    # `mention` no longer rides along here: #147 mode-gated `Use in this conversation` to Chat, and this
     # harness stands in Build (the "mode is Build unless a step says otherwise" default).
     assert [i["key"] for i in _source_row(step)["items"] if i["key"]] == ["remove"]
 

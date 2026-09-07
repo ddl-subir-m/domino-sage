@@ -2,7 +2,7 @@
 does.
 
 The tree, the drawer and the row menu each let a person put a resource in front of the assistant.
-They named that act three different ways: "Add to chat", "Mention in this chat", "Add to this
+They named that act three different ways: "Add to chat", "Mention in this conversation", "Add to this
 conversation". Someone comparing two of them had to work out whether the difference in wording meant
 a difference in effect. It never did.
 
@@ -29,8 +29,8 @@ BUILDER = (_JS / "modes" / "builder.js").read_text()
 SURFACES = {"resource-tree.js": TREE, "resource-drawer.js": DRAWER, "resource-panel.js": PANEL}
 
 # The one verb, and the three it replaced.
-USE = "Use in this chat"
-GONE = ("Add to chat", "Mention in this chat", "Add to this conversation")
+USE = "Use in this conversation"
+GONE = ("Add to chat", "Mention in this conversation", "Add to this conversation")
 
 
 def _flat(src: str) -> str:
@@ -87,9 +87,9 @@ def test_the_chip_announces_the_act_the_menu_offers():
     using here" and the button still announced "Remove ... from this conversation", a screen-reader
     user was the only person hearing the retired verb — and heard the costly one for the free act.
 
-    It says "in this chat" rather than "here" on purpose: the visible control borrows its scope from
+    It says "in this conversation" rather than "here" on purpose: the visible control borrows its scope from
     the panel it sits in, and there is no "here" to look at in audio (ADR-0015)."""
-    assert "`Stop using ${resource.name} in this chat`" in PANEL
+    assert "`Stop using ${resource.name} in this conversation`" in PANEL
     assert "Remove ${resource.name} from this conversation" not in PANEL
     # The button still calls the same store action — this was copy, not wiring.
     assert "SW.store.removeFromConversation(contextItem)" in PANEL
@@ -138,13 +138,13 @@ def test_the_drawer_puts_a_catalogue_resource_in_the_chat_in_one_click():
     assert "await SW.store.addToProject(resource);" not in DRAWER
     assert "SW.store\n        .addToContext(resource, { quiet: true })" in DRAWER
     # The alert above the button has to agree with what the button now does.
-    assert "Using it in this chat adds it to " in DRAWER
+    assert "Using it in this conversation adds it to " in DRAWER
     assert "SW.brand.text(" in DRAWER
 
 
 def test_a_join_the_drawer_cannot_make_says_so():
     """Everything else on this button stays put when the call fails — the drawer is still open, the
-    alert still says the resource is not in the project, the label still reads `Use in this chat`.
+    alert still says the resource is not in the project, the label still reads `Use in this conversation`.
     Without a report, a refused join and a click that never landed look the same."""
     assert ".catch((err) => antd.message.error(String((err && err.message) || err)))" in DRAWER
 

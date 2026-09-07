@@ -61,7 +61,7 @@ window.SW = window.SW || {};
   function deleteApp(app) {
     let alsoDelete = false;
     Modal.confirm({
-      title: `Delete “${app.name}”?`,
+      title: `Delete "${app.name}"?`,
       okText: 'Delete app',
       okButtonProps: { danger: true },
       cancelText: 'Cancel',
@@ -71,8 +71,8 @@ window.SW = window.SW || {};
         // "its record of what it needs to run" rather than "its Bindings" (ADR-0025), and a
         // *record* rather than the things themselves: deleting the app takes the grants, never the
         // Resources — those stay in the Project and can be picked again (ADR-0011).
-        h('div', null, SW.brand.text('This app’s code, its plan and its record of what it needs '
-          + 'to run are removed and can’t be recovered. Your other {builtAppPlural} and this '
+        h('div', null, SW.brand.text("This app's code, its plan and its record of what it needs "
+          + "to run are removed and can't be recovered. Your other {builtAppPlural} and this "
           + 'conversation stay.')),
         app.published &&
           h(
@@ -91,7 +91,7 @@ window.SW = window.SW || {};
               'div',
               { className: 'sw-caption', style: { marginTop: 4, marginLeft: 24 } },
               SW.brand.text('Leave this and its URL goes on serving the version you last '
-                + 'published — but {assistantName} can’t update or delete it after this, so you’d '
+                + "published — but {assistantName} can't update or delete it after this, so you'd "
                 + 'do that in {platformName}.')
             )
           )
@@ -102,7 +102,7 @@ window.SW = window.SW || {};
           .then((out) => {
             if (out.dominoApp === 'deleted') {
               antd.message.success(
-                SW.brand.text('Deleted “{name}” and its {platformName} App.', { name: app.name })
+                SW.brand.text('Deleted "{name}" and its {platformName} App.', { name: app.name })
               );
             } else if (out.dominoApp === 'running') {
               // The one outcome worth saying out loud, and worth holding on screen: the Domino App
@@ -110,15 +110,15 @@ window.SW = window.SW || {};
               // can stop it, and the person has somewhere to go if that is not what they wanted.
               antd.message.warning({
                 content: SW.brand.text(
-                  'Deleted “{name}”. Its {platformName} App is still running — delete it in '
-                    + '{platformName} if you don’t want it, because {assistantName} can no longer '
+                  'Deleted "{name}". Its {platformName} App is still running — delete it in '
+                    + "{platformName} if you don't want it, because {assistantName} can no longer "
                     + 'reach it.',
                   { name: app.name }
                 ),
                 duration: 10,
               });
             } else {
-              antd.message.success(`Deleted “${app.name}”.`);
+              antd.message.success(`Deleted "${app.name}".`);
             }
           })
           .catch((err) => {
@@ -155,8 +155,8 @@ window.SW = window.SW || {};
           showIcon: true,
           style: { marginTop: 12 },
           message: queries.length === 1
-            ? 'One of this app’s queries won’t answer once it’s published'
-            : `${queries.length} of this app’s queries won’t answer once it’s published`,
+            ? "One of this app's queries won't answer once it's published"
+            : `${queries.length} of this app's queries won't answer once it's published`,
           // The app's OWN sentences, which is the property #26 was built on: the creator reads what
           // the viewer would read, so what they go and fix is the thing that will complain.
           description: h(
@@ -171,7 +171,7 @@ window.SW = window.SW || {};
           type: 'info',
           showIcon: true,
           style: { marginTop: 12 },
-          message: 'Where this app’s data goes',
+          message: "Where this app's data goes",
           description: egress,
         })
         : null
@@ -201,9 +201,9 @@ window.SW = window.SW || {};
         null,
         SW.brand.text(
           again
-            ? 'The {platformName} App you published before starts serving this app’s latest code. '
-              + 'The URL doesn’t change, so anybody already holding it sees the new version.'
-            : 'This app’s code is saved and deployed on {platformName} as an App with a URL of its '
+            ? "The {platformName} App you published before starts serving this app's latest code. "
+              + "The URL doesn't change, so anybody already holding it sees the new version."
+            : "This app's code is saved and deployed on {platformName} as an App with a URL of its "
               + 'own. Who can open it is set in {platformName}, so nobody sees it until you '
               + 'share it.'
         )
@@ -224,7 +224,7 @@ window.SW = window.SW || {};
       notice
     );
     const instance = Modal.confirm({
-      title: again ? `Publish a new version of “${app.name}”?` : `Publish “${app.name}”?`,
+      title: again ? `Publish a new version of "${app.name}"?` : `Publish "${app.name}"?`,
       okText: again ? 'Publish new version' : 'Publish',
       cancelText: 'Cancel',
       content: body(null),
@@ -238,8 +238,8 @@ window.SW = window.SW || {};
             // up. Saying so is what stops the first click on `Open app` reading as a broken app.
             antd.message.success(
               out && out.republished
-                ? `Published a new version of “${app.name}”. It takes a few minutes to serve the new code.`
-                : `Published “${app.name}”. It takes a few minutes to come up — Open app opens it.`
+                ? `Published a new version of "${app.name}". It takes a few minutes to serve the new code.`
+                : `Published "${app.name}". It takes a few minutes to come up — Open app opens it.`
             );
           })
           .catch((err) => {
@@ -518,7 +518,7 @@ window.SW = window.SW || {};
     // would replace this stale word with a false one. Silence costs nothing and cannot go stale.
     const previewWord = {
       starting: 'Starting preview…',
-      err: 'Preview didn’t start',
+      err: "Preview didn't start",
       // Nothing answered and Build stopped waiting (#90). Its own word, because it is its own
       // fact: `err` is the preview answering with something bad, this is it never answering.
       stalled: 'Preview never came up',
@@ -770,7 +770,7 @@ window.SW = window.SW || {};
       // stay on offer above it: a listing that would not answer is not a choice anybody has lost.
       if (pick.error) {
         return [{ key: 'unavailable', disabled: true,
-                  label: SW.brand.text('{assistantName} couldn’t look inside this {dataSource}') }];
+                  label: SW.brand.text("{assistantName} couldn't look inside this {dataSource}") }];
       }
       if (!pick.items.length) return [{ key: 'empty', disabled: true, label: 'Nothing here' }];
       return pick.items.map((name) => ({ key: `at:${name}`, label: name }));
@@ -926,7 +926,7 @@ window.SW = window.SW || {};
         mark &&
           h(
             Tooltip,
-            { title: '“not used” is what the last build saw, and it publishes either way.' },
+            { title: '"not used" is what the last build saw, and it publishes either way.' },
             h('span', { className: 'sw-appdeps-unused' }, ' (not used)')
           ),
         h(
@@ -1188,7 +1188,7 @@ window.SW = window.SW || {};
           h(
             'div',
             { className: 'sw-preview-overlay' },
-            starting ? 'Starting preview…' : 'Preview didn’t start — click reload to retry.'
+            starting ? 'Starting preview…' : "Preview didn't start — click reload to retry."
           ),
         // The way out is a button here rather than the toolbar's Reload (#90). Reload is an
         // icon-only control at the other end of the row, and the person this overlay is written
@@ -1380,9 +1380,9 @@ window.SW = window.SW || {};
     // the plan whole however far the last attempt got.
     const planNote = stoppedAt > 1
       ? `A build started from this plan and stopped at step ${stoppedAt}; the steps before it are `
-        + 'already in the app. Say “try again” to run it again, or describe a change to replace it.'
+        + 'already in the app. Say "try again" to run it again, or describe a change to replace it.'
       : stoppedAt === 1
-        ? 'A build started from this plan and did not finish. Say “try again” to run it again, or '
+        ? 'A build started from this plan and did not finish. Say "try again" to run it again, or '
           + 'describe a change to replace it.'
         // Without the shared stem when the note above has just said it. The two notes drawing
         // together is the state this whole screen was rewritten for, so "a new conversation clears

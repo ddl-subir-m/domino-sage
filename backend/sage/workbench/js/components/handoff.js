@@ -109,7 +109,7 @@ window.SW = window.SW || {};
                   null,
                   'A new app',
                   ' ',
-                  h('span', { className: 'sw-caption' }, `named “${handoffDraft.title}”`)
+                  h('span', { className: 'sw-caption' }, `named "${handoffDraft.title}"`)
                 )
               ),
               apps.map((app) =>
@@ -132,7 +132,7 @@ window.SW = window.SW || {};
               type: 'warning',
               showIcon: true,
               style: { marginTop: 10 },
-              message: `This replaces the plan in “${target.name || target.id}”`,
+              message: `This replaces the plan in "${target.name || target.id}"`,
               description: SW.brand.text(
                 'Its code stays until you approve the plan and build. The other {builtAppPlural} '
                   + 'in this project are untouched either way.'

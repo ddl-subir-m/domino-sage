@@ -47,7 +47,7 @@ def test_chat_names_no_app():
     said = _panel("chat")["support_tickets.csv"]
 
     assert PLACEHOLDER not in said, f"Chat named an app nobody has built: {said!r}"
-    assert said == "Only in this chat"
+    assert said == "Only in this conversation"
 
 
 def test_build_still_names_the_app_it_is_missing_from():

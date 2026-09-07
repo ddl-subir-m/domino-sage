@@ -115,7 +115,7 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-sandbox-reading' },
-              'Couldn’t read what this ran. ',
+              "Couldn't read what this ran. ",
               h(Button, { type: 'link', size: 'small', onClick: () => setRow(null) },
                 'Try again')
             ),
@@ -159,7 +159,7 @@ window.SW = window.SW || {};
               size: 'small',
               icon: h(ExportOutlined, null),
               'aria-label': 'Open chart',
-              onClick: () => antd.message.info('Full-size charts are not wired up in this prototype.'),
+              onClick: () => antd.message.info("Opening a chart full size isn't available yet."),
             })
           ),
           h(
@@ -170,7 +170,7 @@ window.SW = window.SW || {};
               size: 'small',
               icon: h(DownloadOutlined, null),
               'aria-label': 'Export chart',
-              onClick: () => antd.message.info('Exporting charts is not wired up in this prototype.'),
+              onClick: () => antd.message.info("Downloading a chart isn't available yet."),
             })
           ),
           onAddToPlan &&
@@ -269,7 +269,7 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        asked ? 'Let’s open this in Build.' : 'This is starting to look like an app.'
+        asked ? "Let's open this in Build." : 'This is starting to look like an app.'
       ),
       h(
         'div',
@@ -307,7 +307,7 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        complete ? 'It’s still being refused.' : 'This conversation keeps being refused.'
+        complete ? "It's still being refused." : 'This conversation keeps being refused.'
       ),
       h(
         'div',
@@ -316,7 +316,7 @@ window.SW = window.SW || {};
           ? 'The summary carried over must hold the value too. Clearing Recall completely leaves '
             + 'the model nothing from this conversation. Your transcript stays.'
           : 'The gateway has refused the same way twice, so what it matched is in this '
-            + 'conversation’s Recall. Clearing Recall starts the model over: your transcript '
+            + "conversation's Recall. Clearing Recall starts the model over: your transcript "
             + 'stays, and the model keeps a short summary of what was said.'
       ),
       h(
@@ -361,7 +361,7 @@ window.SW = window.SW || {};
     const by = (threads || []).find((t) => t.id === superseded.conversation);
     return by && by.title
       // The Conversation's title is the person's own word, so it fills a slot rather than resolving.
-      ? SW.brand.text('“{title}” planned this {builtApp} again.', { title: by.title })
+      ? SW.brand.text('"{title}" planned this {builtApp} again.', { title: by.title })
       : SW.brand.text('Another conversation planned this {builtApp} again.');
   }
 
@@ -374,7 +374,7 @@ window.SW = window.SW || {};
     const parts = ['the plan'];
     if (charts) parts.push(`${charts} ${charts === 1 ? 'chart' : 'charts'}`);
     if (context) parts.push(`${context} ${context === 1 ? 'thing' : 'things'} this conversation `
-                            + 'had in context');
+                            + 'was using');
     if (crossed.transcript) parts.push('the full transcript');
     if (parts.length === 1) return 'the plan, and nothing else';
     return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
@@ -399,7 +399,7 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-crossing-line' },
         'The plan crossed into ',
-        h('strong', null, `“${named}”`),
+        h('strong', null, `"${named}"`),
         // No article engine: "a new {builtApp}" is safe because the article sits before `new`, but
         // the other branch had the article against the noun, so it takes the plural instead.
         crossed.newApp
@@ -600,7 +600,7 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-caption', style: { marginTop: 8 } },
-          `“${crossed.appName || crossed.appId}” stays, along with everything that crossed into `
+          `"${crossed.appName || crossed.appId}" stays, along with everything that crossed into `
           + 'it. The plan is archived, not deleted.'
         ),
       crossed &&

@@ -44,7 +44,7 @@ window.SW = window.SW || {};
       // is quoted rather than retold (#121). Reload is the resolution step.
       return h(Result, {
         status: 'warning',
-        title: SW.brand.text('{assistantName} couldn’t list the {builtAppPlural}'),
+        title: SW.brand.text("{assistantName} couldn't list the {builtAppPlural}"),
         subTitle: h(SW.PlatformError, {
           reason: SW.brand.text('{platformName} answered with an error.'),
           body: state.error,

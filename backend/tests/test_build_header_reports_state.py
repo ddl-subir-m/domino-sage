@@ -82,7 +82,7 @@ def test_the_header_says_the_preview_is_starting():
 
 @needs_node
 def test_the_header_says_the_preview_did_not_start():
-    assert "Preview didn’t start" in _texts(_build(select="app_a", preview="err"), "sw-build-state")
+    assert "Preview didn't start" in _texts(_build(select="app_a", preview="err"), "sw-build-state")
 
 
 @needs_node
@@ -304,7 +304,7 @@ def test_never_came_up_is_not_the_same_answer_as_came_up_broken():
     stalled = _texts(_build(select="app_a", preview="starting", giveUp=True), "sw-build-state")
     failed = _texts(_build(select="app_a", preview="err"), "sw-build-state")
     assert stalled != failed
-    assert "Preview didn’t start" not in stalled
+    assert "Preview didn't start" not in stalled
 
 
 @needs_node

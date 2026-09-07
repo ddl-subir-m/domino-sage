@@ -113,12 +113,12 @@ function rawFromPrefix(id) {
 async function fetchDominoListing() {
   const [res, assets] = await Promise.all([
     request('/resources').catch(() => ({ data_sources: [], llm_aliases: [], model_apis: [], errors: {
-      data_sources: SW.brand.text('Could not list {dataSourcePlural}.'),
-      llm_aliases: 'Could not list language models.',
-      model_apis: SW.brand.text('Could not list {modelApiPlural}.'),
+      data_sources: SW.brand.text("Couldn't list {dataSourcePlural}."),
+      llm_aliases: "Couldn't list language models.",
+      model_apis: SW.brand.text("Couldn't list {modelApiPlural}."),
     } })),
     request('/assets').catch(() => ({
-      assets: [], error: SW.brand.text('Could not list {datasetPlural}.'),
+      assets: [], error: SW.brand.text("Couldn't list {datasetPlural}."),
     })),
   ]);
   const errors = { ...(res.errors || {}) };
@@ -373,7 +373,7 @@ SW.api = {
     const { resourceIndex, catalogueParents } = SW.store.get();
     // The index holds the project's working set. A catalogue parent is not in it yet and the
     // drawer opens on one — without this fallback it would show the bare Domino id as the name,
-    // and `Use in this chat` would write that id into the Resource Browser as the resource's name.
+    // and `Use in this conversation` would write that id into the Resource Browser as the resource's name.
     const known = resourceIndex[id] || (catalogueParents || []).find((r) => r.id === id);
     return Promise.resolve(known || { id, name: rawFromPrefix(id), kind: kindFromPrefix(id) });
   },

@@ -171,7 +171,7 @@ def test_a_platform_that_would_not_answer_is_not_a_platform_with_nothing_in_it()
     assert out["onOpen"]["skeleton"] is True, "it waits while the read is out"
     assert out["afterRefresh"]["skeleton"] is False, "and stops waiting when the read comes back"
     assert out["afterRefresh"]["rows"] == []
-    assert "Could not list" in (out["afterRefresh"]["emptyText"] or "")
+    assert "Couldn't list" in (out["afterRefresh"]["emptyText"] or "")
 
 
 def test_a_listing_that_half_answered_says_which_half():
@@ -179,7 +179,7 @@ def test_a_listing_that_half_answered_says_which_half():
     said in the empty state — it goes above the list, or a whole kind is silently missing."""
     out = _act("partial")
     assert out["afterRefresh"]["rows"] == ["Warehouse", "Risk scorer"]
-    assert out["afterRefresh"]["note"] == "Could not list Datasets."
+    assert out["afterRefresh"]["note"] == "Couldn't list Datasets."
 
 
 def test_a_kind_that_could_not_be_re_read_keeps_the_rows_it_had():
@@ -197,7 +197,7 @@ def test_a_kind_that_could_not_be_re_read_keeps_the_rows_it_had():
         "Risk scorer",
     ]
     # And the rows are not passed off as fresh: the line above the list says the read failed.
-    assert out["afterRefresh"]["note"] == "Could not list Datasets."
+    assert out["afterRefresh"]["note"] == "Couldn't list Datasets."
 
 
 def test_a_search_that_matches_nothing_says_so_even_while_a_leg_is_refusing():
@@ -209,5 +209,5 @@ def test_a_search_that_matches_nothing_says_so_even_while_a_leg_is_refusing():
     out = _act("no-match")
     assert out["afterAct"]["rows"] == []
     assert out["afterAct"]["emptyText"] == 'Nothing in Domino matches "zzz".'
-    assert out["afterAct"]["note"] == "Could not list Datasets."
+    assert out["afterAct"]["note"] == "Couldn't list Datasets."
     assert out["afterAct"]["requests"] == []

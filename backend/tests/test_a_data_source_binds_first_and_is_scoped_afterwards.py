@@ -584,7 +584,7 @@ def test_a_listing_that_will_not_answer_leaves_the_levels_already_chosen_on_offe
     }])[-1]
     under_dwh = step["rungs"][-1]
     assert _keys(under_dwh) == ["use", "reset", "", "unavailable"]
-    assert "couldn’t look inside" in [i["label"] for i in under_dwh][-1]
+    assert "couldn't look inside" in [i["label"] for i in under_dwh][-1]
     assert [i["disabled"] for i in under_dwh][-1] is True
 
 

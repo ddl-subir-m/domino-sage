@@ -114,7 +114,7 @@ def test_the_confirm_names_and_quotes_the_app():
     """The name is quoted for the reason Reset quotes it (`composer.js:228`): a display name starts
     as the title of the plan the app was built from, and those end in a full stop, which unquoted
     lands one in the middle of this question."""
-    assert _publish("app_b", confirm=False)["confirm"]["title"] == "Publish “P&L report”?"
+    assert _publish("app_b", confirm=False)["confirm"]["title"] == 'Publish "P&L report"?'
 
 
 @needs_node
@@ -141,7 +141,7 @@ def test_a_first_publish_says_where_the_app_ends_up():
     said = _publish("app_b", confirm=False)["confirm"]["content"]
     assert "URL of its own" in said, said
     # It must not promise a stable URL to somebody who has not got one yet.
-    assert "doesn’t change" not in said, said
+    assert "doesn't change" not in said, said
 
 
 @needs_node
@@ -149,8 +149,8 @@ def test_a_republish_says_the_url_people_already_have_does_not_change():
     """The other side of the same act, and the creator's actual question once there is a link out
     in the world. One control, two sentences — the sentence is what moves."""
     step = _publish("app_a", confirm=False)
-    assert step["confirm"]["title"] == "Publish a new version of “Desk dashboard”?"
-    assert "doesn’t change" in step["confirm"]["content"], step["confirm"]["content"]
+    assert step["confirm"]["title"] == 'Publish a new version of "Desk dashboard"?'
+    assert "doesn't change" in step["confirm"]["content"], step["confirm"]["content"]
 
 
 @needs_node

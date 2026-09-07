@@ -112,7 +112,7 @@ window.SW = window.SW || {};
     // mounts writable (`_default_dataset`), so offering only the ones someone added to the project
     // greyed this out while the copy would have worked.
     const writableDatasets = SW.store.get().datasetTargets || [];
-    // "Use in this chat" / "Stop using here" is a Conversation-scope act, so it only belongs on a
+    // "Use in this conversation" / "Stop using here" is a Conversation-scope act, so it only belongs on a
     // Chat surface — a Build reader has no conversation for the verb to name (#147).
     const inChat = SW.router.get().mode === 'chat';
     const isScratch = resource.source === 'scratch';
@@ -179,7 +179,7 @@ window.SW = window.SW || {};
           ...(inChat
             ? [{
                 key: inContext ? 'remove-resource-from-conversation' : 'mention',
-                label: inContext ? 'Stop using here' : 'Use in this chat',
+                label: inContext ? 'Stop using here' : 'Use in this conversation',
               }]
             : []),
           ...(isScratch
@@ -355,12 +355,12 @@ window.SW = window.SW || {};
         : onAddToContext
         ? h(
             Tooltip,
-            { title: 'Use in this chat' },
+            { title: 'Use in this conversation' },
             h(
               'button',
               {
                 className: 'sw-res-ctx sw-res-ctx-add',
-                'aria-label': `Use ${resource.name} in this chat`,
+                'aria-label': `Use ${resource.name} in this conversation`,
                 onClick: (e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -396,10 +396,10 @@ window.SW = window.SW || {};
             'button',
             {
               className: 'sw-res-more',
-              // Says "in this chat" where the visible menu says "Stop using here": that control
+              // Says "in this conversation" where the visible menu says "Stop using here": that control
               // takes its scope from the panel around it, and a screen reader has no "here" to
               // look at. Same act, same verb, the scope spoken rather than shown (ADR-0015).
-              'aria-label': `Stop using ${resource.name} in this chat`,
+              'aria-label': `Stop using ${resource.name} in this conversation`,
               onClick: (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -581,7 +581,7 @@ window.SW = window.SW || {};
             ...resource,
             subtitle: inBuild && activeApp
               ? `Chat-only — not in ${activeApp.name}`
-              : 'Only in this chat',
+              : 'Only in this conversation',
           }
         : resource;
       const inContext = attachedIds.has(resource.id);

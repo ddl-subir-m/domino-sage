@@ -104,7 +104,7 @@ window.SW = window.SW || {};
       }
       out.failed.forEach((f) => {
         const person = (directory || []).find((u) => u.id === f.id);
-        antd.message.error(`Could not add ${(person && person.name) || f.id} — ${f.reason}`);
+        antd.message.error(`Couldn't add ${(person && person.name) || f.id} — ${f.reason}`);
       });
     };
 

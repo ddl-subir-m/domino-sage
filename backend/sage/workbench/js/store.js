@@ -3050,7 +3050,7 @@ window.SW = window.SW || {};
         // looked yet", which is a spinner with nothing left to end it.
         if (state.resourceListing) return;
         state.resourceListing = {
-          errors: { listing: SW.brand.text('Could not read {platformName}.') },
+          errors: { listing: SW.brand.text("Couldn't read {platformName}.") },
           groups: {},
         };
         state.resourceListingScope = state.scope && state.scope.id;
@@ -3083,7 +3083,7 @@ window.SW = window.SW || {};
       const result = await SW.api.addToProject(state.scope.id, resource);
       await refreshWorkingSet();
       if (!options.silent && result.added) {
-        antd.message.success(`${resource.name} is now in ${state.scope.name}`);
+        antd.message.success(`${resource.name} is now in ${state.scope.name}.`);
       }
       return result;
     },
@@ -3188,7 +3188,7 @@ window.SW = window.SW || {};
               (a) => a.resourceId !== resource.id && a.parentId !== resource.id
             );
             await refreshWorkingSet();
-            antd.message.info(`${resource.name} is out of ${scopeName}`);
+            antd.message.info(`${resource.name} is out of ${scopeName}.`);
             resolve(true);
           },
           onCancel: () => resolve(false),
@@ -3283,7 +3283,7 @@ window.SW = window.SW || {};
       try {
         result = await SW.api.bind(key[0], key[1]);
       } catch (err) {
-        antd.message.error(`${name} could not be added to ${where}: ${err.message}`);
+        antd.message.error(`${name} couldn't be added to ${where} — ${err.message}`);
         return false;
       }
       // The route answers with the list it just wrote, so nothing is re-read — and the ticket is
@@ -3425,7 +3425,7 @@ window.SW = window.SW || {};
       } catch (err) {
         // Left open on a refusal, unlike the success below: the walk that got here is the work, and
         // shutting the door would make the person do it again to find out what went wrong.
-        antd.message.error(`The table for ${pick.name} could not be set in ${where}: ${err.message}`);
+        antd.message.error(`The table for ${pick.name} couldn't be set in ${where} — ${err.message}`);
         return false;
       }
       store.closeScopePick();
@@ -3473,7 +3473,7 @@ window.SW = window.SW || {};
           // What the act commits to, in one sentence. Not "there is no undo" — there is one, and
           // naming it is what keeps this confirm from reading as a warning about a cheap act.
           content: `${where} carries every file below ${label} from then on, and ships them when `
-            + 'you publish it. Take one back out from the app’s own list.',
+            + "you publish it. Take one back out from the app's own list.",
           okText: `Attach folder to ${where}`,
           onOk: async () => {
             let result;
@@ -3490,7 +3490,7 @@ window.SW = window.SW || {};
             } catch (err) {
               // The server's own sentence, which is the only one that can name the three numbers a
               // cap refusal turns on. Retold here it would be a second, vaguer copy.
-              antd.message.error(`${label} could not be attached to ${where}: ${err.message}`);
+              antd.message.error(`${label} couldn't be attached to ${where} — ${err.message}`);
               resolve(false);
               return;
             }
@@ -3503,7 +3503,7 @@ window.SW = window.SW || {};
             antd.message.success(result.attached
               ? `${SW.util.number(result.attached)} ${result.attached === 1 ? 'file' : 'files'} `
                 + `from ${label} ${result.attached === 1 ? 'is' : 'are'} in ${where}. `
-                + 'Remove one from the app’s own list.'
+                + "Remove one from the app's own list."
               : `${where} already carries every file in ${label}.`);
             resolve(true);
           },
@@ -3559,7 +3559,7 @@ window.SW = window.SW || {};
             } catch (err) {
               // The server's own sentence, because only it can name the files the app still uses.
               // Retold here it would be a second, vaguer copy of the one thing a person can act on.
-              antd.message.error(`${label} could not be removed from ${where}: ${err.message}`);
+              antd.message.error(`${label} couldn't be removed from ${where} — ${err.message}`);
               // A failure here is not always "nothing happened": a removal that stops part way
               // commits what it did, and the message points at the app's file list as the record
               // of what is left. That list has to be re-read for the message to be true. A refusal
@@ -3841,7 +3841,7 @@ window.SW = window.SW || {};
             try {
               result = await SW.api.unbind(binding.kind, binding.id);
             } catch (err) {
-              antd.message.error(`${name} could not be removed: ${err.message}`);
+              antd.message.error(`${name} couldn't be removed — ${err.message}`);
               resolve(false);
               return;
             }
@@ -3884,7 +3884,7 @@ window.SW = window.SW || {};
       try {
         result = await SW.api.detachFile(attachment.path);
       } catch (err) {
-        antd.message.error(`${name} could not be removed: ${err.message}`);
+        antd.message.error(`${name} couldn't be removed — ${err.message}`);
         return false;
       }
       // What `detach_file` actually does: the declaration, the app's copy under public/data/ and any
@@ -4008,7 +4008,7 @@ window.SW = window.SW || {};
       if (attachment.joinedProject) {
         await refreshWorkingSet();
         if (!options.silent) {
-          antd.message.success(`${attachment.resourceName} added to ${state.scope.name}`);
+          antd.message.success(`${attachment.resourceName} is now in ${state.scope.name}.`);
         }
       }
 
@@ -4039,7 +4039,7 @@ window.SW = window.SW || {};
       antd.message.info(
         stillNeeded
           ? `${attachment.resourceName} is out of this conversation. ${app.name} still needs it.`
-          : `${attachment.resourceName} is out of context — still in ${state.scope.name}.`
+          : `${attachment.resourceName} is out of this conversation — still in ${state.scope.name}.`
       );
     },
 
@@ -4082,14 +4082,19 @@ window.SW = window.SW || {};
       }
 
       if (!options.quiet && state.thread && state.messages.length) {
+        // A receipt, not a turn. `system` is what draws it: `SW.Message` renders that role as a
+        // bare line with no avatar and no "who" row, which is what this is — the model has said
+        // nothing yet. As `assistant` it read as something Sage had answered, and it promised the
+        // behaviour of a turn that had not run. It also keeps `pendingAsk` reading past it, which
+        // is right: this line is not the answer to whatever the reader last asked.
         pushMessage({
           id: `ack_${Date.now()}`,
-          role: 'assistant',
+          role: 'system',
           at: new Date().toISOString(),
           blocks: [
             {
               type: 'text',
-              value: `Got it — I can see **${attachment.resourceName}**. We'll use that.`,
+              value: `**${attachment.resourceName}** is now in this conversation.`,
             },
           ],
         });
@@ -5360,7 +5365,7 @@ window.SW = window.SW || {};
       try {
         await SW.api.clearRecall(id, scope);
       } catch (e) {
-        antd.message.error('Could not clear recall.');
+        antd.message.error("Couldn't clear recall.");
         return;
       }
       // Reopen rather than push the divider in from here: the server wrote the event, and the
@@ -5434,7 +5439,7 @@ window.SW = window.SW || {};
       };
       state.resourceIndex[resource.id] = resource;
       await store.attach(resource.id, 'user', 'Uploaded in this conversation.', { silent: true });
-      antd.message.success(`${name} added to this context`);
+      antd.message.success(`${name} is now in this conversation.`);
       return resource;
     },
 
@@ -5490,7 +5495,7 @@ window.SW = window.SW || {};
         await store.attach(next.id, 'user', undefined, { silent: true, quiet: true });
       }
       if (!options.quiet) {
-        antd.message.success(SW.brand.text('{name} is on the {dataset}', { name: resource.name }));
+        antd.message.success(SW.brand.text('{name} is now on the {dataset}.', { name: resource.name }));
       }
       return res;
     },

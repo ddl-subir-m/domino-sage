@@ -442,7 +442,7 @@ def test_the_glossary_holds_both_kinds():
         "Sovereign",
         "Stop using here",
         "Try again",
-        "Use in this chat",
+        "Use in this conversation",
     ]
 
 

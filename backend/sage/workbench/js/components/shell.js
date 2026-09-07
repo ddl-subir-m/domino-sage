@@ -117,9 +117,10 @@ window.SW = window.SW || {};
       onClick: ({ key }) => {
         // What is the viewer's rather than the Project's belongs where a person already looks for
         // their own things, so Account settings is the door onto the preferences (#52). The other
-        // two entries are still Domino screens this prototype does not stand in for.
+        // two entries are still Domino's own screens, so this says where to go for them.
         if (key === 'account') SW.store.set({ settingsOpen: true });
-        else antd.message.info('Account screens are not part of this prototype.');
+        else antd.message.info(SW.brand.text(
+          'Organization and Sign out are {platformName} screens. Open {platformName} to use them.'));
       },
     };
 
