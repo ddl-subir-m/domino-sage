@@ -368,6 +368,24 @@ def test_an_unmounted_dataset_refuses_the_folder_act_with_a_reason(tmp_path: Pat
     assert "mounted" in refused.value.reason
 
 
+def test_the_unmounted_refusal_is_short_enough_to_read_on_a_row(tmp_path: Path):
+    """Twelve words, against the default pack. This reason is the whole of a tooltip on the
+    disabled button and the whole of `attach_folder`'s 409 body, so it owes the two things a
+    withheld act owes — why it is withheld and what to do instead — and a reader hunting those two
+    through a clause about serial downloads is being charged for the clause. That mechanism is
+    `_folder_act_reason`'s own comment now, which is where somebody who wants it looks (#181)."""
+    orch = _orch(tmp_path, _Unmounted())
+    orch.project(start_preview=False)
+
+    reason = orch.list_asset_files("ds_shared")["folder_act"]["reason"]
+
+    assert len(reason.split()) <= 12
+    assert "mounted" in reason and "Attach" in reason
+    # The sentence is templated, not spelled out, so a pack that renames the term still renders.
+    # "Dataset" is the default pack's word — the count above is this pack's, not every pack's.
+    assert "Dataset" in reason and "{" not in reason
+
+
 def test_the_listing_says_whether_the_folder_act_is_available(tmp_path: Path):
     """The row draws the reason the refusal would carry, so the two cannot disagree — and a
     reason is only worth drawing if the act is genuinely unavailable."""

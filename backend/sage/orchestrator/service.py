@@ -10913,7 +10913,7 @@ class Orchestrator:
     def _folder_act_reason(asset: Asset, listing: FileListing) -> str:
         """Why the folder act is unavailable for this Dataset, or "" when it is available.
 
-        One sentence, composed once. The Dataset tree draws it on the folder row before the click
+        One reason, composed once. The Dataset tree carries it on the folder row before the click
         and `attach_folder` refuses with it after one, so a row that offers the act and a route that
         would turn it down cannot exist (ADR-0029).
         """
@@ -10925,11 +10925,15 @@ class Orchestrator:
         if not asset.mount_path:
             # Not "cannot measure it": since #153 the sizes are known here. What is still missing is
             # a way to fetch a folder — every file comes down separately through
-            # `_download_attachment`, with nothing to report progress through (ADR-0029).
+            # `_download_attachment`, with nothing to report progress through (ADR-0029). That
+            # mechanism stays in this comment rather than in the sentence. Both surfaces this
+            # reaches are small and read once — a tooltip on the disabled button, and the whole body
+            # of `attach_folder`'s 409 — so it owes why the act is withheld and what to do instead,
+            # and a paragraph of mechanism is read past on the way to the second half (#181).
+            # "here" is load-bearing: the {dataset} is mounted somewhere, just not into this
+            # workspace.
             return brand.text(
-                "This {dataset} isn't mounted in this workspace, so {assistantName} would have to "
-                "fetch a folder from it one file at a time, with no way to show progress. Attach "
-                "the files you need instead."
+                "This {dataset} isn't mounted here. Folder reads are slow. Attach files instead."
             )
         return ""
 

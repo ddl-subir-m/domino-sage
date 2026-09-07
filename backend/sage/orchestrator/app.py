@@ -1792,7 +1792,7 @@ async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid folder"})
     except FolderActUnavailable as e:
-        # The reason the row already carried, said again by the act it withheld — one sentence,
+        # The reason the row already carried, said again by the act it withheld — one reason,
         # composed once, so the two can never disagree.
         return JSONResponse(status_code=409, content={"error": e.reason})
     except ResourceUnavailable as e:
