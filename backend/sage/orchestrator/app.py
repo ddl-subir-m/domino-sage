@@ -42,6 +42,7 @@ _UI = _WB / "index.html"
 _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
+from .. import timing
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import (
@@ -925,6 +926,22 @@ def diag_log(q: str = "", n: int = 400) -> PlainTextResponse:
     """
     lines = [ln for ln in _LOG_RING if not q or q.lower() in ln.lower()]
     return PlainTextResponse("\n".join(lines[-max(1, n):]) or f"(no lines match {q!r})")
+
+
+@control_app.get("/api/diag/timing")
+def diag_timing(n: int = 5, format: str = "text") -> PlainTextResponse:
+    """Where the last few turns actually spent their wall clock.
+
+    Sage's latency only exists against a live gateway and a real workspace, so this is the readout
+    half of the only feedback loop there is for it: the builder measures itself and a laptop reads
+    the numbers back over HTTP. Text by default because the deployed builder has no shell and a
+    browser is what someone has — `?format=json` for a script.
+
+    A turn still running is the first record, with its open spans marked, so a build that feels
+    stuck can be asked what it is doing rather than guessed at.
+    """
+    body = timing.as_json(n) if format == "json" else timing.render_all(n)
+    return PlainTextResponse(body, media_type="application/json" if format == "json" else "text/plain")
 
 
 @control_app.post("/api/diag/debug-stream")
@@ -2615,11 +2632,15 @@ async def chat_completions(request: Request):
     # (below) flag whether the model's response carried a tool call. build_stream reads these to explain
     # a no-edit turn. See Project.model_calls.
     project.model_calls += 1
+    # The turn's ledger of inferences (see sage.timing). No-op outside a turn, so the shim's own
+    # standalone app and a stray request from a warm OpenCode cost nothing.
+    call = timing.model_call()
     # The live session, so a phased build tags each phase with its OWN session id — that's what makes
     # per-phase spend separable in the gateway dashboard (group by tag:sage-session). Falling back to
     # the project session keeps normal turns tagged exactly as before.
     gen = project.shim.handle(body, project=project.id,
-                              session=project.active_session_id or project.session_id)
+                              session=project.active_session_id or project.session_id,
+                              on_resolved=call.model)
 
     # Drain the (blocking) gateway generator on a worker thread so the response side can interleave SSE
     # keepalives during silent gaps. Without this, we'd have to withhold the whole HTTP response until
@@ -2635,6 +2656,7 @@ async def chat_completions(request: Request):
     first = await run_in_threadpool(ka.get, q, ka.FIRST_BYTE_BUDGET_S)
     if ka.is_error(first):
         err = first[1]
+        call.done(ok=False, error=str(err))
         if isinstance(err, GatewayUpstreamError):
             log.error("gateway %s: %s", err.status, err.body)
             project.last_gateway_error = {"message": str(err), "upstream_status": err.status}
@@ -2643,6 +2665,8 @@ async def chat_completions(request: Request):
         project.last_gateway_error = {"message": f"{type(err).__name__}: {err}"}
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(err).__name__}: {err}"}})
 
+    if first is not ka.EMPTY:
+        call.first_byte()
     log.info(
         "model call -> streaming (first byte %.1fs%s)",
         time.monotonic() - started, ", pending; keepalive engaged" if first is ka.EMPTY else "",
@@ -2656,6 +2680,8 @@ async def chat_completions(request: Request):
 
         def sniff(chunk: bytes) -> None:
             nonlocal flagged
+            call.first_byte()   # no-op after the first; catches the keepalive path's real first chunk
+            call.chunk()
             if not flagged and b"tool_calls" in chunk:
                 flagged = True
                 project.tool_call_responses += 1
@@ -2681,6 +2707,7 @@ async def chat_completions(request: Request):
             yield chunk
 
         if first is ka.DONE:
+            call.done()
             return
         if first is not ka.EMPTY:
             yield from relay(first)  # the first real chunk the eager pull already consumed
@@ -2692,6 +2719,7 @@ async def chat_completions(request: Request):
                 yield ka.KEEPALIVE  # SSE comment: ignored by the parser, resets the client's read timer
                 continue
             if item is ka.DONE:
+                call.done()
                 return
             if ka.is_error(item):
                 e = item[1]
@@ -2700,6 +2728,7 @@ async def chat_completions(request: Request):
                     time.monotonic() - started, type(e).__name__, e,
                 )
                 project.last_gateway_error = {"message": f"{type(e).__name__}: {e}"}
+                call.done(ok=False, error=f"{type(e).__name__}: {e}")
                 yield from ka.error_sse(
                     f"\n\n⚠️ The model gateway closed the stream mid-response ({type(e).__name__}). "
                     "This is usually an upstream idle or duration limit — please retry."

@@ -168,12 +168,18 @@ class EnforcementShim:
         which model Auto uses for plan/implement). Takes effect on the next request."""
         self._catalog = catalog
 
-    def handle(self, request: dict[str, Any], project: str, session: str | None = None) -> Iterator[bytes]:
+    def handle(self, request: dict[str, Any], project: str, session: str | None = None,
+               on_resolved=None) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this.
 
         `project` is kept for the log line only — the gateway captures the caller's Domino project
         as a first-class column, so it's not tagged (a `project` tag would be dropped). `session` is
-        the OpenCode session id, tagged as sage-session for per-build cost rollup."""
+        the OpenCode session id, tagged as sage-session for per-build cost rollup.
+
+        `on_resolved(model, phase)` is called once the router has decided, so the caller's timing
+        record names the model the request actually ran on rather than the one OpenCode asked for —
+        every request asks for the same placeholder, and the override is the whole point of the
+        shim. Optional and swallowed: a recorder must never be able to fail an inference."""
         requested = request.get("model")
         state = self._control.snapshot()
 
@@ -337,6 +343,11 @@ class EnforcementShim:
             "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s)",
             requested, request["model"], decision.reason.value, state.phase.value, decision.locked,
         )
+        if on_resolved is not None:
+            try:
+                on_resolved(request["model"], state.phase.value)
+            except Exception:
+                log.debug("timing: on_resolved failed", exc_info=True)
         if dropped:
             log.info(
                 "model policy: dropped %d image part(s) — %s cannot process images",

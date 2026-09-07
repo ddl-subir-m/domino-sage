@@ -29,6 +29,7 @@ import httpx
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
+from .. import timing
 from ..assets.provider import Asset, AssetProvider, FakeAssetProvider, FileListing
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
@@ -3846,8 +3847,10 @@ class Orchestrator:
             root = project.record.path
             if git.is_repo_root(root):
                 if fetch:
-                    git.fetch(root)
-                found = git.incoming(root)
+                    with timing.span("gate.remote.fetch"):
+                        git.fetch(root)
+                with timing.span("gate.remote.incoming"):
+                    found = git.incoming(root)
         except Exception:
             log.exception("could not check the remote for incoming changes")
             found = git.Incoming("", [])
@@ -4823,9 +4826,12 @@ class Orchestrator:
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = _TurnTicket(new_id("turn"))
-        yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
-                                      prompt=prompt, app=True)
+        timing.start_turn("build", prompt)
+        with timing.span("turn.acquire"):
+            yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
+                                          prompt=prompt, app=True)
         if not ticket.granted:
+            timing.finish_turn(decision="not granted")
             return
         try:
             self._turn_gave_up = False
@@ -4881,8 +4887,9 @@ class Orchestrator:
             # rather than at the top of the turn because the approve fork above runs on a different
             # mode and checks itself — and because the two free gates should get their answer in
             # first. Still before a session is opened and before a single prompt goes out.
-            refusal = self._slot_refusal_events(
-                project, project.control.snapshot().mode, user_text=prompt)
+            with timing.span("gate.slots"):
+                refusal = self._slot_refusal_events(
+                    project, project.control.snapshot().mode, user_text=prompt)
             if refusal:
                 yield from refusal
                 return
@@ -4914,6 +4921,7 @@ class Orchestrator:
                 self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._release_turn()
+            timing.finish_turn()
 
     def create_thread(self) -> dict:
         """A new Chat Thread in this project. Does not provision a Domino project."""
@@ -5307,9 +5315,12 @@ class Orchestrator:
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
         ticket = _TurnTicket(new_id("turn"))
-        yield from self._acquire_turn(ticket, kind="chat", conversation=thread_id, prompt=prompt,
-                                      app=False)
+        timing.start_turn("chat", prompt)
+        with timing.span("turn.acquire"):
+            yield from self._acquire_turn(ticket, kind="chat", conversation=thread_id, prompt=prompt,
+                                          app=False)
         if not ticket.granted:
+            timing.finish_turn(decision="not granted")
             return
         # The lock goes at `done`, not at the end of this generator. What comes after `done` is
         # aftercare — classify the turn for a Build offer, compact the session, commit and push —
@@ -5335,6 +5346,7 @@ class Orchestrator:
                     holding = False
                 yield ev
         finally:
+            timing.finish_turn()
             if holding:
                 self._clear_turn_baseline()
                 self._release_turn()
@@ -7095,22 +7107,26 @@ class Orchestrator:
         Bindings they @-referenced, which ride the prompt text instead (see _resource_mention_note)."""
         import time
 
-        project = self._ensure_seeded()
+        with timing.span("setup.seed"):
+            project = self._ensure_seeded()
         # Repair the warm node_modules before the turn, not only at attach — attach happens once per
         # process, and an agent-run `npm install` can destroy the symlink mid-session and leave the
         # workspace unable to build or preview (see WorkspaceManager.link_warm_deps).
         if self._wm.link_warm_deps():
             log.warning("workspace: restored the warm node_modules — an npm install had removed it")
-        client = self._ensure_opencode()
+        with timing.span("setup.opencode"):
+            client = self._ensure_opencode()
         # A phase runs in the throwaway session its caller made; everything else reuses the project's.
         owns_turn = brief is None
-        sid = session_id or self._ensure_session(project, project.build_conversation)
+        with timing.span("setup.session"):
+            sid = session_id or self._ensure_session(project, project.build_conversation)
         project.active_session_id = sid
         breaker = CircuitBreaker()
         current = prompt
         # Attach the @-mentioned files to the user's turn only — not to the internal nudge/fix
         # follow-ups below, which carry no new user reference.
-        mention_files = self._resolve_mentions(project, mentions)
+        with timing.span("setup.mentions"):
+            mention_files = self._resolve_mentions(project, mentions)
         # Rides the prompt TEXT, appended at the send below rather than here: the gate/answer/plan
         # forks wrap `current` in their own preamble, and the block has to stay at the end of what
         # the agent reads — beside the attachment listing, which is rendered the same way.
@@ -7209,6 +7225,8 @@ class Orchestrator:
             # which is a worse trade than one stale transcript: the plan those old rows point at is
             # long since built or replaced, and the person is one new turn away from a card that is
             # right.
+            if ev["type"] == "done":
+                timing.decide(ev.get("ok"), str(ev.get("decision") or ""))
             if ev["type"] == "done" and read_only:
                 ev["readOnly"] = read_only
             # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
@@ -7227,11 +7245,13 @@ class Orchestrator:
         # pre-turn state. Written after it, they would sit outside the revert point: a stop would
         # roll them back mid-turn, and the read-only gate would be reading a working tree Sage had
         # changed on the user's behalf rather than one the agent wrote.
-        self._refresh_agent_inputs(project)
+        with timing.span("setup.agent_inputs"):
+            self._refresh_agent_inputs(project)
         # Snapshot before touching history/files so a stop mid-turn can restore exactly this
         # state, and remember how many history entries pre-date this turn so a stop can drop
         # everything appended since (the turn disappears from the transcript entirely).
-        project.snapshot.commit_before_turn()
+        with timing.span("gate.commit_before_turn"):
+            project.snapshot.commit_before_turn()
         history_baseline = project.app_for_turn().history_len()
 
         # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
@@ -7312,14 +7332,15 @@ class Orchestrator:
         if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
                                answer_only=answer_only, is_approval=is_approval,
                                skip_planning=skip_planning):
-            gate = scope.wants_a_plan(
-                prompt,
-                gateway=project.shim.gateway,
-                catalog=project.shim.catalog,
-                root=project.app_for_turn().path,
-                session=project.session_id,
-                version=project.shim.version,
-            )
+            with timing.span("gate.scope"):
+                gate = scope.wants_a_plan(
+                    prompt,
+                    gateway=project.shim.gateway,
+                    catalog=project.shim.catalog,
+                    root=project.app_for_turn().path,
+                    session=project.session_id,
+                    version=project.shim.version,
+                )
             if gate:
                 log.info("scope: planning a substantial request on a built project")
         # A gated turn's prompt carries a planning-context preamble scoped to whether the app exists
@@ -7684,7 +7705,17 @@ class Orchestrator:
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.
         first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note)
+        # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
+        # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
+        # answer to "how many model turns does a build spend, and where do they go". Named by what
+        # made Sage ask again, since `iterate` already says that on screen.
+        agent_turn = 0
+        turn_span = None
+        iterate_reason = "first send"
         while True:
+            agent_turn += 1
+            timing.close_span(turn_span)
+            turn_span = timing.open_span(f"agent-turn.{agent_turn}", why=iterate_reason)
             if project.stop_requested:
                 yield handle_stop()
                 return
@@ -7769,9 +7800,16 @@ class Orchestrator:
                 # is_running/messages ReadTimeout used to escape and kill the whole SSE. Tolerate it —
                 # assume still running and retry — and give up only after a sustained outage.
                 try:
+                    _poll_t0 = time.monotonic()
                     running = client.is_running(sid)
                     msgs = client.messages(sid, limit=_BUILD_POLL_MESSAGES)
                     poll_failures = 0
+                    # (c) What the sampling loop costs, split from what it waits for. `poll.read_ms`
+                    # is Sage competing with the agent for the same single-threaded Node server;
+                    # `poll.sleeps` is the second it then spends not looking. Together they bound how
+                    # much of a build's perceived slowness is the absence of a stream.
+                    timing.count("poll.iterations")
+                    timing.observe("poll.read_ms", (time.monotonic() - _poll_t0) * 1000)
                 except httpx.HTTPError as e:
                     poll_failures += 1
                     log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
@@ -7859,6 +7897,9 @@ class Orchestrator:
                             ms = _tool_duration_ms(part)
                             if ms is not None:
                                 ev["durationMs"] = ms
+                            _end = ((part.get("state") or {}).get("time") or {}).get("end")
+                            if isinstance(_end, (int, float)):
+                                timing.observe("emit.lag_ms", max(0.0, time.time() * 1000 - _end))
                             yield persist(ev)
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
@@ -7977,7 +8018,9 @@ class Orchestrator:
                     restore_mode()
                     yield from stalled_offer(quiet_for, in_tool=tool_open)
                     return
+                _sleep_t0 = time.monotonic()
                 time.sleep(1.0)
+                timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
 
             if project.last_gateway_error is not None:
                 err = project.last_gateway_error
@@ -8179,7 +8222,8 @@ class Orchestrator:
                 return
 
             yield {"type": "typecheck-start"}
-            report = self._feedback.check(project.app_for_turn().path)
+            with timing.span("typecheck"):
+                report = self._feedback.check(project.app_for_turn().path)
             yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
             if project.stop_requested:
                 yield handle_stop()
@@ -8248,7 +8292,8 @@ class Orchestrator:
                             project.control.pick(project.shim.catalog.plan)
                             escalated_pick = True
                             reason += " with the strong model"
-                        yield {"type": "iterate", "reason": reason}
+                        iterate_reason = reason
+                        yield {"type": "iterate", "reason": iterate_reason}
                         current = IMPLEMENT_NUDGE
                         continue
                     restore_mode()
@@ -8270,7 +8315,8 @@ class Orchestrator:
                         runtime_fixes += 1
                         project.runtime_error = None  # consume so a later turn starts clean
                         first_line = (rt.get("message") or "runtime error").splitlines()[0][:140]
-                        yield {"type": "iterate", "reason": f"app crashed at runtime — fixing ({first_line})"}
+                        iterate_reason = f"app crashed at runtime — fixing ({first_line})"
+                        yield {"type": "iterate", "reason": iterate_reason}
                         current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                         continue
                 # The agent may have copied attached data into src/ — that leaks it into git
@@ -8284,7 +8330,8 @@ class Orchestrator:
                         leak_fixes += 1
                         for name, where in leaks:
                             yield persist({"type": "data-leak", "file": name, "where": where[:3]})
-                        yield {"type": "iterate", "reason": "copied attached data into source — moving it back to data/"}
+                        iterate_reason = "copied attached data into source — moving it back to data/"
+                        yield {"type": "iterate", "reason": iterate_reason}
                         current = LEAK_FIX_NUDGE
                         continue
                 # The agent may have called the LLM Gateway itself rather than through `askModel`,
@@ -8307,7 +8354,8 @@ class Orchestrator:
                         notice = unbound_alias_notice(raw_calls)
                         if notice:
                             yield persist({"type": "gateway-alias-unbound", "message": notice})
-                        yield {"type": "iterate", "reason": "called the LLM Gateway directly — routing it through askModel"}
+                        iterate_reason = "called the LLM Gateway directly — routing it through askModel"
+                        yield {"type": "iterate", "reason": iterate_reason}
                         current = brand.text(
                             GATEWAY_FIX_NUDGE,
                             files=", ".join(n for n, _ in raw_calls),
@@ -8340,7 +8388,8 @@ class Orchestrator:
                     if saved is not None:
                         yield persist(saved)
                 return
-            yield {"type": "iterate", "reason": decision.reason}
+            iterate_reason = decision.reason
+            yield {"type": "iterate", "reason": iterate_reason}
             current = report.as_agent_message()
 
     def approve_stream(self, answers: str = "", plan_edits: str | None = None,
@@ -8366,9 +8415,12 @@ class Orchestrator:
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
         ticket = _TurnTicket(new_id("turn"))
-        yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",
-                                      app=True)
+        timing.start_turn("approve")
+        with timing.span("turn.acquire"):
+            yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",
+                                          app=True)
         if not ticket.granted:
+            timing.finish_turn(decision="not granted")
             return
         try:
             self._turn_gave_up = False
@@ -8400,6 +8452,7 @@ class Orchestrator:
                 self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._release_turn()
+            timing.finish_turn()
 
     def _approve_locked(self, answers: str = "", plan_edits: str | None = None,
                         user_text: str | None = None, plan_id: str = "",
