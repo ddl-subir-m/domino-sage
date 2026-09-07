@@ -15,7 +15,7 @@ window.SW = window.SW || {};
   // creator still has to know, because those failures land on their build.
   const GROUPS = [
     { owner: 'you', title: 'Yours to fix' },
-    { owner: 'admin', title: 'Your administrator’s to fix' },
+    { owner: 'admin', title: "Your administrator's to fix" },
   ];
 
   SW.ProblemsDrawer = function ProblemsDrawer() {

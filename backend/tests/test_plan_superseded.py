@@ -309,7 +309,7 @@ def test_the_superseded_card_stops_offering_a_build_and_says_which_conversation_
 
     assert card["pending"] is False
     assert "Superseded by a newer plan" in card["text"]
-    assert "“The burndown talk” planned this Built App again" in card["text"]
+    assert '"The burndown talk" planned this Built App again' in card["text"]
     assert "Approve & build" not in card["buttons"]
 
 

@@ -85,7 +85,7 @@ window.SW = window.SW || {};
                   type: 'primary',
                   onClick: () => {
                     SW.store.openDock();
-                    antd.message.success(`${resource.name} is in this app`);
+                    antd.message.success(`${resource.name} is now in this app.`);
                   },
                 },
                 'Use this'

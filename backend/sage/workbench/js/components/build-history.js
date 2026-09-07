@@ -84,7 +84,7 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-bh-empty' },
-          h('div', { className: 'sw-empty-title' }, 'Couldn’t read this app’s build log'),
+          h('div', { className: 'sw-empty-title' }, "Couldn't read this app's build log"),
           h(
             'div',
             { className: 'sw-empty-detail' },

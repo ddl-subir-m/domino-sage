@@ -31,7 +31,8 @@ window.SW = window.SW || {};
       close();
     };
 
-    // The way back out, and the reason the button is a toggle rather than a dead `In this chat`.
+    // The way back out, and the reason the button is a toggle rather than a dead
+    // `In this conversation`.
     // The panel row behind this drawer now only MARKS context — a tick and a tooltip — so this is
     // where a reader who wants it gone is sent, and a disabled button would be a dead end at the
     // end of that trip. Same verb as the row's own menu and the chip's ×, so all three read alike
@@ -43,7 +44,7 @@ window.SW = window.SW || {};
 
     // The join, reported when it fails — because nothing else here would report it. The drawer
     // stays open, the alert above still says the resource is not in the project and the button
-    // still reads `Use in this chat`, so a refused join looks exactly like a click that never
+    // still reads `Use in this conversation`, so a refused join looks exactly like a click that never
     // landed. The composer says so about its own @mention for the same reason.
     const useHere = () =>
       SW.store
@@ -157,7 +158,7 @@ window.SW = window.SW || {};
             // Three roles in one sentence: the platform's catalogue and our own name both resolve
             // through the pack, while the Project's name is the user's word and only fills a slot.
             description: SW.brand.text(
-              'Using it in this chat adds it to {scope}, so {assistantName} can reach it '
+              'Using it in this conversation adds it to {scope}, so {assistantName} can reach it '
                 + 'everywhere in the project. You can remove it later.',
               { scope: scope.name },
             ),
@@ -205,7 +206,7 @@ window.SW = window.SW || {};
                   ? mention
                   : useHere,
               },
-              attached ? 'Stop using here' : 'Use in this chat'
+              attached ? 'Stop using here' : 'Use in this conversation'
             )
           ),
       },

@@ -146,8 +146,8 @@ undo: the Resource stays in the Project and is picked again
 On screen a Binding is named by what it does for the app rather than by the word itself: a Resource
 the selected app holds one for reads "Required by <app>", one it does not reads "Not used by <app>",
 and the act that makes one is "Use in <app>". That act is offered on the Built App's own surface and
-nowhere else — never beside "Use in this chat", which puts a Resource in Session context and binds
-nothing. The two are kept apart on purpose: one writes a chip, the other writes a manifest a
+nowhere else — never beside "Use in this conversation", which puts a Resource in Session
+context and binds nothing. The two are kept apart on purpose: one writes a chip, the other writes a manifest a
 published app depends on
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). A Binding may be
 made without a [[Table]] and given one afterwards, as two acts on that same surface. The list of them on a
@@ -487,17 +487,20 @@ _Kind_: word
 _Avoid_: a bare "Remove" (it does not say which of the two), detach or unbind as a label (those
 name the app-scoped pair in code, not on screen), delete, drop, clear
 
-**Use in this chat**:
+**Use in this conversation**:
 Putting a Resource in front of the assistant for this Conversation. It does write: the Resource
 joins the Project's [[Working set]] on the way through, and the answer says so once. Its inverse is
 [[Stop using here]], and one pair of words is used on every surface that offers the act. See
 [ADR-0015](docs/adr/0015-the-conversation-is-not-a-removal-scope.md).
 _Kind_: word
-_Avoid_: "Add to chat", "Mention in this chat", "Add to this conversation", attach, "Use in <app>"
+_Avoid_: "Use in this chat" (one scope, one word — the panel, the mark and the receipt all say
+Conversation), "Add to chat", "Mention in this chat", "Add to this conversation", attach,
+"Use in <app>"
 (that makes a [[Binding]], on the Built App's own surface, and is a different act)
 
 **Stop using here**:
-Taking a Resource back out of this Conversation, the inverse of [[Use in this chat]]. It is not a
+Taking a Resource back out of this Conversation, the inverse of [[Use in this conversation]].
+It is not a
 [[Remove]], and the reason is reversibility rather than silence — stopping discards nothing, the
 Resource stays wherever it lives, and naming it again is the whole way back. See
 [ADR-0015](docs/adr/0015-the-conversation-is-not-a-removal-scope.md).

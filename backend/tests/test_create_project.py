@@ -188,7 +188,7 @@ def test_new_project_is_explained_rather_than_offered_when_it_cannot_work():
     # Says why, not just greyed out. Written as a token since ADR-0026 gave `Project` a noun
     # key, so the sentence a partner reads is theirs; what is pinned here is that the reason
     # is in the picker at all.
-    assert "can’t create a {project}" in picker
+    assert "can't create a {project}" in picker
     assert "canProvision: false," in store
 
 

@@ -685,7 +685,7 @@ function flatten(node, out = [], depth = 0) {
   // through a click, so a walk that could only click would have no way to open the Scope door —
   // whose whole point is that it stays open across several clicks (#142).
   if (typeof props.onOpenChange === 'function') entry.onOpenChange = props.onOpenChange;
-  // The id a row carries, which is what "Use in this chat" POSTs. The app's rows build
+  // The id a row carries, which is what "Use in this conversation" POSTs. The app's rows build
   // theirs rather than being handed one, so whether it is an id the Project answers in is a
   // question that has to be asked of the value itself (#96).
   if (props.resource && props.resource.id) entry.resourceId = props.resource.id;
@@ -1422,7 +1422,7 @@ for (const step of steps) {
       );
     }
     const item = (row.items || []).find((i) => i.label.startsWith('Use in ')
-      && !i.label.startsWith('Use in this chat'));
+      && !i.label.startsWith('Use in this conversation'));
     if (item) await row.onMenu({ key: item.key });
     report.push({
       step: `useIn ${step.useIn}`,

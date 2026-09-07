@@ -1,4 +1,4 @@
-"""`Use in this chat` / `Stop using here` is a Chat-only act (#147, ADR-0023).
+"""`Use in this conversation` / `Stop using here` is a Chat-only act (#147, ADR-0023).
 
 WHAT #147 CHANGED. Both labels write or drop a chip on THIS Conversation
 (`SW.store.addToContext` / `SW.store.removeResourceFromConversation`). Build has no Conversation on
@@ -61,7 +61,7 @@ def test_use_in_this_chat_still_offers_the_act_it_owns():
     rows = _run([{"panel": "thr_many", "select": APP_ID, "mode": "chat"}])[-1]["rows"]
     row = _row(rows, "Claude Sonnet 4")
     assert _keys(row) == ["mention"]
-    assert [i["label"] for i in row["items"]] == ["Use in this chat"]
+    assert [i["label"] for i in row["items"]] == ["Use in this conversation"]
 
 
 @needs_node

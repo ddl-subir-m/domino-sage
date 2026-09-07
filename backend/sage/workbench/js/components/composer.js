@@ -118,17 +118,31 @@ window.SW = window.SW || {};
     // The token the picker INSERTED, not the row's name. `mentionToken` collapses whitespace, so a
     // Resource called "Sales Warehouse" stands in the box as `@Sales_Warehouse` — and a warning that
     // quoted the name would send the reader looking for a word their prompt does not contain.
-    const named = entries
+    const shown = entries
       .filter((e) => offered.has(`${e.kind}:${e.id}`))
-      .map((e) => SW.util.mentionToken({ name: e.name, path: e.kind === 'file' ? e.id : '' }));
+      .map((e) => ({ kind: e.kind,
+        token: SW.util.mentionToken({ name: e.name, path: e.kind === 'file' ? e.id : '' }) }));
+    const aliases = shown.filter((e) => e.kind === 'llm_alias').map((e) => e.token);
+    const named = shown.filter((e) => e.kind !== 'llm_alias').map((e) => e.token);
+    // Named in both halves, because a Project holds many Built Apps (ADR-0008), and every row
+    // carries the same app.
+    const app = entries[0].app;
+    // An Alias is the one kind whose mention is not a failed delivery. A bound Alias is chosen per
+    // call in the prompt (`resources/pinned_model.bound_aliases`), so what one click buys here is a
+    // capability the app keeps — in this build and in the published app — and a sentence about a
+    // message not arriving would describe the smaller half of what is on offer.
+    const them = aliases.length === 1 ? 'it' : 'them';
+    const guardLines = [
+      aliases.length && `${app} can't call ${aliases.join(', ')} yet. Use ${them} in the app and `
+        + `the app can call ${them} — in this feature and after you publish.`,
+      // Future tense and the consequence rather than a rule: for these kinds sending now really
+      // does cost the mention, so that is what is worth knowing.
+      named.length && `Send now and ${named.join(', ')} won't reach ${app}.`,
+    ].filter(Boolean);
     return h(
       'div',
       { className: 'sw-mention-guard' },
-      // Named, because a Project holds many Built Apps (ADR-0008). Future tense and the
-      // consequence rather than a rule: what is worth knowing here is that sending now costs the
-      // mention, and every row carries the same app.
-      h('div', { className: 'sw-mention-guard-text' },
-        `Send now and ${named.join(', ')} won't reach ${entries[0].app}.`),
+      h('div', { className: 'sw-mention-guard-text' }, guardLines.join(' ')),
       h(Space, { size: 8, wrap: true }, fixes.map((fix, i) =>
         h(Button, {
           key: fix.key,
@@ -311,9 +325,9 @@ window.SW = window.SW || {};
     // middle of this question.
     const confirmReset = () => {
       antd.Modal.confirm({
-        title: activeApp ? `Reset “${activeApp.name}” to the starter template?`
+        title: activeApp ? `Reset "${activeApp.name}" to the starter template?`
           : 'Reset this app to the starter template?',
-        content: 'The code built in this app is removed and can’t be recovered. Your attached files, '
+        content: "The code built in this app is removed and can't be recovered. Your attached files, "
           + `Resources, and this conversation stay${apps.length > 1 ? ', as do your other apps' : ''}.`,
         okText: 'Reset app',
         okButtonProps: { danger: true },
@@ -666,7 +680,7 @@ window.SW = window.SW || {};
                     : null,
                   caption ? h('span', { className: 'sw-caption' }, caption) : null,
                   attachedIds.has(resource.id)
-                    ? h('span', { className: 'sw-incontext-tag' }, 'in context')
+                    ? h('span', { className: 'sw-incontext-tag' }, 'in this conversation')
                     // The menu has ONE heading and it describes the first row only. A catalogue
                     // row sits last, so whenever anything is above it that heading reads
                     // `In {project}` — the exact opposite of true for this row. It says so

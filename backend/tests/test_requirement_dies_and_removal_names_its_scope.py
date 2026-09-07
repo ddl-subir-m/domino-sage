@@ -100,7 +100,7 @@ def test_dropping_a_chip_no_app_is_bound_to_still_names_the_project():
     constant. `dataset:desks` is in nobody's Bindings, so the app is not mentioned."""
     step = _run([{"dropChip": "ctx_dataset", "thread": "thr_many", "select": "app_a"}])[-1]
     said = " ".join(step["said"])
-    assert "Desk margins is out of context" in said
+    assert "Desk margins is out of this conversation" in said
     assert "still needs" not in said
 
 
@@ -111,7 +111,7 @@ def test_the_sentence_follows_the_selected_app_not_the_project():
     Alias only, so it does not need the Data Source `app_a` does."""
     step = _run([{"dropChip": "ctx_source", "thread": "thr_many", "select": "app_c"}])[-1]
     said = " ".join(step["said"])
-    assert "Market data EOD is out of context" in said
+    assert "Market data EOD is out of this conversation" in said
     assert "still needs" not in said
 
 

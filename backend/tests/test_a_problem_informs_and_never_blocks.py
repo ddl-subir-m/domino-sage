@@ -148,7 +148,7 @@ def test_the_drawer_groups_by_who_owns_the_remedy():
     on is the one they meet."""
     (lit,) = _run([{"problems": BOTH}])
     groups = lit["drawer"]["groups"]
-    assert [g["title"] for g in groups] == ["Yours to fix", "Your administrator’s to fix"]
+    assert [g["title"] for g in groups] == ["Yours to fix", "Your administrator's to fix"]
     assert groups[0]["said"] == [MINE["message"], MINE["fix"]]
     assert groups[1]["said"] == [THEIRS["message"], THEIRS["fix"]]
 
@@ -156,7 +156,7 @@ def test_the_drawer_groups_by_who_owns_the_remedy():
 def test_a_group_with_nothing_in_it_is_not_drawn():
     """"Yours to fix — none" is a heading that promises a reader something to read."""
     (admin_only,) = _run([{"problems": [THEIRS]}])
-    assert [g["title"] for g in admin_only["drawer"]["groups"]] == ["Your administrator’s to fix"]
+    assert [g["title"] for g in admin_only["drawer"]["groups"]] == ["Your administrator's to fix"]
 
 
 def test_the_platforms_own_words_stay_inside_the_quotation():

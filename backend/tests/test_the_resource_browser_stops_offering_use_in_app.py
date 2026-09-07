@@ -7,7 +7,7 @@ in which a Resource had no door at all. This ticket closes the window. `use-in-a
 `js/components/resource-panel.js`, and the rail keeps only the acts whose scopes it owns or points
 at.
 
-WHY THE ACT HAD TO MOVE, and not merely be re-labelled. `Use in this chat` writes a chip on one
+WHY THE ACT HAD TO MOVE, and not merely be re-labelled. `Use in this conversation` writes a chip on one
 Conversation. `Use in {app}` writes a committed manifest that publish reads
 ([ADR-0010](../../docs/adr/0010-publish-reads-the-declaration-not-the-code.md)) and that a deployed
 app depends on weeks after the Conversation is dead. ADR-0011 already made both labels name their
@@ -130,7 +130,7 @@ def test_the_row_offers_no_menu_in_build_since_the_conversations_act_moved_to_ch
     that shared the menu with it.
 
     `mention` used to be that act regardless of mode — this file's own name for it, before #147
-    mode-gated `Use in this chat` to the surface with a Conversation to put it in
+    mode-gated `Use in this conversation` to the surface with a Conversation to put it in
     (`test_use_in_this_chat_is_a_chat_only_act.py`). In Build the menu is empty now, and that is
     correct rather than a second door lost: #147 did not reopen anything this ticket closed."""
     row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"], "Claude Sonnet 4")
@@ -143,7 +143,7 @@ def test_the_row_offers_no_menu_in_build_since_the_conversations_act_moved_to_ch
 
 @needs_node
 def test_a_resource_this_conversations_uses_offers_no_way_back_out_in_build():
-    """The other half of the pair ADR-0015 named. `Stop using here` shared `Use in this chat`'s menu
+    """The other half of the pair ADR-0015 named. `Stop using here` shared `Use in this conversation`'s menu
     slot and its mode gate came with it (#147): both are acts on the Conversation, and Build has none
     to act on. The Chat-mode half of this pair is `test_use_in_this_chat_is_a_chat_only_act.py`."""
     row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"], "Market data EOD")
@@ -173,7 +173,7 @@ def test_chat_is_unchanged_because_it_never_had_the_act():
                    for r in step["rows"] for i in r.get("items") or [])
     assert not any("Not used by" in t for r in step["rows"] for t in r["texts"])
     row = _row(step["rows"], "Claude Sonnet 4")
-    assert any(i["label"] == "Use in this chat" for i in row["items"])
+    assert any(i["label"] == "Use in this conversation" for i in row["items"])
 
 
 # ---- the act still exists, one surface over ------------------------------------------------------

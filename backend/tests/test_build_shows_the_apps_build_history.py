@@ -323,7 +323,7 @@ def test_a_failed_read_says_so_instead_of_claiming_the_app_has_no_builds():
     one would be false."""
     step = _run([{"history": "thr_many", "select": "app_a", "readFails": True}])[-1]
     said = " ".join(step["drawer"]["words"])
-    assert "Couldn’t read this app’s build log" in said
+    assert "Couldn't read this app's build log" in said
     assert "No builds of Desk dashboard yet" not in said
     assert step["drawer"]["runs"] == 0
 

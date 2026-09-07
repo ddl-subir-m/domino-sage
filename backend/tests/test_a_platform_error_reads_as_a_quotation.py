@@ -65,14 +65,14 @@ def test_the_platform_keeps_its_own_words():
 
 def test_sages_sentence_stays_outside_the_quotation():
     nodes = _render("PlatformError", {
-        "reason": "Acme couldn’t create the project.",
+        "reason": "Acme couldn't create the project.",
         "body": UPSTREAM,
         "fix": "Try again, then check your permissions in Acme Cloud.",
     })
     quoted = [n for n in nodes if n["className"] == "sw-passthrough"]
     assert len(quoted) == 1
     ours = " ".join(n["text"] for n in nodes if n["tag"] != "pre")
-    assert "Acme couldn’t create the project." in ours  # the reason
+    assert "Acme couldn't create the project." in ours  # the reason
     assert "check your permissions in Acme Cloud." in ours  # the resolution step
     assert UPSTREAM not in ours
 
@@ -80,7 +80,7 @@ def test_sages_sentence_stays_outside_the_quotation():
 def test_nothing_is_quoted_when_the_platform_said_nothing():
     """An empty quotation is a box that means the platform was silent when it was not asked."""
     for empty in ("", None):
-        nodes = _render("PlatformError", {"reason": "Acme couldn’t list them.", "body": empty})
+        nodes = _render("PlatformError", {"reason": "Acme couldn't list them.", "body": empty})
         assert not [n for n in nodes if n["className"] == "sw-passthrough"]
         assert not [n for n in nodes if n["tag"] == "pre"]
 
@@ -111,10 +111,10 @@ def test_every_surface_that_draws_a_platform_error_inline_uses_the_one_treatment
 
 def test_the_copy_around_the_quotation_comes_from_the_pack():
     """Sage's half re-brands even though the platform's half must not."""
-    assert "Sage couldn’t list the Built Apps" not in GALLERY
+    assert "Sage couldn't list the Built Apps" not in GALLERY
     assert "SW.brand.text(" in GALLERY
     assert "Could not list files." not in TREE
     assert "Could not look inside this Data Source." not in TREE
     # The door loads no shell JS, so it reads the pack it already fetches for its logo and colours.
-    assert "'Sage couldn’t open your workspace'" not in DOOR
+    assert "'Sage couldn't open your workspace'" not in DOOR
     assert "pack.assistantName" in DOOR

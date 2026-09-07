@@ -265,7 +265,7 @@ def test_a_failed_row_read_says_so_and_offers_the_way_back():
     step = _run({"block": {"type": "sandbox_run", "label": "Ran bash", "detailRow": 7, "code": ""},
                  "open": True, "rowFails": True})
 
-    assert "Couldn’t read what this ran." in step["words"]
+    assert "Couldn't read what this ran." in step["words"]
     assert "Try again" in step["words"]
     assert step["code"] is None
 

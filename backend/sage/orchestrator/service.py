@@ -4925,7 +4925,9 @@ class Orchestrator:
             lines.append(f"Couldn't use {named(others)} — not attached to this app. "
                          "Attach it in the Data panel, then ask again.")
         if unbound:
-            shown = ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in unbound)
+            def shown(rows: list[dict]) -> str:
+                return ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in rows)
+
             # The act, spelled the way the door spells it. The sentence this replaces sent people to
             # the Resources panel for a control that was not there (#127) and called it "connecting",
             # a word `CONTEXT.md` bans for exactly the confusion it caused here. The panel then grew
@@ -4936,8 +4938,18 @@ class Orchestrator:
             # ships", in the Build header — which is the shape every other pointer in this product
             # takes (`modes/builder.js`, and the receipt in `store.bindToApp`). A direction on the
             # screen would be a second thing to keep in step with a layout.
-            lines.append(f"Couldn't use {shown} — {where} doesn't use it yet. "
-                         f"Choose Use in {where} in the list of what it ships, then ask again.")
+            #
+            # An Alias is split off because its refusal is not a failed delivery: a bound Alias is
+            # chosen per call in the prompt (`resources.pinned_model.bound_aliases`), so the gap is
+            # a capability the app does not have yet. Same destination, same act — the first clause
+            # matches the composer's warning word for word, which is the point of the pair (#136).
+            aliases = [r for r in unbound if str(r.get("kind") or "") == KIND_LLM_ALIAS]
+            rest = [r for r in unbound if str(r.get("kind") or "") != KIND_LLM_ALIAS]
+            act = f"Choose Use in {where} in the list of what it ships, then ask again."
+            if aliases:
+                lines.append(f"{where} can't call {shown(aliases)} yet. {act}")
+            if rest:
+                lines.append(f"Couldn't use {shown(rest)} — {where} doesn't use it yet. {act}")
             # One row per Resource, not per mention. "@Warehouse and @FCT_USAGE_DAILY" names one
             # Data Source at one table, and two identical buttons would offer the same bind twice.
             seen: set[tuple[str, str]] = set()

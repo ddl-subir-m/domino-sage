@@ -112,7 +112,11 @@ def test_the_sentence_names_the_app_and_only_what_a_button_below_it_can_close():
     name something no act on it can fix."""
     assert "const offered = new Set(fixes.map((fix) => fix.key));" in UI
     assert ".filter((e) => offered.has(`${e.kind}:${e.id}`))" in UI
-    assert "`Send now and ${named.join(', ')} won't reach ${entries[0].app}.`" in UI
+    assert "`Send now and ${named.join(', ')} won't reach ${app}.`" in UI
+    # An Alias is not a failed delivery, so it gets the other half of the sentence — the capability
+    # a click buys, in the same words the server's refusal uses (#136).
+    assert "`${app} can't call ${aliases.join(', ')} yet." in UI
+    assert "const aliases = shown.filter((e) => e.kind === 'llm_alias')" in UI
 
 
 def test_the_acts_are_the_store_s_and_the_chip_writes_no_second_copy():
