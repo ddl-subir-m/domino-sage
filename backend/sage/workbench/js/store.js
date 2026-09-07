@@ -1282,6 +1282,11 @@ window.SW = window.SW || {};
     // the request, and this turn did exactly what it was designed to do — a red "Stopped — no app
     // described" under a question reads as a failure the person has to go and fix.
     'no app described': true,
+    // The two candidate cards (#183, #185). Same reason again, and the cards say it loudest: each
+    // one is a list of buttons asking the person to choose, and a red "Stopped —" line under it
+    // reads as the app having broken rather than as a question waiting for an answer.
+    'table candidates': true,
+    'data source candidates': true,
   };
 
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
@@ -1646,6 +1651,22 @@ window.SW = window.SW || {};
           allGroups: ev.allGroups || [],
           total: ev.total || 0,
           matched: ev.matched || 0,
+          live: !!ev.live,
+        });
+      } else if (ev.type === 'source-candidates' && ev.message) {
+        // The Data Sources a caller can reach, for the click that records one (#185). Same `live`
+        // rule as the card below it, and the same reason: a replayed card would record a Binding
+        // and start a build out of a message somebody is only reading back.
+        ensureAssistant().blocks.push({
+          type: 'source_candidates',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          // Empty is a state and not a missing field: it is the caller the platform offers
+          // nothing, and the card says so in words rather than drawing an empty row of buttons.
+          sources: ev.sources || [],
+          // How many of them the request named. Zero is the card that recommends nothing.
+          named: ev.named || 0,
+          answered: ev.answered || {},
           live: !!ev.live,
         });
       } else if (ev.type === 'build-stalled' && ev.message) {
@@ -2195,7 +2216,7 @@ window.SW = window.SW || {};
     // six weeks ago has probably been closed since.
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
         || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'
-        || ev.type === 'table-candidates') ev.live = true;
+        || ev.type === 'table-candidates' || ev.type === 'source-candidates') ev.live = true;
     appendBuildRow(ev);
   }
 
@@ -4299,14 +4320,19 @@ window.SW = window.SW || {};
     // holds it in line on this request's own connection, so this promise stays alive for as long as
     // the wait plus the turn — and a tab can have several of them at once.
     async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false,
-                                  skipTableGate = false } = {}) {
+                                  skipTableGate = false, skipSourceGate = false,
+                                  chosenSource = '', sourceName = '' } = {}) {
       if (!text.trim()) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
       // Echo what the server will write to the transcript, so live and reloaded read the same. For a
       // click that is the click, not the request — the request is already a bubble above the offer,
       // and repeating it would say the user asked twice (see build_stream's `user_text`).
-      const bubble = skipResetGate || skipIncomingGate || skipTableGate ? 'Build it.' : text;
+      // A Data Source pick is a click too, but not that one: what it answered was which store,
+      // so the bubble says which store. Written the same both ends (see _picked_source_text).
+      const bubble = sourceName ? `Use ${sourceName}.`
+        : ((skipResetGate || skipIncomingGate || skipTableGate || skipSourceGate)
+          ? 'Build it.' : text);
       // The app this turn is for. Switching Built App mid-build is allowed and the build carries on
       // server-side (#77), so the events below have to be checked against this before they are
       // appended — otherwise one app's build writes itself into another app's transcript. The
@@ -4338,7 +4364,7 @@ window.SW = window.SW || {};
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: text, conversation: state.thread.id,
-            skipResetGate, skipIncomingGate, skipTableGate,
+            skipResetGate, skipIncomingGate, skipTableGate, skipSourceGate, chosenSource,
             mentions: refs.mentions, resources: refs.resources,
           }),
         });
@@ -4441,6 +4467,34 @@ window.SW = window.SW || {};
       await SW.api.confirmTableCandidate(sourceId, scope);
       await Promise.all([refreshBindings(), store.loadBuild({ keepPreview: true })]);
       return store.sendBuildPrompt(prompt, { ...(answered || {}), skipTableGate: true });
+    },
+
+    // The answer to a Data Source card (#185): the click records the Binding, then the request the
+    // person already made is sent again — and walks into the table search against the store they
+    // just named, which is the point of asking. `chosenSource` carries that store, because the
+    // pick is the answer: somebody who clicked one row under a prompt naming another chose the row.
+    //
+    // Two calls for the reason the table card's click is two: the record stands whether or not the
+    // turn after it succeeds, and that turn takes the turn lock like any other. Reloading the
+    // transcript is what retires the card, so it cannot be answered twice.
+    async chooseSourceAndSearch(prompt, sourceId, sourceName, answered) {
+      await SW.api.bind('data_source', sourceId);
+      await Promise.all([refreshBindings(), store.loadBuild({ keepPreview: true })]);
+      return store.sendBuildPrompt(prompt, {
+        ...(answered || {}), chosenSource: sourceId, sourceName,
+      });
+    },
+
+    // The other button: this request was never about a store. Nothing is recorded, and the gate is
+    // answered rather than skipped — without it the same words meet the same card, forever.
+    //
+    // It carries `answered` for the same reason the pick above it does, and the cost of forgetting
+    // is worse here: "start over and build a dashboard from Snowflake" answers the reset offer,
+    // reaches this card, and a replay without `skipResetGate` offers to throw the app away again —
+    // then answering THAT loses `skipSourceGate`, and the two cards trade the turn back and forth.
+    async buildWithoutSource(prompt, answered) {
+      await store.loadBuild({ keepPreview: true });
+      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipSourceGate: true });
     },
 
     async buildWithIncoming(prompt) {

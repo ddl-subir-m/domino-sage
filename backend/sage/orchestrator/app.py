@@ -2151,6 +2151,12 @@ def build_stream(body: dict) -> StreamingResponse:
     # Set by the click on a table candidate (#183), which is that card being answered: the record is
     # written by then, and this is the original request being replayed against it as a new turn.
     skip_table_gate = bool((body or {}).get("skipTableGate"))
+    # The other button on a Data Source card (#185): build with no store at all. Its own field
+    # rather than `skipTableGate`, because they answer two different questions — and the pick
+    # beside it sets neither, since a recorded Data Source is what stops the card coming back.
+    skip_source_gate = bool((body or {}).get("skipSourceGate"))
+    # And the pick itself, which the table search runs against whatever the prose named.
+    chosen_source = str((body or {}).get("chosenSource") or "")
 
     def refuse_with(message: str) -> StreamingResponse:
         def refuse():
@@ -2171,7 +2177,8 @@ def build_stream(body: dict) -> StreamingResponse:
 
     return StreamingResponse(
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
-                                            skip_reset_gate, skip_incoming_gate, skip_table_gate),
+                                            skip_reset_gate, skip_incoming_gate, skip_table_gate,
+                                            skip_source_gate, chosen_source),
                   "build_stream"),
         media_type="text/event-stream")
 

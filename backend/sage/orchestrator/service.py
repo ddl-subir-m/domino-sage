@@ -4853,7 +4853,8 @@ class Orchestrator:
     def build_stream(self, prompt: str, mentions: list[str] | None = None,
                      resources: list[dict] | None = None, conversation: str | None = None,
                      skip_reset_gate: bool = False, skip_incoming_gate: bool = False,
-                     skip_table_gate: bool = False):
+                     skip_table_gate: bool = False, skip_source_gate: bool = False,
+                     chosen_source: str = ""):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
@@ -4872,7 +4873,13 @@ class Orchestrator:
         answers that offer as much as building past it does. `skip_table_gate` says a candidate on a
         table card was clicked and the record is already written (see _table_offer), which is why
         this arrives as a whole new turn taking the lock again rather than as a paused one resuming:
-        the turn that offered the card ended when it offered it."""
+        the turn that offered the card ended when it offered it.
+
+        The two fields under that belong to the card before it (#185). `chosen_source` is the Data
+        Source somebody picked when the app recorded none, and it is the answer this turn is built
+        on rather than a hint: it is what the table search below runs against, whatever the prose
+        says. `skip_source_gate` is the other button on that card — build without a store at all —
+        and it is the only thing that says a request naming a warehouse was never about one."""
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = _TurnTicket(new_id("turn"))
@@ -4952,12 +4959,31 @@ class Orchestrator:
             # writes the record, so this would not fire again for the Data Source it was about; what
             # it stops is a SECOND unscoped Data Source turning the build that click just bought
             # into another question.
+            answered = {
+                "skipResetGate": skip_reset_gate,
+                "skipIncomingGate": skip_incoming_gate,
+                "skipSourceGate": skip_source_gate,
+            }
+            # And before that one, the question it assumes an answer to: which Data Source (#185).
+            # It fires only where the app records no Data Source at all — a Project with one bound
+            # is a Project whose creator has already answered this — and it costs one platform
+            # listing on those turns, paid before the words are read because the strongest thing a
+            # request can name is a store's own name, and only the listing knows those. That is a
+            # round trip on a turn that will spend thirty seconds in the agent, and it buys the
+            # person whose warehouse is called `reporting-replica` the same answer as the person
+            # whose warehouse is called a warehouse.
+            if not skip_source_gate:
+                with timing.span("gate.source"):
+                    offer = self._source_offer(prompt, resources, answered)
+                if offer is not None:
+                    yield from offer
+                    return
+            # The bubble a Data Source pick writes, which the card below writes for the person
+            # rather than echoing their request a second time (see _table_candidates_events).
+            picked = self._picked_source_text(chosen_source) if chosen_source else ""
             if not skip_table_gate:
                 with timing.span("gate.table"):
-                    offer = self._table_offer(prompt, resources, {
-                        "skipResetGate": skip_reset_gate,
-                        "skipIncomingGate": skip_incoming_gate,
-                    })
+                    offer = self._table_offer(prompt, resources, answered, chosen_source, picked)
                 if offer is not None:
                     yield from offer
                     return
@@ -4968,8 +4994,11 @@ class Orchestrator:
             # above it as an `app-reset` marker.
             yield from self._build_stream(
                 prompt, mentions, resources,
-                user_text=("Build it." if skip_reset_gate or skip_incoming_gate or skip_table_gate
-                           else None))
+                # The pick wins over the three skip flags, which it can arrive carrying: a turn
+                # started by choosing a Data Source says which one, whatever gate the turn before
+                # it had also answered.
+                user_text=(picked or ("Build it." if skip_reset_gate or skip_incoming_gate
+                                      or skip_table_gate or skip_source_gate else None)))
         except TurnWedged:
             # Swallowed, not re-reported: the turn already said what happened in its own stream, and
             # a traceback on top of it would only be a second, worse version of the same sentence.
@@ -6961,7 +6990,96 @@ class Orchestrator:
             if ev["type"] != "user":
                 yield ev
 
-    def _table_offer(self, prompt: str, resources: list[dict] | None, answered: dict):
+    def _source_offer(self, prompt: str, resources: list[dict] | None, answered: dict):
+        """Events for a request that wants a store when the app records none (#185), or None.
+
+        The question before #183's question, and the one that made its answer unreachable: a person
+        whose app has no Data Source at all asks for a dashboard of their warehouse, and a table
+        search has nothing to search. So Sage lists what the platform says this caller can reach and
+        asks which one. The click records the Binding through the writer the panel's own row writes
+        through, and the turn it replays walks into the table search against the store just named.
+
+        TWO CONFIRMATIONS, and the second is not folded into the first for a caller who owns exactly
+        one Data Source. Using the only one silently is the same inference through a side door
+        (ADR-0038), and it would change behaviour under them the day a second one appears.
+
+        Returns None — and the turn goes on exactly as it did — where the app already records a
+        Data Source, where the request was never about a store, or where the platform will not say
+        what this caller can reach. The last one is a fall-through rather than a sentence: a listing
+        that failed is not evidence the person has nothing, and refusing a build over it would take
+        an outage in Domino out on somebody building an app that reads no store at all.
+        """
+        project = self.project()
+        if any(b.kind == KIND_DATA_SOURCE
+               for b in parse_bindings(project.workspace.read_bindings())):
+            return None
+        try:
+            offered = self.list_data_sources()
+        except Exception:
+            log.exception("data source offer: could not list what the caller can reach")
+            return None
+        offer = table_search.offer_sources(
+            prompt,
+            [str(r.get("id") or "") for r in (resources or [])
+             if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE],
+            offered,
+        )
+        if offer is None:
+            return None
+        return self._source_candidates_events(prompt, offer, answered)
+
+    def _source_candidates_events(self, prompt: str, offer: table_search.Offer, answered: dict):
+        """The card: which stores there are, or the plain sentence that there are none."""
+        project = self.project()
+        if offer.sources:
+            message = brand.text(
+                "Which {dataSource} holds this? The click records it on this {builtApp}, and then "
+                "{assistantName} looks inside it for the {scope} this request needs.")
+        else:
+            # Said rather than discovered halfway through a build. The failure this replaces is the
+            # assistant meeting a request about a warehouse, finding no store, and building a
+            # dashboard on rows it invented — which looks finished and is worthless.
+            message = brand.text(
+                "{platformName} offers you no {dataSourcePlural}, so {assistantName} has nothing "
+                "to read this from. Add one in {platformName} and it will be here to pick, or "
+                "build without one and this {builtApp} holds its own data.")
+        events = ({"type": "user", "text": prompt},
+                  # The prompt rides along so the click replays the request rather than asking the
+                  # person to type it again, and `answered` carries the gates this turn was already
+                  # past — both for the reasons the table card carries them (see #183).
+                  {"type": "source-candidates", "prompt": prompt, "message": message,
+                   "answered": answered,
+                   # How many of these the request actually named, which is what says whether the
+                   # first row is an answer or only the first row. Nothing named means no row is
+                   # drawn as the recommended one — a filled button is a recommendation, and this
+                   # is the one place where Sage has no evidence to make one.
+                   "named": offer.named,
+                   "sources": [{"id": s.get("id"), "name": s.get("name"),
+                                "connector": s.get("connector")} for s in offer.sources]},
+                  {"type": "done", "ok": False, "decision": "data source candidates"})
+        for ev in events:
+            project.workspace.append_history(ev, project.build_conversation)
+            if ev["type"] != "user":
+                yield ev
+
+    def _picked_source_text(self, source_id: str) -> str:
+        """The bubble a Data Source pick writes, so the click reads as a click (#185).
+
+        Read off the record the click just wrote rather than the live listing: the name on the card
+        came out of that listing seconds ago, and asking Domino again here would be a network hop
+        to answer a question the manifest already answers.
+
+        Empty where no record answers to that id, which is the same fact `_table_offer` reads when
+        it falls back to the prose: the pick did not take. The turn then says what it would have
+        said with no pick at all, which is the request being built — a bubble naming a store this
+        app does not depend on would be the only thing on the screen claiming the click worked.
+        """
+        binding = next((b for b in parse_bindings(self.project().workspace.read_bindings())
+                        if b.kind == KIND_DATA_SOURCE and b.id == source_id), None)
+        return f"Use {binding.display_name}." if binding else ""
+
+    def _table_offer(self, prompt: str, resources: list[dict] | None, answered: dict,
+                     chosen: str = "", user_text: str = ""):
         """Events for a request that names a Data Source with no table chosen (#183), or None.
 
         The refusal this replaces was correct and useless. `bound_schema` told the assistant it
@@ -6982,14 +7100,24 @@ class Orchestrator:
         say what it holds, or it holds nothing to offer. Falling through means the assistant meets
         the unscoped section and asks, which is a worse answer than the card and a better one than a
         card with nothing on it.
+
+        `chosen` is the Data Source somebody just picked off the card before this one (#185), and
+        it is taken rather than matched: a person who clicked `reporting-replica` under a request
+        that said "from Snowflake" has answered the question, and prose overruling them would be
+        this code choosing after all. It is still read out of the manifest, so a pick whose record
+        never landed falls back to the prose rather than searching a store nothing depends on.
         """
         project = self.project()
-        binding = table_search.named_source(
-            prompt,
-            [str(r.get("id") or "") for r in (resources or [])
-             if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE],
-            parse_bindings(project.workspace.read_bindings()),
-        )
+        bindings = parse_bindings(project.workspace.read_bindings())
+        binding = next((b for b in bindings if b.kind == KIND_DATA_SOURCE
+                        and b.id == chosen and not b.table), None) if chosen else None
+        if binding is None:
+            binding = table_search.named_source(
+                prompt,
+                [str(r.get("id") or "") for r in (resources or [])
+                 if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE],
+                bindings,
+            )
         if binding is None:
             return None
         try:
@@ -7011,10 +7139,11 @@ class Orchestrator:
         if not found:
             return None
         ranking = table_search.rank(prompt, binding, found)
-        return self._table_candidates_events(prompt, binding, ranking, answered)
+        return self._table_candidates_events(prompt, binding, ranking, answered, user_text)
 
     def _table_candidates_events(self, prompt: str, binding: Binding,
-                                 ranking: table_search.Ranking, answered: dict):
+                                 ranking: table_search.Ranking, answered: dict,
+                                 user_text: str = ""):
         """The card itself: what matched, what else there is, and the request to replay after."""
         project = self.project()
         name = binding.display_name
@@ -7032,7 +7161,10 @@ class Orchestrator:
                 "guess one. Pick the {scope} this {builtApp} should read, or say more about the "
                 "data you mean.", name=name)
         shortlist = ranking.candidates[:table_search.SHORTLIST]
-        events = ({"type": "user", "text": prompt},
+        # `user_text` is set when this card follows a Data Source pick (#185), and then it is the
+        # pick that goes on the transcript: the request is already a bubble above the card that was
+        # clicked, and writing it again would say the person asked for the same thing twice.
+        events = ({"type": "user", "text": user_text or prompt},
                   # The prompt rides along so the click can replay the request rather than making
                   # the person type it again. `groups` is the shortlist and `allGroups` every table
                   # there is: a bad ranking has to cost a scroll and never be a dead end, and with
