@@ -675,6 +675,20 @@ class ResourceStillBound(Exception):
         super().__init__(f"{', '.join(holders)} {needs} {name}")
 
 
+class StoreWentQuiet(ResourceUnavailable):
+    """The store was asked what databases it holds and did not answer.
+
+    Its own type because the table search has to tell it from the refusals that share this class,
+    and the two get opposite treatment. A refusal — a connector with no database-wide statement,
+    or a source holding more databases than one search walks — is Sage deciding, settled by
+    counting rather than by anything failing, and it stays SILENT on purpose: nothing was read, so
+    a "reading it now" that has to be taken back would be a lie about the store (#186).
+
+    This is the store failing, and silence there is what let a live build ship a Gong dashboard
+    with four invented metric cards and no account of why nothing was ever searched.
+    """
+
+
 class ResourceNotBound(Exception):
     """The app records no Binding for this Resource, so there is no Scope on it to set (#142).
 
@@ -7501,11 +7515,17 @@ class Orchestrator:
                 # against 3.84s a database, which is why the frame below still lands first in
                 # anything a person would notice.
                 databases = self._databases_to_walk(source, binding)
+        except StoreWentQuiet as e:
+            log.info("table search: %s stopped answering — %s", binding.display_name, e)
+            yield from self._table_search_gave_up(binding)
+            return False
         except (LookupError, ResourceUnavailable) as e:
+            # The refusals, which stay silent: nothing was read, so there is nothing to take back.
             log.info("table search: %s could not be walked — %s", binding.display_name, e)
             return False
         except Exception:
             log.exception("table search: could not walk %s", binding.display_name)
+            yield from self._table_search_gave_up(binding)
             return False
         # Before the first query, not after it: the first database IS the wait this is about.
         yield self._table_search_frame(binding, ())
@@ -7642,6 +7662,32 @@ class Orchestrator:
                                       name=binding.display_name),
                 "groups": table_search.grouped(candidates[:table_search.SHORTLIST]),
                 "total": len(candidates)}
+
+    def _table_search_gave_up(self, binding: Binding):
+        """Say a walk died before it could ask anything, instead of going quiet.
+
+        THE ONE SILENT PATH, and the one a live failure came in through. Every walk that dies after
+        the first query already reports — it takes its own card back carrying a message, because
+        "names appearing and then vanishing with no account of why" was judged worse than never
+        showing them. A walk that dies BEFORE the first query said nothing at all: it returned False
+        on a log line, and the turn fell through to the build as if the store had never been asked.
+
+        What the person got was a Gong dashboard with four invented metric cards and no indication
+        that anything had been attempted. The build is still the right thing to fall through to — a
+        store that will not answer cannot be put on a card, and that is settled (#183). Being
+        invisible while doing it is not.
+
+        The same two frames the post-query failure sends, in the same order, so nothing rendering
+        this has to learn a third shape. The reason itself stays in the log: `ResourceUnavailable`
+        carries a sentence written to be read, but `LookupError` and the bare `Exception` below it
+        do not, and one of three messages being an internal string is how a person ends up chasing
+        a fault in their warehouse that is really a fault in here.
+        """
+        yield self._table_search_frame(binding, ())
+        yield {"type": "table-search-ended", "sourceId": binding.id,
+               "message": brand.text(
+                   "{assistantName} could not read what {name} holds, so it has no {scopePlural} "
+                   "to offer for this request.", name=binding.display_name)}
 
     def _shortlist_columns(self, source: DataSource, shortlist: Sequence[Candidate],
                            budget: float) -> dict[Candidate, list[str]]:
@@ -8063,7 +8109,13 @@ class Orchestrator:
         if binding.database:
             return [binding.database]
         if source.id not in self._source_databases:
-            self._source_databases[source.id] = self._resources.list_databases(source)
+            # Marked as the store failing rather than left to share a class with the refusal
+            # below it. Both end this walk, and only one of them is worth interrupting a person
+            # for: the refusal is an answer, this is the absence of one.
+            try:
+                self._source_databases[source.id] = self._resources.list_databases(source)
+            except (LookupError, ResourceUnavailable) as e:
+                raise StoreWentQuiet(str(e)) from e
         # Not the raw list: a two-level store keys on the empty string the way the cascade passes
         # it, a three-level store that lists nothing has nothing to walk, and the engine's own
         # catalogs are not candidates. `walkable_databases` draws all three, because all three are
@@ -13685,13 +13737,23 @@ class Orchestrator:
         # refused or clicked past, and every one of those paths ends here — so the block says the
         # one thing that keeps failing open from meaning failing silently. One line, because it is
         # a sentence about a declaration and not a listing of what the Dataset holds (ADR-0020).
+        # The two extra clauses below are borrowed from a live Data Source failure, not guessed at.
+        # "Do not invent rows" alone was read as "do not CLAIM they are real", and satisfied by
+        # captioning four fabricated metric cards "Example layout only"; and nothing forbade drawing
+        # the button that would close the gap, so an app shipped one with nothing behind it. A
+        # Dataset holding no files is worse placed than that Data Source was: it IS an empty
+        # collection, so the template's empty-state rule asks for a button on its own terms, and
+        # until now nothing here disagreed with it.
         unreadable = self._datasets_with_nothing_attached(project)
         if unreadable:
             lines += [""] if lines else ["## Attached data", ""]
             lines += [brand.text(
                 "- This app records the {dataset} **{name}** and has no files attached from it, so "
-                "the app cannot read it. Do not invent rows for it — say that nothing is attached "
-                "from that {dataset}.",
+                "the app cannot read it. Do not invent rows for it, and do not stand in sample, "
+                "placeholder or example rows instead — the caption saying so is small and the "
+                "chart above it is not. Say that nothing is attached from that {dataset}. Do not "
+                "render a button offering to attach them either: attaching happens in "
+                "{assistantName}, so a control here has nothing to call.",
                 name=name,
             ) for name in unreadable]
         block = (f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}") \

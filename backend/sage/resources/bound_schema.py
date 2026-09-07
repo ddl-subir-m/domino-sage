@@ -362,6 +362,12 @@ def _unscoped_section(inside: Inside | None) -> list[str]:
     further: the agent has no route to the store from here, and inviting it to find one is how a
     build ends up with a screen full of rows nobody read (#15's original failure, again).
 
+    IT NAMES SAGE, NOT THIS APP, as where the choosing happens. It used to say "on this Built App's
+    own surface" and mean the panel beside it; the agent reading it is the one writing that app, so
+    its own surface is the page in front of it. Live, one built the picker there — a "Choose a Gong
+    table" button on a dashboard, with nothing to call. ADR-0021 puts each scope's door on the
+    surface that owns it, and this sentence was quietly arguing the other way.
+
     WHAT IT NO LONGER SAYS is "and you cannot choose one" (#183). That sentence was true and it was
     a dead end — it told the agent the request could not be answered and left the person holding
     their own question back. Sage searches the store itself now, before this prompt is ever written,
@@ -402,15 +408,28 @@ def _unscoped_section(inside: Inside | None) -> list[str]:
         ]
     lines += [
         brand.text("- **You cannot query it until a {scope} is chosen, and choosing one is the "
-                   "person's act, not yours** — you have no tool that picks one. They do: on this "
-                   "{builtApp}'s own surface, and often on the request itself, where naming this "
-                   "{dataSource} makes {assistantName} search it and offer them candidates."),
+                   "person's act, not yours** — you have no tool that picks one. They do, in "
+                   "{assistantName}: on the panel beside this app, and often on the request "
+                   "itself, where naming this {dataSource} makes {assistantName} search it and "
+                   "offer them candidates."),
+        # This used to say the act happens "on this Built App's own surface", meaning the panel.
+        # The agent reading it is WRITING the Built App, so its own surface is the page in front of
+        # it — and live, one followed the sentence exactly and shipped a "Choose a Gong table"
+        # button with nothing behind it. Naming Sage is the fix; the bullet below is the belt,
+        # because knowing whose act it is has never stopped anything from drawing the button.
+        brand.text("- **Do not build that picker into the app either.** A control on a screen you "
+                   "write has nothing to call — the act happens in {assistantName}, not in this "
+                   "{builtApp} — so what you render is a dead control, and a dead control reads as "
+                   "a broken app to whoever opens it. Say the {scope} is missing in words, and "
+                   "leave the button out."),
         brand.text("- **Say which data you need and stop there.** That sentence is what the person "
                    "answers, and one answered question is worth more than a screen built on a "
                    "guess."),
         ("- **Do not invent rows, and do not build a screen around data you have not read.** "
          "Numbers you wrote yourself look exactly like numbers from the store, which is what makes "
-         "them worse than an empty screen."),
+         "them worse than an empty screen. Calling them a sample, a placeholder or an example does "
+         "not change that: the caption is small and the chart is not, and the chart is what gets "
+         "read, screenshotted and believed."),
         ("- Build the rest from what this app already holds — a file under `public/data/`, an "
          "Attachment, or values the user gave you — or leave that screen out rather than shipping "
          "one that cannot load."),
