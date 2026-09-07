@@ -10,6 +10,7 @@ Deep module, narrow interface: project / build / build_stream / shutdown.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import filecmp
 import json
 import logging
@@ -19,6 +20,7 @@ import re
 import tempfile
 import threading
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from pathlib import PurePosixPath as PurePosix
@@ -140,7 +142,7 @@ from ..workspace.threads import (
     snapshot_files,
     title_from_prompt,
 )
-from . import brand, chat_compact, recall, scope
+from . import brand, chat_compact, recall, scope, table_rank
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
@@ -7010,8 +7012,85 @@ class Orchestrator:
             return None
         if not found:
             return None
+        # Names first, then a model over the names (#184). The name rank is what the model is shown
+        # and what it falls back to, not what the card ends up carrying: "gong" matches 27 of the
+        # live warehouse's 602 tables and scores `MARTS.GONG__CALLS` exactly like
+        # `STAGING.STG_GONG__CALLS`, so ordering by name alone is a coin toss on the one distinction
+        # that decides the app. The ranker fails CLOSED to a layer heuristic — it can reorder these
+        # candidates and it can never take them away.
         ranking = table_search.rank(prompt, binding, found)
+        with timing.span("gate.table.rank"):
+            ranking = table_rank.rank_with_model(
+                prompt, binding, ranking,
+                columns_for=lambda shortlist, budget: self._shortlist_columns(
+                    source, shortlist, budget),
+                gateway=project.shim.gateway,
+                catalog=project.shim.catalog,
+                session=project.session_id,
+                version=project.shim.version,
+            )
         return self._table_candidates_events(prompt, binding, ranking, answered)
+
+    def _shortlist_columns(self, source: DataSource, shortlist: Sequence[Candidate],
+                           budget: float) -> dict[Candidate, list[str]]:
+        """What each shortlisted table holds, for the ranker's second stage (#184).
+
+        Read for the schemas the shortlist stands in and NEVER for the database. The whole column
+        catalog of the live warehouse is 17,049 rows, roughly 237,000 tokens — it can never enter a
+        prompt, which is the entire reason the ranker has two stages.
+
+        A query per schema rather than a query per table, and the difference is measured rather than
+        assumed. ADR-0038's spike timed the same scan both ways: every column in the database was
+        4.25s and the same query narrowed to one shortlist was 4.63s. A filter buys tokens, never
+        seconds — so six per-table queries would be six full scans of `INFORMATION_SCHEMA.COLUMNS`
+        to save nothing, where the two schemas a Gong shortlist spans are two. What the filter is
+        for is the prompt, and the narrowing to the shortlist happens here, locally, at the end.
+
+        The schemas are read at once rather than in turn, because each is ~4s and the whole card is
+        still waiting. A schema that does not answer in time is left out rather than failing the
+        pull: the ranker orders what it was told about and keeps the name rank for the rest.
+
+        `budget` is what is left of the ranker's own ceiling, not a timeout of this method's own. A
+        second independent ceiling here would add itself to the number `table_rank` promises, and
+        three twelve-second budgets on one silent path is thirty-six seconds of a turn looking hung.
+        """
+        if not shortlist or budget <= 0:
+            # An exhausted deadline is a documented outcome, not an anomaly, and firing the queries
+            # anyway would abandon six Arrow Flight statements that still run to completion against
+            # the warehouse. `table_rank._ask` refuses a spent budget the same way.
+            return {}
+        places = sorted({(c.database, c.schema) for c in shortlist})
+
+        def _one(place: tuple[str, str]) -> tuple[tuple[str, str], list]:
+            database, schema = place
+            return place, self._resources.list_columns(source, database, schema)
+
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(places), thread_name_prefix="sage-columns")
+        try:
+            futures = [pool.submit(_one, p) for p in places]
+            done, pending = concurrent.futures.wait(futures, timeout=budget)
+            if pending:
+                log.info("table rank: %d of %d column reads did not finish in %.1fs",
+                         len(pending), len(futures), budget)
+            held: dict[tuple[str, str, str], list[str]] = {}
+            for future in futures:
+                if future not in done:
+                    continue
+                try:
+                    (database, schema), columns = future.result()
+                except Exception as e:
+                    log.info("table rank: columns could not be read — %s", e)
+                    continue
+                for column in columns:
+                    if column.name and column.table:
+                        held.setdefault((database, schema, column.table), []).append(column.name)
+            return {c: names for c in shortlist
+                    if (names := held.get((c.database, c.schema, c.table)))}
+        finally:
+            # wait=False, like every other bounded pool here: a blocked introspection socket cannot
+            # be interrupted, and blocking for it would give back exactly what the timeout bought.
+            pool.shutdown(wait=False)
 
     def _table_candidates_events(self, prompt: str, binding: Binding,
                                  ranking: table_search.Ranking, answered: dict):
