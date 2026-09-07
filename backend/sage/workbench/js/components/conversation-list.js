@@ -47,6 +47,16 @@ window.SW = window.SW || {};
     // must not be recorded as if it were. Someone who opened it by hand still has it open on their
     // next load.
     SW.store.collapseRail();
+    // The plan sheet goes with it, and on the click rather than when the open lands (#198).
+    // `openThread` clears `planViewerId` at the far end of a round trip, so a plan read in Build
+    // stayed on screen across the whole switch — and the sheet is what covers the preview, so the
+    // one surface that would have shown the app changing was the one it hid. Nothing appeared to
+    // happen, which is why a wrong pairing could sit there unnoticed until a later click wrote it
+    // into the URL.
+    //
+    // Unconditional, like the collapse above: a sheet is read BESIDE a conversation, so it belongs
+    // to the one being left. Closing a viewer that is already closed is a no-op.
+    SW.store.closePlanViewer();
     return SW.router.go(SW.conversationRoute(thread, mode));
   };
 

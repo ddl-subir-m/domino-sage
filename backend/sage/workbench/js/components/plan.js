@@ -525,9 +525,24 @@ window.SW = window.SW || {};
                       type: 'link',
                       size: 'small',
                       style: { padding: 0, height: 'auto' },
+                      // Through `openConversation` rather than the route alone (#198). In Build
+                      // the route is only half of opening one: the other half is which Built App
+                      // the preview beside it holds, and `#/build/<id>` names none. So this moved
+                      // the transcript to a conversation belonging to app B while the header, the
+                      // preview and the panel all went on describing app A — and the next click
+                      // back to app A wrote `?app=A` beside thread B, pinning the mismatch into
+                      // the URL. The rail's rows have gone through that door since #100; this is
+                      // the same door, and the second entrance to it.
+                      //
+                      // `boundAppId` off the plan document, which already carries the answer:
+                      // `appId` is the Built App this plan stands in, so it is the app of the
+                      // conversation that produced it. A plan with no app passes nothing, and
+                      // Build's async `resolveConversationApp` stays the correction for that one
+                      // — the case it was always for, rather than the common path.
                       onClick: () =>
-                        SW.router.go(
-                          SW.conversationRoute({ id: plan.originThreadId }, SW.router.get().mode)
+                        SW.openConversation(
+                          { id: plan.originThreadId, boundAppId: plan.appId },
+                          SW.router.get().mode
                         ),
                     },
                     'Open conversation'
