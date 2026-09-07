@@ -975,6 +975,26 @@ def _attach_root(dataset_name: str) -> str:
     return PurePosix("public/data", _slug(dataset_name)).as_posix() + "/"
 
 
+def _dataset_is_attached(attached: list[dict], binding: Binding) -> bool:
+    """Whether anything in the app's tree came from one bound Dataset.
+
+    One copy, because two surfaces ask it and they ask the same thing: the managed block's line
+    about a Dataset the app cannot read (#195) and the card that asks which files to attach (#196).
+    They shipped a day apart from two worktrees and spelled the same fact two ways — which is the
+    shape #193 already cost this feature once, so it is collapsed here before it can drift.
+
+    By the id an Attachment kept, and by the root the files are served from when it kept none. A
+    workspace rebuilt by `_rehydrate_attached`'s symlink scan has no `dataset_id` on its entries, so
+    reading the id alone would report a Dataset whose files are already sitting in the tree. Not by
+    the recorded NAME for the same reason: that scan fills `dataset` from the symlink's parent
+    directory, which is a slug carrying whatever subfolders `attach_folder` nested under it.
+    """
+    root = _attach_root(binding.name)
+    return any(str(e.get("dataset_id") or "") == binding.id
+               or str(e.get("path") or "").startswith(root)
+               for e in attached)
+
+
 # Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept so a
 # file written by an older Sage can still be deleted as a Sage-managed upload. Both are
 # Sage-created, so both are safe to delete; a genuine pre-existing dataset file is neither.
@@ -7892,18 +7912,10 @@ class Orchestrator:
         def dismissed(binding: Binding) -> bool:
             return (project.app_for_turn().app_id, binding.id) in self._dataset_dismissed
 
-        def held(binding: Binding) -> bool:
-            # By id, and by the root the files are served from. A workspace rebuilt by
-            # `_rehydrate_attached`'s symlink scan has entries with no `dataset_id` on them, and
-            # reading the id alone would ask about a Dataset whose files are already in the tree.
-            root = _attach_root(binding.display_name)
-            return any(str(e.get("dataset_id") or "") == binding.id
-                       or str(e.get("path") or "").startswith(root)
-                       for e in project.attached)
-
         bindings = parse_bindings(project.workspace.read_bindings())
         binding = next((b for b in bindings if b.kind == KIND_DATASET
-                        and not held(b) and not dismissed(b)), None)
+                        and not _dataset_is_attached(project.attached, b)
+                        and not dismissed(b)), None)
         if binding is None:
             return None
         try:
@@ -13575,18 +13587,13 @@ class Orchestrator:
         and it is the one an agent invents rows out of: told the app uses a Dataset, handed no path
         to read, and ADR-0020 keeps the working set out of the prompt.
 
-        Matched on the id an Attachment kept, and on the served root when it kept none. Not on the
-        recorded name: `_rehydrate_attached` fills `dataset` from the symlink's parent DIRECTORY,
-        which is a slug, and a slug with subfolders on it for anything `attach_folder` nested. A
-        name comparison never matches those, and the line would then tell the agent not to read
-        files that are sitting in `public/data/<slug>` — worse than saying nothing at all.
+        `_dataset_is_attached` decides which, and says why it reads what it reads. Shared with the
+        card that asks the question (#196) rather than spelled twice: this line and that card have to
+        agree about what "nothing attached" means, or one of them is lying every time they differ.
         """
-        bound = [b for b in parse_bindings(project.workspace.read_bindings())
-                 if b.kind == KIND_DATASET]
-        ids = {str(e.get("dataset_id")) for e in project.attached if e.get("dataset_id")}
-        roots = {"/".join(_path_parts(str(e.get("path") or ""))[:3]) for e in project.attached}
-        return [b.display_name or b.name for b in bound
-                if b.id not in ids and f"public/data/{_slug(b.name)}" not in roots]
+        return [b.display_name or b.name
+                for b in parse_bindings(project.workspace.read_bindings())
+                if b.kind == KIND_DATASET and not _dataset_is_attached(project.attached, b)]
 
     _AGENTS_BEGIN = "<!-- sage:attached-data:begin -->"
     _AGENTS_END = "<!-- sage:attached-data:end -->"
