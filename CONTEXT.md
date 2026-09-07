@@ -119,7 +119,7 @@ context (it reaches no prompt), "add to make available" (it enables nothing)
 **Resource Browser**:
 The panel in which a user sees the [[Working set]] and picks from it. It draws the list; it does not
 own it. The acts it offers are the ones whose scope it owns — putting something in Session context,
-and the two Removes. Adding a Binding is not among them, and neither is choosing a [[Scope]]: both
+and the two Removes. Adding a Binding is not among them, and neither is choosing its [[Table]]: both
 belong to the Built App's own surface
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). It still walks a
 Data Source's databases, schemas and tables, and a Dataset's files, for looking — that is
@@ -135,12 +135,12 @@ A Binding is always declared — a person picks a Resource, and picking produces
 never inferred from what the app's code turns out to touch, so the two can disagree and the
 declaration is the one that publishes
 ([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md)). A Data Source Binding
-also records a Scope. A Dataset can be bound too, and it is the one thing a Binding names that is
+also records a [[Table]]. A Dataset can be bound too, and it is the one thing a Binding names that is
 an [[Asset]] rather than a Resource: the record says which Dataset the app reads. It is not an
 [[Attachment]] and does not produce one, and the rule that a file never becomes a Binding holds,
 because a Dataset is not a file. A Resource is picked once for the Project and can be bound by
 several of its Built Apps; a Binding always names exactly one of them, so "what does this app
-read" has an answer per app. Removing a Binding takes the grant and the Scope with it. There is no
+read" has an answer per app. Removing a Binding takes the grant and the [[Table]] with it. There is no
 undo: the Resource stays in the Project and is picked again
 ([ADR-0011](docs/adr/0011-removal-lives-with-the-list-that-owns-the-scope.md)).
 On screen a Binding is named by what it does for the app rather than by the word itself: a Resource
@@ -150,7 +150,7 @@ nowhere else — never beside "Use in this chat", which puts a Resource in Sessi
 nothing. The two are kept apart on purpose: one writes a chip, the other writes a manifest a
 published app depends on
 ([ADR-0021](docs/adr/0021-each-scopes-door-lives-on-the-surface-that-owns-it.md)). A Binding may be
-made without a Scope and scoped afterwards, as two acts on that same surface. The list of them on a
+made without a [[Table]] and given one afterwards, as two acts on that same surface. The list of them on a
 Built App's surface is headed "Needs to run", and the head says what the app cannot do without them
 rather than what kind of record they are: it is read by someone who came to answer a question about
 their app, and the mechanism is not that question
@@ -160,16 +160,31 @@ _Avoid_: connection (that word is [[Resource]] reach, ADR-0001), link, reference
 requirement (that is this, named a second time), "Bindings" as a group label (that is "Needs to
 run" on screen)
 
-**Scope**:
+**Table**:
 The database, schema and optionally table a Data Source Binding is read at. Chosen from lists
 Sage enumerates, never typed. A Binding may have none, which means the Resource is recorded but
-the part of it the app reads is not — a named unfinished state, drawn as "not scoped yet" and never
+the part of it the app reads is not — a named unfinished state, drawn as "not chosen yet" and never
 as an error. Choosing one is a second act on the Built App's own surface, taken against a Binding
 that already exists; it can be taken again whenever the choice moves, and it can put the Binding back
-to no Scope at all. Removing the Binding takes its Scope with it, so a later re-bind inherits no old
-table.
+to naming no table at all. Removing the Binding takes this with it, so a later re-bind inherits no
+old table. A Binding that names a database and schema but no table is read as "any in that schema",
+drawn as "any in PUBLIC" rather than pretending a table was picked; only the panel can produce one,
+never a [[Candidate]] the user confirmed. Only a Data Source has one — a Dataset Binding names the
+Dataset and stops there, because a Dataset is not a table.
 _Kind_: name
-_Avoid_: path, location, target, qualifier, selection
+_Avoid_: scope (that word names the Project a person is switched into, ADR-0037), path, location,
+target, qualifier, selection
+
+**Candidate**:
+One table Sage offers when a person names a Data Source and not a table. Sage reads the Data
+Source's own catalog for them, ranks what it finds against what they asked for, and shows a few;
+the person's pick is what writes the [[Table]]. Sage never picks for them, however sure the ranking
+looks, because a Binding is declared and never inferred ([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md),
+[ADR-0038](docs/adr/0038-a-found-table-is-bound-by-the-click-not-by-the-agent.md)). Offering one
+is Sage's own act, taken in its own code before the assistant is asked to write anything — the
+assistant may say a table is missing, it may never go and choose it.
+_Kind_: name
+_Avoid_: match, result, suggestion (Sage is not suggesting, it is asking), guess, best table
 
 **Named query**:
 A statement the app can run, declared by name in the Built App's own repo. The browser sends a name
