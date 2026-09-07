@@ -245,6 +245,16 @@ _TURN_SLOT_TTL_S = 60.0
 # and it is safe to hold for as long as we like, because this state never refuses anything.
 _TURN_SLOT_UNCHECKED_TTL_S = 300.0
 
+# How far into whichever of those TTLs is in force the pair is refreshed in the background (see
+# `_slot_listings_due`). Half, and the half comes off the poll that does the refreshing: Build
+# re-reads `/api/apps` every 30 seconds, so any later leaves a poll landing just inside the window,
+# skipping, and the next one arriving after the pair has already gone cold — the exact miss this
+# exists to remove. At half, every other poll refreshes and nothing a turn reads is ever more than
+# one poll away from fresh. A FRACTION rather than a fixed lead because the two TTLs need very
+# different headroom: the "we could not check" pair is the one whose refetch can hang for two 20s
+# timeouts, so it is the one that must start earliest, and a fixed lead would give it the least.
+_TURN_SLOT_REFRESH_AT = 0.5
+
 # Each explicit mode routes to a named opencode.json agent. Ask/Plan are read-only — their
 # `permission` block is enforced natively by OpenCode (edit/bash denied), not just hidden from the
 # model's tool list. Implement carries a strong system prompt that forces the model to actually
@@ -3141,8 +3151,14 @@ class Orchestrator:
         # The same gate `_run_slot_preflight` already applies at boot, for the same reason.
         self._gateway_mode = gateway_mode
         # The listing that check runs on, and when it was taken. See _TURN_SLOT_TTL_S.
+        # Two locks, deliberately: the short one guards the remembered pair, and the long one holds
+        # the round trip that replaces it. One lock would put `_slot_listings_due` — which the rail's
+        # poll calls on the request path — behind whatever a background fetch is waiting on.
         self._slot_listings_at: float = 0.0
         self._slot_listings: tuple[list | None, list | None] = (None, None)
+        self._slot_listings_lock = threading.Lock()
+        self._slot_fetch_lock = threading.Lock()
+        self._slot_listings_refreshing = False
         # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
         # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
         self._attach_max_bytes = _env_int("SAGE_ATTACH_MAX_BYTES", 500 * 1024 * 1024)
@@ -3863,6 +3879,9 @@ class Orchestrator:
         # Off the request path on purpose: the rail is the first thing that draws, and it must not
         # wait on a network round trip to do it. The badge appears on the poll after the check.
         self._remote_check_due(project)
+        # Nothing on the rail reads this one — it is the turn's model gate being kept warm off the
+        # request path, on the poll that is already running while a Builder is open (#125).
+        self._slot_listings_due()
         # The newest document that is still a candidate wins the app it names, read through the
         # same filter the plan pin is answered from everywhere else (#171).
         app_ids = self._wm.app_ids()
@@ -3877,9 +3896,14 @@ class Orchestrator:
     # while they are here, and the save path decides for them once they have gone
     # (see _integrate_remote).
 
-    def _check_remote(self, project: Project, *, fetch: bool = True):
+    def _check_remote(self, project: Project, *, fetch: bool = True, beside: bool = False):
         """Fetch, then read what the remote has that this workspace does not. Caches the answer for
         the rail and returns it. `fetch=False` re-reads the refs a caller just fetched for itself.
+
+        `beside` marks the spans as work running BESIDE a turn rather than in front of it — the rail's
+        background check, and the turn's own prefetch. The readout needs the difference: summing a
+        span the turn never waited on into its pre-inference total would charge it wall clock it did
+        not spend (see scripts/turn-timing.py).
 
         Never raises. This sits at the top of a turn, and a remote that can't be reached has to
         leave the turn exactly as an up-to-date one would — refusing to build because a network was
@@ -3893,9 +3917,9 @@ class Orchestrator:
             root = project.record.path
             if git.is_repo_root(root):
                 if fetch:
-                    with timing.span("gate.remote.fetch"):
+                    with timing.span("gate.remote.fetch", beside=1 if beside else 0):
                         git.fetch(root)
-                with timing.span("gate.remote.incoming"):
+                with timing.span("gate.remote.incoming", beside=1 if beside else 0):
                     found = git.incoming(root)
         except Exception:
             log.exception("could not check the remote for incoming changes")
@@ -3921,7 +3945,7 @@ class Orchestrator:
 
         def run() -> None:
             try:
-                self._check_remote(project)
+                self._check_remote(project, beside=True)
             finally:
                 with self._incoming_lock:
                     self._incoming_checking = False
@@ -4888,6 +4912,10 @@ class Orchestrator:
             self._begin_conversation(conversation)
             project = self.project()
             self._pin_turn_app(project)
+            # The model gate's listing, kicked off here so the gate below reads a local answer
+            # instead of paying 2.5-2.9s for one (#125). A no-op when it is already warm, which the
+            # rail's own poll usually keeps it.
+            self._slot_listings_due()
             plan_app = project.app_for_turn()
             live_plan = (plan_app.read_plan() or "").strip()
             # And a bare "try again" means the same thing again, when the live plan is one an
@@ -4916,10 +4944,14 @@ class Orchestrator:
                     and _looks_like_change_request(prompt)):
                 yield from self._ask_mode_refusal(prompt)
                 return
-            # What this turn would be built on top of (#78). Checked here rather than read from the
-            # rail's cache: the badge is a background reading and may be half a minute old, and a
-            # turn is the moment the answer has to be right. Last of the gates, so a turn that was
-            # never going to run doesn't stop to discuss the remote first.
+            # What this turn would be built on top of (#78). This turn's own check, joined here
+            # rather than read from the rail's cache: the badge is a background reading and may be
+            # half a minute old, and a turn is the moment the answer has to be right. Serial, and
+            # measured at 0.4-0.6s: it stays serial because there is nothing between the top of the
+            # turn and this line for it to run beside, and the only place with real work to hide it
+            # under is past the pre-turn commit — which would mean a refused turn had already
+            # written and committed. Last of the gates, so a turn that was never going to run
+            # doesn't stop to discuss the remote first.
             app = project.app_for_turn()
             if skip_incoming_gate:
                 # The offer ANSWERED, not the gate bypassed — the check the offer just ran is what
@@ -4933,10 +4965,12 @@ class Orchestrator:
                     yield from self._incoming_offer(prompt, changed)
                     return
             # Last of the gates, and the only one that costs a gateway call: the model this turn
-            # would route to, resolved against what the gateway will actually serve (#125). Here
-            # rather than at the top of the turn because the approve fork above runs on a different
-            # mode and checks itself — and because the two free gates should get their answer in
-            # first. Still before a session is opened and before a single prompt goes out.
+            # would route to, resolved against what the gateway will actually serve (#125). The
+            # DECISION is here rather than at the top of the turn because the approve fork above
+            # runs on a different mode and checks itself — and because the cheaper gates should get
+            # their answer in first. The listing it decides on is kept warm off the request path
+            # (see `_slot_listings_due`), so on all but the first turn of a session this reads a
+            # local answer. Still before a session is opened and before a single prompt goes out.
             with timing.span("gate.slots"):
                 refusal = self._slot_refusal_events(
                     project, project.control.snapshot().mode, user_text=prompt)
@@ -7326,6 +7360,101 @@ class Orchestrator:
         with timing.span("setup.session"):
             sid = session_id or self._ensure_session(project, project.build_conversation)
         project.active_session_id = sid
+        # The plan gate's whole decision, taken here rather than beside the first line that reads it.
+        # Every input to it is a local read but one: the scope classifier is a gateway round trip, and
+        # it was 0.4-1.3s of serial wall clock in front of every Auto turn on a built app (measured
+        # 2026-09-07). Nothing needs its verdict until the gate is applied, a long way below, so the
+        # call is STARTED here and joined there, and the setup in between — the agent inputs, the
+        # pre-turn commit — happens underneath it instead of ahead of it.
+        #
+        # The two lines here that have a side effect did NOT move up with the rest: the turn's mode is
+        # armed and the failure flag consumed at the pre-turn commit, because both belong inside its
+        # ordering.
+        # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
+        # read-only planner and stop for the user to approve — this turn deliberately writes no code.
+        mode_at_start = mode or project.control.snapshot().mode
+        is_question = _looks_like_question(prompt)
+        has_built = project.app_for_turn().has_built()
+        # An approval is the user saying "build this plan now" — never gate it (that would re-propose a
+        # plan for an already-approved build and loop forever) and never treat it as a question.
+        # An explicit request for an architecture (see _wants_architecture) produces a document, not a
+        # build and not a build plan — so it overrides the mode in EVERY mode, including Ask. Without
+        # this, Plan turned the request into a ten-step build plan and Implement just built it; Ask
+        # answered in prose, which is right for a question and wrong for a request for a document.
+        # Ask is where a design question is most naturally typed, so it gets the artifact too — the
+        # turn is read-only either way, so nothing about Ask's contract changes.
+        arch = not is_approval and _wants_architecture(prompt)
+        # An explicit ask for a plan (see _wants_plan) is the same instruction as picking Plan mode,
+        # typed instead of clicked, so it gates in every mode too. Ranked below arch: a prompt naming
+        # both artifacts wants the heavier one, and that keeps the existing precedence untouched.
+        wants_plan = not is_approval and not arch and _wants_plan(prompt)
+        settings = project.record.read_settings()
+        skip_planning = bool(settings.get("skip_planning"))
+        # Only affects the SHAPE of a plan this turn writes; the phased execution itself happens on
+        # the approve turn (_phased_approve). A plan written before the toggle was on simply won't
+        # parse into steps, and falls back to a normal build.
+        phased_build = bool(settings.get("phased_build"))
+        gate = False if is_approval else arch or _should_gate(
+            mode=mode_at_start,
+            has_built=has_built,
+            skip_planning=skip_planning,
+            is_question=is_question,
+            wants_plan=wants_plan,
+        )
+        # --- failure-triggered replan (case 3), reading half -------------------------------------
+        # Read here and consumed below, both before the request goes out — the gate can only be
+        # applied before it, because read-only is enforced by stripping write/shell tools from the
+        # OUTGOING request (see shim.enforcement) and cannot be applied retroactively.
+        #
+        # Consumed on any turn that isn't a question, whether or not it goes on to gate: that's what
+        # makes this one-shot. Fail → plan → approve → fail again gives one gate per failure, never a
+        # standing approval wall. A question is the deliberate exception, mirroring _should_gate's
+        # is_question rule — asking "why did that break?" between the failure and the retry must not
+        # spend the gate the failure earned.
+        #
+        # Ordered ahead of the scope classifier below on purpose: a failure has already decided this
+        # turn should be planned, so there is nothing left for a model call to change and
+        # _scope_gate_applies declines it on `gate`. The cheap deterministic signal shadows the paid one.
+        #
+        # The consuming write is the only half with an ordering to keep, so it stays at the pre-turn
+        # commit and the free read comes up here with the rest of the decision.
+        prev_turn_failed = project.app_for_turn().read_last_turn_failed()
+        gate = gate or _failure_gate_applies(
+            mode=mode_at_start,
+            is_approval=is_approval,
+            is_question=is_question,
+            skip_planning=skip_planning,
+            prev_turn_failed=prev_turn_failed,
+        )
+        # --- end failure-triggered replan --------------------------------------------------------
+        # Nothing above gated this turn, and on a built project in Auto nothing ever will again: the
+        # automatic gate is keyed on has_built, so from turn two on, "make the table sortable" and
+        # "add auth, orgs and a billing page" take the same ungated path to code. Scope is the one
+        # thing here a string can't answer, so this is the single decision in the turn path that asks
+        # a model (see scope.wants_a_plan — biased to build, fails open, hard-bounded).
+        #
+        # Auto only. Implement is the user saying "just build it" and Plan already gates every turn;
+        # overriding either would be second-guessing an explicit choice, and this exists precisely
+        # because Auto is the mode with no explicit choice in it.
+        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
+                                      is_approval=is_approval, arch=arch, wants_plan=wants_plan)
+        pending_scope = None
+        if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
+                               answer_only=answer_only, is_approval=is_approval,
+                               skip_planning=skip_planning):
+            # Started, not asked. `result()` below is where the verdict is read, where the breaker is
+            # fed, and where the budget runs out — it is counted from HERE, so a classifier that hangs
+            # still costs the turn scope.TIMEOUT_S however late the join happens.
+            with timing.span("gate.scope.start"):
+                pending_scope = scope.start(
+                    prompt,
+                    gateway=project.shim.gateway,
+                    catalog=project.shim.catalog,
+                    root=project.app_for_turn().path,
+                    session=project.session_id,
+                    version=project.shim.version,
+                )
+
         breaker = CircuitBreaker()
         current = prompt
         # Attach the @-mentioned files to the user's turn only — not to the internal nudge/fix
@@ -7397,10 +7526,10 @@ class Orchestrator:
             # cover a user pressing stop (that yields `stopped`, never a `done`), a busy refusal (never
             # reaches this stream), or the two kinds of turn excluded below.
             #
-            # `answer_only` and `arch` are assigned further down and read late — persist() only runs
-            # once the stream is under way. Neither kind is a build attempt: a question answered in
-            # prose and an architecture document say nothing about whether the app builds, so they
-            # leave the recorded outcome exactly as they found it rather than clearing a real failure.
+            # `answer_only` and `arch` are assigned at the top of the turn and read late — persist()
+            # only runs once the stream is under way. Neither kind is a build attempt: a question
+            # answered in prose and an architecture document say nothing about whether the app
+            # builds, so they leave the recorded outcome as they found it, not clearing a real failure.
             #
             # A phase doesn't own the outcome: six phases would write the flag six times, and a build
             # that failed at phase 4 would be recorded as a success by phases 1-3. _phased_approve
@@ -7459,8 +7588,6 @@ class Orchestrator:
             project.snapshot.commit_before_turn()
         history_baseline = project.app_for_turn().history_len()
 
-        # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
-        # read-only planner and stop for the user to approve — this turn deliberately writes no code.
         # Pin the mode for the whole turn before anything reads it (token-scoped, exactly like the
         # read-only guarantee armed further down). The shim consults control.snapshot() on every
         # request, so unpinned, a mid-turn pick from the picker split one turn in half: its first
@@ -7468,84 +7595,17 @@ class Orchestrator:
         # both stripped, the abandoned tool calls still sitting in context. The pick is not lost —
         # it's the user's standing choice now and runs their next turn. `mode` overrides the pick for
         # a turn Sage runs on the user's behalf (approving a plan from a read-only mode).
-        mode_token = project.control.arm_turn_mode(mode or project.control.snapshot().mode)
-        mode_at_start = project.control.snapshot().mode
-        is_question = _looks_like_question(prompt)
-        has_built = project.app_for_turn().has_built()
-        # An approval is the user saying "build this plan now" — never gate it (that would re-propose a
-        # plan for an already-approved build and loop forever) and never treat it as a question.
-        # An explicit request for an architecture (see _wants_architecture) produces a document, not a
-        # build and not a build plan — so it overrides the mode in EVERY mode, including Ask. Without
-        # this, Plan turned the request into a ten-step build plan and Implement just built it; Ask
-        # answered in prose, which is right for a question and wrong for a request for a document.
-        # Ask is where a design question is most naturally typed, so it gets the artifact too — the
-        # turn is read-only either way, so nothing about Ask's contract changes.
-        arch = not is_approval and _wants_architecture(prompt)
-        # An explicit ask for a plan (see _wants_plan) is the same instruction as picking Plan mode,
-        # typed instead of clicked, so it gates in every mode too. Ranked below arch: a prompt naming
-        # both artifacts wants the heavier one, and that keeps the existing precedence untouched.
-        wants_plan = not is_approval and not arch and _wants_plan(prompt)
-        settings = project.record.read_settings()
-        skip_planning = bool(settings.get("skip_planning"))
-        # Only affects the SHAPE of a plan this turn writes; the phased execution itself happens on
-        # the approve turn (_phased_approve). A plan written before the toggle was on simply won't
-        # parse into steps, and falls back to a normal build.
-        phased_build = bool(settings.get("phased_build"))
-        gate = False if is_approval else arch or _should_gate(
-            mode=mode_at_start,
-            has_built=has_built,
-            skip_planning=skip_planning,
-            is_question=is_question,
-            wants_plan=wants_plan,
-        )
-        # --- failure-triggered replan (case 3), reading half -------------------------------------
-        # Read-and-consume, before the request goes out — the gate can only be applied here, because
-        # read-only is enforced by stripping write/shell tools from the OUTGOING request (see
-        # shim.enforcement) and cannot be applied retroactively.
-        #
-        # Consumed on any turn that isn't a question, whether or not it goes on to gate: that's what
-        # makes this one-shot. Fail → plan → approve → fail again gives one gate per failure, never a
-        # standing approval wall. A question is the deliberate exception, mirroring _should_gate's
-        # is_question rule — asking "why did that break?" between the failure and the retry must not
-        # spend the gate the failure earned.
-        #
-        # Ordered ahead of the scope classifier below on purpose: a failure has already decided this
-        # turn should be planned, so there is nothing left for a model call to change and
-        # _scope_gate_applies declines it on `gate`. The cheap deterministic signal shadows the paid one.
-        prev_turn_failed = project.app_for_turn().read_last_turn_failed()
+        mode_token = project.control.arm_turn_mode(mode_at_start)
+        # The failure-replan flag, consumed. Written here rather than beside its read because it has to
+        # land after the pre-turn commit: a stop reverts the tree to that commit, and a flag cleared
+        # ahead of it would take the gate the failure earned down with it.
         if not is_question:
             project.app_for_turn().set_last_turn_failed(False)
-        gate = gate or _failure_gate_applies(
-            mode=mode_at_start,
-            is_approval=is_approval,
-            is_question=is_question,
-            skip_planning=skip_planning,
-            prev_turn_failed=prev_turn_failed,
-        )
-        # --- end failure-triggered replan --------------------------------------------------------
-        # Nothing above gated this turn, and on a built project in Auto nothing ever will again: the
-        # automatic gate is keyed on has_built, so from turn two on, "make the table sortable" and
-        # "add auth, orgs and a billing page" take the same ungated path to code. Scope is the one
-        # thing here a string can't answer, so this is the single decision in the turn path that asks
-        # a model (see scope.wants_a_plan — biased to build, fails open, hard-bounded).
-        #
-        # Auto only. Implement is the user saying "just build it" and Plan already gates every turn;
-        # overriding either would be second-guessing an explicit choice, and this exists precisely
-        # because Auto is the mode with no explicit choice in it.
-        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
-                                      is_approval=is_approval, arch=arch, wants_plan=wants_plan)
-        if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
-                               answer_only=answer_only, is_approval=is_approval,
-                               skip_planning=skip_planning):
+        # The scope verdict, joined. On a healthy gateway the setup above has already paid for most of
+        # it, so this span is what is LEFT of the call rather than the whole of it.
+        if pending_scope is not None:
             with timing.span("gate.scope"):
-                gate = scope.wants_a_plan(
-                    prompt,
-                    gateway=project.shim.gateway,
-                    catalog=project.shim.catalog,
-                    root=project.app_for_turn().path,
-                    session=project.session_id,
-                    version=project.shim.version,
-                )
+                gate = gate or pending_scope.result()
             if gate:
                 log.info("scope: planning a substantial request on a built project")
         # A gated turn's prompt carries a planning-context preamble scoped to whether the app exists
@@ -10881,12 +10941,86 @@ class Orchestrator:
         it routes to; keyed on one turn's slots it would be a cache that misses whenever the mode
         changes, which is most of the time. The skip inside `_endpoint_listing` still applies, so an
         all-vendor gateway pays nothing for the second call.
+
+        One fetcher at a time. A turn that arrives while `_slot_listings_due`'s background refresh is
+        in flight waits for that answer instead of opening a second listing of its own — it would
+        have made the same two calls, and the wait is the one it was going to pay anyway.
+        """
+        cached = self._slot_listings_cached()
+        if cached is not None:
+            return cached
+        with self._slot_fetch_lock:
+            # Checked again: whoever held the lock may have just answered this.
+            cached = self._slot_listings_cached()
+            return cached if cached is not None else self._refresh_slot_listings()
+
+    def _slot_listings_cached(self) -> tuple[list | None, list | None] | None:
+        """The remembered pair while it is still good for a turn, or None when it has to be fetched."""
+        import time
+
+        with self._slot_listings_lock:
+            ttl = _TURN_SLOT_TTL_S if self._slot_listings[0] else _TURN_SLOT_UNCHECKED_TTL_S
+            if self._slot_listings_at and time.monotonic() - self._slot_listings_at < ttl:
+                return self._slot_listings
+        return None
+
+    def _slot_listings_due(self) -> None:
+        """Refresh the pair in the background before it expires, and return immediately (#125).
+
+        The TTL works — half the measured turns pay nothing at the slot gate — and the whole of the
+        remaining cost is the cold miss on the other half: 2.5-2.9s of Alias and endpoint listing at
+        the very front of a turn, with nothing on screen to say why. Same shape as
+        `_remote_check_due`: the rail polls while a Builder is open, so the answer is fetched while
+        nobody is waiting for it rather than in front of someone who has just pressed send.
+
+        Refreshing early never widens the window `_TURN_SLOT_TTL_S` promises. The fetch replaces the
+        pair and restarts its clock, so what a turn reads is at most one TTL old and usually fresher
+        than it was before — this makes the cache warmer, not staler.
         """
         import time
 
-        ttl = _TURN_SLOT_TTL_S if self._slot_listings[0] else _TURN_SLOT_UNCHECKED_TTL_S
-        if self._slot_listings_at and time.monotonic() - self._slot_listings_at < ttl:
-            return self._slot_listings
+        if self._gateway_mode != "domino":
+            # Nothing reads the pair off this gateway (see `_turn_slot_refusal`), so nothing should
+            # be fetched for it either.
+            return
+        with self._slot_listings_lock:
+            if self._slot_listings_refreshing:
+                return
+            ttl = _TURN_SLOT_TTL_S if self._slot_listings[0] else _TURN_SLOT_UNCHECKED_TTL_S
+            age = time.monotonic() - self._slot_listings_at
+            if self._slot_listings_at and age < ttl * _TURN_SLOT_REFRESH_AT:
+                return
+            self._slot_listings_refreshing = True
+            taken_at = self._slot_listings_at
+
+        def run() -> None:
+            try:
+                with self._slot_fetch_lock, timing.span("gate.slots.prefetch", beside=1):
+                    # Skipped only if the pair MOVED while we queued for the lock — a turn got there
+                    # first and fetched it. Not a TTL check: the pair is still inside its TTL here by
+                    # definition, and that is the whole point of refreshing before it isn't.
+                    if self._slot_listings_at == taken_at:
+                        self._refresh_slot_listings()
+            finally:
+                with self._slot_listings_lock:
+                    self._slot_listings_refreshing = False
+
+        try:
+            threading.Thread(target=run, name="sage-slot-listing", daemon=True).start()
+        except Exception:
+            # A thread that never starts must not leave the flag standing: it would disable the
+            # keep-warm for the life of the process, and every turn after it would quietly go back
+            # to paying the cold miss this exists to remove. Swallowed for the same reason the check
+            # itself is — the rail's poll and the top of a turn both call this, and neither is a
+            # place to raise from.
+            log.warning("turn preflight: could not start the slot listing refresh", exc_info=True)
+            with self._slot_listings_lock:
+                self._slot_listings_refreshing = False
+
+    def _refresh_slot_listings(self) -> tuple[list | None, list | None]:
+        """Fetch the pair and remember it. Call under `_slot_fetch_lock`; never raises."""
+        import time
+
         answer: tuple[list | None, list | None] = (None, None)
         try:
             aliases = self._resources.list_llm_aliases()
@@ -10912,8 +11046,9 @@ class Orchestrator:
             # Logged, not raised and not reported: a turn goes ahead on an unchecked slot, exactly
             # as it did before this check existed.
             log.warning("turn preflight: could not check the model this turn will use — %s", e)
-        self._slot_listings_at = time.monotonic()
-        self._slot_listings = answer
+        with self._slot_listings_lock:
+            self._slot_listings_at = time.monotonic()
+            self._slot_listings = answer
         return answer
 
     def _turn_slot_refusal(self, project: Project, mode: Mode) -> str | None:

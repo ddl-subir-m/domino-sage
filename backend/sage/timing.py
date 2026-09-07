@@ -116,6 +116,16 @@ def start_turn(kind: str, prompt: str = "") -> None:
             if _current is not None and _current.t1 is None:
                 _current.t1 = time.monotonic()
                 _current.decision = _current.decision or "abandoned"
+                # Closed the same way finish_turn closes one, spans and calls included. An abandoned
+                # turn can still have work running on another thread — a gate prefetch outliving the
+                # generator a disconnected client walked away from — and leaving those open would let
+                # them stamp themselves later than the record they belong to.
+                for sp in _current.spans:
+                    if sp.t1 is None:
+                        sp.t1 = _current.t1
+                for c in _current.calls:
+                    if c.t1 is None:
+                        c.t1 = _current.t1
                 _history.append(_current)
             _current = TurnRecord(kind=kind, started_at=time.time(), t0=time.monotonic(),
                                   prompt=(prompt or "")[:200])
@@ -193,7 +203,12 @@ def span(name: str, **fields):
         _stack.depth = depth + 1
         yield s
     finally:
-        s.t1 = time.monotonic()
+        # Only if it is still open, matching close_span. A span on a background thread — a gate
+        # prefetch outliving the turn that started it — has already been stamped by finish_turn at
+        # the turn's own end, and writing over that would put a span in the record that ends after
+        # the record does.
+        if s.t1 is None:
+            s.t1 = time.monotonic()
         _stack.depth = depth
 
 

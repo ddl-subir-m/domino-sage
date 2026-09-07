@@ -13,8 +13,10 @@ reads it back over HTTP. Run it against a Builder right after a slow build.
 The verdict block is the point. It splits a turn into the four things it can be spending time on
 and prints them largest first, so the ranking comes off the numbers rather than off a code read:
 
-    gates    everything serial before the first inference — git fetch, the slot listing, the
-             pre-turn commit, the scope classifier's own model call
+    gates    everything serial before the first inference — the pre-turn commit, and whatever is
+             LEFT of the three gates that now start at the top of the turn and are joined further
+             down (the `git fetch`, the Alias listing, the scope classifier's own model call). What
+             those three cost end to end is listed separately, under "beside the turn".
     model    time inside inferences: the irreducible part, and the denominator for everything else
     polling  what the sampling loop costs — the second it sleeps between looks, plus the lag
              between a tool finishing inside OpenCode and Sage noticing (emit.lag)
@@ -63,10 +65,18 @@ def split(rec: dict) -> dict:
     # Summed by name, not last-wins: a build typechecks once per agent turn, and the number that
     # matters is what the turn spent on tsc altogether.
     named: dict[str, list[float]] = {}
+    # A span the recorder marked `beside` ran on another thread, alongside the turn rather than in
+    # front of it: the gate prefetches (the `git fetch` and the Alias listing, both started at the
+    # top of the turn and joined later, or not joined at all). They are real work and they are timed,
+    # but adding them to the pre-inference total would charge the turn wall clock it never waited on
+    # — and the number this script exists to defend is what the turn WAITED for.
+    beside: dict[str, list[float]] = {}
     for sp in spans:
-        if not sp["name"].startswith("agent-turn."):
-            named.setdefault(sp["name"], []).append(sp["ms"])
+        if sp["name"].startswith("agent-turn."):
+            continue
+        (beside if sp.get("beside") else named).setdefault(sp["name"], []).append(sp["ms"])
     named = {k: (sum(v), len(v)) for k, v in named.items()}
+    beside = {k: (sum(v), len(v)) for k, v in beside.items()}
     pre_names = [n for n in named if n.startswith(("turn.", "setup.", "gate."))]
     # With no inference, "before the first one" is the whole turn, which would charge the gates
     # bucket with the entire build. A turn whose model calls never reached the shim is a real and
@@ -88,6 +98,7 @@ def split(rec: dict) -> dict:
         "calls": len(calls),
         "agent_turns": sum(1 for s in spans if s["name"].startswith("agent-turn.")),
         "named": named,
+        "beside": beside,
         "pre_names": pre_names,
         "no_inference": not calls,
         "obs": obs,
@@ -133,6 +144,11 @@ def report(rec: dict) -> dict:
     unnamed = b["gates"] - sum(r[1] for r in pre)
     if abs(unnamed) > 200:
         print(f"    {'(not instrumented)':<28} {unnamed / 1000:6.1f}s")
+
+    if b["beside"]:
+        print("\n  beside the turn (started early, not waited on here):")
+        for name, (ms, k) in sorted(b["beside"].items(), key=lambda kv: -kv[1][0]):
+            print(f"    {name:<28} {ms / 1000:6.1f}s{f'  (x{k})' if k > 1 else ''}")
 
     during = [(n, *v) for n, v in b["named"].items() if n not in b["pre_names"]]
     if during:
