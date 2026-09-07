@@ -6532,7 +6532,7 @@ class Orchestrator:
         # Source it was about, and the flag stops a SECOND unchosen Data Source turning the answer
         # that click bought into another question.
         if not skip_table_gate:
-            offer = self._chat_table_offer(store, thread_id, prompt, items)
+            offer = self._chat_table_offer(store, project, thread_id, prompt, items)
             if offer is not None:
                 yield from offer
                 return
@@ -7411,31 +7411,59 @@ class Orchestrator:
                        "{name} holds no {scopePlural} {assistantName} can offer for this request.",
                        name=binding.display_name))}
             return False
+        # The model rank runs AFTER the last streamed frame and before the settled card, which is why
+        # the frames carry the name order and the card carries the model's. Them differing across
+        # that boundary is the point rather than a glitch: the frames are the walk reporting what it
+        # has found, and the card is the answer.
+        ranking = self._ranked_candidates(project, source, binding, prompt, found,
+                                          session=project.session_id)
+        yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text,
+                                                 skipped)
+        return True
+
+    def _ranked_candidates(self, project: Project, source: DataSource, binding: Binding,
+                           prompt: str, found: list[Candidate], *,
+                           session: str | None) -> table_search.Ranking:
+        """Names, then a model over the names — for BOTH surfaces that ask (#184, #193).
+
+        One method rather than the same six lines twice, because the two paths already drifted once:
+        #188 built Chat's offer against the pre-#184 shape, and once both were on main the same
+        question asked in Chat and in Build put a different table first with no reason a person could
+        learn. The ranker is not an ingredient of a build turn, it is what "which table?" means, so
+        the call belongs where neither caller can quietly do without it.
+
+        WHERE THE INPUTS COME FROM, decided rather than inherited:
+
+        `gateway`, `catalog` and `version` are the Project's shim on both paths. There is one shim
+        per Project — Chat and Build are two surfaces onto it, not two processes — and Chat's own
+        handoff classifier already reads exactly these three off it for exactly this kind of call.
+
+        `session` is the CALLER's, and it differs, which is why it is a parameter. It is the cost
+        rollup's key: Build's turn runs in `project.session_id`, and a Chat turn runs in the Thread's
+        own OpenCode session, so a Chat rank tagged with the Build session would file this question's
+        cost against a build that never asked it. A Thread that has not run a turn yet has no session
+        and passes None, which is the honest answer rather than a borrowed one.
+
+        `columns_for` is this Orchestrator's own read against the Data Source the caller already
+        resolved. Stage two's I/O is a warehouse query and has nothing to do with which surface asked.
+        """
         # Names first, then a model over the names (#184). The name rank is what the model is shown
         # and what it falls back to, not what the card ends up carrying: "gong" matches 27 of the
         # live warehouse's 602 tables and scores `MARTS.GONG__CALLS` exactly like
         # `STAGING.STG_GONG__CALLS`, so ordering by name alone is a coin toss on the one distinction
         # that decides the app. The ranker fails CLOSED to a layer heuristic — it can reorder these
-        # candidates and it can never take them away.
-        #
-        # It runs AFTER the last streamed frame and before the settled card, which is why the frames
-        # carry the name order and the card carries the model's. The two orders differing across
-        # that boundary is the point rather than a glitch: the frames are the walk reporting what it
-        # has found, and the card is the answer.
+        # candidates and it can never take them away, on either path.
         ranking = table_search.rank(prompt, binding, found)
         with timing.span("gate.table.rank"):
-            ranking = table_rank.rank_with_model(
+            return table_rank.rank_with_model(
                 prompt, binding, ranking,
                 columns_for=lambda shortlist, budget: self._shortlist_columns(
                     source, shortlist, budget),
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
-                session=project.session_id,
+                session=session,
                 version=project.shim.version,
             )
-        yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text,
-                                                 skipped)
-        return True
 
     def _table_search_frame(self, binding: Binding, candidates: tuple[Candidate, ...]) -> dict:
         """The card while the warehouse is still being read: what is known so far, and no way to
@@ -7571,7 +7599,7 @@ class Orchestrator:
             if ev["type"] != "user":
                 yield ev
 
-    def _chat_table_offer(self, store: ThreadStore, thread_id: str, prompt: str,
+    def _chat_table_offer(self, store: ThreadStore, project: Project, thread_id: str, prompt: str,
                           items: list[dict]):
         """The same search, from Chat (#188, ADR-0038), or None to let the turn run.
 
@@ -7614,8 +7642,14 @@ class Orchestrator:
             return None
         if not found:
             return None
-        return self._chat_table_candidates_events(
-            store, thread_id, prompt, binding, table_search.rank(prompt, binding, found), skipped)
+        # The same ranker Build runs, on the same seam (#193). Chat is where ADR-0038 says finding
+        # happens, so it must not be the surface that gets the weaker order — and the ranker already
+        # fails closed, so a Chat turn that cannot reach a model keeps exactly the name order this
+        # path used to hand the card and loses nothing.
+        ranking = self._ranked_candidates(project, source, binding, prompt, found,
+                                          session=store.read_session_id(thread_id))
+        return self._chat_table_candidates_events(store, thread_id, prompt, binding, ranking,
+                                                  skipped)
 
     def _chat_mentioned_sources(self, prompt: str, items: list[dict]) -> list[str]:
         """The Data Source ids this sentence @named, which win over a prose match.

@@ -29,6 +29,7 @@ from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.resources.provider import FakeResourceProvider, ResourceUnavailable
 from sage.resources.table_search import Candidate, Ranking
 from sage.router.models import ModelCatalog
+from sage.workspace.threads import ThreadStore
 
 PROMPT = "build me a dashboard of daily gong calls"
 
@@ -587,3 +588,89 @@ def test_a_ranker_that_is_down_still_draws_the_card(tmp_path: Path):
     card = _card(orch)
     assert card["total"] == 5
     assert [g["schema"] for g in card["allGroups"]] == ["MARTS", "STAGING", "REPORTING"]
+
+
+# ---- the same seam, from Chat -------------------------------------------------------------------
+#
+# WHY THESE LIVE HERE and not beside the rest of the Chat gate. #188 built Chat's offer against the
+# pre-#184 shape, and both tickets were correct on their own branches: the gap only existed once
+# both were on main, where the same request against the same store put a different table first
+# depending on which mode the person happened to be standing in — and Chat, where ADR-0038 says
+# finding happens, had the worse one. A test in either ticket's own file could not have caught that.
+# So both cards are drawn from ONE orchestrator, one warehouse and one scripted verdict, and the
+# comparison itself is the assertion (#193).
+
+
+# Not `TURN`: "build me…" is a build request, which Chat answers with a handoff offer before it ever
+# reaches the table gate. Both cards below are drawn from this one sentence, because two prompts
+# would let the paths agree for the wrong reason.
+ASK = "chart me daily gong calls from Snowflake"
+
+
+def _thread(orch: Orchestrator) -> tuple[ThreadStore, str, list[dict]]:
+    """A Thread using `Snowflake-Data-Warehouse` with no table chosen on it, and the context rows
+    the turn would hand the gate — read the way `_chat_stream` reads them."""
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    thread_id = orch.create_thread()["id"]
+    orch.add_thread_context(thread_id, {
+        "kind": "data_source", "name": "Snowflake-Data-Warehouse",
+        "bindingKey": ["data_source", "ds-dwh"],
+    })
+    items = [i for i in ((store.read_context(thread_id) or {}).get("items") or []) if i.get("id")]
+    return store, thread_id, items
+
+
+def _chat_card(orch: Orchestrator, prompt: str = ASK) -> dict:
+    store, thread_id, items = _thread(orch)
+    events = list(orch._chat_table_offer(
+        store, orch.project(start_preview=False), thread_id, prompt, items) or [])
+    cards = [e for e in events if e.get("type") == "table-candidates"]
+    assert len(cards) == 1, f"expected one card, got {[e.get('type') for e in events]}"
+    return cards[0]
+
+
+def _tables(card: dict) -> list[str]:
+    return [f"{g['schema']}.{t}" for g in card["groups"] for t in g["tables"]]
+
+
+def test_the_chat_card_carries_the_order_the_model_gave(tmp_path: Path):
+    """`DIM_ACCOUNT` shares no word with the request, so only a model puts it first — which is what
+    tells a ranked card from the name rank this path used to hand out."""
+    named = "DWH.MARTS.DIM_ACCOUNT\nDWH.MARTS.GONG__CALLS"
+    assert _chat_card(_orch(tmp_path, StubGateway(named, named)))["groups"][0]["tables"][0] \
+        == "DIM_ACCOUNT"
+
+
+def test_chat_and_build_list_the_same_tables_in_the_same_order(tmp_path: Path):
+    """The ticket itself. Same store, same request, same verdict — and no reason a person could
+    learn for the two cards to differ, so they may not."""
+    named = "DWH.MARTS.DIM_ACCOUNT\nDWH.MARTS.GONG__CALLS"
+    orch = _orch(tmp_path, StubGateway(named, named, named, named))
+    assert _tables(_chat_card(orch)) == _tables(_card(orch, ASK))
+
+
+def test_a_ranker_that_is_down_still_draws_the_chat_card(tmp_path: Path):
+    """The fail rule holds on this path too: no model leaves an ordering standing and every table
+    the walk found still on the card. A Chat turn that cannot reach one keeps exactly what it had
+    before #193 and loses nothing."""
+    orch = _orch(tmp_path, StubGateway(raises=RuntimeError("gateway 502")))
+    card = _chat_card(orch)
+    assert card["total"] == 5
+    assert [g["schema"] for g in card["allGroups"]] == ["MARTS", "STAGING", "REPORTING"]
+
+
+def test_the_chat_rank_is_billed_to_the_conversation_and_not_to_a_build(tmp_path: Path):
+    """Where the ranker's inputs come from, pinned. The gateway, the catalog and the Sage version
+    are the Project's shim on both paths — there is one shim, and Chat's handoff classifier already
+    reads it. The SESSION is the caller's: it is the cost rollup's key, and a Chat rank tagged with
+    `project.session_id` would file this question's cost against a build that never asked it.
+    """
+    named = "DWH.MARTS.GONG__CALLS\nDWH.STAGING.STG_GONG__CALLS"
+    gateway = StubGateway(named, named)
+    orch = _orch(tmp_path, gateway)
+    store, thread_id, items = _thread(orch)
+    store.write_session_id(thread_id, "ses_chat", directory=str(tmp_path))
+    list(orch._chat_table_offer(
+        store, orch.project(start_preview=False), thread_id, ASK, items) or [])
+    assert {labels.session for _, labels in gateway.seen} == {"ses_chat"}
+    assert {labels.component for _, labels in gateway.seen} == {"table-rank"}
