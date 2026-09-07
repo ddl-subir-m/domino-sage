@@ -568,10 +568,20 @@ window.SW = window.SW || {};
       // An Upload has crossed into no app yet — said here, at render time, because which app that
       // is can change without a reload (#147). `resource.subtitle` never sets this for a scratch
       // row, so filling it in only when absent cannot clobber anything real.
+      //
+      // Build names the app; Chat names none, the same rule `saysAppUse` keeps above. Chat draws
+      // no app rail, so `not in <app>` there points at a row nobody can see — and it pointed at
+      // it by the placeholder name, because a Project holds a Built App from birth: `activeApp`
+      // is never absent, `_app_display_name` falls back to `Unnamed Built App`, and so every
+      // Chat upload read `not in Unnamed Built App` while the second branch below never ran. In
+      // Build the placeholder is honest instead of stray — the rail draws a row wearing that
+      // exact label — so the name stays there, unbuilt app included.
       const row = resource.source === 'scratch' && !resource.subtitle
         ? {
             ...resource,
-            subtitle: activeApp ? `Chat-only — not in ${activeApp.name}` : 'Chat-only — not in any app yet',
+            subtitle: inBuild && activeApp
+              ? `Chat-only — not in ${activeApp.name}`
+              : 'Only in this chat',
           }
         : resource;
       const inContext = attachedIds.has(resource.id);
