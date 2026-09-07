@@ -242,7 +242,24 @@ def app_context(root: Path | None) -> str:
 
 
 def _model_for(catalog: ModelCatalog) -> str:
-    """The read-only ask model. Scope and handoff classify on the same slot the user would Ask on."""
+    """The read-only ask model. Scope and handoff classify on the same slot the user would Ask on.
+
+    A cheaper, faster model was measured here on 2026-09-07 and is NOT worth swapping to. The
+    numbers, against the live gateway, so nobody has to take them again:
+
+      bare round trip (1 token in, 1 token out)   gpt-5.4 0.38s   bedrock-qwen3-coder 0.79s
+      this classify, with app context             gpt-5.4 1.0-1.3s   bedrock-qwen3-coder 0.84-0.86s
+      verdicts over 13 prompts, hard cases included               0 disagreements
+
+    So the coder model nets out ~0.2-0.45s faster only because it thinks less — its FLOOR is twice
+    gpt-5.4's. On the case that actually matters, a forty-file app whose listing is long, the model
+    that reads faster is the one that wins, and the floor difference goes the other way. Trading a
+    known-good judge for that, on thirteen agreeing samples, is not a trade worth making.
+
+    The real point: most of this call is the gateway hop, not the model. `gemini-3.7-flash` (2.01s)
+    and `sonnet` (2.80s) are both SLOWER than what is here. Making the classifier cheaper is not the
+    lever — not making the call is. That is what the deterministic short-circuits in _build_stream
+    already do, and widening those is where any further saving has to come from."""
     return catalog.ask
 
 
