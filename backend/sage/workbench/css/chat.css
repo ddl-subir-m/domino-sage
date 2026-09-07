@@ -562,6 +562,11 @@
 }
 .sw-table-pick { font-family: var(--mono); }
 .sw-table-more { padding-left: 0; margin-top: var(--s2); }
+/* Names found while the rest of the warehouse is still being read (#186). Read as text and not as
+   controls, because they are not answerable yet — a button that cannot be clicked would say the
+   card is broken, and one that could would queue a turn behind the walk still filling it. */
+.sw-table-candidates.is-reading { max-height: 160px; }
+.sw-table-pick.is-reading { color: var(--gray-600); font-size: var(--fs-12); }
 
 /* A change, attached to the app it happened to. One turn can change two apps
    and the preview only shows one, so this is the record — every change is

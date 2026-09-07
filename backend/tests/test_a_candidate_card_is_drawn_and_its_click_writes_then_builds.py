@@ -47,9 +47,22 @@ HISTORY = [
 ]
 
 
-def _run(answered: dict | None = None) -> dict:
+# The same turn as it arrives frame by frame (#186): the search says it is reading, says what it
+# has after each database lands, and then settles. Only the last of these is ever written to
+# `.sage/history.jsonl` — these three reach the transcript over SSE, through the same derivation.
+STREAMED = [
+    HISTORY[0],
+    {"type": "table-search", "sourceId": "ds-dwh", "sourceName": "Snowflake-Data-Warehouse",
+     "message": "Sage is reading what Snowflake-Data-Warehouse holds…", "groups": [], "total": 0},
+    {"type": "table-search", "sourceId": "ds-dwh", "sourceName": "Snowflake-Data-Warehouse",
+     "message": "Sage is reading what Snowflake-Data-Warehouse holds…",
+     "groups": [{"database": "DWH", "schema": "MARTS", "tables": ["GONG__CALLS"]}], "total": 2},
+]
+
+
+def _run(answered: dict | None = None, history: list[dict] | None = None) -> dict:
     out = subprocess.run(["node", str(_HARNESS)],
-                         input=json.dumps({"history": HISTORY, "prompt": PROMPT,
+                         input=json.dumps({"history": history or HISTORY, "prompt": PROMPT,
                                            "answered": answered or {}}),
                          check=False, capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
@@ -128,6 +141,125 @@ def test_answering_the_card_retires_it_rather_than_leaving_it_clickable():
     assert out["routes"].index("api/project/build/stream") > next(
         i for i, r in enumerate(out["routes"]) if r.startswith("api/project/history"))
     assert all(card["live"] is False for card in out["cardsAfter"])
+
+
+@needs_node
+def test_the_streaming_frames_fill_one_card_in_rather_than_drawing_a_card_each():
+    """The transcript is derived from the whole event list every time a frame lands, so a search
+    reporting four databases pushes four frames through the same branch chain (#186). Pushed rather
+    than replaced, they would draw four cards under one sentence asking the person to pick a table
+    out of one warehouse — and the last of them would be the only one they could answer.
+
+    What survives is the settled card: it carries the prompt, which is what makes it answerable.
+    """
+    cards = _run(history=STREAMED + HISTORY[1:])["cards"]
+
+    assert len(cards) == 1
+    assert cards[0]["searching"] is False
+    assert cards[0]["prompt"] == PROMPT
+    assert cards[0]["total"] == 3
+
+
+@needs_node
+def test_a_turn_that_ended_leaves_no_card_still_saying_it_is_reading():
+    """The backstop for the ends the search does not reach itself.
+
+    It takes its own card back when it gives up, but a stream cut mid-walk — a dropped connection,
+    a worker restart, an exception past the first frame — reaches none of that code. What is left
+    is a spinner and "…is reading what X holds…" sitting over a finished turn, and it is the one
+    state on this card nobody can answer their way out of: the searching card has no buttons, so
+    there is nothing to click and nothing to wait for. A turn being over says enough.
+    """
+    assert _run(history=STREAMED + [
+        {"type": "done", "ok": True, "decision": "built"},
+    ])["cards"] == []
+
+
+@needs_node
+def test_a_card_taken_back_leaves_no_blank_turn_where_it_stood():
+    """A Stop during the walk is the case with nothing after it (#186).
+
+    The searching card is the assistant message's only block, because the gate runs before any
+    build output, and a Stop carries no sentence to put in its place — the person who pressed it
+    knows why the card went. So retiring it empties the message, and a transcript that kept the
+    empty one renders an assistant turn that said nothing: a blank row under the request, which
+    reads as an answer that failed to load rather than a search somebody called off.
+    """
+    out = _run(history=STREAMED + [{"type": "table-search-ended", "sourceId": "ds-dwh"}])
+
+    assert out["cards"] == []
+    assert out["emptyMessages"] == 0
+
+
+@needs_node
+def test_a_search_that_gave_up_takes_its_card_off_the_screen():
+    """The store stopped answering, or held nothing to offer, and the turn went on to the ordinary
+    build. A card left standing would say "reading" for the rest of the session over a turn that
+    had already moved on — and it is the one card nobody can answer, so it would never go."""
+    cards = _run(history=STREAMED + [
+        {"type": "table-search-ended", "sourceId": "ds-dwh"},
+        {"type": "agent", "kind": "text", "text": "Which table should this read?"},
+        {"type": "done", "ok": True, "decision": "built"},
+    ])["cards"]
+
+    assert cards == []
+
+
+@needs_node
+def test_a_streaming_frame_offers_no_way_to_pick_a_table_from_a_half_read_catalog():
+    """Readable, not answerable. A click sends the request again, and a request sent while the walk
+    is still running queues behind the turn doing the walking — which then ends by drawing its
+    settled card onto a transcript that had already answered one.
+
+    The prompt is the seam. The card's buttons are drawn from it, so a searching frame that carried
+    one would be clickable however the component were written.
+    """
+    cards = _run(history=STREAMED)["cards"]
+
+    assert len(cards) == 1
+    assert cards[0]["searching"] is True
+    assert cards[0]["prompt"] == ""
+    assert cards[0]["total"] == 2
+    # DRAWN, not merely held. The card shows the names it has found — that is the whole of the fix,
+    # and a card holding them and rendering none of them passes every assertion above it — and not
+    # one of them is a button.
+    assert cards[0]["drawn"]["names"] == ["GONG__CALLS"]
+    assert cards[0]["drawn"]["pickable"] == []
+
+
+@needs_node
+def test_a_settled_card_opens_collapsed_even_though_the_searching_one_had_nothing_to_collapse():
+    """The cap on how many buttons mount at once has to survive the card filling in (#186).
+
+    A real warehouse holds 602 tables and a prompt that matched none of their names opens on the
+    whole list, because five arbitrary names laid out like answers read as answers. "The whole
+    list" is only a list up to a point, past which it is a paint on every re-render of the
+    transcript — so past it the card says how many there are and one click opens them.
+
+    The trap is that the searching card mounts first, carrying nothing, and the component is not
+    remounted when the settled one replaces it in place. Anything deciding this at mount time reads
+    "nothing matched, and there are zero tables" and then holds that answer over 602.
+
+    WHAT THIS TEST CANNOT SEE is that trap. The harness mocks `useState` as a function that runs
+    its initializer on every call, so a component that seeded the answer at mount would pass here
+    and fail in a browser. What it pins is the behaviour: eighty tables, none of them matched, five
+    names drawn and the rest one click behind. Reproducing mount identity would take a real React,
+    and the derivation this rests on — `expanded || (nothing matched and the list is short)` — is
+    written so there is no mount to depend on.
+    """
+    big = [f"T_{n:03d}" for n in range(80)]
+    cards = _run(history=STREAMED + [
+        {"type": "table-candidates", "prompt": PROMPT, "message": "No Table name matches.",
+         "sourceId": "ds-dwh", "sourceName": "Snowflake-Data-Warehouse", "answered": {},
+         "groups": [{"database": "DWH", "schema": "MARTS", "tables": big[:5]}],
+         "allGroups": [{"database": "DWH", "schema": "MARTS", "tables": big}],
+         "total": 80, "matched": 0, "live": True},
+        {"type": "done", "ok": False, "decision": "table candidates"},
+    ])["cards"]
+
+    assert len(cards) == 1
+    assert cards[0]["drawn"]["names"] == big[:5]
+    assert cards[0]["drawn"]["more"] is True
 
 
 @needs_node
