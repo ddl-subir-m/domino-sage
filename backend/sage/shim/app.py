@@ -119,6 +119,16 @@ async def chat_completions(
                 stopped = True
                 yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
                 return
+            # Said, not acted on. A cut answer is still the best answer there is, so it goes to
+            # OpenCode unchanged; what this adds is the one line that names the cause when the turn
+            # dies further downstream on a tool call whose arguments stop mid-token.
+            cut = ka.cut_off_finish_reason(chunk)
+            if cut:
+                log.warning(
+                    "gateway ended the answer early: finish_reason=%r after %.1fs (requested=%s). "
+                    "A tool call cut mid-arguments is what this looks like from the build.",
+                    cut, time.monotonic() - started, requested,
+                )
             yield chunk
 
         if first is ka.DONE:

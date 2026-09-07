@@ -122,6 +122,13 @@ for, what you proposed, which steps ran.
   one takes the user's attachment out of the builder: the `@` menu stops offering it, and they have
   to find and attach the file again to say the same sentence. Rewrite `src/App.tsx` instead, and
   leave the attachments where they are — the next turn almost always still wants them.
+- **Read attached data at runtime; never copy rows into a source file.** Everything under
+  `public/data/` is served by the app, so `fetch` it, parse it, and derive what you need in the
+  code. That is true however few rows the request names: "sample 100 rows" means fetch the file and
+  take 100 of them at runtime, not paste 100 rows into a `.tsx`. Pasting them writes one enormous
+  file whose arguments the model has to emit as a single unbroken string, and that is where builds
+  break — a call cut mid-string drops the session and loses the turn. It also freezes the data at
+  the moment you wrote it, so a re-attached or corrected file changes nothing on screen.
 - TypeScript everywhere. Small, typed components. Plain React + CSS is the default, and the
   installed packages are the whole toolbox — there is no adding to it mid-build.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse

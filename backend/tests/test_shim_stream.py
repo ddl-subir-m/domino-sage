@@ -263,3 +263,35 @@ def test_the_gap_is_only_counted_for_a_model_that_signs_at_all():
     for model in ("sonnet", "gpt-5.4", "bedrock-qwen3-coder"):
         assert ka.unsigned_tool_messages(model, split) == 0
     assert ka.unsigned_tool_messages("gemini-3.7-flash", None) == 0
+
+
+def test_a_cut_off_answer_is_recognised_by_its_finish_reason():
+    """An output cap leaves no other trace: the stream ends cleanly and `[DONE]` arrives.
+
+    The only symptom is a layer away, where OpenCode fails the session on a tool call whose
+    arguments stopped mid-token. Reading the reason here is what separates that cause from a bad
+    escape, which no cap change would fix.
+    """
+    assert ka.cut_off_finish_reason(
+        b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n') == "length"
+    assert ka.cut_off_finish_reason(
+        b'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n') == "content_filter"
+
+
+def test_a_healthy_answer_is_never_called_cut_off():
+    # The two healthy reasons, the null every content delta carries, and the frames that are not
+    # completion chunks at all. This runs on every chunk of every stream; a false alarm here would
+    # put a warning under a build that finished.
+    assert ka.cut_off_finish_reason(
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n') is None
+    assert ka.cut_off_finish_reason(
+        b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n') is None
+    assert ka.cut_off_finish_reason(
+        b'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n') is None
+    assert ka.cut_off_finish_reason(b"data: [DONE]\n\n") is None
+    assert ka.cut_off_finish_reason(b": keepalive\n\n") is None
+    assert ka.cut_off_finish_reason(b"not sse at all") is None
+    # And prose that happens to use one of the words. The substring scan is a fast reject, not the
+    # answer, so a chunk that passes it still has to parse into a real finish_reason.
+    assert ka.cut_off_finish_reason(
+        b'data: {"choices":[{"delta":{"content":"the length of the array"}}]}\n\n') is None

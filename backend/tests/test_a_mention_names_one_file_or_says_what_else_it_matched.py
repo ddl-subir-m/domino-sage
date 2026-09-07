@@ -323,7 +323,10 @@ def test_an_ambiguous_mention_is_not_reported_in_the_red_a_refusal_wears():
     assert "mentions-ambiguous" in persisted[:persisted.index("})")]
     # And the agent hears it too. The whole defect #130 named was the screen being told something
     # the agent never heard, and a second copy of that would be this one.
-    assert "unusable_note, ambiguous_note) if p)," in service
+    # The blocks the prompt join carries, not the end of the line: the join grew a
+    # broken-call retry note after these, and what this pins is that the note reaches the
+    # agent at all.
+    assert "unusable_note, ambiguous_note," in service
 
 
 def test_chat_honours_the_qualified_token_the_menu_gave_it():

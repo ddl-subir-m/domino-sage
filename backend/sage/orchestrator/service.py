@@ -2448,6 +2448,26 @@ def _unparsed_tool_input(part: dict) -> bool:
     return isinstance(state.get("input"), str) and bool(state["input"].strip())
 
 
+def _unparsed_tool_evidence(part: dict) -> str:
+    """What the broken arguments looked like, for the log ring behind /api/diag.
+
+    `_unparsed_tool_input` says a call broke; the tool name is all the give-up message can say, and
+    it does not separate the only two causes worth different fixes. Arguments cut off mid-string are
+    an output cap: the tail is an unclosed string and the length sits near a round number, and
+    `cut_off_finish_reason` in shim/keepalive.py should have logged the reason a moment earlier.
+    Arguments that run all the way to a closing brace are a bad escape somewhere in the middle —
+    no cap involved, and raising one would fix nothing.
+
+    Head and tail only. The whole string is the file the model was writing, and the log ring is
+    read by people.
+    """
+    state = part.get("state")
+    raw = (state or {}).get("input") if isinstance(state, dict) else None
+    if not isinstance(raw, str):
+        return ""
+    return f"len={len(raw)} head={raw[:200]!r} tail={raw[-100:]!r}"
+
+
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
@@ -7696,11 +7716,33 @@ class Orchestrator:
             "preview is blank. Fix the code so it renders without throwing. Do not just guard the "
             "symptom — find and fix the root cause.\n\nError: {message}\n\nStack:\n{stack}"
         )
+        # What the retry below adds to the turn it re-sends. The retry used to be the same request,
+        # byte for byte, on the reasoning that the fault was in one response rather than in the
+        # request. That holds when the break is random. It does not hold when the break comes from
+        # what the model chose to write: measured live (2026-09-07), a request to sample 100 rows of
+        # an attached CSV into a dashboard broke a `write` twice, in two separate sessions, at the
+        # same step. An identical second attempt makes the same choice and breaks the same way.
+        #
+        # So the retry says what happened and names the choice that most often causes it. No size
+        # limit here on purpose — nothing has measured where the ceiling is, and an invented number
+        # would push the agent into re-editing one file, which AGENTS.md forbids for its own reasons.
+        BROKEN_CALL_RETRY_NOTE = (
+            "Your last {tool} call arrived with arguments that did not parse, and that session was "
+            "dropped part-way through it. This is a fresh session. The app on disk is what the "
+            "broken turn left behind, so read it before you change it.\n\n"
+            "One very large write is the usual cause, and data copied into a source file is the "
+            "usual reason for one. Any file the user attached is already served from `public/data/` "
+            "— fetch it and sample it at runtime instead of pasting rows into the code. Where a file "
+            "is long for some other reason, put the next part in its own component file rather than "
+            "sending one enormous call."
+        )
         # One automatic retry for a tool call whose arguments never parsed (_unparsed_tool_input).
-        # The fault is transient — the same request usually goes through on the next attempt, which
-        # is what the person was being asked to do by hand. Bounded to one so a model that emits
-        # broken JSON systematically still ends, rather than spending a build on the same break.
+        # Bounded to one so a model that emits broken JSON systematically still ends, rather than
+        # spending a whole build on the same break.
         broken_retries = 0
+        # Set by that retry, cleared by the send that carries it, so it rides the retry only and no
+        # later nudge in the same turn repeats it.
+        broken_retry_note = ""
         # The five blocks that ride the FIRST send only; each is cleared right after it, so a nudge
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.
@@ -7757,7 +7799,8 @@ class Orchestrator:
             send_ts = time.monotonic()
             client.send_prompt(sid,
                                "\n\n".join(p for p in (current, chat_note, resource_note,
-                                                       unusable_note, ambiguous_note) if p),
+                                                       unusable_note, ambiguous_note,
+                                                       broken_retry_note) if p),
                                agent=agent, attachments=mention_files)
             # All five ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
@@ -7770,6 +7813,7 @@ class Orchestrator:
             chat_note = ""
             unusable_note = ""
             ambiguous_note = ""
+            broken_retry_note = ""
             appeared = False
             start = time.monotonic()
             # When OpenCode last produced anything, and so what the quiet deadline below is measured
@@ -7789,6 +7833,10 @@ class Orchestrator:
             # Set when a tool call's arguments arrive unparsed, cleared by any part that lands
             # after it. Only a turn that ENDS with this standing had its work cut off.
             broken_call: str | None = None
+            # Captured with it, reported only if the turn ends on it. Held rather than logged at
+            # the detection site because that site runs on every poll while the part is in flight,
+            # and the same broken call would print a dozen times.
+            broken_evidence = ""
             poll_failures = 0
             while True:
                 if project.stop_requested:
@@ -7865,6 +7913,7 @@ class Orchestrator:
                                 # that went on to finish.
                                 if _unparsed_tool_input(part):
                                     broken_call = tool
+                                    broken_evidence = _unparsed_tool_evidence(part)
                                 # Live "active" hint so a long step names what it's doing instead of
                                 # dead air. Only for tools whose streaming input already carries a
                                 # useful detail (a file path, a command); this deliberately skips
@@ -7888,6 +7937,7 @@ class Orchestrator:
                                 continue
                             seen.add(key)
                             broken_call = None
+                            broken_evidence = ""
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
                             if tool in ("edit", "write"):
@@ -7897,13 +7947,20 @@ class Orchestrator:
                             ms = _tool_duration_ms(part)
                             if ms is not None:
                                 ev["durationMs"] = ms
-                            _end = ((part.get("state") or {}).get("time") or {}).get("end")
+                            # (c) How long a FINISHED tool call sat inside OpenCode before a poll
+                            # noticed it — the only number that separates Sage's sampling delay
+                            # from the model's real latency. Read off the part's own `time`, which
+                            # is where OpenCode 1.18.4 puts {created, ran, completed}; `state.time`
+                            # (what _tool_duration_ms above reads) does not exist on the wire, which
+                            # is why no tool card has ever carried a durationMs.
+                            _end = (part.get("time") or {}).get("completed")
                             if isinstance(_end, (int, float)):
                                 timing.observe("emit.lag_ms", max(0.0, time.time() * 1000 - _end))
                             yield persist(ev)
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
                             broken_call = None
+                            broken_evidence = ""
                             # Take the marker out before anything else looks at this text — the
                             # dedupe below, the plan card, the transcript. Stripped on EVERY turn,
                             # including gated ones: the claim is only honoured on a build turn (see
@@ -8060,8 +8117,12 @@ class Orchestrator:
                 # both. Same directory as `_ensure_session` uses — the Built App, not the
                 # workspace root (ADR-0008).
                 broken_retries += 1
-                log.warning("turn: a %s call arrived unparsed — re-sending the turn in a new session",
-                            broken_call)
+                # The evidence, not just the tool name. A tail that is an unclosed string means the
+                # answer was cut at the output cap, and shim/keepalive.py's `cut_off_finish_reason`
+                # will have named it a moment earlier in this same log; a tail that closes cleanly
+                # means a bad escape, which no cap change would fix.
+                log.warning("turn: a %s call arrived unparsed (%s) — re-sending the turn in a "
+                            "new session", broken_call, broken_evidence or "no arguments captured")
                 sid = client.create_session(directory=str(project.app_for_turn().path))
                 project.active_session_id = sid
                 if owns_turn:
@@ -8069,6 +8130,7 @@ class Orchestrator:
                     project.record.write_session_id(sid, project.build_conversation,
                                                     project.app_for_turn().app_id)
                 mention_files, resource_note, chat_note, unusable_note, ambiguous_note = first_send_extras
+                broken_retry_note = BROKEN_CALL_RETRY_NOTE.format(tool=broken_call)
                 yield {"type": "iterate",
                        "reason": f"the model's {broken_call} call arrived broken — starting it again"}
                 continue
@@ -8082,9 +8144,16 @@ class Orchestrator:
                 if owns_turn:
                     self._turn_gave_up = True
                 restore_mode()
+                log.warning("turn: a %s call arrived unparsed again (%s) — giving up",
+                            broken_call, broken_evidence or "no arguments captured")
+                # Not "try the same request again": the retry above already was that request, and it
+                # broke at the same step. What is left to change is the size of what the model is
+                # asked to write in one go, so the message asks for that instead.
                 message = (f"The model sent a broken {broken_call} call twice, so this build "
                            "stopped part-way through. Anything already written to your app is "
-                           "still there. Try the same request again.")
+                           "still there.\n\nThis usually means one step was too big to write in "
+                           "one go. Ask for a smaller piece of it — the table on its own, then the "
+                           "charts — and it will go through.")
                 if owns_turn and is_approval:
                     message += brand.text(
                         '\n\nThe plan you approved is still here — say "try again" and '

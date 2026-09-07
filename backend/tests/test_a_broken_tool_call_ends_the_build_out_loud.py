@@ -16,7 +16,12 @@ import json
 from pathlib import Path
 
 from sage.feedback.runner import FeedbackReport
-from sage.orchestrator.service import Orchestrator, _tool_detail, _unparsed_tool_input
+from sage.orchestrator.service import (
+    Orchestrator,
+    _tool_detail,
+    _unparsed_tool_evidence,
+    _unparsed_tool_input,
+)
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -101,10 +106,40 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     # into every later request, so re-sending there risks a turn that cannot start at all.
     assert len(oc.sessions) == 2
     assert oc.prompts[1]["session"] != oc.prompts[0]["session"]
-    # And it is the same request, not a nudge. The blocks that ride the first send only — the
-    # user's attachments and the Resource/Chat notes — are cleared after it, and a fresh session
-    # heard none of them, so the retry has to carry them again.
-    assert oc.prompts[1]["text"] == oc.prompts[0]["text"]
+    # It is the same request, not a nudge. The blocks that ride the first send only — the user's
+    # attachments and the Resource/Chat notes — are cleared after it, and a fresh session heard
+    # none of them, so the retry has to carry them again.
+    assert oc.prompts[1]["text"].startswith(oc.prompts[0]["text"])
+    # But not byte-identical. Measured live: a break that comes from what the model chose to write
+    # is made again by a second attempt that was told nothing, so the retry names what broke and
+    # names the choice behind it.
+    note = oc.prompts[1]["text"][len(oc.prompts[0]["text"]):]
+    assert "write call arrived with arguments that did not parse" in note
+    assert "public/data/" in note
+
+
+def test_the_retry_note_rides_the_retry_only(tmp_path: Path):
+    """It answers the break, so a turn with no break must never carry it."""
+    orch, oc = _orch(tmp_path, [Turn(text="Added the chart.", writes={"src/chart.tsx": "c\n"})])
+
+    list(orch.build_stream("add a chart"))
+
+    assert all("did not parse" not in p["text"] for p in oc.prompts)
+
+
+def test_the_broken_arguments_are_described_for_the_log():
+    """The tool name alone cannot separate an output cap from a bad escape. Head and tail can."""
+    cut = {"state": {"status": "running", "input": '{"filePath": "src/App.tsx", "content": "cons'}}
+    ev = _unparsed_tool_evidence(cut)
+    assert "len=" in ev and "src/App.tsx" in ev and "cons" in ev
+    # Head and tail only — the whole string is the file the model was writing.
+    long_input = {"state": {"status": "running", "input": "x" * 90_000}}
+    assert len(_unparsed_tool_evidence(long_input)) < 500
+    assert "len=90000" in _unparsed_tool_evidence(long_input)
+    # And nothing to say about the shapes that are not a break.
+    assert _unparsed_tool_evidence({"state": {"input": {"filePath": "src/App.tsx"}}}) == ""
+    assert _unparsed_tool_evidence({}) == ""
+    assert _unparsed_tool_evidence({"state": "completed"}) == ""
 
 
 def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
@@ -121,7 +156,10 @@ def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
     # to be inferred from an app that did not change.
     message = _of(events, "error")[0]["message"]
     assert "broken write call twice" in message
-    assert "Try the same request again." in message
+    # Not "try the same request again": the retry already was that request, and it broke the same
+    # way. The only thing left for the person to change is how much one step asks for.
+    assert "Try the same request again." not in message
+    assert "Ask for a smaller piece of it" in message
     # Exactly one retry. A model that breaks every time must not spend the whole build proving it.
     assert len(oc.sessions) == 2
 

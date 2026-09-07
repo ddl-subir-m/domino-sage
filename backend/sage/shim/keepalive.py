@@ -125,6 +125,56 @@ def upstream_error(chunk: bytes) -> str | None:
     return None
 
 
+# Finish reasons that mean the answer was cut off rather than finished. The healthy ones — "stop"
+# and "tool_calls" — are deliberately absent: this only ever reports a cut.
+CUT_OFF_FINISH_REASONS = ("length", "max_tokens", "content_filter")
+
+
+def cut_off_finish_reason(chunk: bytes) -> str | None:
+    """The finish_reason on a chunk, when it says the answer was cut off rather than completed.
+
+    Nothing in the shim read finish_reason before this, so an answer truncated at the output cap
+    left no trace at all: the stream ends cleanly, `[DONE]` arrives, and the only symptom shows up
+    a layer away — OpenCode fails the session with "Invalid JSON input for ... tool call write"
+    because the arguments string stopped mid-token. `_unparsed_tool_input` in orchestrator/service.py
+    is what catches that end of it, and the tool name is all it can say.
+
+    One line here is the difference between the two causes that look identical from there: an
+    output cap (raise it, or ask for a smaller write) and a bad escape inside arguments that were
+    sent whole (a prompt problem, no cap involved). The declared caps in opencode.json cannot
+    answer it either — they describe the alias OpenCode assumed, not the model the shim routed to.
+
+    Returns None for an ordinary chunk, including one carrying `"finish_reason": null` or a
+    healthy "stop".
+    """
+    # Fast reject before any parsing, for the same reason upstream_error has one: this runs against
+    # every chunk of every stream, and an OpenAI-style content delta carries `"finish_reason": null`
+    # on each one, so keying off the field name would json.loads the whole hot path. Keying off the
+    # values costs a substring scan and rejects every healthy chunk. A false hit — the word
+    # "length" inside prose the model is writing — falls through to the parse below and is rejected
+    # there.
+    if not any(v.encode() in chunk for v in CUT_OFF_FINISH_REASONS):
+        return None
+    for line in chunk.split(b"\n"):
+        payload = line.strip()
+        if not payload.startswith(b"data:"):
+            continue
+        payload = payload[len(b"data:"):].strip()
+        if not payload.startswith(b"{"):  # skips [DONE] and SSE comments
+            continue
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        for choice in obj.get("choices") or []:
+            reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+            if reason in CUT_OFF_FINISH_REASONS:
+                return str(reason)
+    return None
+
+
 # How many assistant tool-call messages the debug listing shows before it stops.
 DEBUG_REQUEST_MAX_CALLS = 20
 
