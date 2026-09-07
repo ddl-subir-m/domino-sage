@@ -310,6 +310,14 @@ class SqlDialect:
     guessing column names. `None` for a connector whose columns Sage cannot list, which is the same
     set as the rest of this table.
 
+    `database_tables` is the same reading as `tables` over a whole database at once, and it is what a
+    SEARCH asks (#182): a creator opens one schema because they chose it, while "which table in here
+    holds the Gong calls" is a question about all of them. Walking the levels costs ~3s each, which is
+    about 45 seconds over the 15 schemas of the live warehouse against 3.84s for one query
+    (ADR-0038). `None` where Sage has no such statement, which is every connector but Snowflake until
+    #187 — a caller reads `walks_whole_database` and asks the creator for a schema instead, and never
+    sweeps the schemas one at a time, because that sweep is the cost this exists to avoid.
+
     Statements are formatted with `{db}` and `{schema}` (validated, quoted identifiers),
     `{schema_lit}` (the same name bare, for the string comparisons `information_schema` needs) and
     `{table_clause}` (the whole `AND TABLE_NAME = '…'` phrase, or nothing when every table is wanted —
@@ -323,6 +331,7 @@ class SqlDialect:
     quote: str = '"'  # `"` everywhere except the stores where it means a string literal by default
     columns: str | None = None
     sample: str | None = None
+    database_tables: str | None = None
 
     def ident(self, name: str) -> str:
         """One validated identifier, quoted. Quoted only to preserve case — the validation has
@@ -387,6 +396,20 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
         verified=True,
         columns=_ANSI_COLUMNS,
         sample=_SAMPLE_3,
+        # The line above with its schema filter dropped and the schema put in the projection — the
+        # same view, on the same database, read the same way. Derived rather than written so that
+        # what stands behind it is the live run behind `tables`, not a guess at a second spelling.
+        # Ordered by schema first because every reader of this groups by schema (ADR-0038).
+        #
+        # `INFORMATION_SCHEMA` itself is dropped, for the reason the Postgres `schemas` entry below
+        # drops it: it is the store's own bookkeeping, never what an app was built to read. The
+        # per-schema statement never had to say so because the creator names the schema, and a
+        # search names none — so "which table holds the usage data" would otherwise offer
+        # `INFORMATION_SCHEMA.USAGE_PRIVILEGES` beside the marts.
+        database_tables=("SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name "
+                         "FROM {db}.INFORMATION_SCHEMA.TABLES "
+                         "WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' "
+                         "ORDER BY TABLE_SCHEMA, TABLE_NAME"),
     ),
     # Three levels: `sys.databases` is cross-database on one connection, unlike Postgres.
     "SQLServerConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
@@ -494,6 +517,23 @@ class Column:
 
 
 @dataclass(frozen=True)
+class Table:
+    """One table found by a database-wide walk (#182), and the schema that holds it.
+
+    A pair rather than a bare name, because the walk spans schemas and the schema is what tells two
+    tables of the same subject apart: `MARTS.GONG__CALLS` is the modeled table a daily summary wants
+    and `STAGING.STG_GONG__CALLS` is the raw one it does not, and a list of names alone cannot say
+    which is which. It is also what candidates are grouped by when a person is asked to pick.
+
+    Not `Column`'s `table` field in reverse: that one names a table inside a schema already known,
+    while this is the answer to a question asked across all of them.
+    """
+
+    schema: str
+    name: str
+
+
+@dataclass(frozen=True)
 class SampleRows:
     """A handful of real rows out of one table (#16).
 
@@ -536,6 +576,33 @@ def cascade_levels(source: DataSource) -> list[str]:
     if dialect is None:
         return []
     return (["database"] if dialect.databases else []) + ["schema", "table"]
+
+
+def walks_whole_database(source: DataSource) -> bool:
+    """Whether this source can be read in one query, or has to be asked about a schema at a time.
+
+    Read BEFORE the query, because the alternative is a different question to the person — "which
+    schema?" — rather than a retry. False for a connector Sage has no dialect for at all, on the same
+    practical ground as a connector that merely has no database-wide statement: there is nothing to
+    walk either way. What separates them is what happens next, and it separates itself: falling back
+    to the cascade meets `dialect_for`'s refusal, which names the connector.
+    """
+    dialect = SQL_DIALECTS.get(source.connector_type)
+    return bool(dialect and dialect.database_tables)
+
+
+def _no_database_wide_walk(source: DataSource) -> ResourceUnavailable:
+    """The refusal both providers raise for a connector that has to be walked a schema at a time.
+
+    Raised rather than answered with []: an empty list is what a database holding no tables looks
+    like, and a caller that cannot tell those apart would tell the person their warehouse is empty
+    instead of asking them which schema to look in.
+    """
+    return ResourceUnavailable(brand.text(
+        "{assistantName} cannot list every table in a {kind} {dataSource} in one go, so it needs "
+        "to be told which schema to look in.",
+        kind=source.connector or source.connector_type,
+    ))
 
 
 def name_column(frame: Any) -> list[str]:
@@ -663,6 +730,12 @@ class ResourceProvider(Protocol):
     def list_schemas(self, source: DataSource, database: str) -> list[str]: ...
 
     def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]: ...
+
+    # Not a cascade level either: it answers a search rather than an expander, so it comes back as
+    # (schema, table) pairs and not as the names under one schema (#182). Refuses for a connector
+    # with no database-wide statement, which `walks_whole_database` says before the query, so a
+    # caller asks the person for a schema rather than sweeping every schema in turn.
+    def list_database_tables(self, source: DataSource, database: str) -> list[Table]: ...
 
     # Not a cascade level — no picker opens it. Read once when a Scope is bound, so the agent that
     # writes the app's queries knows what the tables hold (#15). `table` narrows it to one; "" means
@@ -1480,6 +1553,24 @@ class DominoResourceProvider:
         return self._introspect(
             source, dialect.statement(dialect.tables, database=database, schema=schema))
 
+    def list_database_tables(self, source: DataSource, database: str) -> list[Table]:
+        """Every table in one database, with the schema that holds it, in one query (#182).
+
+        Not the cascade with its levels folded together: this is a single statement, which is the
+        whole point. The cascade's ~3s a level is affordable for a creator opening one schema they
+        chose, and is about 45 seconds over the 15 schemas of the live warehouse for a search that
+        has to look at all of them (ADR-0038).
+        """
+        dialect = dialect_for(source)
+        if dialect.database_tables is None:
+            raise _no_database_wide_walk(source)
+        rows = self._introspect_rows(
+            source, dialect.statement(dialect.database_tables, database=database))
+        return [
+            Table(str(r.get("table_schema") or ""), str(r.get("table_name") or ""))
+            for r in rows if str(r.get("table_name") or "")
+        ]
+
     def list_columns(self, source: DataSource, database: str, schema: str,
                      table: str = "") -> list[Column]:
         """What the bound tables hold, in one query (#15).
@@ -1899,6 +1990,27 @@ class FakeResourceProvider:
     def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]:
         dialect_for(source)
         return list(self.tree.get(source.id, {}).get(database, {}).get(schema, []))
+
+    def list_database_tables(self, source: DataSource, database: str) -> list[Table]:
+        """Every table in one database (#182), from the same tree the cascade walks.
+
+        Built out of the cascade rather than out of a second catalog of its own: a hand-written one
+        would be a fixture that can disagree with the tree, and a caller checking "is the table the
+        search found also one the panel offers" would then be testing the drift.
+
+        Refuses exactly where the real one does, so the state a caller has to handle — a connector
+        that must be asked about a schema at a time — is reachable with no warehouse.
+
+        Sorted, which the fake's own per-schema listing is not: the real statement carries
+        `ORDER BY TABLE_SCHEMA, TABLE_NAME`, and a caller that pins that order would otherwise pass
+        against the warehouse and fail locally.
+        """
+        dialect = dialect_for(source)
+        if dialect.database_tables is None:
+            raise _no_database_wide_walk(source)
+        return [Table(schema, name)
+                for schema in self.list_schemas(source, database)
+                for name in sorted(self.list_tables(source, database, schema))]
 
     def list_columns(self, source: DataSource, database: str, schema: str,
                      table: str = "") -> list[Column]:
