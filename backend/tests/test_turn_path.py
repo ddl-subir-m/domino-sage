@@ -542,12 +542,25 @@ def test_an_approved_plan_builds_even_when_the_classifier_would_gate(tmp_path: P
 def test_a_tool_card_reports_the_time_the_tool_actually_took():
     """The card used to print a hardcoded "0.0s" on every row, so a build that ran for a minute
     read as a build that ran for no time. A part OpenCode timed reports its real duration; a part
-    it did not time reports nothing, which the card renders as no duration rather than a zero."""
+    it did not time reports nothing, which the card renders as no duration rather than a zero.
+
+    The shape below is the one OpenCode sends, read off a live session on 2026-09-07: a top-level
+    `time = {created, ran, completed}`, with no time under `state`. This test used to assert
+    `state.time = {start, end}`, which is not a shape the server has ever produced — so it passed
+    for as long as the feature was completely broken, and no build ever showed a duration.
+
+    Timed from `ran`: the gap before it is the model still streaming the call's arguments, which is
+    the model's time and not the tool's."""
     from sage.orchestrator.service import _tool_duration_ms
 
-    assert _tool_duration_ms({"state": {"time": {"start": 1000, "end": 3500}}}) == 2500
+    assert _tool_duration_ms({"time": {"created": 500, "ran": 1000, "completed": 3500}}) == 2500
+    # Not started yet, so `created` is the only start there is — better than reporting nothing for
+    # a call the server did time.
+    assert _tool_duration_ms({"time": {"created": 1000, "completed": 3500}}) == 2500
     assert _tool_duration_ms({"state": {"status": "completed"}}) is None
-    assert _tool_duration_ms({"state": {"time": {"start": 1000}}}) is None
+    assert _tool_duration_ms({"time": {"created": 1000}}) is None
     assert _tool_duration_ms({}) is None
+    # The invented shape reports nothing, rather than quietly working and hiding the regression.
+    assert _tool_duration_ms({"state": {"time": {"start": 1000, "end": 3500}}}) is None
     # A clock that ran backwards is a measurement nobody should read as a duration.
-    assert _tool_duration_ms({"state": {"time": {"start": 3500, "end": 1000}}}) is None
+    assert _tool_duration_ms({"time": {"ran": 3500, "completed": 1000}}) is None

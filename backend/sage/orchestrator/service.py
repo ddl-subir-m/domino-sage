@@ -2505,12 +2505,21 @@ def _tool_detail(tool: str, part: dict) -> str:
 def _tool_duration_ms(part: dict) -> int | None:
     """How long a tool call took, in ms, or None when OpenCode did not time it.
 
-    A completed tool part carries `state.time = {start, end}` as epoch ms. None rather than 0 is
-    the whole point: the card used to print a hardcoded "0.0s" on every row, which reads as "this
-    took no time at all" when the truth is "nobody measured it".
+    A completed tool part carries its own top-level `time = {created, ran, completed}` as epoch ms,
+    and its `state` carries no time at all. This used to read `state.time = {start, end}`, which
+    does not exist on the wire — so it missed on every part ever sent and no tool row in any build
+    has ever shown a duration. Verified live against the gateway on 2026-09-07.
+
+    Timed from `ran`, not `created`: the gap before `ran` is the model still streaming the call's
+    arguments, which is the model's time and not the tool's — charging it here is what would make a
+    4ms edit read as a 400ms one. `created` is the fallback for a part that has not started, so a
+    row OpenCode did time never reads as one it did not.
+
+    None rather than 0 is the whole point: the card used to print a hardcoded "0.0s" on every row,
+    which reads as "this took no time at all" when the truth is "nobody measured it".
     """
-    t = (part.get("state") or {}).get("time") or {}
-    start, end = t.get("start"), t.get("end")
+    t = part.get("time") or {}
+    start, end = t.get("ran", t.get("created")), t.get("completed")
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
         return None
     ms = int(end - start)

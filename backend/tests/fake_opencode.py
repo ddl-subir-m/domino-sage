@@ -127,6 +127,11 @@ class FakeOpenCode:
             parts.append("a bare string OpenCode sent in place of a part dict")
         for j, tool in enumerate(turn.tools):
             parts.append({"id": f"m{n}-t{j}", "type": "tool", "tool": tool,
+                          # The wire's own shape: a top-level `time`, and no time under `state`.
+                          # A double that times its parts somewhere OpenCode does not would make
+                          # _tool_duration_ms testable and still wrong (see that function).
+                          "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
+                                   "completed": 1_700_000_000_350},
                           "state": {"status": "completed"}})
         # Writes land where the real agent's would: relative to the directory the session was
         # opened in. A Build session stands in the Built App (`apps/<appId>/`) and a Chat session
@@ -137,6 +142,8 @@ class FakeOpenCode:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body)
             parts.append({"id": f"m{n}-w{j}", "type": "tool", "tool": "write",
+                          "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
+                                   "completed": 1_700_000_000_350},
                           "state": {"status": "completed", "input": {"filePath": rel}}})
         if turn.broken_write:
             parts.append({"id": f"m{n}-b", "type": "tool", "tool": "write",
