@@ -205,6 +205,13 @@ _CHAT_TURN_MAX_S = 600.0
 # on the same box. A turn writes one assistant message per step, so this is a turn many times over;
 # anything older was already emitted and is already in `seen`.
 _CHAT_POLL_MESSAGES = 20
+# The same cap for a Build poll, and the same reasoning — Build was left out when Chat got it, so a
+# build re-serialized its own whole session once a second out of the single-threaded Node server
+# that was running the agent, and got slower the longer it ran. Larger than Chat's because a build
+# step emits more parts per second (tool calls with payloads, not just prose), and the window has to
+# stay wide enough that a poll cannot miss a part that appeared and scrolled out between two polls.
+# `_seen_baseline` reads the same window, so the two agree on what counts as already-emitted.
+_BUILD_POLL_MESSAGES = 40
 
 # Largest image inlined into a prompt as a data: URI. Base64 inflates by ~4/3, and the result rides
 # in the request body through OpenCode -> shim -> gateway -> provider; anything larger degrades to
@@ -4407,7 +4414,9 @@ class Orchestrator:
         if sid is None:
             return None
         try:
-            client.messages(sid)
+            # Only the status matters — a 200 means the server still knows this session. Bounded so a
+            # long recovered session isn't serialized in full to answer a yes/no question.
+            client.messages(sid, limit=1)
         except httpx.HTTPStatusError:
             return None
         return sid
@@ -7593,7 +7602,7 @@ class Orchestrator:
         # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
         # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
         # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
-        seen: set[tuple[str, object]] = self._seen_baseline(client, sid)
+        seen: set[tuple[str, object]] = self._seen_baseline(client, sid, limit=_BUILD_POLL_MESSAGES)
         # Text already shown this turn, so a repeat is dropped rather than printed twice. Scoped to the
         # turn (not the session): a later turn restating something is usually answering a new question.
         emitted_text: set[str] = set()
@@ -7761,7 +7770,7 @@ class Orchestrator:
                 # assume still running and retry — and give up only after a sustained outage.
                 try:
                     running = client.is_running(sid)
-                    msgs = client.messages(sid)
+                    msgs = client.messages(sid, limit=_BUILD_POLL_MESSAGES)
                     poll_failures = 0
                 except httpx.HTTPError as e:
                     poll_failures += 1
