@@ -219,12 +219,20 @@ window.SW = window.SW || {};
       if (key.startsWith('unbind-app:')) {
         return SW.store.openAppBindings(key.slice('unbind-app:'.length));
       }
-      // The route only, as the Plan page's own "From conversation" link does: the chip's door is
-      // "Stop using here" on the row once the conversation is open, and it draws itself there.
+      // Through `openConversation`, the one door every entrance to a Conversation now uses — the
+      // rail's rows, the Plan page's own back-link, and this (#198). It wrote the route by hand
+      // until now, which in Build left the preview and the header on the app you came from while
+      // the transcript moved to another app's conversation.
+      //
+      // No `boundAppId` to hand it, unlike the Plan page: a Resource chip knows which Conversation
+      // uses the Resource and nothing about which Built App that Conversation built. So this stays
+      // the case Build's async `resolveConversationApp` answers, exactly as it did before.
+      //
+      // Still the route and no more than that, in the sense the old comment meant: the chip's own
+      // door is "Stop using here" on the row once the conversation is open, and it draws itself
+      // there.
       if (key.startsWith('open-chat:')) {
-        return SW.router.go(
-          SW.conversationRoute({ id: key.slice('open-chat:'.length) }, SW.router.get().mode)
-        );
+        return SW.openConversation({ id: key.slice('open-chat:'.length) }, SW.router.get().mode);
       }
       if (key === 'to-app') return SW.store.addScratchToDataset(resource, '');
       if (key === 'delete-scratch') return SW.store.deleteScratchFile(resource);
