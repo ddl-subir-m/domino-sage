@@ -106,6 +106,17 @@ to the Thread's own `context.json` and carried into `bind_data_source` by the ex
 refusing to confirm in Chat and telling the person to pick again in Build — makes them answer the
 same question twice across a handoff, which is the friction this decision exists to remove.
 
+The ranker is the same one, on the same seam, and that had to be said out loud: Chat shipped its half
+first and kept the name rank for a release, so the same request against the same store put a
+different table first depending on which mode the person was standing in — in Chat, where this
+decision says finding happens. What the ranker reads in a Chat turn is therefore decided rather than
+inherited. The gateway, the model catalog and the Sage version are the **Project's shim** on both
+paths: there is one shim per Project, Chat and Build are two surfaces onto it, and Chat's own handoff
+classifier already reads those three off it for the same kind of call. The **session** is the
+caller's, and it is the one input that differs — it keys the cost rollup, so a Chat rank tagged with
+the build session would file this question's cost against a build that never asked it. A Chat turn
+passes the Thread's own OpenCode session, and a Thread that has not run a turn yet passes none.
+
 ## The Dataset half
 
 The same act, with a different outcome: for a Dataset, confirming a candidate **attaches the files**
