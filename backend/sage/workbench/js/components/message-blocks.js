@@ -146,6 +146,32 @@ window.SW = window.SW || {};
 
   function TableBlock({ block }) {
     const [showAll, setShowAll] = useState(false);
+    // With neither columns nor rows, antd paints a bordered box under the title and nothing
+    // else — it reads as a rendering fault, and it names neither what is missing nor anything
+    // to do about it. Two of these arrived under a correct "Adverse Events Summary" title. The
+    // file the turn wrote is the only thing that can settle which it is: a frame that really
+    // was empty, or a wrapper `blocksForArtifacts` could not read. So offer the file.
+    if (!block.columns.length && !block.rows.length) {
+      return h(
+        'div',
+        { className: 'sw-block-card' },
+        block.title &&
+          h('div', { className: 'sw-block-head' },
+            h('div', { className: 'sw-block-title' }, block.title)),
+        h(
+          'div',
+          { className: 'sw-block-body' },
+          h('div', { className: 'sw-block-sub' }, 'This table came through with no rows.'),
+          block.path &&
+            h(
+              'a',
+              { className: 'sw-block-sub',
+                href: `./api/project/file/raw?path=${encodeURIComponent(block.path)}` },
+              'Open the file'
+            )
+        )
+      );
+    }
     const columns = block.columns.map((name, index) => ({
       title: name,
       dataIndex: index,
@@ -1109,6 +1135,11 @@ window.SW = window.SW || {};
         if (b.type === 'code') return `\`\`\`${b.language || ''}\n${b.value}\n\`\`\``;
         if (b.type === 'table') {
           const cell = (v) => String(v ?? '').replace(/\|/g, '\\|');
+          // The card says this in words; a pasted `|  |` over `|  |` says it in a syntax that
+          // renders as an empty table wherever it lands, which is how this reached a bug report.
+          if (!b.columns.length && !b.rows.length) {
+            return [b.title, '(no rows)'].filter(Boolean).join('\n');
+          }
           const header = `| ${b.columns.map(cell).join(' | ')} |`;
           const rule = `| ${b.columns.map(() => '---').join(' | ')} |`;
           const rows = b.rows.map((row) => `| ${row.map(cell).join(' | ')} |`);

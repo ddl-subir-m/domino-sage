@@ -1,0 +1,90 @@
+// What a `.table.json` Artifact card SAYS, given the block the store built for it.
+//
+// `table_artifact_harness.mjs` is the sibling of this file and stops one step short: it settles what
+// `columns` and `rows` a wrapper recovers, which is a claim about data. The bug reported against
+// this pair was seen on screen first — "2 blank adverse events summary boxes" — so the claim here
+// is WHICH SENTENCES ARE ON SCREEN, and no amount of correct block data settles that.
+//
+// Nothing is mounted. `createElement` is stubbed to a plain object and `TableBlock` builds its own
+// markup, so the card is fully decided by the tree `MessageBlock` returns. antd's `Table` is stubbed
+// to the bare string 'Table': the empty card must not render one at all, and a card that does is
+// reported here as `table: true` rather than inspected — what antd paints inside it is antd's.
+//
+// Input on stdin: one block, verbatim as `blocksForArtifacts` pushes it.
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
+const block = JSON.parse(fs.readFileSync(0, 'utf8'));
+
+const sandbox = {
+  console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
+  Error, Blob, ArrayBuffer, Uint8Array, Infinity, encodeURIComponent, decodeURIComponent,
+  setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
+  location: { hash: '' },
+  addEventListener() {}, removeEventListener() {},
+  React: {
+    createElement: (t, p, ...c) => ({ t, p: p || {}, c }),
+    useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+    useEffect: () => {},
+    useMemo: (fn) => fn(),
+    useRef: () => ({ current: null }),
+    Fragment: 'Fragment',
+  },
+  antd: {
+    Input: Object.assign(function Input() {}, { TextArea: 'Input.TextArea' }),
+    Button: 'Button', Table: 'Table', Tooltip: 'Tooltip', Tag: 'Tag', Space: 'Space',
+    Modal: Object.assign(function Modal() {}, { confirm() {} }),
+    message: { success() {}, error() {}, info() {}, warning() {} },
+  },
+  icons: new Proxy({}, { get: (_, name) => String(name) }),
+  fetch: async () => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
+                        json: async () => ({}), text: async () => '' }),
+};
+sandbox.window = sandbox;
+sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+for (const f of ['util.js', 'api.js', 'prefs.js', 'store.js', 'components/message-blocks.js']) {
+  vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
+}
+const SW = sandbox.SW;
+
+function* walk(node) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { for (const c of node) yield* walk(c); return; }
+  yield node;
+  yield* walk(node.c);
+}
+
+// `MessageBlock` only routes: for a table it returns a `TableBlock` ELEMENT, and a stubbed
+// `createElement` never calls it. Step through that one hop so the card under test is the card the
+// router actually picks, rather than one this harness named for itself.
+const routed = SW.MessageBlock({ block });
+const tree = routed && typeof routed.t === 'function' ? routed.t(routed.p) : routed;
+const nodes = [...walk(tree)];
+const saidBy = (cls) => nodes.filter((n) => (n.p || {}).className === cls)
+  .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join(''))
+  .filter(Boolean);
+
+// `copyTextFor` is private to the module, and exporting it to be tested would be the test changing
+// the thing it tests. The Copy button holds the only reference, so press it: `SW.util.copy` is the
+// clipboard here, and what the button hands it is what the person pastes. This is the path that
+// produced the `|  |` over `|  |` in the report.
+let copied = null;
+SW.util.copy = (text) => { copied = text; };
+const message = { id: 'msg_1', role: 'assistant', blocks: [block] };
+const button = [...walk(SW.Message({ message }))]
+  .find((n) => (n.p || {})['aria-label'] === 'Copy message');
+if (button) button.p.onClick();
+
+console.log(JSON.stringify({
+  title: saidBy('sw-block-title')[0] || null,
+  // Every line of prose the card puts on screen, in order. A blank card says none.
+  said: saidBy('sw-block-sub'),
+  // Where the card sends someone who cannot read the table it failed to draw.
+  links: nodes.filter((n) => n.t === 'a').map((n) => (n.p || {}).href).filter(Boolean),
+  table: nodes.some((n) => n.t === 'Table'),
+  copied,
+}));

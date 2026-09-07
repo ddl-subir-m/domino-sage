@@ -1047,15 +1047,32 @@ window.SW = window.SW || {};
           // "No data" placeholder. Recover the wrapper from the records rather than trust every
           // turn's Python to have followed the contract.
           const bare = Array.isArray(data) ? data : null;
-          const source = bare || data.rows || [];
+          const wrapper = bare ? {} : data;
+          // A third way to miss it, and the one that reads worst: the wrapper is there, `title`
+          // is there, and the rows are under some other key. A turn thinking in pandas rather
+          // than in the contract reaches for `df.to_json(orient=…)`, and every orient that keeps
+          // a wrapper puts its rows under `data`; a turn half-remembering the contract writes
+          // `records`. Reading only `rows` left a correct title over an antd table with no
+          // columns and no rows — a captioned blank box.
+          const source = bare || ['rows', 'data', 'records'].map((k) => wrapper[k]).find(Array.isArray) || [];
           const head = source[0];
+          // `orient="table"` names its columns in a JSON Table Schema `fields` list and nowhere
+          // else. Its `index` field is one pandas synthesised, not one of the frame's own.
+          const fields = Array.isArray(wrapper.schema && wrapper.schema.fields)
+            ? wrapper.schema.fields.map((f) => (f || {}).name).filter((n) => n && n !== 'index')
+            : [];
           // Only a record row names its columns. Reading them off a positional row would header
           // the table "0", "1", … — worse than the empty header that shape renders today.
           const columns =
-            (bare ? null : data.columns) || (head && !Array.isArray(head) ? Object.keys(head) : []);
+            (Array.isArray(wrapper.columns) && wrapper.columns.length ? wrapper.columns : null) ||
+            (fields.length ? fields : null) ||
+            (head && !Array.isArray(head) ? Object.keys(head) : []);
           blocks.push({
             type: 'table',
             title: data.title || art.title,
+            // Carried so a table that still recovers nothing can hand over the file instead of
+            // painting the blank box that started this.
+            path,
             columns,
             rows: source.map((row) =>
               Array.isArray(row) ? row : columns.map((name) => (row || {})[name] ?? null)),
@@ -4882,11 +4899,21 @@ window.SW = window.SW || {};
             state.typing = null;
             ensurePushed();
             const items = ev.items || ev.artifacts;
+            // The server sends this list TWICE — once as `artifacts`, once again on the `done`
+            // that closes the turn — so this filter is the only thing standing between one file
+            // and two cards. Identity is the path. Folding each block down to whichever of
+            // `src`/`path`/`title` was set first made the match depend on which key that
+            // happened to be: a table had no `src` and no `path`, so it was matched on the title
+            // the TURN wrote inside the JSON, while the incoming row carries a title derived
+            // from the filename. Those differ the moment the JSON names itself, which is how one
+            // "Adverse Events Summary" became two. Titles are not identifiers in the other
+            // direction either — a matrix is written as a PNG and a table that share one on
+            // purpose — so match on the path and nothing else.
             const have = new Set(
               assistant.blocks.filter((b) => b.type === 'image' || b.type === 'table' || b.type === 'file')
-                .map((b) => b.src || b.path || b.title)
+                .flatMap((b) => [b.src, b.path].filter(Boolean))
             );
-            const fresh = (items || []).filter((a) => !have.has(fileUrl(a.path)) && !have.has(a.path) && !have.has(a.title));
+            const fresh = (items || []).filter((a) => !have.has(fileUrl(a.path)) && !have.has(a.path));
             if (fresh.length) {
               assistant.blocks = [...assistant.blocks, ...(await blocksForArtifacts(fresh))];
             }
