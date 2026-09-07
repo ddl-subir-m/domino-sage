@@ -691,6 +691,12 @@ SW.api = {
   // read minutes ago, while the panel's cascade was walked seconds ago.
   confirmTableCandidate: (resourceId, scope) =>
     post(`/bindings/data_source/${encodeURIComponent(resourceId)}/candidate`, scope || {}),
+  // The same click, answered in Chat (#188). A different record, not a different act: Chat has no
+  // Built App to depend on anything, so the table goes on the Thread's own context row and crosses
+  // into a Binding at the handoff.
+  confirmThreadTableCandidate: (threadId, resourceId, scope) =>
+    post(`/threads/${encodeURIComponent(threadId)}/context/data_source/`
+      + `${encodeURIComponent(resourceId)}/candidate`, scope || {}),
   // The two app-scoped removals (ADR-0011). Both answer with the app source that STILL uses what
   // just went — read by the route before the record goes, because a Data Source's queries are found
   // through the record — so neither caller has to scan anything to report it.

@@ -985,12 +985,21 @@ window.SW = window.SW || {};
                     // spin both rows on one click.
                     loading: busy === `${group.database}.${group.schema}.${table}`,
                     disabled: !!busy,
+                    // Which door the click writes through (#188). A card drawn in Chat carries the
+                    // Thread it belongs to, and the table goes on that conversation's own row —
+                    // Chat has no Built App to hold a Binding, and the record crosses at the
+                    // handoff. Without a Thread this is the Build card and writes the Binding.
                     onClick: run(`${group.database}.${group.schema}.${table}`,
-                      () => SW.store.chooseTableAndBuild(
-                        block.prompt, block.sourceId,
-                        { database: group.database, schema: group.schema, table },
-                        block.answered,
-                      )),
+                      () => (block.threadId
+                        ? SW.store.chooseTableAndAsk(
+                          block.prompt, block.threadId, block.sourceId,
+                          { database: group.database, schema: group.schema, table },
+                        )
+                        : SW.store.chooseTableAndBuild(
+                          block.prompt, block.sourceId,
+                          { database: group.database, schema: group.schema, table },
+                          block.answered,
+                        ))),
                   }, table)))
               )),
               hidden > 0

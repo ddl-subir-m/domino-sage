@@ -183,7 +183,10 @@ the person's pick is what writes the [[Table]]. Sage never picks for them, howev
 looks, because a Binding is declared and never inferred ([ADR-0010](docs/adr/0010-publish-reads-the-declaration-not-the-code.md),
 [ADR-0038](docs/adr/0038-a-found-table-is-bound-by-the-click-not-by-the-agent.md)). Offering one
 is Sage's own act, taken in its own code before the assistant is asked to write anything — the
-assistant may say a table is missing, it may never go and choose it.
+assistant may say a table is missing, it may never go and choose it. Offered in Chat as well as in
+Build, because the mode a person happens to be standing in does not decide whether Sage will look;
+a Chat pick is recorded on the [[Conversation]] instead, since Chat has no Built App to hold a
+Binding, and it becomes the [[Table]] when that Conversation hands off.
 _Kind_: name
 _Avoid_: match, result, suggestion (Sage is not suggesting, it is asking), guess, best table
 
