@@ -11957,10 +11957,13 @@ class Orchestrator:
         would turn it down cannot exist (ADR-0029).
         """
         if listing.truncated:
-            return brand.text(
-                "{assistantName} could not list all of this {dataset}, so it cannot tell which "
-                "folders in it are whole. Attach the files you need one at a time."
-            )
+            # The walk is sorted, so the cap cuts the tail: early folders are whole, late ones are
+            # cut or absent, and nothing downstream can tell which (ADR-0029). That mechanism stays
+            # in this comment rather than in the sentence, the way #181 moved its sibling's — both
+            # reasons land on the same two small surfaces, a tooltip on the disabled button and the
+            # whole body of `attach_folder`'s 409, and a reader hunting why the act is withheld and
+            # what to do instead reads past a clause about subtree completeness on the way (#189).
+            return brand.text("Only part of this {dataset} could be listed. Attach files instead.")
         if not asset.mount_path:
             # Not "cannot measure it": since #153 the sizes are known here. What is still missing is
             # a way to fetch a folder — every file comes down separately through
