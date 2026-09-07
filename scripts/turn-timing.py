@@ -22,7 +22,10 @@ and prints them largest first, so the ranking comes off the numbers rather than 
              between a tool finishing inside OpenCode and Sage noticing (emit.lag)
     other    the remainder: typecheck, git, and whatever is not yet instrumented
 
-Exits 1 when the pre-model overhead is over budget, so it can be run as a check rather than read.
+Exits 1 when the MEDIAN turn's pre-model overhead is over budget, so it can be run as a check
+rather than read. The default of 2.5s is evidenced, not chosen: a median turn measured 1.9s on
+2026-09-07 after the gate work, and the floor under that is a gateway round trip the scope
+classifier has to make (~1s), so a budget near 1s is one no code change can reach.
 """
 from __future__ import annotations
 
@@ -173,21 +176,29 @@ def main() -> int:
     ap.add_argument("--cookie", default="", help="Cookie header for a deployed Builder")
     ap.add_argument("--raw", action="store_true", help="the server's own waterfall, unsummarised")
     ap.add_argument("--watch", action="store_true", help="re-read every 5s (follow a live turn)")
-    ap.add_argument("--budget-pre", type=float, default=5.0,
-                    help="seconds of pre-inference overhead before this exits 1 (default 5)")
+    ap.add_argument("--budget-pre", type=float, default=2.5,
+                    help="seconds of MEDIAN pre-inference overhead before this exits 1 (default 2.5)")
     a = ap.parse_args()
 
     while True:
         try:
             if a.raw:
                 print(fetch_text(a.url, a.n, a.cookie))
-                worst = 0.0
+                median_pre = worst = 0.0
             else:
                 recs = fetch(a.url, a.n, a.cookie)
                 if not recs:
                     print("(no turns recorded yet — run a build, then read this again)")
                     return 0
-                worst = max(report(r)["gates"] for r in recs) / 1000
+                pres = sorted(report(r)["gates"] for r in recs)
+                # Gate on the MEDIAN, report the worst. The budget used to be the worst turn, and
+                # that made this a coin toss rather than a check: `gate.slots` is a 60s cache whose
+                # background refresh does not always win the race, so one turn in a run legitimately
+                # pays a ~2.5s cold miss and the whole check went red on it. A regression in what a
+                # turn pays before its first token moves the middle of the distribution; a cold
+                # cache moves only the tail.
+                median_pre = pres[len(pres) // 2] / 1000
+                worst = pres[-1] / 1000
         except Exception as e:
             print(f"could not read {a.url}/api/diag/timing: {type(e).__name__}: {e}", file=sys.stderr)
             return 2
@@ -195,9 +206,9 @@ def main() -> int:
             break
         time.sleep(5)
 
-    if worst > a.budget_pre:
-        print(f"\nRED: {worst:.1f}s of a turn ran before its first inference "
-              f"(budget {a.budget_pre:.1f}s).", file=sys.stderr)
+    if median_pre > a.budget_pre:
+        print(f"\nRED: the median turn ran {median_pre:.1f}s before its first inference "
+              f"(budget {a.budget_pre:.1f}s; worst turn {worst:.1f}s).", file=sys.stderr)
         return 1
     return 0
 

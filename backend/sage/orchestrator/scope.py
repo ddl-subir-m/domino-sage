@@ -55,6 +55,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .. import timing
 from ..gateway.client import CostLabels, GatewayClient
 from ..router.models import ModelCatalog
 
@@ -380,7 +381,27 @@ def start(
             "temperature": 0,
             "stream": True,
         }
-        return _extract(b"".join(gateway.route(request, labels)))
+        # On the turn's ledger, because this IS an inference the turn pays for — ~1s of it, on the
+        # critical path until the join. It reached /api/diag/timing through nothing until now: the
+        # ledger is filled by the /v1 shim handler, and this call goes STRAIGHT to the gateway, so
+        # every Auto turn on a built app under-counted its own inferences by one.
+        #
+        # Deliberately NOT added to `project.model_calls`. That counter means "inferences that
+        # reached the SHIM", and `model_calls == 0` is what `shim_bypassed` reads to tell a broken
+        # OpenCode->shim wiring from a working one. A call that bypasses the shim by design would
+        # make that zero non-zero and hide the fault the counter exists to surface.
+        call = timing.model_call(_model_for(catalog), "scope")
+        chunks = []
+        try:
+            for chunk in gateway.route(request, labels):
+                call.first_byte()
+                call.chunk()
+                chunks.append(chunk)
+        except BaseException as e:
+            call.done(ok=False, error=f"{type(e).__name__}: {e}")
+            raise
+        call.done()
+        return _extract(b"".join(chunks))
 
     done = threading.Event()
     box: dict = {}

@@ -398,3 +398,60 @@ def test_a_classifier_already_declared_broken_starts_nothing():
     calls = len(gw.seen)
     assert _begin(gw).result() is False
     assert len(gw.seen) == calls
+
+
+def test_the_classifier_puts_its_own_inference_on_the_turns_ledger():
+    """The scope call is ~1s of a turn's critical path (measured live 2026-09-07), and it reached
+    the timing readout through nothing at all: the ledger is filled by the /v1 shim handler, and
+    this call goes STRAIGHT to the gateway. So every Auto turn on a built app under-counted its own
+    inferences by one, and the one it dropped was the one on the critical path."""
+    from sage import timing
+
+    timing.start_turn("build", "add scheduled retraining")
+    try:
+        assert _ask(StubGateway("PLAN")) is True
+        rec = timing.current()
+        assert rec is not None
+        scope_calls = [c for c in rec.calls if c.phase == "scope"]
+        assert len(scope_calls) == 1, f"the classifier's inference is not on the ledger: {rec.calls}"
+        assert scope_calls[0].model == CATALOG.ask
+        assert scope_calls[0].t1 is not None, "the ledger entry was never closed"
+    finally:
+        timing.finish_turn()
+
+
+def test_a_failed_classify_still_closes_its_ledger_entry():
+    """An entry left open reads as a call still in flight, which on the readout is indistinguishable
+    from a gateway that hung — the exact fault someone would be looking at the ledger to diagnose."""
+    from sage import timing
+
+    timing.start_turn("build", "add scheduled retraining")
+    try:
+        assert _ask(StubGateway(raises=RuntimeError("gateway down"))) is False
+        rec = timing.current()
+        scope_calls = [c for c in rec.calls if c.phase == "scope"]
+        assert len(scope_calls) == 1
+        assert scope_calls[0].t1 is not None, "a failed call left its ledger entry open"
+        assert scope_calls[0].ok is False
+    finally:
+        timing.finish_turn()
+
+
+def test_the_classifier_is_kept_off_the_shim_counter():
+    """`project.model_calls` counts inferences that reached the SHIM, and `model_calls == 0` is what
+    `shim_bypassed` reads to tell broken OpenCode->shim wiring from working wiring. This call
+    bypasses the shim by design, so counting it there would hide the very fault that counter exists
+    to surface. Asserted rather than commented, because the ledger fix above is one obvious edit
+    away from breaking it."""
+    import ast
+    import inspect
+
+    # The AST, not the source text: the comment at the call site explains WHY this counter is left
+    # alone, so a substring check would fail on the explanation and pass on the mistake.
+    tree = ast.parse(inspect.getsource(scope))
+    touched = [n for n in ast.walk(tree)
+               if isinstance(n, ast.Attribute) and n.attr == "model_calls"]
+    assert not touched, (
+        "scope.py now reads or writes model_calls — that counter is the shim-bypass detector, and "
+        "a call that deliberately skips the shim must not increment it"
+    )
