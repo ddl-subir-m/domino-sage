@@ -18,6 +18,7 @@ import queue
 import re
 import tempfile
 import threading
+import weakref
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -217,6 +218,15 @@ _CHAT_POLL_MESSAGES = 20
 # stay wide enough that a poll cannot miss a part that appeared and scrolled out between two polls.
 # `_seen_baseline` reads the same window, so the two agree on what counts as already-emitted.
 _BUILD_POLL_MESSAGES = 40
+
+# Smallest gap the build poll will leave between two transcript reads once it is being woken by the
+# event stream rather than by a timer (see _EventTap.wait). The read costs 22ms p50 out of the same
+# single-threaded Node server the agent is running in, so an uncapped wake rate would spend the
+# agent's own CPU buying back Sage's latency — which is the objection to simply shortening the
+# sleep, and it applies just as much here. At this value a burst of tool frames costs at most five
+# reads a second instead of thirteen back-to-back, and a card is late by at most this much; a quiet
+# turn is woken by nothing at all and reads less often than the old one-second timer ever did.
+_POLL_FLOOR_S = 0.2
 
 # Largest image inlined into a prompt as a data: URI. Base64 inflates by ~4/3, and the result rides
 # in the request body through OpenCode -> shim -> gateway -> provider; anything larger degrades to
@@ -1710,17 +1720,14 @@ class _EventTap:
         # path, never reads the transcript, and goes to the quiet cap blind to its own progress.
         self.seen_any = False
         if self._stream is not None:
-            threading.Thread(target=self._read, daemon=True, name="sage-chat-events").start()
-
-    def _read(self) -> None:
-        try:
-            for ev in self._stream:
-                self._q.put(ev)
-        except Exception as e:  # any failure means "poll instead", never "fail the turn"
-            log.info("chat: event stream unavailable (%s: %s) - polling the transcript instead",
-                     type(e).__name__, e)
-        finally:
-            self.ok = False
+            # The target is a plain function over a weakref, NOT a bound method, and that is the
+            # whole reason __del__ below can ever run. A live Thread holds its target alive, so
+            # `target=self._read` would keep this tap referenced for as long as the reader runs —
+            # and the reader runs until the tap is closed, which is what __del__ was meant to do.
+            # The refcount would never reach zero, and the cleanup would be dead code that reads
+            # like a safety net.
+            threading.Thread(target=_pump, args=(self._stream, self._q, weakref.ref(self)),
+                             daemon=True, name="sage-events").start()
 
     def drain(self) -> list:
         """Everything that has arrived since the last call. Never blocks."""
@@ -1732,10 +1739,108 @@ class _EventTap:
                 self.seen_any = self.seen_any or bool(out)
                 return out
 
+    def wait(self, timeout: float, floor: float = 0.0) -> bool:
+        """Block until a frame worth re-reading the transcript for, or until `timeout`.
+
+        The doorbell for a loop that reads the TRANSCRIPT rather than the stream. What arrives here
+        is dropped, not returned, and that is the design rather than an omission: the transcript
+        stays the single source of every card, so there is no second key space to dedupe against and
+        no card whose wording depends on which path found it. It is also what makes a stream with no
+        `?after=` usable at all — nothing is carried, so a frame that is missed costs one ordinary
+        timeout instead of a card that never appears. A caller that wants the events themselves
+        wants drain(); the two are not mixed, because this one throws them away.
+
+        Text deltas do not count. A paragraph produces dozens a second and completes nothing the
+        transcript could show, so waking on them would turn one answer into thirty reads against the
+        single-threaded server the agent is using — the cost of a shorter blind sleep, arriving
+        through the back door. `text.ended` does count: that part has landed.
+
+        `floor` is the smallest gap this will leave between two reads, and it is what stops the same
+        storm arriving through tool frames instead. Deltas are the loudest source but not the only
+        one: a step that reads six files emits a `called` and a `success` for each, and every one of
+        those IS worth a read — so without a floor a single step turns one poll into thirteen
+        back-to-back ones. Held frames are not dropped, only deferred: the next call finds them
+        queued and returns at once, so the cost of the floor is latency inside a burst and nothing
+        else, and the reader that lands after it renders every card the burst produced.
+
+        A tap with no stream, or one whose stream has died, has an empty queue forever — so this is
+        exactly the blind sleep it replaced, and the fallback needs no branch to be taken."""
+        import time
+
+        started = time.monotonic()
+        deadline = started + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                ev = self._q.get(timeout=remaining)
+            except queue.Empty:
+                return False
+            if _worth_a_read(ev):
+                held = floor - (time.monotonic() - started)
+                if held > 0:
+                    time.sleep(held)
+                return True
+
     def close(self) -> None:
         self.ok = False
         if self._stream is not None:
             self._stream.close()
+
+    def __del__(self) -> None:
+        # The reader is parked on a read that nothing else will ever end: /event is global and stays
+        # open for the life of the server. Every ordinary exit closes the tap by hand; this is for
+        # the ones that cannot — a turn abandoned mid-poll because the tab closed, or an exception
+        # nobody here expected — where one missed close holds a thread and a socket for the life of
+        # the process. It only works because the reader thread holds a weakref (see __init__).
+        try:
+            self.close()
+        except Exception:  # interpreter teardown; there is nothing left to close it for
+            pass
+
+
+def _pump(stream, q: queue.Queue, tap_ref) -> None:
+    """Drain one event stream into a queue, off the turn thread.
+
+    A module-level function rather than a method, and holding the tap only by weakref, so that a tap
+    nobody is using any more can be collected while this is still parked on the socket — see the
+    thread start in _EventTap.__init__."""
+    try:
+        for ev in stream:
+            q.put(ev)
+            # Marked on ARRIVAL rather than on consumption. A turn can end with real frames still
+            # queued — the loop breaks the moment the session reads idle — and a flag that counted
+            # only what was taken out would call that stream silent. Silent is the one thing the
+            # flag exists to report (it is how a wrong session directory shows up at all), so a
+            # false alarm there costs more than the flag is worth.
+            tap = tap_ref()
+            if tap is not None:
+                tap.seen_any = True
+            del tap
+    except Exception as e:  # any failure means "poll instead", never "fail the turn"
+        log.info("event stream unavailable (%s: %s) - polling the transcript instead",
+                 type(e).__name__, e)
+    finally:
+        tap = tap_ref()
+        if tap is not None:
+            tap.ok = False
+
+
+def _worth_a_read(ev) -> bool:
+    """Whether one stream frame means the transcript now has something new to show.
+
+    Everything OpenCode sends about a step qualifies — a call starting, finishing, failing, a step
+    ending — because each of those is a part the next read can render. A text delta does not: the
+    part it belongs to is still open, and a read would find it exactly as it was.
+
+    Total by construction. This is the one thing on the reader's output that runs on the TURN's
+    thread, and the reader swallows every failure precisely so that a stream can never fail a turn;
+    an attribute error raised here would walk straight out of the poll loop and undo that."""
+    if getattr(ev, "kind", "") != "message":
+        return True
+    payload = getattr(ev, "payload", None)
+    return bool(payload.get("final")) if isinstance(payload, dict) else True
 
 
 # What Chat says it is doing, while it does it. None of this is kept: the Thread keeps the chart
@@ -8042,6 +8147,17 @@ class Orchestrator:
             # Boundary for the runtime-error check below: only a crash the preview reports AFTER this
             # send belongs to this turn's code (an earlier turn's render reported before send_ts).
             send_ts = time.monotonic()
+            # Opened BEFORE the prompt, for the reason Chat's tap is: the stream has no `?after=`,
+            # so a frame emitted before the reader connects is gone. Here that costs nothing worse
+            # than one 1.0s wait — the poll below is what emits, not this — but the window is free
+            # to close, so it is closed.
+            #
+            # The directory is the SESSION's, which for Build is the Built App (`_ensure_session`
+            # and the broken-call retry both create on `app_for_turn().path`). Getting it wrong is
+            # the one failure here that is silent: /event delivers only the events of the directory
+            # the connection asks for, so a mismatched value connects, stays open, carries nothing,
+            # and leaves a turn exactly as slow as it was with no error anywhere to say why.
+            tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
             client.send_prompt(sid,
                                "\n\n".join(p for p in (current, chat_note, resource_note,
                                                        unusable_note, ambiguous_note,
@@ -8086,6 +8202,7 @@ class Orchestrator:
             while True:
                 if project.stop_requested:
                     client.interrupt(sid)
+                    tap.close()
                     yield handle_stop()
                     return
                 # Poll OpenCode for turn status + new messages. A transient slow/unresponsive OpenCode
@@ -8107,6 +8224,7 @@ class Orchestrator:
                     poll_failures += 1
                     log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
                     if poll_failures >= _MAX_POLL_FAILURES:
+                        tap.close()
                         restore_mode()
                         yield persist({"type": "error", "message": (
                             "OpenCode stopped responding, so the build was halted. Try again — if it "
@@ -8304,6 +8422,11 @@ class Orchestrator:
                                 + "Restart the workspace to clear it. Everything already written "
                                   "to your app is still there.")})
                         yield persist({"type": "done", "ok": False, "decision": "wedged"})
+                        # By hand, unlike the other two exits: this one propagates, and a live
+                        # traceback holds the frame — and so the tap — for as long as anything up
+                        # the stack keeps the exception. The workspace is already unusable; a
+                        # parked reader on top of that helps nobody.
+                        tap.close()
                         raise TurnWedged()
                     # It stopped, so the tree is ours again: put the mode pins back and hand the
                     # person an offer they can act on rather than an error row they cannot.
@@ -8317,12 +8440,29 @@ class Orchestrator:
                     # "stopped" without running a step. The stop has been honoured — the session is
                     # idle — so the flag has done its job.
                     project.stop_requested = False
+                    tap.close()
                     restore_mode()
                     yield from stalled_offer(quiet_for, in_tool=tool_open)
                     return
+                # The second this loop used to spend not looking, minus however much of it OpenCode
+                # can say is not worth spending. A frame ends the wait; no frame, a dead stream or a
+                # driver that cannot stream at all leaves the full second, which is what this line
+                # did before and is why an unavailable stream is a degradation and not a failure.
+                # `poll.sleep_ms` still measures it, so the before/after is the same number.
                 _sleep_t0 = time.monotonic()
-                time.sleep(1.0)
+                tap.wait(1.0, floor=_POLL_FLOOR_S)
                 timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
+
+            # The tap is closed on every exit from the poll loop above: the three `return`s close it
+            # where they stand, the wedged `raise` closes it below, and the three `break`s land
+            # here. `__del__` is the net under an abandoned turn, not the plan. A nudge re-enters
+            # the outer loop and opens a fresh tap, so this is also what stops one turn from
+            # finishing with four readers parked on the same socket.
+            if tap.ok and not tap.seen_any:
+                # The silent failure named at the open: connected, and carried nothing all turn.
+                log.warning("build: the event stream carried nothing for %s — the turn polled "
+                            "blind. Check the session directory.", sid)
+            tap.close()
 
             if project.last_gateway_error is not None:
                 err = project.last_gateway_error
