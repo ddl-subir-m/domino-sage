@@ -1,5 +1,9 @@
 {
   "compilerOptions": {
+    /* Where `tsc -b` (npm run build) parks its build-state file. Drop this and the file lands next
+       to this one in the app root, untracked and visible in the Workbench Files panel. `incremental`
+       stays off on purpose: the feedback runner's `tsc --noEmit -p` is the agent's error signal, and
+       ~0.1s off a 0.35s check is not worth a cache that can go stale over a real error. */
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
