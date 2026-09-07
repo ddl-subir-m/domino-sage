@@ -387,7 +387,7 @@ def _unscoped_section(inside: Inside | None) -> list[str]:
             "",
         ]
     lines += [
-        brand.text("- **You cannot query it until a {scope} is set, and you cannot set one** — the "
+        brand.text("- **You cannot query it until a {scope} is chosen, and you cannot choose one** — the "
                    "person can, on this {builtApp}'s own surface."),
         brand.text("- **Ask which one holds the data they mean.** Name what you need and stop "
                    "there; one question answered is worth more than a screen built on a guess."),
@@ -412,7 +412,7 @@ def _tables_section(source: BoundSource) -> list[str]:
     if not tables:
         return [
             brand.text(
-                "{assistantName} could not read what the tables in this {scope} hold, so their "
+                "{assistantName} could not read what the tables it is bound to hold, so their "
                 "column names are not available here. Ask the user what a table holds rather than "
                 "guessing column names — a query naming a column that does not exist fails for the "
                 "first person who opens the app."),
@@ -486,8 +486,8 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
         ("- **`runQuery` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
         brand.text(
-            "- **Queries answer in the preview too**, against the same {dataSource}, the same "
-            "{scope} and the same statements the published app will use. So a query that fails while "
+            "- **Queries answer in the preview too**, against the same {dataSource}, the same part "
+            "of it and the same statements the published app will use. So a query that fails while "
             "you are building is a real failure and worth fixing now — do not design a screen "
             "around it, and do not treat an empty result as the normal state. Preview answers are "
             "cached for a few seconds, so a change made in the store may take a moment to show."),
@@ -555,13 +555,13 @@ def _scope_rule(binding: Binding, stranded: list[tuple[str, str]] | None, table:
                           qualified=f"{binding.schema or 'schema'}.{table}")
     if not stranded:
         return (f"- **Write table names unqualified** — `FROM {table}`, not "
-                f"`FROM {binding.schema or 'schema'}.{table}`. This app sends its Scope to the store "
-                "as configuration, so the statement does not repeat it, and a qualified name would "
-                "be a second place for the same fact to go wrong.")
+                f"`FROM {binding.schema or 'schema'}.{table}`. This app sends the part of the store "
+                "it is bound to as configuration, so the statement does not repeat it, and a "
+                "qualified name would be a second place for the same fact to go wrong.")
     levels = ", ".join(value for _, value in stranded)
     return (f"- **The statement has to name {levels} itself** — "
             f"`FROM {_qualified(table, stranded)}`. This connector will not take that part of the "
-            "Scope as configuration, so a query that leaves it out is refused before it runs.")
+            "store as configuration, so a query that leaves it out is refused before it runs.")
 
 
 def _samples_section(tables) -> list[str]:
@@ -640,7 +640,7 @@ def _unasked_section(unasked) -> list[str]:
             "- **Write the query, or say the app cannot answer from that {dataSource} yet.** Both "
             "are honest. Leaving placeholder data where real data belongs is not."),
         brand.text(
-            "- If you cannot write it because no {scope} is set, say which part of the store you "
+            "- If you cannot write it because no {scope} is chosen, say which part of the store you "
             "need. The person sets it; you cannot, from here."),
         "",
     ]

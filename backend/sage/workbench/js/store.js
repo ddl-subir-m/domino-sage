@@ -42,7 +42,9 @@ window.SW = window.SW || {};
       },
       project: { singular: 'Project', plural: 'Projects' },
       resource: { singular: 'Resource', plural: 'Resources' },
-      scope: { singular: 'Scope', plural: 'Scopes' },
+      // The prose word is Table (ADR-0037); the key stays `scope`, because ADR-0014 renames what a
+      // person reads and never the identifier behind it. In step with `brand.DEFAULT`.
+      scope: { singular: 'Table', plural: 'Tables' },
       chat: { singular: 'Chat', plural: 'Chats' },
       turn: { singular: 'Turn', plural: 'Turns' },
     },
@@ -938,7 +940,7 @@ window.SW = window.SW || {};
   const UNBIND_COPY = {
     data_source: {
       stops: 'stops being allowed to read it',
-      cost: 'Pick it again from Project resources and you will choose its Scope again — the Scope '
+      cost: 'Pick it again from Project resources and you will choose its table again — the table '
         + 'goes with the Binding.',
     },
     model_api: {
@@ -3159,7 +3161,7 @@ window.SW = window.SW || {};
       // (#142) — so the receipt names the second act rather than leaving it to be found. No other
       // kind has a part to choose, so no other kind is told to choose one.
       const scopeHint = SW.util.recordsScope(key[0])
-        ? ' Choose a Scope beside its name to say which part of it the app reads.'
+        ? ' Choose the table beside its name to say which part of it the app reads.'
         : '';
       antd.message.success(
         `${where} now uses ${name}.${scopeHint} Remove it under App dependencies.`
@@ -3264,7 +3266,7 @@ window.SW = window.SW || {};
       if (!pick) return false;
       const where = appScopeName();
       const gen = appGen;
-      const dotted = SW.util.scopeText(scope);
+      const shown = SW.util.scopeShown(scope);
       let result;
       try {
         result = await SW.api.scopeBinding(pick.id, {
@@ -3275,7 +3277,7 @@ window.SW = window.SW || {};
       } catch (err) {
         // Left open on a refusal, unlike the success below: the walk that got here is the work, and
         // shutting the door would make the person do it again to find out what went wrong.
-        antd.message.error(`${pick.name} could not be scoped in ${where}: ${err.message}`);
+        antd.message.error(`The table for ${pick.name} could not be set in ${where}: ${err.message}`);
         return false;
       }
       store.closeScopePick();
@@ -3288,11 +3290,12 @@ window.SW = window.SW || {};
       // back. The way back here is the same control, because moving a Scope and setting one are the
       // same act — which is the difference between this and a Binding, whose undo is a Remove
       // somewhere else entirely.
-      antd.message.success(dotted
-        ? `${where} reads ${dotted} in ${pick.name}. Choose again from the same control to move it.`
+      antd.message.success(shown
+        ? `In ${pick.name}, ${where} reads ${shown}. Choose again from the same control to move it.`
         // The Scope cleared rather than moved. Named as the state it leaves behind, in the words
         // the record itself is drawn with, so the sentence and the screen agree.
-        : `${pick.name} is ${SW.util.NO_SCOPE_YET} in ${where}. Choose one from the same control.`);
+        : `The table for ${pick.name} is ${SW.util.NO_SCOPE_YET} in ${where}. `
+          + 'Choose one from the same control.');
       return true;
     },
 

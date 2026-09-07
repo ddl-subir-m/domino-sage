@@ -236,7 +236,7 @@ def test_the_terms_needing_a_key_are_computed_from_what_the_ui_says():
         "Hosted GenAI Endpoint",
         "Project",
         "Resource",
-        "Scope",
+        "Table",
         "Chat",
         "Turn",
     }

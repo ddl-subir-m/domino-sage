@@ -78,7 +78,9 @@ DEFAULT: dict[str, Any] = {
         },
         "project": {"singular": "Project", "plural": "Projects"},
         "resource": {"singular": "Resource", "plural": "Resources"},
-        "scope": {"singular": "Scope", "plural": "Scopes"},
+        # The prose word is Table (ADR-0037); the key stays `scope`, because ADR-0014
+        # renames what a person reads and never the identifier behind it.
+        "scope": {"singular": "Table", "plural": "Tables"},
         "chat": {"singular": "Chat", "plural": "Chats"},
         "turn": {"singular": "Turn", "plural": "Turns"},
     },

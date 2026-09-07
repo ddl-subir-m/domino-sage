@@ -206,7 +206,7 @@ def test_a_binding_the_apps_source_never_calls_is_marked():
     said = _flat(_build(select="app_a"))
     # The Scope sits between the name and the mark, because both qualify the record and the Scope is
     # the one a person can act on (#142). The mark still lands on this name and no other.
-    assert "Market data EOD not scoped yet (not used)" in said
+    assert "Market data EOD not chosen yet (not used)" in said
     assert "Claude Sonnet 4 (not used)" not in said
     assert "Churn risk (not used)" not in said
 

@@ -751,11 +751,11 @@ window.SW = window.SW || {};
   function ScopeDoor({ binding, app }) {
     const { scopePick } = SW.store.get();
     const pick = scopePick && scopePick.id === binding.id ? scopePick : null;
-    const scope = SW.util.scopeText(binding);
+    const scope = SW.util.scopeShown(binding);
     // What the walk has answered so far. Empty at the top, which is the one position with nothing
     // to commit — a bind there would name the whole source, and that is what the Binding already
     // says without this control's help.
-    const at = pick ? SW.util.scopeText({ database: pick.database, schema: pick.schema }) : '';
+    const at = pick ? SW.util.scopeShown({ database: pick.database, schema: pick.schema }) : '';
 
     const rungs = () => {
       // No ladder at all: a connector Sage has no dialect for. The Binding is still a real record —
@@ -793,7 +793,7 @@ window.SW = window.SW || {};
             // one-way trip — the cost the split was made to remove. It is the same empty body the
             // route already takes from the bind.
             : pick.recorded
-              ? [{ key: 'clear', label: 'Read all of it — no Scope' }, { type: 'divider' }]
+              ? [{ key: 'clear', label: 'Read all of it — no table' }, { type: 'divider' }]
               : []),
           ...rungs(),
         ];
@@ -829,7 +829,7 @@ window.SW = window.SW || {};
         Tooltip,
         {
           title: scope
-            ? `${app.name} reads ${scope} in ${binding.display_name || binding.name}. `
+            ? `In ${binding.display_name || binding.name}, ${app.name} reads ${scope}. `
               + 'Choose again to move it.'
             : `Choose which database, schema or table ${app.name} reads in `
               + `${binding.display_name || binding.name}. You can change it later.`,

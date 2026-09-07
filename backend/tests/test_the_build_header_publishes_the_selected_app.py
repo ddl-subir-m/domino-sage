@@ -257,9 +257,9 @@ def test_a_refused_publish_holds_the_confirm_open_and_says_why():
     """Delete's precedent. Nothing was published, the app is exactly as it was, and the answer to
     a refusal is usually to read it and press this again — a modal that closed would take the
     sentence with it."""
-    step = _publish("app_b", refuse="A Data Source this app queries has no Scope.")
+    step = _publish("app_b", refuse="A Data Source this app queries has no table.")
     assert step["acted"] == "held open"
-    assert "A Data Source this app queries has no Scope." in step["said"]
+    assert "A Data Source this app queries has no table." in step["said"]
     assert _published(step) == ["app_a", "app_d"]
 
 

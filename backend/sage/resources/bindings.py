@@ -86,6 +86,23 @@ class Binding:
         """
         return ".".join(p for p in (self.database, self.schema, self.table) if p)
 
+    @property
+    def scope_shown(self) -> str:
+        """The same record as a person reads it (ADR-0037), or "" for a kind that has none.
+
+        Prose calls this a Table, and under that word a record that stopped above one cannot be
+        drawn as its dotted levels alone: `DWH.MARTS` would read as a table nobody picked. It says
+        what the record actually means instead — any table in the part of the store it does name.
+
+        The whole position stays in the sentence, not just the innermost level: this is what
+        `usedBy` puts in front of a reader (#133), and `DWH.MARTS` and `RISK.MARTS` are two
+        different places for one app to be reading. `scope` stays the bare position, which is what
+        a statement and the AGENTS.md data block need.
+        """
+        if self.table:
+            return self.scope
+        return f"any in {self.scope}" if self.scope else ""
+
     def to_dict(self) -> dict:
         """The manifest entry and the HTTP row, one shape.
 
@@ -227,7 +244,15 @@ def mention_note(mentions: list[Mention], recorded: list[Binding]) -> str:
         # The display name is what the creator picked from; the name is what they typed after the @.
         # Both, when they differ, so neither reading of the mention is left guessing.
         name = b.display_name if b.display_name == b.name else f"{b.display_name} (`{b.name}`)"
-        scope = f", scoped to `{b.scope}`" if b.scope else ""
+        if b.table:
+            scope = f", reading `{b.scope}`"
+        elif b.scope:
+            # Not `reading \`DWH.MARTS\``. Under the word Table that reads as a table nobody
+            # picked (ADR-0037), and this note is what the agent writes its statements from — it
+            # would put `FROM DWH.MARTS` in `.sage/queries.json` and the query would be refused.
+            scope = f", reading any table in `{b.scope}`"
+        else:
+            scope = ""
         said = _what_the_app_does_with(b, first.get(b.kind))
         # The tables the creator reached for inside the Resource. Their columns are already in the
         # AGENTS.md data block, so this points rather than repeats — the block is re-read every turn,

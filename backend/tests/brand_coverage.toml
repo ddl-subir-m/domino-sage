@@ -26,7 +26,7 @@ words = [
   "LLM Gateway", "LLM Gateways",
   "Hosted GenAI Endpoint", "Hosted GenAI Endpoints",
   "Project", "Projects", "Resource", "Resources",
-  "Scope", "Scopes", "Chat", "Chats", "Turn", "Turns",
+  "Table", "Tables", "Chat", "Chats", "Turn", "Turns",
 ]
 
 [sentinels]

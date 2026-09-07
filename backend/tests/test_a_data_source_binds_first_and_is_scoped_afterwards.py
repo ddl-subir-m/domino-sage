@@ -358,7 +358,7 @@ def test_the_scope_route_refuses_where_the_app_holds_no_binding(tmp_path: Path, 
     # `LookupError` a Data Source the platform will not describe raises, precisely so this can name
     # the act that fixes it instead of sending the creator to Domino about a grant.
     assert res.json()["error"] == (
-        "This app doesn't need that Data Source to run, so there is no Scope to set. Use it "
+        "This app doesn't need that Data Source to run, so there is no Table to set. Use it "
         "in the app first."
     )
     assert client.get("/api/bindings").json()["bindings"] == []
@@ -448,13 +448,13 @@ def test_the_receipt_names_the_second_act():
     ])
     said = " ".join(source["said"])
     assert "Rate curve viewer now uses Risk warehouse" in said
-    assert "Choose a Scope beside its name" in said
+    assert "Choose the table beside its name" in said
     # And the way back out is still named, because that is what the act ADDS to (ADR-0021).
     # The receipt names the surface that can reverse the bind, in the words the reader will see on
     # the way to it (ADR-0011). That surface is the App dependencies modal since ADR-0035; it said
     # "Project resources, under {app}" while the panel held a section per app.
     assert "Remove it under App dependencies" in said
-    assert "Choose a Scope" not in " ".join(alias["said"])
+    assert "Choose the table" not in " ".join(alias["said"])
 
 
 @needs_node
@@ -464,7 +464,7 @@ def test_a_binding_with_no_scope_names_its_state_beside_the_record():
     it, which is what keeps it from reading as an error. The tooltip says what the click buys and
     that it is reversible, because a Scope is a choice and not a commitment."""
     step = _steps([{"scopeIn": "Market data EOD", "open": False, **AT_APP_A}])[-1]
-    assert step["shut"]["label"] == "not scoped yet"
+    assert step["shut"]["label"] == "not chosen yet"
     assert step["shut"]["open"] is False
     assert "Choose which database, schema or table" in step["shut"]["tooltip"]
     assert "change it later" in step["shut"]["tooltip"]
@@ -485,11 +485,11 @@ def test_the_scope_door_walks_one_rung_at_a_time_and_stopping_is_an_answer():
     # already says without this control's help.
     assert "use" not in _keys(top)
     assert _keys(under_dwh) == ["use", "reset", "", "at:MARTS", "at:REPORTING"]
-    assert [i["label"] for i in under_dwh][:2] == ["Use DWH", "Start again"]
+    assert [i["label"] for i in under_dwh][:2] == ["Use any in DWH", "Start again"]
     # The empty levels are sent, not omitted: the route flattens "" to "not chosen", and a body that
     # left the key out would be asking it to guess which of the two was meant.
     assert step["scoped"] == [{"id": "ds_1", "database": "DWH", "schema": "", "table": ""}]
-    assert step["now"]["label"] == "DWH"
+    assert step["now"]["label"] == "any in DWH"
 
 
 @needs_node
@@ -503,7 +503,7 @@ def test_choosing_a_table_is_the_answer_rather_than_another_rung():
     assert step["scoped"] == [{"id": "ds_1", "database": "DWH", "schema": "MARTS",
                                "table": "FCT_USAGE_DAILY"}]
     assert step["now"]["label"] == "DWH.MARTS.FCT_USAGE_DAILY"
-    assert "Desk dashboard reads DWH.MARTS.FCT_USAGE_DAILY" in step["now"]["tooltip"]
+    assert "In Market data EOD, Desk dashboard reads DWH.MARTS.FCT_USAGE_DAILY" in step["now"]["tooltip"]
 
 
 @needs_node
@@ -531,7 +531,7 @@ def test_the_act_says_what_it_did_and_that_the_same_control_moves_it():
         "scopeIn": "Market data EOD", "walk": ["DWH", "MARTS"], "then": ["use"], **AT_APP_A,
     }])[-1]
     said = " ".join(step["said"])
-    assert f"{APP} reads DWH.MARTS in Market data EOD" in said
+    assert f"In Market data EOD, {APP} reads any in DWH.MARTS" in said
     assert "Choose again from the same control" in said
 
 
@@ -569,8 +569,8 @@ def test_the_two_acts_run_back_to_back_from_the_one_surface():
     }])[-1]
     assert step["posted"] == [{"kind": "data_source", "id": "ds_9"}]
     assert step["scoped"] == [{"id": "ds_9", "database": "RISK", "schema": "LIMITS", "table": ""}]
-    assert step["shut"]["label"] == "not scoped yet"
-    assert step["now"]["label"] == "RISK.LIMITS"
+    assert step["shut"]["label"] == "not chosen yet"
+    assert step["now"]["label"] == "any in RISK.LIMITS"
 
 
 @needs_node
@@ -608,17 +608,18 @@ def test_the_scope_can_be_cleared_back_to_the_state_the_bind_leaves():
     # source, so the item would be an act with no effect.
     assert "clear" not in _keys(top_before)
     assert _keys(top_after)[:2] == ["clear", ""]
-    assert top_after[0]["label"] == "Read all of it — no Scope"
+    assert top_after[0]["label"] == "Read all of it — no table"
 
     assert step["scoped"] == [
         {"id": "ds_1", "database": "DWH", "schema": "", "table": ""},
         {"id": "ds_1", "database": "", "schema": "", "table": ""},
     ]
-    assert step["now"]["label"] == "not scoped yet"
+    assert step["now"]["label"] == "not chosen yet"
     # One record throughout — clearing a Scope is not a Remove, and the Binding stands.
     assert step["bindings"] == ["llm_alias:al_1", "data_source:ds_1", "model_api:ma_1"]
     # And the receipt names the state it left behind, in the words the record is drawn with.
-    assert "Market data EOD is not scoped yet in Desk dashboard" in " ".join(step["said"])
+    assert ("The table for Market data EOD is not chosen yet in Desk dashboard"
+            in " ".join(step["said"]))
 
 
 @needs_node

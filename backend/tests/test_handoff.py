@@ -294,7 +294,7 @@ def test_the_digest_says_what_a_data_source_is_and_which_part_is_in_play():
                   "sourceName": "Snowflake-Data-Warehouse"}],
         artifacts=[],
     )
-    assert "Snowflake-Data-Warehouse (Data Source, no Scope chosen)" in text
+    assert "Snowflake-Data-Warehouse (Data Source, no Table chosen)" in text
     assert "\n\n" not in text          # still one paragraph
 
 
