@@ -821,7 +821,8 @@ def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
     return folders
 
 
-def _dataset_rows(dataset_name: str, files: Sequence[DatasetFile], *, folders: bool) -> list[dict]:
+def _dataset_rows(dataset_name: str, files: Sequence[DatasetFile], *, folders: bool,
+                  sized: bool) -> list[dict]:
     """The rows a Dataset card offers, from the grouping the Dataset tree already uses (#196).
 
     Below `FOLDER_COLLAPSE_THRESHOLD` the file is the row; above it the folder is (ADR-0029,
@@ -841,8 +842,16 @@ def _dataset_rows(dataset_name: str, files: Sequence[DatasetFile], *, folders: b
     writes five thousand rows into the transcript, on the shape most likely to produce them. Every
     row past the cap is reachable through the Data panel's tree, which is the ordinary door and the
     one story 15 keeps.
+
+    `sized` is `FileListing.measured`: whether this listing WEIGHED what it named. A file it did
+    not weigh arrives as a zero and reads exactly like an empty one, and a row drawn from it saying
+    "0 bytes" is a lie about the file where no size at all is the truth about the listing (#197).
+    So an unweighed zero loses the key and a real one keeps it — which is also why the test is
+    `sized or f.size` rather than `sized` alone: a listing that under-reported some of its rows
+    still reported others, and hiding a size it did give would throw away the half it got right.
     """
-    rows = [{"kind": "file", "path": f.path, "size": f.size} for f in files]
+    rows = [{"kind": "file", "path": f.path} | ({"size": f.size} if sized or f.size else {})
+            for f in files]
     if not folders or len(files) <= FOLDER_COLLAPSE_THRESHOLD:
         return rows[:dataset_files.MAX_ROWS]
     # Where the best-ranked file in each group sits, so the folder holding the closest match is the
@@ -7877,7 +7886,13 @@ class Orchestrator:
         # The availability rule read off the same listing the rows come from, so a row that offers
         # the folder act and a route that would turn it down cannot exist (ADR-0029).
         reason = self._folder_act_reason(asset, listing)
-        rows = _dataset_rows(asset.name, ranking.candidates, folders=folders and not reason)
+        # A Dataset with no mount here still lists and a single file still attaches, as a download
+        # rather than a symlink — so it draws a card of file rows rather than being a dead end
+        # (#197). What it cannot always do is MEASURE, and that is read off the listing rather than
+        # off `mount_path`: since #153 the API weighs an unmounted Dataset too, so a card keying on
+        # the mount would throw away sizes the platform did report.
+        rows = _dataset_rows(asset.name, ranking.candidates, folders=folders and not reason,
+                             sized=listing.measured)
         return {"rows": rows[:dataset_files.SHORTLIST], "allRows": rows, "total": len(rows),
                 "matched": ranking.matched, "truncated": listing.truncated}
 
@@ -7950,6 +7965,7 @@ class Orchestrator:
                 "No file name in {name} matches this request, so {assistantName} will not guess "
                 "one. Pick what this {builtApp} should read, or build without attaching anything.",
                 name=name)
+        message += self._partial_note(card["truncated"], name)
         events = ({"type": "user", "text": user_text or prompt},
                   # The prompt rides along so the click can replay the request rather than making
                   # the person type it again, and `answered` carries the gates this turn was already
@@ -8018,6 +8034,7 @@ class Orchestrator:
             message = brand.text(
                 "No file name in {name} matches this question, so {assistantName} will not guess "
                 "one. Pick the file to read, or say more about the data you mean.", name=asset.name)
+        message += self._partial_note(card["truncated"], asset.name)
         events = ({"type": "dataset-files", "prompt": prompt, "message": message,
                    "datasetId": asset.id, "datasetName": asset.name,
                    # What tells the click which door to write through. The Build card carries the
@@ -8158,6 +8175,28 @@ class Orchestrator:
         return " " + brand.text(
             "{assistantName} could not read {databases}, so any {scopePlural} they hold are not "
             "on this list.", databases=", ".join(skipped[:-1]) + " and " + skipped[-1])
+
+    @staticmethod
+    def _partial_note(truncated: bool, name: str) -> str:
+        """The sentence a Dataset card adds when the listing stopped at the provider's cap (#197).
+
+        The pattern is #191's, one Asset over: a partial answer NAMES THE GAP rather than discarding
+        what it found. The rows on this card are real files somebody can see and click, so throwing
+        them away would cost them the answer over a fact about the tail — which is why this is not a
+        reversal of ADR-0038's refuse-rather-than-truncate rule, and ADR-0039 records why. There the
+        unwalked database left an invisible gap; here the gap is stated and the prefix still works.
+
+        It reads `_folder_act_reason`'s answer rather than holding a second opinion about the same
+        state. That reason ends "Attach files instead." and THIS CARD IS the attaching of files, so
+        the note owes the state and what it means for the list, and not an instruction the card is
+        already carrying out. Shared by both cards for the reason the listing is shared: the mode
+        somebody is standing in must not decide whether they are told a Dataset went half-read.
+        """
+        if not truncated:
+            return ""
+        return " " + brand.text(
+            "Only part of {name} could be listed, so this list is its start rather than all of it.",
+            name=name)
 
     def _wedged_refusal(self):
         """Events yielded when a streaming turn cannot run because the workspace is wedged (#39).
@@ -12448,8 +12487,15 @@ class Orchestrator:
         return ""
 
     def list_asset_files(self, dataset_id: str) -> dict:
-        """Files in a Dataset, each with its size and whether it's already attached. Size is 0 for
-        a Dataset with no mount here — the API listing names files without measuring them.
+        """Files in a Dataset, each with its size and whether it's already attached. The size is
+        real on both paths — `stat()` on a mount, the platform's own on an unmounted Dataset since
+        #153 — and only a listing that came back sizeless reports a 0 nothing measured.
+
+        This tree still draws those zeros. The Dataset CARD leaves an unmeasured size off rather
+        than asserting "0 bytes" about a file nothing weighed (#197), and the same is owed here;
+        `FileListing.measured` is the flag to read when it is done. Not done in #197 because that
+        ticket is the card, and a size the tree adds into a total is a different act from a size a
+        card puts beside one row.
 
         `truncated` says the listing stopped at the provider's cap, so what came back is part of
         the Dataset and no subtree in it can be proven whole (ADR-0029).

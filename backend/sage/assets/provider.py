@@ -79,10 +79,18 @@ class FileListing:
     cut or missing, and nothing downstream can tell which is which (ADR-0029). `truncated` is what
     lets a caller refuse an act it cannot prove the scope of, rather than act on a silent partial
     answer.
+
+    `measured` is the same idea about the OTHER column. A size is an `int` here because every
+    caller that adds sizes up needs one, so a file the platform named without weighing arrives as a
+    zero and reads exactly like an empty file. This says the listing weighed what it named, so a
+    caller putting a size in front of a person can leave it off rather than assert "0 bytes" about
+    a file nothing measured (#197). It is a fact about the LISTING and not about a row, because a
+    row that came back without a size leaves nothing behind to ask.
     """
 
     files: list[DatasetFile]
     truncated: bool = False
+    measured: bool = True
 
 
 def walk_files(root: Path) -> FileListing:
@@ -401,7 +409,10 @@ class DominoAssetProvider:
         # 400 "Invalid path input", `?path=` answers 200.
         body = self._files_api_json(
             f"datasetrw/snapshot/{snapshot_id}/files/recursive", {"path": ""}, asset)
-        files: list[DatasetFile] = []
+        # Sizes stay OPTIONAL until the cut. Since #153 the endpoint weighs what it names, and the
+        # `or 0` below is the only place a size can be invented — carrying the `None` this far is
+        # that coercion owning up to itself rather than a second guess about the endpoint (#197).
+        weighed: list[tuple[str, int | None]] = []
         for row in (body or {}).get("rows") or []:
             name = row.get("name") or {}
             # Directories come back as rows of their own, with a null size. Kept, a folder would
@@ -414,12 +425,20 @@ class DominoAssetProvider:
             path = str(name.get("fileName") or name.get("label") or "")
             if not path:
                 continue
-            files.append(DatasetFile(path, int((row.get("size") or {}).get("sizeInBytes") or 0)))
+            weight = (row.get("size") or {}).get("sizeInBytes")
+            weighed.append((path, None if weight is None else int(weight)))
         # Sorted before the cut, because the cap has to take the sorted prefix (ADR-0029) and the
         # rows do not arrive in that order. Counted before it too: the whole tree is in hand, so
         # `truncated` is a fact here rather than the inference the paged SDK listing had to make.
-        files.sort(key=lambda f: f.path)
-        return FileListing(files[:_MAX_FILES], truncated=len(files) > _MAX_FILES)
+        weighed.sort(key=lambda p: p[0])
+        kept = weighed[:_MAX_FILES]
+        # Read off the PREFIX rather than the whole response, because the prefix is the whole of
+        # what anything downstream can see. A sizeless row sorting past the cut would otherwise
+        # take the size off every genuinely empty file in front of it, which is the same lie one
+        # step over: a file nobody weighed drawn as empty, and now an empty file drawn as unweighed.
+        return FileListing([DatasetFile(p, w or 0) for p, w in kept],
+                           truncated=len(weighed) > _MAX_FILES,
+                           measured=all(w is not None for _, w in kept))
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         """Copy one file out of a Dataset this container has no mount for. Returns bytes written."""

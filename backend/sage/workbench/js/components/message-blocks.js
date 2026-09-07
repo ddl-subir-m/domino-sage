@@ -1186,10 +1186,17 @@ window.SW = window.SW || {};
                 // What the row stands for, which the label cannot say for a folder: the click
                 // carries every file below it, and a row that showed only a path would understate
                 // an act that attaches two hundred files.
-                h('span', { className: 'sw-dataset-count' },
-                  row.kind === 'folder'
-                    ? ` — ${SW.util.number(row.count)} ${row.count === 1 ? 'file' : 'files'}`
-                    : ` — ${SW.util.bytes(row.size || 0)}`)
+                //
+                // A file row with no `size` at all is a file the listing named without measuring,
+                // which is what a Dataset with no mount here can hand back. It draws bare rather
+                // than as "0 bytes" (#197): the server left the key off precisely so this does not
+                // have to guess whether a zero means empty or unmeasured.
+                (row.kind === 'folder' || row.size !== undefined)
+                  ? h('span', { className: 'sw-dataset-count' },
+                      row.kind === 'folder'
+                        ? ` — ${SW.util.number(row.count)} ${row.count === 1 ? 'file' : 'files'}`
+                        : ` — ${SW.util.bytes(row.size)}`)
+                  : null
               )),
               hidden > 0
                 ? h(Button, {

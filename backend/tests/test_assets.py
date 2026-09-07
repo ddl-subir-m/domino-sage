@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from sage.assets.provider import (
+    _MAX_FILES,
     Asset,
     DominoAssetProvider,
     FakeAssetProvider,
@@ -11,6 +12,7 @@ from sage.assets.provider import (
     dataset_unique_name,
     parse_tag_snapshots,
     parse_tags,
+    walk_files,
 )
 from sage.resources.provider import ResourceUnavailable
 
@@ -144,6 +146,56 @@ def test_an_unmounted_dataset_reports_the_real_byte_size_of_every_file(monkeypat
         ("http://domino/v4/datasetrw/snapshots/i1", {}),
         ("http://domino/v4/datasetrw/snapshot/s1/files/recursive", {"path": ""}),
     ]
+
+
+def test_a_listing_that_weighed_what_it_named_says_so(monkeypatch):
+    """`measured` is what lets a caller put a size in front of a person. A listing carrying real
+    sizes has to say it did, or the card that reads this would drop every one of them (#197)."""
+    _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s1", 0)],
+                                   rows=[_row("all_series.json", 940), _row("empty.csv", 0)]))
+
+    assert _provider().list_files(Asset(id="i1", name="shared_ds")).measured is True
+
+
+def test_a_row_that_came_back_without_a_size_makes_the_whole_listing_unmeasured(monkeypatch):
+    """The `or 0` owning up to itself. A row with no `sizeInBytes` still has to become an `int`,
+    because every caller that adds sizes up needs one — and that zero then reads exactly like an
+    empty file. This is the only thing left that can tell the two apart, so a listing which
+    invented even one of its zeros says so for all of them (#197)."""
+    row = _row("forecasts.csv", 0)
+    row["size"] = {"label": "?"}
+    _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s1", 0)],
+                                   rows=[_row("all_series.json", 940), row]))
+
+    listing = _provider().list_files(Asset(id="i1", name="shared_ds"))
+
+    assert listing.measured is False
+    # The sizes it DID give are kept: a caller can still show those and leave the invented one off.
+    assert [(f.path, f.size) for f in listing.files] == [("all_series.json", 940),
+                                                         ("forecasts.csv", 0)]
+
+
+def test_a_sizeless_row_past_the_cut_does_not_unmeasure_the_prefix(monkeypatch):
+    """`measured` is read off the PREFIX, because the prefix is the whole of what anything
+    downstream can see. A sizeless row sorting past the cap would otherwise take the size off every
+    genuinely empty file in front of it — the same lie one step over."""
+    rows = [_row(f"a/{n:05d}.csv", 0) for n in range(_MAX_FILES)]
+    past = _row("z_last.csv", 0)
+    past["size"] = {"label": "?"}
+    _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s1", 0)], rows=[*rows, past]))
+
+    listing = _provider().list_files(Asset(id="i1", name="shared_ds"))
+
+    assert listing.truncated is True
+    assert listing.measured is True
+
+
+def test_a_mounted_walk_is_always_measured(tmp_path):
+    """`stat()` weighs everything it names, so an empty file on a mount is genuinely empty and the
+    card says "0 bytes" about it rather than going quiet."""
+    (tmp_path / "empty.csv").write_text("")
+
+    assert walk_files(tmp_path).measured is True
 
 
 def test_a_nested_file_keeps_the_path_a_mount_would_have_given_it(monkeypatch):

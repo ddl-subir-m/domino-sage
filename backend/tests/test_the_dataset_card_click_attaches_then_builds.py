@@ -135,6 +135,22 @@ def test_clicking_a_folder_attaches_the_folder_rather_than_its_files_one_at_a_ti
 
 
 @needs_node
+def test_a_row_the_listing_never_measured_draws_no_size_at_all():
+    """A Dataset with no mount here can be named without being weighed, and the server leaves the
+    key off rather than sending a zero (#197). A row that filled it back in as "0 bytes" would put
+    the lie back on the card the omission exists to keep off it — and the row still has to be
+    pickable, because a single-file attach works on an unmounted Dataset as a download."""
+    rows = [{"kind": "file", "path": "calls_daily.csv"}, {"kind": "file", "path": "accounts.csv"}]
+    history = [HISTORY[0],
+               {**HISTORY[1], "live": True, "rows": rows, "allRows": rows, "total": 2},
+               HISTORY[2]]
+
+    card = _run(history=history)["cards"][0]
+
+    assert card["drawn"]["pickable"] == ["calls_daily.csv", "accounts.csv"]
+
+
+@needs_node
 def test_the_replay_carries_the_gates_this_turn_had_already_answered():
     """"Start over and summarise my calls" answers the reset offer and then reaches this card. The
     reset gate is a prompt match with nothing remembered, so a replay that dropped `skipResetGate`

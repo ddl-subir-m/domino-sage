@@ -18,12 +18,13 @@ No test here needs a mounted Dataset, a live platform or a warehouse.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from sage.assets.provider import Asset, FakeAssetProvider, FileListing
+from sage.assets.provider import Asset, AssetProvider, DatasetFile, FakeAssetProvider, FileListing, walk_files
 from sage.orchestrator import app as appmod
 from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
@@ -89,7 +90,48 @@ def _partitioned(tmp: Path, days: int = 40) -> FakeAssetProvider:
     })
 
 
-def _orch(tmp: Path, assets: FakeAssetProvider, turns: list[Turn] | None = None):
+class _Unmounted:
+    """A Dataset the platform lists but this container has no mount for (#197).
+
+    Listing works without a mount, so the card is drawn from real file names. Attaching works too,
+    as a download rather than a symlink, which is what `_download_attachment` exists for.
+
+    `measured` is the half that varies, and BOTH shapes are real. Since #153 the platform weighs an
+    unmounted Dataset and the listing carries true sizes; a listing that came back without them
+    reports zeros nothing measured. Keying the card on the mount instead would collapse the two and
+    throw away the sizes the platform did give, so both are staged here.
+    """
+
+    def __init__(self, root: Path, asset: Asset, *, measured: bool = False) -> None:
+        self.root, self.asset, self.measured = root, asset, measured
+
+    def list_datasets(self, project_id: str | None) -> list[Asset]:
+        return [self.asset]
+
+    def list_files(self, asset: Asset) -> FileListing:
+        walked = walk_files(self.root).files
+        if self.measured:
+            return FileListing(walked)
+        return FileListing([DatasetFile(f.path, 0) for f in walked], measured=False)
+
+    def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.root / rel_path, dest)
+        return dest.stat().st_size
+
+
+def _unmounted(tmp: Path, name: str, files: dict[str, str], *, measured: bool = False) -> _Unmounted:
+    """The same Dataset as `_dataset`, with no mount for this container to walk."""
+    where = tmp / "unmounted" / name
+    for rel, body in files.items():
+        p = where / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+    return _Unmounted(where, Asset(f"ds_{name}", name, project="Revenue", mount_path=""),
+                      measured=measured)
+
+
+def _orch(tmp: Path, assets: AssetProvider, turns: list[Turn] | None = None):
     template = tmp / "template"
     (template / "src").mkdir(parents=True, exist_ok=True)
     (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
@@ -460,6 +502,180 @@ def test_an_empty_dataset_is_not_a_question(tmp_path: Path, monkeypatch):
 
     assert [f for f in _frames(_build(client)) if f.get("type") == "dataset-files"] == []
     assert oc.prompts
+
+
+# ---- a listing that could not say everything (#197) ----------------------------------------------
+
+
+def _truncate(monkeypatch, assets: FakeAssetProvider) -> None:
+    """The provider's cap, reached: the same files back, flagged as a sorted prefix."""
+    whole = FakeAssetProvider.list_files
+    monkeypatch.setattr(type(assets), "list_files",
+                        lambda self, asset: FileListing(whole(self, asset).files, truncated=True))
+
+
+def test_a_truncated_listing_still_draws_a_card_from_the_prefix_that_came_back(
+        tmp_path: Path, monkeypatch):
+    """#191's pattern, one Asset over: a partial answer names the gap instead of discarding what it
+    found. Every row here is a real file somebody can see and click, so withholding the card over a
+    fact about the tail would cost them the answer and put them back in front of an app built on
+    invented rows."""
+    assets = _partitioned(tmp_path)
+    _truncate(monkeypatch, assets)
+    orch, oc = _orch(tmp_path, assets)
+    orch.bind_dataset("ds_calls_raw")
+    client = _client(orch, monkeypatch)
+
+    card = _card(_build(client))
+
+    assert card["truncated"] is True
+    assert len(card["allRows"]) == 40
+    assert oc.prompts == []
+
+
+def test_a_truncated_listing_says_the_list_is_partial_rather_than_reading_as_the_whole_dataset(
+        tmp_path: Path, monkeypatch):
+    """The sentence is the whole point: a prefix presented without one is read as the Dataset."""
+    assets = _partitioned(tmp_path)
+    _truncate(monkeypatch, assets)
+    orch, _ = _orch(tmp_path, assets)
+    orch.bind_dataset("ds_calls_raw")
+    client = _client(orch, monkeypatch)
+
+    assert "Only part of calls_raw could be listed" in _card(_build(client))["message"]
+
+
+def test_no_folder_row_on_a_truncated_listing_offers_the_folder_act(
+        tmp_path: Path, monkeypatch):
+    """A sorted prefix cuts the tail, so early folders are whole and late ones are cut with nothing
+    able to tell which (ADR-0029). The card reads `_folder_act_reason`'s answer rather than holding
+    a second opinion about it, and falls back to the files — which is what the reason it reads has
+    been telling people to do since #189."""
+    assets = _partitioned(tmp_path)
+    _truncate(monkeypatch, assets)
+    orch, _ = _orch(tmp_path, assets)
+    orch.bind_dataset("ds_calls_raw")
+    client = _client(orch, monkeypatch)
+
+    assert {r["kind"] for r in _card(_build(client))["allRows"]} == {"file"}
+
+
+def test_the_partial_listing_is_named_in_chat_in_the_same_words(tmp_path: Path, monkeypatch):
+    """One question asked in two places, so one sentence about the gap in it. A person who gets the
+    card in Chat and the card in Build must be told about the same half-read Dataset in the same
+    words, which is why the note is composed once."""
+    assets = _partitioned(tmp_path)
+    _truncate(monkeypatch, assets)
+    orch, _ = _orch(tmp_path, assets)
+    client = _client(orch, monkeypatch)
+    tid = _thread_with_dataset(orch, "ds_calls_raw", "calls_raw")
+
+    assert "Only part of calls_raw could be listed" in _card(_ask(client, tid))["message"]
+
+
+def test_a_complete_listing_says_nothing_about_being_partial(tmp_path: Path, monkeypatch):
+    """The other half of the same fact. A note on every card would say nothing about any of them."""
+    orch, _ = _orch(tmp_path, _calls_dataset(tmp_path))
+    orch.bind_dataset("ds_revenue_2026")
+    client = _client(orch, monkeypatch)
+
+    card = _card(_build(client))
+
+    assert card["truncated"] is False
+    assert "Only part of" not in card["message"]
+
+
+# ---- a Dataset with no mount here (#197) ---------------------------------------------------------
+
+
+def test_a_dataset_this_workspace_has_no_mount_for_still_draws_a_card_of_files(
+        tmp_path: Path, monkeypatch):
+    """Story 7 of #194: "not mounted here" stops being a dead end. Listing works without a mount, so
+    there is a card to draw; only the folder act stays withheld, and it is withheld for a reason
+    about reporting an unbounded serial download rather than about reach."""
+    orch, oc = _orch(tmp_path, _unmounted(tmp_path, "revenue_2026", {
+        "calls_daily.csv": "day,calls\n2026-01-01,7\n",
+        "accounts.csv": "id,name\n1,Acme\n",
+    }))
+    orch.bind_dataset("ds_revenue_2026")
+    client = _client(orch, monkeypatch)
+
+    card = _card(_build(client))
+
+    assert set(_paths(card)) == {"calls_daily.csv", "accounts.csv"}
+    assert {r["kind"] for r in card["allRows"]} == {"file"}
+    assert oc.prompts == []
+
+
+def test_a_file_the_listing_never_measured_carries_no_size_at_all(tmp_path: Path, monkeypatch):
+    """A row reading "0 bytes" is a lie about the file; no size at all is the truth about the
+    listing. The absence is the honest answer, and it is what keeps the card from asserting
+    something the platform never told it."""
+    orch, _ = _orch(tmp_path, _unmounted(tmp_path, "revenue_2026", {
+        "calls_daily.csv": "day,calls\n2026-01-01,7\n",
+        "accounts.csv": "id,name\n1,Acme\n",
+    }))
+    orch.bind_dataset("ds_revenue_2026")
+    client = _client(orch, monkeypatch)
+
+    assert [r for r in _card(_build(client))["allRows"] if "size" in r] == []
+
+
+def test_a_measured_listing_still_carries_every_size_including_a_real_zero(
+        tmp_path: Path, monkeypatch):
+    """What is missing is a fact about the LISTING, never about the number. A mounted walk stats
+    every file, so an empty file there is genuinely empty and the card says so."""
+    orch, _ = _orch(tmp_path, _dataset(tmp_path, "revenue_2026", {
+        "empty.csv": "", "calls_daily.csv": "day,calls\n2026-01-01,7\n",
+    }))
+    orch.bind_dataset("ds_revenue_2026")
+    client = _client(orch, monkeypatch)
+
+    rows = {r["path"]: r for r in _card(_build(client))["allRows"]}
+
+    assert rows["empty.csv"]["size"] == 0
+    assert rows["calls_daily.csv"]["size"] == 23
+
+
+def test_an_unmounted_listing_that_did_measure_keeps_every_size_the_platform_gave(
+        tmp_path: Path, monkeypatch):
+    """The absence is read off the LISTING, never off the mount. Since #153 the platform weighs an
+    unmounted Dataset, so a card keying on `mount_path` would blank sizes it had been handed — and
+    would blank them inconsistently, hiding the one row where "0 bytes" is the fact somebody
+    needed while every row beside it kept its number."""
+    orch, _ = _orch(tmp_path, _unmounted(tmp_path, "revenue_2026", {
+        "placeholder.csv": "", "calls_daily.csv": "day,calls\n2026-01-01,7\n",
+    }, measured=True))
+    orch.bind_dataset("ds_revenue_2026")
+    client = _client(orch, monkeypatch)
+
+    rows = {r["path"]: r for r in _card(_build(client))["allRows"]}
+
+    assert rows["calls_daily.csv"]["size"] == 23
+    assert rows["placeholder.csv"]["size"] == 0
+
+
+def test_clicking_a_file_on_an_unmounted_dataset_attaches_it_and_then_the_request_builds(
+        tmp_path: Path, monkeypatch):
+    """The same click, the same replay, the same build. Only the attach itself differs — the bytes
+    come down through the data library rather than off a mount — and nothing above it can tell."""
+    orch, oc = _orch(tmp_path, _unmounted(tmp_path, "revenue_2026", {
+        "calls_daily.csv": "day,calls\n2026-01-01,7\n",
+    }))
+    orch.bind_dataset("ds_revenue_2026")
+    client = _client(orch, monkeypatch)
+    _card(_build(client))
+
+    attached = client.post("/api/project/assets/ds_revenue_2026/files/attach",
+                           json={"path": "calls_daily.csv"})
+    body = _build(client, skipDatasetGate=True)
+
+    assert attached.status_code == 200, attached.text
+    assert [f for f in _frames(body) if f.get("type") == "dataset-files"] == []
+    assert oc.prompts, "the request the card was asked about never reached the assistant"
+    # The real bytes, in the app's own tree, so the preview and the published app serve them.
+    landed = orch.project(start_preview=False).workspace.path / attached.json()["path"]
+    assert landed.read_text() == "day,calls\n2026-01-01,7\n"
 
 
 # ---- the same question, in Chat -----------------------------------------------------------------
