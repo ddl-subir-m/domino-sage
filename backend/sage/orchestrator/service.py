@@ -13225,6 +13225,27 @@ class Orchestrator:
             )
         return lines
 
+    def _datasets_with_nothing_attached(self, project: Project) -> list[str]:
+        """The Datasets this app records and cannot read: bound, with no Attachment from them.
+
+        `bind_dataset` writes the record and deliberately writes no Attachment — the two are the
+        app's two named things and they stay two (ADR-0039). So this state is reachable by design,
+        and it is the one an agent invents rows out of: told the app uses a Dataset, handed no path
+        to read, and ADR-0020 keeps the working set out of the prompt.
+
+        Matched on the id an Attachment kept, and on the served root when it kept none. Not on the
+        recorded name: `_rehydrate_attached` fills `dataset` from the symlink's parent DIRECTORY,
+        which is a slug, and a slug with subfolders on it for anything `attach_folder` nested. A
+        name comparison never matches those, and the line would then tell the agent not to read
+        files that are sitting in `public/data/<slug>` — worse than saying nothing at all.
+        """
+        bound = [b for b in parse_bindings(project.workspace.read_bindings())
+                 if b.kind == KIND_DATASET]
+        ids = {str(e.get("dataset_id")) for e in project.attached if e.get("dataset_id")}
+        roots = {"/".join(_path_parts(str(e.get("path") or ""))[:3]) for e in project.attached}
+        return [b.display_name or b.name for b in bound
+                if b.id not in ids and f"public/data/{_slug(b.name)}" not in roots]
+
     _AGENTS_BEGIN = "<!-- sage:attached-data:begin -->"
     _AGENTS_END = "<!-- sage:attached-data:end -->"
 
@@ -13232,12 +13253,13 @@ class Orchestrator:
         """Maintain a managed block in the workspace AGENTS.md listing attached data files, so the
         agent knows they exist (and their served paths) even without an explicit @mention."""
         agents = project.workspace.path / "AGENTS.md"
+        lines: list[str] = []
         if project.attached:
             # Be prescriptive: give the EXACT disk path and the EXACT served URL per file. Agents
             # otherwise guess a flat `/data/<name>` (the files are nested under a dataset slug), hit
             # the SPA fallback (index.html) instead of the CSV, and "fix" it by copying the file into
             # src/ — which leaks the data into git (public/data/ is gitignored on purpose).
-            lines = [
+            lines += [
                 "## Attached data", "",
                 ("The user attached the files below. Each lives on disk at the path shown (read or "
                  "edit it there) and the running app serves it at the URL shown. Load one in app code "
@@ -13264,9 +13286,21 @@ class Orchestrator:
                  "finds nothing here proves nothing — read the file instead."), "",
             ]
             lines += self._attached_data_lines(project)
-            block = f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}"
-        else:
-            block = ""
+        # Belt and braces (ADR-0039). The card that asks which files to attach can be skipped,
+        # refused or clicked past, and every one of those paths ends here — so the block says the
+        # one thing that keeps failing open from meaning failing silently. One line, because it is
+        # a sentence about a declaration and not a listing of what the Dataset holds (ADR-0020).
+        unreadable = self._datasets_with_nothing_attached(project)
+        if unreadable:
+            lines += [""] if lines else ["## Attached data", ""]
+            lines += [brand.text(
+                "- This app records the {dataset} **{name}** and has no files attached from it, so "
+                "the app cannot read it. Do not invent rows for it — say that nothing is attached "
+                "from that {dataset}.",
+                name=name,
+            ) for name in unreadable]
+        block = (f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}") \
+            if lines else ""
         with self._agents_lock:  # serialize with write_instructions — same file, distinct regions
             existing = agents.read_text() if agents.exists() else ""
             b, e = existing.find(self._AGENTS_BEGIN), existing.find(self._AGENTS_END)
@@ -13473,6 +13507,9 @@ class Orchestrator:
         self._write_app_model(project)
         self._write_app_model_api(project)
         self._write_app_data(project)
+        # A Dataset Binding changes what the attached-data block has to say (ADR-0039): binding one
+        # nothing is attached from opens the gap that block reports, and unbinding closes it.
+        self._write_agents_data_block(project)
         self._rebaseline_turn(project)
 
     @staticmethod
