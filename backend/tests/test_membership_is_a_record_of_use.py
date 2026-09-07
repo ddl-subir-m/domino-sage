@@ -165,7 +165,7 @@ def test_a_second_bind_changes_nothing_about_the_membership_row(tmp_path: Path):
     after = orch.list_project_resources()
     membership = [{k: v for k, v in r.items() if k != "usedBy"} for r in after]
     assert membership == [{k: v for k, v in r.items() if k != "usedBy"} for r in before]
-    assert [u["scope"] for u in after[0]["usedBy"]] == ["DWH.MARTS_ARCHIVE"]
+    assert [u["scope"] for u in after[0]["usedBy"]] == ["any in DWH.MARTS_ARCHIVE"]
 
 
 def test_a_resource_already_in_the_project_is_not_renamed_by_a_bind(tmp_path: Path):

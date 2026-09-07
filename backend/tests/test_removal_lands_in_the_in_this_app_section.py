@@ -260,7 +260,7 @@ def test_removing_a_binding_confirms_and_names_what_re_picking_costs():
     step = _remove("Market data EOD", confirm=True)
     assert step["confirm"] is not None
     assert step["confirm"]["title"] == "Remove Market data EOD from Desk dashboard?"
-    assert "Scope" in step["confirm"]["content"]
+    assert "table" in step["confirm"]["content"]
     assert "no undo" in step["confirm"]["content"]
     assert step["confirm"]["danger"] is True
 
@@ -275,7 +275,7 @@ def test_the_binding_confirm_says_the_model_api_token_does_not_go():
     assert "token" in content
     assert "sample request" in content
     # The Scope belongs to a Data Source Binding. Saying it here would be a cost that is not real.
-    assert "Scope" not in content
+    assert "table" not in content
 
 
 @needs_node
@@ -285,7 +285,7 @@ def test_a_binding_confirm_over_a_kind_with_neither_cost_claims_neither():
     losing something it never had."""
     content = _remove("Claude Sonnet 4", confirm=True)["confirm"]["content"]
     assert "Pick it again from Project resources." in content
-    assert "Scope" not in content and "token" not in content
+    assert "table" not in content and "token" not in content
 
 
 @needs_node

@@ -97,7 +97,7 @@ def test_the_bind_carries_no_scope_and_the_second_act_is_waiting_on_the_apps_sur
     assert step["scoped"] == []
     assert step["walkOpen"] is False
     # And the Binding arrives on the app's own surface in the state the product has a word for.
-    assert step["doors"] == [{"after": "Risk warehouse", "label": "not scoped yet"}]
+    assert step["doors"] == [{"after": "Risk warehouse", "label": "not chosen yet"}]
 
 
 @needs_node
@@ -108,7 +108,7 @@ def test_the_receipt_names_the_resource_and_sends_the_reader_to_the_second_act()
     said = _fix(SOURCE)["said"]
     assert len(said) == 1
     assert "Risk warehouse" in said[0]
-    assert "Choose a Scope beside its name" in said[0]
+    assert "Choose the table beside its name" in said[0]
 
 
 # ---- the Model API --------------------------------------------------------------------------

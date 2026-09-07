@@ -224,15 +224,28 @@ def key_for(term: str) -> str:
 
 
 def terms_needing_a_key(
-    strings: Iterable[Marked], glossary: Path | None = None
+    strings: Iterable[Marked], glossary: Path | None = None, pack: dict | None = None
 ) -> dict[str, str]:
     """The glossary terms a marked position names by writing a token, as `key → term`.
 
     Half of what ADR-0014 asks for, and the half that reads a token. The other half —
     a name spelled out in prose — is `unkeyed_name_phrases`, because a bare name is
     caught by matching the word rather than by resolving a key.
+
+    `key_for` guesses the key from the spelling, which is right for every name whose word and
+    identifier were chosen together. The pack is the authority where they were not: ADR-0037
+    renamed the prose word to `Table` and left the key `scope`, because ADR-0014 moves what a
+    person reads and never the identifier behind it. So a pack key REPLACES the guess for the
+    name it holds — otherwise `{table}` would be answered with "the pack needs a 'table' noun
+    key", which is advice to add a second key for a name that already has one.
     """
     by_key = {key_for(term): term for term in glossary_terms(glossary)}
+    named = set(glossary_terms(glossary))
+    for key, forms in ((pack or brand.DEFAULT).get("nouns") or {}).items():
+        term = forms.get("singular")
+        if term in named:
+            by_key.pop(key_for(term), None)
+            by_key[key] = term
     used: dict[str, str] = {}
     for marked in strings:
         if not marked.substituted:
@@ -263,7 +276,7 @@ def findings(
     strings = list(strings)
     # The computation itself: a token the pack cannot resolve is owed a noun key when the
     # glossary is where the word comes from, and is a typo when it is not.
-    wanted = terms_needing_a_key(strings, glossary)
+    wanted = terms_needing_a_key(strings, glossary, pack)
 
     out: list[Finding] = []
     # An entry with no marker is read as a name above; it is also said out loud here, so

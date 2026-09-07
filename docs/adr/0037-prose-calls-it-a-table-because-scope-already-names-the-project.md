@@ -53,9 +53,14 @@ the plainest available word for it is the word the person already used when they
 ## What it costs
 
 A Binding may name a database and schema and no table, meaning "any table in that schema". Under
-the label "Table" that state would read as a lie, so it is drawn as **"any in PUBLIC"** rather than
-as a table name. The panel can still produce that state deliberately; the [[Candidate]] flow never
-does, because a search that ends on a schema has not answered the question it was asked.
+the label "Table" that state would read as a lie, so it is drawn as **"any in DWH.MARTS"** rather
+than as a table name. The panel can still produce that state deliberately; the [[Candidate]] flow
+never does, because a search that ends on a schema has not answered the question it was asked.
+
+The whole position, not just the schema. "any in MARTS" was the first shape and it loses the one
+thing this label is read for: `usedBy` exists so one look answers where each app reads (#133), and
+`DWH.MARTS` and `RISK.MARTS` are two different places in one warehouse. The word "any" is what
+stops the lie; dropping the database does not help it and costs the answer.
 
 We considered keeping "Scope" and fixing only the empty state. Rejected: the failure was not that
 the word was unfamiliar, it was that three surfaces use it for three things, and a person who learns

@@ -108,7 +108,7 @@ def test_a_data_source_bound_before_the_join_shipped_reaches_the_working_set(tmp
     assert row["bindingKey"] == ["data_source", "ds-dwh"]
     # The rail's subtitle reads off the app's own manifest, so the migrated row arrives with the
     # answer to "where is this used" already attached.
-    assert [u["scope"] for u in row["usedBy"]] == ["DWH.MARTS"]
+    assert [u["scope"] for u in row["usedBy"]] == ["any in DWH.MARTS"]
 
 
 def test_every_bound_kind_is_backfilled(tmp_path: Path):

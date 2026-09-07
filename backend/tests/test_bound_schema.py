@@ -865,7 +865,7 @@ def test_an_unscoped_binding_names_what_is_one_level_down_and_asks():
     up. Naming the databases is what turns "I know nothing" into a question worth asking."""
     block = block_for(UNSCOPED, inside=Inside("database", ["ANALYTICS", "RAW", "PROD"]))
 
-    assert "No Scope is chosen yet" in block
+    assert "No Table is chosen yet" in block
     assert "It holds 3 databases:" in block
     assert "`ANALYTICS`, `RAW`, `PROD`" in block
     assert "Do not invent rows" in block
@@ -908,4 +908,4 @@ def test_a_scope_that_reached_a_schema_still_says_its_columns_are_missing():
     block = block_for(SNOWFLAKE, columns=[])
 
     assert "could not read what the tables" in block
-    assert "No Scope is chosen yet" not in block
+    assert "No Table is chosen yet" not in block

@@ -168,7 +168,8 @@ as an error. Choosing one is a second act on the Built App's own surface, taken 
 that already exists; it can be taken again whenever the choice moves, and it can put the Binding back
 to naming no table at all. Removing the Binding takes this with it, so a later re-bind inherits no
 old table. A Binding that names a database and schema but no table is read as "any in that schema",
-drawn as "any in PUBLIC" rather than pretending a table was picked; only the panel can produce one,
+drawn as "any in DWH.MARTS" — the whole position, so two apps reading two databases are told apart —
+rather than pretending a table was picked; only the panel can produce one,
 never a [[Candidate]] the user confirmed. Only a Data Source has one — a Dataset Binding names the
 Dataset and stops there, because a Dataset is not a table.
 _Kind_: name

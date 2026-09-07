@@ -234,7 +234,7 @@ def test_a_scope_is_readable_in_full_without_a_hover():
     # The door still explains itself on hover — that it can be chosen again — which is a different
     # thing from repeating a truncated label.
     assert row["tips"] == [
-        "Desk dashboard reads DWH.MARTS.FCT_USAGE_DAILY in Market data EOD. Choose again to move it."
+        "In Market data EOD, Desk dashboard reads DWH.MARTS.FCT_USAGE_DAILY. Choose again to move it."
     ]
 
 
@@ -247,7 +247,7 @@ def test_a_binding_with_no_scope_reads_as_an_unfinished_state_and_not_an_error()
     Not an error, and drawn as none: the Binding stands, the app depends on the Data Source, and
     what is unanswered is which part of it the app reads."""
     row = _app_row(_at(walk=[], bound=UNSCOPED))
-    assert "not scoped yet" in row["texts"]
+    assert "not chosen yet" in row["texts"]
     assert "data source" not in row["texts"]
     # The hover says what choosing one would do, which is the way out of the unfinished state.
     assert row["tips"] == [

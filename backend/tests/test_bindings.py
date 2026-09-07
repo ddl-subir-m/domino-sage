@@ -523,7 +523,7 @@ def test_a_mention_carries_the_kind_and_the_scope_not_just_the_name():
                      "Snowflake-Data-Warehouse", "DWH", "MARTS", "FCT_USAGE_DAILY")
     note = mention_note([Mention(alias), Mention(source)], [alias, source])
     assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in note
-    assert "Data Source **Snowflake-Data-Warehouse**, scoped to `DWH.MARTS.FCT_USAGE_DAILY`" in note
+    assert "Data Source **Snowflake-Data-Warehouse**, reading `DWH.MARTS.FCT_USAGE_DAILY`" in note
     assert "This app's default model" in note
     assert 'Queries read it by naming `"binding": "ds-dwh"`' in note
 
@@ -592,7 +592,7 @@ def test_a_mention_can_name_one_table_inside_the_data_source(tmp_path: Path):
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")   # a schema, so the Scope holds many tables
     note = orch._resource_mention_note(
         orch.project(), [{"kind": "data_source", "id": "ds-dwh", "table": "FCT_USAGE_DAILY"}])
-    assert "scoped to `DWH.MARTS`" in note                    # the Binding is unchanged
+    assert "reading any table in `DWH.MARTS`" in note                    # the Binding is unchanged
     assert "the table `FCT_USAGE_DAILY` inside it" in note    # and the request is narrowed
     assert "AGENTS.md data block lists" in note               # the columns are not repeated here
 

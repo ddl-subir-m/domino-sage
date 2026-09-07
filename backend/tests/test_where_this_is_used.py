@@ -100,7 +100,7 @@ def test_two_apps_binding_one_source_both_reach_the_listing_with_their_scopes(tm
     _record(orch, _source(("DWH", "SANDBOX", "DIM_ACCOUNT")))
 
     assert _row(orch, "data_source:ds-1")["usedBy"] == [
-        {"appId": orch._wm.app_ids()[0], "name": "Desk exposure", "scope": "DWH.MARTS"},
+        {"appId": orch._wm.app_ids()[0], "name": "Desk exposure", "scope": "any in DWH.MARTS"},
         {"appId": orch._wm.app_ids()[1], "name": "Churn model", "scope": "DWH.SANDBOX.DIM_ACCOUNT"},
     ]
 

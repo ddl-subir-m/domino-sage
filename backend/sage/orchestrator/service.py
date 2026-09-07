@@ -2039,7 +2039,7 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
             # table names — which nothing had asked them for. Not knowing WHICH table is a question;
             # it is not the store being shut.
             return brand.text(
-                "- {dataSource} {name}{extra}. No {scope} is set on it, so which tables it holds is "
+                "- {dataSource} {name}{extra}. No {scope} is chosen on it, so which tables it holds is "
                 "not recorded here. Reach it with "
                 "`from domino_data.data_sources import DataSourceClient` then "
                 "`DataSourceClient().get_datasource({quoted})`, and list its tables before you "
@@ -9637,7 +9637,7 @@ class Orchestrator:
         return [
             {**row,
              "usedBy": [
-                 {"appId": ws.app_id, "name": _app_display_name(ws), "scope": b.scope}
+                 {"appId": ws.app_id, "name": _app_display_name(ws), "scope": b.scope_shown}
                  for ws, b in self._apps_that_bind(str(row.get("id") or ""), scanned)
              ],
              "heldBy": self._threads_that_hold(str(row.get("id") or ""), chips)}

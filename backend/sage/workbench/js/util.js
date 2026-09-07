@@ -590,7 +590,7 @@ window.SW = window.SW || {};
     // would read as two different states — which is the opposite of what naming it is for. Lower
     // case because it follows a name on the header's strip and sits among lower-case kind words in
     // the panel, and because it is a state rather than a title.
-    NO_SCOPE_YET: 'not scoped yet',
+    NO_SCOPE_YET: 'not chosen yet',
 
     // A Scope as one dotted label, or "" for a record that has none. The join `Binding.scope` does
     // on the server, so a row, a tooltip and a receipt all name a Scope the way the AGENTS.md data
@@ -599,6 +599,21 @@ window.SW = window.SW || {};
     scopeText(record) {
       const at = record || {};
       return [at.database, at.schema, at.table].filter(Boolean).join('.');
+    },
+
+    // The same record as a person reads it (ADR-0037), or "" when it names nothing. Prose calls
+    // this a Table, and under that word a record that stopped above one cannot be drawn as its
+    // dotted levels alone: `DWH.MARTS` would read as a table nobody picked. It says what the
+    // record actually means instead — any table in the part of the store it does name.
+    //
+    // The whole position stays in the label, not just the innermost level: `DWH.MARTS` and
+    // `RISK.MARTS` are two different places, and this is also the breadcrumb a half-finished walk
+    // reads back. `Binding.scope_shown` is the same rule on the server, for the rows it computes.
+    scopeShown(record) {
+      const at = record || {};
+      if (at.table) return SW.util.scopeText(at);
+      const above = SW.util.scopeText(at);
+      return above ? `any in ${above}` : '';
     },
 
     thumbUrl(name) {
