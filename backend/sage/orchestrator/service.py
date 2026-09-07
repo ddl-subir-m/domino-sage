@@ -115,6 +115,7 @@ from ..resources.provider import (
     alias_reasoning_efforts,
     cascade_levels,
     safe_identifier,
+    walkable_databases,
     walks_whole_database,
 )
 from ..resources.publish_egress import egress_notice, needs_listing
@@ -7207,12 +7208,12 @@ class Orchestrator:
         database-wide query — and a search that takes a minute is slower than reading the data
         catalog by hand, which is the thing it exists to save.
         """
-        # `or [""]` is the two-level store, which keys on the empty string the way the cascade
-        # passes it — no dialect with a database-wide statement is two-level yet, and #187 is where
-        # one arrives. Without it such a store answers with an empty database list, produces no
-        # candidates, and silently draws no card after saying it could be walked.
+        # Not the raw list: a two-level store keys on the empty string the way the cascade passes
+        # it, a three-level store that lists nothing has nothing to walk, and the engine's own
+        # catalogs are not candidates. `walkable_databases` draws all three, because all three are
+        # facts about the connector rather than about this caller.
         databases = ([binding.database] if binding.database
-                     else self._resources.list_databases(source) or [""])
+                     else walkable_databases(source, self._resources.list_databases(source)))
         if len(databases) > _DATABASES_SEARCHED:
             # Bounded because this runs before anything streams, and the budget is measured: one
             # database-wide query is 3.84s on the live warehouse, so twenty of them is a turn that

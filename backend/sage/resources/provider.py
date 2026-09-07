@@ -314,9 +314,9 @@ class SqlDialect:
     SEARCH asks (#182): a creator opens one schema because they chose it, while "which table in here
     holds the Gong calls" is a question about all of them. Walking the levels costs ~3s each, which is
     about 45 seconds over the 15 schemas of the live warehouse against 3.84s for one query
-    (ADR-0038). `None` where Sage has no such statement, which is every connector but Snowflake until
-    #187 — a caller reads `walks_whole_database` and asks the creator for a schema instead, and never
-    sweeps the schemas one at a time, because that sweep is the cost this exists to avoid.
+    (ADR-0038). `None` where Sage has no such statement, which after #187 is BigQuery alone — a
+    caller reads `walks_whole_database` and asks the creator for a schema instead, and never sweeps
+    the schemas one at a time, because that sweep is the cost this exists to avoid.
 
     Statements are formatted with `{db}` and `{schema}` (validated, quoted identifiers),
     `{schema_lit}` (the same name bare, for the string comparisons `information_schema` needs) and
@@ -332,6 +332,17 @@ class SqlDialect:
     columns: str | None = None
     sample: str | None = None
     database_tables: str | None = None
+    # Databases the SEARCH drops before it walks them, on the ground the statements above drop
+    # `INFORMATION_SCHEMA`: they are the engine's own, not anybody's data, and the store answers
+    # with them unasked. The cascade still offers them, because a creator who opens one has picked
+    # it — the same split #182 drew at the schema level. Every three-level dialect names some, none
+    # of them by accident: `SHOW DATABASES`, `SHOW CATALOGS` and `sys.databases` all ship with the
+    # engine's own in the list. Empty only where there is no outer level to hold any.
+    #
+    # Named narrowly and never generously. A dropped database is one nobody can search, which is a
+    # worse answer than a noisy list — so a name goes in here only when no company's tables could
+    # be under it.
+    bookkeeping_databases: tuple[str, ...] = ()
 
     def ident(self, name: str) -> str:
         """One validated identifier, quoted. Quoted only to preserve case — the validation has
@@ -360,6 +371,15 @@ _ANSI_SCHEMAS = ("SELECT SCHEMA_NAME AS name FROM {db}.INFORMATION_SCHEMA.SCHEMA
                  "ORDER BY SCHEMA_NAME")
 _ANSI_TABLES = ("SELECT TABLE_NAME AS name FROM {db}.INFORMATION_SCHEMA.TABLES "
                 "WHERE TABLE_SCHEMA = '{schema_lit}' ORDER BY TABLE_NAME")
+# The line above with its schema filter dropped and the schema moved into the projection, which is
+# what a SEARCH asks rather than what an expander asks (#182, #187). One statement for four
+# connectors that disagree about the case of the bookkeeping schema — SQL Server and Synapse define
+# the views as INFORMATION_SCHEMA, Databricks and Trino as information_schema — so both spellings
+# are dropped, because a case-sensitive collation on either side lets the other one through.
+_ANSI_DATABASE_TABLES = ("SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name "
+                         "FROM {db}.INFORMATION_SCHEMA.TABLES "
+                         "WHERE TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'information_schema') "
+                         "ORDER BY TABLE_SCHEMA, TABLE_NAME")
 # One statement for the whole Scope, not one per table: a schema with 200 tables would otherwise be
 # 200 round trips at ~3s each. ORDINAL_POSITION so the agent reads the columns in the order the table
 # declares them, which is the order a person describing the table would use.
@@ -374,6 +394,12 @@ _ANSI_COLUMNS = ("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
                  "DATA_TYPE AS data_type FROM {db}.INFORMATION_SCHEMA.COLUMNS "
                  "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
                  "ORDER BY TABLE_NAME, ORDINAL_POSITION")
+
+# `sys.databases` is never only the customer's: these four ship with every SQL Server instance, and
+# a search that walked them would spend most of its database budget before reaching an actual one —
+# the widening would then refuse on a server holding a single user database. Nothing of anybody's
+# lives in the four, so dropping them from the SEARCH hides nothing. The cascade still offers them.
+_SQL_SERVER_SYSTEM = ("master", "model", "msdb", "tempdb")
 
 # Keyed on `dataSourceType`, and a subset of SQL_CONNECTORS on purpose: a connector Sage can list but
 # cannot look inside still belongs in the panel, because recording the dependency is worth something
@@ -410,14 +436,21 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                          "FROM {db}.INFORMATION_SCHEMA.TABLES "
                          "WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' "
                          "ORDER BY TABLE_SCHEMA, TABLE_NAME"),
+        # One level up from that filter, and the same argument (#187). `SHOW DATABASES` answers with
+        # both of these on an ordinary account: `SNOWFLAKE` is the account-usage share and
+        # `SNOWFLAKE_SAMPLE_DATA` is Snowflake's own TPC-H and TPC-DS, whose `CUSTOMER` would
+        # otherwise rank against the marts on a question about customer data.
+        bookkeeping_databases=("SNOWFLAKE", "SNOWFLAKE_SAMPLE_DATA"),
     ),
     # Three levels: `sys.databases` is cross-database on one connection, unlike Postgres.
     "SQLServerConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
                                   _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS,
-                                  sample=_SAMPLE_TOP),
+                                  sample=_SAMPLE_TOP, database_tables=_ANSI_DATABASE_TABLES,
+                                  bookkeeping_databases=_SQL_SERVER_SYSTEM),
     "SynapseConfig": SqlDialect("SELECT name FROM sys.databases ORDER BY name",
                                 _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS,
-                                sample=_SAMPLE_TOP),
+                                sample=_SAMPLE_TOP, database_tables=_ANSI_DATABASE_TABLES,
+                                bookkeeping_databases=_SQL_SERVER_SYSTEM),
     # Two levels. A Postgres connection is bound to one database and cannot read another's catalog,
     # so listing the others would offer choices that then fail. `pg_%` and `information_schema` are
     # dropped: they are the server's own bookkeeping, never what an app was built to read.
@@ -433,6 +466,14 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                  "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
                  "ORDER BY TABLE_NAME, ORDINAL_POSITION"),
         sample=_SAMPLE_2,
+        # The `schemas` entry above with its two exclusions kept and the schema moved into the
+        # projection. No `{db}` at all, rather than one that renders empty: the connection is already
+        # inside one database, and an empty prefix would leave `FROM .INFORMATION_SCHEMA.TABLES`.
+        database_tables=("SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name "
+                         "FROM INFORMATION_SCHEMA.TABLES "
+                         "WHERE TABLE_SCHEMA NOT LIKE 'pg_%' "
+                         "AND TABLE_SCHEMA <> 'information_schema' "
+                         "ORDER BY TABLE_SCHEMA, TABLE_NAME"),
     ),
     # Two levels each, and in MySQL's family "database" and "schema" are one thing — so the single
     # namespace level is offered as the schema, which is the level the Binding records.
@@ -447,14 +488,52 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                  "WHERE TABLE_SCHEMA = '{schema_lit}'{table_clause} "
                  "ORDER BY TABLE_NAME, ORDINAL_POSITION"),
         sample=_SAMPLE_2,
+        # The single namespace level IS the database here, so this reads the whole server. The
+        # `schemas` entry above offers the server's own databases and this one does not, which is the
+        # same split #182 drew on Snowflake: a creator picking a schema can see what they picked, and
+        # a search picks none. Named for the whole family that shares this dialect — `mysql`,
+        # `performance_schema` and `sys` are MySQL's own, `system` and the second spelling of the
+        # information schema are ClickHouse's, and `cluster` and `memsql` are SingleStore's.
+        #
+        # The 3.84s behind ADR-0038 was measured on Snowflake and does not carry here. MySQL 5.7 and
+        # MariaDB materialise `INFORMATION_SCHEMA.TABLES` by opening every table definition, so an
+        # unfiltered read of a server with thousands of tables can cost more than the schema-by-
+        # schema sweep this replaces. 8.0's data dictionary makes it cheap again. There is no
+        # narrower whole-server statement to write instead — the alternative is not walking at all.
+        database_tables=("SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name "
+                         "FROM INFORMATION_SCHEMA.TABLES "
+                         "WHERE TABLE_SCHEMA NOT IN ('information_schema', 'INFORMATION_SCHEMA', "
+                         "'mysql', 'performance_schema', 'sys', 'system', 'cluster', 'memsql') "
+                         "ORDER BY TABLE_SCHEMA, TABLE_NAME"),
     ),
     # Catalogs are the outer level on both, and `SHOW` is how each names them.
+    # Both answer `SHOW CATALOGS` with the engine's own catalogs beside the customer's, which only
+    # matters once there is a walk to spend on them (#187). Trino's list is the longer one because a
+    # stock deployment mounts more: `tpch` and `tpcds` answer `information_schema` perfectly well,
+    # so their synthetic `CUSTOMER` and `ORDERS` would rank as real answers.
+    #
+    # Databricks's `hive_metastore` is NOT dropped, and the cost of that is worth stating: it has no
+    # `information_schema`, so on a workspace that still has it the walk errors, and `_walk_catalog`
+    # gives up on every catalog rather than answer with some of them — the same refuse-rather-than-
+    # truncate rule the database budget follows. The alternative is worse: a workspace migrated to
+    # Unity Catalog keeps its legacy tables under `hive_metastore`, so skipping it would answer a
+    # search by hiding data. Telling those apart needs a Databricks workspace to look at.
     "DatabricksConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, quote="`",
-                                   columns=_ANSI_COLUMNS, sample=_SAMPLE_3),
+                                   columns=_ANSI_COLUMNS, sample=_SAMPLE_3,
+                                   database_tables=_ANSI_DATABASE_TABLES,
+                                   bookkeeping_databases=("system", "samples")),
     "TrinoConfig": SqlDialect("SHOW CATALOGS", _ANSI_SCHEMAS, _ANSI_TABLES, columns=_ANSI_COLUMNS,
-                              sample=_SAMPLE_3),
+                              sample=_SAMPLE_3, database_tables=_ANSI_DATABASE_TABLES,
+                              bookkeeping_databases=("system", "jmx", "memory", "blackhole",
+                                                     "tpch", "tpcds")),
     # Two levels. A BigQuery dataset holds its own `INFORMATION_SCHEMA`, so the tables view is
-    # qualified by the schema rather than filtered on it.
+    # qualified by the schema rather than filtered on it — and that is also why this is the one
+    # connector with a cascade and no `database_tables` (#187). There is no database-level view to
+    # sweep; the only project-wide one is `region-us`.INFORMATION_SCHEMA.TABLES, and Domino's
+    # `BigQueryConfig` carries only `project`, with no region to qualify it with. A guessed region is
+    # not the same bet as the other six statements: those are the standard shape, unverified but
+    # fair, while `region-us` is known wrong for every project outside the US. So a search asks the
+    # creator which schema instead, which `walks_whole_database` says before it sends anything.
     "BigQueryConfig": SqlDialect(
         None,
         "SELECT SCHEMA_NAME AS name FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME",
@@ -464,6 +543,7 @@ SQL_DIALECTS: dict[str, SqlDialect] = {
                  "DATA_TYPE AS data_type FROM {schema}.INFORMATION_SCHEMA.COLUMNS "
                  "WHERE TRUE{table_clause} ORDER BY TABLE_NAME, ORDINAL_POSITION"),
         sample=_SAMPLE_2,
+        database_tables=None,  # Explicit, and the comment above this entry says why.
     ),
 }
 # Same statements, same shape, different type strings. Written as aliases rather than repeated so a
@@ -589,6 +669,27 @@ def walks_whole_database(source: DataSource) -> bool:
     """
     dialect = SQL_DIALECTS.get(source.connector_type)
     return bool(dialect and dialect.database_tables)
+
+
+def walkable_databases(source: DataSource, listed: list[str]) -> list[str]:
+    """The databases a SEARCH should walk, out of everything the store lists (#187).
+
+    Connector knowledge, kept here rather than in the caller, and it does two things.
+
+    A store with no database level answers [] because there was never a question at that level, and
+    the walk still has to run once — on "", the empty string the cascade passes there. A store that
+    HAS a database level and lists none has genuinely nothing to walk, and gets [] rather than that
+    empty string, which would render as `FROM .INFORMATION_SCHEMA.TABLES` and come back as the
+    store's own syntax error. Telling those two apart is the whole of this branch.
+
+    And the engine's own catalogs come out, for the reason the statements give one level down. The
+    cascade keeps offering them, because a creator who opens one has picked it.
+    """
+    dialect = SQL_DIALECTS.get(source.connector_type)
+    if dialect is None or dialect.databases is None:
+        return [""]
+    skip = {name.lower() for name in dialect.bookkeeping_databases}
+    return [d for d in listed if d.lower() not in skip]
 
 
 def _no_database_wide_walk(source: DataSource) -> ResourceUnavailable:
