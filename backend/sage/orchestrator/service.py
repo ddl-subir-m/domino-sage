@@ -8558,21 +8558,23 @@ class Orchestrator:
                 return
 
             # Gated (plan) turn that wrote nothing — the designed outcome. Resolve the gate HERE,
-            # ahead of the typecheck, for three reasons. Running tsc over a tree the turn never
-            # touched is pure dead time (10-30s of the user staring at a spinner for a plan). Its
-            # "Typecheck passed" line lands under the plan and reads as though Sage already built
-            # and verified the app. And the old placement nested this inside the circuit breaker's
-            # `stop` branch, so a workspace carrying pre-existing type errors sent a plan turn into
-            # the fix-it nudge loop instead of proposing its plan. A gated turn that DID write falls
-            # through to the violation check below and is reverted.
+            # ahead of the typecheck, for two reasons, both about what the user is told rather than
+            # what the run costs. Its "Typecheck passed" line lands under the plan and reads as
+            # though Sage already built and verified the app. And the old placement nested this
+            # inside the circuit breaker's `stop` branch, so a workspace carrying pre-existing type
+            # errors sent a plan turn into the fix-it nudge loop instead of proposing its plan.
+            # Speed is no longer one of the reasons: TypeScript 6.0 is the native compiler and
+            # typechecks this template in 0.7-0.9s (measured 2026-09-07), not the 10-30s an earlier
+            # version of this comment claimed. A gated turn that DID write falls through to the
+            # violation check below and is reverted.
             if gate and not agent_wrote():
                 plan_md = _tidy_plan("\n".join(plan_text_parts))
                 restore_mode()
-                # A weak planner can finish this read-only turn without emitting any plan text —
-                # finish this read-only turn without emitting any plan text — leaving nothing to
-                # approve. Don't persist a blank plan or present an approve card that would build
-                # from an empty plan; report it as a failed planning turn, with the same diagnostics
-                # a stalled build gets, since "no plan text" is usually "no inference reached us".
+                # A weak planner can finish this read-only turn without emitting any plan text,
+                # leaving nothing to approve. Don't persist a blank plan or present an approve card
+                # that would build from an empty plan; report it as a failed planning turn, with the
+                # same diagnostics a stalled build gets, since "no plan text" is usually "no
+                # inference reached us".
                 if not plan_md:
                     log.warning("%s gate produced no text (model_calls=%d) — reporting empty plan",
                                 "architecture" if arch else "plan", project.model_calls)
@@ -8658,8 +8660,9 @@ class Orchestrator:
                 return
 
             # The agent said this request cannot be acted on (NO_BUILD_MARKER) and, true to that,
-            # wrote nothing. Finish here. Two things are being skipped, and the second is the point:
-            # the typecheck, which would be 10-30s of tsc over a tree nobody touched, and the
+            # wrote nothing. Finish here. Two things are being skipped, and only the second is the
+            # point: the typecheck, a sub-second run over a tree nobody touched (measurement at the
+            # plan gate above) that would be no reason on its own to return early, and the
             # implement-nudge below. That nudge exists to break an agent stalled at a plan; pointed
             # at an agent that correctly declined, it force-switches the turn to Implement, pins the
             # strong model, and pushes until something gets written into src/App.tsx — which is
