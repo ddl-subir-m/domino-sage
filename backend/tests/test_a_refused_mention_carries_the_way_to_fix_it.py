@@ -203,8 +203,10 @@ def test_only_the_frame_that_arrived_this_session_carries_buttons():
     """The invariant the three offers beside it keep. A replayed refusal draws the status line it
     always drew, so a reloaded transcript reads exactly as it did before this shipped."""
     store = _js("store.js")
-    assert ("|| ev.type === 'build-stalled' || ev.type === 'mentions-unresolved') ev.live = true;"
-            in store)
+    assert "|| ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'" in store
+    # The same list, joined by the table candidate card (#183), which keeps the rule for the
+    # sharpest reason of the four: its buttons write a Binding record and start a build.
+    assert "|| ev.type === 'table-candidates') ev.live = true;" in store
 
     blocks = _js("components", "message-blocks.js")
     assert "const fixes = block.live" in blocks

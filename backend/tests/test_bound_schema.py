@@ -874,6 +874,22 @@ def test_an_unscoped_binding_names_what_is_one_level_down_and_asks():
     assert "could not read what the tables" not in block
 
 
+def test_the_unscoped_section_no_longer_tells_the_agent_the_table_cannot_be_chosen():
+    """The dead end, removed (#183). "You cannot query it and you cannot choose one" was true and it
+    left the agent with nothing to do but hand the request back — which is exactly what it did.
+
+    Sage searches the store itself now and the person picks off a card (ADR-0038), so the sentence
+    names that act instead. What has NOT softened is the second half: the agent still has no tool
+    that picks a table, because an agent that could pick one would be inferring a Binding on the
+    turn it felt confident, and ADR-0010 forbids exactly that.
+    """
+    block = block_for(UNSCOPED, inside=Inside("database", ["ANALYTICS"]))
+
+    assert "you cannot choose one" not in block
+    assert "no tool that picks one" in block
+    assert "search it and offer them candidates" in block
+
+
 def test_a_long_list_of_names_is_cut_at_the_same_ceiling_as_the_tables():
     """AGENTS.md is re-read every turn, so an eight-hundred-schema warehouse must not be paid for on
     each one. The count stays truthful above the cut — that is what makes the list safe to trim."""

@@ -544,6 +544,25 @@
   overflow-x: auto;
 }
 
+/* The tables a search found, for the person to pick one (#183). Scrollable rather than tall: the
+   full list of a real warehouse runs to hundreds of names, and it must not push the card's own
+   sentence off the top of the transcript. Grouped by schema, with space between groups and less
+   within them, so the two layers holding the same subject read as two places. */
+.sw-table-candidates {
+  margin-top: var(--s2);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.sw-table-group + .sw-table-group { margin-top: var(--s3); }
+.sw-table-group-head {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  color: var(--gray-600);
+  margin-bottom: var(--s1);
+}
+.sw-table-pick { font-family: var(--mono); }
+.sw-table-more { padding-left: 0; margin-top: var(--s2); }
+
 /* A change, attached to the app it happened to. One turn can change two apps
    and the preview only shows one, so this is the record — every change is
    visible and reviewable here whether or not the panel is pointing at it. */

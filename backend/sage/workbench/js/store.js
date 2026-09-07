@@ -1628,6 +1628,26 @@ window.SW = window.SW || {};
           count: ev.count || (ev.files || []).length,
           live: !!ev.live,
         });
+      } else if (ev.type === 'table-candidates' && ev.message) {
+        // The tables a search found, for the click that records one (#183). Same `live` rule as the
+        // offers around it, and the sharper reason: a replayed card would write a record and start
+        // a build from a message somebody is only reading back.
+        ensureAssistant().blocks.push({
+          type: 'table_candidates',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          sourceId: ev.sourceId || '',
+          sourceName: ev.sourceName || '',
+          // The gates this turn was already past. Without them the replay walks back into a gate
+          // the person has answered — most sharply the reset offer, which is a prompt match with
+          // nothing remembered, so it would offer to throw the app away a second time.
+          answered: ev.answered || {},
+          groups: ev.groups || [],
+          allGroups: ev.allGroups || [],
+          total: ev.total || 0,
+          matched: ev.matched || 0,
+          live: !!ev.live,
+        });
       } else if (ev.type === 'build-stalled' && ev.message) {
         // A turn that stopped saying anything and was given up on (#39). An offer rather than a
         // status line: the message explains what happened and what was kept, and the button asks
@@ -2174,7 +2194,8 @@ window.SW = window.SW || {};
     // app selected NOW, while the refusal names the app that was selected then, and a gap reported
     // six weeks ago has probably been closed since.
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
-        || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved') ev.live = true;
+        || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'
+        || ev.type === 'table-candidates') ev.live = true;
     appendBuildRow(ev);
   }
 
@@ -4277,14 +4298,15 @@ window.SW = window.SW || {};
     // A second send no longer bounces off `state.buildRunning` (#79). The server takes the turn and
     // holds it in line on this request's own connection, so this promise stays alive for as long as
     // the wait plus the turn — and a tab can have several of them at once.
-    async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false } = {}) {
+    async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false,
+                                  skipTableGate = false } = {}) {
       if (!text.trim()) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
       // Echo what the server will write to the transcript, so live and reloaded read the same. For a
       // click that is the click, not the request — the request is already a bubble above the offer,
       // and repeating it would say the user asked twice (see build_stream's `user_text`).
-      const bubble = skipResetGate || skipIncomingGate ? 'Build it.' : text;
+      const bubble = skipResetGate || skipIncomingGate || skipTableGate ? 'Build it.' : text;
       // The app this turn is for. Switching Built App mid-build is allowed and the build carries on
       // server-side (#77), so the events below have to be checked against this before they are
       // appended — otherwise one app's build writes itself into another app's transcript. The
@@ -4315,7 +4337,8 @@ window.SW = window.SW || {};
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            prompt: text, conversation: state.thread.id, skipResetGate, skipIncomingGate,
+            prompt: text, conversation: state.thread.id,
+            skipResetGate, skipIncomingGate, skipTableGate,
             mentions: refs.mentions, resources: refs.resources,
           }),
         });
@@ -4399,6 +4422,25 @@ window.SW = window.SW || {};
       }
       await Promise.all([store.loadApps({ cascade: false }), store.loadBuild({ keepPreview: true })]);
       return store.sendBuildPrompt(prompt, { skipIncomingGate: true });
+    },
+
+    // The answer to a table candidate card (#183): the click writes the record, then the request
+    // the person already made is sent again against it. Two calls rather than one, because they are
+    // two acts — the record stands whether or not the build that follows it succeeds, and the build
+    // is an ordinary turn taking the turn lock like any other. Refreshing the Bindings first is
+    // what puts the chosen table on the app's row before the build starts talking about it.
+    //
+    // Reloading the transcript is what retires the card, as it is for the offers above: the
+    // server's copy of it carries no `live`, so its buttons go with the reload and the same card
+    // cannot be answered twice. Answering it twice would overwrite the recorded table and start a
+    // second build, silently, off a catalog the server may already have dropped as stale.
+    //
+    // `answered` carries the gates this turn was already past, so the replay does not walk back
+    // into one the person has settled.
+    async chooseTableAndBuild(prompt, sourceId, scope, answered) {
+      await SW.api.confirmTableCandidate(sourceId, scope);
+      await Promise.all([refreshBindings(), store.loadBuild({ keepPreview: true })]);
+      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipTableGate: true });
     },
 
     async buildWithIncoming(prompt) {

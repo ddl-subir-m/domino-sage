@@ -930,6 +930,87 @@ window.SW = window.SW || {};
     );
   }
 
+  // The tables a search found, for the person to pick one (#183, ADR-0038). Sage finds; the person
+  // binds — so this card IS the declaration, and every button on it writes the same record the
+  // panel's picker writes before replaying the request that produced the card.
+  //
+  // Grouped by schema because the schema is the difference being asked about: `MARTS.GONG__CALLS`
+  // is the modeled table a daily summary wants and `STAGING.STG_GONG__CALLS` is the raw one it does
+  // not, and the two names alone cannot say which is which. Every table stays reachable behind
+  // "show all", so a ranking that put the right one sixth costs a click and never a dead end.
+  //
+  // Same `live` rule as the two offers above, and the strongest case of it: a replayed card would
+  // write a record and start a build out of a message somebody is only scrolling back through.
+  function TableCandidates({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    // With nothing matched, the shortlist is only the alphabetical head of the catalog, so opening
+    // on the whole list is what keeps the card honest — five arbitrary names laid out like answers
+    // read as answers. Only where the whole list is a list: a real warehouse holds 602 tables, and
+    // mounting all of them the moment a vague prompt lands costs a paint on every re-render of the
+    // transcript. Past that the button below says how many there are and one click opens them.
+    const [all, setAll] = useState(!block.matched && (block.total || 0) <= 60);
+    const groups = (all ? block.allGroups : block.groups) || [];
+    const shown = groups.reduce((n, g) => n + (g.tables || []).length, 0);
+    const hidden = (block.total || 0) - shown;
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        // Gone rather than greyed out on a replay, which is what the three offers above do and what
+        // matters most here: hundreds of dead buttons under a sentence still asking somebody to pick
+        // one reads as an app that has broken, not as a question already answered.
+        block.live && block.prompt
+          ? h(
+              'div',
+              { className: 'sw-table-candidates' },
+              groups.map((group) => h(
+                'div',
+                { className: 'sw-table-group', key: `${group.database}.${group.schema}` },
+                // The whole position, not the schema alone: `DWH.MARTS` and `SANDBOX.MARTS` are two
+                // places, and the heading tells a reader which one they are picking out of.
+                h('div', { className: 'sw-table-group-head' },
+                  [group.database, group.schema].filter(Boolean).join('.')),
+                h(Space, { size: 6, wrap: true },
+                  (group.tables || []).map((table) => h(Button, {
+                    key: table,
+                    size: 'small',
+                    className: 'sw-table-pick',
+                    // Keyed on the whole position for the same reason the heading carries it: two
+                    // schemas can hold one table name, and a key that dropped the database would
+                    // spin both rows on one click.
+                    loading: busy === `${group.database}.${group.schema}.${table}`,
+                    disabled: !!busy,
+                    onClick: run(`${group.database}.${group.schema}.${table}`,
+                      () => SW.store.chooseTableAndBuild(
+                        block.prompt, block.sourceId,
+                        { database: group.database, schema: group.schema, table },
+                        block.answered,
+                      )),
+                  }, table)))
+              )),
+              hidden > 0
+                ? h(Button, {
+                    type: 'link',
+                    size: 'small',
+                    className: 'sw-table-more',
+                    onClick: () => setAll(true),
+                    // Through the pack, because the sentence right above it is: a button reading
+                    // "Show all 602 tables" under "Pick the Dataset table…" is one surface using
+                    // two words for one thing. The marked-position lint cannot catch a bare
+                    // literal here, which is the reason to write it correctly the first time.
+                  }, SW.brand.text('Show all {count} {scopePlural}', { count: block.total }))
+                : null
+            )
+          : null
+      )
+    );
+  }
+
   // A change that happened, attached to the app it happened to. This is where
   // Review and Publish belong: a turn can change two apps, and the preview can
   // only show one of them, so the entry — not the panel — is what makes every
@@ -1156,6 +1237,8 @@ window.SW = window.SW || {};
         return h(ResetOffer, { block });
       case 'incoming_changes':
         return h(IncomingChanges, { block });
+      case 'table_candidates':
+        return h(TableCandidates, { block });
       case 'build_stalled':
         return h(BuildStalled, { block });
       case 'plan_suggestion':

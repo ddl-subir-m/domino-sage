@@ -686,6 +686,11 @@ SW.api = {
   // never record the Binding it was narrowing. The id is BARE, as every binding route wants it.
   scopeBinding: (resourceId, scope) =>
     post(`/bindings/data_source/${encodeURIComponent(resourceId)}/scope`, scope || {}),
+  // The same record, reached from a candidate card instead of the panel (#183). Its own route
+  // because the server proves the table is still there before it writes — this list may have been
+  // read minutes ago, while the panel's cascade was walked seconds ago.
+  confirmTableCandidate: (resourceId, scope) =>
+    post(`/bindings/data_source/${encodeURIComponent(resourceId)}/candidate`, scope || {}),
   // The two app-scoped removals (ADR-0011). Both answer with the app source that STILL uses what
   // just went — read by the route before the record goes, because a Data Source's queries are found
   // through the record — so neither caller has to scan anything to report it.

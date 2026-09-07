@@ -361,6 +361,20 @@ def _unscoped_section(inside: Inside | None) -> list[str]:
     So the section names what is one level down and then asks. It does NOT hand over a way to look
     further: the agent has no route to the store from here, and inviting it to find one is how a
     build ends up with a screen full of rows nobody read (#15's original failure, again).
+
+    WHAT IT NO LONGER SAYS is "and you cannot choose one" (#183). That sentence was true and it was
+    a dead end — it told the agent the request could not be answered and left the person holding
+    their own question back. Sage searches the store itself now, before this prompt is ever written,
+    and a request that names the Data Source is met with candidate tables to pick from (ADR-0038).
+    The agent still gets no tool that chooses one, and that has not softened: it may report that the
+    table is missing, and it may not go and pick it. What changed is that the missing table is now
+    something a person is being asked about rather than something nobody can fix.
+
+    The search is said to happen "often" rather than always, and the panel keeps its mention, because
+    the search does not reach every store: a connector Sage cannot walk a whole database of goes on
+    reaching this section instead, and that is most of them until #187. Promising it unconditionally
+    would rebuild the dead end one turn further out — the agent would tell somebody to name the Data
+    Source they had just named, and go on telling them.
     """
     lines = [brand.text("**No {scope} is chosen yet, so no query this app writes can run.**"), ""]
     if inside is None:
@@ -387,10 +401,13 @@ def _unscoped_section(inside: Inside | None) -> list[str]:
             "",
         ]
     lines += [
-        brand.text("- **You cannot query it until a {scope} is chosen, and you cannot choose one** — the "
-                   "person can, on this {builtApp}'s own surface."),
-        brand.text("- **Ask which one holds the data they mean.** Name what you need and stop "
-                   "there; one question answered is worth more than a screen built on a guess."),
+        brand.text("- **You cannot query it until a {scope} is chosen, and choosing one is the "
+                   "person's act, not yours** — you have no tool that picks one. They do: on this "
+                   "{builtApp}'s own surface, and often on the request itself, where naming this "
+                   "{dataSource} makes {assistantName} search it and offer them candidates."),
+        brand.text("- **Say which data you need and stop there.** That sentence is what the person "
+                   "answers, and one answered question is worth more than a screen built on a "
+                   "guess."),
         ("- **Do not invent rows, and do not build a screen around data you have not read.** "
          "Numbers you wrote yourself look exactly like numbers from the store, which is what makes "
          "them worse than an empty screen."),

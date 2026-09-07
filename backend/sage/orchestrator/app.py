@@ -1600,6 +1600,48 @@ async def set_binding_scope(resource_id: str, request: Request) -> JSONResponse:
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
+# The click on a table candidate (#183). Its own route rather than a flag on the one above, for the
+# reason that one is its own route rather than a flag on `add_binding`: what separates them is a
+# precondition, and a boolean that decides whether a write is checked first is a parameter nobody
+# can read at the call site. The record they write is the same record, written by the same writer.
+#
+# What it adds is the check. The candidate came off a list that may have been read minutes ago and
+# cached for the session, so the one table being recorded is looked for again before it is written —
+# a stale list costs a click, and a dropped table in the record costs the first viewer of the
+# published app a screen that cannot load.
+@control_app.post("/api/bindings/data_source/{resource_id}/candidate")
+async def confirm_table_candidate(resource_id: str, request: Request) -> JSONResponse:
+    """Record the table a person picked off a candidate card, once it is proved to still be there."""
+    body = await request.json()
+    database, schema, table = _scope_levels(body)
+    if not table:
+        # A candidate is always one table. Settling for the schema is the answer this whole path
+        # exists to refuse: "somewhere in PUBLIC" does not say which table holds the data, and a
+        # schema-level record is still available from the panel, the surface that owns that door.
+        return JSONResponse(status_code=400, content={"error": brand_text(
+            "Pick one {scope}. {assistantName} does not record a schema from here."
+        )})
+    try:
+        return JSONResponse(content={"bindings": orchestrator.confirm_table_candidate(
+            resource_id, database, schema, table)})
+    except ResourceNotBound:
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "This app doesn't need that {dataSource} to run, so there is no {scope} to record. "
+            "Use it in the app first."
+        )})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text(
+            "That {dataSource} is not one {platformName} offers you, so its {scope} cannot be "
+            "recorded."
+        )})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ResourceUnavailable as e:
+        # Both halves of the check land here: the table that is gone, and the store that would not
+        # say either way. Neither writes the record, which is the whole point of checking.
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
 # Its own route rather than a field on /api/resources: a Model API listing is what the project
 # offers, and this is what Sage remembers about it. The two come from different places and one must
 # not fail because the other did.
@@ -2106,6 +2148,9 @@ def build_stream(body: dict) -> StreamingResponse:
     # Set by either button on an incoming-changes offer (#78). Pulling answers that offer as much
     # as building past it does, so both arrive here and neither is asked the same question twice.
     skip_incoming_gate = bool((body or {}).get("skipIncomingGate"))
+    # Set by the click on a table candidate (#183), which is that card being answered: the record is
+    # written by then, and this is the original request being replayed against it as a new turn.
+    skip_table_gate = bool((body or {}).get("skipTableGate"))
 
     def refuse_with(message: str) -> StreamingResponse:
         def refuse():
@@ -2126,7 +2171,8 @@ def build_stream(body: dict) -> StreamingResponse:
 
     return StreamingResponse(
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
-                                            skip_reset_gate, skip_incoming_gate), "build_stream"),
+                                            skip_reset_gate, skip_incoming_gate, skip_table_gate),
+                  "build_stream"),
         media_type="text/event-stream")
 
 
