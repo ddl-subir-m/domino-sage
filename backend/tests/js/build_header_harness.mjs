@@ -267,6 +267,9 @@ let selected = 'app_a';
 let expanded = false;
 // A 500 on the app's build log, which is not the same answer as an app nobody has built in.
 let historyFails = false;
+// A 500 on ONE tool card's input, which is not the same answer as a tool that recorded none. Its
+// own switch because it is its own read: the list can arrive and the row behind a card still not.
+let rowDetailFails = false;
 // A 500 on the app list, which is not the same answer as a Project with no apps (#95).
 let appsFail = false;
 // A refused publish, as the sentence the server would send with the 409. Nothing is published on
@@ -325,7 +328,9 @@ function serve(url, init) {
   const key = `${(init && init.method) || 'GET'} ${path}`;
   calls.push(key);
   const body = route(path, init);
-  if (holding && holding.has(path)) {
+  // Named with or without the query: `/project/history` is asked with one now (`detail=off`), and
+  // a hold is about WHICH ROUTE is parked, not which arguments it carried.
+  if (holding && (holding.has(path) || holding.has(path.split('?')[0]))) {
     return new Promise((release) => { held.push({ key, release: () => release(body) }); });
   }
   return body;
@@ -375,15 +380,32 @@ function route(path, init) {
   // The app's whole build log, which is the question this route answers when no conversation is
   // named. Filtered when one IS named, exactly as the server filters — so a caller that started
   // naming one would come back short a build rather than answering the same list either way.
+  // One tool call's input, by its position in the app's log — what `detail=off` left out. Served
+  // before the listing below, which would otherwise swallow the path.
+  if (path.startsWith('/project/history/row/')) {
+    const i = Number(path.slice('/project/history/row/'.length));
+    const row = (HISTORY[selected] || [])[i];
+    if (rowDetailFails) return json({ error: 'unavailable' }, 500);
+    if (!row || !row.detail) return json({ error: 'no such row in this app\'s log' }, 404);
+    return json({ detail: row.detail });
+  }
   if (path.startsWith('/project/history')) {
     if (historyFails) return json({ error: 'unavailable' }, 500);
     const rows = HISTORY[selected] || [];
     const named = path.match(/[?&]conversation=([^&]+)/);
-    return json({
-      history: named
-        ? rows.filter((r) => r.conversation === decodeURIComponent(named[1]))
-        : rows,
-    });
+    const picked = named
+      ? rows.filter((r) => r.conversation === decodeURIComponent(named[1]))
+      : rows;
+    // `detail=off` exactly as the server does it: every row and every other field kept, the tool
+    // input dropped, and its POSITION IN THE LOG left behind so the card can go back for it. The
+    // fixture elides rather than pretending it does, or the drawer would be tested against a
+    // payload no server sends.
+    if (/[?&]detail=off/.test(path)) {
+      return json({
+        history: picked.map((r, i) => (r.detail ? { ...r, detail: '', detailRow: i } : r)),
+      });
+    }
+    return json({ history: picked });
   }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
@@ -1605,6 +1627,7 @@ for (const step of steps) {
 
     expanded = !!step.expand;
     historyFails = !!step.readFails;
+    rowDetailFails = !!step.rowReadFails;
     calls.length = 0;
     // Build history is an item in the header's own `…` menu now (`624ff9b`), where it used to be a
     // control with an aria-label of its own. Both are accepted: what these tests are about is the
@@ -1714,6 +1737,7 @@ for (const step of steps) {
     // so a switch turned off here would be off for the render the report is built from.
     expanded = false;
     historyFails = false;
+    rowDetailFails = false;
     continue;
   }
 

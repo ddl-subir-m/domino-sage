@@ -1436,6 +1436,11 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({
           type: 'sandbox_run',
           label: (TOOL_LABELS[ev.tool] || {}).ran || `Ran ${ev.tool || 'tool'}`,
+          // Where to go and read what this tool was called with, when the read that produced the
+          // row left it out (`api.appHistory`). Absent on every other read, and the card takes
+          // that absence as "there is nothing more" — which is what an empty `detail` has always
+          // meant here. Only the drawer's read sets it.
+          detailRow: ev.detailRow,
           // Absent on turns OpenCode did not time, and on every turn recorded before Sage started
           // reading the clock. The card leaves the duration off rather than inventing one.
           durationMs: ev.durationMs,

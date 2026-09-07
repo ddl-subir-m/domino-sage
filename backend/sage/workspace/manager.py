@@ -952,18 +952,27 @@ class Workspace:
         with self.history_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
 
-    def _iter_history(self, only: str | None = None) -> Iterator[dict]:
+    def _iter_history(self, only: str | None = None) -> Iterator[tuple[int, dict]]:
         """One line at a time. The log reaches megabytes on a long-lived project (~68KB per user
         turn), and every caller below used to pay a whole-file read plus a parse of every line to
         answer a question most of them could answer from a fraction of it.
 
-        `only` skips the parse for any line that does not contain that raw text."""
+        `only` skips the parse for any line that does not contain that raw text.
+
+        The position comes out with the row, and it counts every non-blank line whether `only` kept
+        it or not — so it stays the position IN THE FILE, which is the only number
+        `history_row_detail` can go back and read by. A count of what a filter happened to keep
+        would name a different line on the next read."""
         if not self.history_path.exists():
             return
         with self.history_path.open() as f:
+            i = -1
             for line in f:
-                if line.strip() and (only is None or only in line):
-                    yield json.loads(line)
+                if not line.strip():
+                    continue
+                i += 1
+                if only is None or only in line:
+                    yield i, json.loads(line)
 
     @staticmethod
     def _tag_text(conversation: str | None = None) -> str:
@@ -976,16 +985,49 @@ class Workspace:
             return json.dumps("conversation") + ":"
         return json.dumps({"conversation": conversation})[1:-1]
 
-    def read_history(self, conversation: str | None = None) -> list[dict]:
+    def read_history(self, conversation: str | None = None,
+                     tool_detail: bool = True) -> list[dict]:
         """No conversation means this app's whole log: history.md and any caller that wants the
         log as written. Naming one filters to it. Every row is this app's either way — the file is
-        the app's — so there is nothing to filter on that side."""
+        the app's — so there is nothing to filter on that side.
+
+        `tool_detail=False` drops what a tool was CALLED WITH and keeps every row and every other
+        field. That one field is the log: measured over a real 432-row app log it is 465KB of
+        555KB, because a `bash` row carries the whole source the agent wrote (`cat > src/App.tsx
+        <<EOF ...`, 27KB in one row). A reader that lists builds pays megabytes for it and draws
+        none of it — `SandboxRun` keeps it behind a fold inside a fold — so the reader that wants
+        it asks for one row (`history_row_detail`) at the click that reveals it.
+
+        The row still SAYS the detail is elsewhere rather than reading as a tool nobody recorded
+        the input of: `detailRow` is where to go and get it. The card tells those two apart, and
+        an empty `detail` already means the second thing to every reader of this log."""
         if conversation is None:
-            return list(self._iter_history())
-        # The pre-filter can only over-select (the equality check below still decides), so an app
-        # with several conversations parses its own turns instead of everyone's.
-        tag = self._tag_text(conversation)
-        return [r for r in self._iter_history(only=tag) if r.get("conversation") == conversation]
+            rows: Iterator[tuple[int, dict]] = self._iter_history()
+        else:
+            # The pre-filter can only over-select (the equality check below still decides), so an
+            # app with several conversations parses its own turns instead of everyone's.
+            tag = self._tag_text(conversation)
+            rows = ((i, r) for i, r in self._iter_history(only=tag)
+                    if r.get("conversation") == conversation)
+        if tool_detail:
+            return [r for _, r in rows]
+        # Numbered by POSITION IN THE FILE, which is the id this log already keeps: the stop-button
+        # baseline is a position in it and `truncate_history` drops from the end.
+        return [{**r, "detail": "", "detailRow": i} if r.get("detail") else r for i, r in rows]
+
+    def history_row_detail(self, index: int) -> str | None:
+        """What the tool at line `index` was called with, read without parsing the rest of the log.
+
+        The other half of `read_history(tool_detail=False)`: one row, asked for at the click that
+        opens it. None when the line is not there — a log truncated by the stop button since the
+        list was read — which the caller answers as a 404 rather than as an empty tool call."""
+        if index < 0 or not self.history_path.exists():
+            return None
+        with self.history_path.open() as f:
+            for i, line in enumerate(l for l in f if l.strip()):
+                if i == index:
+                    return str(json.loads(line).get("detail") or "")
+        return None
 
     def has_untagged_history(self) -> bool:
         """True while entries written before conversation tagging are still unclaimed.
@@ -1053,7 +1095,7 @@ class Workspace:
         # one part of this rewrite that grew without bound.
         turns: deque[list[dict]] = deque(maxlen=self._MAX_ARCHIVED_TURNS)
         total = 0
-        for entry in self._iter_history():
+        for _, entry in self._iter_history():
             if entry.get("type") not in self._ARCHIVED_EVENTS:
                 continue
             if entry.get("type") == "user" or not total:

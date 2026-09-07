@@ -403,6 +403,12 @@
   display: grid;
   gap: var(--s3);
 }
+/* The card is open and what it ran is still coming, or did not come. Sits where the code goes so
+   the fold does not jump when it arrives. */
+.sw-sandbox-reading {
+  font-size: var(--fs-12);
+  color: var(--gray-500);
+}
 .sw-stdout-label {
   font-size: var(--fs-11);
   font-weight: 600;

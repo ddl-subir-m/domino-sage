@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState } = React;
+  const { createElement: h, useState, useEffect } = React;
   const { Button, Table, Tooltip, Tag, Space, Input } = antd;
   const {
     CopyOutlined, RightOutlined, DownOutlined, PushpinOutlined, ReloadOutlined,
@@ -47,11 +47,45 @@ window.SW = window.SW || {};
 
   function SandboxRun({ block }) {
     const [open, setOpen] = useState(false);
+    // What this tool was called with, when the read that drew the card left it out — the Build
+    // history drawer's read does (`api.appHistory`), because those arguments are six bytes in
+    // seven of the log and this fold sits two clicks below the list that was paying for them.
+    //
+    // ONE state, not three. `null` is "nobody has asked yet", `{ detail }` is the answer and
+    // `{ failed: true }` is the read that did not arrive, so "still reading" is derived rather
+    // than stored — three booleans can disagree with each other and this cannot. It is also the
+    // shape `appHistory` itself uses in the store, for the same reason: a read that failed is not
+    // an answer that came back empty.
+    const [row, setRow] = useState(null);
+    const deferred = block.detailRow !== undefined && block.detailRow !== null
+      && !String(block.code || '').trim();
+    const failed = !!(row && row.failed);
+    const reading = deferred && open && row === null;
+    const code = row && !row.failed ? row.detail : block.code;
+
+    // ONE reader, and the condition IS the trigger: open, deferred, and holding nothing. Same
+    // shape and same reason as the drawer's own read two files over.
+    //
+    // Not in the click handler. A card can be open without anyone having clicked it, and — the
+    // sharper reason — a Try again that fetched for itself would fetch twice for one click: it has
+    // to put the state back to "holding nothing" to show a spinner, and that is exactly the
+    // condition this fires on. So the button below only clears, and the read happens here.
+    useEffect(() => {
+      if (!(deferred && open && row === null)) return;
+      SW.api.historyRowDetail(block.detailRow).then(
+        (detail) => setRow({ detail }),
+        () => setRow({ failed: true })
+      );
+    }, [deferred, open, row === null, block.detailRow]);
+
     // Some calls name nothing we can show — a tool that takes no arguments, or a card replayed
     // from a transcript recorded before Sage read that tool's input. Those rows say what ran and
     // stop there: the chevron used to open onto an empty grey box, which reads as detail that
     // failed to load rather than a step with nothing to look at.
-    const hasDetail = !!String(block.code || '').trim() || !!block.stdout;
+    //
+    // A deferred row is the opposite case and has to count as detail, or the one card whose
+    // contents are worth a fetch would be the one card with nothing to click.
+    const hasDetail = !!String(code || '').trim() || !!block.stdout || deferred;
     return h(
       'div',
       { className: 'sw-sandbox-run' },
@@ -73,7 +107,20 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-sandbox-detail' },
-          h(CodeBlock, { code: block.code, language: 'python' }),
+          reading && h('div', { className: 'sw-sandbox-reading' }, 'Reading what this ran…'),
+          // Said as a fact about the READ, and offering the way back — the rule the drawer's own
+          // failed state states (#90). The card stays open behind it, so the step it names is
+          // still on screen while the retry is offered.
+          failed &&
+            h(
+              'div',
+              { className: 'sw-sandbox-reading' },
+              'Couldn’t read what this ran. ',
+              h(Button, { type: 'link', size: 'small', onClick: () => setRow(null) },
+                'Try again')
+            ),
+          !reading && !failed && !!String(code || '').trim() &&
+            h(CodeBlock, { code, language: 'python' }),
           block.stdout &&
             h(
               'div',

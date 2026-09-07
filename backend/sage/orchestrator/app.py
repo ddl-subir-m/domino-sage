@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import Body, FastAPI, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -569,6 +570,20 @@ class _ViewerIdentityMiddleware:
 control_app.add_middleware(_ViewerIdentityMiddleware)
 
 
+# Added last, so it sits OUTSIDE the two above and sees every response they let through.
+#
+# The JSON here is mostly prose and source: the Build log answers a single read at megabytes and
+# gzips ~6x, and nothing on the Workbench was compressed before, because Domino's nginx gzips
+# text/html and not application/json. SSE is what makes this a decision rather than a default —
+# `gzip` holds bytes back until it has a block to write, which would stall a build stream into
+# silence — and starlette excludes `text/event-stream` for exactly that reason. Every streaming
+# route here declares it (`_turn_sse`, the shim's `/v1`), which is what keeps that exclusion true.
+#
+# Level 6 rather than the library's 9: on a megabyte of log the last three levels cost more CPU
+# than the bytes they save are worth over a proxy on the same host.
+control_app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
+
 @control_app.get("/")
 def ui() -> HTMLResponse:
     """The Workbench shell (Chat / Build), or the door.
@@ -1016,15 +1031,37 @@ def unpin_project_resource(
 
 
 @control_app.get("/api/project/history")
-def project_history(conversation: str = "") -> JSONResponse:
+def project_history(conversation: str = "", detail: str = "full") -> JSONResponse:
     """The chat transcript persisted in the workspace, so the UI can replay it after a reload or
     restart (see Workspace.append_history / Orchestrator.history). Reads disk without starting the
     preview.
 
     `conversation` is a Thread id: Build's transcript is per conversation (ADR-0005). Naming none
     returns the selected Built App's whole log, which is what the agent's own archive renders. It
-    is never another app's: the log lives in the app's directory (ADR-0008)."""
-    return JSONResponse(content={"history": orchestrator.history(conversation or None)})
+    is never another app's: the log lives in the app's directory (ADR-0008).
+
+    `detail=off` keeps every row and drops what each tool was CALLED WITH, which on a real log is
+    six bytes in seven. The Build history drawer asks that way: it names no conversation, so it
+    reads the whole log to draw a list of prompts, and the tool inputs it was paying for sit two
+    folds down behind a click that most of them never get. That click reads its own row through
+    `/project/history/row/{index}`. The default is unchanged, because the transcript beside it
+    draws those cards open."""
+    return JSONResponse(content={
+        "history": orchestrator.history(conversation or None, tool_detail=detail != "off"),
+    })
+
+
+@control_app.get("/api/project/history/row/{index}")
+def project_history_row(index: int) -> JSONResponse:
+    """What one tool call was called with — the row `detail=off` left out (see above).
+
+    404 rather than an empty string when the line is gone: the stop button truncates this log, so a
+    drawer read before a revert can ask for a row that no longer exists, and "" is what a tool
+    nobody recorded the input of already says."""
+    detail = orchestrator.history_row_detail(index)
+    if detail is None:
+        return JSONResponse(status_code=404, content={"error": "no such row in this app's log"})
+    return JSONResponse(content={"detail": detail})
 
 
 @control_app.post("/api/project/model")

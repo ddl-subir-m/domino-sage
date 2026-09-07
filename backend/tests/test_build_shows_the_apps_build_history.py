@@ -140,7 +140,7 @@ def test_the_header_opens_the_selected_apps_build_history():
     between this list and the transcript behind it."""
     step = _opened()
     assert step["control"]["texts"] == ["Build history"]
-    assert "GET /project/history" in step["calls"]
+    assert "GET /project/history?detail=off" in step["calls"]
     assert step["drawer"]["title"] == "Build history · Desk dashboard"
 
 
@@ -256,7 +256,7 @@ def test_it_is_the_apps_builds_and_not_the_conversations_turns():
     step = _opened(thread="thr_many")
     assert "Sort the desks by P&L" in step["drawer"]["prompts"]
     # And nothing on the wire narrowed it to one, which is what makes that possible.
-    assert "GET /project/history" in step["calls"]
+    assert "GET /project/history?detail=off" in step["calls"]
 
 
 @needs_node
@@ -350,7 +350,7 @@ def test_opening_it_again_reads_again_rather_than_showing_the_last_look():
     step = _run([{"history": "thr_many", "select": "app_a", "reopen": True}])[-1]
 
     assert step["mid"]["runs"] > 0                     # the first look had the list
-    assert "GET /project/history" in step["calls"]     # and the second look went and asked again
+    assert "GET /project/history?detail=off" in step["calls"]  # the second look went and asked
     assert step["drawer"]["open"] is True
     assert step["drawer"]["prompts"] == step["mid"]["prompts"]
 
@@ -362,7 +362,7 @@ def test_a_shut_drawer_reads_nothing():
     conversation — and this is the read that is not."""
     step = _run([{"history": "thr_many", "select": "app_c", "closed": True}])[-1]
     assert step["drawer"]["open"] is False
-    assert "GET /project/history" not in step["calls"]
+    assert "GET /project/history?detail=off" not in step["calls"]
     assert "GET /project/history?conversation=thr_many" in step["calls"]
 
 
@@ -390,7 +390,9 @@ def test_the_api_entry_names_no_conversation():
     src = _API.read_text()
     start = src.index("appHistory:")
     entry = src[start : src.index("\n", src.index("request(", start))]
-    assert "'/project/history'" in entry
+    # `detail=off` is on the wire too and is the other rule this call keeps (see api.js): it drops
+    # the tool inputs, which are most of a log this read has to take whole.
+    assert "'/project/history?detail=off'" in entry
     assert "conversation" not in entry
 
 

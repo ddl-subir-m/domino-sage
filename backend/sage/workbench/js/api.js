@@ -653,7 +653,21 @@ SW.api = {
   // Its own entry rather than a bare `history()`: the rule that this call names no conversation is
   // the whole of what tells the two questions apart, and a rule kept in the caller is a rule the
   // next caller does not read.
-  appHistory: () => request('/project/history').then((r) => r.history || []),
+  // `detail=off` because this is the read that CANNOT be small any other way. It names no
+  // conversation, so it is the whole log by definition, and on a real app six bytes in seven of
+  // that log are the arguments a tool was called with — one `bash` row carries the entire file the
+  // agent wrote. The drawer draws a list of prompts. It reaches those arguments only for somebody
+  // who opens a build, then opens a turn, then opens the card; `historyRowDetail` fetches that one
+  // row at the third click. Measured on a 432-row log: 588KB became 7.2KB on the wire.
+  //
+  // `history()` above is deliberately NOT changed. It answers a named conversation, it is the
+  // transcript rather than the list, and it draws those cards where they are read.
+  appHistory: () => request('/project/history?detail=off').then((r) => r.history || []),
+  // What one tool call was called with, by its position in the app's log — the half `detail=off`
+  // left behind. 404 when the stop button truncated the log after the list was read, which the
+  // card reports rather than drawing an empty box (see SandboxRun).
+  historyRowDetail: (index) =>
+    request(`/project/history/row/${encodeURIComponent(index)}`).then((r) => r.detail || ''),
   bindings: () => request('/bindings'),
   // The app-scoped ADD, mirror of the removal below and the other half of the pair ADR-0011 hung
   // the door for. The id is BARE (`al_1`), never the Project row's prefixed one (`llm_alias:al_1`):

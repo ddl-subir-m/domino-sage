@@ -9591,12 +9591,18 @@ class Orchestrator:
         finally:
             self._turn_lock.release()
 
-    def history(self, conversation: str | None = None) -> list[dict]:
+    def history_row_detail(self, index: int) -> str | None:
+        """One tool call's input, off the selected app's log. The other half of the elided read
+        below — see Workspace.read_history — asked for at the click that opens the card."""
+        return self._wm.app_workspace(self._project_id).history_row_detail(index)
+
+    def history(self, conversation: str | None = None,
+                tool_detail: bool = True) -> list[dict]:
         """Reads straight from the app's directory on the volume, so the transcript is available
         without starting the preview (attaching the project) — a plain GET must not spin up Vite."""
         workspace = self._wm.app_workspace(self._project_id)
         self._adopt_legacy_build_history(workspace, self._wm.project_record(self._project_id))
-        return workspace.read_history(conversation)
+        return workspace.read_history(conversation, tool_detail=tool_detail)
 
     def list_project_resources(self) -> list[dict]:
         """Domino Resources the creator added to this project — the rail, not the catalogue.
