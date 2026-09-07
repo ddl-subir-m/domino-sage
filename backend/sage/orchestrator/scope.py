@@ -48,9 +48,10 @@ coupling by reading the code is the part deliberately left to the plan turn.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +246,147 @@ def _model_for(catalog: ModelCatalog) -> str:
     return catalog.ask
 
 
+
+class Pending:
+    """A classify that is already in flight, joined by the caller when it finally needs the word.
+
+    The turn does not read this answer until it decides how to gate, which is a long way past the
+    setup that precedes it — the agent inputs, the pre-turn commit — and every step of that is work
+    the gateway round trip can happen underneath. So `start` fires the call and hands back one of
+    these; `result` joins it.
+
+    Concurrency changes none of the three properties in the module docstring. The deadline is
+    measured from the START, so a slow classifier still costs the turn at most `timeout_s` however
+    late the join is; a call that never lands still returns False (fails OPEN); an answer that
+    arrives and cannot be read still returns True and still feeds the breaker. `result` is
+    idempotent — a caller that joins twice gets the same word and spends one entry of the unreadable
+    streak, not two.
+    """
+
+    def __init__(self, verdict: bool | None = None, *, done=None, box: dict | None = None,
+                 deadline: float = 0.0, timeout_s: float = TIMEOUT_S) -> None:
+        self._verdict = verdict
+        self._done = done
+        # `is None`, not `or`: the box starts EMPTY, and `{} or {}` would quietly bind a second
+        # dict here that the worker never writes to.
+        self._box = {} if box is None else box
+        self._deadline = deadline
+        self._timeout_s = timeout_s
+
+    def result(self) -> bool:
+        """The verdict, waiting for it if it has not landed. Never raises."""
+        if self._verdict is None:
+            self._verdict = self._read(self._join())
+        return self._verdict
+
+    def _join(self) -> str | None:
+        """The classifier's raw answer, or None when the call never landed."""
+        if not self._done.wait(max(0.0, self._deadline - time.monotonic())):
+            # The worker is abandoned, not cancelled — a blocked socket read can't be interrupted. It
+            # holds one thread until the gateway gives up, which is the price of not hanging the turn.
+            log.warning("scope: classify timed out after %.1fs — building without a plan",
+                        self._timeout_s)
+            return None
+        error = self._box.get("error")
+        if error is not None:
+            log.warning("scope: classify failed (%s: %s) — building without a plan",
+                        type(error).__name__, error)
+            return None
+        return self._box.get("answer")
+
+    @staticmethod
+    def _read(answer: str | None) -> bool:
+        if answer is None:
+            # Down, not broken: no answer arrived, so this is no evidence about the model and must
+            # not count towards the breaker. Fail OPEN — the turn builds as it did before.
+            return False
+        verdict = answer.strip().upper()
+        if verdict.startswith("PLAN"):
+            _health.answered()
+            return True
+        if verdict.startswith("BUILD"):
+            _health.answered()
+            return False
+        # An answer in neither vocabulary means the contract didn't hold. Returning False here — which
+        # is what this did until #29 — is not "no signal", it is a guess, and it guesses the one
+        # outcome with side effects: the turn goes on to write code. Gate instead, and let _Health
+        # decide when a run of these stops being an anomaly and becomes a broken classifier.
+        return _health.unreadable_answer(answer)
+
+
+def start(
+    prompt: str,
+    *,
+    gateway: GatewayClient,
+    catalog: ModelCatalog,
+    root: Path | None = None,
+    session: str | None = None,
+    version: str | None = None,
+    timeout_s: float = TIMEOUT_S,
+) -> Pending:
+    """Begin classifying, and return the handle the caller joins later. Never raises.
+
+    The two answers that need no call — an empty prompt, and a classifier already declared broken —
+    are settled here, on the caller's thread, so neither costs a thread or a round trip.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return Pending(False)
+    if _health.broken:
+        # Declared broken earlier in this process (see _Health). Skip the call entirely rather than
+        # pay for another answer we already know we can't read.
+        return Pending(False)
+
+    # phase="plan": this call decides whether to plan, so it is planning overhead, and tagging it as
+    # its own component keeps it separable from build inference in cost analysis.
+    labels = CostLabels(phase="plan", mode="auto", component="scope", session=session, version=version)
+
+    def _call() -> str:
+        # Built on the worker, not on the caller's thread: `app_context` walks the app's source and
+        # counts newlines, and that is I/O this exists to keep off the turn's critical path.
+        #
+        # File paths are app structure, not user data. Truncate the prompt rather than refuse.
+        request = {
+            "model": _model_for(catalog),
+            "messages": [
+                {"role": "system", "content": _SYSTEM + app_context(root)},
+                {"role": "user", "content": text[:MAX_PROMPT_CHARS]},
+            ],
+            # One word is the whole contract, but the CEILING can't be one word's worth. A route with
+            # extended thinking on spends this budget on reasoning tokens before emitting any content,
+            # and the call then returns a perfectly successful response whose content is "" — which is
+            # what four consecutive turns saw in #29, each one logged as an unrecognised verdict and
+            # absorbed into a build. Raised to leave room for that. It costs nothing in the ordinary
+            # case: max_tokens is a ceiling, not a spend, and a model answering "BUILD" still stops at
+            # one word.
+            "max_tokens": 256,
+            "temperature": 0,
+            "stream": True,
+        }
+        return _extract(b"".join(gateway.route(request, labels)))
+
+    done = threading.Event()
+    box: dict = {}
+
+    def _worker() -> None:
+        try:
+            box["answer"] = _call()
+        except Exception as e:
+            box["error"] = e
+        finally:
+            done.set()
+
+    # A bare daemon thread rather than a ThreadPoolExecutor, for two reasons that are really one. The
+    # worker cannot be cancelled — a blocked socket read can't be interrupted — so the bound has to
+    # come from not WAITING for it, and a pool that is never shut down keeps a non-daemon thread that
+    # `concurrent.futures`' atexit handler then joins. That was survivable while start and join were
+    # one statement; now that a turn can raise between them, a pool would leak a live thread per
+    # turn that started a classify and never got back to it. A daemon thread ends when its call does,
+    # joined or not.
+    threading.Thread(target=_worker, name="sage-scope", daemon=True).start()
+    return Pending(done=done, box=box, deadline=time.monotonic() + timeout_s, timeout_s=timeout_s)
+
+
 def wants_a_plan(
     prompt: str,
     *,
@@ -257,66 +399,7 @@ def wants_a_plan(
 ) -> bool:
     """True when this request should be planned and approved before any code is written.
 
-    False on every failure path, so the caller can treat it as "gate this?" and nothing else."""
-    text = (prompt or "").strip()
-    if not text:
-        return False
-    if _health.broken:
-        # Declared broken earlier in this process (see _Health). Skip the call entirely rather than
-        # pay for another answer we already know we can't read.
-        return False
-
-    # File paths are app structure, not user data. Truncate the prompt rather than refuse.
-    request = {
-        "model": _model_for(catalog),
-        "messages": [
-            {"role": "system", "content": _SYSTEM + app_context(root)},
-            {"role": "user", "content": text[:MAX_PROMPT_CHARS]},
-        ],
-        # One word is the whole contract, but the CEILING can't be one word's worth. A route with
-        # extended thinking on spends this budget on reasoning tokens before emitting any content,
-        # and the call then returns a perfectly successful response whose content is "" — which is
-        # what four consecutive turns saw in #29, each one logged as an unrecognised verdict and
-        # absorbed into a build. Raised to leave room for that. It costs nothing in the ordinary
-        # case: max_tokens is a ceiling, not a spend, and a model answering "BUILD" still stops at
-        # one word.
-        "max_tokens": 256,
-        "temperature": 0,
-        "stream": True,
-    }
-    # phase="plan": this call decides whether to plan, so it is planning overhead, and tagging it as
-    # its own component keeps it separable from build inference in cost analysis.
-    labels = CostLabels(phase="plan", mode="auto", component="scope", session=session, version=version)
-
-    def _call() -> str:
-        return _extract(b"".join(gateway.route(request, labels)))
-
-    # Deliberately NOT a `with` block: the executor's context manager shuts down with wait=True, so
-    # exiting it blocks until the worker returns and the timeout above it buys nothing — the turn
-    # still hangs for as long as the gateway does. shutdown(wait=False) is what makes it a bound.
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-scope")
-    try:
-        answer = pool.submit(_call).result(timeout=timeout_s)
-    except concurrent.futures.TimeoutError:
-        # The worker is abandoned, not cancelled — a blocked socket read can't be interrupted. It
-        # holds one thread until the gateway gives up, which is the price of not hanging the turn.
-        log.warning("scope: classify timed out after %.1fs — building without a plan", timeout_s)
-        return False
-    except Exception as e:
-        log.warning("scope: classify failed (%s: %s) — building without a plan", type(e).__name__, e)
-        return False
-    finally:
-        pool.shutdown(wait=False)
-
-    verdict = answer.strip().upper()
-    if verdict.startswith("PLAN"):
-        _health.answered()
-        return True
-    if verdict.startswith("BUILD"):
-        _health.answered()
-        return False
-    # An answer in neither vocabulary means the contract didn't hold. Returning False here — which is
-    # what this did until #29 — is not "no signal", it is a guess, and it guesses the one outcome
-    # with side effects: the turn goes on to write code. Gate instead, and let _Health decide when a
-    # run of these stops being an anomaly and becomes a broken classifier.
-    return _health.unreadable_answer(answer)
+    False on every failure path, so the caller can treat it as "gate this?" and nothing else. Start
+    and join in one step, for callers with nothing to do in between."""
+    return start(prompt, gateway=gateway, catalog=catalog, root=root, session=session,
+                 version=version, timeout_s=timeout_s).result()

@@ -84,9 +84,9 @@ def test_a_timeout_builds_instead_of_hanging_the_turn():
     import time
 
     # Released only after the assertions below, so the call really is still in flight when the
-    # timeout has to fire. A bare sleep(30) would prove the same thing and then outlive the test:
-    # the worker is a non-daemon pool thread, so `concurrent.futures`' atexit handler joins it and
-    # the whole pytest process sits out the rest of the 30s before it can exit.
+    # timeout has to fire. Released at all, rather than left to its own sleep(30), because a worker
+    # abandoned mid-read holds its thread for as long as the fake gateway keeps it — harmless, since
+    # it is a daemon, but it leaves a suite that looks finished sitting there.
     released = threading.Event()
 
     class Hanging:
@@ -97,8 +97,8 @@ def test_a_timeout_builds_instead_of_hanging_the_turn():
     started = time.monotonic()
     try:
         assert _ask(Hanging(), timeout_s=0.2) is False
-        # The bound has to be real: an executor shut down with wait=True would block here for the
-        # full 30s and the timeout above it would buy nothing. This assertion is the whole test.
+        # The bound has to be real: waiting on the worker rather than on the clock would block here
+        # for the full 30s and the timeout above it would buy nothing. This assertion is the test.
         assert time.monotonic() - started < 5
     finally:
         released.set()
@@ -294,3 +294,107 @@ def test_an_explicit_mode_is_never_second_guessed(mode: Mode):
     # mode carrying no explicit instruction, which is why it's the only one that needs one inferred.
     assert _scope_gate_applies(mode=mode, has_built=True, gate=False, answer_only=False,
                                is_approval=False, skip_planning=False) is False
+
+
+# --- started early, joined late ------------------------------------------------------------------
+#
+# The classifier is a gateway round trip in front of every Auto turn on a built app — 0.4-1.3s of it,
+# measured live 2026-09-07 — and nothing reads its verdict until the plan gate is applied, well past
+# the setup that precedes it. So the turn starts it at the top and joins it there. The three
+# properties above are exactly what concurrency is not allowed to change, which is what these check.
+
+class HoldingGateway(StubGateway):
+    """A StubGateway that says when it was asked, and can be held open until a test lets it go."""
+
+    def __init__(self, verdict: str = "BUILD", *, hold=None, **kw) -> None:
+        import threading
+
+        super().__init__(verdict, **kw)
+        self.hold = hold
+        self.asked = threading.Event()
+
+    def route(self, request, labels):
+        self.asked.set()
+        if self.hold is not None:
+            self.hold.wait(30)
+        yield from super().route(request, labels)
+
+
+def _begin(gateway, prompt="add scheduled retraining", **kw) -> scope.Pending:
+    return scope.start(prompt, gateway=gateway, catalog=CATALOG, **kw)
+
+
+def test_the_call_is_already_out_before_anybody_joins_it():
+    # The whole point of the split: `start` hands back a handle while the call is still in flight, so
+    # the turn's setup happens underneath the round trip instead of after it.
+    import threading
+
+    hold = threading.Event()
+    gw = HoldingGateway("PLAN", hold=hold)
+    try:
+        pending = _begin(gw)
+        assert gw.asked.wait(5), "start() returned without the request going out"
+    finally:
+        hold.set()
+    assert pending.result() is True
+
+
+def test_a_late_join_still_fails_open():
+    # Down, not broken. A call that never landed is no evidence about the model, and a classifier
+    # nobody can reach must not become a classifier that blocks builds — however late it is joined.
+    import time
+
+    pending = _begin(StubGateway(raises=RuntimeError("gateway 502")))
+    time.sleep(0.05)
+    assert pending.result() is False
+    assert scope._health.broken is False
+
+
+def test_a_late_join_still_gates_on_an_answer_it_cannot_read():
+    # And the opposite failure keeps the opposite answer (#29): the call worked and the contract
+    # didn't, so a needless plan card beats a diff already written into the user's app.
+    import time
+
+    pending = _begin(StubGateway(""))
+    time.sleep(0.05)
+    assert pending.result() is True
+
+
+def test_the_budget_is_counted_from_the_start_not_from_the_join():
+    """The hard wall-clock bound is the fourth property, and starting early must not turn it into a
+    bound that begins whenever the turn gets round to joining. Counted from `start`, a hung
+    classifier costs the turn its timeout once — and by the time a late join asks, it is spent."""
+    import threading
+    import time
+
+    hold = threading.Event()
+    try:
+        pending = _begin(HoldingGateway("PLAN", hold=hold), timeout_s=0.2)
+        time.sleep(0.4)                                # the budget expires while the turn works
+        started = time.monotonic()
+        assert pending.result() is False               # failed open, as a timeout must
+        # Joining does not restart the clock: this returns at once rather than waiting a second full
+        # budget on a call that is never coming back.
+        assert time.monotonic() - started < 0.15
+    finally:
+        hold.set()
+
+
+def test_joining_twice_spends_one_entry_of_the_unreadable_streak():
+    # Idempotent on purpose. The breaker counts consecutive unreadable ANSWERS, and a caller that
+    # reads the same handle twice has still only had one answer.
+    pending = _begin(StubGateway(""))
+    assert pending.result() is True
+    assert pending.result() is True
+    assert scope._health.unreadable == 1
+
+
+def test_a_classifier_already_declared_broken_starts_nothing():
+    gw = StubGateway("")
+    for _ in range(scope.MAX_UNREADABLE):
+        _begin(gw).result()
+    assert scope._health.broken is True
+
+    calls = len(gw.seen)
+    assert _begin(gw).result() is False
+    assert len(gw.seen) == calls
