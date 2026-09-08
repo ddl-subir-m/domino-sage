@@ -124,8 +124,14 @@ def test_the_acts_are_the_store_s_and_the_chip_writes_no_second_copy():
     per-kind map beside them for the same reason."""
     assert "const fixes = SW.store.mentionFixes(entries, activeAppId);" in UI
     assert "FromMention" not in UI, "the chip reaches the acts through the shared map, never direct"
-    # An Alias and a Data Source each finish in one click, through one shared act (#143); a Model
-    # API routes into the credential flow. All of them, once, in the store.
+    # An Alias, a Data Source and a Dataset each finish in one click, through one shared act (#143,
+    # #212); a Model API routes into the credential flow. All of them, once, in the store.
+    #
+    # Named one by one rather than counted, because this warning and the refusal below it are drawn
+    # from the same map: a kind missing from it is DROPPED, so the composer went quiet about a
+    # Dataset it was about to refuse, which is the one thing the test above says it can never do.
+    for kind in ("llm_alias", "data_source", "dataset"):
+        assert f"{kind}: bind," in STORE
     assert STORE.count("act: () => store.bindFromMention(e)") == 1
     assert STORE.count("act: () => store.openCredentialForMention(e),") == 1
     assert STORE.count("act: () => store.attachFileForMention(e)") == 1

@@ -50,6 +50,8 @@ APP = "Rate curve viewer"
 # The Data Source the app holds no Binding for, and the Model API it holds no credential for.
 SOURCE = {"kind": "data_source", "id": "ds_9", "name": "Risk warehouse"}
 MODEL_API = {"kind": "model_api", "id": "ma_1", "name": "Churn risk"}
+# And the Dataset it holds no Binding for. `dataset:as_ticks` is the fixture row bound by nobody.
+DATASET = {"kind": "dataset", "id": "as_ticks", "name": "Tick archive"}
 
 
 def _run(steps: list[dict]) -> list[dict]:
@@ -143,6 +145,40 @@ def test_the_credential_sentence_names_the_resource_rather_than_the_app():
     assert len(said) == 1
     assert "Churn risk" in said[0]
     assert APP not in said[0]
+
+
+# ---- Dataset ------------------------------------------------------------------------------------
+
+
+@needs_node
+def test_the_dataset_repair_records_the_binding_the_way_the_alias_one_does():
+    """A Dataset bind takes one argument, the same as an Alias, so its repair finishes in one click
+    and wears the same words.
+
+    It was absent from `MENTION_FIX` until #212, and a kind absent from that map is DROPPED rather
+    than drawn plain — so what a Dataset mention actually got was the refusal with no fix on it at
+    all: the five-step dead end #135 exists to close, reached again through a kind nobody added.
+    """
+    step = _fix(DATASET)
+
+    assert step["labels"] == [f"Use in {APP}"]
+    assert step["posted"] == [{"kind": "dataset", "id": "as_ticks"}]
+    assert step["bindings"] == ["llm_alias:al_2", "dataset:as_ticks"]
+
+
+@needs_node
+def test_the_dataset_repair_is_told_to_choose_no_part_of_it():
+    """A Dataset is reached whole — `bind_dataset` writes no Scope fields and there is no second act
+    waiting — so the receipt says what moved and stops. The Data Source one names the table still to
+    be chosen, and telling a Dataset to choose one would point at a door it does not have."""
+    step = _fix(DATASET)
+
+    assert step["scoped"] == []
+    assert step["walkOpen"] is False
+    said = step["said"]
+    assert len(said) == 1
+    assert "Tick archive" in said[0]
+    assert "table" not in said[0]
 
 
 # ---- and what neither of them does any more ---------------------------------------------------

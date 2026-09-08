@@ -3793,15 +3793,23 @@ window.SW = window.SW || {};
     // being a record. The composer's warning is read off the selected app every render, so its
     // rows can never disagree; it passes the same id rather than keeping a second entry point.
     mentionFixes(entries, activeAppId) {
-      // The two kinds whose bind takes a single argument, so a click on either one finishes. A
+      // The kinds whose bind takes a single argument, so a click on any of them finishes. A
       // Data Source joined the Alias here when #142 stopped deriving its Scope from a cascade
       // position: the bind records the dependency and nothing else now, and the Scope is a second
       // act on the app's own surface — which is where `bindToApp`'s receipt sends the reader.
       // One label for one act, in the words the header's own door already uses.
+      //
+      // A Dataset belongs with them and was missing until #212: #141 made `bind_dataset` a real
+      // one-argument bind and put it on the route beside the Alias, and this map was not told. An
+      // entry whose kind is absent here is DROPPED below, so the miss did not read as a missing
+      // button — it read as a refusal with no fix at all, which is the exact five-step dead end
+      // #135 exists to close. Adding a kind to the route means adding it here or taking that
+      // dead end back.
       const bind = (e) => ({ label: `Use in ${e.app}`, act: () => store.bindFromMention(e) });
       const MENTION_FIX = {
         llm_alias: bind,
         data_source: bind,
+        dataset: bind,
         model_api: (e) => ({
           label: 'Add its access token',
           act: () => store.openCredentialForMention(e),
