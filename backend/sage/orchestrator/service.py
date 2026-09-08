@@ -6423,9 +6423,20 @@ class Orchestrator:
         start; a one-word greeting paid for all of it. OpenCode loads AGENTS.md from the session
         directory, and the session directory is this one.
 
-        A stub rather than no file at all: an absent AGENTS.md lets OpenCode walk up for one, and
-        an AGENTS.md added at the Project root later would then reach a Thread. Build's rules are
-        not this Thread's.
+        A stub rather than no file at all — but NOT for the reason this docstring used to give. It
+        claimed a file here stops OpenCode walking up for another, so that an AGENTS.md at the
+        Project root could never reach a Thread. It does not stop it. Measured live 2026-09-07: a
+        root AGENTS.md left by a pre-`apps/` seed instructed every Chat turn in the Project with
+        this stub sitting in place, and Chat answered "a Snowflake connection is called a
+        {dataSource}" (#202). OpenCode reads the session directory's file AND every one above it.
+
+        What actually keeps a root AGENTS.md harmless is
+        `WorkspaceManager._voice_legacy_root_agents_md`, one level up. This file is not a shield
+        and must not be relied on as one — anything a Thread must not read has to be dealt with
+        where it lives, not fenced off from here.
+
+        The stub stays for what it does do: it is read on every turn, so it is worth the one
+        sentence that points the agent at the turn's own instructions.
         """
         from .brand import apply_voice
         return apply_voice(
