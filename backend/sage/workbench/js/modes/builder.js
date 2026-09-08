@@ -506,9 +506,23 @@ window.SW = window.SW || {};
     // "Other" is other than the one the header names, so with nothing named there is no count to
     // give: every touched app would be counted as an other, against an app picker reading
     // "Choose a Built App".
-    const others = activeApp
-      ? (touched || []).filter((t) => t.appId !== activeApp.id)
+    //
+    // "Other" also carries a second claim, and it is about the named app: that this Conversation
+    // changed THAT one too. So the list is split before it is counted. A Conversation can name an
+    // app it never built — a handoff binds one whose build never ran (`touched` is written from an
+    // `app_change` receipt only), another tab moves the Project-wide selection under this one
+    // (ADR-0040), a delete falls back to a survivor and keeps the Conversation, and
+    // `resolveConversationApp` can land on an app that was discussed and not built. On any of
+    // those, "1 other app changed here" is a sentence about work that never happened.
+    const changedHere = activeApp ? touched || [] : [];
+    const namedIsAmongThem = changedHere.some((t) => t.appId === activeApp.id);
+    const others = namedIsAmongThem
+      ? changedHere.filter((t) => t.appId !== activeApp.id)
       : [];
+    // The same rows, said the other way round: with the named app not among them there is no
+    // "other" to count from, so the sentence is about the Conversation and names what it did
+    // change. The rail's tags are still where it goes back to.
+    const elsewhere = namedIsAmongThem ? [] : changedHere;
 
     // What state the app the header names is really in. `Running` is the Gallery's word for a
     // deployed App and is deliberately not borrowed: a Built App is not deployed, and the Gallery
@@ -573,6 +587,21 @@ window.SW = window.SW || {};
             'span',
             { className: 'sw-caption sw-build-others' },
             `${others.length} other app${others.length === 1 ? '' : 's'} changed here`
+          )
+        ),
+      elsewhere.length > 0 &&
+        h(
+          Tooltip,
+          {
+            title:
+              elsewhere.length > 1
+                ? `Changed here: ${elsewhere.map((t) => t.appName).join(', ')}`
+                : null,
+          },
+          h(
+            'span',
+            { className: 'sw-caption sw-build-others' },
+            `This conversation changed ${elsewhere.map((t) => t.appName).join(', ')}`
           )
         )
     );
