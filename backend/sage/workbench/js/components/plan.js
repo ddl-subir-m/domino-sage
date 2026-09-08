@@ -44,7 +44,7 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-plan-card-head' },
-        h('div', { className: 'sw-plan-card-title' }, plan.title),
+        h('div', { className: 'sw-plan-card-title' }, plan.caption || plan.title),
         h(SW.PlanStatusTag, { status: plan.status }),
         h('span', { className: 'sw-caption' }, `v${plan.version}`)
       ),
@@ -461,7 +461,7 @@ window.SW = window.SW || {};
               : h(
                   'div',
                   { className: 'sw-plan-title-row' },
-                  h('h1', { className: 'sw-plan-title' }, plan.title),
+                  h('h1', { className: 'sw-plan-title' }, plan.caption || plan.title),
                   // Same affordance as a section's, because it is the same act: the pencil, the
                   // draft, Save and Cancel. `editing` is shared with the sections, so opening this
                   // closes one of those rather than leaving two editors open at once.
@@ -737,7 +737,7 @@ window.SW = window.SW || {};
             ),
           }),
 
-        lead && lead !== plan.title &&
+        lead && lead !== (plan.caption || plan.title) &&
           h('div', { className: 'sw-plan-lead sw-plan-md' }, SW.util.markdown(lead)),
 
         inBuild && view === 'Markdown'

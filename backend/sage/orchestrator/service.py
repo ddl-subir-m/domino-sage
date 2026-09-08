@@ -2804,6 +2804,27 @@ def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
     return f"Unnamed app {n}" if workspace.has_built() else f"Draft app {n}"
 
 
+def _plan_doc_captioned(doc: dict | None) -> dict | None:
+    """A plan document with something to draw on its face: the title somebody wrote, else its first
+    line, cleaned.
+
+    Beside `title` and never over it, because the two are read for opposite reasons. `title` is what
+    somebody WROTE, and it is empty until they do (#216): it is rendered back as the plan's `# `
+    heading at the next edit, copied into `plan.md`, read from there as the Built App's name, and
+    stored as `displayName` outright by `_open_app` when a Chat handoff is confirmed. A caption that
+    reached any of those would be a sentence becoming a deployment's name by the long way round —
+    and the rename box, which opens on `title`, would offer that sentence back for one Enter.
+
+    `caption` is only ever drawn. It is `plan_title`'s cleaned first line, unchanged and read off
+    the same markdown the plan card's own fallback reads, so a card and the plan pin cannot end up
+    calling one document two things.
+    """
+    if not doc:
+        return doc
+    stored = str(doc.get("title") or "").strip()
+    return {**doc, "caption": stored or chat_handoff.plan_title(str(doc.get("markdown") or ""))}
+
+
 def _app_change_event(workspace: Workspace) -> dict:
     """The record that a turn changed an app, attached to the app it changed (#56, #83).
 
@@ -3728,11 +3749,11 @@ class Orchestrator:
         return self.project(start_preview=False, seed_app=False).record
 
     def list_plan_docs(self) -> list[dict]:
-        return self._plan_docs_record().list_plan_docs()
+        return [_plan_doc_captioned(d) for d in self._plan_docs_record().list_plan_docs()]
 
     def read_plan_doc(self, plan_id: str) -> dict | None:
         project = self.project(start_preview=False, seed_app=False)
-        doc = project.record.read_plan_doc(plan_id)
+        doc = _plan_doc_captioned(project.record.read_plan_doc(plan_id))
         if doc is None:
             return None
         # Answered here rather than on the page, because "may this plan be built again" is the same
@@ -6227,7 +6248,13 @@ class Orchestrator:
         _warn_if_shapeless("chat handoff", plan_md)
         plan_id = project.record.create_plan_doc(
             plan_md,
-            title=chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
+            # Empty unless the planner wrote a heading, and captioned on the way out
+            # (`_plan_doc_captioned`). What is stored here becomes a NAME twice over: `_open_app`
+            # writes it into the app's `displayName` when this handoff is confirmed, and the next
+            # edit to this document renders it back as the plan's `# ` heading, which `plan.md`
+            # then takes a copy of. Seeded from the first line, both of those turn the sentence
+            # somebody typed into the name of a deployment — the long way round to what #216 shut.
+            title=chat_handoff.plan_heading(plan_md),
             author=_viewer_id(),
             origin_thread_id=thread_id,
         )["id"]
@@ -10214,7 +10241,8 @@ class Orchestrator:
                     _warn_if_shapeless("plan gate", plan_md)
                     plan_id = project.record.create_plan_doc(
                         plan_md,
-                        title=chat_handoff.plan_title(plan_md) or "App",
+                        # Written or empty, never scraped — see the Chat handoff's own call.
+                        title=chat_handoff.plan_heading(plan_md),
                         author=_viewer_id(),
                         # This gate ran inside an app, so the document knows which one from the
                         # start — unlike a Chat handoff, which is planned before any app exists

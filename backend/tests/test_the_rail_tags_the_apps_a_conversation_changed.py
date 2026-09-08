@@ -48,16 +48,18 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-def _plan(title: str, step: str) -> str:
-    return (f"{title}\n\n"
+def _plan(name: str, step: str) -> str:
+    """Opening on a `# ` heading, which is the only thing that names the app it is built into
+    (#216) and what the plan shape asks the planner for."""
+    return (f"# {name}\n\n"
             "## Plan\n"
             f"1. **{step}** — Show it.\n\n"
             "## Open questions\n"
             "None — ready to build.\n")
 
 
-_DESK = _plan("A desk exposure dashboard.", "Desk table")
-_PNL = _plan("A daily P&L report.", "P&L table")
+_DESK = _plan("Desk exposure", "Desk table")
+_PNL = _plan("Daily P&L", "P&L table")
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +132,7 @@ def test_a_build_turn_that_changes_an_app_tags_the_conversation_with_it(tmp_path
     list(orch.approve_stream(conversation=tid))
 
     assert _tags(orch, tid) == [
-        {"appId": app_id, "appName": "A desk exposure dashboard.", "kind": "built"},
+        {"appId": app_id, "appName": "Desk exposure", "kind": "built"},
     ]
 
 
@@ -149,7 +151,7 @@ def test_the_tag_says_built_only_when_this_conversation_made_the_app(tmp_path: P
     list(orch.build_stream("make it dark", conversation=later))
 
     assert _tags(orch, later) == [
-        {"appId": app_id, "appName": "A desk exposure dashboard.", "kind": "changed"},
+        {"appId": app_id, "appName": "Desk exposure", "kind": "changed"},
     ]
 
 
@@ -191,8 +193,8 @@ def test_two_apps_in_one_conversation_leave_two_tags(tmp_path: Path):
     list(orch.approve_stream(conversation=tid))
 
     assert _tags(orch, tid) == [
-        {"appId": desk, "appName": "A desk exposure dashboard.", "kind": "built"},
-        {"appId": pnl, "appName": "A daily P&L report.", "kind": "changed"},
+        {"appId": desk, "appName": "Desk exposure", "kind": "built"},
+        {"appId": pnl, "appName": "Daily P&L", "kind": "changed"},
     ]
 
 
@@ -215,7 +217,7 @@ def test_the_tag_reaches_the_list_the_rail_reads(tmp_path: Path, monkeypatch):
 
     row = next(r for r in rows if r["id"] == tid)
     assert row["touched"] == [
-        {"appId": app_id, "appName": "A desk exposure dashboard.", "kind": "built"},
+        {"appId": app_id, "appName": "Desk exposure", "kind": "built"},
     ]
 
 
@@ -315,7 +317,7 @@ def test_renaming_an_app_relabels_its_tags(tmp_path: Path):
     ]
     # The other conversation names a different app, and a rename is not a reason to touch it.
     assert _tags(orch, pnl_tid) == [
-        {"appId": pnl, "appName": "A daily P&L report.", "kind": "built"},
+        {"appId": pnl, "appName": "Daily P&L", "kind": "built"},
     ]
 
 
