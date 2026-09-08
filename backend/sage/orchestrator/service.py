@@ -4690,6 +4690,25 @@ class Orchestrator:
         self._adopt_legacy_build_history(project.workspace, project.record)
 
     @staticmethod
+    def _name_conversation(project: Project, conversation: str | None, prompt: str) -> None:
+        """Give a Build Conversation the title Chat would have given it (see _chat_stream).
+
+        One naming rule for both modes: `title_from_prompt`, the same 60 characters, the same
+        placeholder guard. A no-op once the row carries any other title, so a rename typed into the
+        rail outranks every prompt that follows it.
+
+        Silent when the id names no row. A build driven from outside the rail — the CLI, a test —
+        passes a conversation this store has no record of (see ThreadStore.is_deleted), and naming
+        something that does not exist is not what a turn is for."""
+        if not conversation:
+            return
+        store = ThreadStore(project.record.path)
+        row = store.get(conversation)
+        if row is None or row.get("title") not in ("", "New conversation"):
+            return
+        store.touch(conversation, title=title_from_prompt(prompt))
+
+    @staticmethod
     def _adopt_legacy_build_history(workspace: Workspace, record: ProjectRecord) -> None:
         """Build history predates conversation tagging (Workspace.adopt_history). Hand every
         untagged entry to the project's OLDEST conversation: an upgraded project keeps its
@@ -5183,6 +5202,20 @@ class Orchestrator:
             self._turn_gave_up = False
             self._begin_conversation(conversation)
             project = self.project()
+            # Name the Conversation off the first thing typed into it, exactly as Chat does at the
+            # top of _chat_stream. Build shared the record all along and never wrote the one field
+            # the rail draws, so a Conversation opened in Build read "New conversation" for the rest
+            # of its life while the identical Conversation opened in Chat read back what was asked.
+            #
+            # Here rather than in _build_stream, which is the loop and not the door: a phase of a
+            # phased build enters that with a step brief for a prompt, and an approve enters it with
+            # none at all. This is the one path a person's own sentence arrives on.
+            #
+            # Guarded on the placeholder rather than on "first turn", again as Chat is, and it buys
+            # three things at once: a rename from the rail menu survives every later turn, the second
+            # prompt does not overwrite the first, and a gate card's replay — which resends the same
+            # prompt with a skip flag — is a no-op instead of a second write.
+            self._name_conversation(project, conversation, prompt)
             self._pin_turn_app(project)
             # The model gate's listing, kicked off here so the gate below reads a local answer
             # instead of paying 2.5-2.9s for one (#125). A no-op when it is already warm, which the

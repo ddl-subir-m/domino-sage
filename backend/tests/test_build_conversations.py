@@ -159,3 +159,74 @@ def test_the_history_route_filters_to_the_conversation_it_is_asked_for(tmp_path:
     assert [r["text"] for r in client.get("/api/project/history?conversation=thr_a").json()["history"]] == ["in a"]
     assert client.get("/api/project/history?conversation=thr_missing").json()["history"] == []
     assert len(client.get("/api/project/history").json()["history"]) == 2
+
+
+# ---- the rail's name for it -------------------------------------------------------------------
+#
+# A Conversation opened in Build kept the literal words "New conversation" for the rest of its life,
+# while the identical Conversation opened in Chat read back the sentence it was started with. Both
+# modes have always shared this record; only Chat ever wrote its title (see `_chat_stream`). The
+# rail draws one field for both, so the mode you happened to start in decided whether the row was
+# findable a week later.
+
+
+def _named_orch(tmp_path: Path):
+    """A Project whose build turns actually run, so the title is asserted off the real path rather
+    than off the helper called directly. `_orch` above cannot: its gateway is never called."""
+    from .fake_opencode import FakeOpenCode, Turn
+
+    template = _template(tmp_path)
+    ws = tmp_path / "mnt" / "code"
+    orch = Orchestrator(
+        workspace_dir=ws, template=template, gateway=object(),
+        catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",
+                             plan="p", implement="i", ask="a"),
+        project_id="Sage",
+        opencode_client=FakeOpenCode(ws, [Turn(text="ok"), Turn(text="ok"), Turn(text="ok")]),
+    )
+    project = orch.project(start_preview=False)
+    return orch, ThreadStore(project.record.path)
+
+
+def test_a_build_conversation_is_named_after_the_first_thing_typed_into_it(tmp_path: Path):
+    orch, store = _named_orch(tmp_path)
+    thread = store.create()
+    assert store.get(thread["id"])["title"] == "New conversation"
+
+    list(orch.build_stream("add a revenue chart by region", None, None, conversation=thread["id"]))
+
+    assert store.get(thread["id"])["title"] == "add a revenue chart by region"
+
+
+def test_the_second_prompt_does_not_rename_the_conversation(tmp_path: Path):
+    """The title is what the Conversation was STARTED for. A later turn changing it would move the
+    row out from under someone mid-build."""
+    orch, store = _named_orch(tmp_path)
+    thread = store.create()
+
+    list(orch.build_stream("add a revenue chart by region", None, None, conversation=thread["id"]))
+    list(orch.build_stream("make it dark", None, None, conversation=thread["id"]))
+
+    assert store.get(thread["id"])["title"] == "add a revenue chart by region"
+
+
+def test_a_name_typed_into_the_rail_outranks_every_prompt_after_it(tmp_path: Path):
+    """Same guard Chat uses, and this is what it buys: a rename is a decision, a prompt is not."""
+    orch, store = _named_orch(tmp_path)
+    thread = store.create()
+    store.update(thread["id"], title="Q3 exposure")
+
+    list(orch.build_stream("add a revenue chart by region", None, None, conversation=thread["id"]))
+
+    assert store.get(thread["id"])["title"] == "Q3 exposure"
+
+
+def test_a_build_naming_no_conversation_writes_no_title(tmp_path: Path):
+    """A build driven from outside the rail — the CLI, a test — passes an id this store has no row
+    for, or none at all. Neither is a Conversation to name."""
+    orch, store = _named_orch(tmp_path)
+
+    list(orch.build_stream("add a revenue chart by region", None, None, conversation=None))
+    list(orch.build_stream("add a revenue chart by region", None, None, conversation="thr_missing"))
+
+    assert store.list() == []

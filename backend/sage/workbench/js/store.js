@@ -4214,7 +4214,7 @@ window.SW = window.SW || {};
     async attach(resourceId, addedBy = 'user', rationale, options = {}) {
       // Putting something in context is intent, the same as typing, so it opens
       // a conversation. Only navigation is free.
-      if (!conversationId()) await store.newThread({ appId: options.appId });
+      if (!conversationId()) await store.newThread();
       const attachment = await SW.api.addToConversation(
         conversationId(),
         resourceId,
@@ -4327,12 +4327,13 @@ window.SW = window.SW || {};
 
     // Chat ---------------------------------------------------------------
 
-    async newThread(options = {}) {
-      const thread = await SW.api.createThread(
-        state.scope.id || null,
-        options.title || 'New chat',
-        options.appId
-      );
+    // No arguments, and none to give: the server mints the Thread untitled and names it from the
+    // first thing typed into it, in Chat and in Build alike (see `_name_conversation`). This used
+    // to pass a scope, a title and an app id that `SW.api.createThread` has never taken and the
+    // route has never read — three dead arguments that read like the title was being asked for
+    // here and ignored somewhere else.
+    async newThread() {
+      const thread = await SW.api.createThread();
       state.thread = thread;
       // The conversation the rail's placeholder was standing in for now exists, so the flag has
       // done its job. Clearing it HERE and not in `clearConversation` is the whole distinction:
