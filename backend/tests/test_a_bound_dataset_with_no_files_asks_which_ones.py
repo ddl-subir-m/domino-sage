@@ -874,6 +874,65 @@ def test_listing_a_dataset_does_not_put_its_tree_into_the_prompt(tmp_path: Path,
     assert "part.csv" not in "\n".join(p["text"] for p in oc.prompts)
 
 
+# ---- the crack the nudge opened (#214) -----------------------------------------------------------
+
+# The live sentence, from the issue. It has to be a build request for the two tests below to mean
+# anything: `PROMPT` above is not one, which is why the whole Chat section passed while the card was
+# unreachable in front of every person who typed this.
+BUILD_PROMPT = "build me a narnia dashboard from the data in @forecasts"
+
+
+def test_the_live_sentence_is_a_build_request():
+    """The premise of the two tests below, asserted rather than assumed.
+
+    Both pass for the wrong reason if this sentence stops matching — the card would be drawn because
+    the short-circuit never fired, not because the gate now runs ahead of it. The regex is the
+    classifier's cheap half and will be tuned again; this fails loudly when it is, instead of
+    quietly turning the reorder's only tests into a re-run of the ones above.
+    """
+    assert handoff.looks_like_build_request(BUILD_PROMPT)
+    assert not handoff.looks_like_build_request(PROMPT)
+
+
+def test_a_build_request_naming_a_dataset_is_asked_which_file_first(tmp_path: Path, monkeypatch):
+    """The card, on the turn it was asked. The whole issue in one assertion.
+
+    Before the reorder this same call answered with a lone `handoff-suggest` and returned: the
+    dataset gate sat below the short-circuit, and Build does not ask instead — a confirmed handoff
+    arrives as `kind: "approve"`, above the gate block. So the app was minted around a Dataset with
+    no file chosen, which is #204's crack in the half #204 did not move.
+    """
+    orch, oc = _orch(tmp_path, _calls_dataset(tmp_path))
+    client = _client(orch, monkeypatch)
+    tid = _thread_with_dataset(orch, "ds_revenue_2026", "revenue_2026")
+
+    kinds = [e["type"] for e in _frames(_ask(client, tid, BUILD_PROMPT))]
+    assert "dataset-files" in kinds
+    assert "handoff-suggest" not in kinds
+    # The turn stops at the question, the way every other declared gate does: no agent ran, and
+    # nothing was written against a file nobody picked.
+    assert oc.prompts == []
+
+
+def test_the_nudge_still_arrives_on_the_turn_the_dataset_click_buys(tmp_path: Path, monkeypatch):
+    """Deferred, not dropped. The click replays the question and the nudge answers it.
+
+    Pinned by POSITION, not by membership: the model classifier offers after a turn anyway, so
+    "somewhere in the events" would hold even with the regex skipped. What the click buys is the
+    nudge arriving INSTEAD of a turn, in the milliseconds the regex costs.
+    """
+    orch, oc = _orch(tmp_path, _calls_dataset(tmp_path))
+    client = _client(orch, monkeypatch)
+    tid = _thread_with_dataset(orch, "ds_revenue_2026", "revenue_2026")
+    assert "dataset-files" in [e["type"] for e in _frames(_ask(client, tid, BUILD_PROMPT))]
+
+    orch.confirm_thread_dataset_file(tid, "ds_revenue_2026", "calls_daily.csv")
+    kinds = [e["type"] for e in _frames(_ask(client, tid, BUILD_PROMPT, skipDatasetGate=True))]
+    assert kinds.index("handoff-suggest") == 0
+    assert "agent" not in kinds
+    assert oc.prompts == []
+
+
 # ---- the two surfaces cannot drift --------------------------------------------------------------
 
 

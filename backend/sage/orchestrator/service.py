@@ -6750,6 +6750,34 @@ class Orchestrator:
                 yield from offer
                 return
 
+        # And a Dataset on this Thread with no file pinned from it (#196, ADR-0039), asked after the
+        # table for the reason Build asks it after: a store with no table cannot be read at all,
+        # while a Dataset nobody has picked a file from still lets a turn run. `skip_dataset_gate`
+        # is the card being ANSWERED — the chip is on the Thread by then — and it stops a second
+        # Dataset turning the answer that click bought into another question.
+        #
+        # BEFORE the handoff offer below, for the reason the table gate above is (#204, #214). The
+        # two gates were split across the short-circuit and the half below it was unreachable: a
+        # sentence that names a Dataset AND asks for an app matches the explicit-build regex, so the
+        # nudge answered and returned before this ran. Build does not ask instead — a confirmed
+        # handoff arrives as `kind: "approve"`, above the whole gate block — so nobody asked, and
+        # the app was minted around a Dataset with no file chosen.
+        #
+        # Invisible from the suite, because every Chat test here sends "build me a daily summary of
+        # calls", which the regex does not match. A test for this ordering has to assert its own
+        # prompt is a build request, or it drifts back into testing nothing.
+        if dismissed_dataset:
+            # Against the Thread rather than the app, because a Thread is what Chat's account of
+            # "this conversation is about that Dataset" hangs on. Same reason as Build's: the gate
+            # reads the Thread's rows rather than the question's words, so a Dataset nobody wants to
+            # pin from would meet every later question with the same card.
+            self._dataset_dismissed.add((thread_id, dismissed_dataset))
+        if not skip_dataset_gate:
+            offer = self._chat_dataset_offer(store, thread_id, prompt, items)
+            if offer is not None:
+                yield from offer
+                return
+
         # "Build me an app" is answered by Build, so offer it now rather than after a turn.
         # sage-chat writes an Artifact under examples/, never an app, so running the turn first
         # spends a whole turn and ends exactly where this starts — which is how a build request
@@ -6760,8 +6788,8 @@ class Orchestrator:
         # exists.
         #
         # NOT under `asking`, which is the guard on echoing the person's sentence back and nothing
-        # more. `asking` is false on exactly the turn the table card replays into
-        # (`skip_table_gate`), so guarding this with it put the spinner back on the one turn the
+        # more. `asking` is false on exactly the turns a card replays into (`skip_table_gate`,
+        # `skip_dataset_gate`), so guarding this with it put the spinner back on the one turn the
         # reorder above exists to buy: measured, the click was answered by a whole sage-chat turn
         # and the nudge arrived after it, rather than in the three milliseconds the regex costs.
         #
@@ -6777,23 +6805,6 @@ class Orchestrator:
             yield early
             yield done
             return
-        # And a Dataset on this Thread with no file pinned from it (#196, ADR-0039), asked last for
-        # the reason Build asks it last: a store with no table cannot be read at all, while a
-        # Dataset nobody has picked a file from still lets a turn run. `skip_dataset_gate` is the
-        # card being ANSWERED — the chip is on the Thread by then — and it stops a second Dataset
-        # turning the answer that click bought into another question.
-        if dismissed_dataset:
-            # Against the Thread rather than the app, because a Thread is what Chat's account of
-            # "this conversation is about that Dataset" hangs on. Same reason as Build's: the gate
-            # reads the Thread's rows rather than the question's words, so a Dataset nobody wants to
-            # pin from would meet every later question with the same card.
-            self._dataset_dismissed.add((thread_id, dismissed_dataset))
-        if not skip_dataset_gate:
-            offer = self._chat_dataset_offer(store, thread_id, prompt, items)
-            if offer is not None:
-                yield from offer
-                return
-
         immediate = "first" if was_first else None
         artifacts: list[dict] = []
         history = store.read_history(thread_id)
