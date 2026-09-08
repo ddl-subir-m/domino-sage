@@ -217,10 +217,19 @@ the title it just wrote, and the rail applies it. No read, so the row is right w
 frame. Covered by
 `backend/tests/test_the_rail_learns_the_name_while_the_turn_is_still_running.py`.
 
-**Still open: the app switcher's own staleness.** The name of the selected app is refreshed
-on the same schedule and has no equivalent event. `_app_change_event` already carries a
-name and is the obvious carrier. Left out deliberately — ticket 216 changes what an app
-name *is*, and wiring a stale name faster is worth less than wiring the right one.
+**Not open after all: the app switcher's own staleness.** Deferred here while 216 was in
+flight, then checked against the code once the ladder had settled. There is no equivalent
+hole. `_watchBuild`'s tick calls `loadAppList` unconditionally every two seconds for as long
+as a turn runs, because which app a build is running in is a row's state (#77) — so the name
+rides along, and the only unattended writer of a name, the plan's `#` heading, only writes
+mid-turn. The two writers outside a turn each read the list back themselves: `renameApp` and
+`publishApp`'s `finally`.
+
+`_app_change_event` is not the carrier it looked like, on two counts. It is yielded
+immediately before `done`, so it is no earlier than the re-read that already happens. And the
+name it carries is a then-fact by design — a run from six weeks ago names the app what it was
+called then — which the transcript replays, so applying it to the live row would put an old
+name on a current app.
 
 ## Decision trace
 
