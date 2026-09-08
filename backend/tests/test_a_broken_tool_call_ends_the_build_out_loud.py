@@ -164,7 +164,14 @@ def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
     # And it says what the log says: the gateway stopped mid-answer, twice. What it must NOT say is
     # that one step was too big — see test_a_cut_stream_is_named_for_what_cut_it.py.
     assert "the model gateway stopped responding" in message
-    assert "Send the same request again in a few minutes." in message
+    # The advice used to be "again in a few minutes", on the reading that the gateway was under
+    # load. It is not (2026-09-08): the gateway buffers a tool call's argument deltas instead of
+    # streaming them, so the connection goes quiet and a 60s idle limit ends it — 13 reproductions
+    # out of 13, at concurrency 1, 4 and 8 alike, following the alias rather than the hour
+    # (gateway-questions.md bug 3). Waiting is not a fix and asking for it spends the person's
+    # afternoon, so the message asks for the one thing that is.
+    assert "Pick a different model and send the same request again." in message
+    assert "few minutes" not in message, "the give-up still tells the person to wait it out"
     # Exactly one retry. A model that breaks every time must not spend the whole build proving it.
     assert len(oc.sessions) == 2
 

@@ -9374,6 +9374,12 @@ class Orchestrator:
         # agent to restructure it is work spent on a problem it does not have — that assumption
         # already produced the escape-heavy repro in #205, which streamed perfectly.
         #
+        # A second wrong cause, corrected 2026-09-08: "under load". It is not load either. The
+        # gateway buffers a tool call's argument deltas instead of streaming them, so the connection
+        # goes quiet and a 60s idle limit ends it — 13 reproductions out of 13, at concurrency 1, 4
+        # and 8 alike, depending on the alias rather than the hour (gateway-questions.md bug 3,
+        # reproduced by scripts/gateway-stream-probe.py). So the note no longer blames load.
+        #
         # So the note names the gateway and asks for the same change again, which is what the retry
         # is for. No size advice here at all: the evidence for it would be `_unparsed_tool_evidence`
         # reporting a `len=` near a model's output cap, and nothing has measured where that ceiling
@@ -9383,8 +9389,8 @@ class Orchestrator:
             "dropped part-way through it. This is a fresh session. The app on disk is what the "
             "broken turn left behind, so read it before you change it.\n\n"
             "The cause was upstream of you: the model gateway stopped sending part-way through that "
-            "call, which usually means it is under load. The step itself was fine — make the same "
-            "change again."
+            "call. It is a limit on the gateway, not something your answer did wrong. The step "
+            "itself was fine — make the same change again."
         )
         # One automatic retry for a tool call whose arguments never parsed (_unparsed_tool_input).
         # Bounded to one so a model that emits broken JSON systematically still ends, rather than
@@ -9837,13 +9843,17 @@ class Orchestrator:
                 # big to write in one go. The capture behind #207 disproves it: 22 characters of
                 # arguments had been emitted when the stream stopped, and splitting the request
                 # would have changed nothing. So the message names what the log now names — a
-                # gateway that stopped mid-answer — and asks for the one thing that does help,
-                # which is time. It does not promise a smaller ask will go through, because there
-                # is no evidence that it would.
+                # gateway that stopped mid-answer. It also used to ask for time, on the reading
+                # that the gateway was under load — wrong as well, corrected 2026-09-08. The cut is
+                # deterministic and follows the alias, not the hour: 13 of 13, at concurrency 1, 4
+                # and 8 alike (gateway-questions.md bug 3). So waiting changes nothing, and the one
+                # thing that does help is a different model. It still does not promise a shorter ask
+                # will go through, because there is still no evidence that it would.
                 message = (f"This build stopped part-way through a {broken_call} step, twice. "
                            "Anything already written to your app is still there.\n\nBoth times, "
-                           "the model gateway stopped responding part-way through it — usually a "
-                           "sign it's under load. Send the same request again in a few minutes.")
+                           "the model gateway stopped responding part-way through it. It does this "
+                           "on some models and not others, and waiting doesn't change it. Pick a "
+                           "different model and send the same request again.")
                 if owns_turn and is_approval:
                     message += brand.text(
                         '\n\nThe plan you approved is still here — say "try again" and '
