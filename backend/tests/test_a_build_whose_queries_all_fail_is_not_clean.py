@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import _PERSISTED_EVENTS, Orchestrator
-from sage.preview.queries import CachingExecutor
+from sage.preview.queries import CachingExecutor, PreviewQueries
 from sage.resources.builtapp import serve_module
 from sage.resources.provider import FakeResourceProvider
 from sage.router.models import ModelCatalog
@@ -112,6 +113,37 @@ def _ready(orch: Orchestrator, answer) -> None:
     orch.bind_data_source("ds-dwh")
     _catalog(orch, [{"name": "usage", "binding": "ds-dwh", "sql": "SELECT 1"}])
     orch.project(start_preview=False).queries = FakeQueries(answer)
+
+
+def _write_catalog(workspace: Path, statements: dict[str, str]) -> None:
+    (workspace / ".sage").mkdir(parents=True, exist_ok=True)
+    (workspace / ".sage" / "queries.json").write_text(
+        json.dumps([{"name": name, "binding": "ds-dwh", "sql": sql}
+                    for name, sql in statements.items()]), encoding="utf-8")
+
+
+def _preview_with_catalog(tmp: Path, statements: dict[str, str]) -> PreviewQueries:
+    """A preview standing where the live one stood: the real `serve.py`, a real catalog on disk, and
+    a real executor holding whatever it last failed with. Everything `refresh` reads and nothing it
+    does not — the loopback server and its thread play no part in re-reading a file.
+
+    The two rewrites below each change the catalog's SIZE, so the stamp moves without this having to
+    wait out an mtime tick.
+    """
+    workspace = tmp / "app"
+    _write_catalog(workspace, statements)
+    previews = PreviewQueries(workspace, TEMPLATE)
+    previews._module = serve_module(TEMPLATE)
+    previews._server = SimpleNamespace(sage_queries=previews._module.load_queries(workspace))
+    previews.executor = CachingExecutor(
+        lambda query, params: {"columns": [], "rows": [], "truncated": False})
+    previews._stamp = previews._catalog_stamp()
+    return previews
+
+
+def _rewrite_catalog(tmp: Path, statements: dict[str, str]) -> None:
+    """What the agent does mid-turn, which trips no HMR reload: `.sage/` is not under `src/`."""
+    _write_catalog(tmp / "app", statements)
 
 
 # ---- the turn stops reporting a clean build ---------------------------------------------------
@@ -324,6 +356,32 @@ def test_a_query_that_starts_working_is_forgotten():
     executor(_Query("usage", "SELECT good"), {})
 
     assert executor.failures == {}
+
+
+def test_a_rewritten_statement_drops_what_the_old_one_failed_with(tmp_path: Path):
+    """The fix that no reload announces. `.sage/queries.json` is not under `src/`, so rewriting it
+    trips no HMR reload and nothing fires the query again — and fixing a query is the likeliest last
+    act of a turn that had a broken one. Without this the turn ends reporting SQL the agent has
+    already replaced, which is this ticket's defect facing the other way."""
+    previews = _preview_with_catalog(tmp_path, {"usage": "SELECT bad"})
+    previews.executor.failures["usage"] = "Object 'GONG' does not exist or not authorized"
+
+    _rewrite_catalog(tmp_path, {"usage": "SELECT good"})
+    previews.refresh()
+
+    assert previews.failures() == {}
+
+
+def test_an_unchanged_statement_keeps_what_it_failed_with(tmp_path: Path):
+    """Only a statement that CHANGED is forgiven. A catalog rewritten around one broken query —
+    a second query added beside it — must not launder the one nobody touched."""
+    previews = _preview_with_catalog(tmp_path, {"usage": "SELECT bad"})
+    previews.executor.failures["usage"] = "Object 'GONG' does not exist or not authorized"
+
+    _rewrite_catalog(tmp_path, {"usage": "SELECT bad", "trend": "SELECT 1"})
+    previews.refresh()
+
+    assert "usage" in previews.failures()
 
 
 # ---- and the preview stops sending a creator to a published app's log ---------------------------

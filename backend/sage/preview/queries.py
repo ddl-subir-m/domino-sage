@@ -218,6 +218,14 @@ class PreviewQueries:
         catalog is new statements against the same store, so the executor and its connection stay. A
         rewritten Binding is a DIFFERENT store, so the executor, the client it holds and every row
         cached from the old one are all wrong and get dropped together.
+
+        A statement that CHANGED also drops whatever that query last failed with (#203). The failure
+        map is otherwise cleared only by the query answering, and answering needs the screen to fire
+        it again — which a rewritten catalog does not cause, because `.sage/queries.json` is not
+        under `src/` and so trips no HMR reload. Fixing a query is the likeliest last act of a turn
+        that had a broken one, so without this the turn ends reporting SQL the agent has already
+        replaced. The name comes back on the next fire if the new statement is broken too; what must
+        not happen is a build called broken over a statement that no longer exists.
         """
         if self._server is None or self._module is None:
             return
@@ -227,7 +235,14 @@ class PreviewQueries:
         try:
             if self._stamp is None or stamp[1] != self._stamp[1]:
                 self._server.sage_executor = self.executor = self._build_executor()
+            was = getattr(self._server, "sage_queries", {}) or {}
             self._server.sage_queries = self._module.load_queries(self._workspace)
+            if self.executor is not None:
+                now = self._server.sage_queries
+                for name in list(self.executor.failures):
+                    old_q, new_q = was.get(name), now.get(name)
+                    if new_q is None or getattr(old_q, "sql", None) != getattr(new_q, "sql", None):
+                        self.executor.failures.pop(name, None)
         except Exception:
             log.exception("preview queries: could not re-read the catalog, keeping the last one")
             return
